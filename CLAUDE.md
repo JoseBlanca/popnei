@@ -16,13 +16,14 @@ need for their own work. They did not see the session. The principles of
 the writing skill, `.claude/skills/writing/SKILL.md`, hold in chat, and
 these are the ones that fail most often there:
 
-- The first sentence answers the question that was asked, in the owner's
-  words. When several things are true, the one that changes what the owner
-  does goes first.
-- When the reply does not follow a question, a report at the end of a
-  long task or something found on the way, it opens with a sentence of
-  context: what was being worked on and why. The owner may come back to it
-  after hours of other work.
+- A reply opens with a sentence that says what it is about, also when it
+  follows a question: what was asked or what was being worked on, with the
+  options or the things named by what they are. The owner may come back to
+  it after hours of other work. The answer comes next, in a full sentence.
+  When several things are true, the one that changes what the owner does
+  goes first.
+- A longer reply is sketched before it is written, as the writing skill
+  says, so that no term is used before the sentence that explains it.
 - A reply holds the decisions that are needed from the owner and what they
   need to know. How the work went stays out, unless it changes what they
   do next.

@@ -44,7 +44,10 @@ Report these, in this order, and nothing else:
    one where I cannot tell which side is the better.
 5. **Sentences that gave me nothing.** Those about the text itself, about
    how I should react, about how the work went, or that answer an
-   objection I did not have. Quote them.
+   objection I did not have. Quote them. A sentence that says what was not
+   kept, not checked or not known is not one of these: it tells me how far
+   to trust the rest. Neither is a line that says what was left out of a
+   reply and where it can be put.
 6. **If it asks for a decision:** can I answer with what is on the page?
    If not, what would I have to ask first?
 7. **The writer's questions**, if any came with the text. Answer each one
