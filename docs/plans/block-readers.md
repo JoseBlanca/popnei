@@ -1,6 +1,8 @@
 # Plan: readers that give blocks
 
-September 2026. Approved by the owner on 20 September 2026. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026 and under way
+on the branch `plan/block-readers`, with its work report in
+`docs/reports/block-readers.md`. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
