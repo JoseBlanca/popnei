@@ -15,9 +15,6 @@ pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
     /// found in a file.
     Core(popnei::Error),
-    /// An argument this crate refuses on its own, before the core sees it,
-    /// with the message a Python user reads.
-    Argument(String),
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -34,7 +31,6 @@ impl From<PyPopneiError> for PyErr {
     fn from(error: PyPopneiError) -> PyErr {
         match error {
             PyPopneiError::Core(error) => exception_of(error),
-            PyPopneiError::Argument(message) => PyValueError::new_err(message),
             PyPopneiError::Broken(message) => PyRuntimeError::new_err(message),
         }
     }

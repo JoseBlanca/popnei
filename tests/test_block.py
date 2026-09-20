@@ -219,10 +219,16 @@ def test_every_pass_over_the_variants_reads_the_file_again(
 def test_a_field_that_is_not_one_of_the_five_is_refused(
     reference_vcf_dir: Path,
 ) -> None:
-    """The refusal comes at the call and not at the first block."""
+    """The refusal comes at the call and not at the first block.
+
+    The message is the core's, which both languages share, and it lists
+    the five names a user can write.
+    """
     variants = open_vcf(reference_vcf_dir / "cases.vcf")
-    with pytest.raises(ValueError, match="depth"):
+    with pytest.raises(ValueError, match="depth") as refusal:
         variants.iter_blocks(fields=("chrom", "depth"))
+    for name in ALL_FIELDS:
+        assert f"`{name}`" in str(refusal.value)
 
 
 def test_blocks_of_no_variant_are_refused(reference_vcf_dir: Path) -> None:

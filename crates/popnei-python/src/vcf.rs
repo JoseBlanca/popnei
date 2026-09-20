@@ -22,9 +22,9 @@ use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyString, PyTuple};
 
-use popnei::block::{AllelesColumn, Block, BlockCollector};
+use popnei::block::{AllelesColumn, Block, BlockCollector, needs_of_the_fields};
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::{Needs, VariantReader};
+use popnei::variant::VariantReader;
 
 use crate::errors::PyPopneiError;
 
@@ -39,17 +39,6 @@ type BlockColumns<'py> = (
     Option<Bound<'py, PyTuple>>,
     Option<Bound<'py, PyArray1<f32>>>,
 );
-
-/// The name each field of a block has in Python, with the fields of the
-/// core it asks the reader for. The chromosome and the position are one
-/// field of the core, so either name fills both.
-const FIELD_NAMES: [(&str, Needs); 5] = [
-    ("chrom", Needs::CHROM_POS),
-    ("pos", Needs::CHROM_POS),
-    ("id", Needs::ID),
-    ("alleles", Needs::ALLELES),
-    ("qual", Needs::QUAL),
-];
 
 /// A VCF that was opened: its path, the options it is read with, and the
 /// individuals its header named.
@@ -82,7 +71,8 @@ impl VcfSource {
         fields: Vec<String>,
         num_vars_per_block: Option<usize>,
     ) -> PyResult<Blocks> {
-        let needs = needs_of(&fields)?;
+        let needs =
+            needs_of_the_fields(fields.iter().map(String::as_str)).map_err(PyPopneiError::from)?;
         let path = &self.path;
         let options = self.options;
         let collector = py.detach(|| -> Result<_, PyPopneiError> {
@@ -206,26 +196,6 @@ pub(crate) fn open_vcf(
         options,
         individuals,
     })
-}
-
-/// The fields of the core that the names of `fields` ask for, the genotypes
-/// among them, which every block holds.
-fn needs_of(fields: &[String]) -> Result<Needs, PyPopneiError> {
-    let mut needs = Needs::GTS;
-    for field in fields {
-        let found = FIELD_NAMES
-            .iter()
-            .find(|(name, _)| *name == field.as_str())
-            .map(|(_, of_the_core)| *of_the_core);
-        let Some(of_the_core) = found else {
-            let names = FIELD_NAMES.map(|(name, _)| format!("`{name}`")).join(", ");
-            return Err(PyPopneiError::Argument(format!(
-                "`{field}` is not a field of a block; the fields are {names}"
-            )));
-        };
-        needs = needs.union(of_the_core);
-    }
-    Ok(needs)
 }
 
 /// The array, which nothing writes into any more: a block is frozen, and
