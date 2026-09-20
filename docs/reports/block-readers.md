@@ -289,3 +289,38 @@ Findings not taken:
 - numpy's `into_pyarray` has no form that gives an error, so a failed
   allocation there is a panic; the loops over variants inside the binding
   crates and a Python pass with no `close` are older than the plan.
+
+### Tasks 2.4 to 2.6
+
+Task 2.4, `VcfReader` as a reader of blocks on the parser of task 2.3,
+went to the subagent that wrote that parser: commits 9e20eb7, a sentence
+of the spec, 83349df, the reader, both bindings and the bench, 2bf494d
+and 8a887a5; 241 thousand tokens and 28 minutes. Run by the orchestrator:
+the checks of the `coding` skill, `147 passed`, pytest `50 passed`, `npm
+test` `tests 42`, `fail 0`, both wasm targets checked; between f6bed12 and
+8a887a5 no file of `python/`, `js/popnei/src/`, `tests/` or
+`js/popnei/test/` changed but one new node test; `grep -rn
+"VariantReader\|BlockCollector\|CollectedBlocks" crates/popnei-python
+crates/popnei-js` finds nothing. `read_variant` and the old parser of a
+line are gone with this task, since the reader could not be both at
+once; 53 mentions of the record level are left in `block.rs` and
+`variant.rs` for task 3.1. No pytest or node test leaned on the old rule
+that a position is checked when it was not asked for.
+
+The bench on the new reader, run by the orchestrator right after the
+task, the same command and file as the baseline above, load average 1.3:
+the plain file in a median of 0.650, 0.598 and 0.606 s on one thread in
+three runs of 5, and of 0.120 s on 18; the bgzipped one in 0.881 s and
+0.431 s. The subagent had 0.586, 0.123, 0.874 and 0.434 s. Task 2.6 is
+the measurement that says which targets are met.
+
+`docs/specs/io_vcf.md` changed in 9e20eb7: a size of the blocks that the
+caller asked for is refused when the reader is built, and the default
+size, which nobody asked for, when the first block is built. The reason
+is the finding of the review of the bindings: in wasm a header of 170000
+individuals opened with the ploidy 255 was refused at `openVcf`, because
+the default block of 100 variants holds more genotypes than 32 bits
+count, although that file is read in blocks of 10. It is a corner that a
+user sees, decided by the subagent and kept by the orchestrator because
+it follows from "nothing is read when it is called but the header" of
+section 5 of the architecture; the owner can reverse it.

@@ -291,7 +291,7 @@ describes, no more. The three revised specs.
   binding crates in the same tree. A wrong genotype here is silent anywhere else, so it is a
   commit of its own, and the comparison with bcftools of deliverable 3 is
   what guards it.
-- [ ] 2.4 `VcfReader` as a `BlockReader` on the row parser: the lines of
+- [x] 2.4 `VcfReader` as a `BlockReader` on the row parser: the lines of
   a block, the rows given to the lines that have one, the threads, the
   numbers of the chromosomes, the errors in their order, the reader that
   refuses to go on after a parse that did not come back; the tests of
