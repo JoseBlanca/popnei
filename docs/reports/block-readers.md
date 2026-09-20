@@ -383,3 +383,105 @@ on was called `FieldsNotFilled`, after the variant that a reader filled.
 It is `FieldsNotInTheBlock` now. Nothing gives it yet, and no binding
 crate or test outside `error.rs` names it; it is a public name of the
 core, so the owner may want another.
+
+### The review of tasks 2.3 to 2.5
+
+Seven reviewers at b67f652, one for each category, each in a worktree of
+its own, 1.1 million tokens together (`spec` 155 thousand, `tests` 181,
+`numbers` 123, `errors` 181, `api` 128, `architecture` 155, `binding`
+184). No reviewer found a wrong genotype, position, id, allele or
+quality. What they ran: the reader against bcftools 1.24 and pyNei on
+VCFs of their own, with ploidies of 1, 3 and 4, 127 and 128 alleles,
+every form of a genotype, `GT` at any place of the FORMAT, 1500 variants
+equal in the three programs; every read with the same bytes for five
+sizes of block, six bounds of a batch and 1 or 4 threads; the 32
+combinations of the fields with the values of all the fields; 640 passes
+from Python against pyNei, 4 files by 32 sets of fields by 5 sizes, with
+no mismatch, and the same blocks from node; 210 thousand mutated inputs,
+a file cut at every length, every byte changed and removed, random bytes
+after a header, on 1 to 8 threads, with no panic and no hang; a Ctrl-C
+at three moments of a pass of 2 million variants on a release build,
+always a `KeyboardInterrupt`; the memory of wasm the same after 100
+passes. The sixteen counts of the spec, recomputed from the stored output
+of bcftools, are exact.
+
+What held went back to the subagent that wrote the reader, test first,
+six commits from 93b0710 to 2ed860b, 102 thousand tokens, and three small
+ones of the bindings to the subagent that wrote those, b385e77 to aaa7464,
+37 thousand tokens. After them, run by the orchestrator: `153 passed`,
+pytest `61 passed`, `npm test` `tests 45`, `fail 0`, both wasm targets
+checked, the wheel of pyodide built and its smoke test exited with 0. What was found
+that mattered, and is fixed:
+
+- A bgzipped file that was cut got the new error only when the cut fell
+  where a gzip member ends: of the 21904 ways to cut `many.vcf.gz` short,
+  3 gave it and 21899 gave "incomplete deflate stream" or "unexpected end
+  of file", in Python an `OSError` with no file name in it. A bgzipped
+  source that ends early is now that one error wherever it was cut, a
+  `ValueError` in Python, with the variants before the cut given first by
+  the reader; an error of the file system stays the error of the input,
+  and has a test with a source that fails after some bytes, which nothing
+  drove before.
+- Eight rules of the reader could be broken with its 101 tests passing,
+  and each has a test now that was seen to fail: no block after an error,
+  which every test had checked with the wrong line at the end of its
+  file, where the reader stops for lack of lines; the text of a batch
+  cleared for the next one, which is what the bound of 8 MiB is for, and
+  without which the reader held every line of the file; both halves of
+  what tells a bgzip file from a gzip one; the window of the last 28
+  compressed bytes; two messages that were asserted by their place alone;
+  and an allele of exactly 127, which only refusals tested.
+- A default size of the blocks that does not fit, which only wasm meets,
+  told a user who gave no size to ask for fewer variants in a block. It
+  has words of its own, and the check of a size is one function that
+  `reblock` and the VCF reader both call, where it was written in three
+  places that had drifted apart.
+- The bench took any argument it did not know as the path of the file, so
+  `--lines-per-batch=4096` ran with the default and said nothing. It
+  refuses what it does not know, and has a `--help`.
+- A `ploidy` of -1 was told that up to 18446744073709551615 is allowed;
+  an error of the input with no number from the system lost the name of
+  its file on the way to Python; and the header of 170000 individuals that
+  has to open where a size is 32 bits was tested under node and not under
+  pyodide, which is such a build.
+
+`docs/specs/io_vcf.md` changed in 93b0710 and `docs/specs/block.md` in
+f9dc27d, in commits of their own. Six sentences said what the code does
+not do, and the code was right: that the reader as built parses every
+position, which was true of the old one; that `bcftools view -f .,PASS`
+makes the same choice as popnei, which it does not for a FILTER that
+names `PASS` beside a filter that failed, `PASS;q10`, which bcftools
+keeps and popnei skips; that a line whose bytes are not text is an error
+of the line, where the nine first columns are checked and a byte that is
+not text in the column of an individual is "not an allele number" with
+the name of that individual; that the positions and the qualities are
+written from the threads, where only the genotypes are, the rest being
+appended after each batch at a cost of 1 ms of 127 on 18 threads; that two
+bytes of the source are looked at, where it is sixteen. The seventh is
+the decision of the first item above, which extends the owner's decision
+on the mark of the end to a cut inside a member.
+
+Findings not taken, each because its fix is the owner's:
+
+- A bgzip file whose second member has the two bytes of the length of its
+  extra field changed to one precise value makes the decoder land on the
+  last, empty member: the mark of the end is there, and the file gives no
+  variant and no error. One reviewer found it, the only silent case among
+  the 101745 changes of one byte of `cases.vcf.gz`; the reader before this
+  plan had it too. The fix is to read a bgzip file by the size that each
+  of its members states, as bcftools does, where the spec names flate2's
+  decoder of several members.
+- Through `iter_blocks` a file that was cut gives fewer variants than the
+  reader does before the error, because `reblock` loses what it was
+  keeping, as the block spec says of any error: `many.vcf.gz` without its
+  last 28 bytes gives 500 variants in blocks of 1 and of 100, 497 in
+  blocks of 7, and none with the default size, the whole file being one
+  short block that was waiting.
+- No error of a data line names the file, only the line and the column.
+- A parse that did not come back is a `ValueError`, as the VCF reader spec
+  says, where the `coding` skill keeps `RuntimeError` for a defect of
+  popnei; and neither binding reaches that error: a panic of the parse is
+  a `PanicException` in Python.
+- A position written `+5` is read as 5, as pyNei reads it; the spec says
+  that an allele number is a run of digits and says nothing of a
+  position.
