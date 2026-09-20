@@ -521,25 +521,31 @@ fn fill_genotype(
     Ok(())
 }
 
+/// Where `GT` is among the keys of the FORMAT column, which is where the
+/// genotype of each individual is in its own column.
+fn gt_index_of(format: &str, line: u64) -> Result<usize> {
+    format
+        .split(':')
+        .position(|key| key == "GT")
+        .ok_or_else(|| Error::VcfDataLine {
+            line,
+            place: VcfPlace::Column("FORMAT"),
+            problem: format!("`{format}` has no GT key, and GT is the genotype"),
+        })
+}
+
 /// The genotypes of every individual of the line, appended to `gts`: the
 /// value of the key `GT` of each column, which an individual that drops its
 /// last values still has.
 fn fill_genotypes<'a>(
     gts: &mut Vec<i8>,
     columns: &mut impl Iterator<Item = &'a str>,
-    format: &str,
+    gt_index: usize,
     individuals: &[String],
     ploidy: usize,
     num_alleles: usize,
     line: u64,
 ) -> Result<()> {
-    let Some(gt_index) = format.split(':').position(|key| key == "GT") else {
-        return Err(Error::VcfDataLine {
-            line,
-            place: VcfPlace::Column("FORMAT"),
-            problem: format!("`{format}` has no GT key, and GT is the genotype"),
-        });
-    };
     for (read_so_far, individual) in individuals.iter().enumerate() {
         let Some(column) = columns.next() else {
             return Err(Error::VcfDataLine {
@@ -645,14 +651,23 @@ impl<R: BufRead + Send> VcfReader<R> {
                 var.qual = parse_quality(quality_text, number)?;
                 var.filled |= Needs::QUAL;
             }
+            // The shape of the line is checked whatever was asked for: the
+            // nine first columns are there, the FORMAT has a GT key, and
+            // one column of an individual comes after it at least. What is
+            // in those columns, and how many of them there are, is read
+            // only when the genotypes are asked for.
+            //
+            // INFO is not read, and its column has to be there.
+            next_column(&mut columns, "INFO", number)?;
+            let format_text = next_column(&mut columns, "FORMAT", number)?;
+            let gt_index = gt_index_of(format_text, number)?;
+            let first_individual = next_column(&mut columns, "individual", number)?;
             if needs.contains(Needs::GTS) {
-                // INFO is not read, and its column has to be there.
-                next_column(&mut columns, "INFO", number)?;
-                let format_text = next_column(&mut columns, "FORMAT", number)?;
+                let mut columns = std::iter::once(first_individual).chain(columns);
                 fill_genotypes(
                     &mut var.gts,
                     &mut columns,
-                    format_text,
+                    gt_index,
                     individuals,
                     options.ploidy,
                     num_alleles,
@@ -1373,6 +1388,52 @@ mod tests {
         assert_eq!(var.pos, 100);
         assert!(var.gts.is_empty());
         assert_eq!(var.qual, None);
+    }
+
+    /// The variants of a VCF read with the id and the alleles asked for
+    /// and not the genotypes, or the error the reader stops at.
+    fn read_without_the_genotypes(vcf: &str) -> Result<Vec<Row>> {
+        let mut reader = reader_over(vcf, VcfOptions::default());
+        reader.set_needs(Needs::ID | Needs::ALLELES);
+        rows_of(&mut reader)
+    }
+
+    #[test]
+    fn a_line_of_seven_columns_is_refused_with_the_genotypes_not_asked_for() {
+        let vcf = vcf_of(&["chr1 100 . A T . PASS"]);
+        let error = read_without_the_genotypes(&vcf).unwrap_err();
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Line));
+    }
+
+    #[test]
+    fn a_format_with_no_gt_is_refused_with_the_genotypes_not_asked_for() {
+        let vcf = vcf_of(&["chr1 100 . A T . PASS . DP 3 4 5"]);
+        let error = read_without_the_genotypes(&vcf).unwrap_err();
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("FORMAT")));
+    }
+
+    #[test]
+    fn what_is_in_the_columns_of_the_individuals_is_not_read_without_the_genotypes() {
+        // A tetraploid genotype under a ploidy of 2, and a line with the
+        // columns of two individuals under a header with three: errors
+        // when the genotypes are asked for, and not looked at here.
+        let vcf = vcf_of(&[
+            "chr1 100 rs1 A T . PASS . GT 0/0/1/1 0/1 0/1",
+            "chr1 200 rs2 A T . PASS . GT 0/0 0/1",
+        ]);
+        assert_eq!(
+            read_without_the_genotypes(&vcf).unwrap(),
+            vec![
+                row("chr1", 100, "rs1", &["A", "T"], None, &[]),
+                row("chr1", 200, "rs2", &["A", "T"], None, &[]),
+            ]
+        );
     }
 
     #[test]
