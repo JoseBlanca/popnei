@@ -198,3 +198,44 @@ is published, and no manifest names one now.
 The `coding` skill has no reference for wasm-bindgen. What task 1.3 and
 its review learned is above and in `js/popnei/README.md`, to write one
 from.
+
+## Work package 2: the variant module
+
+Task 2.1, the whole work package, commits 813dacb, the spec, and
+175163d, the code; one subagent run of 106 thousand tokens and 6
+minutes. It finished as planned.
+
+The deliverables, run by the orchestrator at 175163d: `cargo test -p
+popnei --lib variant:: -- --list` `4 tests`, the three types and the two
+variants read through a `Box<dyn VariantReader>`; fmt exit 0, clippy no
+warning, `cargo test --workspace` `7 passed`, `cargo wasm-check`
+finished.
+
+What the subagent added to `docs/specs/variant.md`, in a commit of its
+own before the code, for the owner to look at. None changes what a user
+of Python or TypeScript sees:
+
+- A `ChromTable` that is full, 4294967295 names, gives `u32::MAX` for a
+  new name and does not keep it, and `name` gives `None` for that
+  number. `intern` returns a `u32` and has no error to give, and the
+  rule is what keeps it from panicking.
+- The error of a field that was asked for and not filled carries the
+  fields as a `Needs`, so a consumer that lacks two reports both.
+- `ChromTable::is_empty`, and `Default` for `ChromTable` and `Variant`,
+  which clippy asks for beside `len` and `new`.
+- `Needs` is written by hand, and `thiserror` is a new dependency of the
+  core, which the `coding` skill asks errors to be written with. It
+  builds for both wasm targets.
+
+For what comes next: `Variant::clear` empties `alleles` by dropping its
+strings and keeps only the capacity of the vector, so a reader that
+fills the alleles through `clear` allocates a string for each allele of
+each variant. Section 1 of the architecture wants those buffers reused.
+The spec asks only for the state a read leaves, so the VCF reader can
+write over the strings that are there; task 3.2 is told, and the check
+by hand of task 5.1 is where it shows.
+
+The review of this work package is made together with that of work
+package 3, as the `following-plans` skill allows when the two are one
+piece of code: the types have no caller until the VCF reader, and what
+a reviewer can say of them alone is little.

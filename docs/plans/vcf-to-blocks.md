@@ -200,7 +200,7 @@ there is a reader, and the comparison with pyNei is made in work package
 
 **Tasks.**
 
-- [ ] 2.1 The module: the two constants, `Needs`, `ChromTable`,
+- [x] 2.1 The module: the two constants, `Needs`, `ChromTable`,
   `Variant`, the trait with its implementation for a box, the error of
   the crate with its first case, and their tests. From "The Rust
   interface", "Fields that were not asked for, and sources that lack
