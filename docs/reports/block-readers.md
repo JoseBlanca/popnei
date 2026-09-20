@@ -152,3 +152,40 @@ now: `grep -rn "path dependency\|sibling checkout" docs .claude/skills
   three files, with no code, unless `npm run build` was run first: the
   package has no script that builds before a pack. Publishing is outside
   this plan.
+
+## Work package 2: the VCF reader gives blocks
+
+Notes taken task by task; the deliverables, the review and what the owner
+should know are written when the work package ends.
+
+Task 2.1, the trait of the readers, what a block gains, the view of one
+variant and `reblock`, in the core: commit 1c9f2e4, one subagent, 207
+thousand tokens and 15 minutes. Run by the orchestrator: `cargo test
+--workspace` `107 passed`, 15 of them new, pytest `38 passed`, both wasm
+targets checked. Three of the six cases of the error that the spec lists
+were there from the collector and fit; three are new. What it did that
+the task or the spec did not say, which the reviewers of the work package
+were told to look at: `retain_vars` runs `check` before it moves a row,
+because a block with a defect would make it index outside an array;
+`reblock` skips a block of no variants that its source gives, where the
+spec says only that a reader gives none; the collector got a `set_needs`
+of four lines so that the reader that stands on it until work package 3
+can keep the contract of the trait; and the subagent wrote the code before
+the tests, against the `coding` skill, and then broke the code in three
+places to see the tests fail, which showed a defect of its first version,
+a block of no variants given after a cut.
+
+Task 2.2, both binding crates on a boxed reader of blocks: commit
+319d435, one subagent, 185 thousand tokens and 10 minutes. Run by the
+orchestrator: the checks of the `coding` skill, `107 passed`, `38
+passed`, `tests 39`, `fail 0`; `git diff --stat 1c9f2e4 -- python
+js/popnei/src tests js/popnei/test` prints nothing, so no test and no
+file of the two packages changed; `grep -rn
+"VariantReader\|BlockCollector" crates/popnei-python crates/popnei-js`
+finds nothing; no manifest changed. Every function of the Python binding
+crate returns the result of the crate, as the corrected skill asks, and
+the three `map_err` that are left on an error of the core add the path of
+the file. Two cases of the error that say a reader has a defect are a
+`RuntimeError` in Python. No test sees that choice: neither binding crate
+can build cargo tests, and no reader that Python reaches gives those
+errors.

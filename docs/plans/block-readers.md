@@ -275,7 +275,7 @@ describes, no more. The three revised specs.
   guess", "How it is verified" and "The Rust interface" of
   `docs/specs/block.md`, and "The Rust interface" of
   `docs/specs/variant.md` for the view. Serves deliverable 1.
-- [ ] 2.2 The two binding crates hold a `Box<dyn BlockReader>`, put a
+- [x] 2.2 The two binding crates hold a `Box<dyn BlockReader>`, put a
   `Reblock` over it for the size that `iter_blocks` was asked for, and
   call `Block::check` before the genotypes cross. No file
   of `python/`, `js/popnei/src/`, `tests/` or `js/popnei/test/` changes.
