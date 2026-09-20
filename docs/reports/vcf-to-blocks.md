@@ -23,3 +23,27 @@ with no change for git.
 
 The owner has not yet said how pyNei is depended on, a path or a git
 commit. Task 4.2 follows the plan's meanwhile, the absolute path.
+
+## Work package 1, while it goes
+
+Task 1.1, commit 71279e5, one subagent run of 82 thousand tokens and 3
+minutes. The orchestrator ran the checks again: `cargo fmt --all
+--check` exit 0, clippy finished with no warning, `cargo test
+--workspace` `2 passed`, and `cargo test -p popnei --lib -- --list`
+`2 tests`. The subagent added a test that gzips a line and reads it
+back, so that flate2 is called and not only compiled, and built the core
+for both wasm targets: `wasm32-unknown-unknown` and
+`wasm32-unknown-emscripten` both finish, with miniz_oxide and no C
+compiler. The plan's check `cargo test -p popnei -- --list` ends with the
+line of the doc tests, `0 tests`; the count of the library is read with
+`--lib`.
+
+Change to the plan: tasks 1.2 and 1.3 were marked as side by side, and
+they run one after the other. Both add a member to the root
+`Cargo.toml` and both write `Cargo.lock`, and a `cargo clippy
+--workspace` of one would meet the half written crate of the other. One
+tree has one writer per file.
+
+For the owner: the manifests have no `license` field, because no
+document of the repository names a license. Nothing needs it until
+popnei is published.

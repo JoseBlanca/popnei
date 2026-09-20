@@ -139,7 +139,7 @@ around it.
 
 **Tasks.**
 
-- [ ] 1.1 The cargo workspace and the core crate with its version
+- [x] 1.1 The cargo workspace and the core crate with its version
   function, the lints and the settings that the `coding` skill asks of
   the core, a `.gitignore`, and `flate2` as a dependency. From section 8
   of the architecture. Serves deliverable 1.
