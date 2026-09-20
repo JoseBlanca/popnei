@@ -13,10 +13,15 @@ decisions that the owner took the same day. The owner answered its
 breakdown in chat on 20 September 2026.
 
 It was written before the specs it builds from were revised, on the
-owner's order, and that is its first condition: the three specs below are
-revised for blocks and reviewed before the plan is approved, and the
-parts of them that its tasks name are then checked against their
-headings. The specs, which another session of the assistant revises:
+owner's order. Another session of the assistant revised them for blocks
+the same day, each through the spec reviewer and the first reader, and
+the plan was then checked against them: every part of a spec that a task
+names is a heading they have, and `reblock` moved from the third work
+package to the second, because the revised `docs/specs/block.md` has
+`iter_blocks` always end in one, so the bindings need it. When this was
+written the revised specs were in the main checkout and not committed.
+They have to be committed before the plan runs, since it runs in a
+worktree made from `main`. The specs:
 
 - `docs/specs/variant.md`, what is left of the variant module: the set of
   wanted fields, the table of chromosomes, the view of one variant of a
@@ -67,13 +72,15 @@ Out, with where it goes:
 
 ## What has to be in place
 
-- The three specs above, revised for blocks, each through the first
-  reader and the spec reviewer, and the revised `docs/architecture.md`
-  and `docs/glossary.md` committed. Checked by reading: none of the three
-  names `read_variant`, `VariantReader` or `BlockCollector` as something
-  to build, and `docs/specs/block.md` has `BlockReader` in "The Rust
-  interface". The revised `docs/specs/io_vcf.md` has to say, because the
-  tasks of work package 2 build from it: how a line that gives no variant,
+- The three specs above, revised for blocks and reviewed, and the
+  revised `docs/architecture.md` and `docs/glossary.md`, all committed on
+  `main`: `git status --short docs .claude` shows none of them as
+  changed. Checked by reading: none of the three specs names
+  `read_variant`, `VariantReader` or `BlockCollector` as something to
+  build, `docs/specs/block.md` has `BlockReader` and `Reblock` in "The
+  Rust interface", and each has "Open points: None". The revised
+  `docs/specs/io_vcf.md` says, in "How it runs", what the
+  tasks of work package 2 build from: how a line that gives no variant,
   one that failed its FILTER or an empty one, gets no row while the rows
   are parsed side by side; how many lines are held as text at a time, so
   that the memory of a reader does not grow without limit, and how a
@@ -174,11 +181,16 @@ would change the plan if it failed, and everything after it is removal.
 
 **Deliverables.**
 
-1. `BlockReader` in the core, and `Block::variant` with its view, as
-   "The Rust interface" of `docs/specs/block.md` has them. Check: `cargo
-   test -p popnei --lib block:: -- --list` names tests of the view, one
-   variant of `cases.vcf` seen through it with the literals of the table
-   of `docs/specs/io_vcf.md`, and of a reader used as a boxed
+1. In the core, as "The Rust interface" of `docs/specs/block.md` and of
+   `docs/specs/variant.md` have them: the `BlockReader` trait with its
+   contract; what `Block` gains, `fields`, `variants`, `variant`,
+   `retain_vars` and `check`; the view of one variant; and `Reblock`.
+   Check: the cargo tests that "How it is verified" of
+   `docs/specs/block.md` lists for the block, made at `retain_vars`,
+   `variants` and `check`, and those of `reblock` that are made over a
+   reader written in the test, the blocks of one variant that go through
+   with no copy and the source that is called once and no more after its
+   error, exist and pass; a test uses a reader as a boxed
    `dyn BlockReader`.
 2. The row parser: one data line, as bytes, written into one row of a
    block, the genotypes into a slice of individuals x ploidy alleles.
@@ -194,7 +206,9 @@ would change the plan if it failed, and everything after it is removal.
    against the stored output of bcftools and the sixteen counts of the
    spec pass, made at `next_block`; the blocks of `many.vcf` have the
    sizes that "How it is verified" of `docs/specs/block.md` gives, for
-   the sizes asked for there; the same blocks come out in rayon pools of
+   the sizes asked for there, and the tests of `reblock` made over a
+   `VcfReader`, the 72 blocks of 7 and the tetraploid genotype of line
+   251, pass; the same blocks come out in rayon pools of
    1 and of 4 threads, with the same chromosome numbers; a wrong line
    gives the blocks before it and then its error and then nothing; the
    serial parse, which is the one wasm runs, is tested natively against
@@ -206,7 +220,9 @@ would change the plan if it failed, and everything after it is removal.
    error, as a review of the plan before this one found on the file of
    that day. A gzipped file that bgzip did not write, plain
    gzip, is still read.
-5. Both bindings hold a boxed `BlockReader`. Check: `uv run maturin
+5. Both bindings hold a boxed `BlockReader`, with a `Reblock` at the
+   end of every `iter_blocks` and `Block::check` before the genotypes
+   cross, as `docs/specs/block.md` asks. Check: `uv run maturin
    develop && uv run pytest` `38 passed` and more, with no test of
    `tests/` changed but for the new ones; `npm test` in `js/popnei`
    `tests 39` and more, `fail 0`, none changed; the wheel of pyodide
@@ -226,12 +242,18 @@ describes, no more. The three revised specs.
 
 **Tasks.**
 
-- [ ] 2.1 `BlockReader`, `Block::variant` and its view, in the core,
-  with their tests, and a reader, marked as one that goes in work package
-  3, that gives the blocks of the `BlockCollector` that exists, so that
-  the next task can move the bindings before the VCF reader changes. From
-  "The Rust interface" of `docs/specs/block.md`. Serves deliverable 1.
-- [ ] 2.2 The two binding crates hold a `Box<dyn BlockReader>`. No file
+- [ ] 2.1 In the core: `BlockReader`, the methods that `Block` gains,
+  the view of one variant, `Reblock`, the cases of the error that they
+  add, and their tests; and a reader, marked as one that goes in work
+  package 3, that gives the blocks of the `BlockCollector` that exists,
+  so that the next task can move the bindings before the VCF reader
+  changes. From "What it gives", "What a reader of the rules would not
+  guess", "How it is verified" and "The Rust interface" of
+  `docs/specs/block.md`, and "The Rust interface" of
+  `docs/specs/variant.md` for the view. Serves deliverable 1.
+- [ ] 2.2 The two binding crates hold a `Box<dyn BlockReader>`, put a
+  `Reblock` over it for the size that `iter_blocks` was asked for, and
+  call `Block::check` before the genotypes cross. No file
   of `python/`, `js/popnei/src/`, `tests/` or `js/popnei/test/` changes.
   From "In Python and in TypeScript" of `docs/specs/block.md`. Serves
   deliverable 5. Needs 2.1.
@@ -270,11 +292,11 @@ flate2 does not tell its caller where a gzip member ends. If a
 target of "Speed" is still missed, the plan is done when the measurement
 is reported, and the owner gets the numbers.
 
-## Work package 3: the record level goes, and reblock comes
+## Work package 3: the record level goes
 
 **What it gives.** A core in which a block is the one shape of the
-variants, as the architecture says, and the reader over a reader that
-the vars file, the filters and `iter_blocks` with a size will need.
+variants, as the architecture says, with nothing left of the single
+variant that a reader filled.
 
 **Deliverables.**
 
@@ -285,14 +307,7 @@ the vars file, the filters and `iter_blocks` with a size will need.
    stood on the collector is gone; the cases of the error enum that only
    the record level could give are gone, and the two binding crates still
    map every case that is left.
-2. `reblock`, as `docs/specs/block.md` has it. Check: cargo tests with
-   a reader written in the test that gives blocks of uneven sizes, 3, 0
-   is never given, 5 and 1 variants: asked for 4 it gives 4, 4 and 1, and
-   asked for 100 it gives one of 9; every column that is there is cut and
-   joined with the genotypes, the alleles among them; the blocks joined
-   are those of the source; the error of the source comes after the
-   blocks that were whole before it.
-3. Everything still passes. Check: the final check below.
+2. Everything still passes. Check: the final check below.
 
 **What it stands on.** Work package 2.
 
@@ -305,9 +320,6 @@ the vars file, the filters and `iter_blocks` with a size will need.
   with the test of work package 2 that covers what it covered. From
   "Not in this spec" and "The Rust interface" of `docs/specs/variant.md`
   and `docs/specs/block.md`. Serves deliverable 1.
-- [ ] 3.2 `reblock` and its tests. From the part of `docs/specs/block.md`
-  that has it. Serves deliverable 2. Side by side with 3.1 only if the
-  spec puts it in a file of its own; otherwise after it.
 
 **What could go wrong.** A test that is deleted because the thing it
 called is gone can take with it the only check of a rule that still
