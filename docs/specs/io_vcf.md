@@ -63,7 +63,11 @@ it are taken out of a file. The owner decided this on 20 September 2026;
 pyNei reads such a number, and the option not taken was to do the same.
 
 The ploidy, how many alleles a genotype holds, is the same for every
-individual and every variant, and the caller gives it. A genotype written
+individual and every variant, and the caller gives it. It is 1 or more
+and at most `MAX_PLOIDY`, 255, which is above the ploidy of anything that
+has been sequenced and keeps a ploidy that came from a user from asking
+for a genotype of more alleles than a machine can hold; a ploidy outside
+that range is an error when the reader is built. A genotype written
 as a single `.` is a missing genotype of that ploidy, every allele of it
 missing. Any other genotype with a number of alleles that is not the
 ploidy is an error, which says that popnei does not read a VCF of mixed
@@ -151,7 +155,9 @@ be the nine of a VCF with genotypes and whose other columns are the
 individuals. A VCF with no FORMAT column is an error, as in pyNei, and so
 is one with a FORMAT column and no individual. Two individuals with the
 same name are an error; pyNei raises it in `Genotypes.__init__` of
-`pynei/variants.py`, when it builds the first chunk.
+`pynei/variants.py`, when it builds the first chunk. An individual with
+no name is an error too, which is what a `#CHROM` line that ends in a tab
+has.
 
 A line ends in `\n` or in `\r\n`. The genotype of the last individual is
 the one that would carry the `\r`, so it is taken off the line first;
@@ -160,22 +166,28 @@ pyNei's `test_vcf_with_windows_line_ends` and
 
 An allele number above 127 is an error even when ALT declares that many
 alleles, as in pyNei, whose `test_an_allele_over_the_limit_is_refused`
-asserts a `NotImplementedError`. A FORMAT with no `GT`, a position that
-is not a number and a line with fewer than ten columns are errors. Every
-error of a data line gives the number of the line in the file, counted
-from 1 with the header lines, and the column or the individual.
+asserts a `NotImplementedError`. An allele number is a run of digits, so
+`+1` is not one. A FORMAT with no `GT`, a position that is not a number,
+a quality that is neither a number nor a dot, and a line with fewer than
+ten columns are errors. A line whose bytes are not text, not valid UTF-8,
+is an error of that line and not an error of the input: a VCF is text.
+Every error of a data line gives the number of the line in the file,
+counted from 1 with the header lines, and the column or the individual.
 
 A line that is skipped for its FILTER is not parsed beyond that column,
 so what is wrong in the rest of it is not found. The seven columns up to
-the FILTER are taken as text and read only when the variant is given, so
-what is wrong in them is not found either: a position that is not a
-number in a line that is skipped gives no error, and the name of the
-chromosome of such a line gets no number.
+the FILTER have to be there, since the FILTER is the seventh, and what
+they hold is read only when the variant is given, so what is wrong
+inside them is not found either: a position that is not a number in a
+line that is skipped gives no error, and the name of the chromosome of
+such a line gets no number.
 
 The alleles of ALT are counted for every variant that is given, to check the allele
 numbers of the genotypes, also when `ALLELES` was not asked for and the
 texts of the alleles are not kept. It is a pass over a column of a few
-bytes.
+bytes. An allele with no letter in it, which is what an empty REF, an
+empty ALT or a trailing comma in ALT gives, is an error of its column;
+bcftools reads no alternative allele in `T,`.
 
 The chromosomes get their numbers in the order in which they first appear
 in the data lines that are given. The `##contig` lines of the header are
@@ -219,14 +231,24 @@ variants before it are given first and the error comes at the
 `read_variant` that would have given that line.
 
 Only what `Needs` asks for is parsed, except the chromosome and the
-position, which are always filled. With the genotypes not asked for, the
-reader does not look at the columns of the individuals, and their errors
-are not found.
+position, which are always filled. What is checked whatever is asked for
+is the shape of the line: the nine first columns have to be there, the
+FORMAT has to have a `GT` key, and there has to be one column after the
+FORMAT at least. With the genotypes not asked for, the reader does not
+look at the columns of the individuals: how many of them there are and
+what is in them is not read, so a line with two columns of individuals
+under a header with three, or one with a genotype of another ploidy, is
+given.
 
 The reader is built over any `BufRead`, as section 1 of the architecture
-asks, and it finds the gzip bytes by looking at the buffer without
-consuming it. A function that takes a path opens the file and does the
-same, for the callers that have one.
+asks. It reads the first two bytes of the source to find the gzip and
+hands them back in front of it, because one look at the buffer of a
+source may give fewer than two bytes: a pipe, or the bytes of a file that
+a page hands over a few at a time. Nothing of the source is consumed, and
+the bytes after the first two are read from the buffer of the source
+itself. A function that takes a path opens the file and does the same,
+for the callers that have one; a file that cannot be opened is an error
+that carries the path.
 
 ### How it is verified
 
@@ -312,26 +334,38 @@ alternative allele, asked for with `GTS` alone; an allele of 128; a line
 with two columns of individuals under a header with three, and one with
 four; a FORMAT with no `GT`; a position `x`; a source that starts with
 neither `#` nor the gzip bytes; a header with no FORMAT column, and one
-with it and no individual; two individuals with the same name; a ploidy
-of 0. And these,
+with it and no individual; two individuals with the same name; an
+individual with no name, a `#CHROM` line that ends in a tab; a ploidy of
+0 and one of 256; a quality `x`; an ALT that ends in a comma and an empty
+REF; a line whose bytes are not valid UTF-8; and a path that no file is
+at, whose error carries the path. With `ID` and `ALLELES` asked for and
+no `GTS`, these four: a line of seven columns and a FORMAT of `DP`, which
+are errors, and a tetraploid genotype under a ploidy of 2 and a line with
+the columns of two individuals under a header with three, which are read.
+And these,
 which are not errors: `GT` second in the FORMAT, `DP:GT` with `3:0/1`;
 lines that end in `\r\n`; an empty line at the end; a header and no
 variant, which gives false at the first `read_variant`; a variant whose
 ALT declares two alleles and whose genotypes carry only the first; a
 line with `q10` and a tetraploid genotype, which the default skips and
-`only_passed` false refuses; and a line with `q10` and the position `x`,
-which the default skips.
+`only_passed` false refuses; a line with `q10` and the position `x`,
+which the default skips; a last line with no end of line; and a source
+that gives one byte at a time, gzipped and plain, which a reader that
+looked for the two bytes of gzip in one look at the buffer would refuse.
 
 What `Needs` does: with `GTS` alone, `filled` has the genotypes, the
 chromosome and the position and no more, and `alleles` is empty; with
-`ID` and `ALLELES` and no `GTS`, `gts` is empty. That a second pass over
+`ID` and `ALLELES` and no `GTS`, `gts` is empty; and a reader asked for
+everything and then for `GTS` alone leaves the alleles of the variant it
+filled before empty. That a second pass over
 `many.vcf` allocates nothing is checked once by hand with a counting
 allocator when the reader is written, and it is not a test that stays.
 
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
-individuals that are not there, the repeated name and the ploidy of 0,
-and at
+individuals that are not there, the repeated name, the name that is not
+there and the ploidy out of range, at `from_path` for the file that is
+not there, and at
 `read_variant` for the rest, with the reader built over the bytes of the
 file. The pytest tests are made at `open_vcf` and the blocks of what it
 returns: the counts of the table above on `many.vcf`, with the default
@@ -348,6 +382,14 @@ What the caller says about the file. The default is a ploidy of 2 and
 only the variants that passed.
 
 ```rust
+/// The ploidy and the FILTER of the default, each a constant so that the
+/// binding crates and the tests name them.
+pub const DEFAULT_PLOIDY: usize = 2;
+pub const DEFAULT_ONLY_PASSED: bool = true;
+/// The largest ploidy a reader takes.
+pub const MAX_PLOIDY: usize = 255;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VcfOptions {
     /// How many alleles every genotype has. 1 or more.
     pub ploidy: usize,
@@ -357,12 +399,28 @@ pub struct VcfOptions {
 impl Default for VcfOptions { /* 2, true */ }
 ```
 
+Where in a data line something is wrong, which the error of a data line
+carries beside the number of the line. The column is one of the nine
+fixed names, the individual is the name the header gave it, and the line
+is for what no one column is at fault for, the count of its columns.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VcfPlace {
+    Column(&'static str),
+    Individual(String),
+    Line,
+}
+```
+
 The reader. `new` reads the header, so the individuals are known when it
 returns, and it fails when the source is not a VCF with genotypes or the
 ploidy is 0.
 
 ```rust
 pub struct VcfReader<R: BufRead + Send> { /* private */ }
+impl<R: BufRead + Send> fmt::Debug for VcfReader<R> { /* not R: Debug */ }
 
 impl<R: BufRead + Send> VcfReader<R> {
     /// `source` is the VCF, gzipped or not.
@@ -377,13 +435,17 @@ impl<R: BufRead + Send> VariantReader for VcfReader<R> { /* ... */ }
 ```
 
 The cases this module adds to the error of the crate: the source is not a
-VCF, with what was found; a wrong header, with what is wrong; a ploidy of
-0, which is the one thing `new` refuses that is not in the source; a
-wrong data line, with the number of the line, the column or the
-individual, and what is wrong; a genotype of another ploidy, with the
-line, the individual, the ploidy of the genotype and the one expected;
-and an error of the input, which wraps `std::io::Error`. In Python the
-first five are a `ValueError` and the last an `OSError`.
+VCF, with what was found; a wrong header, with what is wrong; a ploidy
+out of range, which is the one thing `new` refuses that is not in the
+source, with the ploidy that was asked for; a wrong data line, with the
+number of the line, the column or the individual, and what is wrong; a
+genotype of another ploidy, with the line, the individual, the ploidy of
+the genotype and the one expected; a file that could not be opened, with
+its path and the `std::io::Error` as the source of the error, so that a
+binding can put the path where the language of the binding keeps it,
+`OSError.filename` in Python; and an error of the input, which wraps
+`std::io::Error`. In Python the first five are a `ValueError` and the
+last two an `OSError`.
 
 ## Speed
 

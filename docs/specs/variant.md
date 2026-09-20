@@ -26,7 +26,9 @@ reused, so a million variants cost no allocation after the first few.
 
 A `Variant` holds the chromosome as a number, an index into the table of
 chromosome names that the reader keeps, the position, the genotypes, the
-id, the alleles and the quality. The genotypes are one `i8` per allele,
+id, the alleles and the quality, which is the QUAL column of a VCF,
+phred scaled: minus ten times the base ten logarithm of the probability
+that there is no variant at that site, so 30 is one in a thousand. The genotypes are one `i8` per allele,
 individual after individual, `ploidy` of them for each: the alleles of
 individual i are `gts[i * ploidy .. (i + 1) * ploidy]`. 0 is the reference allele, 1
 and above the alternative ones in the order of the VCF, up to 127, and
@@ -110,7 +112,9 @@ tests of this module are of the three types themselves: a `Needs` built
 from flags contains them and no other; a `ChromTable` gives the same
 number for the same name, numbers in the order of first appearance, and
 the name back for a number; a `Variant` that was filled and then cleared
-holds the empty values above and keeps the capacity of its buffers. That
+holds the empty values above and keeps the capacity of its buffers, and
+one cleared with `clear_but_the_alleles` holds them too and its alleles
+as they were. That
 a reader honours `Needs` and `filled`, and that nothing is allocated from
 one variant to the next, is tested where there is a reader, in
 `docs/specs/io_vcf.md`.
@@ -137,13 +141,24 @@ impl Needs {
     pub const ID: Needs;
     pub const ALLELES: Needs;
     pub const QUAL: Needs;
+    /// The five above, built from them.
     pub const ALL: Needs;
+    pub fn empty() -> Needs;
+    pub fn contains(self, fields: Needs) -> bool;
+    pub fn is_empty(self) -> bool;
+    pub fn union(self, other: Needs) -> Needs;
+    pub fn difference(self, other: Needs) -> Needs;
 }
 ```
+
+Its `Display` writes the name of each field of the set between backticks,
+`` `gts`, `chrom and pos` ``, and `nothing` for the empty set, so that
+the message of a consumer that did not get two fields is read as two.
 
 The names of the chromosomes of one reader, each with its number.
 
 ```rust
+#[derive(Debug, Default)]
 pub struct ChromTable { /* private */ }
 impl ChromTable {
     pub fn new() -> ChromTable;
@@ -164,6 +179,7 @@ The record. Its fields are public because every reader writes them and
 every consumer reads them.
 
 ```rust
+#[derive(Debug, Default)]
 pub struct Variant {
     /// A number of the ChromTable of the reader that filled this variant.
     pub chrom: u32,
@@ -175,6 +191,7 @@ pub struct Variant {
     pub id: String,
     /// The reference allele first, then the alternative ones.
     pub alleles: Vec<String>,
+    /// The QUAL of a VCF, phred scaled.
     pub qual: Option<f32>,
     /// What the reader filled in the last read.
     pub filled: Needs,
@@ -184,6 +201,11 @@ impl Variant {
     /// Every field to its empty value and `filled` to nothing. It keeps
     /// the capacity of the buffers.
     pub fn clear(&mut self);
+    /// Every field but `alleles`, which is left as it is. It is what a
+    /// reader that writes over the strings of the alleles, instead of
+    /// dropping them, calls, and `clear` is it followed by emptying
+    /// `alleles`: the list of the fields is written once.
+    pub fn clear_but_the_alleles(&mut self);
 }
 ```
 
