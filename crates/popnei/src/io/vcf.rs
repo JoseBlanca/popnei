@@ -148,11 +148,36 @@ const LINES_PER_BATCH: usize = 1;
 /// memory is made of, the variants parsed from them and the growth of
 /// the buffers by doubling, so bounding the text bounds all of it.
 ///
-/// 8 MiB cuts the [`LINES_PER_BATCH`] lines of a batch wherever a line is
-/// longer than 2 KiB: of the VCF of "Speed" of `docs/specs/io_vcf.md`, 1000
-/// individuals and about 4 KB a line, a batch gets about 2077 lines of the
-/// 4096 it was allowed. A batch holds one line whatever its bytes are.
-const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
+/// Where it cuts, a block is read in more than one batch, and the last
+/// batch of a block is the one the threads of rayon share worst. Of the VCF
+/// of "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000
+/// individuals in 403 MB and about 4 KB a line, the block of 2500 variants
+/// is 10.1 MB of text: with 8 MiB a batch got about 2077 of those lines and
+/// a block was read in two, and with 16 MiB it is read in one. Measured on
+/// 21 September 2026 on the owner's Apple M5 Pro, 18 cores, release, the
+/// file in the page cache, the genotypes alone and the default options, the
+/// median of 5 runs of `benches/read_vcf.rs`, three sets of runs for each
+/// bound, interleaved: on 18 threads 8 MiB reads the plain file in 0.098 s
+/// and 16 MiB in 0.094, and the bgzipped one, 38 MB, in 0.411 s and
+/// 0.392 s. On one thread the two are the same read, plain 0.58 to 0.62 s
+/// and bgzipped 0.90 to 0.95 s, which is the spread of the machine between
+/// one set of runs and the next.
+///
+/// What the 16 MiB costs is memory. The most bytes a reader held at once on
+/// 18 threads, counted by an allocator that adds every allocation and
+/// subtracts every free, were 23.3 MB with 8 MiB and 35.7 MB with 16 MiB on
+/// that file, and 22.5 MB and 34.6 MB on a VCF of 10000 individuals, 3000
+/// variants in 120 MB; the maximum resident set size of the benchmark that
+/// reads it, which holds the binary and the pages the allocator keeps too,
+/// went from 20.0 MB to 33.5 MB and from 24.4 MB to 32.8 MB. What is alive
+/// at once is the genotypes of the block, 5.0 MB at 2500 variants of 1000
+/// diploid individuals, the text of a batch, and the buffer of the file;
+/// each of those grows by doubling, and a growth holds the old buffer and
+/// the new one at once, so a reader of that file with one line in a batch,
+/// whose text is 4 KB, already peaks at 10.2 MB.
+///
+/// A batch holds one line whatever its bytes are.
+const BYTES_PER_BATCH: usize = 16 * 1024 * 1024;
 
 /// How many bytes of the file [`VcfReader::from_path`] holds between two
 /// calls to the file system, for the callers that give a path and not a
@@ -167,10 +192,12 @@ const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
 /// options, the median of 5 runs of `benches/read_vcf.rs` on the VCF of
 /// "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000 individuals
 /// in 403 MB, with the batches this file has, [`LINES_PER_BATCH`] lines and
-/// [`BYTES_PER_BATCH`]: 8 KiB reads it in 0.118 s on 18 threads, 64 KiB in
-/// 0.108, 256 KiB in 0.106 and 1 MiB in 0.105. On one thread the four are
-/// the same read, 0.59 to 0.62 s, which is the spread of the machine
-/// between one set of runs and the next.
+/// [`BYTES_PER_BATCH`]: 8 KiB reads it in 0.105 s on 18 threads, 64 KiB in
+/// 0.095, 256 KiB in 0.093 and 1 MiB in 0.093. With the 1024 lines and the
+/// 8 MiB the reader had before those two were measured, the same four read
+/// it in 0.118, 0.108, 0.106 and 0.105 s. On one thread the four are the
+/// same read, 0.58 to 0.62 s, which is the spread of the machine between
+/// one set of runs and the next.
 ///
 /// 256 KiB is where the gain stops: 1 MiB buys nothing more and holds four
 /// times the bytes. `std::io::BufReader::new` would give 8 KiB.
