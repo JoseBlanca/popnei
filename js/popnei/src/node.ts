@@ -1,0 +1,31 @@
+/**
+ * The entry point under node, where the WebAssembly of the core is read
+ * from the file beside this package.
+ *
+ * node resolves the package to this file through the condition `node` of
+ * the field `exports` of `package.json`; a bundler and a page get `web.ts`
+ * instead. The two export the same functions.
+ */
+
+import { readFile } from "node:fs/promises";
+
+import loadTheWasm from "../wasm/popnei.js";
+import { wasmIsLoaded } from "./core.js";
+
+export { version } from "./core.js";
+
+let loading: Promise<void> | undefined;
+
+/**
+ * Loads the WebAssembly of the core, and returns when it can be called.
+ *
+ * It has to be awaited before any other function of the package, and a
+ * second call returns the same promise as the first, so that the
+ * WebAssembly is loaded once.
+ */
+export function init(): Promise<void> {
+  loading ??= readFile(new URL("../wasm/popnei_bg.wasm", import.meta.url))
+    .then((wasm) => loadTheWasm({ module_or_path: wasm }))
+    .then(wasmIsLoaded);
+  return loading;
+}

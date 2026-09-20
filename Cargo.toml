@@ -1,8 +1,6 @@
 [workspace]
 resolver = "3"
-# The JavaScript binding crate, crates/popnei-js, comes with task 1.3 of
-# docs/plans/vcf-to-blocks.md.
-members = ["crates/popnei", "crates/popnei-python"]
+members = ["crates/popnei", "crates/popnei-python", "crates/popnei-js"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,6 +16,12 @@ flate2 = "1"
 # The Python binding crate. The names of pyo3 change from version to
 # version, and .claude/skills/coding/pyo3.md was written from this one.
 pyo3 = "0.29.2"
+# The JavaScript binding crate. The crate writes into the wasm file what
+# the `wasm-bindgen` command line then reads to generate the JavaScript,
+# and the two refuse to work together when their versions differ, so this
+# one is pinned to the command line installed on the machine that builds,
+# 0.2.128. Both move together: a new command line needs this line changed.
+wasm-bindgen = "=0.2.128"
 
 # The table of .claude/skills/coding/lints.toml, with the reasons for each
 # lint in .claude/skills/coding/SKILL.md. Every crate takes it with

@@ -6,5 +6,12 @@ __pycache__/
 # The module that `maturin develop` compiles and leaves beside the Python
 # package: popnei/_core.cpython-<version>-<platform>.so.
 python/popnei/_core*.so
+# The dependencies of the TypeScript package, npm, which `package-lock.json`
+# says which versions of.
+node_modules/
+# The JavaScript, the declarations and the wasm that the `wasm-bindgen`
+# command line generates from the build of crates/popnei-js. What the
+# TypeScript compiler leaves, js/popnei/dist/, is under the `dist/` above.
+js/popnei/wasm/
 tmp/
 .claude/worktrees/

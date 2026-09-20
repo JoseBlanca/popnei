@@ -1,0 +1,27 @@
+[package]
+name = "popnei-js"
+description = "Population genetics: the JavaScript binding crate, wasm-bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+# One dynamic library, which for the target wasm32-unknown-unknown is the
+# wasm file that the `wasm-bindgen` command line reads. The JavaScript
+# package `js/popnei` imports what that command line generates beside it.
+crate-type = ["cdylib"]
+# There are no cargo tests here: the calculations are tested in the core
+# crate and what this crate adds is tested from TypeScript, under node, as
+# section 11 of docs/architecture.md says. A test binary would also be
+# built for the native target, where the functions that wasm-bindgen
+# generates are stubs that panic when they are called.
+test = false
+doctest = false
+
+[dependencies]
+popnei.workspace = true
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
