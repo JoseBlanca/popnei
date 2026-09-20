@@ -1,4 +1,6 @@
 target/
+# The wheel for pyodide that scripts/build_pyodide_wheel.sh leaves, and the
+# JavaScript that the TypeScript compiler leaves in js/popnei/dist/.
 dist/
 .venv/
 __pycache__/
@@ -6,8 +8,9 @@ __pycache__/
 # The module that `maturin develop` compiles and leaves beside the Python
 # package: popnei/_core.cpython-<version>-<platform>.so.
 python/popnei/_core*.so
-# The dependencies of the TypeScript package, npm, which `package-lock.json`
-# says which versions of.
+# The dependencies that npm installs for the TypeScript package and for the
+# smoke test of pyodide, which the `package-lock.json` beside each of the
+# two says which versions of.
 node_modules/
 # The JavaScript, the declarations and the wasm that the `wasm-bindgen`
 # command line generates from the build of crates/popnei-js. What the
