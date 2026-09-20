@@ -102,9 +102,10 @@ with the two options in an object, which is how TypeScript writes
 arguments that have a name and a default. `source` is a `Uint8Array` with
 the bytes of the file; reading a `File` that a user picked in a page is
 under "Not in this spec". A `source` that is not a `Uint8Array`, a
-`ploidy` that is not a whole number of 1 or more, and an `onlyPassed`
-that is not a boolean are an `Error` at the call that says what was
-given. A number of JavaScript is a float64 and reaches the core as an
+`ploidy` that is not a whole number of 1 or more and at most 4294967295,
+which is what a whole number of the core holds in wasm, and an
+`onlyPassed` that is not a boolean are an `Error` at the call that says
+what was given. A number of JavaScript is a float64 and reaches the core as an
 integer of 32 bits, so a ploidy of 2.5 or of 2^32 + 2 would otherwise be
 read as 2, and bytes that are not a `Uint8Array` would be read as the
 bytes of something the user never wrote.

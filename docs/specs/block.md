@@ -121,12 +121,13 @@ give a TypeScript user another position than a Python user, who gets the
 uint64 the source has.
 
 `fields` takes an array of names, and `numVarsPerBlock` a whole number of
-1 or more. A name that is not one of the five, a `fields` that is not an
-array, and a `numVarsPerBlock` with a fraction, below 1 or above 2^53 are
-an `Error` at the call of `iterBlocks`, which names the value that was
-given. A number of JavaScript is a float64 and reaches the core as an
-integer of 32 bits, so a size of 2^32 + 1 would otherwise be read as a
-block of one variant.
+1 or more and at most 4294967295, which is what a whole number of the core
+holds in wasm. A name that is not one of the five, a `fields` that is not
+an array, and a `numVarsPerBlock` with a fraction, below 1 or above that
+number are an `Error` at the call of `iterBlocks`, which names the value
+that was given. A number of JavaScript is a float64 and reaches the core
+as an integer of 32 bits, so a size of 2^32 + 1 would otherwise be read as
+a block of one variant.
 
 ### What a reader of the rules would not guess
 
