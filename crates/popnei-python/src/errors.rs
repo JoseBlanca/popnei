@@ -33,8 +33,10 @@ pub(crate) enum PyPopneiError {
     Count {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
-        /// What was given for it.
-        value: i64,
+        /// What was given for it, as Python prints it: an integer of Python
+        /// is of any size, so the number that was refused does not always
+        /// fit in one of Rust.
+        value: String,
     },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
@@ -94,7 +96,7 @@ impl From<PyPopneiError> for PyErr {
                 path,
             ),
             PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
-                "`{name}` is {value}, and it says how many of something there are: 0 or \
+                "`{name}` is {value}, and it says how many of something there are: 1 or \
                  more, and at most {largest}",
                 largest = usize::MAX
             )),

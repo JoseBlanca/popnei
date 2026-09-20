@@ -21,6 +21,7 @@ use std::sync::Mutex;
 
 use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
+use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyString, PyTuple};
 
@@ -75,7 +76,7 @@ impl VcfSource {
         &self,
         py: Python<'_>,
         fields: Vec<String>,
-        num_vars_per_block: Option<i64>,
+        num_vars_per_block: Option<&Bound<'_, PyAny>>,
     ) -> Result<Blocks, PyPopneiError> {
         let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
         let num_vars_per_block = num_vars_per_block
@@ -279,7 +280,7 @@ impl Pass {
 pub(crate) fn open_vcf(
     py: Python<'_>,
     path: PathBuf,
-    ploidy: i64,
+    ploidy: &Bound<'_, PyAny>,
     only_passed: bool,
 ) -> Result<VcfSource, PyPopneiError> {
     let options = VcfOptions {
@@ -309,11 +310,32 @@ pub(crate) fn open_vcf(
 
 /// The `value` that was given for the argument `name`, as a number of
 /// things: the one place where an argument that counts something crosses
-/// from Python, so that a number that counts nothing is refused by the name
-/// a user wrote and not by the conversion, whose `OverflowError` names
-/// neither the argument nor what is wrong with it.
-fn count_of(name: &'static str, value: i64) -> Result<usize, PyPopneiError> {
-    usize::try_from(value).map_err(|_| PyPopneiError::Count { name, value })
+/// from Python.
+///
+/// The object is taken as it is and converted here, and not by the
+/// signature, because an integer of Python is of any size: converting it in
+/// the signature raises the `OverflowError` of pyo3, "Python int too large
+/// to convert to C long", which names neither the argument nor what is
+/// wrong with it, and it does so before any code of ours runs.
+///
+/// # Errors
+///
+/// When the object is a whole number that counts nothing, a negative one or
+/// one above what this machine counts, which is the error that names the
+/// argument and the value. An object that is not a whole number at all,
+/// `2.5` or `"two"`, keeps the `TypeError` of pyo3, which says what it was
+/// given.
+fn count_of(name: &'static str, value: &Bound<'_, PyAny>) -> Result<usize, PyPopneiError> {
+    match value.extract::<usize>() {
+        Ok(count) => Ok(count),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Count {
+                name,
+                value: value.to_string(),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// The array, which nothing writes into any more: a block is frozen, and
