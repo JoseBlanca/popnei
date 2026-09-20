@@ -315,7 +315,7 @@ pyNei is depended on, or the absolute path meanwhile.
   it is verified" of `docs/specs/io_vcf.md`, and "What a Python and a
   TypeScript user see" of `docs/specs/variant.md`. Serves deliverable 2.
   Needs 4.1. Side by side with 4.3.
-- [ ] 4.3 The TypeScript side: in the binding crate, the same two
+- [x] 4.3 The TypeScript side: in the binding crate, the same two
   classes over a `Uint8Array`, with the arrays copied out of the memory
   of wasm, the errors thrown as `Error`, and `free()`; in the package,
   `openVcf`, `Variants` and `iterBlocks` usable in a `for ... of`; the
