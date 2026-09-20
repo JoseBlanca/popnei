@@ -58,8 +58,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use popnei::block::BlockReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::{Needs, Variant, VariantReader};
+use popnei::variant::Needs;
 
 /// How many times the file is read when the command line does not say.
 const DEFAULT_RUNS: usize = 5;
@@ -129,12 +130,14 @@ fn arguments() -> Result<Arguments, String> {
     })
 }
 
-/// It reads every variant of the VCF at `path` with the genotypes asked
-/// for, and gives how many there were.
+/// It reads every block of the VCF at `path` with the genotypes asked for,
+/// and gives how many variants there were.
 ///
-/// The two bounds of a batch are set only when the command line named
-/// them, through the two hidden setters of the reader, which are there for
-/// this benchmark and for the tests.
+/// The blocks are the size that popnei chooses for the individuals of the
+/// file, which is what a user who asks for no size gets. The two bounds of
+/// a batch are set only when the command line named them, through the two
+/// hidden setters of the reader, which are there for this benchmark and for
+/// the tests.
 fn read_the_whole_file(path: &Path, arguments: &Arguments) -> Result<u64, popnei::Error> {
     let mut reader = VcfReader::from_path(path, VcfOptions::default())?;
     if let Some(lines) = arguments.lines_per_batch {
@@ -144,11 +147,10 @@ fn read_the_whole_file(path: &Path, arguments: &Arguments) -> Result<u64, popnei
         reader.set_bytes_per_batch(bytes);
     }
     reader.set_needs(Needs::GTS);
-    let mut var = Variant::new();
     let mut variants: u64 = 0;
-    while reader.read_variant(&mut var)? {
+    while let Some(block) = reader.next_block()? {
         // A file of more variants than a u64 counts cannot be written.
-        variants = variants.saturating_add(1);
+        variants = variants.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
     }
     Ok(variants)
 }

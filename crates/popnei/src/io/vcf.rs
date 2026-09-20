@@ -1,11 +1,16 @@
-//! The VCF reader: it gives the variants of a VCF, plain or gzipped, one at
-//! a time.
+//! The VCF reader: it gives the variants of a VCF, plain or gzipped, in
+//! blocks.
 //!
 //! [`VcfReader::new`] takes any source of bytes and reads the header of the
 //! VCF, so the individuals are known before a variant is, and
 //! [`VcfReader::from_path`] does the same for a caller that has a path. The
-//! reader is a [`VariantReader`]: the consumer owns one [`Variant`] and
-//! lends it to `read_variant` again and again.
+//! reader is a [`BlockReader`]: each call gives the next run of variants as
+//! the arrays of a [`Block`].
+//!
+//! A line is parsed into its own row of the block, so the lines of a batch
+//! are parsed side by side on the threads of rayon, and in wasm, which has
+//! no threads, one after another. The columns of the individuals are read
+//! as bytes and never as text.
 //!
 //! The source is gzipped when its first two bytes are those of gzip,
 //! whatever the name of the file. A VCF written by bgzip, which is what
@@ -20,12 +25,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::ops::Range;
 use std::path::Path;
 
 use flate2::bufread::MultiGzDecoder;
 
+use crate::block::{AllelesColumn, Block, BlockReader, default_num_vars_per_block};
 use crate::error::{Error, Result};
-use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs, Variant, VariantReader};
+use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
 /// The ploidy a VCF is read with when the caller asks for no other, the
 /// ploidy of a diploid organism. pyNei has no such argument and reports 2
@@ -155,15 +162,21 @@ pub struct VcfOptions {
     pub ploidy: usize,
     /// Skip the variants whose FILTER is neither PASS nor a dot.
     pub only_passed: bool,
+    /// How many variants a block holds, 1 or more, or `None` for
+    /// [`default_num_vars_per_block`] for the individuals of the header.
+    pub num_vars_per_block: Option<usize>,
 }
 
 impl Default for VcfOptions {
-    /// [`DEFAULT_PLOIDY`] and [`DEFAULT_ONLY_PASSED`], which are 2 and the
-    /// variants that passed their filters alone.
+    /// [`DEFAULT_PLOIDY`], [`DEFAULT_ONLY_PASSED`] and the size of a block
+    /// that popnei chooses: 2 alleles in a genotype, the variants that
+    /// passed their filters alone, and as many variants in a block as the
+    /// individuals of the file make room for.
     fn default() -> VcfOptions {
         VcfOptions {
             ploidy: DEFAULT_PLOIDY,
             only_passed: DEFAULT_ONLY_PASSED,
+            num_vars_per_block: None,
         }
     }
 }
@@ -254,143 +267,114 @@ impl<R: BufRead> VcfSource<R> {
         }
     }
 
-    /// The next line, with its end of line, appended to `line`. 0 at the
-    /// end of the source.
+    /// The bytes of the next line, with its end of line, appended to
+    /// `line`, and how many they were: 0 at the end of the source.
     ///
-    /// Bytes that are not valid UTF-8 come back as an error of the input
-    /// whose kind says so, which the callers turn into an error of the line
-    /// they were reading, since a VCF is text and the number of the line is
-    /// what a user needs.
-    fn read_line(&mut self, line: &mut String) -> std::io::Result<usize> {
+    /// The line is bytes and not text, because a VCF is read as bytes: the
+    /// columns of the individuals are never turned into text, and whether
+    /// the line is text at all is the parse of that line's to say, so that
+    /// a line that is not gives the error of a data line with its number.
+    fn read_line(&mut self, line: &mut Vec<u8>) -> std::io::Result<usize> {
         match self {
-            VcfSource::Plain(source) => source.read_line(line),
-            VcfSource::Gzipped(source) => source.read_line(line),
+            VcfSource::Plain(source) => source.read_until(b'\n', line),
+            VcfSource::Gzipped(source) => source.read_until(b'\n', line),
         }
     }
 }
 
-/// What one data line of the batch gave when it was parsed.
-enum LineOutcome {
-    /// No variant: the line was empty, or its FILTER says that the variant
-    /// failed a filter and the options leave those out. It is also what a
-    /// line that was handed out is left with.
-    NoVariant,
-    /// The variant in the `var` of the line.
-    Variant,
-    /// The line is wrong, and this is the error that the reader gives at
-    /// the read that would have given its variant.
-    Wrong(Error),
-}
-
-/// One line of the batch the reader parses, with the variant it gave and
-/// the buffers that the next line read into this place writes over.
+/// One line of a batch that gets a row of the block, with the row it was
+/// parsed into and what its parse gave.
 ///
 /// Every line of a batch has its own, so that the threads that parse them
-/// share nothing.
-struct BatchLine {
-    /// The line as the source gave it, with its end of line.
-    text: String,
+/// share nothing, and the buffers of the row are written over by the line
+/// that is parsed into it in the next batch.
+struct BatchRow {
+    /// Where the bytes of the line are in the text of the batch, without
+    /// its end of line.
+    line: Range<usize>,
     /// Its number in the file, counted from 1 with the lines of the header.
     number: u64,
-    /// The name of the chromosome of its variant, which gets its number
-    /// when the variant is handed out.
-    chrom_name: String,
-    /// The variant the line was parsed into, whose `chrom` is not given
-    /// yet.
-    var: Variant,
-    /// The strings of the alleles of the variants parsed here before,
-    /// written over by the next one that asks for the alleles.
-    spare_alleles: Vec<String>,
-    /// What the line gave.
-    outcome: LineOutcome,
+    /// What the line gave, but for its genotypes, which went into the row
+    /// of the block.
+    row: ParsedRow,
+    /// The error of its parse, when it has one. The reader gives the error
+    /// of the first line of the file that has one.
+    error: Option<Error>,
 }
 
-impl BatchLine {
-    /// A line with no text and no variant, which the reader adds to the
-    /// batch when it reads more lines than the batch has held so far.
-    fn new() -> BatchLine {
-        BatchLine {
-            text: String::new(),
+impl BatchRow {
+    /// A line with no text and no row, which the reader adds to the batch
+    /// when it reads more lines than the batch has held so far.
+    fn new() -> BatchRow {
+        BatchRow {
+            line: 0..0,
             number: 0,
-            chrom_name: String::new(),
-            var: Variant::new(),
-            spare_alleles: Vec::new(),
-            outcome: LineOutcome::NoVariant,
+            row: ParsedRow::default(),
+            error: None,
         }
     }
 
-    /// The variant of the text of this line, into its own variant, and what
-    /// it gave into its `outcome`.
-    ///
-    /// The variant is cleared first and the strings of the alleles it held
-    /// are kept, so that a line parsed again, and every line of the batches
-    /// that come after this one, allocates nothing.
-    fn parse(&mut self, rules: &ParseRules<'_>) {
-        let BatchLine {
-            text,
-            number,
-            chrom_name,
-            var,
-            spare_alleles,
-            outcome,
-        } = self;
+    /// The line parsed into its row, with its genotypes into `gts`, the
+    /// alleles of that variant in the block, and what went wrong into its
+    /// own `error`.
+    fn parse(&mut self, text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
         #[cfg(test)]
-        tests::panic_if_the_test_asked_for_it(*number, rules);
-        var.clear_but_the_alleles();
-        spare_alleles.append(&mut var.alleles);
-        chrom_name.clear();
-        *outcome = match parse_data_line(
-            without_the_line_end(text),
-            *number,
-            rules,
-            var,
-            chrom_name,
-            spare_alleles,
-        ) {
-            Ok(true) => LineOutcome::Variant,
-            Ok(false) => LineOutcome::NoVariant,
-            Err(error) => LineOutcome::Wrong(error),
-        };
+        tests::panic_if_the_test_asked_for_it(self.number, rules);
+        let line = text.get(self.line.clone()).unwrap_or_default();
+        self.error = parse_row(line, self.number, rules, gts, &mut self.row).err();
     }
 }
 
-/// The lines of a batch, each parsed into the variant of its own line.
+/// The lines of a batch, each parsed into the row of the block that was
+/// kept for it.
 ///
-/// Natively they are parsed on threads of rayon: no two lines share a
-/// buffer, and what depends on the order of the file, the number of the
-/// chromosome, is given later, when the variant is handed out, so neither
-/// the variants nor the numbers depend on how many threads there are. In
-/// wasm there are none and the same lines are parsed one after another; a
-/// batch there holds one line.
+/// Natively they are parsed on threads of rayon: no two lines write the
+/// same row and none of them reads another's, and what depends on the order
+/// of the file, the number of a chromosome and the place of a text in the
+/// column it is appended to, is done afterwards, serially, so that neither
+/// the blocks nor the numbers depend on how many threads there are. In wasm
+/// there are none and the same lines are parsed one after another.
 ///
 /// The threads are those of the pool the caller is running in, and rayon's
 /// global pool, one thread per core, only when the caller is in none. That
 /// is what lets a test and the benchmark read the same file on a pool of
-/// one thread and on a pool of many, with `install`. A reader that a
-/// consumer has moved to a thread of its own, the read ahead thread of
-/// section 3 of `docs/architecture.md`, is in no pool on that thread and
-/// parses on the global one, whatever pool the consumer itself is in.
+/// one thread and on a pool of many, with `install`.
+///
+/// `gts` holds the rows of these lines and no other, `gts_per_variant`
+/// alleles for each of them, and it is empty when the genotypes were not
+/// asked for.
 #[cfg(not(target_family = "wasm"))]
-fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
-    use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+fn parse_rows(rows: &mut [BatchRow], text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+    use rayon::slice::ParallelSliceMut;
 
-    lines.par_iter_mut().for_each(|line| line.parse(rules));
+    if gts.is_empty() {
+        rows.par_iter_mut()
+            .for_each(|row| row.parse(text, &mut [], rules));
+        return;
+    }
+    // Every individual has one allele at least and there is one individual
+    // at least, since the header of a VCF with no individual is refused, so
+    // the chunks are of one allele at least, which `par_chunks_mut` asks
+    // for.
+    let gts_per_variant = rules.gts_per_variant().max(1);
+    gts.par_chunks_mut(gts_per_variant)
+        .zip(rows.par_iter_mut())
+        .for_each(|(gts, row)| row.parse(text, gts, rules));
 }
 
-/// The lines of a batch, each parsed into the variant of its own line, one
-/// after another, which is what wasm does: it has no threads.
+/// The lines of a batch, each parsed into its row, one after another, which
+/// is what wasm does: it has no threads.
 #[cfg(target_family = "wasm")]
-fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
-    parse_lines_one_by_one(lines, rules);
+fn parse_rows(rows: &mut [BatchRow], text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
+    parse_rows_one_by_one(rows, text, gts, rules);
 }
 
 /// The lines of a batch parsed one after another.
 ///
 /// It is compiled for every target and not for wasm alone, so that the
 /// cargo tests, which run natively, can parse the same lines with it and
-/// with the threads and compare what the two give. Before that it was
-/// compiled for wasm alone, and what ran it was the node tests and the
-/// smoke test of pyodide, over the 4 and the 2 data lines of their files.
+/// with the threads and compare what the two give.
 #[cfg_attr(
     not(target_family = "wasm"),
     allow(
@@ -399,30 +383,46 @@ fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
                   compares the two ways of parsing calls"
     )
 )]
-fn parse_lines_one_by_one(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
-    for line in lines {
-        line.parse(rules);
+fn parse_rows_one_by_one(rows: &mut [BatchRow], text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
+    if gts.is_empty() {
+        for row in rows {
+            row.parse(text, &mut [], rules);
+        }
+        return;
+    }
+    let gts_per_variant = rules.gts_per_variant().max(1);
+    for (gts, row) in gts.chunks_mut(gts_per_variant).zip(rows) {
+        row.parse(text, gts, rules);
     }
 }
 
-/// A reader over a VCF, which gives its variants one at a time.
+/// A reader over a VCF, which gives its variants in blocks.
 ///
-/// It holds the individuals of the file and the names of the chromosomes
-/// it has given so far, each with its number.
+/// It holds the individuals of the file and the names of the chromosomes of
+/// the variants it has given, each with its number. It is a
+/// [`BlockReader`], and `docs/specs/io_vcf.md` has the rules it reads a VCF
+/// by.
 pub struct VcfReader<R: BufRead + Send> {
     source: VcfSource<R>,
     options: VcfOptions,
     individuals: Vec<String>,
     chroms: ChromTable,
     needs: Needs,
-    /// The lines that were read together and parsed together, each with its
-    /// variant. The ones after `filled` are the lines of the batches
-    /// before, kept for their buffers.
-    batch: Vec<BatchLine>,
-    /// How many lines of the batch were read from the source.
+    /// How many variants a block holds: the size the caller asked for, or
+    /// [`default_num_vars_per_block`] for the individuals of the header.
+    num_vars_per_block: usize,
+    /// `num_individuals` x `ploidy`, the alleles of one variant, which is
+    /// the row of a block that one line is parsed into.
+    gts_per_variant: usize,
+    /// The bytes of the lines of the batch that are given a row, one after
+    /// another. The lines that are left out are taken off it again.
+    text: Vec<u8>,
+    /// One for each line of the batch that is given a row, with the row it
+    /// was parsed into. The ones after `filled` are of the batches before,
+    /// kept for their buffers.
+    batch: Vec<BatchRow>,
+    /// How many lines of the batch were read and are to be parsed.
     filled: usize,
-    /// Which of them is the next to be handed out.
-    next: usize,
     /// How many lines the reader reads before it parses them,
     /// [`LINES_PER_BATCH`], which the tests lower to read a file in several
     /// batches.
@@ -438,18 +438,18 @@ pub struct VcfReader<R: BufRead + Send> {
     /// The number of the line that was read last, counted from 1 with the
     /// lines of the header.
     line_number: u64,
-    /// The error of the line that could not be read, which is given after
-    /// the lines of the batch that were read before it.
+    /// The error of the line that could not be read, which is given in the
+    /// place of the block it would have been in.
     line_error: Option<Error>,
     /// Whether the source has been read to its end or could not be read.
     source_done: bool,
-    /// Whether the reader gave its last variant or an error. After either,
-    /// every read gives no variant.
+    /// Whether the reader gave its last block or an error. After either,
+    /// every call gives no block.
     finished: bool,
     /// Whether a parse of a batch was begun and did not come back, which is
     /// what a panic inside the parse leaves behind: the lines of that batch
-    /// hold what the batch before them left in them, so the reader cannot
-    /// go on.
+    /// were never parsed, and a reader that went on would drop them without
+    /// a word.
     parsing: bool,
     /// The line whose parse panics, which the test of what a reader does
     /// after a panic in its parse sets and nothing else can.
@@ -463,17 +463,23 @@ impl<R: BufRead + Send> VcfReader<R> {
     ///
     /// # Errors
     ///
-    /// When the ploidy of the options is 0 or above [`MAX_PLOIDY`], when
-    /// the source is not a VCF,
-    /// when its header has not the nine first columns of a VCF with
-    /// genotypes or no individual after them, when two individuals have the
-    /// same name, and when the source cannot be read.
+    /// When the ploidy of the options is 0 or above [`MAX_PLOIDY`]; when
+    /// the size of a block the caller asked for is 0 or holds more
+    /// genotypes than a `usize` counts, which the size popnei chooses
+    /// itself is checked for when the first block is built instead; when
+    /// the source is not a VCF; when its header has not the nine first
+    /// columns of a VCF with genotypes or no individual after them; when
+    /// two individuals have the same name; and when the source cannot be
+    /// read.
     pub fn new(source: R, options: VcfOptions) -> Result<VcfReader<R>> {
         if options.ploidy == 0 || options.ploidy > MAX_PLOIDY {
             return Err(Error::VcfPloidyOutOfRange {
                 ploidy: options.ploidy,
                 largest: MAX_PLOIDY,
             });
+        }
+        if options.num_vars_per_block == Some(0) {
+            return Err(Error::BlockOfNoVariants);
         }
         let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
         let gzipped = source.first.starts_with(&GZIP_BYTES);
@@ -494,9 +500,11 @@ impl<R: BufRead + Send> VcfReader<R> {
             individuals: Vec::new(),
             chroms: ChromTable::new(),
             needs: Needs::ALL,
+            num_vars_per_block: 0,
+            gts_per_variant: 0,
+            text: Vec::new(),
             batch: Vec::new(),
             filled: 0,
-            next: 0,
             lines_per_batch: LINES_PER_BATCH,
             bytes_per_batch: BYTES_PER_BATCH,
             #[cfg(test)]
@@ -510,6 +518,28 @@ impl<R: BufRead + Send> VcfReader<R> {
             panic_at_line: None,
         };
         reader.read_header()?;
+        // The individuals are known now, so the alleles of one variant and
+        // the size of a block are too.
+        let num_individuals = reader.individuals.len();
+        reader.gts_per_variant = num_individuals
+            .checked_mul(options.ploidy)
+            .ok_or_else(|| reader.block_too_large(options.num_vars_per_block.unwrap_or(0)))?;
+        reader.num_vars_per_block = match options.num_vars_per_block {
+            Some(asked_for) => {
+                // A size the caller wrote is refused here, before a line of
+                // the file is read. The one popnei chooses is checked when
+                // the first block is built instead, so that a file opened
+                // for its individuals alone is never refused for a size
+                // that nobody asked for: `docs/specs/io_vcf.md` has the
+                // case.
+                reader
+                    .gts_per_variant
+                    .checked_mul(asked_for)
+                    .ok_or_else(|| reader.block_too_large(asked_for))?;
+                asked_for
+            }
+            None => default_num_vars_per_block(num_individuals),
+        };
         Ok(reader)
     }
 
@@ -518,37 +548,442 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// first data line.
     ///
     /// The line it reads into is its own: the header is read once, when the
-    /// reader is built, and the lines of the batch are not there yet.
+    /// reader is built, and the text of the batch is not there yet.
     fn read_header(&mut self) -> Result<()> {
-        let mut line = String::new();
+        let mut line = Vec::new();
         loop {
             line.clear();
             let number = next_line_number(self.line_number);
-            let read = self.source.read_line(&mut line).map_err(|error| {
-                if is_not_text(&error) {
-                    Error::VcfHeader {
-                        problem: format!(
-                            "the bytes of its line {number} are not valid UTF-8, and a \
-                             VCF is text"
-                        ),
-                    }
-                } else {
-                    Error::Io(error)
-                }
-            })?;
+            let read = self.source.read_line(&mut line)?;
             if read == 0 {
                 return Err(Error::VcfHeader {
                     problem: "it has no #CHROM line".to_string(),
                 });
             }
             self.line_number = number;
-            let text = without_the_line_end(&line);
+            let Ok(text) = std::str::from_utf8(without_the_bytes_of_the_line_end(&line)) else {
+                return Err(Error::VcfHeader {
+                    problem: format!(
+                        "the bytes of its line {number} are not valid UTF-8, and a VCF is text"
+                    ),
+                });
+            };
             if text.starts_with("##") {
                 continue;
             }
             self.individuals = individuals_of(text, self.line_number)?;
             return Ok(());
         }
+    }
+
+    /// The error of a block of `num_vars_per_block` variants of this file
+    /// that the machine does not give the memory for.
+    fn block_too_large(&self, num_vars_per_block: usize) -> Error {
+        Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals: self.individuals.len(),
+            ploidy: self.options.ploidy,
+        }
+    }
+}
+
+impl<R: BufRead + Send> VcfReader<R> {
+    /// How many lines the reader takes from the source before it parses
+    /// them, which is [`LINES_PER_BATCH`] until this is called. A batch
+    /// holds one line at least, whatever this says, and no more lines with
+    /// a row than the block it is filling has room for.
+    ///
+    /// It is hidden from the documentation and it is not part of what
+    /// popnei promises: it is for the benchmark `benches/read_vcf.rs`,
+    /// which times a file with one batch after another, and for the tests,
+    /// which read a file of a few hundred lines in several batches and one
+    /// line at a time, the batch of wasm. What a read gives does not depend
+    /// on it.
+    #[doc(hidden)]
+    pub fn set_lines_per_batch(&mut self, lines: usize) {
+        self.lines_per_batch = lines.max(1);
+    }
+
+    /// How many bytes of text the reader takes from the source before it
+    /// parses what it read, which is [`BYTES_PER_BATCH`] until this is
+    /// called. A batch holds one line at least, whatever this says.
+    ///
+    /// Hidden and outside what popnei promises, like
+    /// [`VcfReader::set_lines_per_batch`], and for the same two callers.
+    #[doc(hidden)]
+    pub fn set_bytes_per_batch(&mut self, bytes: usize) {
+        self.bytes_per_batch = bytes.max(1);
+    }
+
+    /// How many batches the reader has filled, which is what says whether a
+    /// bound cut them.
+    #[cfg(test)]
+    fn batches_filled(&self) -> u64 {
+        self.batches_filled
+    }
+
+    /// The line whose parse panics, for the test of what a reader does
+    /// after a panic inside its parse. No VCF panics the parse.
+    #[cfg(test)]
+    fn panic_at_line(&mut self, line: u64) {
+        self.panic_at_line = Some(line);
+    }
+
+    /// An empty column reserved for `num_items`, or `None` when `field` is
+    /// not among what the blocks of this reader hold.
+    ///
+    /// The memory is asked for with `try_reserve_exact`, which gives it
+    /// back as an error: `Vec::with_capacity` ends the process when the
+    /// machine has not the memory, and panics above what a `Vec` holds, and
+    /// a size that a caller of popnei wrote reaches both.
+    fn reserved_column<T>(&self, field: Needs, num_items: usize) -> Result<Option<Vec<T>>> {
+        if !self.needs.contains(field) {
+            return Ok(None);
+        }
+        let mut column = Vec::new();
+        column
+            .try_reserve_exact(num_items)
+            .map_err(|_| self.block_too_large(self.num_vars_per_block))?;
+        Ok(Some(column))
+    }
+
+    /// An empty block with every column the reader was asked for, each
+    /// reserved for a full block.
+    ///
+    /// # Errors
+    ///
+    /// When the genotypes of a full block are more than a `usize` counts,
+    /// which is where the size that popnei chose itself is checked, and
+    /// when the machine does not give the memory of one of the columns.
+    fn start_block(&self) -> Result<Block> {
+        let num_vars = self.num_vars_per_block;
+        let too_large = || self.block_too_large(num_vars);
+        let mut gts = Vec::new();
+        if self.needs.contains(Needs::GTS) {
+            let gts_per_block = self
+                .gts_per_variant
+                .checked_mul(num_vars)
+                .ok_or_else(too_large)?;
+            gts.try_reserve_exact(gts_per_block)
+                .map_err(|_| too_large())?;
+        }
+        let alleles = match self.needs.contains(Needs::ALLELES) {
+            true => Some(AllelesColumn::with_num_vars(num_vars).map_err(|_| too_large())?),
+            false => None,
+        };
+        Ok(Block {
+            num_vars: 0,
+            num_individuals: self.individuals.len(),
+            ploidy: self.options.ploidy,
+            gts,
+            chrom: self.reserved_column(Needs::CHROM_POS, num_vars)?,
+            pos: self.reserved_column(Needs::CHROM_POS, num_vars)?,
+            id: self.reserved_column(Needs::ID, num_vars)?,
+            alleles,
+            qual: self.reserved_column(Needs::QUAL, num_vars)?,
+        })
+    }
+
+    /// It reads the next lines of the source into the batch, over the text
+    /// and the rows of the batch before, and keeps the ones that are given
+    /// a row of the block: an empty line has none, and neither has a line
+    /// whose FILTER failed when the options leave those out.
+    ///
+    /// It keeps `room` lines at most, so that a batch ends where its block
+    /// does, and stops at the two bounds of a batch or at the end of the
+    /// source. A line that cannot be read ends the batch and its error is
+    /// kept apart, to be given in the place of the block it would have been
+    /// in.
+    fn fill_batch(&mut self, room: usize) {
+        let VcfReader {
+            source,
+            options,
+            text,
+            batch,
+            filled,
+            lines_per_batch,
+            bytes_per_batch,
+            line_number,
+            line_error,
+            source_done,
+            #[cfg(test)]
+            batches_filled,
+            ..
+        } = self;
+        *filled = 0;
+        text.clear();
+        #[cfg(test)]
+        {
+            *batches_filled = batches_filled.saturating_add(1);
+        }
+        // The text of the lines that were read, which bounds the batch
+        // beside their number: one line of a file of many individuals is
+        // where the memory of a reader would otherwise grow without a
+        // bound.
+        let mut bytes: usize = 0;
+        let mut lines_read: usize = 0;
+        while lines_read < *lines_per_batch && bytes < *bytes_per_batch && *filled < room {
+            let number = next_line_number(*line_number);
+            let start = text.len();
+            match source.read_line(text) {
+                Ok(0) => {
+                    *source_done = true;
+                    break;
+                }
+                Ok(read) => {
+                    *line_number = number;
+                    // A batch holds `lines_per_batch` lines at most, so the
+                    // count does not reach the largest `usize`, and the
+                    // bytes of a batch stop growing at the line that
+                    // reaches the bound.
+                    lines_read = lines_read.saturating_add(1);
+                    bytes = bytes.saturating_add(read);
+                }
+                Err(error) => {
+                    *line_number = number;
+                    *line_error = Some(Error::Io(error));
+                    *source_done = true;
+                    break;
+                }
+            }
+            // The serial pass that says which lines are given a row. It
+            // gives no error: a line with fewer than seven columns has no
+            // FILTER to find and is given one, whose parse gives the error
+            // of a line with too few columns.
+            let read_bytes = text.get(start..).unwrap_or_default();
+            let end = start.saturating_add(without_the_bytes_of_the_line_end(read_bytes).len());
+            let line = text.get(start..end).unwrap_or_default();
+            if line.is_empty() || (options.only_passed && !filter_passed(line)) {
+                text.truncate(start);
+                continue;
+            }
+            if batch.len() <= *filled {
+                batch.push(BatchRow::new());
+            }
+            let Some(row) = batch.get_mut(*filled) else {
+                break;
+            };
+            row.line = start..end;
+            row.number = number;
+            row.error = None;
+            *filled = filled.saturating_add(1);
+        }
+    }
+
+    /// The rows of the lines of the batch appended to the block, after the
+    /// `first` variants it holds already, in the order of the file, and how
+    /// many they were.
+    ///
+    /// The genotypes are in the block already: the parse wrote them
+    /// straight into their rows. What is appended here is the columns,
+    /// which are one buffer each, and the numbers of the chromosomes, which
+    /// follow the order of the variants that are given and not the order in
+    /// which the lines were parsed.
+    ///
+    /// # Errors
+    ///
+    /// The error of the first line of the batch whose parse failed, which
+    /// is the first one of the file, since the batches are parsed one after
+    /// another. The block is lost with it.
+    fn append_batch(&mut self, block: &mut Block, first: usize) -> Result<usize> {
+        let VcfReader {
+            chroms,
+            batch,
+            filled,
+            ..
+        } = self;
+        let rows = batch.get_mut(..*filled).unwrap_or_default();
+        for (given, line) in rows.iter_mut().enumerate() {
+            if let Some(error) = line.error.take() {
+                return Err(error);
+            }
+            let row = &line.row;
+            if let Some(chrom) = block.chrom.as_mut() {
+                chrom.push(chroms.intern(&row.chrom));
+            }
+            if let Some(pos) = block.pos.as_mut() {
+                pos.push(row.pos);
+            }
+            if let Some(id) = block.id.as_mut() {
+                id.push(row.id.clone());
+            }
+            if let Some(alleles) = block.alleles.as_mut() {
+                alleles.push(row.alleles());
+            }
+            if let Some(qual) = block.qual.as_mut() {
+                qual.push(row.qual);
+            }
+            // The variants of a block are as many as the lines the reader
+            // read, so the count does not reach the largest `usize`.
+            block.num_vars = first.saturating_add(given).saturating_add(1);
+        }
+        Ok(*filled)
+    }
+
+    /// The next block: batches of lines read and parsed into its rows until
+    /// it holds the variants it was asked for, or until the source ends.
+    ///
+    /// # Errors
+    ///
+    /// The ones of [`VcfReader::start_block`], the error of a line that
+    /// could not be read, and the error of the first wrong line of the
+    /// file. The block that was being built is lost with any of them.
+    fn build_block(&mut self) -> Result<Option<Block>> {
+        let mut block = self.start_block()?;
+        let mut num_vars: usize = 0;
+        while num_vars < self.num_vars_per_block {
+            if let Some(error) = self.line_error.take() {
+                return Err(error);
+            }
+            if self.source_done {
+                break;
+            }
+            // The room left in the block, which bounds the batch beside its
+            // own two bounds: a batch ends where its block does.
+            let room = self.num_vars_per_block.saturating_sub(num_vars);
+            self.fill_batch(room);
+            // The rows of the lines of this batch, after the ones that are
+            // in the block already. They are filled with the missing allele
+            // and the parse writes every one of them: a row it did not
+            // write is in a block that is lost with an error.
+            let start_of_the_rows = block.gts.len();
+            if self.needs.contains(Needs::GTS) {
+                let alleles = self
+                    .filled
+                    .checked_mul(self.gts_per_variant)
+                    .and_then(|alleles| start_of_the_rows.checked_add(alleles))
+                    .ok_or_else(|| self.block_too_large(self.num_vars_per_block))?;
+                block.gts.resize(alleles, MISSING_ALLELE);
+            }
+            let VcfReader {
+                options,
+                individuals,
+                needs,
+                text,
+                batch,
+                filled,
+                parsing,
+                #[cfg(test)]
+                panic_at_line,
+                ..
+            } = self;
+            let rules = RowRules {
+                needs: *needs,
+                ploidy: options.ploidy,
+                individuals,
+                #[cfg(test)]
+                panic_at_line: *panic_at_line,
+            };
+            let rows = batch.get_mut(..*filled).unwrap_or_default();
+            let gts = block.gts.get_mut(start_of_the_rows..).unwrap_or_default();
+            // A panic of a worker unwinds through here, and what says so
+            // afterwards is this flag, which is set until the parse comes
+            // back.
+            *parsing = true;
+            parse_rows(rows, text, gts, &rules);
+            *parsing = false;
+            let given = self.append_batch(&mut block, num_vars)?;
+            num_vars = num_vars.saturating_add(given);
+        }
+        if num_vars == 0 {
+            return Ok(None);
+        }
+        block.num_vars = num_vars;
+        Ok(Some(block))
+    }
+}
+
+/// Whether the line is given a row: its FILTER, the bytes between its sixth
+/// and its seventh tab, is `PASS` or a dot, which says that no filter was
+/// applied to it.
+///
+/// A line with fewer than seven columns has no FILTER to find and is given
+/// a row, so that its parse gives the error of a line with too few columns,
+/// the same one whatever the options say.
+fn filter_passed(line: &[u8]) -> bool {
+    let mut tabs = memchr::memchr_iter(b'\t', line);
+    let Some(sixth) = tabs.nth(5) else {
+        return true;
+    };
+    let start = sixth.saturating_add(1);
+    let end = tabs.next().unwrap_or(line.len());
+    let filter = line.get(start..end).unwrap_or_default();
+    filter == b"PASS" || filter == MISSING_VALUE.as_bytes()
+}
+
+impl<R: BufRead + Send> fmt::Debug for VcfReader<R> {
+    /// What the reader was built with and where it has got to. The source
+    /// is left out, so that a reader over a source that has no `Debug` has
+    /// one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VcfReader")
+            .field("individuals", &self.individuals)
+            .field("options", &self.options)
+            .field("needs", &self.needs)
+            .field("num_vars_per_block", &self.num_vars_per_block)
+            .field("chroms", &self.chroms)
+            .field("line_number", &self.line_number)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: BufRead + Send> BlockReader for VcfReader<R> {
+    /// The next block of the file, which holds one variant at least, and
+    /// `None` when there are no more variants and at every call after that.
+    ///
+    /// # Errors
+    ///
+    /// When a line of the source cannot be read, when a data line is not
+    /// one popnei reads, and when the machine does not give the memory of
+    /// the block. The block that was being built is lost with the error,
+    /// the blocks before it were given, and every call after it gives
+    /// `None`.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        // A panic inside the parse of a batch unwinds through the reader
+        // and leaves this: the lines of that batch were never parsed. The
+        // error is given once, as the error of a reader is, and the calls
+        // after it give no block.
+        if self.parsing {
+            self.finished = true;
+            return Err(Error::VcfParseNotFinished {
+                line: self.line_number,
+            });
+        }
+        match self.build_block() {
+            Ok(Some(block)) => Ok(Some(block)),
+            Ok(None) => {
+                self.finished = true;
+                Ok(None)
+            }
+            Err(error) => {
+                self.finished = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.options.ploidy
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+
+    /// The fields the blocks from the next one on hold. Every line of a
+    /// batch is parsed into the block that asked for it, so nothing is
+    /// parsed and not given when this is called.
+    fn set_needs(&mut self, needs: Needs) {
+        self.needs = needs;
     }
 }
 
@@ -624,19 +1059,6 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     Ok(individuals.iter().map(|name| (*name).to_string()).collect())
 }
 
-/// Whether the error of an input is bytes that are not valid UTF-8, which
-/// is what `read_line` gives for a line of a VCF that is not text.
-fn is_not_text(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::InvalidData
-}
-
-/// The line without the `\n` or the `\r\n` it ends in. The genotype of the
-/// last individual is the one that would carry the `\r`.
-fn without_the_line_end(line: &str) -> &str {
-    let line = line.strip_suffix('\n').unwrap_or(line);
-    line.strip_suffix('\r').unwrap_or(line)
-}
-
 /// The number of the next line. A file of `u64::MAX` lines cannot be
 /// written, so the saturation is not reached and no error is worth adding
 /// for it.
@@ -677,12 +1099,6 @@ fn next_column<'a>(
             first = FIRST_COLUMNS.join(" "),
         ),
     })
-}
-
-/// Whether the FILTER column says that the variant passed: `PASS`, or a
-/// dot, which says that no filter was applied to it.
-fn passed(filter: &str) -> bool {
-    filter == "PASS" || filter == MISSING_VALUE
 }
 
 /// The position of the variant, 1 based as in the VCF.
@@ -739,114 +1155,6 @@ fn allele_texts<'a>(reference: &'a str, alternatives: &'a str) -> impl Iterator<
     std::iter::once(reference).chain(alternatives.into_iter().flat_map(|texts| texts.split(',')))
 }
 
-/// The alleles of the variant, written over the strings of `spare`, the
-/// ones the reader took out of the variant before this read.
-///
-/// A variant with more alleles than the one before it would allocate a
-/// string if the strings that are left over were dropped instead of kept:
-/// a second pass over `many.vcf` with every field asked for allocated 54
-/// times, once for each of its 54 variants with two alternative alleles.
-/// Section 1 of `docs/architecture.md` asks for none.
-fn fill_alleles(
-    alleles: &mut Vec<String>,
-    spare: &mut Vec<String>,
-    reference: &str,
-    alternatives: &str,
-) {
-    for text in allele_texts(reference, alternatives) {
-        let mut allele = spare.pop().unwrap_or_default();
-        allele.clear();
-        allele.push_str(text);
-        alleles.push(allele);
-    }
-}
-
-/// One allele of a genotype: a number of the alleles the variant declares,
-/// or [`MISSING_ALLELE`] for a dot.
-fn parse_allele(text: &str, num_alleles: usize, line: u64, individual: &str) -> Result<i8> {
-    if text == MISSING_VALUE {
-        return Ok(MISSING_ALLELE);
-    }
-    let wrong = |problem: String| Error::VcfDataLine {
-        line,
-        place: VcfPlace::Individual(individual.to_string()),
-        problem,
-    };
-    if text.is_empty() {
-        return Err(wrong("`` is not an allele number".to_string()));
-    }
-    let mut number: u32 = 0;
-    for byte in text.as_bytes() {
-        let Some(digit) = char::from(*byte).to_digit(10) else {
-            return Err(wrong(format!(
-                "`{text}` is not an allele number, which is a run of digits"
-            )));
-        };
-        // Once the number is above the largest allele the answer is the
-        // same whatever its other digits are, so it stops growing there
-        // and the two operations cannot overflow.
-        number = number.saturating_mul(10).saturating_add(digit);
-    }
-    let Ok(allele) = i8::try_from(number) else {
-        return Err(wrong(format!(
-            "the allele `{text}` is above {MAX_ALLELE}, the largest allele popnei holds"
-        )));
-    };
-    // The allele is not negative, since its text was parsed as a `u32`.
-    if usize::from(allele.unsigned_abs()) >= num_alleles {
-        return Err(wrong(format!(
-            "the allele {number} is not one of the {num_alleles} alleles that REF and ALT declare"
-        )));
-    }
-    Ok(allele)
-}
-
-/// The alleles of the genotype of one individual, appended to `gts`. A
-/// genotype written as a single dot is a missing genotype of the ploidy of
-/// the file, and any other number of alleles than the ploidy is an error.
-fn fill_genotype(
-    gts: &mut Vec<i8>,
-    text: &str,
-    ploidy: usize,
-    num_alleles: usize,
-    line: u64,
-    individual: &str,
-) -> Result<()> {
-    // VCF 4.4 lets a genotype start with its separator, `/0/1`.
-    let text = text.strip_prefix(['/', '|']).unwrap_or(text);
-    if text == MISSING_VALUE {
-        gts.extend(std::iter::repeat_n(MISSING_ALLELE, ploidy));
-        return Ok(());
-    }
-    // The alleles are read in one pass over the text, and what was pushed
-    // is taken off again when the genotype turns out to be of another
-    // ploidy or one of its alleles is wrong, so that a genotype leaves
-    // either all of its alleles in `gts` or none.
-    let start = gts.len();
-    for allele in text.split(['/', '|']) {
-        match parse_allele(allele, num_alleles, line, individual) {
-            Ok(allele) => gts.push(allele),
-            Err(error) => {
-                gts.truncate(start);
-                return Err(error);
-            }
-        }
-    }
-    // `gts` only grew in the loop above, so the subtraction does not
-    // saturate: it is how many alleles this genotype pushed.
-    let found = gts.len().saturating_sub(start);
-    if found != ploidy {
-        gts.truncate(start);
-        return Err(Error::VcfGenotypePloidy {
-            line,
-            individual: individual.to_string(),
-            found,
-            expected: ploidy,
-        });
-    }
-    Ok(())
-}
-
 /// Where `GT` is among the keys of the FORMAT column, which is where the
 /// genotype of each individual is in its own column.
 fn gt_index_of(format: &str, line: u64) -> Result<usize> {
@@ -860,172 +1168,8 @@ fn gt_index_of(format: &str, line: u64) -> Result<usize> {
         })
 }
 
-/// The genotypes of every individual of the line, appended to `gts`: the
-/// value of the key `GT` of each column, which an individual that drops its
-/// last values still has.
-fn fill_genotypes<'a>(
-    gts: &mut Vec<i8>,
-    columns: &mut impl Iterator<Item = &'a str>,
-    gt_index: usize,
-    individuals: &[String],
-    ploidy: usize,
-    num_alleles: usize,
-    line: u64,
-) -> Result<()> {
-    for (read_so_far, individual) in individuals.iter().enumerate() {
-        let Some(column) = columns.next() else {
-            return Err(Error::VcfDataLine {
-                line,
-                place: VcfPlace::Line,
-                problem: format!(
-                    "it has the columns of {read_so_far} individuals and the header has {count}",
-                    count = individuals.len(),
-                ),
-            });
-        };
-        let Some(genotype) = column.split(':').nth(gt_index) else {
-            return Err(Error::VcfDataLine {
-                line,
-                place: VcfPlace::Individual(individual.clone()),
-                problem: format!("`{column}` has no value where the FORMAT has GT"),
-            });
-        };
-        fill_genotype(gts, genotype, ploidy, num_alleles, line, individual)?;
-    }
-    let left_over = columns.count();
-    if left_over != 0 {
-        return Err(Error::VcfDataLine {
-            line,
-            place: VcfPlace::Line,
-            problem: format!(
-                "it has {left_over} columns more than the {count} individuals of the header",
-                count = individuals.len(),
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// What the parse of a data line needs to know, which is the same for
-/// every line of a file: the reader hands one to each line it parses.
-struct ParseRules<'a> {
-    options: VcfOptions,
-    needs: Needs,
-    individuals: &'a [String],
-    /// The line whose parse panics. No VCF makes the parse panic, and this
-    /// is how the test of what a reader does after a panic in its parse
-    /// makes one happen; nothing outside the tests can set it.
-    #[cfg(test)]
-    panic_at_line: Option<u64>,
-}
-
-/// The variant of the data line `text`, the line `number` of the file,
-/// into `var`, and false when the line gives no variant: an empty line, or
-/// one whose FILTER failed when the options leave those out.
-///
-/// The name of the chromosome goes into `chrom_name` and its number is not
-/// given here: the reader gives it when it hands the variant out, so that
-/// the numbers follow the order of the file and not the order in which the
-/// lines were parsed. The alleles are written over the strings of
-/// `spare_alleles`, the ones of the variants read before.
-///
-/// `var` is cleared by the caller, which is also what puts the strings of
-/// the alleles it held into `spare_alleles`.
-fn parse_data_line(
-    text: &str,
-    number: u64,
-    rules: &ParseRules<'_>,
-    var: &mut Variant,
-    chrom_name: &mut String,
-    spare_alleles: &mut Vec<String>,
-) -> Result<bool> {
-    let ParseRules {
-        options,
-        needs,
-        individuals,
-        ..
-    } = rules;
-    if text.is_empty() {
-        return Ok(false);
-    }
-    // The seven columns up to the FILTER are taken as text and read only
-    // when the variant is given: a line that is skipped costs no parsing,
-    // and the name of its chromosome gets no number.
-    let mut columns = text.split('\t');
-    let chrom_text = next_column(&mut columns, "CHROM", number)?;
-    let pos_text = next_column(&mut columns, "POS", number)?;
-    let id_text = next_column(&mut columns, "ID", number)?;
-    let reference_text = next_column(&mut columns, "REF", number)?;
-    let alternatives_text = next_column(&mut columns, "ALT", number)?;
-    let quality_text = next_column(&mut columns, "QUAL", number)?;
-    let filter_text = next_column(&mut columns, "FILTER", number)?;
-    if options.only_passed && !passed(filter_text) {
-        return Ok(false);
-    }
-
-    var.pos = parse_position(pos_text, number)?;
-    chrom_name.push_str(chrom_text);
-    var.filled = Needs::CHROM_POS;
-    if needs.contains(Needs::ID) {
-        if id_text != MISSING_VALUE {
-            var.id.push_str(id_text);
-        }
-        var.filled |= Needs::ID;
-    }
-    // The alleles are counted for every variant that is given, to check the
-    // allele numbers of its genotypes, also when the texts of the alleles
-    // are not kept.
-    let num_alleles = count_alleles(reference_text, alternatives_text, number)?;
-    if needs.contains(Needs::ALLELES) {
-        fill_alleles(
-            &mut var.alleles,
-            spare_alleles,
-            reference_text,
-            alternatives_text,
-        );
-        var.filled |= Needs::ALLELES;
-    }
-    if needs.contains(Needs::QUAL) {
-        var.qual = parse_quality(quality_text, number)?;
-        var.filled |= Needs::QUAL;
-    }
-    // The shape of the line is checked whatever was asked for: the nine
-    // first columns are there, the FORMAT has a GT key, and one column of
-    // an individual comes after it at least. What is in those columns, and
-    // how many of them there are, is read only when the genotypes are asked
-    // for.
-    //
-    // INFO is not read, and its column has to be there.
-    next_column(&mut columns, "INFO", number)?;
-    let format_text = next_column(&mut columns, "FORMAT", number)?;
-    let gt_index = gt_index_of(format_text, number)?;
-    let first_individual = next_column(&mut columns, "individual", number)?;
-    if needs.contains(Needs::GTS) {
-        let mut columns = std::iter::once(first_individual).chain(columns);
-        fill_genotypes(
-            &mut var.gts,
-            &mut columns,
-            gt_index,
-            individuals,
-            options.ploidy,
-            num_alleles,
-            number,
-        )?;
-        var.filled |= Needs::GTS;
-    }
-    Ok(true)
-}
-
 /// What the parse of a data line into a row of a block needs to know, which
 /// is the same for every line of a file.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "task 2.4 of docs/plans/block-readers.md is what calls the row parser \
-                  from the reader; until then its tests are its only callers"
-    )
-)]
 struct RowRules<'a> {
     /// Which fields are parsed. A column that is not asked for is not read
     /// and not checked.
@@ -1035,6 +1179,25 @@ struct RowRules<'a> {
     /// The individuals of the header, in the order of their columns, by the
     /// name that an error of one of them carries.
     individuals: &'a [String],
+    /// The line whose parse panics. No VCF makes the parse panic, and this
+    /// is how the test of what a reader does after a panic in its parse
+    /// makes one happen; nothing outside the tests can set it.
+    #[cfg(test)]
+    panic_at_line: Option<u64>,
+}
+
+impl RowRules<'_> {
+    /// The alleles of one variant, the individuals times the ploidy, which
+    /// is the row of a block that one line is parsed into.
+    ///
+    /// A reader refuses a file whose individuals times its ploidy are more
+    /// than a `usize` counts before it reads a line, so the saturation is
+    /// not reached; what does reach it is a caller of the row parser with a
+    /// defect, and the parse then refuses the row it was given, whose
+    /// length cannot be what it asks for.
+    fn gts_per_variant(&self) -> usize {
+        self.individuals.len().saturating_mul(self.ploidy)
+    }
 }
 
 /// One row of a block as one data line gives it, but for the genotypes,
@@ -1050,14 +1213,6 @@ struct RowRules<'a> {
 /// The buffers of a row are written over by the next line parsed into it,
 /// so a reader that keeps one row for each line of a batch allocates
 /// nothing after its first batch.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "task 2.4 of docs/plans/block-readers.md is what puts these rows into the \
-                  blocks of the reader; until then the tests of the row parser are what read them"
-    )
-)]
 #[derive(Debug, Default)]
 struct ParsedRow {
     /// The name of the chromosome, empty when the chromosome and the
@@ -1086,14 +1241,6 @@ struct ParsedRow {
     num_alleles: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "task 2.4 of docs/plans/block-readers.md is what appends these alleles to \
-                  the column of a block; until then the tests are what read them"
-    )
-)]
 impl ParsedRow {
     /// The texts of the alleles of the line that was parsed into this row,
     /// the reference first, and none when the alleles were not asked for.
@@ -1216,14 +1363,6 @@ impl<'a> Iterator for ByteColumns<'a> {
 /// the line and the column or the individual it is in. The row and the
 /// genotypes are then what the parse had written when it stopped, and the
 /// caller drops the block they are in.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "task 2.4 of docs/plans/block-readers.md is what parses the lines of a \
-                  batch with this; until then its tests are its only callers"
-    )
-)]
 fn parse_row(
     line: &[u8],
     number: u64,
@@ -1235,6 +1374,7 @@ fn parse_row(
         needs,
         ploidy,
         individuals,
+        ..
     } = rules;
     row.clear();
     let line = without_the_bytes_of_the_line_end(line);
@@ -1498,309 +1638,25 @@ fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str
     Ok(allele)
 }
 
-/// What the reader gives when a line of the source could not be read: the
-/// bytes that are not text are an error of that line, with its number,
-/// since a VCF is text and the number of the line is what a user needs, and
-/// anything else is an error of the input.
-fn error_reading_a_line(error: std::io::Error, number: u64) -> Error {
-    if is_not_text(&error) {
-        Error::VcfDataLine {
-            line: number,
-            place: VcfPlace::Line,
-            problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
-        }
-    } else {
-        Error::Io(error)
-    }
-}
-
-impl<R: BufRead + Send> VcfReader<R> {
-    /// How many lines the reader takes from the source before it parses
-    /// them, which is [`LINES_PER_BATCH`] until this is called. A batch
-    /// holds one line at least, whatever this says.
-    ///
-    /// It is hidden from the documentation and it is not part of what
-    /// popnei promises: it is for the benchmark `benches/read_vcf.rs`,
-    /// which times a file with one batch after another, and for the tests,
-    /// which read a file of a few hundred lines in several batches and one
-    /// line at a time, the batch of wasm. What a read gives does not depend
-    /// on it.
-    #[doc(hidden)]
-    pub fn set_lines_per_batch(&mut self, lines: usize) {
-        self.lines_per_batch = lines.max(1);
-    }
-
-    /// How many bytes of text the reader takes from the source before it
-    /// parses what it read, which is [`BYTES_PER_BATCH`] until this is
-    /// called. A batch holds one line at least, whatever this says.
-    ///
-    /// Hidden and outside what popnei promises, like
-    /// [`VcfReader::set_lines_per_batch`], and for the same two callers.
-    #[doc(hidden)]
-    pub fn set_bytes_per_batch(&mut self, bytes: usize) {
-        self.bytes_per_batch = bytes.max(1);
-    }
-
-    /// How many batches the reader has filled, which is what says whether a
-    /// bound cut them.
-    #[cfg(test)]
-    fn batches_filled(&self) -> u64 {
-        self.batches_filled
-    }
-
-    /// The line whose parse panics, for the test of what a reader does
-    /// after a panic inside its parse. No VCF panics the parse.
-    #[cfg(test)]
-    fn panic_at_line(&mut self, line: u64) {
-        self.panic_at_line = Some(line);
-    }
-
-    /// It reads the next lines of the source into the batch, over the text
-    /// and the buffers of the batch before, and parses them.
-    ///
-    /// A line that cannot be read ends the batch and its error is kept
-    /// apart, to be given after the lines that were read before it.
-    fn fill_batch(&mut self) {
-        let VcfReader {
-            source,
-            options,
-            individuals,
-            needs,
-            batch,
-            filled,
-            next,
-            lines_per_batch,
-            bytes_per_batch,
-            line_number,
-            line_error,
-            source_done,
-            parsing,
-            #[cfg(test)]
-            batches_filled,
-            #[cfg(test)]
-            panic_at_line,
-            ..
-        } = self;
-        *next = 0;
-        *filled = 0;
-        #[cfg(test)]
-        {
-            *batches_filled = batches_filled.saturating_add(1);
-        }
-        // The text of the lines that were read, which bounds the batch
-        // beside their number: one line of a file of many individuals is
-        // where the memory of a reader would otherwise grow without a
-        // bound.
-        let mut bytes: usize = 0;
-        while *filled < *lines_per_batch && bytes < *bytes_per_batch {
-            if batch.len() <= *filled {
-                batch.push(BatchLine::new());
-            }
-            let Some(line) = batch.get_mut(*filled) else {
-                break;
-            };
-            line.text.clear();
-            let number = next_line_number(*line_number);
-            match source.read_line(&mut line.text) {
-                Ok(0) => {
-                    *source_done = true;
-                    break;
-                }
-                Ok(read) => {
-                    *line_number = number;
-                    line.number = number;
-                    // A batch holds `lines_per_batch` lines at most, so the
-                    // count does not reach the largest `usize`, and the
-                    // bytes of a batch stop growing at the line that
-                    // reaches the bound.
-                    *filled = filled.saturating_add(1);
-                    bytes = bytes.saturating_add(read);
-                }
-                Err(error) => {
-                    *line_number = number;
-                    *line_error = Some(error_reading_a_line(error, number));
-                    *source_done = true;
-                    break;
-                }
-            }
-        }
-        let rules = ParseRules {
-            options: *options,
-            needs: *needs,
-            individuals,
-            #[cfg(test)]
-            panic_at_line: *panic_at_line,
-        };
-        if let Some(lines) = batch.get_mut(..*filled) {
-            // A panic of a worker unwinds through here, and what says so
-            // afterwards is this flag, which is set until the parse comes
-            // back.
-            *parsing = true;
-            parse_lines(lines, &rules);
-            *parsing = false;
-        }
-    }
-
-    /// The next variant of the file, from the batch that was parsed, and
-    /// from the next batch when that one is spent: the empty lines and,
-    /// when the options ask for it, the variants that failed a filter are
-    /// the lines of the batch that give no variant.
-    fn next_variant(&mut self, var: &mut Variant) -> Result<bool> {
-        if self.parsing {
-            return Err(Error::VcfParseNotFinished {
-                line: self.line_number,
-            });
-        }
-        if self.finished {
-            return Ok(false);
-        }
-        loop {
-            while self.next < self.filled {
-                let VcfReader {
-                    chroms,
-                    batch,
-                    next,
-                    ..
-                } = self;
-                let index = *next;
-                // A batch holds `lines_per_batch` lines at most, so the
-                // count does not reach the largest `usize`.
-                *next = index.saturating_add(1);
-                let Some(line) = batch.get_mut(index) else {
-                    break;
-                };
-                // What the line gave is taken out of it: the line is left
-                // with the variant of the consumer, which the next batch
-                // written into this place clears, and with nothing to give
-                // again.
-                match std::mem::replace(&mut line.outcome, LineOutcome::NoVariant) {
-                    LineOutcome::NoVariant => {}
-                    LineOutcome::Variant => {
-                        // The name of the chromosome gets its number here,
-                        // when the variant is handed out, so that the
-                        // numbers follow the order of the file whatever the
-                        // threads did.
-                        let chrom = chroms.intern(&line.chrom_name);
-                        line.var.chrom = chrom;
-                        std::mem::swap(var, &mut line.var);
-                        return Ok(true);
-                    }
-                    LineOutcome::Wrong(error) => return Err(error),
-                }
-            }
-            if let Some(error) = self.line_error.take() {
-                return Err(error);
-            }
-            if self.source_done {
-                self.finished = true;
-                return Ok(false);
-            }
-            self.fill_batch();
-        }
-    }
-}
-
-impl<R: BufRead + Send> fmt::Debug for VcfReader<R> {
-    /// What the reader was built with and where it has got to. The source
-    /// is left out, so that a reader over a source that has no `Debug` has
-    /// one.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("VcfReader")
-            .field("individuals", &self.individuals)
-            .field("options", &self.options)
-            .field("needs", &self.needs)
-            .field("chroms", &self.chroms)
-            .field("line_number", &self.line_number)
-            .field("finished", &self.finished)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<R: BufRead + Send> VariantReader for VcfReader<R> {
-    fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-        // The variant of the consumer is swapped with the one of the line
-        // that is handed out, so what it held goes back into the batch and
-        // is written over there, the strings of its alleles among them.
-        match self.next_variant(var) {
-            Ok(true) => Ok(true),
-            Ok(false) => {
-                var.clear();
-                Ok(false)
-            }
-            Err(error) => {
-                self.finished = true;
-                var.clear();
-                Err(error)
-            }
-        }
-    }
-
-    fn individuals(&self) -> &[String] {
-        &self.individuals
-    }
-
-    fn ploidy(&self) -> usize {
-        self.options.ploidy
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        &self.chroms
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        if needs == self.needs {
-            return;
-        }
-        self.needs = needs;
-        // The lines of the batch that were read and not handed out yet were
-        // parsed for the fields that were asked for before, and the change
-        // holds from the next read on, so they are parsed again: their text
-        // is still in the batch and the parse writes over the same buffers.
-        // A line that could not be read is not one of them, and its error
-        // waits apart from the batch.
-        let VcfReader {
-            options,
-            individuals,
-            needs,
-            batch,
-            filled,
-            next,
-            #[cfg(test)]
-            panic_at_line,
-            ..
-        } = self;
-        let rules = ParseRules {
-            options: *options,
-            needs: *needs,
-            individuals,
-            #[cfg(test)]
-            panic_at_line: *panic_at_line,
-        };
-        if let Some(lines) = batch.get_mut(*next..*filled) {
-            parse_lines(lines, &rules);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
     use super::{
-        BYTES_PER_BATCH, BatchLine, LINES_PER_BATCH, LineOutcome, MAX_PLOIDY, MISSING_VALUE,
-        ParseRules, ParsedRow, RowRules, VcfOptions, VcfPlace, VcfReader, parse_lines,
-        parse_lines_one_by_one, parse_row,
+        BYTES_PER_BATCH, BatchRow, LINES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE, ParsedRow, RowRules,
+        VcfOptions, VcfPlace, VcfReader, parse_row, parse_rows, parse_rows_one_by_one,
     };
+    use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
-    use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
+    use crate::variant::{MISSING_ALLELE, Needs};
 
     /// The panic that the test of a reader whose parse did not come back
     /// injects into the parse of one line. It is the only way to make the
     /// parse panic: no VCF does it, and every error of a line is a value
     /// that the line carries back.
-    pub(super) fn panic_if_the_test_asked_for_it(number: u64, rules: &super::ParseRules<'_>) {
+    pub(super) fn panic_if_the_test_asked_for_it(number: u64, rules: &super::RowRules<'_>) {
         assert!(
             rules.panic_at_line != Some(number),
             "the parse of the line {number} panicked, which this test asked for"
@@ -1837,11 +1693,226 @@ mod tests {
 #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\tind3
 ";
 
+    /// A VCF of the tests: the header above and one data line for each line
+    /// given, whose columns are written with spaces and separated by tabs
+    /// in the file.
+    fn vcf_of(lines: &[&str]) -> String {
+        let mut vcf = HEADER.to_string();
+        for line in lines {
+            vcf.push_str(&line.replace(' ', "\t"));
+            vcf.push('\n');
+        }
+        vcf
+    }
+
+    /// The first data line of a VCF that `vcf_of` writes is the fourth line
+    /// of the file: the errors count the three lines of the header.
+    const FIRST_DATA_LINE: u64 = 4;
+
+    /// The options of a file of another ploidy, or of one read with every
+    /// variant given, with the size of a block that popnei chooses.
+    fn options(ploidy: usize, only_passed: bool) -> VcfOptions {
+        VcfOptions {
+            ploidy,
+            only_passed,
+            num_vars_per_block: None,
+        }
+    }
+
+    /// The same options with the blocks of the size that a test asks for,
+    /// which is how a test reads a file of a few lines in several blocks.
+    fn in_blocks_of(options: VcfOptions, num_vars_per_block: usize) -> VcfOptions {
+        VcfOptions {
+            num_vars_per_block: Some(num_vars_per_block),
+            ..options
+        }
+    }
+
+    /// A reader over bytes held in memory, which is how the tests give a
+    /// VCF of their own.
+    fn reader_over(vcf: &str, options: VcfOptions) -> VcfReader<Cursor<Vec<u8>>> {
+        match VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("the reader was not built: {error}"),
+        }
+    }
+
+    /// A reader over one of the reference files.
+    fn reader_of_file(name: &str, options: VcfOptions) -> VcfReader<BufReader<File>> {
+        match VcfReader::from_path(&reference_vcf(name), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{name}: {error}"),
+        }
+    }
+
+    /// One variant as the tables of "How it is verified" of
+    /// `docs/specs/io_vcf.md` give it, with the name of the chromosome in
+    /// the place of the number the reader gave it. A field the block does
+    /// not hold is empty, 0 or `None`.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Row {
+        chrom: String,
+        pos: u64,
+        id: String,
+        alleles: Vec<String>,
+        qual: Option<f32>,
+        gts: Vec<i8>,
+    }
+
+    fn row(
+        chrom: &str,
+        pos: u64,
+        id: &str,
+        alleles: &[&str],
+        qual: Option<f32>,
+        gts: &[i8],
+    ) -> Row {
+        Row {
+            chrom: chrom.to_string(),
+            pos,
+            id: id.to_string(),
+            alleles: alleles.iter().map(|text| (*text).to_string()).collect(),
+            qual,
+            gts: gts.to_vec(),
+        }
+    }
+
+    /// Every block a reader gives, until it has no more or it fails. Each
+    /// of them holds one variant at least and is of its size, which the
+    /// trait of a reader of blocks asks of every reader.
+    fn blocks_of(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
+        let mut blocks = Vec::new();
+        while let Some(block) = reader.next_block()? {
+            assert!(block.num_vars > 0, "a block of no variant");
+            block.check().expect("the block is of its size");
+            assert_eq!(block.num_individuals, reader.individuals().len());
+            assert_eq!(block.ploidy, reader.ploidy());
+            blocks.push(block);
+        }
+        Ok(blocks)
+    }
+
+    /// The variants of the blocks of a reader, joined, through the views of
+    /// one variant, with the names of their chromosomes.
+    fn rows_of(reader: &mut impl BlockReader) -> Result<Vec<Row>> {
+        let mut rows = Vec::new();
+        loop {
+            let Some(block) = reader.next_block()? else {
+                return Ok(rows);
+            };
+            assert!(block.num_vars > 0, "a block of no variant");
+            block.check().expect("the block is of its size");
+            for view in block.variants() {
+                rows.push(Row {
+                    chrom: view
+                        .chrom()
+                        .and_then(|number| reader.chroms().name(number))
+                        .unwrap_or_default()
+                        .to_string(),
+                    pos: view.pos().unwrap_or_default(),
+                    id: view.id().unwrap_or_default().to_string(),
+                    alleles: (0..view.num_alleles().unwrap_or_default())
+                        .map(|allele| view.allele(allele).unwrap_or_default().to_string())
+                        .collect(),
+                    qual: view.qual().filter(|qual| !qual.is_nan()),
+                    gts: view.gts().to_vec(),
+                });
+            }
+        }
+    }
+
+    /// The variants of a VCF written in a test.
+    fn rows_read(vcf: &str, options: VcfOptions) -> Vec<Row> {
+        match rows_of(&mut reader_over(vcf, options)) {
+            Ok(rows) => rows,
+            Err(error) => panic!("the reader stopped at {error}"),
+        }
+    }
+
+    /// The variants of one of the reference files.
+    fn rows_of_file(name: &str, options: VcfOptions) -> Vec<Row> {
+        match rows_of(&mut reader_of_file(name, options)) {
+            Ok(rows) => rows,
+            Err(error) => panic!("{name}: the reader stopped at {error}"),
+        }
+    }
+
+    /// The error a VCF written in a test stops the reader at.
+    fn error_reading(vcf: &str, options: VcfOptions) -> Error {
+        match rows_of(&mut reader_over(vcf, options)) {
+            Ok(rows) => panic!("the reader gave {} variants and no error", rows.len()),
+            Err(error) => error,
+        }
+    }
+
+    /// The four rows of the table of `cases.vcf` of "How it is verified" of
+    /// `docs/specs/io_vcf.md`, which bcftools 1.24 printed.
+    fn the_rows_of_cases() -> Vec<Row> {
+        vec![
+            row(
+                "chr1",
+                100,
+                "rs1",
+                &["A", "T"],
+                Some(29.5),
+                &[0, 0, 0, 1, 1, 1],
+            ),
+            row(
+                "chr1",
+                200,
+                "",
+                &["A", "T"],
+                None,
+                &[MISSING_ALLELE, MISSING_ALLELE, 0, 1, MISSING_ALLELE, 0],
+            ),
+            row(
+                "chr1",
+                300,
+                "",
+                &["A", "G", "T"],
+                Some(67.0),
+                &[1, 2, 2, 1, 2, 2],
+            ),
+            row("chr1", 400, "", &["T"], Some(47.0), &[0, 0, 0, 0, 0, 0]),
+        ]
+    }
+
+    /// The two rows of the table of `differences.vcf` of the same section,
+    /// the two variants that pyNei does not read as bcftools does.
+    fn the_rows_of_differences() -> Vec<Row> {
+        vec![
+            row(
+                "chr2",
+                50,
+                "ms1",
+                &["GTC", "G", "GTCT"],
+                Some(50.0),
+                &[0, 1, 0, 2, MISSING_ALLELE, MISSING_ALLELE],
+            ),
+            row(
+                "chr2",
+                60,
+                "",
+                &["A", "<DEL>", "*"],
+                None,
+                &[0, 1, 2, 2, 0, 0],
+            ),
+        ]
+    }
+
+    /// The batches to read a file of a few lines in, so that a test of what
+    /// the reader does at a line is made with that line in a batch of its
+    /// own, at the start of a batch, in the middle of one and with the
+    /// whole file in one: the batching is what carries the lines and the
+    /// errors of a file to the blocks that give them.
+    const BATCHES_TO_TRY: [usize; 4] = [LINES_PER_BATCH, 4, 2, 1];
+
+    // What the reader reads in a header, and what it refuses there.
+
     #[test]
     fn the_individuals_of_a_plain_and_of_a_gzipped_vcf_are_read() {
         for name in ["cases.vcf", "cases.vcf.gz"] {
-            let reader = VcfReader::from_path(&reference_vcf(name), VcfOptions::default())
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let reader = reader_of_file(name, VcfOptions::default());
             assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"], "{name}");
             assert_eq!(reader.ploidy(), 2, "{name}");
             assert!(reader.chroms().is_empty(), "{name}");
@@ -1944,6 +2015,18 @@ mod tests {
     }
 
     #[test]
+    fn an_individual_with_no_name_is_refused() {
+        let vcf = "##fileformat=VCFv4.4
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\t
+";
+        let error = error_of(vcf, VcfOptions::default());
+        let Error::VcfHeader { problem } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(problem.contains("no name"), "{problem}");
+    }
+
+    #[test]
     fn a_header_that_ends_before_the_chrom_line_is_refused() {
         let vcf = "##fileformat=VCFv4.4\n##contig=<ID=chr1>\n";
         let error = error_of(vcf, VcfOptions::default());
@@ -1953,6 +2036,21 @@ mod tests {
         // The other errors of a header name the #CHROM line too, so what
         // this one has to say is that there is none.
         assert!(problem.contains("no #CHROM line"), "{problem}");
+    }
+
+    #[test]
+    fn a_header_line_whose_bytes_are_not_text_is_refused() {
+        let mut vcf = b"##fileformat=VCFv4.4\n##contig=<ID=\xffchr1>\n".to_vec();
+        vcf.extend_from_slice(HEADER.as_bytes());
+        let error = match VcfReader::new(Cursor::new(vcf), VcfOptions::default()) {
+            Ok(reader) => panic!("the reader was built over {:?}", reader.individuals()),
+            Err(error) => error,
+        };
+        let Error::VcfHeader { problem } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(problem.contains("UTF-8"), "{problem}");
+        assert!(problem.contains('2'), "{problem}");
     }
 
     #[test]
@@ -1979,244 +2077,91 @@ mod tests {
         assert!(found.contains("hello"), "{found}");
     }
 
-    /// The batches to read a file of a few lines in, so that a test of
-    /// what the reader does at a line is made with that line in a batch of
-    /// its own, at the start of a batch, in the middle of one and with the
-    /// whole file in one: the batching is what carries the lines and the
-    /// errors of a file to the reads that give them.
-    const BATCHES_TO_TRY: [usize; 4] = [LINES_PER_BATCH, 4, 2, 1];
-
     #[test]
-    fn a_gzipped_source_cut_in_the_middle_of_a_member_is_refused() {
-        let bytes = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
-        // The first member of this file is its header and the second its
-        // four variants, so the cut is inside the second one.
-        let cut = bytes.len().saturating_sub(20);
-        let bytes = bytes.get(..cut).unwrap_or_default().to_vec();
-        for lines_per_batch in BATCHES_TO_TRY {
-            let mut reader =
-                VcfReader::new(Cursor::new(bytes.clone()), VcfOptions::default()).unwrap();
-            reader.set_lines_per_batch(lines_per_batch);
-            assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
-            let error = rows_of(&mut reader).unwrap_err();
-            assert!(
-                matches!(error, Error::Io(_)),
-                "a file cut in the middle of a gzip member read in batches of \
-                 {lines_per_batch} lines gives {error}"
-            );
+    fn a_ploidy_of_zero_and_one_above_the_largest_are_refused() {
+        for asked_for in [0, MAX_PLOIDY.saturating_add(1), usize::MAX] {
+            let error = error_of(HEADER, options(asked_for, true));
+            let Error::VcfPloidyOutOfRange { ploidy, largest } = error else {
+                panic!("the error of the ploidy {asked_for} is {error}");
+            };
+            assert_eq!((ploidy, largest), (asked_for, MAX_PLOIDY));
         }
     }
 
     #[test]
-    fn a_last_line_with_no_end_of_line_is_read() {
-        let vcf = format!(
-            "{HEADER}chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n\
-             chr1\t200\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"
-        );
-        assert_eq!(
-            rows_read(&vcf, VcfOptions::default()),
-            vec![
-                row("chr1", 100, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
-                row("chr1", 200, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
-            ]
-        );
+    fn a_reader_of_blocks_of_no_variant_is_refused() {
+        // A block holds one variant at least, and the caller that wants the
+        // size popnei chooses asks for none instead of asking for 0.
+        let error = error_of(HEADER, in_blocks_of(VcfOptions::default(), 0));
+        assert!(matches!(error, Error::BlockOfNoVariants), "{error}");
+        let message = error.to_string();
+        assert!(message.contains('0'), "{message}");
     }
 
+    /// The genotypes of a block are its variants times the individuals
+    /// times the ploidy, and a size that a caller wrote carries that
+    /// multiplication beyond what a `usize` holds. It is an error when the
+    /// reader is built, before a line of the file is read, and not a panic,
+    /// on a machine of 32 bit addresses as on one of 64.
     #[test]
-    fn a_read_after_an_error_and_after_the_last_variant_gives_no_variant() {
-        let mut reader = reader_over(
-            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]),
-            VcfOptions::default(),
-        );
-        let mut var = Variant::new();
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert!(!reader.read_variant(&mut var).unwrap());
-
-        let mut reader = reader_over(
-            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1"]),
-            VcfOptions::default(),
-        );
-        assert!(reader.read_variant(&mut var).is_err());
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.filled, Needs::empty());
-    }
-
-    /// A reader over bytes held in memory, which is how the tests give a
-    /// VCF of their own.
-    fn reader_over(vcf: &str, options: VcfOptions) -> VcfReader<Cursor<Vec<u8>>> {
-        match VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("the reader was not built: {error}"),
-        }
-    }
-
-    /// A VCF of the tests: the header above and one data line for each line
-    /// given, whose columns are written with spaces and separated by tabs
-    /// in the file.
-    fn vcf_of(lines: &[&str]) -> String {
-        let mut vcf = HEADER.to_string();
-        for line in lines {
-            vcf.push_str(&line.replace(' ', "\t"));
-            vcf.push('\n');
-        }
-        vcf
-    }
-
-    /// The first data line of a VCF that `vcf_of` writes is the fourth line
-    /// of the file: the errors count the three lines of the header.
-    const FIRST_DATA_LINE: u64 = 4;
-
-    /// One variant as the tables of "How it is verified" of
-    /// `docs/specs/io_vcf.md` give it, with the name of the chromosome in
-    /// the place of the number the reader gave it.
-    #[derive(Debug, Clone, PartialEq)]
-    struct Row {
-        chrom: String,
-        pos: u64,
-        id: String,
-        alleles: Vec<String>,
-        qual: Option<f32>,
-        gts: Vec<i8>,
-    }
-
-    fn row(
-        chrom: &str,
-        pos: u64,
-        id: &str,
-        alleles: &[&str],
-        qual: Option<f32>,
-        gts: &[i8],
-    ) -> Row {
-        Row {
-            chrom: chrom.to_string(),
-            pos,
-            id: id.to_string(),
-            alleles: alleles.iter().map(|text| (*text).to_string()).collect(),
-            qual,
-            gts: gts.to_vec(),
-        }
-    }
-
-    /// The variant a reader filled, with the name that its table of
-    /// chromosomes gives to the number of that variant.
-    fn row_of(var: &Variant, reader: &impl VariantReader) -> Row {
-        Row {
-            chrom: reader
-                .chroms()
-                .name(var.chrom)
-                .unwrap_or("no name")
-                .to_string(),
-            pos: var.pos,
-            id: var.id.clone(),
-            alleles: var.alleles.clone(),
-            qual: var.qual,
-            gts: var.gts.clone(),
-        }
-    }
-
-    /// Every variant a reader gives, until it has no more or it fails.
-    fn rows_of(reader: &mut impl VariantReader) -> Result<Vec<Row>> {
-        let mut var = Variant::new();
-        let mut rows = Vec::new();
-        while reader.read_variant(&mut var)? {
-            rows.push(row_of(&var, reader));
-        }
-        Ok(rows)
-    }
-
-    /// The variants of a VCF written in a test.
-    fn rows_read(vcf: &str, options: VcfOptions) -> Vec<Row> {
-        match rows_of(&mut reader_over(vcf, options)) {
-            Ok(rows) => rows,
-            Err(error) => panic!("the reader stopped at {error}"),
-        }
-    }
-
-    /// The variants of one of the reference files.
-    fn rows_of_file(name: &str, options: VcfOptions) -> Vec<Row> {
-        let mut reader = match VcfReader::from_path(&reference_vcf(name), options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{name}: {error}"),
-        };
-        match rows_of(&mut reader) {
-            Ok(rows) => rows,
-            Err(error) => panic!("{name}: the reader stopped at {error}"),
-        }
-    }
-
-    /// The error a VCF written in a test stops the reader at.
-    fn error_reading(vcf: &str, options: VcfOptions) -> Error {
-        match rows_of(&mut reader_over(vcf, options)) {
-            Ok(rows) => panic!("the reader gave {} variants and no error", rows.len()),
-            Err(error) => error,
-        }
-    }
-
-    /// The options of a file of another ploidy, or of one read with every
-    /// variant given.
-    fn options(ploidy: usize, only_passed: bool) -> VcfOptions {
-        VcfOptions {
+    fn a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_reader_is_built() {
+        let error = error_of(HEADER, in_blocks_of(VcfOptions::default(), usize::MAX));
+        let Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
             ploidy,
-            only_passed,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (num_vars_per_block, num_individuals, ploidy),
+            (usize::MAX, 3, 2)
+        );
+    }
+
+    /// The size that popnei chooses is not checked when the reader is
+    /// built: a caller that opens a file for its individuals alone, which
+    /// is what `open_vcf` and `openVcf` do, is not refused for a size that
+    /// nobody asked for. A `usize` is 64 bits natively, and the block of
+    /// 100 variants of 170000 individuals of the ploidy 255 that is more
+    /// than one holds in wasm is 4.3 thousand million here, so what this
+    /// test sees is that the reader is built and gives the variants; the
+    /// node test of `js/popnei` is where the refusal would show.
+    #[test]
+    fn the_size_popnei_chooses_is_not_refused_when_the_reader_is_built() {
+        let vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]);
+        let mut reader = reader_over(&vcf, options(MAX_PLOIDY, true));
+        assert_eq!(reader.individuals().len(), 3);
+        // The genotypes of that line are not of the ploidy 255, so what is
+        // asserted is the error of the line and not one of the size.
+        let error = match rows_of(&mut reader) {
+            Ok(rows) => panic!("the reader gave {} variants", rows.len()),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::VcfGenotypePloidy { .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_largest_ploidy_is_read() {
+        let mut genotype = String::from("0");
+        for _ in 1..MAX_PLOIDY {
+            genotype.push_str("/1");
         }
+        let line = format!("chr1 100 . A T . PASS . GT {genotype} . .");
+        let rows = rows_read(&vcf_of(&[&line]), options(MAX_PLOIDY, true));
+        let first = rows.first().expect("one variant");
+        assert_eq!(first.gts.len(), MAX_PLOIDY.saturating_mul(3));
+        assert_eq!(first.gts.first(), Some(&0));
+        assert_eq!(first.gts.last(), Some(&MISSING_ALLELE));
     }
 
-    /// The four rows of the table of `cases.vcf` of "How it is verified" of
-    /// `docs/specs/io_vcf.md`, which bcftools 1.24 printed.
-    fn the_rows_of_cases() -> Vec<Row> {
-        vec![
-            row(
-                "chr1",
-                100,
-                "rs1",
-                &["A", "T"],
-                Some(29.5),
-                &[0, 0, 0, 1, 1, 1],
-            ),
-            row(
-                "chr1",
-                200,
-                "",
-                &["A", "T"],
-                None,
-                &[MISSING_ALLELE, MISSING_ALLELE, 0, 1, MISSING_ALLELE, 0],
-            ),
-            row(
-                "chr1",
-                300,
-                "",
-                &["A", "G", "T"],
-                Some(67.0),
-                &[1, 2, 2, 1, 2, 2],
-            ),
-            row("chr1", 400, "", &["T"], Some(47.0), &[0, 0, 0, 0, 0, 0]),
-        ]
-    }
-
-    /// The two rows of the table of `differences.vcf` of the same section,
-    /// the two variants that pyNei does not read as bcftools does.
-    fn the_rows_of_differences() -> Vec<Row> {
-        vec![
-            row(
-                "chr2",
-                50,
-                "ms1",
-                &["GTC", "G", "GTCT"],
-                Some(50.0),
-                &[0, 1, 0, 2, MISSING_ALLELE, MISSING_ALLELE],
-            ),
-            row(
-                "chr2",
-                60,
-                "",
-                &["A", "<DEL>", "*"],
-                None,
-                &[0, 1, 2, 2, 0, 0],
-            ),
-        ]
-    }
+    // What a data line gives, and what is refused in one. The tests of the
+    // row parser above are made at one line; these are made at the blocks
+    // the reader gives.
 
     #[test]
     fn the_four_variants_of_cases_vcf_are_read_when_every_variant_is_given() {
@@ -2259,19 +2204,33 @@ mod tests {
             "chr1 20 rs2 A T 9.5 PASS . GT 0/0 0/1 1/1",
             "chr9 30 . A T . PASS . GT 0/0 0/1 1/1",
         ]);
-        let mut reader = reader_over(&vcf, VcfOptions::default());
-        let mut var = Variant::new();
-
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!((var.pos, var.chrom), (20, 0));
-        assert_eq!(var.filled, Needs::ALL);
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!((var.pos, var.chrom), (30, 1));
-
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert_eq!(reader.chroms().len(), 2);
-        assert_eq!(reader.chroms().name(0), Some("chr1"));
-        assert_eq!(reader.chroms().name(1), Some("chr9"));
+        // The variant that the FILTER leaves out is the first of the file
+        // and its chromosome gets no number, so `chr1` is the number 0
+        // although `chr9` comes first in the file. The blocks of one
+        // variant are what makes the numbers of a file read in several
+        // blocks the same as in one.
+        for num_vars_per_block in [1, 2, 100] {
+            let mut reader = reader_over(
+                &vcf,
+                in_blocks_of(VcfOptions::default(), num_vars_per_block),
+            );
+            let rows = rows_of(&mut reader).unwrap();
+            assert_eq!(
+                rows.iter().map(|row| row.pos).collect::<Vec<u64>>(),
+                [20, 30],
+                "blocks of {num_vars_per_block}"
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.chrom.as_str())
+                    .collect::<Vec<&str>>(),
+                ["chr1", "chr9"],
+                "blocks of {num_vars_per_block}"
+            );
+            assert_eq!(reader.chroms().len(), 2);
+            assert_eq!(reader.chroms().name(0), Some("chr1"));
+            assert_eq!(reader.chroms().name(1), Some("chr9"));
+        }
     }
 
     #[test]
@@ -2294,18 +2253,20 @@ mod tests {
     }
 
     #[test]
-    fn a_haploid_genotype_with_a_ploidy_of_two_is_refused_after_the_variants_before_it() {
+    fn a_haploid_genotype_with_a_ploidy_of_two_is_refused_after_the_blocks_before_it() {
         let vcf = vcf_of(&[
             "chr1 100 . A T . PASS . GT 0/0 0/1 1/1",
             "chr1 200 . A T . PASS . GT 1 0 1",
         ]);
-        let mut reader = reader_over(&vcf, VcfOptions::default());
-        let mut var = Variant::new();
+        let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 1));
 
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.pos, 100);
+        let first = reader.next_block().unwrap().expect("the first block");
+        assert_eq!(
+            (first.num_vars, first.pos.as_deref()),
+            (1, Some([100].as_slice()))
+        );
 
-        let error = reader.read_variant(&mut var).unwrap_err();
+        let error = reader.next_block().unwrap_err();
         let Error::VcfGenotypePloidy {
             line,
             individual,
@@ -2319,6 +2280,9 @@ mod tests {
             (line, individual.as_str(), found, expected),
             (5, "ind1", 1, 2)
         );
+        // The block the wrong line was in is lost and there is no block
+        // after it.
+        assert!(reader.next_block().unwrap().is_none());
     }
 
     #[test]
@@ -2348,10 +2312,12 @@ mod tests {
     fn an_allele_that_the_variant_does_not_declare_is_refused() {
         let vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/2 1/1"]);
         let mut reader = reader_over(&vcf, VcfOptions::default());
+        // The alleles of ALT are counted for every line that is parsed, so
+        // that the allele numbers are checked also when the texts of the
+        // alleles are not kept.
         reader.set_needs(Needs::GTS);
-        let mut var = Variant::new();
 
-        let error = reader.read_variant(&mut var).unwrap_err();
+        let error = reader.next_block().unwrap_err();
         let Error::VcfDataLine {
             line,
             place,
@@ -2448,6 +2414,21 @@ mod tests {
         assert!(problem.contains('x'), "{problem}");
     }
 
+    /// A column that is not parsed is not checked, which "How it runs" of
+    /// `docs/specs/io_vcf.md` decides: the reader that this one took the
+    /// place of parsed the position of every line, and a position that is
+    /// not a number was an error whatever was asked for.
+    #[test]
+    fn a_position_that_is_not_a_number_is_read_when_the_position_was_not_asked_for() {
+        let vcf = vcf_of(&["chr1 x . A T . PASS . GT 0/0 0/1 1/1"]);
+        let mut reader = reader_over(&vcf, VcfOptions::default());
+        reader.set_needs(Needs::GTS);
+        let rows = rows_of(&mut reader).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].gts, [0, 0, 0, 1, 1, 1]);
+        assert_eq!(rows[0].pos, 0);
+    }
+
     #[test]
     fn a_quality_that_is_not_a_number_is_refused() {
         let vcf = vcf_of(&["chr1 100 . A T x PASS . GT 0/0 0/1 1/1"]);
@@ -2540,14 +2521,45 @@ mod tests {
     }
 
     #[test]
-    fn a_vcf_with_a_header_and_no_variant_gives_no_variant_and_no_error() {
+    fn a_last_line_with_no_end_of_line_is_read() {
+        let vcf = format!(
+            "{HEADER}chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n\
+             chr1\t200\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"
+        );
+        assert_eq!(
+            rows_read(&vcf, VcfOptions::default()),
+            vec![
+                row("chr1", 100, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
+                row("chr1", 200, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_vcf_with_a_header_and_no_variant_gives_no_block_and_no_error() {
         let mut reader = reader_over(HEADER, VcfOptions::default());
-        let mut var = Variant::new();
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.filled, Needs::empty());
-        assert!(var.gts.is_empty());
+        assert!(reader.next_block().unwrap().is_none());
+        assert!(reader.next_block().unwrap().is_none());
         assert!(reader.chroms().is_empty());
+    }
+
+    #[test]
+    fn a_block_after_an_error_and_after_the_last_block_is_no_block() {
+        let mut reader = reader_over(
+            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]),
+            VcfOptions::default(),
+        );
+        assert!(reader.next_block().unwrap().is_some());
+        assert!(reader.next_block().unwrap().is_none());
+        assert!(reader.next_block().unwrap().is_none());
+
+        let mut reader = reader_over(
+            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1"]),
+            VcfOptions::default(),
+        );
+        assert!(reader.next_block().is_err());
+        assert!(reader.next_block().unwrap().is_none());
+        assert!(reader.next_block().unwrap().is_none());
     }
 
     #[test]
@@ -2605,36 +2617,41 @@ mod tests {
     }
 
     #[test]
-    fn with_the_genotypes_alone_the_id_and_the_alleles_are_not_filled() {
+    fn with_the_genotypes_alone_a_block_has_no_column() {
         let vcf = vcf_of(&["chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1"]);
         let mut reader = reader_over(&vcf, VcfOptions::default());
         reader.set_needs(Needs::GTS);
-        let mut var = Variant::new();
 
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.filled, Needs::GTS | Needs::CHROM_POS);
-        assert_eq!(var.gts, [0, 0, 0, 1, 1, 1]);
-        assert_eq!(var.pos, 100);
-        assert_eq!(reader.chroms().name(var.chrom), Some("chr1"));
-        assert!(var.alleles.is_empty());
-        assert!(var.id.is_empty());
-        assert_eq!(var.qual, None);
+        let block = reader.next_block().unwrap().expect("a block");
+        assert_eq!(block.num_vars, 1);
+        assert_eq!(block.gts, [0, 0, 0, 1, 1, 1]);
+        assert!(block.chrom.is_none());
+        assert!(block.pos.is_none());
+        assert!(block.id.is_none());
+        assert!(block.alleles.is_none());
+        assert!(block.qual.is_none());
+        assert_eq!(block.fields(), Needs::GTS);
+        // The chromosome of a line that was not asked for its chromosome
+        // gets no number.
+        assert!(reader.chroms().is_empty());
     }
 
     #[test]
-    fn with_the_id_and_the_alleles_alone_the_genotypes_are_not_filled() {
+    fn with_the_id_and_the_alleles_alone_a_block_has_those_two_columns_and_no_genotype() {
         let vcf = vcf_of(&["chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1"]);
         let mut reader = reader_over(&vcf, VcfOptions::default());
         reader.set_needs(Needs::ID | Needs::ALLELES);
-        let mut var = Variant::new();
 
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.filled, Needs::ID | Needs::ALLELES | Needs::CHROM_POS);
-        assert_eq!(var.id, "rs1");
-        assert_eq!(var.alleles, ["A", "T"]);
-        assert_eq!(var.pos, 100);
-        assert!(var.gts.is_empty());
-        assert_eq!(var.qual, None);
+        let block = reader.next_block().unwrap().expect("a block");
+        assert_eq!(block.num_vars, 1);
+        assert!(block.gts.is_empty());
+        assert_eq!(block.id.as_deref(), Some(["rs1".to_string()].as_slice()));
+        let alleles = block.alleles.as_ref().expect("the alleles");
+        assert_eq!(alleles.num_alleles(0), 2);
+        assert_eq!(alleles.allele(0, 1), "T");
+        assert!(block.chrom.is_none());
+        assert!(block.qual.is_none());
+        assert_eq!(block.fields(), Needs::ID | Needs::ALLELES);
     }
 
     /// The variants of a VCF read with the id and the alleles asked for
@@ -2643,84 +2660,6 @@ mod tests {
         let mut reader = reader_over(vcf, VcfOptions::default());
         reader.set_needs(Needs::ID | Needs::ALLELES);
         rows_of(&mut reader)
-    }
-
-    #[test]
-    fn a_data_line_whose_bytes_are_not_text_is_refused_with_its_number() {
-        let mut vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]).into_bytes();
-        vcf.extend_from_slice(b"chr1\t200\t.\t\xffA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n");
-        for lines_per_batch in BATCHES_TO_TRY {
-            let mut reader =
-                VcfReader::new(Cursor::new(vcf.clone()), VcfOptions::default()).unwrap();
-            reader.set_lines_per_batch(lines_per_batch);
-            let mut var = Variant::new();
-
-            // The line that cannot be read is the one after a good one,
-            // whatever batch they fall in: the variant of the good line is
-            // given first and the error comes at the read after it.
-            assert!(reader.read_variant(&mut var).unwrap(), "{lines_per_batch}");
-            assert_eq!(var.pos, 100, "{lines_per_batch}");
-
-            let error = reader.read_variant(&mut var).unwrap_err();
-            let Error::VcfDataLine {
-                line,
-                place,
-                problem,
-            } = error
-            else {
-                panic!("in batches of {lines_per_batch} lines the error is {error}");
-            };
-            assert_eq!((line, place), (5, VcfPlace::Line), "{lines_per_batch}");
-            assert!(problem.contains("UTF-8"), "{lines_per_batch}: {problem}");
-        }
-    }
-
-    #[test]
-    fn a_header_line_whose_bytes_are_not_text_is_refused() {
-        let mut vcf = b"##fileformat=VCFv4.4\n##contig=<ID=\xffchr1>\n".to_vec();
-        vcf.extend_from_slice(HEADER.as_bytes());
-        let error = match VcfReader::new(Cursor::new(vcf), VcfOptions::default()) {
-            Ok(reader) => panic!("the reader was built over {:?}", reader.individuals()),
-            Err(error) => error,
-        };
-        let Error::VcfHeader { problem } = error else {
-            panic!("the error is {error}");
-        };
-        assert!(problem.contains("UTF-8"), "{problem}");
-        assert!(problem.contains('2'), "{problem}");
-    }
-
-    #[test]
-    fn an_alt_that_ends_in_a_comma_is_refused() {
-        let vcf = vcf_of(&["chr1 100 . A T, . PASS . GT 0/0 0/1 1/1"]);
-        let error = error_reading(&vcf, VcfOptions::default());
-        let Error::VcfDataLine { line, place, .. } = error else {
-            panic!("the error is {error}");
-        };
-        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("ALT")));
-    }
-
-    #[test]
-    fn a_ref_with_no_letter_in_it_is_refused() {
-        // The REF of this line is empty: two tabs, one after the other.
-        let vcf = vcf_of(&["chr1 100 .  T . PASS . GT 0/0 0/1 1/1"]);
-        let error = error_reading(&vcf, VcfOptions::default());
-        let Error::VcfDataLine { line, place, .. } = error else {
-            panic!("the error is {error}");
-        };
-        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("REF")));
-    }
-
-    #[test]
-    fn an_individual_with_no_name_is_refused() {
-        let vcf = "##fileformat=VCFv4.4
-#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\t
-";
-        let error = error_of(vcf, VcfOptions::default());
-        let Error::VcfHeader { problem } = error else {
-            panic!("the error is {error}");
-        };
-        assert!(problem.contains("no name"), "{problem}");
     }
 
     #[test]
@@ -2754,665 +2693,192 @@ mod tests {
         ]);
         assert_eq!(
             read_without_the_genotypes(&vcf).unwrap(),
+            // The position was not asked for either, so it is not parsed
+            // and the column of a block does not hold it.
             vec![
-                row("chr1", 100, "rs1", &["A", "T"], None, &[]),
-                row("chr1", 200, "rs2", &["A", "T"], None, &[]),
+                row("", 0, "rs1", &["A", "T"], None, &[]),
+                row("", 0, "rs2", &["A", "T"], None, &[]),
             ]
         );
     }
 
     #[test]
-    fn a_reader_asked_for_the_genotypes_alone_empties_the_alleles_it_filled_before() {
+    fn a_reader_asked_for_the_genotypes_alone_gives_its_next_block_without_the_columns() {
         let vcf = vcf_of(&[
             "chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1",
             "chr1 200 rs2 A T 29.5 PASS . GT 0/0 0/1 1/1",
         ]);
-        let mut reader = reader_over(&vcf, VcfOptions::default());
-        let mut var = Variant::new();
+        let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 1));
 
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.alleles, ["A", "T"]);
-        assert_eq!(var.id, "rs1");
-        assert_eq!(var.filled, Needs::ALL);
+        let first = reader.next_block().unwrap().expect("the first block");
+        assert_eq!(first.fields(), Needs::ALL);
+        assert_eq!(first.id.as_deref(), Some(["rs1".to_string()].as_slice()));
 
         reader.set_needs(Needs::GTS);
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.filled, Needs::GTS | Needs::CHROM_POS);
-        assert!(var.alleles.is_empty());
-        assert!(var.id.is_empty());
-        assert_eq!(var.qual, None);
+        let second = reader.next_block().unwrap().expect("the second block");
+        assert_eq!(second.fields(), Needs::GTS);
+        assert!(second.id.is_none());
+        assert!(second.alleles.is_none());
+        assert!(second.qual.is_none());
+        assert_eq!(second.gts, [0, 0, 0, 1, 1, 1]);
     }
 
     #[test]
-    fn the_buffers_of_a_variant_are_written_over_from_one_variant_to_the_next() {
-        let vcf = vcf_of(&[
-            "chr1 100 rs1 AAAA TTTT . PASS . GT 0/0 0/1 1/1",
-            "chr1 200 rs2 A T,G . PASS . GT 0/0 0/1 1/2",
-            "chr1 300 . A T . PASS . GT 0/0 0/1 1/1",
-        ]);
-        let mut reader = reader_over(&vcf, VcfOptions::default());
-        let mut var = Variant::new();
-
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.alleles, ["AAAA", "TTTT"]);
-        let gts = var.gts.capacity();
-
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.alleles, ["A", "T", "G"]);
-        assert_eq!(var.id, "rs2");
-
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.alleles, ["A", "T"]);
-        assert_eq!(var.id, "");
-        assert_eq!(var.gts.capacity(), gts);
-    }
-
-    #[test]
-    fn the_genotypes_of_a_variant_come_back_in_the_buffers_of_the_variants_before_it() {
-        // Eight lines that give the same genotypes, so that no buffer has
-        // to grow, read in batches of two. Three buffers serve the eight
-        // variants: the one of the consumer and the ones of the two lines
-        // of the batch, which the swap of every read passes round. A reader
-        // that gave a new buffer for each variant would give eight, and
-        // that is what nothing else notices: the tests that read three
-        // variants read them from three lines of one batch, each with a
-        // buffer of its own.
-        let lines: Vec<String> = (1..=8)
-            .map(|pos| format!("chr1 {pos}00 . A T . PASS . GT 0/0 0/1 1/1"))
-            .collect();
-        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-        let mut reader = reader_over(&vcf_of(&lines), VcfOptions::default());
-        reader.set_lines_per_batch(2);
-        let mut var = Variant::new();
-
-        let mut buffers = Vec::new();
-        let mut read = 0;
-        while reader.read_variant(&mut var).unwrap() {
-            read += 1;
-            assert_eq!(var.gts, [0, 0, 0, 1, 1, 1]);
-            let buffer = var.gts.as_ptr().addr();
-            if !buffers.contains(&buffer) {
-                buffers.push(buffer);
-            }
-        }
-        assert_eq!(read, 8);
-        assert_eq!(buffers.len(), 3, "the buffers of the genotypes");
-    }
-
-    /// The ploidy of the 50 individuals of `many.vcf`, which
-    /// `tests/reference/vcf/make_reference.py` writes as diploid.
-    const MANY_PLOIDY: usize = 2;
-
-    /// How many columns the output of `bcftools query` has before the
-    /// genotypes: CHROM, POS, ID, REF, ALT, QUAL and FILTER, the seven of
-    /// the format that `make_reference.py` gave bcftools.
-    const COLUMNS_BEFORE_THE_GENOTYPES: usize = 7;
-
-    /// Where the FILTER is among them, counted from 0.
-    const FILTER_COLUMN: usize = 6;
-
-    /// What the tests of `many.vcf` compare, one variant of it: the name of
-    /// its chromosome, its position and the alleles of every genotype, the
-    /// ploidy of them for each individual.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct Site {
-        chrom: String,
-        pos: u64,
-        gts: Vec<i8>,
-    }
-
-    /// One line of `many.bcftools.tsv`, what bcftools 1.24 printed for one
-    /// variant of `many.vcf`.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct ReferenceRow {
-        site: Site,
-        /// Whether its FILTER column is `PASS` or a dot, which is what the
-        /// reader gives by default.
-        passed: bool,
-    }
-
-    /// The alleles of a genotype as bcftools prints it, `0|1` or `./.`: the
-    /// numbers of the alleles the variant declares, and [`MISSING_ALLELE`]
-    /// for the dot of an allele that was not called.
-    fn alleles_of(genotype: &str) -> impl Iterator<Item = i8> + '_ {
-        genotype.split(['/', '|']).map(|allele| {
-            if allele == MISSING_VALUE {
-                MISSING_ALLELE
-            } else {
-                allele.parse().unwrap()
-            }
-        })
-    }
-
-    /// The rows of the file that `bcftools query` wrote beside a reference
-    /// VCF, one line per variant with the seven columns above and then the
-    /// GT of every individual.
-    fn reference_rows(name: &str) -> Vec<ReferenceRow> {
-        let text = std::fs::read_to_string(reference_vcf(name))
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
-        let mut rows = Vec::new();
-        for line in text.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let columns: Vec<&str> = line.split('\t').collect();
-            assert!(
-                columns.len() > COLUMNS_BEFORE_THE_GENOTYPES,
-                "{name}: `{line}` has {} columns",
-                columns.len()
-            );
-            rows.push(ReferenceRow {
-                site: Site {
-                    chrom: columns[0].to_string(),
-                    pos: columns[1].parse().unwrap(),
-                    gts: columns[COLUMNS_BEFORE_THE_GENOTYPES..]
-                        .iter()
-                        .flat_map(|genotype| alleles_of(genotype))
-                        .collect(),
-                },
-                passed: matches!(columns[FILTER_COLUMN], "PASS" | MISSING_VALUE),
-            });
-        }
-        rows
-    }
-
-    /// The chromosome, the position and the genotypes of the variants the
-    /// reader gave, with the name of the chromosome that `rows_of` already
-    /// took from the table of the reader.
-    fn sites_of(rows: &[Row]) -> Vec<Site> {
-        rows.iter()
-            .map(|row| Site {
-                chrom: row.chrom.clone(),
-                pos: row.pos,
-                gts: row.gts.clone(),
-            })
-            .collect()
-    }
-
-    /// The rows of bcftools the reader has to give with `options`: all of
-    /// them, or the ones whose FILTER passed.
-    fn expected_sites(rows: &[ReferenceRow], options: VcfOptions) -> Vec<Site> {
-        rows.iter()
-            .filter(|row| !options.only_passed || row.passed)
-            .map(|row| row.site.clone())
-            .collect()
-    }
-
-    /// The variants one by one, so that a file of 500 variants that differs
-    /// in one of them says which one and not that two long lists differ.
-    fn assert_the_same_sites(given: &[Site], expected: &[Site], read: &str) {
-        assert_eq!(
-            given.len(),
-            expected.len(),
-            "{read}: the number of variants"
-        );
-        for (index, (given, expected)) in given.iter().zip(expected).enumerate() {
-            assert_eq!(
-                given, expected,
-                "{read}: the variant {index}, counted from 0"
-            );
-        }
-    }
-
-    /// The eight counts of the table of `many.vcf` of "How it is verified"
-    /// of `docs/specs/io_vcf.md`, counted in the variants the reader gave.
-    #[derive(Debug, PartialEq, Eq)]
-    struct Counts {
-        variants: u64,
-        variants_in_chr2: u64,
-        variants_with_two_alternative_alleles: u64,
-        /// The genotypes with an allele that was not called, the half
-        /// called ones among them.
-        missing_genotypes: u64,
-        /// The genotypes with an allele called and another one not.
-        half_called_genotypes: u64,
-        missing_alleles: u64,
-        called_alleles: u64,
-        /// The sum of the numbers of the alleles that were called, 0 for
-        /// the reference allele and 1 and 2 for the alternative ones. It is
-        /// the count that a genotype read at the wrong allele changes.
-        sum_of_the_called_alleles: u64,
-    }
-
-    /// A count of the tests as the number the table of the spec has. Every
-    /// count of a file of 500 variants of 50 individuals fits in a `u64`.
-    fn counted(number: usize) -> u64 {
-        u64::try_from(number).unwrap()
-    }
-
-    fn counts_of(rows: &[Row], ploidy: usize) -> Counts {
-        let genotypes = || rows.iter().flat_map(|row| row.gts.chunks_exact(ploidy));
-        let alleles = || rows.iter().flat_map(|row| row.gts.iter());
-        let called = |allele: &&i8| **allele != MISSING_ALLELE;
-        let missing_in = |genotype: &[i8]| {
-            genotype
-                .iter()
-                .filter(|allele| **allele == MISSING_ALLELE)
-                .count()
-        };
-        Counts {
-            variants: counted(rows.len()),
-            variants_in_chr2: counted(rows.iter().filter(|row| row.chrom == "chr2").count()),
-            // The reference allele and the two alternative ones.
-            variants_with_two_alternative_alleles: counted(
-                rows.iter().filter(|row| row.alleles.len() == 3).count(),
-            ),
-            missing_genotypes: counted(
-                genotypes()
-                    .filter(|genotype| missing_in(genotype) != 0)
-                    .count(),
-            ),
-            half_called_genotypes: counted(
-                genotypes()
-                    .filter(|genotype| {
-                        let missing = missing_in(genotype);
-                        missing != 0 && missing != genotype.len()
-                    })
-                    .count(),
-            ),
-            missing_alleles: counted(
-                alleles()
-                    .filter(|allele| **allele == MISSING_ALLELE)
-                    .count(),
-            ),
-            called_alleles: counted(alleles().filter(called).count()),
-            sum_of_the_called_alleles: alleles()
-                .filter(called)
-                .map(|allele| u64::from(allele.unsigned_abs()))
-                .sum(),
-        }
-    }
-
-    #[test]
-    fn every_variant_of_many_vcf_is_read_as_bcftools_read_it() {
-        let reference = reference_rows("many.bcftools.tsv");
-        assert_eq!(reference.len(), 500);
-        let options = options(MANY_PLOIDY, false);
-        let expected = expected_sites(&reference, options);
-        for name in ["many.vcf", "many.vcf.gz"] {
-            let given = sites_of(&rows_of_file(name, options));
-            assert_the_same_sites(&given, &expected, &format!("{name}, every variant"));
-        }
-    }
-
-    #[test]
-    fn the_default_gives_the_variants_of_many_vcf_whose_filter_passed() {
-        let reference = reference_rows("many.bcftools.tsv");
-        let expected = expected_sites(&reference, VcfOptions::default());
-        // `bcftools view -f .,PASS` left 475 of the 500 variants.
-        assert_eq!(expected.len(), 475);
-        for name in ["many.vcf", "many.vcf.gz"] {
-            let given = sites_of(&rows_of_file(name, VcfOptions::default()));
-            assert_the_same_sites(&given, &expected, &format!("{name}, the default"));
-        }
-    }
-
-    #[test]
-    fn the_first_genotypes_of_many_vcf_are_the_ones_of_the_spec() {
-        // The spec gives the first five genotypes of the first variant,
-        // chr1 1000, as `1/1 .|. 1/0 1/1 0/1`.
-        let first_five = [1, 1, MISSING_ALLELE, MISSING_ALLELE, 1, 0, 1, 1, 0, 1];
-        for name in ["many.vcf", "many.vcf.gz"] {
-            let rows = rows_of_file(name, VcfOptions::default());
-            let first = &rows[0];
-            assert_eq!((first.chrom.as_str(), first.pos), ("chr1", 1000), "{name}");
-            assert_eq!(
-                first.gts.get(..first_five.len()),
-                Some(&first_five[..]),
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_counts_of_many_vcf_with_every_variant_given_are_the_ones_of_the_spec() {
-        let expected = Counts {
-            variants: 500,
-            variants_in_chr2: 250,
-            variants_with_two_alternative_alleles: 54,
-            missing_genotypes: 1511,
-            half_called_genotypes: 257,
-            missing_alleles: 2765,
-            called_alleles: 47235,
-            sum_of_the_called_alleles: 25954,
-        };
-        for name in ["many.vcf", "many.vcf.gz"] {
-            let rows = rows_of_file(name, options(MANY_PLOIDY, false));
-            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
-        }
-    }
-
-    #[test]
-    fn the_counts_of_many_vcf_with_the_default_are_the_ones_of_the_spec() {
-        let expected = Counts {
-            variants: 475,
-            variants_in_chr2: 238,
-            variants_with_two_alternative_alleles: 53,
-            missing_genotypes: 1431,
-            half_called_genotypes: 240,
-            missing_alleles: 2622,
-            called_alleles: 44878,
-            sum_of_the_called_alleles: 24831,
-        };
-        for name in ["many.vcf", "many.vcf.gz"] {
-            let rows = rows_of_file(name, VcfOptions::default());
-            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
-        }
-    }
-
-    /// The variants of `many.vcf`, each with the number its reader gave to
-    /// its chromosome, read inside a rayon pool of `threads` threads and in
-    /// batches of `lines_per_batch` lines.
-    ///
-    /// The pool is built here and is not rayon's global one, which has one
-    /// thread per core of the machine: `install` runs the reader on this
-    /// one instead. rayon is a dependency of the targets that are not wasm,
-    /// so this and what uses it are compiled for those alone.
-    #[cfg(not(target_family = "wasm"))]
-    fn many_vcf_read_in_a_pool(threads: usize, lines_per_batch: usize) -> Vec<(u32, Row)> {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
+    fn a_data_line_whose_bytes_are_not_text_is_refused_with_its_number() {
+        let mut vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]).into_bytes();
+        vcf.extend_from_slice(b"chr1\t200\t.\t\xffA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n");
+        for lines_per_batch in BATCHES_TO_TRY {
+            let mut reader = VcfReader::new(
+                Cursor::new(vcf.clone()),
+                in_blocks_of(VcfOptions::default(), 1),
+            )
             .unwrap();
-        pool.install(|| {
-            let mut reader =
-                match VcfReader::from_path(&reference_vcf("many.vcf"), options(MANY_PLOIDY, false))
-                {
-                    Ok(reader) => reader,
-                    Err(error) => panic!("many.vcf: {error}"),
-                };
             reader.set_lines_per_batch(lines_per_batch);
-            let mut var = Variant::new();
-            let mut variants = Vec::new();
-            while match reader.read_variant(&mut var) {
-                Ok(read) => read,
-                Err(error) => panic!("many.vcf: the reader stopped at {error}"),
-            } {
-                variants.push((var.chrom, row_of(&var, &reader)));
-            }
-            variants
-        })
-    }
 
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn many_vcf_gives_the_same_variants_in_a_pool_of_one_thread_and_in_one_of_four() {
-        // 64 lines a batch, and the file has 500 data lines, so the pool of
-        // four threads parses eight batches and every thread parses lines
-        // of each.
-        let one_thread = many_vcf_read_in_a_pool(1, 64);
-        let four_threads = many_vcf_read_in_a_pool(4, 64);
-        assert_eq!(one_thread.len(), 500);
-        assert_eq!(one_thread, four_threads);
+            // The line that cannot be read is the one after a good one,
+            // whatever batch they fall in: the block of the good line is
+            // given first and the error comes at the call after it.
+            let first = reader
+                .next_block()
+                .unwrap_or_else(|error| panic!("{lines_per_batch}: {error}"))
+                .expect("the first block");
+            assert_eq!(first.pos.as_deref(), Some([100].as_slice()));
 
-        // They are the variants bcftools read, and the numbers of the
-        // chromosomes are the ones of the order of the file, whose first
-        // name is `chr1`.
-        let rows: Vec<Row> = four_threads.iter().map(|(_, row)| row.clone()).collect();
-        let reference = reference_rows("many.bcftools.tsv");
-        let expected = expected_sites(&reference, options(MANY_PLOIDY, false));
-        assert_the_same_sites(&sites_of(&rows), &expected, "many.vcf in a pool of four");
-        for (number, row) in &four_threads {
-            let expected_number = if row.chrom == "chr1" { 0 } else { 1 };
-            assert_eq!(*number, expected_number, "{} {}", row.chrom, row.pos);
-        }
-    }
-
-    #[test]
-    fn a_reader_whose_parse_did_not_come_back_gives_an_error_and_no_variant() {
-        // Eight data lines, in batches of four, and the parse of the third
-        // line of the second batch panics: the four variants of the first
-        // batch are given, and then the read that fills the second batch
-        // panics inside the parse and unwinds through the reader.
-        let lines: Vec<String> = (1..=8)
-            .map(|pos| format!("chr1 {pos}00 . A T . PASS . GT 0/0 0/1 1/1"))
-            .collect();
-        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-        let mut reader = reader_over(&vcf_of(&lines), VcfOptions::default());
-        reader.set_lines_per_batch(4);
-        // The three lines of the header come first, so the sixth data line
-        // is the line 9 of the file.
-        reader.panic_at_line(9);
-        let mut var = Variant::new();
-
-        let mut read = 0;
-        let hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let went_on = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            while reader.read_variant(&mut var).unwrap() {
-                read += 1;
-            }
-        }));
-        std::panic::set_hook(hook);
-        assert!(went_on.is_err(), "the parse did not panic");
-        assert_eq!(read, 4);
-
-        // The lines of the batch that was being parsed were never parsed,
-        // and a reader that went on would give the variants of the ones
-        // that were and drop the others without a word.
-        let error = reader.read_variant(&mut var).unwrap_err();
-        let Error::VcfParseNotFinished { line } = error else {
-            panic!("the error is {error}");
-        };
-        assert_eq!(line, 11);
-        // Every read after it gives the same error and not the false of a
-        // file that was read to its end, which a consumer would take for a
-        // VCF that ends there.
-        let again = reader.read_variant(&mut var).unwrap_err();
-        assert!(
-            matches!(again, Error::VcfParseNotFinished { line: 11 }),
-            "the second error is {again}"
-        );
-        assert_eq!(var.filled, Needs::empty());
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    #[test]
-    fn a_wrong_line_of_a_later_batch_comes_after_the_variants_that_were_read_before_it() {
-        let mut lines: Vec<String> = (1..=200)
-            .map(|pos| format!("chr1 {pos} . A T . PASS . GT 0/0 0/1 1/1"))
-            .collect();
-        // A haploid genotype in a file read as diploid, in the 201st data
-        // line, which is the line 204 of the file and, with batches of 64
-        // lines, is in the fourth batch and not in the first.
-        lines.push("chr1 201 . A T . PASS . GT 1 0 1".to_string());
-        lines.push("chr1 202 . A T . PASS . GT 0/0 0/1 1/1".to_string());
-        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
-        let vcf = vcf_of(&lines);
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(4)
-            .build()
-            .unwrap();
-        pool.install(|| {
-            let mut reader = reader_over(&vcf, VcfOptions::default());
-            reader.set_lines_per_batch(64);
-            let mut var = Variant::new();
-            for pos in 1..=200 {
-                assert!(reader.read_variant(&mut var).unwrap(), "the variant {pos}");
-                assert_eq!(var.pos, pos);
-            }
-
-            let error = reader.read_variant(&mut var).unwrap_err();
-            let Error::VcfGenotypePloidy {
+            let error = reader.next_block().unwrap_err();
+            let Error::VcfDataLine {
                 line,
-                individual,
-                found,
-                expected,
+                place,
+                problem,
             } = error
             else {
-                panic!("the error is {error}");
+                panic!("in batches of {lines_per_batch} lines the error is {error}");
             };
-            assert_eq!(
-                (line, individual.as_str(), found, expected),
-                (204, "ind1", 1, 2)
-            );
-            // The good line after the wrong one was parsed in the same
-            // batch and is not given: an error ends the reader.
-            assert!(!reader.read_variant(&mut var).unwrap());
-        });
-    }
-
-    /// The data lines of a reference VCF as a batch, each in a line of its
-    /// own with its number in the file, which is what the reader gives the
-    /// parse.
-    fn a_batch_of(name: &str) -> Vec<BatchLine> {
-        let text = std::fs::read_to_string(reference_vcf(name))
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
-        let mut batch = Vec::new();
-        for (index, line) in text.lines().enumerate() {
-            if line.starts_with('#') {
-                continue;
-            }
-            let mut in_the_batch = BatchLine::new();
-            in_the_batch.text.push_str(line);
-            in_the_batch.text.push('\n');
-            // The lines of a file are counted from 1.
-            in_the_batch.number = u64::try_from(index).unwrap().saturating_add(1);
-            batch.push(in_the_batch);
+            assert_eq!((line, place), (5, VcfPlace::Line), "{lines_per_batch}");
+            assert!(problem.contains("UTF-8"), "{lines_per_batch}: {problem}");
         }
-        batch
-    }
-
-    /// What one line of a batch was parsed into, to be compared with what
-    /// the other way of parsing gave for the same line.
-    fn parsed(line: &BatchLine) -> (&str, &str, u64, &[i8], &str, &[String], Option<f32>) {
-        let outcome = match line.outcome {
-            LineOutcome::NoVariant => "no variant",
-            LineOutcome::Variant => "a variant",
-            LineOutcome::Wrong(_) => "wrong",
-        };
-        (
-            outcome,
-            &line.chrom_name,
-            line.var.pos,
-            &line.var.gts,
-            &line.var.id,
-            &line.var.alleles,
-            line.var.qual,
-        )
     }
 
     #[test]
-    fn the_lines_parsed_one_after_another_give_what_the_threads_give() {
-        let individuals: Vec<String> =
-            match VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default()) {
-                Ok(reader) => reader.individuals().to_vec(),
-                Err(error) => panic!("many.vcf: {error}"),
-            };
-        let rules = ParseRules {
-            options: options(MANY_PLOIDY, false),
-            needs: Needs::ALL,
-            individuals: &individuals,
-            panic_at_line: None,
+    fn an_alt_that_ends_in_a_comma_is_refused() {
+        let vcf = vcf_of(&["chr1 100 . A T, . PASS . GT 0/0 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
         };
-        let mut on_the_threads = a_batch_of("many.vcf");
-        let mut one_by_one = a_batch_of("many.vcf");
-        assert_eq!(on_the_threads.len(), 500);
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("ALT")));
+    }
 
-        parse_lines(&mut on_the_threads, &rules);
-        parse_lines_one_by_one(&mut one_by_one, &rules);
+    #[test]
+    fn a_ref_with_no_letter_in_it_is_refused() {
+        // The REF of this line is empty: two tabs, one after the other.
+        let vcf = vcf_of(&["chr1 100 .  T . PASS . GT 0/0 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("REF")));
+    }
 
-        for (index, (threads, one)) in on_the_threads.iter().zip(&one_by_one).enumerate() {
-            assert_eq!(
-                parsed(threads),
-                parsed(one),
-                "the line {index}, counted from 0"
+    #[test]
+    fn a_gzipped_source_cut_in_the_middle_of_a_member_is_refused() {
+        let bytes = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
+        // The first member of this file is its header and the second its
+        // four variants, so the cut is inside the second one.
+        let cut = bytes.len().saturating_sub(20);
+        let bytes = bytes.get(..cut).unwrap_or_default().to_vec();
+        for lines_per_batch in BATCHES_TO_TRY {
+            let mut reader =
+                VcfReader::new(Cursor::new(bytes.clone()), VcfOptions::default()).unwrap();
+            reader.set_lines_per_batch(lines_per_batch);
+            assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
+            let error = rows_of(&mut reader).unwrap_err();
+            assert!(
+                matches!(error, Error::Io(_)),
+                "a file cut in the middle of a gzip member read in batches of \
+                 {lines_per_batch} lines gives {error}"
             );
         }
-        let variants = one_by_one
-            .iter()
-            .filter(|line| matches!(line.outcome, LineOutcome::Variant))
-            .count();
-        assert_eq!(variants, 500);
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    // The blocks of a file: their sizes, and that what they hold does not
+    // depend on the size, on the batches or on the threads.
+
     #[test]
-    fn a_batch_holds_more_than_one_line_where_there_are_threads() {
-        // Every test of this file passes with one line in a batch: what a
-        // read gives does not depend on how many lines were parsed together
-        // or on how many threads parsed them, which is what the reader
-        // promises. So nothing here notices a reader that stopped reading
-        // ahead, and what would notice is the time it takes: the benchmark
-        // `benches/read_vcf.rs` on the 400 MB VCF of 100000 variants of
-        // 1000 individuals took 1.24 s on one thread and 0.160 s on the 18
-        // cores of the owner's machine in task 5.2 of
-        // `docs/plans/vcf-to-blocks.md`, and with one line in a batch there
-        // is nothing for the other 17 to do.
-        // The assertion is over a constant, and clippy asks for a const
-        // block, which would refuse to compile instead of failing as a
-        // test: a test that fails is what names this file and this reason.
-        let lines_per_batch = std::hint::black_box(LINES_PER_BATCH);
-        assert!(
-            lines_per_batch > 1,
-            "a batch of {lines_per_batch} line gives the threads of rayon one line to share"
-        );
+    fn the_blocks_of_many_vcf_have_the_sizes_of_the_spec() {
+        // "How it is verified" of `docs/specs/block.md`: five blocks of
+        // 100, 100, 100, 100 and 75 with the default, five of 100 with
+        // every variant given, and one of 475 with blocks of 1000.
+        let sizes = |options: VcfOptions| -> Vec<usize> {
+            let mut reader = reader_of_file("many.vcf", options);
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+            blocks.iter().map(|block| block.num_vars).collect()
+        };
+        let default = VcfOptions::default();
+        assert_eq!(sizes(in_blocks_of(default, 100)), [100, 100, 100, 100, 75]);
+        assert_eq!(sizes(in_blocks_of(options(2, false), 100)), [100; 5]);
+        assert_eq!(sizes(in_blocks_of(default, 1000)), [475]);
+        // The 50 individuals of `many.vcf` and no size asked for: its 475
+        // variants are one block, since the default is 10000 of them.
+        assert_eq!(sizes(default), [475]);
     }
 
     #[test]
-    fn a_bound_of_bytes_smaller_than_the_file_cuts_the_batches_and_changes_no_result() {
+    fn the_blocks_of_many_vcf_hold_the_same_whatever_their_size_and_their_batches() {
         let expected = rows_of_file("many.vcf", VcfOptions::default());
         assert_eq!(expected.len(), 475);
-        // `many.vcf` has 500 data lines of about 230 bytes each. A bound of
-        // one byte holds one line in every batch, which is the line a batch
-        // holds whatever the bound says; the batch of the last line stops
-        // at the bound without seeing the end of the file, so one more
-        // batch is filled, which reads no line: 501. The bound of the code,
-        // 8 MiB, takes the 500 lines and the end of the file in one.
-        for (bytes, batches) in [(1, 501), (BYTES_PER_BATCH, 1)] {
-            let mut reader =
-                VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default())
-                    .unwrap_or_else(|error| panic!("many.vcf: {error}"));
-            reader.set_bytes_per_batch(bytes);
-            let rows = rows_of(&mut reader).unwrap();
-            assert_eq!(rows, expected, "with {bytes} bytes a batch");
-            assert_eq!(
-                reader.batches_filled(),
-                batches,
-                "with {bytes} bytes a batch"
-            );
+        for num_vars_per_block in [1, 7, 100, 1000] {
+            for lines_per_batch in [1, 3, 1024] {
+                let mut reader = reader_of_file(
+                    "many.vcf",
+                    in_blocks_of(VcfOptions::default(), num_vars_per_block),
+                );
+                reader.set_lines_per_batch(lines_per_batch);
+                let rows = rows_of(&mut reader).expect("the rows");
+                assert_eq!(
+                    rows, expected,
+                    "blocks of {num_vars_per_block} variants read in batches of \
+                     {lines_per_batch} lines"
+                );
+            }
         }
     }
 
     #[test]
-    fn a_file_read_one_line_at_a_time_gives_what_it_gives_in_one_batch() {
-        // A batch of one line is what wasm reads, where there are no
-        // threads, and the cargo tests are run natively.
-        let mut reader = VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default())
-            .unwrap_or_else(|error| panic!("many.vcf: {error}"));
-        reader.set_lines_per_batch(1);
-        let one_line_at_a_time = rows_of(&mut reader).unwrap();
-        assert_eq!(
-            one_line_at_a_time,
-            rows_of_file("many.vcf", VcfOptions::default())
-        );
-        assert_eq!(one_line_at_a_time.len(), 475);
-    }
+    fn the_error_of_the_third_variant_comes_after_the_block_of_the_two_before_it() {
+        let vcf = vcf_of(&[
+            "chr1 100 rs1 A T . PASS . GT 0/0 0/1 1/1",
+            "chr1 200 rs2 A T . PASS . GT 0/0 0/1 1/1",
+            "chr1 300 rs3 A T . PASS . GT 0/0 0/1 0/0/1/1",
+            "chr1 400 rs4 A T . PASS . GT 0/0 0/1 1",
+        ]);
+        let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 2));
 
-    #[test]
-    fn a_ploidy_of_zero_and_one_above_the_largest_are_refused() {
-        for asked_for in [0, MAX_PLOIDY.saturating_add(1), usize::MAX] {
-            let error = error_of(HEADER, options(asked_for, true));
-            let Error::VcfPloidyOutOfRange { ploidy, largest } = error else {
-                panic!("the error of the ploidy {asked_for} is {error}");
-            };
-            assert_eq!((ploidy, largest), (asked_for, MAX_PLOIDY));
-        }
-    }
+        let first = reader.next_block().unwrap().expect("the first block");
+        assert_eq!(first.num_vars, 2);
+        assert_eq!(first.gts, [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1]);
 
-    #[test]
-    fn the_largest_ploidy_is_read() {
-        let mut genotype = String::from("0");
-        for _ in 1..MAX_PLOIDY {
-            genotype.push_str("/1");
-        }
-        let line = format!("chr1 100 . A T . PASS . GT {genotype} . .");
-        let rows = rows_read(&vcf_of(&[&line]), options(MAX_PLOIDY, true));
-        let first = rows.first().expect("one variant");
-        assert_eq!(first.gts.len(), MAX_PLOIDY.saturating_mul(3));
-        assert_eq!(first.gts.first(), Some(&0));
-        assert_eq!(first.gts.last(), Some(&MISSING_ALLELE));
+        // Two wrong lines, and the error is that of the first of them.
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the reader gave {block:?}"),
+            Err(error) => error,
+        };
+        let Error::VcfGenotypePloidy {
+            line,
+            individual,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        // The third data line of a VCF of three header lines.
+        assert_eq!(line, 6);
+        assert_eq!(individual, "ind3");
+        assert_eq!((found, expected), (4, 2));
+
+        // The block that was being built is lost with the error, and there
+        // is no block after it.
+        assert!(reader.next_block().unwrap().is_none());
     }
 
     // The row parser: one data line, as bytes, into one row of a block.
@@ -3453,6 +2919,7 @@ mod tests {
             needs,
             ploidy,
             individuals,
+            panic_at_line: None,
         };
         let mut gts = if needs.contains(Needs::GTS) {
             vec![NOT_WRITTEN; individuals.len().saturating_mul(ploidy)]
@@ -3912,6 +3379,7 @@ mod tests {
             needs: Needs::GTS,
             ploidy: 2,
             individuals: &individuals,
+            panic_at_line: None,
         };
         let line = data_line("chr1 100 . A T . PASS . GT 0/0 0/1 1/1");
         let mut gts = vec![NOT_WRITTEN; 4];
@@ -3929,74 +3397,584 @@ mod tests {
         assert_eq!((array, found, expected), ("gts", 4, 6));
     }
 
-    /// Every data line of the reference files, parsed by the row parser and
-    /// by the parser that fills one `Variant`, gives the same variant. A
-    /// wrong genotype is silent everywhere else, and the two parsers were
-    /// written from the same spec by different hands.
-    ///
-    /// It goes with the parser of one variant in work package 3 of
-    /// `docs/plans/block-readers.md`, and what guards the row parser
-    /// afterwards is the comparison of the reader with bcftools.
+    // `many.vcf`, against what bcftools 1.24 read in it and the counts of
+    // "How it is verified" of `docs/specs/io_vcf.md`.
+
+    /// The ploidy of the 50 individuals of `many.vcf`, which
+    /// `tests/reference/vcf/make_reference.py` writes as diploid.
+    const MANY_PLOIDY: usize = 2;
+
+    /// How many columns the output of `bcftools query` has before the
+    /// genotypes: CHROM, POS, ID, REF, ALT, QUAL and FILTER, the seven of
+    /// the format that `make_reference.py` gave bcftools.
+    const COLUMNS_BEFORE_THE_GENOTYPES: usize = 7;
+
+    /// Where the FILTER is among them, counted from 0.
+    const FILTER_COLUMN: usize = 6;
+
+    /// What the tests of `many.vcf` compare, one variant of it: the name of
+    /// its chromosome, its position and the alleles of every genotype, the
+    /// ploidy of them for each individual.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Site {
+        chrom: String,
+        pos: u64,
+        gts: Vec<i8>,
+    }
+
+    /// One line of `many.bcftools.tsv`, what bcftools 1.24 printed for one
+    /// variant of `many.vcf`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ReferenceRow {
+        site: Site,
+        /// Whether its FILTER column is `PASS` or a dot, which is what the
+        /// reader gives by default.
+        passed: bool,
+    }
+
+    /// The alleles of a genotype as bcftools prints it, `0|1` or `./.`: the
+    /// numbers of the alleles the variant declares, and [`MISSING_ALLELE`]
+    /// for the dot of an allele that was not called.
+    fn alleles_of(genotype: &str) -> impl Iterator<Item = i8> + '_ {
+        genotype.split(['/', '|']).map(|allele| {
+            if allele == MISSING_VALUE {
+                MISSING_ALLELE
+            } else {
+                allele.parse().unwrap()
+            }
+        })
+    }
+
+    /// The rows of the file that `bcftools query` wrote beside a reference
+    /// VCF, one line per variant with the seven columns above and then the
+    /// GT of every individual.
+    fn reference_rows(name: &str) -> Vec<ReferenceRow> {
+        let text = std::fs::read_to_string(reference_vcf(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut rows = Vec::new();
+        for line in text.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let columns: Vec<&str> = line.split('\t').collect();
+            assert!(
+                columns.len() > COLUMNS_BEFORE_THE_GENOTYPES,
+                "{name}: `{line}` has {} columns",
+                columns.len()
+            );
+            rows.push(ReferenceRow {
+                site: Site {
+                    chrom: columns[0].to_string(),
+                    pos: columns[1].parse().unwrap(),
+                    gts: columns[COLUMNS_BEFORE_THE_GENOTYPES..]
+                        .iter()
+                        .flat_map(|genotype| alleles_of(genotype))
+                        .collect(),
+                },
+                passed: matches!(columns[FILTER_COLUMN], "PASS" | MISSING_VALUE),
+            });
+        }
+        rows
+    }
+
+    /// The chromosome, the position and the genotypes of the variants the
+    /// reader gave, with the name of the chromosome that `rows_of` already
+    /// took from the table of the reader.
+    fn sites_of(rows: &[Row]) -> Vec<Site> {
+        rows.iter()
+            .map(|row| Site {
+                chrom: row.chrom.clone(),
+                pos: row.pos,
+                gts: row.gts.clone(),
+            })
+            .collect()
+    }
+
+    /// The rows of bcftools the reader has to give with `options`: all of
+    /// them, or the ones whose FILTER passed.
+    fn expected_sites(rows: &[ReferenceRow], options: VcfOptions) -> Vec<Site> {
+        rows.iter()
+            .filter(|row| !options.only_passed || row.passed)
+            .map(|row| row.site.clone())
+            .collect()
+    }
+
+    /// The variants one by one, so that a file of 500 variants that differs
+    /// in one of them says which one and not that two long lists differ.
+    fn assert_the_same_sites(given: &[Site], expected: &[Site], read: &str) {
+        assert_eq!(
+            given.len(),
+            expected.len(),
+            "{read}: the number of variants"
+        );
+        for (index, (given, expected)) in given.iter().zip(expected).enumerate() {
+            assert_eq!(
+                given, expected,
+                "{read}: the variant {index}, counted from 0"
+            );
+        }
+    }
+
+    /// The eight counts of the table of `many.vcf` of "How it is verified"
+    /// of `docs/specs/io_vcf.md`, counted in the variants the reader gave.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Counts {
+        variants: u64,
+        variants_in_chr2: u64,
+        variants_with_two_alternative_alleles: u64,
+        /// The genotypes with an allele that was not called, the half
+        /// called ones among them.
+        missing_genotypes: u64,
+        /// The genotypes with an allele called and another one not.
+        half_called_genotypes: u64,
+        missing_alleles: u64,
+        called_alleles: u64,
+        /// The sum of the numbers of the alleles that were called, 0 for
+        /// the reference allele and 1 and 2 for the alternative ones. It is
+        /// the count that a genotype read at the wrong allele changes.
+        sum_of_the_called_alleles: u64,
+    }
+
+    /// A count of the tests as the number the table of the spec has. Every
+    /// count of a file of 500 variants of 50 individuals fits in a `u64`.
+    fn counted(number: usize) -> u64 {
+        u64::try_from(number).unwrap()
+    }
+
+    fn counts_of(rows: &[Row], ploidy: usize) -> Counts {
+        let genotypes = || rows.iter().flat_map(|row| row.gts.chunks_exact(ploidy));
+        let alleles = || rows.iter().flat_map(|row| row.gts.iter());
+        let called = |allele: &&i8| **allele != MISSING_ALLELE;
+        let missing_in = |genotype: &[i8]| {
+            genotype
+                .iter()
+                .filter(|allele| **allele == MISSING_ALLELE)
+                .count()
+        };
+        Counts {
+            variants: counted(rows.len()),
+            variants_in_chr2: counted(rows.iter().filter(|row| row.chrom == "chr2").count()),
+            // The reference allele and the two alternative ones.
+            variants_with_two_alternative_alleles: counted(
+                rows.iter().filter(|row| row.alleles.len() == 3).count(),
+            ),
+            missing_genotypes: counted(
+                genotypes()
+                    .filter(|genotype| missing_in(genotype) != 0)
+                    .count(),
+            ),
+            half_called_genotypes: counted(
+                genotypes()
+                    .filter(|genotype| {
+                        let missing = missing_in(genotype);
+                        missing != 0 && missing != genotype.len()
+                    })
+                    .count(),
+            ),
+            missing_alleles: counted(
+                alleles()
+                    .filter(|allele| **allele == MISSING_ALLELE)
+                    .count(),
+            ),
+            called_alleles: counted(alleles().filter(called).count()),
+            sum_of_the_called_alleles: alleles()
+                .filter(called)
+                .map(|allele| u64::from(allele.unsigned_abs()))
+                .sum(),
+        }
+    }
+
     #[test]
-    fn the_row_parser_reads_the_reference_files_as_the_parser_of_one_variant_does() {
-        for name in ["cases.vcf", "differences.vcf", "many.vcf"] {
-            let text = std::fs::read_to_string(reference_vcf(name))
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
-            let chrom_line = text
-                .lines()
-                .find(|line| line.starts_with("#CHROM"))
-                .unwrap_or_else(|| panic!("{name} has no #CHROM line"));
-            let individuals = super::individuals_of(chrom_line, 1)
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
-            let line_rules = ParseRules {
-                options: options(2, false),
-                needs: Needs::ALL,
-                individuals: &individuals,
-                panic_at_line: None,
-            };
-            let row_rules = RowRules {
-                needs: Needs::ALL,
-                ploidy: 2,
-                individuals: &individuals,
-            };
-            let mut data_lines = 0u64;
-            for (index, line) in text.lines().enumerate() {
-                if line.starts_with('#') {
-                    continue;
-                }
-                let number = u64::try_from(index).unwrap().saturating_add(1);
-                data_lines = data_lines.saturating_add(1);
+    fn every_variant_of_many_vcf_is_read_as_bcftools_read_it() {
+        let reference = reference_rows("many.bcftools.tsv");
+        assert_eq!(reference.len(), 500);
+        let options = options(MANY_PLOIDY, false);
+        let expected = expected_sites(&reference, options);
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let given = sites_of(&rows_of_file(name, options));
+            assert_the_same_sites(&given, &expected, &format!("{name}, every variant"));
+        }
+    }
 
-                let mut var = Variant::new();
-                let mut chrom_name = String::new();
-                let mut spare_alleles = Vec::new();
-                let gave = super::parse_data_line(
-                    line,
-                    number,
-                    &line_rules,
-                    &mut var,
-                    &mut chrom_name,
-                    &mut spare_alleles,
-                )
-                .unwrap_or_else(|error| panic!("{name} line {number}: {error}"));
-                assert!(gave, "{name} line {number} gave no variant");
+    #[test]
+    fn the_default_gives_the_variants_of_many_vcf_whose_filter_passed() {
+        let reference = reference_rows("many.bcftools.tsv");
+        let expected = expected_sites(&reference, VcfOptions::default());
+        // `bcftools view -f .,PASS` left 475 of the 500 variants.
+        assert_eq!(expected.len(), 475);
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let given = sites_of(&rows_of_file(name, VcfOptions::default()));
+            assert_the_same_sites(&given, &expected, &format!("{name}, the default"));
+        }
+    }
 
-                let mut gts = vec![NOT_WRITTEN; individuals.len().saturating_mul(2)];
-                let mut row = ParsedRow::default();
-                super::parse_row(line.as_bytes(), number, &row_rules, &mut gts, &mut row)
-                    .unwrap_or_else(|error| panic!("{name} line {number}: {error}"));
+    #[test]
+    fn the_first_genotypes_of_many_vcf_are_the_ones_of_the_spec() {
+        // The spec gives the first five genotypes of the first variant,
+        // chr1 1000, as `1/1 .|. 1/0 1/1 0/1`.
+        let first_five = [1, 1, MISSING_ALLELE, MISSING_ALLELE, 1, 0, 1, 1, 0, 1];
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, VcfOptions::default());
+            let first = &rows[0];
+            assert_eq!((first.chrom.as_str(), first.pos), ("chr1", 1000), "{name}");
+            assert_eq!(
+                first.gts.get(..first_five.len()),
+                Some(&first_five[..]),
+                "{name}"
+            );
+        }
+    }
 
-                assert_eq!(row.chrom, chrom_name, "{name} line {number}");
-                assert_eq!(row.pos, var.pos, "{name} line {number}");
-                assert_eq!(row.id, var.id, "{name} line {number}");
-                assert_eq!(row.alleles(), var.alleles, "{name} line {number}");
-                assert_eq!(gts, var.gts, "{name} line {number}");
-                match var.qual {
-                    Some(qual) => assert_eq!(row.qual.to_bits(), qual.to_bits()),
-                    None => assert!(row.qual.is_nan(), "{name} line {number}"),
+    #[test]
+    fn the_counts_of_many_vcf_with_every_variant_given_are_the_ones_of_the_spec() {
+        let expected = Counts {
+            variants: 500,
+            variants_in_chr2: 250,
+            variants_with_two_alternative_alleles: 54,
+            missing_genotypes: 1511,
+            half_called_genotypes: 257,
+            missing_alleles: 2765,
+            called_alleles: 47235,
+            sum_of_the_called_alleles: 25954,
+        };
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, options(MANY_PLOIDY, false));
+            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_counts_of_many_vcf_with_the_default_are_the_ones_of_the_spec() {
+        let expected = Counts {
+            variants: 475,
+            variants_in_chr2: 238,
+            variants_with_two_alternative_alleles: 53,
+            missing_genotypes: 1431,
+            half_called_genotypes: 240,
+            missing_alleles: 2622,
+            called_alleles: 44878,
+            sum_of_the_called_alleles: 24831,
+        };
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, VcfOptions::default());
+            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
+        }
+    }
+
+    /// The variants of `many.vcf`, each with the number its reader gave to
+    /// its chromosome, read inside a rayon pool of `threads` threads, in
+    /// blocks of `num_vars_per_block` variants and in batches of
+    /// `lines_per_batch` lines.
+    ///
+    /// The pool is built here and is not rayon's global one, which has one
+    /// thread per core of the machine: `install` runs the reader on this
+    /// one instead. rayon is a dependency of the targets that are not wasm,
+    /// so this and what uses it are compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    fn many_vcf_read_in_a_pool(
+        threads: usize,
+        num_vars_per_block: usize,
+        lines_per_batch: usize,
+    ) -> Vec<(u32, Row)> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut reader = reader_of_file(
+                "many.vcf",
+                in_blocks_of(options(MANY_PLOIDY, false), num_vars_per_block),
+            );
+            reader.set_lines_per_batch(lines_per_batch);
+            let mut variants = Vec::new();
+            loop {
+                let block = match reader.next_block() {
+                    Ok(Some(block)) => block,
+                    Ok(None) => return variants,
+                    Err(error) => panic!("many.vcf: the reader stopped at {error}"),
+                };
+                for view in block.variants() {
+                    let number = view.chrom().expect("the chromosome");
+                    variants.push((
+                        number,
+                        Row {
+                            chrom: reader.chroms().name(number).unwrap_or_default().to_string(),
+                            pos: view.pos().expect("the position"),
+                            id: view.id().expect("the id").to_string(),
+                            alleles: (0..view.num_alleles().expect("the alleles"))
+                                .map(|allele| view.allele(allele).unwrap_or_default().to_string())
+                                .collect(),
+                            qual: view.qual().filter(|qual| !qual.is_nan()),
+                            gts: view.gts().to_vec(),
+                        },
+                    ));
                 }
             }
-            assert!(data_lines > 0, "{name} has no data line");
+        })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn many_vcf_gives_the_same_variants_in_a_pool_of_one_thread_and_in_one_of_four() {
+        // 64 lines a batch and blocks of 100 variants, and the file has 500
+        // data lines, so the pool of four threads parses several batches
+        // and every thread parses lines of each.
+        let one_thread = many_vcf_read_in_a_pool(1, 100, 64);
+        let four_threads = many_vcf_read_in_a_pool(4, 100, 64);
+        assert_eq!(one_thread.len(), 500);
+        assert_eq!(one_thread, four_threads);
+
+        // They are the variants bcftools read, and the numbers of the
+        // chromosomes are the ones of the order of the file, whose first
+        // name is `chr1`.
+        let rows: Vec<Row> = four_threads.iter().map(|(_, row)| row.clone()).collect();
+        let reference = reference_rows("many.bcftools.tsv");
+        let expected = expected_sites(&reference, options(MANY_PLOIDY, false));
+        assert_the_same_sites(&sites_of(&rows), &expected, "many.vcf in a pool of four");
+        for (number, row) in &four_threads {
+            let expected_number = if row.chrom == "chr1" { 0 } else { 1 };
+            assert_eq!(*number, expected_number, "{} {}", row.chrom, row.pos);
         }
+    }
+
+    #[test]
+    fn a_reader_whose_parse_did_not_come_back_gives_an_error_and_no_block() {
+        // Eight data lines, in blocks of four, and the parse of the second
+        // line of the second block panics: the first block is given, and
+        // then the call that reads the second panics inside the parse and
+        // unwinds through the reader.
+        let lines: Vec<String> = (1..=8)
+            .map(|pos| format!("chr1 {pos}00 . A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut reader = reader_over(&vcf_of(&lines), in_blocks_of(VcfOptions::default(), 4));
+        // The three lines of the header come first, so the sixth data line
+        // is the line 9 of the file.
+        reader.panic_at_line(9);
+
+        let mut blocks = 0;
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let went_on = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            while reader.next_block().unwrap().is_some() {
+                blocks += 1;
+            }
+        }));
+        std::panic::set_hook(hook);
+        assert!(went_on.is_err(), "the parse did not panic");
+        assert_eq!(blocks, 1);
+
+        // The lines of the batch that was being parsed were never parsed,
+        // and a reader that went on would give the variants of the ones
+        // that were and drop the others without a word.
+        let error = reader.next_block().unwrap_err();
+        let Error::VcfParseNotFinished { line } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(line, 11);
+        // Every call after it gives no block and not an error again: a
+        // reader ends at its error, and the one that was given is the one
+        // that says what happened.
+        assert!(reader.next_block().unwrap().is_none());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_wrong_line_of_a_later_batch_comes_after_the_blocks_that_were_read_before_it() {
+        let mut lines: Vec<String> = (1..=200)
+            .map(|pos| format!("chr1 {pos} . A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        // A haploid genotype in a file read as diploid, in the 201st data
+        // line, which is the line 204 of the file and, with batches of 64
+        // lines, is in the fourth batch and not in the first.
+        lines.push("chr1 201 . A T . PASS . GT 1 0 1".to_string());
+        lines.push("chr1 202 . A T . PASS . GT 0/0 0/1 1/1".to_string());
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let vcf = vcf_of(&lines);
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 100));
+            reader.set_lines_per_batch(64);
+            for block in 1..=2 {
+                let given = reader
+                    .next_block()
+                    .unwrap_or_else(|error| panic!("the block {block}: {error}"))
+                    .expect("a block");
+                assert_eq!(given.num_vars, 100, "the block {block}");
+            }
+
+            let error = reader.next_block().unwrap_err();
+            let Error::VcfGenotypePloidy {
+                line,
+                individual,
+                found,
+                expected,
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(
+                (line, individual.as_str(), found, expected),
+                (204, "ind1", 1, 2)
+            );
+            // The good line after the wrong one was parsed in the same
+            // batch and is not given: an error ends the reader.
+            assert!(reader.next_block().unwrap().is_none());
+        });
+    }
+
+    /// The data lines of a reference VCF as a batch, with the bytes of the
+    /// lines and the rows they are parsed into, which is what the reader
+    /// gives the parse.
+    fn a_batch_of(name: &str) -> (Vec<u8>, Vec<BatchRow>) {
+        let text = std::fs::read_to_string(reference_vcf(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut bytes = Vec::new();
+        let mut batch = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let start = bytes.len();
+            bytes.extend_from_slice(line.as_bytes());
+            let mut row = BatchRow::new();
+            row.line = start..bytes.len();
+            // The lines of a file are counted from 1.
+            row.number = u64::try_from(index).unwrap().saturating_add(1);
+            batch.push(row);
+        }
+        (bytes, batch)
+    }
+
+    /// What one line of a batch was parsed into, to be compared with what
+    /// the other way of parsing gave for the same line.
+    fn parsed(
+        row: &BatchRow,
+        gts: &[i8],
+    ) -> (String, String, u64, Vec<i8>, String, Vec<String>, u32) {
+        (
+            row.error
+                .as_ref()
+                .map_or_else(|| "no error".to_string(), Error::to_string),
+            row.row.chrom.clone(),
+            row.row.pos,
+            gts.to_vec(),
+            row.row.id.clone(),
+            row.row.alleles().to_vec(),
+            row.row.qual.to_bits(),
+        )
+    }
+
+    #[test]
+    fn the_lines_parsed_one_after_another_give_what_the_threads_give() {
+        let individuals = reader_of_file("many.vcf", VcfOptions::default())
+            .individuals()
+            .to_vec();
+        let rules = RowRules {
+            needs: Needs::ALL,
+            ploidy: MANY_PLOIDY,
+            individuals: &individuals,
+            panic_at_line: None,
+        };
+        let gts_per_variant = individuals.len().saturating_mul(MANY_PLOIDY);
+
+        let (text, mut on_the_threads) = a_batch_of("many.vcf");
+        let (_, mut one_by_one) = a_batch_of("many.vcf");
+        assert_eq!(on_the_threads.len(), 500);
+        let mut gts_of_the_threads = vec![MISSING_ALLELE; on_the_threads.len() * gts_per_variant];
+        let mut gts_one_by_one = gts_of_the_threads.clone();
+
+        parse_rows(&mut on_the_threads, &text, &mut gts_of_the_threads, &rules);
+        parse_rows_one_by_one(&mut one_by_one, &text, &mut gts_one_by_one, &rules);
+
+        for (index, (threads, one)) in on_the_threads.iter().zip(&one_by_one).enumerate() {
+            let row = index * gts_per_variant..(index + 1) * gts_per_variant;
+            assert_eq!(
+                parsed(threads, &gts_of_the_threads[row.clone()]),
+                parsed(one, &gts_one_by_one[row]),
+                "the line {index}, counted from 0"
+            );
+        }
+        let wrong = one_by_one.iter().filter(|row| row.error.is_some()).count();
+        assert_eq!(wrong, 0);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_batch_holds_more_than_one_line_where_there_are_threads() {
+        // Every test of this file passes with one line in a batch: what a
+        // block holds does not depend on how many lines were parsed
+        // together or on how many threads parsed them, which is what the
+        // reader promises. So nothing here notices a reader that stopped
+        // reading ahead, and what would notice is the time it takes: the
+        // benchmark `benches/read_vcf.rs` on the 400 MB VCF of 100000
+        // variants of 1000 individuals takes about a second on one thread
+        // and a sixth of that on the 18 cores of the owner's machine, and
+        // with one line in a batch there is nothing for the other 17 to do.
+        // The assertion is over a constant, and clippy asks for a const
+        // block, which would refuse to compile instead of failing as a
+        // test: a test that fails is what names this file and this reason.
+        let lines_per_batch = std::hint::black_box(LINES_PER_BATCH);
+        assert!(
+            lines_per_batch > 1,
+            "a batch of {lines_per_batch} line gives the threads of rayon one line to share"
+        );
+    }
+
+    #[test]
+    fn a_bound_of_bytes_smaller_than_the_file_cuts_the_batches_and_changes_no_result() {
+        let expected = rows_of_file("many.vcf", VcfOptions::default());
+        assert_eq!(expected.len(), 475);
+        // `many.vcf` has 500 data lines of about 230 bytes each, read here
+        // in one block of 1000 variants. A bound of one byte holds one line
+        // in every batch, which is the line a batch holds whatever the
+        // bound says; the batch of the last line stops at the bound without
+        // seeing the end of the file, so one more batch is filled, which
+        // reads no line: 501. The bound of the code, 8 MiB, takes the 500
+        // lines and the end of the file in one.
+        for (bytes, batches) in [(1, 501), (BYTES_PER_BATCH, 1)] {
+            let mut reader = reader_of_file("many.vcf", in_blocks_of(VcfOptions::default(), 1000));
+            reader.set_bytes_per_batch(bytes);
+            let rows = rows_of(&mut reader).unwrap();
+            assert_eq!(rows, expected, "with {bytes} bytes a batch");
+            assert_eq!(
+                reader.batches_filled(),
+                batches,
+                "with {bytes} bytes a batch"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_read_one_line_at_a_time_gives_what_it_gives_in_one_batch() {
+        // A batch of one line is what wasm reads, where there are no
+        // threads, and the cargo tests are run natively.
+        let mut reader = reader_of_file("many.vcf", VcfOptions::default());
+        reader.set_lines_per_batch(1);
+        let one_line_at_a_time = rows_of(&mut reader).unwrap();
+        assert_eq!(
+            one_line_at_a_time,
+            rows_of_file("many.vcf", VcfOptions::default())
+        );
+        assert_eq!(one_line_at_a_time.len(), 475);
+    }
+
+    /// The rows of a batch are the buffers that the lines of the next batch
+    /// are parsed into, so a reader of a file of any length keeps the rows
+    /// of one batch and no more: the reader that this one took the place of
+    /// kept the buffers of one variant for each line of a batch, and the
+    /// test of that was over the buffer of the genotypes of a variant.
+    #[test]
+    fn the_rows_of_a_batch_are_the_ones_the_next_batch_is_parsed_into() {
+        let mut reader = reader_of_file("many.vcf", in_blocks_of(VcfOptions::default(), 1000));
+        reader.set_lines_per_batch(8);
+        let rows = rows_of(&mut reader).unwrap();
+        assert_eq!(rows.len(), 475);
+        assert_eq!(reader.batch.len(), 8);
+        assert!(reader.batches_filled() > 60, "{}", reader.batches_filled());
     }
 }

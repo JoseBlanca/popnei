@@ -1601,30 +1601,39 @@ mod tests {
         VcfOptions {
             ploidy: MANY_PLOIDY,
             only_passed: false,
+            num_vars_per_block: None,
         }
     }
 
-    /// A collector over one of the reference VCFs.
-    fn collector_over(
+    /// The same options with the blocks of the size that a test asks for.
+    fn in_blocks_of(options: VcfOptions, num_vars_per_block: Option<usize>) -> VcfOptions {
+        VcfOptions {
+            num_vars_per_block,
+            ..options
+        }
+    }
+
+    /// A reader over one of the reference VCFs, which gives its blocks of
+    /// `num_vars_per_block` variants holding `needs` and the genotypes.
+    fn reader_over(
         name: &str,
         options: VcfOptions,
         needs: Needs,
         num_vars_per_block: Option<usize>,
-    ) -> BlockCollector<VcfReader<BufReader<File>>> {
-        let reader = match VcfReader::from_path(&reference_vcf(name), options) {
+    ) -> VcfReader<BufReader<File>> {
+        let options = in_blocks_of(options, num_vars_per_block);
+        let mut reader = match VcfReader::from_path(&reference_vcf(name), options) {
             Ok(reader) => reader,
             Err(error) => panic!("{name}: {error}"),
         };
-        match BlockCollector::new(reader, needs, num_vars_per_block) {
-            Ok(collector) => collector,
-            Err(error) => panic!("{name}: the collector was not built: {error}"),
-        }
+        reader.set_needs(needs.union(Needs::GTS));
+        reader
     }
 
-    /// Every block a collector gives, until it has no more or it fails.
-    fn blocks_of<R: VariantReader>(collector: &mut BlockCollector<R>) -> Result<Vec<Block>> {
+    /// Every block a reader gives, until it has no more or it fails.
+    fn blocks_of(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
         let mut blocks = Vec::new();
-        while let Some(block) = collector.next_block()? {
+        while let Some(block) = reader.next_block()? {
             blocks.push(block);
         }
         Ok(blocks)
@@ -1637,10 +1646,10 @@ mod tests {
         needs: Needs,
         num_vars_per_block: Option<usize>,
     ) -> Vec<Block> {
-        let mut collector = collector_over(name, options, needs, num_vars_per_block);
-        match blocks_of(&mut collector) {
+        let mut reader = reader_over(name, options, needs, num_vars_per_block);
+        match blocks_of(&mut reader) {
             Ok(blocks) => blocks,
-            Err(error) => panic!("{name}: the collector stopped at {error}"),
+            Err(error) => panic!("{name}: the reader stopped at {error}"),
         }
     }
 
@@ -1693,27 +1702,17 @@ mod tests {
         gts: Vec<i8>,
     }
 
-    /// The variants of a VCF read one by one, which is what the blocks are
-    /// compared with.
-    fn sites_read_one_by_one(name: &str, options: VcfOptions) -> Vec<Site> {
-        let mut reader = match VcfReader::from_path(&reference_vcf(name), options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{name}: {error}"),
-        };
-        reader.set_needs(Needs::GTS | Needs::CHROM_POS);
-        let mut var = Variant::new();
-        let mut sites = Vec::new();
-        loop {
-            match reader.read_variant(&mut var) {
-                Ok(true) => sites.push(Site {
-                    chrom: var.chrom,
-                    pos: var.pos,
-                    gts: var.gts.clone(),
-                }),
-                Ok(false) => return sites,
-                Err(error) => panic!("{name}: the reader stopped at {error}"),
-            }
-        }
+    /// The variants of a VCF in one block, which is what the blocks of
+    /// every other size are compared with.
+    fn sites_read_in_one_block(name: &str, options: VcfOptions) -> Vec<Site> {
+        let blocks = blocks_read(
+            name,
+            options,
+            Needs::CHROM_POS,
+            Some(MAX_NUM_VARS_PER_BLOCK),
+        );
+        assert_eq!(blocks.len(), 1, "{name} is not one block");
+        sites_of(&blocks)
     }
 
     /// One variant with every field it has, which is what a block holds
@@ -1730,31 +1729,12 @@ mod tests {
         gts: Vec<i8>,
     }
 
-    /// Every field of every variant of a VCF, read one variant at a time by
-    /// the VCF reader: what the blocks of that file have to hold, joined,
-    /// whatever their size.
-    fn variants_read_one_by_one(name: &str, options: VcfOptions) -> Vec<FullVariant> {
-        let mut reader = match VcfReader::from_path(&reference_vcf(name), options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{name}: {error}"),
-        };
-        reader.set_needs(Needs::ALL);
-        let mut var = Variant::new();
-        let mut variants = Vec::new();
-        loop {
-            match reader.read_variant(&mut var) {
-                Ok(true) => variants.push(FullVariant {
-                    chrom: var.chrom,
-                    pos: var.pos,
-                    id: var.id.clone(),
-                    alleles: var.alleles.clone(),
-                    qual: var.qual,
-                    gts: var.gts.clone(),
-                }),
-                Ok(false) => return variants,
-                Err(error) => panic!("{name}: the reader stopped at {error}"),
-            }
-        }
+    /// Every field of every variant of a VCF in one block: what the blocks
+    /// of that file have to hold, joined, whatever their size.
+    fn variants_read_in_one_block(name: &str, options: VcfOptions) -> Vec<FullVariant> {
+        let blocks = blocks_read(name, options, Needs::ALL, Some(MAX_NUM_VARS_PER_BLOCK));
+        assert_eq!(blocks.len(), 1, "{name} is not one block");
+        variants_of(&blocks)
     }
 
     /// Every field of every variant of the blocks, joined, read through
@@ -1806,7 +1786,7 @@ mod tests {
 
     #[test]
     fn the_blocks_joined_are_the_variants_the_reader_gives_one_by_one() {
-        let expected = sites_read_one_by_one("many.vcf", VcfOptions::default());
+        let expected = sites_read_in_one_block("many.vcf", VcfOptions::default());
         assert_eq!(expected.len(), 475);
         for num_vars_per_block in [1, 7, 100, 1000] {
             let blocks = blocks_read(
@@ -1888,75 +1868,32 @@ mod tests {
         vcf
     }
 
-    /// A collector over a VCF written in a test.
-    fn collector_over_text(
+    /// A reader over a VCF written in a test.
+    ///
+    /// What a reader with no variant, and what an error in the middle of a
+    /// block, give is tested where the reader is, in `io::vcf`.
+    fn reader_over_text(
         vcf: &str,
         options: VcfOptions,
         needs: Needs,
         num_vars_per_block: Option<usize>,
-    ) -> BlockCollector<VcfReader<Cursor<Vec<u8>>>> {
-        let reader = match VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), options) {
+    ) -> VcfReader<Cursor<Vec<u8>>> {
+        let options = in_blocks_of(options, num_vars_per_block);
+        let mut reader = match VcfReader::new(Cursor::new(vcf.as_bytes().to_vec()), options) {
             Ok(reader) => reader,
             Err(error) => panic!("the reader was not built: {error}"),
         };
-        match BlockCollector::new(reader, needs, num_vars_per_block) {
-            Ok(collector) => collector,
-            Err(error) => panic!("the collector was not built: {error}"),
-        }
-    }
-
-    #[test]
-    fn a_reader_with_no_variants_gives_no_block() {
-        let mut collector =
-            collector_over_text(HEADER, VcfOptions::default(), Needs::ALL, Some(100));
-        assert!(collector.next_block().unwrap().is_none());
-        assert!(collector.next_block().unwrap().is_none());
-    }
-
-    #[test]
-    fn the_error_of_the_third_variant_comes_after_the_block_of_the_two_before_it() {
-        let vcf = vcf_of(&[
-            "chr1 100 rs1 A T . PASS . GT 0/0 0/1 1/1",
-            "chr1 200 rs2 A T . PASS . GT 0/0 0/1 1/1",
-            "chr1 300 rs3 A T . PASS . GT 0/0 0/1 0/0/1/1",
-        ]);
-        let mut collector = collector_over_text(&vcf, VcfOptions::default(), Needs::GTS, Some(2));
-
-        let first = collector.next_block().unwrap().expect("the first block");
-        assert_eq!(first.num_vars, 2);
-        assert_eq!(first.gts, [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1]);
-
-        let error = match collector.next_block() {
-            Ok(block) => panic!("the collector gave {block:?}"),
-            Err(error) => error,
-        };
-        let Error::VcfGenotypePloidy {
-            line,
-            individual,
-            found,
-            expected,
-        } = error
-        else {
-            panic!("the error is {error}");
-        };
-        // The third data line of a VCF of three header lines.
-        assert_eq!(line, 6);
-        assert_eq!(individual, "ind3");
-        assert_eq!((found, expected), (4, 2));
-
-        // The variant of the block that was being built is lost with the
-        // error, and there is no block after it.
-        assert!(collector.next_block().unwrap().is_none());
+        reader.set_needs(needs.union(Needs::GTS));
+        reader
     }
 
     #[test]
     fn a_collector_of_blocks_of_no_variant_is_refused() {
-        let reader = VcfReader::new(
-            Cursor::new(HEADER.as_bytes().to_vec()),
-            VcfOptions::default(),
-        )
-        .expect("the reader");
-        let error = match BlockCollector::new(reader, Needs::GTS, Some(0)) {
+        let error = match BlockCollector::new(
+            FakeReader::giving(2, Fills::Everything),
+            Needs::GTS,
+            Some(0),
+        ) {
             Ok(collector) => panic!("the collector was built: {collector:?}"),
             Err(error) => error,
         };
@@ -2134,9 +2071,10 @@ mod tests {
         let options = VcfOptions {
             ploidy: 4,
             only_passed: true,
+            num_vars_per_block: None,
         };
-        let mut collector = collector_over_text(&vcf, options, Needs::GTS, Some(2));
-        let blocks = blocks_of(&mut collector).expect("the blocks");
+        let mut reader = reader_over_text(&vcf, options, Needs::GTS, Some(2));
+        let blocks = blocks_of(&mut reader).expect("the blocks");
 
         assert_eq!(num_vars_of(&blocks), [2, 1]);
         assert_eq!(blocks[0].ploidy, 4);
@@ -3000,7 +2938,7 @@ mod tests {
     #[test]
     fn a_cut_copies_the_rows_it_gives_and_leaves_the_rest_in_the_block_that_waits() {
         // The 500 variants of `many.vcf` in one block of the source.
-        let source = collected_over("many.vcf", every_variant(), Needs::CHROM_POS, Some(500));
+        let source = source_over("many.vcf", every_variant(), Needs::CHROM_POS, Some(500));
         let mut reblock = Reblock::new(source, Some(1)).expect("the reblock");
 
         let mut blocks = Vec::new();
@@ -3336,22 +3274,46 @@ mod tests {
         assert!(message.contains('0'), "{message}");
     }
 
-    /// The blocks of one of the reference VCFs, read through the collector
-    /// that exists, which is a reader of blocks.
-    fn collected_over(
+    /// `CollectedBlocks`, the blocks of a reader of single variants, is
+    /// what the binding crates held their reader through until the VCF
+    /// reader gave blocks itself. It goes in work package 3 of
+    /// `docs/plans/block-readers.md` with the collector and the single
+    /// variant, and until then this is what keeps it read.
+    #[test]
+    fn the_blocks_of_a_reader_of_single_variants_are_a_reader_of_blocks() {
+        let mut blocks = CollectedBlocks::new(
+            FakeReader::giving(3, Fills::Everything),
+            Needs::CHROM_POS,
+            Some(2),
+        )
+        .expect("the reader of blocks");
+        assert_eq!(blocks.individuals(), ["ind1", "ind2"]);
+        assert_eq!(blocks.ploidy(), 2);
+        assert!(blocks.chroms().is_empty());
+        blocks.set_needs(Needs::CHROM_POS);
+
+        let first = blocks
+            .next_block()
+            .expect("the first block")
+            .expect("a block");
+        assert_eq!((first.num_vars, first.gts.len()), (2, 8));
+        let last = blocks
+            .next_block()
+            .expect("the last block")
+            .expect("a block");
+        assert_eq!(last.num_vars, 1);
+        assert!(blocks.next_block().expect("no block").is_none());
+    }
+
+    /// The blocks of one of the reference VCFs, which `reblock` takes as
+    /// its source.
+    fn source_over(
         name: &str,
         options: VcfOptions,
         needs: Needs,
         num_vars_per_block: Option<usize>,
-    ) -> CollectedBlocks<VcfReader<BufReader<File>>> {
-        let reader = match VcfReader::from_path(&reference_vcf(name), options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{name}: {error}"),
-        };
-        match CollectedBlocks::new(reader, needs, num_vars_per_block) {
-            Ok(blocks) => blocks,
-            Err(error) => panic!("{name}: the reader of blocks was not built: {error}"),
-        }
+    ) -> VcfReader<BufReader<File>> {
+        reader_over(name, options, needs, num_vars_per_block)
     }
 
     /// An error loses the block it happened in, and `reblock` loses with
@@ -3369,9 +3331,7 @@ mod tests {
         let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
         let vcf = vcf_of(&lines);
 
-        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default())
-            .expect("the reader");
-        let source = CollectedBlocks::new(reader, Needs::CHROM_POS, Some(100)).expect("the source");
+        let source = reader_over_text(&vcf, VcfOptions::default(), Needs::CHROM_POS, Some(100));
         let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
 
         let mut blocks = Vec::new();
@@ -3413,10 +3373,10 @@ mod tests {
         // Every field of every variant of the file, read one variant at a
         // time by the VCF reader: what the blocks hold, joined, whatever
         // their size.
-        let expected = variants_read_one_by_one("many.vcf", every_variant());
+        let expected = variants_read_in_one_block("many.vcf", every_variant());
         assert_eq!(expected.len(), 500);
         for (num_vars_per_block, sizes_expected) in sizes {
-            let source = collected_over("many.vcf", every_variant(), Needs::ALL, Some(100));
+            let source = source_over("many.vcf", every_variant(), Needs::ALL, Some(100));
             let mut reblock = Reblock::new(source, num_vars_per_block).expect("the reblock");
             let blocks = match blocks_given(&mut reblock) {
                 Ok(blocks) => blocks,

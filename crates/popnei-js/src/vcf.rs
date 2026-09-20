@@ -26,9 +26,7 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::{
-    AllelesColumn, Block, BlockReader, CollectedBlocks, Reblock, needs_of_the_fields,
-};
+use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::variant::Needs;
 
@@ -101,14 +99,15 @@ impl VcfSource {
         // over it has nothing to cut or to join and every block goes through
         // with no copy. It is there for the sources that give another size,
         // a filter among them, and it is what `docs/specs/block.md` puts at
-        // the end of every `iterBlocks`. The source today is the adapter of
-        // the core over the reader of single variants; task 2.4 of
-        // `docs/plans/block-readers.md` puts the VCF reader itself there,
-        // which is the line that builds `blocks`.
-        let reader = VcfReader::new(source, self.options)?;
-        let blocks = CollectedBlocks::new(reader, needs, num_vars_per_block)?;
+        // the end of every `iterBlocks`.
+        let options = VcfOptions {
+            num_vars_per_block,
+            ..self.options
+        };
+        let mut reader = VcfReader::new(source, options)?;
+        reader.set_needs(needs.union(Needs::GTS));
         Ok(Blocks {
-            reader: Box::new(Reblock::new(blocks, num_vars_per_block)?),
+            reader: Box::new(Reblock::new(reader, num_vars_per_block)?),
             finished: false,
         })
     }
@@ -320,6 +319,7 @@ pub fn open_vcf(
     let options = VcfOptions {
         ploidy,
         only_passed,
+        num_vars_per_block: None,
     };
     // The `Vec` wasm-bindgen filled with the bytes of the `Uint8Array` is
     // the one every pass reads: an `Arc<[u8]>` here would allocate the whole
@@ -327,13 +327,12 @@ pub fn open_vcf(
     // never gives that back.
     let bytes = Arc::new(bytes);
     let source = Cursor::new(SharedBytes(Arc::clone(&bytes)));
-    // The header is read when the reader is built, and the names it gave
-    // are asked of the adapter, which is what this crate holds a reader
-    // through. Task 2.4 of `docs/plans/block-readers.md` puts the VCF
-    // reader itself in the place of the adapter, and it answers this
-    // itself. No variant is read here, so the fields and the size of a
-    // block are the ones that ask for nothing.
-    let reader = CollectedBlocks::new(VcfReader::new(source, options)?, Needs::GTS, None)?;
+    // The header is read when the reader is built and no variant is.
+    // Nothing here asks for a block, so a file whose blocks would need more
+    // memory than wasm addresses, a header of 170000 individuals read with
+    // the ploidy 255, is opened all the same and its individuals read; the
+    // size of its blocks is the user's to choose at `iterBlocks`.
+    let reader = VcfReader::new(source, options)?;
     let individuals = reader.individuals().to_vec();
     Ok(VcfSource {
         bytes,

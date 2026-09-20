@@ -25,9 +25,7 @@ use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyString, PyTuple};
 
-use popnei::block::{
-    AllelesColumn, Block, BlockReader, CollectedBlocks, Reblock, needs_of_the_fields,
-};
+use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::io::vcf::{VcfOptions, VcfReader};
 use popnei::variant::{ChromTable, Needs};
 
@@ -91,13 +89,14 @@ impl VcfSource {
                 // block goes through with no copy. It is there for the
                 // sources that give another size, a filter among them, and
                 // it is what `docs/specs/block.md` puts at the end of every
-                // `iter_blocks`. The source today is the adapter of the
-                // core over the reader of single variants; task 2.4 of
-                // `docs/plans/block-readers.md` puts the VCF reader itself
-                // there, which is the line that builds `blocks`.
-                let reader = VcfReader::from_path(path, options)?;
-                let blocks = CollectedBlocks::new(reader, needs, num_vars_per_block)?;
-                Ok(Box::new(Reblock::new(blocks, num_vars_per_block)?))
+                // `iter_blocks`.
+                let options = VcfOptions {
+                    num_vars_per_block,
+                    ..options
+                };
+                let mut reader = VcfReader::from_path(path, options)?;
+                reader.set_needs(needs.union(Needs::GTS));
+                Ok(Box::new(Reblock::new(reader, num_vars_per_block)?))
             })
             .map_err(|error| PyPopneiError::of_the_file(error, path))?;
         Ok(Blocks {
@@ -286,18 +285,16 @@ pub(crate) fn open_vcf(
     let options = VcfOptions {
         ploidy: count_of("ploidy", ploidy)?,
         only_passed,
+        num_vars_per_block: None,
     };
     let individuals = py
         .detach(|| -> Result<_, popnei::Error> {
-            // The header is read when the reader is built, and the names it
-            // gave are asked of the adapter, which is what this crate holds
-            // a reader through. Task 2.4 of
-            // `docs/plans/block-readers.md` puts the VCF reader itself in
-            // the place of the adapter, and it answers this itself. No
-            // variant is read here, so the fields and the size of a block
-            // are the ones that ask for nothing.
+            // The header is read when the reader is built and no variant
+            // is. Nothing here asks for a block, so a file whose blocks
+            // would need more memory than this machine gives is opened all
+            // the same and its individuals read, and the size of its blocks
+            // is the user's to choose at `iter_blocks`.
             let reader = VcfReader::from_path(&path, options)?;
-            let reader = CollectedBlocks::new(reader, Needs::GTS, None)?;
             Ok(reader.individuals().to_vec())
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
