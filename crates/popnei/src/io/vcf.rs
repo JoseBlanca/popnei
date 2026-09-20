@@ -2287,6 +2287,38 @@ mod tests {
         assert_eq!(var.gts.capacity(), gts);
     }
 
+    #[test]
+    fn the_genotypes_of_a_variant_come_back_in_the_buffers_of_the_variants_before_it() {
+        // Eight lines that give the same genotypes, so that no buffer has
+        // to grow, read in batches of two. Three buffers serve the eight
+        // variants: the one of the consumer and the ones of the two lines
+        // of the batch, which the swap of every read passes round. A reader
+        // that gave a new buffer for each variant would give eight, and
+        // that is what nothing else notices: the tests that read three
+        // variants read them from three lines of one batch, each with a
+        // buffer of its own.
+        let lines: Vec<String> = (1..=8)
+            .map(|pos| format!("chr1 {pos}00 . A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut reader = reader_over(&vcf_of(&lines), VcfOptions::default());
+        reader.set_lines_per_batch(2);
+        let mut var = Variant::new();
+
+        let mut buffers = Vec::new();
+        let mut read = 0;
+        while reader.read_variant(&mut var).unwrap() {
+            read += 1;
+            assert_eq!(var.gts, [0, 0, 0, 1, 1, 1]);
+            let buffer = var.gts.as_ptr().addr();
+            if !buffers.contains(&buffer) {
+                buffers.push(buffer);
+            }
+        }
+        assert_eq!(read, 8);
+        assert_eq!(buffers.len(), 3, "the buffers of the genotypes");
+    }
+
     /// The ploidy of the 50 individuals of `many.vcf`, which
     /// `tests/reference/vcf/make_reference.py` writes as diploid.
     const MANY_PLOIDY: usize = 2;
