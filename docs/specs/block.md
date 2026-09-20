@@ -116,7 +116,8 @@ after the block was collected and not before.
 When the reader gives an error, the collector gives that error and not
 the block it was building: the variants of that block that were already
 read are lost with it. With a VCF that has a wrong line after 250 good
-ones and blocks of 100, the caller gets two blocks and then the error.
+ones and blocks of 100, the caller gets two blocks and then the error,
+and every call after it gives no block.
 
 ### How it runs
 
@@ -173,8 +174,10 @@ allele.
 pub struct AllelesColumn { /* private */ }
 impl AllelesColumn {
     pub fn num_vars(&self) -> usize;
+    /// 0 for a variant the column does not hold.
     pub fn num_alleles(&self, var: usize) -> usize;
-    /// Allele 0 is the reference.
+    /// Allele 0 is the reference. A variant or an allele the column does
+    /// not hold gives an empty text, which no allele of a source is.
     pub fn allele(&self, var: usize, allele: usize) -> &str;
 }
 ```
@@ -217,15 +220,29 @@ impl<R: VariantReader> BlockCollector<R> {
     pub fn reader(&self) -> &R;
 }
 
-/// The default number of variants of a block for that many individuals.
+/// The default number of variants of a block for that many individuals:
+/// the genotypes of a block divided by the individuals, and never fewer
+/// than the smallest number of variants nor more than the largest.
 pub fn default_num_vars_per_block(num_individuals: usize) -> usize;
+
+/// The three numbers of that rule, each inherited from pyNei's
+/// `config.py` and measured for popnei by nobody.
+pub const GENOTYPES_PER_BLOCK: usize = 5_000_000;
+pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
+pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 ```
 
 `BlockCollector<Box<dyn VariantReader>>` is how the two binding crates
 hold it, so `VariantReader` is implemented for a box of itself.
 
-This module adds one case to the error of the crate: a
-`num_vars_per_block` of 0.
+This module adds two cases to the error of the crate: a
+`num_vars_per_block` of 0, and a block whose genotypes are more than the
+addresses of the machine, `num_vars_per_block` times `num_individuals`
+times `ploidy` above what a `usize` holds, which `BlockCollector::new`
+refuses. Only a size the caller asked for reaches the second one, and it
+reaches it in wasm, where a `usize` is 32 bits and holds 4295 million:
+10000 variants of 250000 individuals of the ploidy 2 are 5000 million
+genotypes.
 
 ## Open points
 
