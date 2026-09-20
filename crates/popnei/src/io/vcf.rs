@@ -38,6 +38,14 @@ pub const DEFAULT_PLOIDY: usize = 2;
 /// ignores that column and gives every variant.
 pub const DEFAULT_ONLY_PASSED: bool = true;
 
+/// The largest ploidy a reader takes. Nothing that has been sequenced comes
+/// near it: the ploidies of the crops with the most copies of their genome
+/// are 6 and 8. It is here so that a ploidy that came from a user cannot
+/// ask the reader for a genotype of more alleles than a machine can hold: a
+/// ploidy of `usize::MAX` asked for a vector of that many alleles at the
+/// first genotype written as a dot.
+pub const MAX_PLOIDY: usize = 255;
+
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 
@@ -230,13 +238,17 @@ impl<R: BufRead + Send> VcfReader<R> {
     ///
     /// # Errors
     ///
-    /// When the ploidy of the options is 0, when the source is not a VCF,
+    /// When the ploidy of the options is 0 or above [`MAX_PLOIDY`], when
+    /// the source is not a VCF,
     /// when its header has not the nine first columns of a VCF with
     /// genotypes or no individual after them, when two individuals have the
     /// same name, and when the source cannot be read.
     pub fn new(source: R, options: VcfOptions) -> Result<VcfReader<R>> {
-        if options.ploidy == 0 {
-            return Err(Error::VcfPloidyIsZero);
+        if options.ploidy == 0 || options.ploidy > MAX_PLOIDY {
+            return Err(Error::VcfPloidyOutOfRange {
+                ploidy: options.ploidy,
+                largest: MAX_PLOIDY,
+            });
         }
         let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
         let gzipped = source.first.starts_with(&GZIP_BYTES);
@@ -771,7 +783,7 @@ mod tests {
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
-    use super::{MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
+    use super::{MAX_PLOIDY, MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
 
@@ -1807,15 +1819,27 @@ mod tests {
     }
 
     #[test]
-    fn a_ploidy_of_zero_is_refused() {
-        let options = VcfOptions {
-            ploidy: 0,
-            only_passed: true,
-        };
-        let error = error_of(HEADER, options);
-        assert!(
-            matches!(error, Error::VcfPloidyIsZero),
-            "the error is {error}"
-        );
+    fn a_ploidy_of_zero_and_one_above_the_largest_are_refused() {
+        for asked_for in [0, MAX_PLOIDY.saturating_add(1), usize::MAX] {
+            let error = error_of(HEADER, options(asked_for, true));
+            let Error::VcfPloidyOutOfRange { ploidy, largest } = error else {
+                panic!("the error of the ploidy {asked_for} is {error}");
+            };
+            assert_eq!((ploidy, largest), (asked_for, MAX_PLOIDY));
+        }
+    }
+
+    #[test]
+    fn the_largest_ploidy_is_read() {
+        let mut genotype = String::from("0");
+        for _ in 1..MAX_PLOIDY {
+            genotype.push_str("/1");
+        }
+        let line = format!("chr1 100 . A T . PASS . GT {genotype} . .");
+        let rows = rows_read(&vcf_of(&[&line]), options(MAX_PLOIDY, true));
+        let first = rows.first().expect("one variant");
+        assert_eq!(first.gts.len(), MAX_PLOIDY.saturating_mul(3));
+        assert_eq!(first.gts.first(), Some(&0));
+        assert_eq!(first.gts.last(), Some(&MISSING_ALLELE));
     }
 }

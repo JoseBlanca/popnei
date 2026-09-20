@@ -41,10 +41,18 @@ pub enum Error {
         problem: String,
     },
 
-    /// The ploidy the VCF reader was asked for is 0. It is the one thing
-    /// `VcfReader::new` refuses that does not come from the source.
-    #[error("the ploidy asked of the VCF reader is 0, and a genotype holds one allele or more")]
-    VcfPloidyIsZero,
+    /// The ploidy the VCF reader was asked for is 0, or above the largest
+    /// one it reads. It is the one thing `VcfReader::new` refuses that does
+    /// not come from the source.
+    #[error(
+        "the ploidy asked of the VCF reader is {ploidy}, and a genotype holds one allele at least and {largest} at most"
+    )]
+    VcfPloidyOutOfRange {
+        /// The ploidy that was asked for.
+        ploidy: usize,
+        /// The largest one the reader takes, `vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
 
     /// A data line of the VCF is not one popnei can read.
     #[error("line {line} of the VCF, {place}: {problem}")]
