@@ -12,7 +12,9 @@ It writes, beside itself:
   and popnei reads as bcftools does.
 - many.vcf, 500 variants of 50 diploid individuals drawn with a fixed seed,
   and many.vcf.gz. One variant in 20 failed its FILTER, q10, and one in 20
-  has no FILTER, a dot. It is 115 KB, more than the 64 KB that one block of bgzip
+  has no FILTER, a dot; one in three has no ID and one in five no QUAL, so that
+  the comparison with pyNei covers those two columns on 500 variants. It is
+  more than the 64 KB that one block of bgzip
   holds, so the gzipped file has several gzip members one after another.
 - cases.bcftools.tsv, differences.bcftools.tsv and many.bcftools.tsv, what
   `bcftools query` prints for each: chrom, pos, id, ref, alt, qual, filter and
@@ -93,9 +95,19 @@ def write_many(num_vars=500, num_individuals=50, seed=42):
                 alleles[0] = "."
             sep = "|" if rng.random() < 0.3 else "/"
             gts.append(sep.join(alleles))
-        # no random draw here, so that the genotypes do not depend on it
+        # no random draw in the three that follow, so that the genotypes do
+        # not depend on them: one variant in 20 failed its filter and one in
+        # 20 has none, one in three has no id, one in five no quality, and
+        # half of the qualities that are there have a decimal
         filter_ = {7: "q10", 13: "."}.get(var_idx % 20, "PASS")
-        fields = [chrom, str(pos), ".", "A", alt, ".", filter_, ".", "GT"] + gts
+        id_ = "." if var_idx % 3 == 0 else f"var{var_idx:03d}"
+        if var_idx % 5 == 0:
+            qual = "."
+        elif var_idx % 2 == 0:
+            qual = str(20 + var_idx % 60)
+        else:
+            qual = f"{20 + var_idx % 60}.5"
+        fields = [chrom, str(pos), id_, "A", alt, qual, filter_, ".", "GT"] + gts
         lines.append("\t".join(fields) + "\n")
     (HERE / "many.vcf").write_text("".join(lines))
 
