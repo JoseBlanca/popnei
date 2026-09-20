@@ -53,6 +53,56 @@ pub fn default_num_vars_per_block(num_individuals: usize) -> usize {
     num_vars.clamp(MIN_NUM_VARS_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK)
 }
 
+/// The name of each column of a block in Python and in TypeScript, in the
+/// order of the columns of [`Block`]. The genotypes are not among them:
+/// every block holds them, and no user asks for them.
+pub const FIELD_NAMES: [&str; 5] = ["chrom", "pos", "id", "alleles", "qual"];
+
+/// The fields of a variant that each of those names asks the reader for.
+/// The chromosome and the position travel together in the core, so either
+/// name fills both.
+const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
+    ("chrom", Needs::CHROM_POS),
+    ("pos", Needs::CHROM_POS),
+    ("id", Needs::ID),
+    ("alleles", Needs::ALLELES),
+    ("qual", Needs::QUAL),
+];
+
+/// The fields a collector has to be asked for to fill the columns that
+/// `names` name, the genotypes among them, which every block holds.
+///
+/// It is what the binding crates call with the names their user gave, so
+/// that one list of names serves Python and TypeScript and a column added
+/// later cannot reach one language and not the other.
+///
+/// # Errors
+///
+/// When a name is not one of [`FIELD_NAMES`]: the error names it and lists
+/// the five, and it is the `ValueError` of Python and the `Error` of
+/// TypeScript.
+pub fn needs_of_the_fields<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Needs> {
+    let mut needs = Needs::GTS;
+    for name in names {
+        let found = FIELDS_OF_THE_NAMES
+            .iter()
+            .find(|(of_a_field, _)| *of_a_field == name);
+        let Some((_, field)) = found else {
+            return Err(Error::NotAFieldOfABlock {
+                name: name.to_string(),
+            });
+        };
+        needs = needs.union(*field);
+    }
+    Ok(needs)
+}
+
+/// The names of the fields of a block between backticks, `` `chrom`,
+/// `pos` ``, for the message of a name that is not one of them.
+pub(crate) fn field_names_listed() -> String {
+    FIELD_NAMES.map(|name| format!("`{name}`")).join(", ")
+}
+
 /// How many alleles the buffers of an alleles column are reserved for in
 /// each variant, and how many bytes for each of those alleles: the `A` and
 /// the `T` of a biallelic SNP, which is the commonest variant of a VCF. A
@@ -451,8 +501,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AllelesColumn, Block, BlockCollector, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK,
-        MIN_NUM_VARS_PER_BLOCK, default_num_vars_per_block,
+        AllelesColumn, Block, BlockCollector, FIELD_NAMES, FIELDS_OF_THE_NAMES,
+        GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
+        default_num_vars_per_block, needs_of_the_fields,
     };
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -1099,6 +1150,64 @@ mod tests {
         let collector =
             BlockCollector::new(no_variant(), Needs::ALL, Some(2)).expect("the collector");
         assert_eq!(collector.reader().needs, Needs::ALL);
+    }
+
+    /// The names a Python and a TypeScript user writes in `fields` are the
+    /// names of the columns of a block, and which field of the core each
+    /// one asks for is knowledge of the domain that the core keeps: the
+    /// two binding crates call this with what their user gave.
+    #[test]
+    fn the_names_of_the_columns_of_a_block_ask_for_the_fields_of_the_core() {
+        assert_eq!(FIELD_NAMES, ["chrom", "pos", "id", "alleles", "qual"]);
+        assert_eq!(FIELD_NAMES, FIELDS_OF_THE_NAMES.map(|(name, _)| name));
+
+        // Every block holds the genotypes, so they are part of what any
+        // set of names asks for, and no name asks for them.
+        let no_name: [&str; 0] = [];
+        assert_eq!(needs_of_the_fields(no_name).expect("no name"), Needs::GTS);
+        assert_eq!(
+            needs_of_the_fields(["chrom"]).expect("the chromosomes"),
+            Needs::GTS | Needs::CHROM_POS
+        );
+        // The chromosome and the position are one field of the core, so
+        // either name fills both.
+        assert_eq!(
+            needs_of_the_fields(["pos"]).expect("the positions"),
+            Needs::GTS | Needs::CHROM_POS
+        );
+        assert_eq!(
+            needs_of_the_fields(["qual", "id", "alleles", "chrom"]).expect("the four"),
+            Needs::ALL
+        );
+        assert_eq!(
+            needs_of_the_fields(["id", "id"]).expect("the ids twice"),
+            Needs::GTS | Needs::ID
+        );
+
+        let error = match needs_of_the_fields(["chrom", "c"]) {
+            Ok(needs) => panic!("the names gave {needs}"),
+            Err(error) => error,
+        };
+        let Error::NotAFieldOfABlock { name } = &error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(name, "c");
+        let message = error.to_string();
+        assert!(
+            message.contains("`c` is not a field of a block"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`chrom`, `pos`, `id`, `alleles`, `qual`"),
+            "{message}"
+        );
+
+        // The genotypes are not a name a user writes.
+        let error = needs_of_the_fields(["gts"]);
+        assert!(
+            matches!(error, Err(Error::NotAFieldOfABlock { .. })),
+            "`gts` gave {error:?}"
+        );
     }
 
     /// The genotypes of a block are read as variants x individuals x

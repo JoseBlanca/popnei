@@ -49,6 +49,18 @@ pub enum Error {
         ploidy: usize,
     },
 
+    /// A name that was given for a column of a block is not one of the
+    /// five. It is a Python or a TypeScript user who writes them, in
+    /// `iter_blocks(fields=...)`, so the message lists the names there are.
+    #[error(
+        "`{name}` is not a field of a block; the fields are {fields}",
+        fields = crate::block::field_names_listed()
+    )]
+    NotAFieldOfABlock {
+        /// The name that was given and is not a field of a block.
+        name: String,
+    },
+
     /// A reader filled a variant with a number of alleles other than its
     /// individuals times its ploidy, which the trait of a reader asks of
     /// it. It is a defect of that reader: a block of such variants has
