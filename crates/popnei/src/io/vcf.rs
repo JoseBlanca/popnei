@@ -227,10 +227,13 @@ pub struct VcfReader<R: BufRead + Send> {
     /// of the variant at the start of every read and written over in the
     /// next one that asks for the alleles.
     spare_alleles: Vec<String>,
-    /// The line being read, without its end of line.
+    /// The line being read, with its end of line.
     line: String,
-    /// The number of that line in the file, counted from 1 with the lines
-    /// of the header.
+    /// The name of the chromosome of the line that was parsed, which gets
+    /// its number when the variant is handed out.
+    chrom_name: String,
+    /// The number of the line that was read last, counted from 1 with the
+    /// lines of the header.
     line_number: u64,
     /// Whether the source has been read to its end or gave an error. After
     /// either, every read gives no variant.
@@ -276,6 +279,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             needs: Needs::ALL,
             spare_alleles: Vec::new(),
             line: String::new(),
+            chrom_name: String::new(),
             line_number: 0,
             finished: false,
         };
@@ -672,6 +676,126 @@ fn fill_genotypes<'a>(
     Ok(())
 }
 
+/// What the parse of a data line needs to know, which is the same for
+/// every line of a file: the reader hands one to each line it parses.
+struct ParseRules<'a> {
+    options: VcfOptions,
+    needs: Needs,
+    individuals: &'a [String],
+}
+
+/// The variant of the data line `text`, the line `number` of the file,
+/// into `var`, and false when the line gives no variant: an empty line, or
+/// one whose FILTER failed when the options leave those out.
+///
+/// The name of the chromosome goes into `chrom_name` and its number is not
+/// given here: the reader gives it when it hands the variant out, so that
+/// the numbers follow the order of the file and not the order in which the
+/// lines were parsed. The alleles are written over the strings of
+/// `spare_alleles`, the ones of the variants read before.
+///
+/// `var` is cleared by the caller, which is also what puts the strings of
+/// the alleles it held into `spare_alleles`.
+fn parse_data_line(
+    text: &str,
+    number: u64,
+    rules: &ParseRules<'_>,
+    var: &mut Variant,
+    chrom_name: &mut String,
+    spare_alleles: &mut Vec<String>,
+) -> Result<bool> {
+    let ParseRules {
+        options,
+        needs,
+        individuals,
+    } = rules;
+    if text.is_empty() {
+        return Ok(false);
+    }
+    // The seven columns up to the FILTER are taken as text and read only
+    // when the variant is given: a line that is skipped costs no parsing,
+    // and the name of its chromosome gets no number.
+    let mut columns = text.split('\t');
+    let chrom_text = next_column(&mut columns, "CHROM", number)?;
+    let pos_text = next_column(&mut columns, "POS", number)?;
+    let id_text = next_column(&mut columns, "ID", number)?;
+    let reference_text = next_column(&mut columns, "REF", number)?;
+    let alternatives_text = next_column(&mut columns, "ALT", number)?;
+    let quality_text = next_column(&mut columns, "QUAL", number)?;
+    let filter_text = next_column(&mut columns, "FILTER", number)?;
+    if options.only_passed && !passed(filter_text) {
+        return Ok(false);
+    }
+
+    var.pos = parse_position(pos_text, number)?;
+    chrom_name.push_str(chrom_text);
+    var.filled = Needs::CHROM_POS;
+    if needs.contains(Needs::ID) {
+        if id_text != MISSING_VALUE {
+            var.id.push_str(id_text);
+        }
+        var.filled |= Needs::ID;
+    }
+    // The alleles are counted for every variant that is given, to check the
+    // allele numbers of its genotypes, also when the texts of the alleles
+    // are not kept.
+    let num_alleles = count_alleles(reference_text, alternatives_text, number)?;
+    if needs.contains(Needs::ALLELES) {
+        fill_alleles(
+            &mut var.alleles,
+            spare_alleles,
+            reference_text,
+            alternatives_text,
+        );
+        var.filled |= Needs::ALLELES;
+    }
+    if needs.contains(Needs::QUAL) {
+        var.qual = parse_quality(quality_text, number)?;
+        var.filled |= Needs::QUAL;
+    }
+    // The shape of the line is checked whatever was asked for: the nine
+    // first columns are there, the FORMAT has a GT key, and one column of
+    // an individual comes after it at least. What is in those columns, and
+    // how many of them there are, is read only when the genotypes are asked
+    // for.
+    //
+    // INFO is not read, and its column has to be there.
+    next_column(&mut columns, "INFO", number)?;
+    let format_text = next_column(&mut columns, "FORMAT", number)?;
+    let gt_index = gt_index_of(format_text, number)?;
+    let first_individual = next_column(&mut columns, "individual", number)?;
+    if needs.contains(Needs::GTS) {
+        let mut columns = std::iter::once(first_individual).chain(columns);
+        fill_genotypes(
+            &mut var.gts,
+            &mut columns,
+            gt_index,
+            individuals,
+            options.ploidy,
+            num_alleles,
+            number,
+        )?;
+        var.filled |= Needs::GTS;
+    }
+    Ok(true)
+}
+
+/// What the reader gives when a line of the source could not be read: the
+/// bytes that are not text are an error of that line, with its number,
+/// since a VCF is text and the number of the line is what a user needs, and
+/// anything else is an error of the input.
+fn error_reading_a_line(error: std::io::Error, number: u64) -> Error {
+    if is_not_text(&error) {
+        Error::VcfDataLine {
+            line: number,
+            place: VcfPlace::Line,
+            problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+        }
+    } else {
+        Error::Io(error)
+    }
+}
+
 impl<R: BufRead + Send> VcfReader<R> {
     /// The next variant of the file, skipping the empty lines and, when the
     /// options ask for it, the variants that failed a filter.
@@ -684,101 +808,35 @@ impl<R: BufRead + Send> VcfReader<R> {
             needs,
             spare_alleles,
             line,
+            chrom_name,
             line_number,
             finished,
         } = self;
         if *finished {
             return Ok(false);
         }
+        let rules = ParseRules {
+            options: *options,
+            needs: *needs,
+            individuals,
+        };
         loop {
             line.clear();
             let number = next_line_number(*line_number);
-            let read = source.read_line(line).map_err(|error| {
-                if is_not_text(&error) {
-                    Error::VcfDataLine {
-                        line: number,
-                        place: VcfPlace::Line,
-                        problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
-                    }
-                } else {
-                    Error::Io(error)
-                }
-            })?;
+            let read = source
+                .read_line(line)
+                .map_err(|error| error_reading_a_line(error, number))?;
             if read == 0 {
                 *finished = true;
                 return Ok(false);
             }
             *line_number = number;
+            chrom_name.clear();
             let text = without_the_line_end(line);
-            if text.is_empty() {
-                continue;
+            if parse_data_line(text, number, &rules, var, chrom_name, spare_alleles)? {
+                var.chrom = chroms.intern(chrom_name);
+                return Ok(true);
             }
-            // The seven columns up to the FILTER are taken as text and read
-            // only when the variant is given: a line that is skipped costs
-            // no parsing, and the name of its chromosome gets no number.
-            let mut columns = text.split('\t');
-            let chrom_text = next_column(&mut columns, "CHROM", number)?;
-            let pos_text = next_column(&mut columns, "POS", number)?;
-            let id_text = next_column(&mut columns, "ID", number)?;
-            let reference_text = next_column(&mut columns, "REF", number)?;
-            let alternatives_text = next_column(&mut columns, "ALT", number)?;
-            let quality_text = next_column(&mut columns, "QUAL", number)?;
-            let filter_text = next_column(&mut columns, "FILTER", number)?;
-            if options.only_passed && !passed(filter_text) {
-                continue;
-            }
-
-            var.pos = parse_position(pos_text, number)?;
-            var.chrom = chroms.intern(chrom_text);
-            var.filled = Needs::CHROM_POS;
-            if needs.contains(Needs::ID) {
-                if id_text != MISSING_VALUE {
-                    var.id.push_str(id_text);
-                }
-                var.filled |= Needs::ID;
-            }
-            // The alleles are counted for every variant that is given, to
-            // check the allele numbers of its genotypes, also when the
-            // texts of the alleles are not kept.
-            let num_alleles = count_alleles(reference_text, alternatives_text, number)?;
-            if needs.contains(Needs::ALLELES) {
-                fill_alleles(
-                    &mut var.alleles,
-                    spare_alleles,
-                    reference_text,
-                    alternatives_text,
-                );
-                var.filled |= Needs::ALLELES;
-            }
-            if needs.contains(Needs::QUAL) {
-                var.qual = parse_quality(quality_text, number)?;
-                var.filled |= Needs::QUAL;
-            }
-            // The shape of the line is checked whatever was asked for: the
-            // nine first columns are there, the FORMAT has a GT key, and
-            // one column of an individual comes after it at least. What is
-            // in those columns, and how many of them there are, is read
-            // only when the genotypes are asked for.
-            //
-            // INFO is not read, and its column has to be there.
-            next_column(&mut columns, "INFO", number)?;
-            let format_text = next_column(&mut columns, "FORMAT", number)?;
-            let gt_index = gt_index_of(format_text, number)?;
-            let first_individual = next_column(&mut columns, "individual", number)?;
-            if needs.contains(Needs::GTS) {
-                let mut columns = std::iter::once(first_individual).chain(columns);
-                fill_genotypes(
-                    &mut var.gts,
-                    &mut columns,
-                    gt_index,
-                    individuals,
-                    options.ploidy,
-                    num_alleles,
-                    number,
-                )?;
-                var.filled |= Needs::GTS;
-            }
-            return Ok(true);
         }
     }
 }
