@@ -152,11 +152,11 @@ fn exception_of(error: popnei::Error) -> PyErr {
 /// `IsADirectoryError` or the `PermissionError` of that number, and it
 /// carries the file in `filename`, where the standard library puts it.
 ///
-/// A cause that no number came with, which is an error of Rust's own, is an
-/// `OSError` with the message alone.
+/// A cause that no number came with, which is an error of Rust's own, a
+/// gzip stream that ends in the middle among them, is an `OSError` whose
+/// `errno` is `None` and whose `filename` is the file all the same: it is
+/// the file a user needs, and which of the two ways the read failed is not
+/// theirs to tell apart.
 fn os_error(number: Option<i32>, message: String, path: String) -> PyErr {
-    match number {
-        Some(number) => PyOSError::new_err((number, message, path)),
-        None => PyOSError::new_err(message),
-    }
+    PyOSError::new_err((number, message, path))
 }
