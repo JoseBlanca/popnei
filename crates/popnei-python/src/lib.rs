@@ -9,10 +9,10 @@
 
 use pyo3::prelude::*;
 
-/// The version of the core crate, `major.minor.patch`.
-///
-/// The Python package publishes it as its own `__version__`, so that a
-/// user who reports a result names the code that gave it.
+// The version of the core crate, `major.minor.patch`, which the Python
+// package publishes as its own `__version__`. A `///` comment here would
+// become the `__doc__` of `popnei._core.version`, and the documentation a
+// Python user reads belongs to the package, which is the API.
 #[pyfunction]
 fn version() -> &'static str {
     popnei::version()

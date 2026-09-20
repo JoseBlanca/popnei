@@ -1,0 +1,29 @@
+# Settings for every cargo command run inside this repository.
+
+[env]
+# What the Python binding crate builds is an extension module: a shared
+# library that Python loads, whose Python symbols are resolved by the
+# interpreter that loads it and are left undefined in the file. Without
+# this, pyo3 links the library against the libpython of whatever
+# interpreter it found, and `cargo build --workspace` fails on this Mac,
+# where the only `python3` of the PATH is Apple's 3.9 and its framework
+# ships no libpython3.9 to link: "ld: library 'python3.9' not found".
+#
+# This is the variable pyo3 0.29 reads for it, and the `extension-module`
+# cargo feature that did the same is deprecated. maturin and pyodide-build
+# set it themselves; `[env]` does not overwrite a variable that is already
+# set, so what they choose still wins. It names no interpreter, so a
+# checkout with no `.venv` yet builds and lints: pyo3 reads the version of
+# the `python3` of the PATH, and what it needs from it is which Python
+# features to compile in, not a library to link.
+PYO3_BUILD_EXTENSION_MODULE = "1"
+
+[alias]
+# The core crate has to build for the two targets of WebAssembly popnei
+# ships, `wasm32-unknown-unknown` for the wasm package and
+# `wasm32-unknown-emscripten` for the wheel of pyodide. The five commands
+# of .claude/skills/coding/SKILL.md are native, so a dependency or a line
+# that does not build for wasm would otherwise be found when the wasm
+# package or the wheel is next built, work packages later. This checks both
+# in one command.
+wasm-check = "check -p popnei --target wasm32-unknown-unknown --target wasm32-unknown-emscripten"

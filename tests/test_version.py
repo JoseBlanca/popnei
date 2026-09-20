@@ -7,6 +7,7 @@ were built together and the package imports the module that was just
 compiled.
 """
 
+import importlib.metadata
 import tomllib
 from pathlib import Path
 
@@ -27,3 +28,15 @@ def _version_of_the_core_crate() -> str:
 
 def test_the_package_version_is_the_version_of_the_core_crate() -> None:
     assert popnei.__version__ == _version_of_the_core_crate()
+
+
+def test_the_distribution_version_is_the_one_of_the_core_crate() -> None:
+    """The version of the wheel, which is a second version of its own.
+
+    maturin reads it from the manifest of the binding crate, and
+    `popnei.__version__` comes the other way, through the compiled module
+    from the core crate. The two are the same line of the workspace
+    manifest only while both crates take `version.workspace = true`, so
+    nothing but this catches a wheel published under another number.
+    """
+    assert importlib.metadata.version("popnei") == _version_of_the_core_crate()

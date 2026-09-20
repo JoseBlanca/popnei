@@ -5,6 +5,11 @@ members = ["crates/popnei", "crates/popnei-python", "crates/popnei-js"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The rustc popnei is built and tested with, and not a measured minimum:
+# no older toolchain has been tried. What the manifests use needs less,
+# 1.85 for edition 2024 and for resolver 3. Raise this line when the
+# project moves to a newer rustc, and lower it when an older one is tried
+# and passes the checks.
 rust-version = "1.98"
 repository = "https://github.com/JoseBlanca/popnei"
 
@@ -16,6 +21,9 @@ flate2 = "1"
 # The Python binding crate. The names of pyo3 change from version to
 # version, and .claude/skills/coding/pyo3.md was written from this one.
 pyo3 = "0.29.2"
+# Beside it, in the build script of the binding crate, for the link
+# arguments of an extension module. It is a part of pyo3 and moves with it.
+pyo3-build-config = "0.29.2"
 # The JavaScript binding crate. The crate writes into the wasm file what
 # the `wasm-bindgen` command line then reads to generate the JavaScript,
 # and the two refuse to work together when their versions differ, so this
