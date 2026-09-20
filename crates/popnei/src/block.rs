@@ -1614,6 +1614,70 @@ mod tests {
         }
     }
 
+    /// One variant with every field it has, which is what a block holds
+    /// when every field was asked for. The quality is `None` for a variant
+    /// that has none, where the column of a block has a NaN, so that the
+    /// comparison of two variants compares no float with another.
+    #[derive(Debug, PartialEq)]
+    struct FullVariant {
+        chrom: u32,
+        pos: u64,
+        id: String,
+        alleles: Vec<String>,
+        qual: Option<f32>,
+        gts: Vec<i8>,
+    }
+
+    /// Every field of every variant of a VCF, read one variant at a time by
+    /// the VCF reader: what the blocks of that file have to hold, joined,
+    /// whatever their size.
+    fn variants_read_one_by_one(name: &str, options: VcfOptions) -> Vec<FullVariant> {
+        let mut reader = match VcfReader::from_path(&reference_vcf(name), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{name}: {error}"),
+        };
+        reader.set_needs(Needs::ALL);
+        let mut var = Variant::new();
+        let mut variants = Vec::new();
+        loop {
+            match reader.read_variant(&mut var) {
+                Ok(true) => variants.push(FullVariant {
+                    chrom: var.chrom,
+                    pos: var.pos,
+                    id: var.id.clone(),
+                    alleles: var.alleles.clone(),
+                    qual: var.qual,
+                    gts: var.gts.clone(),
+                }),
+                Ok(false) => return variants,
+                Err(error) => panic!("{name}: the reader stopped at {error}"),
+            }
+        }
+    }
+
+    /// Every field of every variant of the blocks, joined, read through
+    /// their views.
+    fn variants_of(blocks: &[Block]) -> Vec<FullVariant> {
+        let mut variants = Vec::new();
+        for block in blocks {
+            block.check().expect("the block is of its size");
+            for view in block.variants() {
+                let num_alleles = view.num_alleles().expect("the alleles were asked for");
+                variants.push(FullVariant {
+                    chrom: view.chrom().expect("the chromosome"),
+                    pos: view.pos().expect("the position"),
+                    id: view.id().expect("the id").to_string(),
+                    alleles: (0..num_alleles)
+                        .map(|allele| view.allele(allele).unwrap_or("").to_string())
+                        .collect(),
+                    qual: view.qual().filter(|qual| !qual.is_nan()),
+                    gts: view.gts().to_vec(),
+                });
+            }
+        }
+        variants
+    }
+
     /// The variants of the blocks, joined, one by one.
     fn sites_of(blocks: &[Block]) -> Vec<Site> {
         let mut sites = Vec::new();
@@ -2290,19 +2354,46 @@ mod tests {
         },
     ];
 
+    /// The two variants of the table of `differences.vcf` of that spec,
+    /// three individuals of the ploidy 2 as well, whose alleles are of one
+    /// byte and of several: a column that moved a text by a number of
+    /// alleles where it should move it by a number of bytes gives the same
+    /// answer for every allele of one byte, and not for these.
+    const OF_SEVERAL_BYTES: [Row; 2] = [
+        Row {
+            pos: 50,
+            id: "ms1",
+            alleles: &["GTC", "G", "GTCT"],
+            qual: Some(50.0),
+            gts: [0, 1, 0, 2, MISSING, MISSING],
+        },
+        Row {
+            pos: 60,
+            id: "",
+            alleles: &["A", "<DEL>", "*"],
+            qual: None,
+            gts: [0, 1, 2, 2, 0, 0],
+        },
+    ];
+
     /// A block built by hand from the rows of that table, with every
     /// column: this is what a reader of `cases.vcf` gives, and building it
     /// here is what lets the tests of the block and of `reblock` stand on
     /// the literals of the spec without a file.
     fn cases_block(rows: &[usize]) -> Block {
+        let rows: Vec<&Row> = rows.iter().map(|row| &CASES[*row]).collect();
+        block_of(&rows)
+    }
+
+    /// A block of the rows of either table, in the order they are given.
+    fn block_of(rows: &[&Row]) -> Block {
         let mut gts = Vec::new();
         let mut chrom = Vec::new();
         let mut pos = Vec::new();
         let mut id = Vec::new();
         let mut qual = Vec::new();
         let mut alleles = AllelesColumn::with_num_vars(rows.len()).expect("the alleles");
-        for index in rows {
-            let row = &CASES[*index];
+        for row in rows {
             gts.extend_from_slice(&row.gts);
             chrom.push(0);
             pos.push(row.pos);
@@ -2333,25 +2424,37 @@ mod tests {
     }
 
     /// That a view holds the row `row` of the table of `cases.vcf`, every
-    /// field of it. The quality is compared as an `Option`, with the NaN
-    /// of a variant that has none as `None`.
+    /// field of it.
     fn assert_view_is_the_row(view: &VariantRef<'_>, row: usize) {
-        let expected = &CASES[row];
-        assert_eq!(view.gts(), expected.gts, "the genotypes of the row {row}");
-        assert_eq!(view.chrom(), Some(0), "the chromosome of the row {row}");
-        assert_eq!(
-            view.pos(),
-            Some(expected.pos),
-            "the position of the row {row}"
-        );
-        assert_eq!(view.id(), Some(expected.id), "the id of the row {row}");
+        assert_view_is(view, &CASES[row], &format!("the row {row}"));
+    }
+
+    /// That a view holds every field of `expected`. The quality is compared
+    /// as an `Option`, with the NaN of a variant that has none as `None`.
+    fn assert_view_is(view: &VariantRef<'_>, expected: &Row, name: &str) {
+        assert_eq!(view.gts(), expected.gts, "the genotypes of {name}");
+        assert_eq!(view.chrom(), Some(0), "the chromosome of {name}");
+        assert_eq!(view.pos(), Some(expected.pos), "the position of {name}");
+        assert_eq!(view.id(), Some(expected.id), "the id of {name}");
         let qual = view.qual().filter(|qual| !qual.is_nan());
-        assert_eq!(qual, expected.qual, "the quality of the row {row}");
+        assert_eq!(qual, expected.qual, "the quality of {name}");
         assert_eq!(
             alleles_of_view(view),
             expected.alleles,
-            "the alleles of the row {row}"
+            "the alleles of {name}"
         );
+    }
+
+    /// That the views of `blocks`, joined, are `rows`, in their order.
+    fn assert_views_are_the_rows(blocks: &[Block], rows: &[&Row]) {
+        let views: Vec<VariantRef<'_>> = blocks.iter().flat_map(Block::variants).collect();
+        assert_eq!(views.len(), rows.len(), "how many variants the blocks hold");
+        for (index, (view, row)) in views.iter().zip(rows).enumerate() {
+            assert_view_is(view, row, &format!("the variant {index}, counted from 0"));
+        }
+        for block in blocks {
+            block.check().expect("the block is of its size");
+        }
     }
 
     /// The views of a block are its variants in order, each with every
@@ -2721,6 +2824,73 @@ mod tests {
         );
     }
 
+    /// The six rows of the two tables, the ones whose alleles are of
+    /// several bytes among the ones whose alleles are of one: what a cut, a
+    /// join and `retain_vars` have to carry. They are interleaved so that
+    /// the alleles before any row are a different number of bytes and of
+    /// alleles, which is what tells a shift in bytes from one in alleles.
+    fn rows_of_both_tables() -> Vec<&'static Row> {
+        vec![
+            &CASES[0],
+            &OF_SEVERAL_BYTES[0],
+            &CASES[1],
+            &OF_SEVERAL_BYTES[1],
+            &CASES[2],
+            &CASES[3],
+        ]
+    }
+
+    /// A cut carries every column of the rows that leave, the alleles
+    /// among them: a column that moved a text by a number of alleles and
+    /// not by a number of bytes gives the alleles of one byte right and
+    /// these wrong.
+    #[test]
+    fn a_cut_carries_every_column_of_the_rows_it_gives() {
+        let rows = rows_of_both_tables();
+        // One block of the source with the six rows, cut into blocks of 4:
+        // the cut falls inside the rows whose alleles are of one byte, and
+        // the block that is left holds the ones of several.
+        let source = GivenBlocks::of(vec![block_of(&rows)]);
+        let mut reblock = Reblock::new(source, Some(4)).expect("the reblock");
+        let blocks = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&blocks), [4, 2]);
+        assert_views_are_the_rows(&blocks, &rows);
+    }
+
+    /// A join carries every column of the block that arrives, the alleles
+    /// among them, after the ones that were waiting.
+    #[test]
+    fn a_join_carries_every_column_of_the_blocks_it_joins() {
+        let rows = rows_of_both_tables();
+        // Six blocks of one variant each, joined into one of six.
+        let blocks = rows.iter().map(|row| block_of(&[row])).collect();
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(6)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [6]);
+        assert_views_are_the_rows(&given, &rows);
+    }
+
+    /// `retain_vars` carries every column of the variants that stay, the
+    /// alleles among them, and the variants it drops before them are what
+    /// move the texts of the ones that stay.
+    #[test]
+    fn retain_vars_keeps_the_alleles_of_the_variants_that_stay() {
+        let rows = rows_of_both_tables();
+        let mut block = block_of(&rows);
+        // A row whose alleles are of several bytes goes, and a row whose
+        // alleles are of one, so the texts of the rows that stay move over
+        // both.
+        block
+            .retain_vars(&[true, false, true, true, false, true])
+            .expect("the variants to keep");
+
+        assert_eq!(block.num_vars, 4);
+        let kept: Vec<&Row> = vec![rows[0], rows[2], rows[3], rows[5]];
+        assert_views_are_the_rows(std::slice::from_ref(&block), &kept);
+    }
+
     /// The trait says that a reader ends at its error and that a reader
     /// over another reader does not call its source again: what a source
     /// gives after an error is not the file.
@@ -2923,9 +3093,13 @@ mod tests {
             // 500 of the file are one block.
             (None, vec![500]),
         ];
-        let mut first_sites: Option<Vec<Site>> = None;
-        for (num_vars_per_block, expected) in sizes {
-            let source = collected_over("many.vcf", every_variant(), Needs::CHROM_POS, Some(100));
+        // Every field of every variant of the file, read one variant at a
+        // time by the VCF reader: what the blocks hold, joined, whatever
+        // their size.
+        let expected = variants_read_one_by_one("many.vcf", every_variant());
+        assert_eq!(expected.len(), 500);
+        for (num_vars_per_block, sizes_expected) in sizes {
+            let source = collected_over("many.vcf", every_variant(), Needs::ALL, Some(100));
             let mut reblock = Reblock::new(source, num_vars_per_block).expect("the reblock");
             let blocks = match blocks_given(&mut reblock) {
                 Ok(blocks) => blocks,
@@ -2933,19 +3107,20 @@ mod tests {
             };
             assert_eq!(
                 num_vars_of(&blocks),
-                expected,
+                sizes_expected,
                 "the variants of the blocks of {num_vars_per_block:?}"
             );
-            // The genotypes, the positions and the chromosome numbers of
-            // the blocks, joined, one variant after another.
-            let sites = sites_of(&blocks);
-            assert_eq!(sites.len(), 500);
-            match first_sites.as_ref() {
-                None => first_sites = Some(sites),
-                Some(first) => assert_eq!(
-                    &sites, first,
-                    "blocks of {num_vars_per_block:?}: the variants are not the ones of the blocks of 7"
-                ),
+            let given = variants_of(&blocks);
+            assert_eq!(
+                given.len(),
+                expected.len(),
+                "blocks of {num_vars_per_block:?}: how many variants"
+            );
+            for (index, (given, expected)) in given.iter().zip(&expected).enumerate() {
+                assert_eq!(
+                    given, expected,
+                    "blocks of {num_vars_per_block:?}: the variant {index}, counted from 0"
+                );
             }
         }
     }
