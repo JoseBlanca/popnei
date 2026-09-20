@@ -18,6 +18,15 @@ popnei = { path = "crates/popnei", version = "0.1.0" }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
+# The threads the VCF reader parses its batches of lines on, and the pool
+# every parallel loop of popnei will run on: section 3 of
+# docs/architecture.md gives rayon the records and the rows of a block, and
+# the library never builds its global pool. In wasm there are no threads,
+# so the core crate takes it under
+# [target.'cfg(not(target_family = "wasm"))'.dependencies] and the parallel
+# code is behind the same cfg, with the serial version beside it. It is
+# pure Rust and pulls in crossbeam and either, all of them pure Rust too.
+rayon = "1"
 # The error of the core crate. It writes the Display and the
 # std::error::Error of the enum from the message on each variant, so that a
 # case added by a later module cannot be a variant whose message was

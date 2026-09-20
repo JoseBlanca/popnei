@@ -10,5 +10,12 @@ repository.workspace = true
 flate2.workspace = true
 thiserror.workspace = true
 
+# The VCF reader parses the lines of a batch on the threads of rayon, and
+# in wasm, where there are no threads, it parses them one after another:
+# the parallel code is behind `cfg(not(target_family = "wasm"))` and rayon
+# is not a dependency of the two wasm targets popnei ships.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon.workspace = true
+
 [lints]
 workspace = true

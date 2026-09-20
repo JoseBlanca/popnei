@@ -60,6 +60,31 @@ const BYTES_LOOKED_AT: usize = 16;
 /// called.
 const MISSING_VALUE: &str = ".";
 
+/// How many lines the reader takes from the source before it parses them,
+/// on the threads of rayon.
+///
+/// Nobody has measured it. What bounds it from above is the memory a batch
+/// holds, the text of its lines and the variants they were parsed into: on
+/// the VCF of "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000
+/// individuals in 400 MB, a line is 4 KB and its genotypes 2000 alleles, so
+/// 1024 lines are 4 MB of text and 2 MB of genotypes. What bounds it from
+/// below is that the lines of one batch are what the threads share: on the
+/// 18 cores of the machine of that section, 1024 lines are 56 lines a
+/// thread, so a thread that starts late costs the others a fraction of the
+/// batch and not a wait for half of it. The measurement of the reader on
+/// that file is task 5.2 of `docs/plans/vcf-to-blocks.md`, and it is what
+/// says whether this is the right number.
+#[cfg(not(target_family = "wasm"))]
+const LINES_PER_BATCH: usize = 1024;
+
+/// How many lines the reader takes from the source before it parses them
+/// in wasm, where there are no threads: one, which is the reader that
+/// parses a line and hands its variant out before it reads the next. A
+/// batch there would hold the memory of its lines and buy nothing, since
+/// the same one thread parses them.
+#[cfg(target_family = "wasm")]
+const LINES_PER_BATCH: usize = 1;
+
 /// The nine first columns of the `#CHROM` line of a VCF with genotypes. The
 /// columns after them are the individuals.
 const FIRST_COLUMNS: [&str; 9] = [
@@ -213,6 +238,113 @@ impl<R: BufRead> VcfSource<R> {
     }
 }
 
+/// What one data line of the batch gave when it was parsed.
+enum LineOutcome {
+    /// No variant: the line was empty, or its FILTER says that the variant
+    /// failed a filter and the options leave those out. It is also what a
+    /// line that was handed out is left with.
+    NoVariant,
+    /// The variant in the `var` of the line.
+    Variant,
+    /// The line is wrong, and this is the error that the reader gives at
+    /// the read that would have given its variant.
+    Wrong(Error),
+}
+
+/// One line of the batch the reader parses, with the variant it gave and
+/// the buffers that the next line read into this place writes over.
+///
+/// Every line of a batch has its own, so that the threads that parse them
+/// share nothing.
+struct BatchLine {
+    /// The line as the source gave it, with its end of line.
+    text: String,
+    /// Its number in the file, counted from 1 with the lines of the header.
+    number: u64,
+    /// The name of the chromosome of its variant, which gets its number
+    /// when the variant is handed out.
+    chrom_name: String,
+    /// The variant the line was parsed into, whose `chrom` is not given
+    /// yet.
+    var: Variant,
+    /// The strings of the alleles of the variants parsed here before,
+    /// written over by the next one that asks for the alleles.
+    spare_alleles: Vec<String>,
+    /// What the line gave.
+    outcome: LineOutcome,
+}
+
+impl BatchLine {
+    /// A line with no text and no variant, which the reader adds to the
+    /// batch when it reads more lines than the batch has held so far.
+    fn new() -> BatchLine {
+        BatchLine {
+            text: String::new(),
+            number: 0,
+            chrom_name: String::new(),
+            var: Variant::new(),
+            spare_alleles: Vec::new(),
+            outcome: LineOutcome::NoVariant,
+        }
+    }
+
+    /// The variant of the text of this line, into its own variant, and what
+    /// it gave into its `outcome`.
+    ///
+    /// The variant is cleared first and the strings of the alleles it held
+    /// are kept, so that a line parsed again, and every line of the batches
+    /// that come after this one, allocates nothing.
+    fn parse(&mut self, rules: &ParseRules<'_>) {
+        let BatchLine {
+            text,
+            number,
+            chrom_name,
+            var,
+            spare_alleles,
+            outcome,
+        } = self;
+        var.clear_but_the_alleles();
+        spare_alleles.append(&mut var.alleles);
+        chrom_name.clear();
+        *outcome = match parse_data_line(
+            without_the_line_end(text),
+            *number,
+            rules,
+            var,
+            chrom_name,
+            spare_alleles,
+        ) {
+            Ok(true) => LineOutcome::Variant,
+            Ok(false) => LineOutcome::NoVariant,
+            Err(error) => LineOutcome::Wrong(error),
+        };
+    }
+}
+
+/// The lines of a batch, each parsed into the variant of its own line.
+///
+/// Natively they are parsed on the threads of rayon's global pool: no two
+/// lines share a buffer, and what depends on the order of the file, the
+/// number of the chromosome, is given later, when the variant is handed
+/// out, so neither the variants nor the numbers depend on how many threads
+/// there are. In wasm there are none and the same lines are parsed one
+/// after another; a batch there holds one line.
+#[cfg(not(target_family = "wasm"))]
+fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
+    use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+
+    lines.par_iter_mut().for_each(|line| line.parse(rules));
+}
+
+/// The lines of a batch, each parsed into the variant of its own line, one
+/// after another, which is what wasm does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
+    for line in lines {
+        line.parse(rules);
+    }
+}
+
 /// A reader over a VCF, which gives its variants one at a time.
 ///
 /// It holds the individuals of the file and the names of the chromosomes
@@ -223,20 +355,28 @@ pub struct VcfReader<R: BufRead + Send> {
     individuals: Vec<String>,
     chroms: ChromTable,
     needs: Needs,
-    /// The strings of the alleles of the variants read so far, taken out
-    /// of the variant at the start of every read and written over in the
-    /// next one that asks for the alleles.
-    spare_alleles: Vec<String>,
-    /// The line being read, with its end of line.
-    line: String,
-    /// The name of the chromosome of the line that was parsed, which gets
-    /// its number when the variant is handed out.
-    chrom_name: String,
+    /// The lines that were read together and parsed together, each with its
+    /// variant. The ones after `filled` are the lines of the batches
+    /// before, kept for their buffers.
+    batch: Vec<BatchLine>,
+    /// How many lines of the batch were read from the source.
+    filled: usize,
+    /// Which of them is the next to be handed out.
+    next: usize,
+    /// How many lines the reader reads before it parses them,
+    /// [`LINES_PER_BATCH`], which the tests lower to read a file in several
+    /// batches.
+    lines_per_batch: usize,
     /// The number of the line that was read last, counted from 1 with the
     /// lines of the header.
     line_number: u64,
-    /// Whether the source has been read to its end or gave an error. After
-    /// either, every read gives no variant.
+    /// The error of the line that could not be read, which is given after
+    /// the lines of the batch that were read before it.
+    line_error: Option<Error>,
+    /// Whether the source has been read to its end or could not be read.
+    source_done: bool,
+    /// Whether the reader gave its last variant or an error. After either,
+    /// every read gives no variant.
     finished: bool,
 }
 
@@ -277,10 +417,13 @@ impl<R: BufRead + Send> VcfReader<R> {
             individuals: Vec::new(),
             chroms: ChromTable::new(),
             needs: Needs::ALL,
-            spare_alleles: Vec::new(),
-            line: String::new(),
-            chrom_name: String::new(),
+            batch: Vec::new(),
+            filled: 0,
+            next: 0,
+            lines_per_batch: LINES_PER_BATCH,
             line_number: 0,
+            line_error: None,
+            source_done: false,
             finished: false,
         };
         reader.read_header()?;
@@ -290,11 +433,15 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// It skips the `##` lines and takes the individuals from the `#CHROM`
     /// line, which it leaves consumed, so that the next line read is the
     /// first data line.
+    ///
+    /// The line it reads into is its own: the header is read once, when the
+    /// reader is built, and the lines of the batch are not there yet.
     fn read_header(&mut self) -> Result<()> {
+        let mut line = String::new();
         loop {
-            self.line.clear();
+            line.clear();
             let number = next_line_number(self.line_number);
-            let read = self.source.read_line(&mut self.line).map_err(|error| {
+            let read = self.source.read_line(&mut line).map_err(|error| {
                 if is_not_text(&error) {
                     Error::VcfHeader {
                         problem: format!(
@@ -312,7 +459,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                 });
             }
             self.line_number = number;
-            let text = without_the_line_end(&self.line);
+            let text = without_the_line_end(&line);
             if text.starts_with("##") {
                 continue;
             }
@@ -797,46 +944,127 @@ fn error_reading_a_line(error: std::io::Error, number: u64) -> Error {
 }
 
 impl<R: BufRead + Send> VcfReader<R> {
-    /// The next variant of the file, skipping the empty lines and, when the
-    /// options ask for it, the variants that failed a filter.
-    fn next_variant(&mut self, var: &mut Variant) -> Result<bool> {
+    /// How many lines the reader takes from the source before it parses
+    /// them, which is [`LINES_PER_BATCH`] until this is called. The tests
+    /// lower it, so that a file of a few hundred lines is read in several
+    /// batches and so that one line at a time, which is what wasm reads, is
+    /// read here too. A batch holds one line at least.
+    #[cfg(test)]
+    fn set_lines_per_batch(&mut self, lines: usize) {
+        self.lines_per_batch = lines.max(1);
+    }
+
+    /// It reads the next lines of the source into the batch, over the text
+    /// and the buffers of the batch before, and parses them.
+    ///
+    /// A line that cannot be read ends the batch and its error is kept
+    /// apart, to be given after the lines that were read before it.
+    fn fill_batch(&mut self) {
         let VcfReader {
             source,
             options,
             individuals,
-            chroms,
             needs,
-            spare_alleles,
-            line,
-            chrom_name,
+            batch,
+            filled,
+            next,
+            lines_per_batch,
             line_number,
-            finished,
+            line_error,
+            source_done,
+            ..
         } = self;
-        if *finished {
-            return Ok(false);
+        *next = 0;
+        *filled = 0;
+        while *filled < *lines_per_batch {
+            if batch.len() <= *filled {
+                batch.push(BatchLine::new());
+            }
+            let Some(line) = batch.get_mut(*filled) else {
+                break;
+            };
+            line.text.clear();
+            let number = next_line_number(*line_number);
+            match source.read_line(&mut line.text) {
+                Ok(0) => {
+                    *source_done = true;
+                    break;
+                }
+                Ok(_) => {
+                    *line_number = number;
+                    line.number = number;
+                    // A batch holds `lines_per_batch` lines at most, so the
+                    // count does not reach the largest `usize`.
+                    *filled = filled.saturating_add(1);
+                }
+                Err(error) => {
+                    *line_number = number;
+                    *line_error = Some(error_reading_a_line(error, number));
+                    *source_done = true;
+                    break;
+                }
+            }
         }
         let rules = ParseRules {
             options: *options,
             needs: *needs,
             individuals,
         };
+        if let Some(lines) = batch.get_mut(..*filled) {
+            parse_lines(lines, &rules);
+        }
+    }
+
+    /// The next variant of the file, from the batch that was parsed, and
+    /// from the next batch when that one is spent: the empty lines and,
+    /// when the options ask for it, the variants that failed a filter are
+    /// the lines of the batch that give no variant.
+    fn next_variant(&mut self, var: &mut Variant) -> Result<bool> {
+        if self.finished {
+            return Ok(false);
+        }
         loop {
-            line.clear();
-            let number = next_line_number(*line_number);
-            let read = source
-                .read_line(line)
-                .map_err(|error| error_reading_a_line(error, number))?;
-            if read == 0 {
-                *finished = true;
+            while self.next < self.filled {
+                let VcfReader {
+                    chroms,
+                    batch,
+                    next,
+                    ..
+                } = self;
+                let index = *next;
+                // A batch holds `lines_per_batch` lines at most, so the
+                // count does not reach the largest `usize`.
+                *next = index.saturating_add(1);
+                let Some(line) = batch.get_mut(index) else {
+                    break;
+                };
+                // What the line gave is taken out of it: the line is left
+                // with the variant of the consumer, which the next batch
+                // written into this place clears, and with nothing to give
+                // again.
+                match std::mem::replace(&mut line.outcome, LineOutcome::NoVariant) {
+                    LineOutcome::NoVariant => {}
+                    LineOutcome::Variant => {
+                        // The name of the chromosome gets its number here,
+                        // when the variant is handed out, so that the
+                        // numbers follow the order of the file whatever the
+                        // threads did.
+                        let chrom = chroms.intern(&line.chrom_name);
+                        line.var.chrom = chrom;
+                        std::mem::swap(var, &mut line.var);
+                        return Ok(true);
+                    }
+                    LineOutcome::Wrong(error) => return Err(error),
+                }
+            }
+            if let Some(error) = self.line_error.take() {
+                return Err(error);
+            }
+            if self.source_done {
+                self.finished = true;
                 return Ok(false);
             }
-            *line_number = number;
-            chrom_name.clear();
-            let text = without_the_line_end(line);
-            if parse_data_line(text, number, &rules, var, chrom_name, spare_alleles)? {
-                var.chrom = chroms.intern(chrom_name);
-                return Ok(true);
-            }
+            self.fill_batch();
         }
     }
 }
@@ -860,12 +1088,9 @@ impl<R: BufRead + Send> fmt::Debug for VcfReader<R> {
 
 impl<R: BufRead + Send> VariantReader for VcfReader<R> {
     fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-        // The strings of the alleles are moved into the reader instead of
-        // being dropped, and `fill_alleles` writes the alleles of the next
-        // variant over them. The variant is left with none, so a read that
-        // does not fill them leaves none behind.
-        var.clear_but_the_alleles();
-        self.spare_alleles.append(&mut var.alleles);
+        // The variant of the consumer is swapped with the one of the line
+        // that is handed out, so what it held goes back into the batch and
+        // is written over there, the strings of its alleles among them.
         match self.next_variant(var) {
             Ok(true) => Ok(true),
             Ok(false) => {
@@ -893,7 +1118,33 @@ impl<R: BufRead + Send> VariantReader for VcfReader<R> {
     }
 
     fn set_needs(&mut self, needs: Needs) {
+        if needs == self.needs {
+            return;
+        }
         self.needs = needs;
+        // The lines of the batch that were read and not handed out yet were
+        // parsed for the fields that were asked for before, and the change
+        // holds from the next read on, so they are parsed again: their text
+        // is still in the batch and the parse writes over the same buffers.
+        // A line that could not be read is not one of them, and its error
+        // waits apart from the batch.
+        let VcfReader {
+            options,
+            individuals,
+            needs,
+            batch,
+            filled,
+            next,
+            ..
+        } = self;
+        let rules = ParseRules {
+            options: *options,
+            needs: *needs,
+            individuals,
+        };
+        if let Some(lines) = batch.get_mut(*next..*filled) {
+            parse_lines(lines, &rules);
+        }
     }
 }
 
@@ -1186,20 +1437,29 @@ mod tests {
         }
     }
 
+    /// The variant a reader filled, with the name that its table of
+    /// chromosomes gives to the number of that variant.
+    fn row_of(var: &Variant, reader: &impl VariantReader) -> Row {
+        Row {
+            chrom: reader
+                .chroms()
+                .name(var.chrom)
+                .unwrap_or("no name")
+                .to_string(),
+            pos: var.pos,
+            id: var.id.clone(),
+            alleles: var.alleles.clone(),
+            qual: var.qual,
+            gts: var.gts.clone(),
+        }
+    }
+
     /// Every variant a reader gives, until it has no more or it fails.
     fn rows_of(reader: &mut impl VariantReader) -> Result<Vec<Row>> {
         let mut var = Variant::new();
         let mut rows = Vec::new();
         while reader.read_variant(&mut var)? {
-            let chrom = reader.chroms().name(var.chrom).unwrap_or("no name");
-            rows.push(Row {
-                chrom: chrom.to_string(),
-                pos: var.pos,
-                id: var.id.clone(),
-                alleles: var.alleles.clone(),
-                qual: var.qual,
-                gts: var.gts.clone(),
-            });
+            rows.push(row_of(&var, reader));
         }
         Ok(rows)
     }
@@ -2137,6 +2397,122 @@ mod tests {
             let rows = rows_of_file(name, VcfOptions::default());
             assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
         }
+    }
+
+    /// The variants of `many.vcf`, each with the number its reader gave to
+    /// its chromosome, read inside a rayon pool of `threads` threads and in
+    /// batches of `lines_per_batch` lines.
+    ///
+    /// The pool is built here and is not rayon's global one, which is what
+    /// the reader uses and which has one thread per core of the machine:
+    /// `install` runs the reader on this one instead.
+    fn many_vcf_read_in_a_pool(threads: usize, lines_per_batch: usize) -> Vec<(u32, Row)> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut reader =
+                match VcfReader::from_path(&reference_vcf("many.vcf"), options(MANY_PLOIDY, false))
+                {
+                    Ok(reader) => reader,
+                    Err(error) => panic!("many.vcf: {error}"),
+                };
+            reader.set_lines_per_batch(lines_per_batch);
+            let mut var = Variant::new();
+            let mut variants = Vec::new();
+            while match reader.read_variant(&mut var) {
+                Ok(read) => read,
+                Err(error) => panic!("many.vcf: the reader stopped at {error}"),
+            } {
+                variants.push((var.chrom, row_of(&var, &reader)));
+            }
+            variants
+        })
+    }
+
+    #[test]
+    fn many_vcf_gives_the_same_variants_in_a_pool_of_one_thread_and_in_one_of_four() {
+        // 64 lines a batch, and the file has 500 data lines, so the pool of
+        // four threads parses eight batches and every thread parses lines
+        // of each.
+        let one_thread = many_vcf_read_in_a_pool(1, 64);
+        let four_threads = many_vcf_read_in_a_pool(4, 64);
+        assert_eq!(one_thread.len(), 500);
+        assert_eq!(one_thread, four_threads);
+
+        // They are the variants bcftools read, and the numbers of the
+        // chromosomes are the ones of the order of the file, whose first
+        // name is `chr1`.
+        let rows: Vec<Row> = four_threads.iter().map(|(_, row)| row.clone()).collect();
+        let reference = reference_rows("many.bcftools.tsv");
+        let expected = expected_sites(&reference, options(MANY_PLOIDY, false));
+        assert_the_same_sites(&sites_of(&rows), &expected, "many.vcf in a pool of four");
+        for (number, row) in &four_threads {
+            let expected_number = if row.chrom == "chr1" { 0 } else { 1 };
+            assert_eq!(*number, expected_number, "{} {}", row.chrom, row.pos);
+        }
+    }
+
+    #[test]
+    fn a_wrong_line_of_a_later_batch_comes_after_the_variants_that_were_read_before_it() {
+        let mut lines: Vec<String> = (1..=200)
+            .map(|pos| format!("chr1 {pos} . A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        // A haploid genotype in a file read as diploid, in the 201st data
+        // line, which is the line 204 of the file and, with batches of 64
+        // lines, is in the fourth batch and not in the first.
+        lines.push("chr1 201 . A T . PASS . GT 1 0 1".to_string());
+        lines.push("chr1 202 . A T . PASS . GT 0/0 0/1 1/1".to_string());
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let vcf = vcf_of(&lines);
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut reader = reader_over(&vcf, VcfOptions::default());
+            reader.set_lines_per_batch(64);
+            let mut var = Variant::new();
+            for pos in 1..=200 {
+                assert!(reader.read_variant(&mut var).unwrap(), "the variant {pos}");
+                assert_eq!(var.pos, pos);
+            }
+
+            let error = reader.read_variant(&mut var).unwrap_err();
+            let Error::VcfGenotypePloidy {
+                line,
+                individual,
+                found,
+                expected,
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(
+                (line, individual.as_str(), found, expected),
+                (204, "ind1", 1, 2)
+            );
+            // The good line after the wrong one was parsed in the same
+            // batch and is not given: an error ends the reader.
+            assert!(!reader.read_variant(&mut var).unwrap());
+        });
+    }
+
+    #[test]
+    fn a_file_read_one_line_at_a_time_gives_what_it_gives_in_one_batch() {
+        // A batch of one line is what wasm reads, where there are no
+        // threads, and the cargo tests are run natively.
+        let mut reader = VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default())
+            .unwrap_or_else(|error| panic!("many.vcf: {error}"));
+        reader.set_lines_per_batch(1);
+        let one_line_at_a_time = rows_of(&mut reader).unwrap();
+        assert_eq!(
+            one_line_at_a_time,
+            rows_of_file("many.vcf", VcfOptions::default())
+        );
+        assert_eq!(one_line_at_a_time.len(), 475);
     }
 
     #[test]
