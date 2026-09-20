@@ -19,3 +19,12 @@ rayon.workspace = true
 
 [lints]
 workspace = true
+
+# The timing of the VCF reader of task 5.2 of docs/plans/vcf-to-blocks.md.
+# It takes the path of a VCF, the threads and the runs on its command line
+# and prints one wall time per run, so it runs without a harness: criterion
+# times a function that is called again and again, and this one times a
+# whole read of a 400 MB file.
+[[bench]]
+name = "read_vcf"
+harness = false
