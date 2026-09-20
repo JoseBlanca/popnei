@@ -49,20 +49,19 @@ pub enum Error {
         ploidy: usize,
     },
 
-    /// Two blocks of one source do not hold the same dataset: one has
-    /// another number of individuals or another ploidy than the ones
-    /// before it. `reblock` finds it when it joins blocks, and it is a
-    /// defect of the reader it takes them from: the rows of the two cannot
-    /// be one array of variants x individuals x ploidy.
+    /// A reader gave a block of other individuals or of another ploidy
+    /// than it says its source has, so the rows of its blocks are not rows
+    /// of one array of variants x individuals x ploidy and cannot be
+    /// joined. `reblock` finds it, and it is a defect of that reader.
     #[error(
-        "the blocks of the source do not fit together: one of {found_num_individuals} individuals of the ploidy {found_ploidy} came after blocks of {num_individuals} individuals of the ploidy {ploidy}"
+        "the reader says its source has {num_individuals} individuals of the ploidy {ploidy} and gave a block of {found_num_individuals} individuals of the ploidy {found_ploidy}"
     )]
     BlocksDoNotFitTogether {
-        /// How many individuals the blocks before it have.
+        /// How many individuals the reader says its source has.
         num_individuals: usize,
-        /// How many alleles the genotype of one individual holds in them.
+        /// The ploidy the reader says its source has.
         ploidy: usize,
-        /// How many individuals the block that does not fit has.
+        /// How many individuals the block it gave has.
         found_num_individuals: usize,
         /// How many alleles the genotype of one individual holds in it.
         found_ploidy: usize,

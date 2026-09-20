@@ -77,8 +77,9 @@ const FIELDS_OF_THE_NAMES: [(&str, Needs); 5] = [
     ("qual", Needs::QUAL),
 ];
 
-/// The fields a collector has to be asked for to fill the columns that
-/// `names` name, the genotypes among them, which every block holds.
+/// The fields a reader has to be asked for to fill the columns that
+/// `names` name, the genotypes among them, which every block a user gets
+/// holds.
 ///
 /// It is what the binding crates call with the names their user gave, so
 /// that one list of names serves Python and TypeScript and a column added
@@ -145,12 +146,22 @@ impl AllelesColumn {
     /// `num_vars` variants of [`ALLELES_PER_VARIANT`] alleles of
     /// [`BYTES_PER_ALLELE`] bytes.
     ///
+    /// Every reader of the crate that fills the alleles of a block starts
+    /// its column here, with the variants a full block holds, and then
+    /// pushes the alleles of one variant after another with
+    /// [`AllelesColumn::push`]. The memory is asked for with `try_reserve`,
+    /// which gives it back as an error: `Vec::with_capacity` ends the
+    /// process when the machine has not the memory, and a size that a
+    /// caller of popnei wrote reaches it.
+    ///
     /// # Errors
     ///
     /// When the machine does not give the memory of the buffers, which the
-    /// collector turns into the error of the crate that names the size that
+    /// reader turns into the error of the crate that names the size that
     /// was asked for.
-    fn with_num_vars(num_vars: usize) -> std::result::Result<AllelesColumn, TryReserveError> {
+    pub(crate) fn with_num_vars(
+        num_vars: usize,
+    ) -> std::result::Result<AllelesColumn, TryReserveError> {
         // A number of variants that makes these saturate is far above what
         // any machine gives, and the reservation of it is the error.
         let num_alleles = num_vars.saturating_mul(ALLELES_PER_VARIANT);
@@ -168,8 +179,17 @@ impl AllelesColumn {
         })
     }
 
-    /// The alleles of one more variant, at the end of the column.
-    fn push(&mut self, alleles: &[String]) {
+    /// The alleles of one more variant, at the end of the column, the
+    /// reference allele first and then the alternative ones, as the source
+    /// gives their texts. It is how a reader fills a column, one variant
+    /// after another and in the order of the block.
+    ///
+    /// The buffers grow when the alleles of a block are more, or longer,
+    /// than [`AllelesColumn::with_num_vars`] reserved for, and growing is
+    /// what `Vec` does with a memory it is not given: an allocation that
+    /// fails here ends the process. A reader that reserves for the block it
+    /// builds does not reach it.
+    pub(crate) fn push(&mut self, alleles: &[String]) {
         for allele in alleles {
             self.texts.extend_from_slice(allele.as_bytes());
             self.allele_ends.push(self.texts.len());
@@ -374,15 +394,20 @@ impl AllelesColumn {
 
 /// A run of consecutive variants of one source, held as arrays.
 ///
-/// A column other than the genotypes is there only when the collector was
-/// asked for it, and `None` when it was not. The number of a chromosome is
-/// a number of the table of the reader the block came from, and that table
-/// grows while the source is read, so the name of a number is looked up
-/// after the block was collected.
+/// A column other than the genotypes is there only when the reader was
+/// asked for it, and `None` when it was not or when its source has no such
+/// field. The number of a chromosome is a number of the table of the reader
+/// the block came from, and that table grows while the source is read, so
+/// the name of a number is looked up after the block was given.
+///
+/// The fields are public, because every reader builds blocks, so a reader
+/// with a defect can build one whose arrays are not of its size.
+/// [`Block::check`] is what says whether a block keeps them.
 #[derive(Debug)]
 pub struct Block {
-    /// How many variants the block holds, which is the number that was
-    /// asked for except in the last block of a source.
+    /// How many variants the block holds. A reader that was given a size
+    /// gives that many, the last block of a source aside; a filter and the
+    /// reader of a vars file give the blocks the size their work leaves.
     pub num_vars: usize,
     /// How many individuals the source has, the same for every variant.
     pub num_individuals: usize,
@@ -395,7 +420,7 @@ pub struct Block {
     /// that was not called.
     pub gts: Vec<i8>,
     /// The number of the chromosome of each variant, in the
-    /// [`ChromTable`](crate::variant::ChromTable) of the reader the block
+    /// [`ChromTable`] of the reader the block
     /// came from.
     pub chrom: Option<Vec<u32>>,
     /// The position of each variant, 1 based as in a VCF.
@@ -418,23 +443,37 @@ impl Block {
     /// `asked_for.difference(block.fields())`.
     #[must_use]
     pub fn fields(&self) -> Needs {
+        // Every field of the block is named here, and in the five other
+        // places that read them all, so that a column added later does not
+        // fall out of one of them without the compiler saying so.
+        let Block {
+            num_vars,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = self;
         let mut fields = Needs::empty();
-        if !self.gts.is_empty() || self.num_vars == 0 {
+        if !gts.is_empty() || *num_vars == 0 {
             fields |= Needs::GTS;
         }
         // The chromosome and the position are one field, and a block that
         // holds one of the two columns and not the other is a block that
         // `check` does not look at: it holds neither field.
-        if self.chrom.is_some() && self.pos.is_some() {
+        if chrom.is_some() && pos.is_some() {
             fields |= Needs::CHROM_POS;
         }
-        if self.id.is_some() {
+        if id.is_some() {
             fields |= Needs::ID;
         }
-        if self.alleles.is_some() {
+        if alleles.is_some() {
             fields |= Needs::ALLELES;
         }
-        if self.qual.is_some() {
+        if qual.is_some() {
             fields |= Needs::QUAL;
         }
         fields
@@ -447,19 +486,32 @@ impl Block {
     /// It is not [`Block::fields`]: that one answers what a consumer can
     /// read, and puts the chromosome and the position together.
     fn columns(&self) -> [bool; 6] {
+        let Block {
+            num_vars: _,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = self;
         [
-            !self.gts.is_empty(),
-            self.chrom.is_some(),
-            self.pos.is_some(),
-            self.id.is_some(),
-            self.alleles.is_some(),
-            self.qual.is_some(),
+            !gts.is_empty(),
+            chrom.is_some(),
+            pos.is_some(),
+            id.is_some(),
+            alleles.is_some(),
+            qual.is_some(),
         ]
     }
 
     /// How many alleles one variant of the block holds, the individuals
-    /// times the ploidy, or the error of a block that cannot be.
-    fn gts_per_var(&self) -> Result<usize> {
+    /// times the ploidy, or the error of a block that cannot be. They are
+    /// alleles and not genotypes: a genotype is the `ploidy` alleles of one
+    /// individual, as `docs/glossary.md` has it.
+    fn alleles_per_var(&self) -> Result<usize> {
         self.num_individuals
             .checked_mul(self.ploidy)
             .ok_or(Error::BlockTooLarge {
@@ -472,9 +524,13 @@ impl Block {
     /// The views of the variants of the block, in order.
     ///
     /// A view allocates nothing: its genotypes are a slice of `gts` and its
-    /// other fields are read out of the columns. A block whose arrays are
-    /// not of its size, which [`Block::check`] finds, gives the views up to
-    /// the first variant that is not in them.
+    /// other fields are read out of the columns.
+    ///
+    /// A block whose arrays are not of its size gives the views up to the
+    /// first variant that is not in them and then stops, with no error, so
+    /// a consumer whose blocks come from a reader with no [`Reblock`] and
+    /// no binding crate in between calls [`Block::check`] first: both of
+    /// those check every block they pass on.
     pub fn variants(&self) -> impl Iterator<Item = VariantRef<'_>> {
         (0..self.num_vars).map_while(|var| self.variant(var))
     }
@@ -483,38 +539,39 @@ impl Block {
     /// `None` when the block has no such variant.
     #[must_use]
     pub fn variant(&self, var: usize) -> Option<VariantRef<'_>> {
-        if var >= self.num_vars {
+        let Block {
+            num_vars,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = self;
+        if var >= *num_vars {
             return None;
         }
-        let gts = match self.gts.is_empty() {
+        let gts = match gts.is_empty() {
             // A block built without the genotypes: every view has none.
             true => &[][..],
             false => {
-                let gts_per_var = self.gts_per_var().ok()?;
-                let start = var.checked_mul(gts_per_var)?;
-                let end = start.checked_add(gts_per_var)?;
-                self.gts.get(start..end)?
+                let alleles_per_var = self.alleles_per_var().ok()?;
+                let start = var.checked_mul(alleles_per_var)?;
+                let end = start.checked_add(alleles_per_var)?;
+                gts.get(start..end)?
             }
         };
         Some(VariantRef::new(
             gts,
-            self.chrom
-                .as_ref()
-                .and_then(|column| column.get(var))
-                .copied(),
-            self.pos
-                .as_ref()
-                .and_then(|column| column.get(var))
-                .copied(),
-            self.id
-                .as_ref()
+            chrom.as_ref().and_then(|column| column.get(var)).copied(),
+            pos.as_ref().and_then(|column| column.get(var)).copied(),
+            id.as_ref()
                 .and_then(|column| column.get(var))
                 .map(String::as_str),
-            self.qual
-                .as_ref()
-                .and_then(|column| column.get(var))
-                .copied(),
-            self.alleles.as_ref().map(|column| (column, var)),
+            qual.as_ref().and_then(|column| column.get(var)).copied(),
+            alleles.as_ref().map(|column| (column, var)),
         ))
     }
 
@@ -541,32 +598,43 @@ impl Block {
         // The rows are moved by their place in `gts`, so the arrays have to
         // be of the size the block says before any of them is touched.
         self.check()?;
-        let gts_per_var = self.gts_per_var()?;
-        if !self.gts.is_empty() {
+        let alleles_per_var = self.alleles_per_var()?;
+        let Block {
+            num_vars,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = self;
+        if !gts.is_empty() {
             let mut write = 0usize;
             for (var, keep_it) in keep.iter().enumerate() {
                 if !*keep_it {
                     continue;
                 }
                 // Every one of these is a place in `gts`, which `check`
-                // just said holds num_vars x gts_per_var alleles.
-                let read = var.saturating_mul(gts_per_var);
-                let end = read.saturating_add(gts_per_var);
-                if end <= self.gts.len() {
-                    self.gts.copy_within(read..end, write);
+                // just said holds num_vars x alleles_per_var alleles.
+                let read = var.saturating_mul(alleles_per_var);
+                let end = read.saturating_add(alleles_per_var);
+                if end <= gts.len() {
+                    gts.copy_within(read..end, write);
                 }
-                write = write.saturating_add(gts_per_var);
+                write = write.saturating_add(alleles_per_var);
             }
-            self.gts.truncate(write);
+            gts.truncate(write);
         }
-        retain_in_column(self.chrom.as_mut(), keep);
-        retain_in_column(self.pos.as_mut(), keep);
-        retain_in_column(self.id.as_mut(), keep);
-        retain_in_column(self.qual.as_mut(), keep);
-        if let Some(alleles) = self.alleles.as_mut() {
+        retain_in_column(chrom.as_mut(), keep);
+        retain_in_column(pos.as_mut(), keep);
+        retain_in_column(id.as_mut(), keep);
+        retain_in_column(qual.as_mut(), keep);
+        if let Some(alleles) = alleles.as_mut() {
             alleles.retain_vars(keep);
         }
-        self.num_vars = keep.iter().filter(|keep_it| **keep_it).count();
+        *num_vars = keep.iter().filter(|keep_it| **keep_it).count();
         Ok(())
     }
 
@@ -586,40 +654,48 @@ impl Block {
     /// When an array is not of the size of the block: the error names the
     /// array, how many entries it holds and how many the block says.
     pub fn check(&self) -> Result<()> {
-        let gts_per_var = self.gts_per_var()?;
-        let gts_of_the_block =
-            self.num_vars
-                .checked_mul(gts_per_var)
+        let alleles_per_var = self.alleles_per_var()?;
+        let Block {
+            num_vars,
+            num_individuals,
+            ploidy,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = self;
+        let alleles_of_the_block =
+            num_vars
+                .checked_mul(alleles_per_var)
                 .ok_or(Error::BlockTooLarge {
-                    num_vars_per_block: self.num_vars,
-                    num_individuals: self.num_individuals,
-                    ploidy: self.ploidy,
+                    num_vars_per_block: *num_vars,
+                    num_individuals: *num_individuals,
+                    ploidy: *ploidy,
                 })?;
-        if !self.gts.is_empty() && self.gts.len() != gts_of_the_block {
+        if !gts.is_empty() && gts.len() != alleles_of_the_block {
             return Err(Error::BlockArrayOfAnotherSize {
                 array: "gts",
-                found: self.gts.len(),
-                expected: gts_of_the_block,
+                found: gts.len(),
+                expected: alleles_of_the_block,
             });
         }
         let lengths = [
-            ("chrom", self.chrom.as_ref().map(Vec::len)),
-            ("pos", self.pos.as_ref().map(Vec::len)),
-            ("id", self.id.as_ref().map(Vec::len)),
-            ("qual", self.qual.as_ref().map(Vec::len)),
-            (
-                "alleles",
-                self.alleles.as_ref().map(AllelesColumn::num_vars),
-            ),
+            ("chrom", chrom.as_ref().map(Vec::len)),
+            ("pos", pos.as_ref().map(Vec::len)),
+            ("id", id.as_ref().map(Vec::len)),
+            ("qual", qual.as_ref().map(Vec::len)),
+            ("alleles", alleles.as_ref().map(AllelesColumn::num_vars)),
         ];
         for (array, length) in lengths {
             if let Some(length) = length
-                && length != self.num_vars
+                && length != *num_vars
             {
                 return Err(Error::BlockArrayOfAnotherSize {
                     array,
                     found: length,
-                    expected: self.num_vars,
+                    expected: *num_vars,
                 });
             }
         }
@@ -653,6 +729,21 @@ fn retain_in_column<T>(column: Option<&mut Vec<T>>, keep: &[bool]) {
 ///   another reader does not call its source again. A reader that went on
 ///   would give the variants that follow a wrong one as if nothing had
 ///   happened.
+/// - Every block it gives passes [`Block::check`]: its genotypes are its
+///   variants times its individuals times its ploidy, or none, and every
+///   column it holds has one entry for each variant.
+/// - Every block has the individuals of `individuals` and the ploidy of
+///   `ploidy`, the same for every block of one pass.
+/// - The chromosomes and the positions are two columns and one field: a
+///   block holds both or neither, since [`Block::fields`] reports neither
+///   when one of the two is missing.
+///
+/// [`Reblock`] gives each of those of the blocks of its source, and both
+/// binding crates check a block before its genotypes cross to numpy or to
+/// an `Int8Array`. A consumer that takes its blocks from a reader without
+/// one of those in between calls [`Block::check`] itself before it walks
+/// [`Block::variants`], which on a block whose arrays are too short stops
+/// early and says nothing.
 ///
 /// It can be used as a boxed trait object, `Box<dyn BlockReader>`, which is
 /// how the two binding crates hold their reader, because neither a pyo3
@@ -775,8 +866,8 @@ impl<R: BlockReader> Reblock<R> {
             num_individuals,
             ploidy,
         };
-        let gts_per_var = num_individuals.checked_mul(ploidy).ok_or_else(too_large)?;
-        gts_per_var
+        let alleles_per_var = num_individuals.checked_mul(ploidy).ok_or_else(too_large)?;
+        alleles_per_var
             .checked_mul(num_vars_per_block)
             .ok_or_else(too_large)?;
         Ok(Reblock {
@@ -825,17 +916,28 @@ impl<R: BlockReader> Reblock<R> {
     /// The rows of `block` after the ones of `waiting`, which have the same
     /// columns: one copy of each column and none per variant.
     fn join(&self, waiting: &mut Block, block: Block) -> Result<()> {
+        let Block {
+            num_vars: arrived,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = block;
         let num_vars = waiting
             .num_vars
-            .checked_add(block.num_vars)
+            .checked_add(arrived)
             .ok_or_else(|| self.too_large())?;
-        try_extend(&mut waiting.gts, block.gts).map_err(|_| self.too_large())?;
-        try_extend_column(waiting.chrom.as_mut(), block.chrom).map_err(|_| self.too_large())?;
-        try_extend_column(waiting.pos.as_mut(), block.pos).map_err(|_| self.too_large())?;
-        try_extend_column(waiting.id.as_mut(), block.id).map_err(|_| self.too_large())?;
-        try_extend_column(waiting.qual.as_mut(), block.qual).map_err(|_| self.too_large())?;
-        if let (Some(waiting), Some(block)) = (waiting.alleles.as_mut(), block.alleles.as_ref()) {
-            waiting.try_append(block).map_err(|_| self.too_large())?;
+        try_extend(&mut waiting.gts, gts).map_err(|_| self.too_large())?;
+        try_extend_column(waiting.chrom.as_mut(), chrom).map_err(|_| self.too_large())?;
+        try_extend_column(waiting.pos.as_mut(), pos).map_err(|_| self.too_large())?;
+        try_extend_column(waiting.id.as_mut(), id).map_err(|_| self.too_large())?;
+        try_extend_column(waiting.qual.as_mut(), qual).map_err(|_| self.too_large())?;
+        if let (Some(waiting), Some(arrived)) = (waiting.alleles.as_mut(), alleles.as_ref()) {
+            waiting.try_append(arrived).map_err(|_| self.too_large())?;
         }
         waiting.num_vars = num_vars;
         Ok(())
@@ -1067,11 +1169,11 @@ fn take_rows(
 ) -> std::result::Result<Block, TryReserveError> {
     // The block passed `check` when it was taken, so its arrays hold its
     // variants and these places are in them.
-    let gts_per_var = block.num_individuals.saturating_mul(block.ploidy);
+    let alleles_per_var = block.num_individuals.saturating_mul(block.ploidy);
     let mut gts = Vec::new();
     if !block.gts.is_empty() {
-        let start = from.saturating_mul(gts_per_var);
-        let end = start.saturating_add(count.saturating_mul(gts_per_var));
+        let start = from.saturating_mul(alleles_per_var);
+        let end = start.saturating_add(count.saturating_mul(alleles_per_var));
         let rows = block.gts.get(start..end).unwrap_or(&[]);
         gts.try_reserve_exact(rows.len())?;
         gts.extend_from_slice(rows);

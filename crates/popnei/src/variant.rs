@@ -35,7 +35,7 @@ pub const MISSING_ALLELE: i8 = -1;
 pub const MAX_ALLELE: i8 = i8::MAX;
 
 /// The name of each field, for the messages. In the order of the bits.
-const FIELD_NAMES: [(Needs, &str); 5] = [
+const NAMES_OF_THE_NEEDS: [(Needs, &str); 5] = [
     (Needs::GTS, "gts"),
     (Needs::CHROM_POS, "chrom and pos"),
     (Needs::ID, "id"),
@@ -128,7 +128,7 @@ impl fmt::Display for Needs {
     /// five is `chrom and pos`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut written = false;
-        for (field, name) in FIELD_NAMES {
+        for (field, name) in NAMES_OF_THE_NEEDS {
             if self.contains(field) {
                 if written {
                     formatter.write_str(", ")?;
@@ -378,8 +378,15 @@ impl<'a> VariantRef<'a> {
         self.id
     }
 
-    /// The quality of the variant, phred scaled as the QUAL of a VCF, and
-    /// NaN when the variant has none.
+    /// The quality of the variant, phred scaled as the QUAL of a VCF:
+    /// minus ten times the base ten logarithm of the probability that
+    /// there is no variant at that site, so 30 is one in a thousand.
+    ///
+    /// It is NaN for a variant whose source gives no quality, which is
+    /// what the column of a block holds for one, so a caller asks
+    /// `is_nan` before it compares the quality or puts it in a sum: NaN
+    /// travels through arithmetic and comes out at the end with nothing
+    /// to say where it came from.
     #[must_use]
     pub fn qual(&self) -> Option<f32> {
         self.qual
