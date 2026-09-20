@@ -541,8 +541,20 @@ pub enum VcfPlace {
 
 The reader. `new` reads the header, so the individuals are known when it
 returns, and it fails when the source is not a VCF with genotypes, the
-ploidy is out of range, or the size of the blocks is one that
-`docs/specs/block.md` refuses.
+ploidy is out of range, or the size of the blocks that the caller asked
+for is one that `docs/specs/block.md` refuses: 0 variants, or a block of
+more genotypes than a `usize` holds.
+
+A `num_vars_per_block` of `None`, the size that popnei chooses, is not
+checked there but when the first block is built, and the error is the same
+one. So a caller that opens a file to read its individuals, which is what
+`open_vcf` and `openVcf` do, never fails for a size that nobody asked for:
+a header of 170000 individuals read with the ploidy 255 gives a default
+block of 100 variants whose genotypes are more than the 4295 million that a
+`usize` holds in wasm, and such a file is opened, its individuals read, and
+its blocks then asked for in a size that fits. It was decided here, when a
+review of the binding crates found that file refused at `openVcf` although
+blocks of ten of its variants are read.
 
 ```rust
 pub struct VcfReader<R: BufRead + Send> { /* private */ }
