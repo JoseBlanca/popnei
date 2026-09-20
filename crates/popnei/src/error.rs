@@ -26,10 +26,10 @@ pub enum Error {
         fields: Needs,
     },
 
-    /// A collector of blocks was asked for blocks of 0 variants. A block
-    /// holds one variant at least, and the caller that wants the size
-    /// popnei chooses asks for none instead of asking for 0.
-    #[error("a collector was asked for blocks of 0 variants, and a block holds 1 variant at least")]
+    /// A reader that takes a size was asked for blocks of 0 variants. A
+    /// block holds one variant at least, and the caller that wants the
+    /// size popnei chooses asks for none instead of asking for 0.
+    #[error("a reader was asked for blocks of 0 variants, and a block holds 1 variant at least")]
     BlockOfNoVariants,
 
     /// A block of that many variants needs more memory than the machine
@@ -47,6 +47,57 @@ pub enum Error {
         num_individuals: usize,
         /// How many alleles the genotype of one individual holds.
         ploidy: usize,
+    },
+
+    /// Two blocks of one source do not hold the same dataset: one has
+    /// another number of individuals or another ploidy than the ones
+    /// before it. `reblock` finds it when it joins blocks, and it is a
+    /// defect of the reader it takes them from: the rows of the two cannot
+    /// be one array of variants x individuals x ploidy.
+    #[error(
+        "the blocks of the source do not fit together: one of {found_num_individuals} individuals of the ploidy {found_ploidy} came after blocks of {num_individuals} individuals of the ploidy {ploidy}"
+    )]
+    BlocksDoNotFitTogether {
+        /// How many individuals the blocks before it have.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds in them.
+        ploidy: usize,
+        /// How many individuals the block that does not fit has.
+        found_num_individuals: usize,
+        /// How many alleles the genotype of one individual holds in it.
+        found_ploidy: usize,
+    },
+
+    /// An array of a block is not of the size the block says: its
+    /// genotypes are not its variants times its individuals times its
+    /// ploidy, or a column has not one entry for each variant. The fields
+    /// of a block are public, so a reader with a defect can build one, and
+    /// its genotypes would be read one at the place of another with
+    /// nothing to show it. `Block::check` is what finds it.
+    #[error(
+        "the `{array}` of a block holds {found} entries, and a block of its size holds {expected}"
+    )]
+    BlockArrayOfAnotherSize {
+        /// The array that is not of the size of the block: `gts` or the
+        /// name of a column.
+        array: &'static str,
+        /// How many entries it holds.
+        found: usize,
+        /// How many it has to hold.
+        expected: usize,
+    },
+
+    /// A filter gave `Block::retain_vars` a number of values other than
+    /// the variants of the block. There is one value for each variant, and
+    /// the block is left as it was.
+    #[error(
+        "the variants to keep are {found} values and the block has {num_vars} variants; there is one value for each variant of the block"
+    )]
+    KeepOfAnotherSize {
+        /// How many values were given.
+        found: usize,
+        /// How many variants the block holds.
+        num_vars: usize,
     },
 
     /// A name that was given for a column of a block is not one of the

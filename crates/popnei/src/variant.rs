@@ -10,13 +10,20 @@
 //!
 //! A consumer says with a [`Needs`] which fields it wants, and the reader
 //! may skip the rest; after each read the variant says in its `filled`
-//! which fields it really holds. `docs/specs/variant.md` has the design and
-//! section 1 of `docs/architecture.md` the reasons for it.
+//! which fields it really holds.
+//!
+//! A calculation that works variant by variant does not read a [`Variant`]
+//! but a [`VariantRef`], the view of one variant of a block, which
+//! allocates nothing: [`Variant`] and its trait go out with the record
+//! level, in work package 3 of `docs/plans/block-readers.md`.
+//! `docs/specs/variant.md` has the design and section 1 of
+//! `docs/architecture.md` the reasons for it.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
+use crate::block::AllelesColumn;
 use crate::error::Result;
 
 /// An allele that was not called, `.` in a VCF.
@@ -292,6 +299,111 @@ impl Variant {
 impl Default for Variant {
     fn default() -> Variant {
         Variant::new()
+    }
+}
+
+/// One variant of a block: its genotypes and its other fields as they lie
+/// in the arrays of that block.
+///
+/// A calculation that works variant by variant walks
+/// [`Block::variants`](crate::block::Block::variants), and the row helpers
+/// take this view. It allocates nothing and copies nothing: every field is
+/// a number or a slice of the block it came from.
+///
+/// Every method but [`VariantRef::gts`] gives `None` when the block has no
+/// such column, which is a column that nobody asked for or that the source
+/// could not give.
+#[derive(Debug, Clone, Copy)]
+pub struct VariantRef<'a> {
+    gts: &'a [i8],
+    chrom: Option<u32>,
+    pos: Option<u64>,
+    id: Option<&'a str>,
+    qual: Option<f32>,
+    /// The alleles of the whole block, and which variant of them this is:
+    /// the texts of one variant are not a slice of a column.
+    alleles: Option<(&'a AllelesColumn, usize)>,
+}
+
+impl<'a> VariantRef<'a> {
+    /// The view of one variant, which only the `block` module builds: the
+    /// fields of a variant are read out of the columns of its block, and a
+    /// view that another crate could build would not be a view of one.
+    pub(crate) fn new(
+        gts: &'a [i8],
+        chrom: Option<u32>,
+        pos: Option<u64>,
+        id: Option<&'a str>,
+        qual: Option<f32>,
+        alleles: Option<(&'a AllelesColumn, usize)>,
+    ) -> VariantRef<'a> {
+        VariantRef {
+            gts,
+            chrom,
+            pos,
+            id,
+            qual,
+            alleles,
+        }
+    }
+
+    /// The genotypes of the variant, num_individuals x ploidy alleles,
+    /// individual after individual: the alleles of the individual i are
+    /// `gts[i * ploidy .. (i + 1) * ploidy]`. 0 is the reference allele, 1
+    /// up to [`MAX_ALLELE`] the alternative ones, and [`MISSING_ALLELE`] an
+    /// allele that was not called.
+    ///
+    /// Empty when the block was built without the genotypes.
+    #[must_use]
+    pub fn gts(&self) -> &'a [i8] {
+        self.gts
+    }
+
+    /// The number of the chromosome of the variant, in the [`ChromTable`]
+    /// of the reader the block came from.
+    #[must_use]
+    pub fn chrom(&self) -> Option<u32> {
+        self.chrom
+    }
+
+    /// The position of the variant, 1 based as in a VCF.
+    #[must_use]
+    pub fn pos(&self) -> Option<u64> {
+        self.pos
+    }
+
+    /// The id of the variant, empty when the variant has none.
+    #[must_use]
+    pub fn id(&self) -> Option<&'a str> {
+        self.id
+    }
+
+    /// The quality of the variant, phred scaled as the QUAL of a VCF, and
+    /// NaN when the variant has none.
+    #[must_use]
+    pub fn qual(&self) -> Option<f32> {
+        self.qual
+    }
+
+    /// How many alleles the variant has, the reference one among them.
+    #[must_use]
+    pub fn num_alleles(&self) -> Option<usize> {
+        self.alleles.map(|(column, var)| column.num_alleles(var))
+    }
+
+    /// The text of one allele of the variant, as the source gave it: `A`,
+    /// `<DEL>`, `*`. The allele 0 is the reference one.
+    ///
+    /// `None` for an allele the variant does not have, as for a block that
+    /// holds no alleles.
+    #[must_use]
+    pub fn allele(&self, allele: usize) -> Option<&'a str> {
+        let (column, var) = self.alleles?;
+        let text = column.allele(var, allele);
+        match text.is_empty() {
+            true => None,
+            false => Some(text),
+        }
     }
 }
 
