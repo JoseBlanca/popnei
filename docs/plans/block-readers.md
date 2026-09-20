@@ -266,7 +266,7 @@ describes, no more. The three revised specs.
 
 **Tasks.**
 
-- [ ] 2.1 In the core: `BlockReader`, the methods that `Block` gains,
+- [x] 2.1 In the core: `BlockReader`, the methods that `Block` gains,
   the view of one variant, `Reblock`, the cases of the error that they
   add, and their tests; and a reader, marked as one that goes in work
   package 3, that gives the blocks of the `BlockCollector` that exists,

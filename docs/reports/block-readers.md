@@ -102,3 +102,16 @@ corrected them: "Tests" of the `coding` skill, which had pyNei as a path
 dependency, and `pyo3.md` beside it, which described a newtype with a
 `From` for each error type of the core where the binding crate has an
 enum with one case for the one error of the core.
+
+### The review
+
+One reviewer, `spec`, in a worktree of its own at a16ea06, 63 thousand
+tokens: the work package has no code to break, so `tests` had nothing to
+run, and the numbers its commits claim are few and were checked by the
+orchestrator above. It confirmed by running them: the `LICENSE` is the
+MIT text of SPDX, whole; the native wheel and the source distribution
+that maturin builds, the wheel of pyodide and the tarball of npm from a
+fresh checkout all carry it; `uv sync` in a tree that never saw the
+owner's path installs pyNei from GitHub at ef0ca6e, and pytest gives `38
+passed` there.
+
