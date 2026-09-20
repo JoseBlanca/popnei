@@ -58,3 +58,47 @@ runs" of `docs/specs/io_vcf.md` decides; task 1.1 corrects section 8 of
 because `memchr` is not a dependency today and 2.3 writes the manifest of
 the core crate and `Cargo.lock`, and 2.6 runs after 2.5; tasks 2.4 and
 2.5 name "The Rust interface" of the VCF reader spec.
+
+## Work package 1: the five decisions
+
+Tasks 1.1 and 1.2 went to one subagent in one prompt, since both are
+small: commits 8ca8935 and a16ea06, 113 thousand tokens and 7 minutes.
+
+### The deliverables, run by the orchestrator at a16ea06
+
+1. The license. `LICENSE` at the root starts with `MIT License` and
+   `Copyright (c) 2026 Jose Blanca`; `cargo metadata --no-deps
+   --format-version 1` gives `MIT` for `popnei`, `popnei-python` and
+   `popnei-js`, which take it from the workspace manifest;
+   `pyproject.toml` has `license = "MIT"` and `license-files`, and
+   `js/popnei/package.json` `"license": "MIT"`; the wheel of pyodide holds
+   `popnei-0.1.0.dist-info/licenses/LICENSE`, and `npm pack --dry-run` in
+   `js/popnei` lists `LICENSE` among its 21 files. npm packs the files of
+   the directory of the package and leaves a symbolic link out, so a
+   `prepack` script copies the `LICENSE` of the root beside
+   `package.json` before every pack, and `.gitignore` holds that copy:
+   git has one `LICENSE`.
+2. pyNei by its repository. `pyproject.toml` has pyNei as a git source of
+   uv at ef0ca6e177be5a18c2dba1cc78901940ad847cf9; `grep -n "Users/jose"
+   pyproject.toml uv.lock` finds nothing; `uv sync`, `uv run maturin
+   develop` and `uv run pytest -k pynei` give `8 passed, 30 deselected`,
+   and the whole of pytest `38 passed`; `grep -rn "path dependency"
+   docs/objectives.md docs/architecture.md` finds nothing.
+3. The `coding` skill. "Errors, and no panics" says that the core crate
+   has one error enum, `non_exhaustive`, to which each module adds its
+   cases, with the owner's two reasons, and how each binding crate turns
+   it into what its language throws, in `errors.rs` of each. The
+   orchestrator read the paragraph against the code: the two files, the
+   enums `PyPopneiError` and `JsPopneiError`, and the cases it names are
+   there.
+
+### What was changed in the plan, and what the tasks did beyond it
+
+`.claude/skills/code-review/categories.md` asked a reviewer of errors for
+one error type per operation, so a reviewer would have reported the single
+enum as a defect; the orchestrator added its correction to task 1.2.
+The subagent found two more places that said what the tasks correct, and
+corrected them: "Tests" of the `coding` skill, which had pyNei as a path
+dependency, and `pyo3.md` beside it, which described a newtype with a
+`From` for each error type of the core where the binding crate has an
+enum with one case for the one error of the core.

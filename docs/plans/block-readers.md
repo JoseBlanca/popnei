@@ -179,13 +179,13 @@ panics", for one error type for each operation.
 
 **Tasks.**
 
-- [ ] 1.1 The license and the dependency on pyNei: the `LICENSE` file,
+- [x] 1.1 The license and the dependency on pyNei: the `LICENSE` file,
   the field in the workspace manifest, in `pyproject.toml` and in
   `package.json`; pyNei as a git source of uv at ef0ca6e, with the
   comment of `pyproject.toml` that explains the absolute path replaced;
   the sentence of objective 1 of `docs/objectives.md` and the one of
   section 8 of `docs/architecture.md`. Serves deliverables 1 and 2.
-- [ ] 1.2 The paragraph of the `coding` skill, written as the `writing`
+- [x] 1.2 The paragraph of the `coding` skill, written as the `writing`
   skill asks, with the reasons the owner took: one type is what the two
   bindings map, and `non_exhaustive` lets a module add a case without
   breaking a caller. The line of "errors" in
