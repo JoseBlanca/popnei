@@ -150,6 +150,28 @@ const LINES_PER_BATCH: usize = 1;
 /// one line whatever its bytes are.
 const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
 
+/// How many bytes of the file [`VcfReader::from_path`] holds between two
+/// calls to the file system, for the callers that give a path and not a
+/// source of their own.
+///
+/// Every line the reader takes comes out of this buffer, and a buffer that
+/// runs out is a call to the file system that the thread reading the lines
+/// waits for. On 18 threads that wait is a large part of the time, since
+/// the lines are read serially while the rows are parsed side by side.
+/// Measured on 21 September 2026 on the owner's Apple M5 Pro, 18 cores,
+/// release, the file in the page cache, the genotypes alone and the default
+/// options, the median of 5 runs of `benches/read_vcf.rs` on the VCF of
+/// "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000 individuals
+/// in 403 MB, with the batches this file has, [`LINES_PER_BATCH`] lines and
+/// [`BYTES_PER_BATCH`]: 8 KiB reads it in 0.118 s on 18 threads, 64 KiB in
+/// 0.108, 256 KiB in 0.106 and 1 MiB in 0.105. On one thread the four are
+/// the same read, 0.59 to 0.62 s, which is the spread of the machine
+/// between one set of runs and the next.
+///
+/// 256 KiB is where the gain stops: 1 MiB buys nothing more and holds four
+/// times the bytes. `std::io::BufReader::new` would give 8 KiB.
+const BYTES_OF_THE_FILE_BUFFER: usize = 256 * 1024;
+
 /// The nine first columns of the `#CHROM` line of a VCF with genotypes. The
 /// columns after them are the individuals.
 const FIRST_COLUMNS: [&str; 9] = [
@@ -1206,7 +1228,10 @@ impl VcfReader<BufReader<File>> {
             path: path.to_path_buf(),
             source: error,
         })?;
-        VcfReader::new(BufReader::new(file), options)
+        VcfReader::new(
+            BufReader::with_capacity(BYTES_OF_THE_FILE_BUFFER, file),
+            options,
+        )
     }
 }
 
