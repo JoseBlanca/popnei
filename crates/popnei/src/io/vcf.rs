@@ -104,7 +104,7 @@ const MISSING_VALUE: &str = ".";
 /// 0.160 and 0.147 s on 18 threads, and 1.28, 1.24 and 1.28 s on one;
 /// gzipped, where the decompression is one thread's work whatever the
 /// others do, 0.555, 0.497 and 0.458 s on 18 threads. Those are the
-/// numbers of task 5.2 of `docs/plans/vcf-to-blocks.md`, taken before
+/// numbers of `docs/reports/vcf-to-blocks.md`, taken before
 /// [`BYTES_PER_BATCH`]; with it the same three take 0.202, 0.158 and 0.151
 /// s, the last one because 4096 lines of that file are 16.5 MB and the
 /// bound cuts them to about 2000. A batch of 4096 lines whole, with the
@@ -137,15 +137,15 @@ const LINES_PER_BATCH: usize = 1;
 /// the 1024 lines of [`LINES_PER_BATCH`], a reader of the VCF of "Speed"
 /// of `docs/specs/io_vcf.md`, 1000 individuals, holds 13.3 MB of resident
 /// memory, one of 10000 individuals 82.7 MB and one of 100000 individuals
-/// near 0.8 GB, which the review of work package 5 of
-/// `docs/plans/vcf-to-blocks.md` measured. The text of the lines is what
+/// near 0.8 GB, which the review of work package 5 in
+/// `docs/reports/vcf-to-blocks.md` measured. The text of the lines is what
 /// that memory is made of, the variants parsed from them and the growth of
 /// the buffers by doubling, so bounding the text bounds all of it, at
 /// about three times this number.
 ///
 /// 8 MiB is twice the 4.1 MB that 1024 lines of that 400 MB file hold, so
 /// the batches of a file of a thousand individuals are the 1024 lines they
-/// were and the timings of task 5.2 hold; a file of 10000 individuals gets
+/// were and the timings of that report hold; a file of 10000 individuals gets
 /// about 200 lines in a batch and one of 100000 about 20. A batch holds
 /// one line whatever its bytes are.
 const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
@@ -181,8 +181,8 @@ impl fmt::Display for VcfPlace {
 }
 
 /// What the caller says about the VCF it opens: the ploidy every genotype
-/// of the file has, and whether the variants that failed a filter are left
-/// out.
+/// of the file has, whether the variants that failed a filter are left out,
+/// and how many variants a block holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VcfOptions {
     /// How many alleles every genotype has. 1 or more.
@@ -362,24 +362,81 @@ enum VcfSource<R: BufRead> {
     Plain(WithFirstBytes<R>),
     /// The source through the decoder of gzip, which goes on to the next
     /// member of the file when one ends, with the last bytes that went by
-    /// to it kept.
+    /// to it kept and whether bgzip wrote it, which its first member says.
     ///
-    /// The decoder and its two buffers are 249 bytes where a plain source
-    /// is 32, and every reader would carry the larger of the two, so this
+    /// The decoder with its buffers is 288 bytes over a `Cursor<Vec<u8>>`,
+    /// where the plain source over the same bytes is 64, and a reader of a
+    /// file that is not gzipped would carry the larger of the two, so this
     /// one is behind a pointer: one allocation when a gzipped file is
     /// opened, and the buffer of the lines is read through one indirection
     /// more.
-    Gzipped(Box<BufReader<MultiGzDecoder<WithTheLastBytes<WithFirstBytes<R>>>>>),
+    Gzipped {
+        source: Box<BufReader<MultiGzDecoder<WithTheLastBytes<WithFirstBytes<R>>>>>,
+        /// Whether bgzip wrote it, which is what makes the mark of the end
+        /// of a bgzipped file something to ask for.
+        written_by_bgzip: bool,
+    },
 }
 
 impl<R: BufRead> VcfSource<R> {
-    /// Whether the compressed bytes that went by end with the empty block
-    /// that marks the end of a file that bgzip wrote. A source that is not
-    /// gzipped has no such mark and is not asked for one.
-    fn ends_with_the_bgzip_mark(&self) -> bool {
+    /// The bytes of `source` as the reader reads them: through the decoder
+    /// of gzip when they are gzipped, and as they are when they are not.
+    ///
+    /// The first bytes of the source say which of the two it is and whether
+    /// bgzip wrote it, and they are handed back in front of it, so nothing
+    /// of it is consumed.
+    ///
+    /// # Errors
+    ///
+    /// When the source is not a VCF, which its first byte after the
+    /// decompression says, and when its bytes cannot be read.
+    fn of(source: R) -> Result<VcfSource<R>> {
+        let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
+        let gzipped = source.first.starts_with(&GZIP_BYTES);
+        // Whether bgzip wrote the file is read from its first gzip member,
+        // which carries the extra field `BC` that bgzip writes in every
+        // block of a file.
+        let written_by_bgzip = gzipped && written_by_bgzip(&source.first);
+        let mut source = if gzipped {
+            VcfSource::Gzipped {
+                source: Box::new(BufReader::new(MultiGzDecoder::new(WithTheLastBytes::new(
+                    source,
+                )))),
+                written_by_bgzip,
+            }
+        } else {
+            VcfSource::Plain(source)
+        };
+        let first_bytes = source.first_bytes()?;
+        if !first_bytes.starts_with(b"#") {
+            return Err(Error::NotAVcf {
+                found: as_text(first_bytes),
+            });
+        }
+        Ok(source)
+    }
+
+    /// Whether bgzip wrote the source, which is what makes its bytes
+    /// running out a file that was cut short and not an error of the input.
+    fn written_by_bgzip(&self) -> bool {
         match self {
-            VcfSource::Plain(_) => true,
-            VcfSource::Gzipped(source) => source.get_ref().get_ref().ends_with_the_bgzip_mark(),
+            VcfSource::Plain(_) => false,
+            VcfSource::Gzipped {
+                written_by_bgzip, ..
+            } => *written_by_bgzip,
+        }
+    }
+
+    /// Whether the source ended without the mark of the end of a file that
+    /// bgzip wrote, which says that it was cut short. Nothing is missing
+    /// from a source that bgzip did not write: it has no such mark.
+    fn was_cut_short(&self) -> bool {
+        match self {
+            VcfSource::Plain(_) => false,
+            VcfSource::Gzipped {
+                source,
+                written_by_bgzip,
+            } => *written_by_bgzip && !source.get_ref().get_ref().ends_with_the_bgzip_mark(),
         }
     }
 
@@ -387,7 +444,7 @@ impl<R: BufRead> VcfSource<R> {
     fn first_bytes(&mut self) -> std::io::Result<&[u8]> {
         match self {
             VcfSource::Plain(source) => source.fill_buf(),
-            VcfSource::Gzipped(source) => source.fill_buf(),
+            VcfSource::Gzipped { source, .. } => source.fill_buf(),
         }
     }
 
@@ -401,7 +458,7 @@ impl<R: BufRead> VcfSource<R> {
     fn read_line(&mut self, line: &mut Vec<u8>) -> std::io::Result<usize> {
         match self {
             VcfSource::Plain(source) => source.read_until(b'\n', line),
-            VcfSource::Gzipped(source) => source.read_until(b'\n', line),
+            VcfSource::Gzipped { source, .. } => source.read_until(b'\n', line),
         }
     }
 }
@@ -500,11 +557,12 @@ fn parse_rows(rows: &mut [BatchRow], text: &[u8], gts: &mut [i8], rules: &RowRul
 /// cargo tests, which run natively, can parse the same lines with it and
 /// with the threads and compare what the two give.
 #[cfg_attr(
-    not(target_family = "wasm"),
-    allow(
+    all(not(target_family = "wasm"), not(test)),
+    expect(
         dead_code,
-        reason = "in wasm it is the parse of a batch; natively it is what the test that \
-                  compares the two ways of parsing calls"
+        reason = "in wasm it is the parse of a batch, and natively it is what the test \
+                  that compares the two ways of parsing calls; outside the tests and \
+                  outside wasm nothing calls it"
     )
 )]
 fn parse_rows_one_by_one(rows: &mut [BatchRow], text: &[u8], gts: &mut [i8], rules: &RowRules<'_>) {
@@ -568,10 +626,6 @@ pub struct VcfReader<R: BufRead + Send> {
     /// The error of the line that could not be read, which is given in the
     /// place of the block it would have been in.
     line_error: Option<Error>,
-    /// Whether bgzip wrote the source, which its first gzip member says and
-    /// which is what makes the mark of the end of a bgzipped file something
-    /// to ask for.
-    written_by_bgzip: bool,
     /// The error the reader gives where it would have said that there are
     /// no more variants: the source was cut short. Every variant that was
     /// read is given first.
@@ -615,25 +669,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             });
         }
 
-        let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
-        let gzipped = source.first.starts_with(&GZIP_BYTES);
-        // Whether bgzip wrote the file is read from its first gzip member,
-        // which carries the extra field `BC` that bgzip writes in every
-        // block of a file.
-        let written_by_bgzip = gzipped && written_by_bgzip(&source.first);
-        let mut source = if gzipped {
-            VcfSource::Gzipped(Box::new(BufReader::new(MultiGzDecoder::new(
-                WithTheLastBytes::new(source),
-            ))))
-        } else {
-            VcfSource::Plain(source)
-        };
-        let first_bytes = source.first_bytes()?;
-        if !first_bytes.starts_with(b"#") {
-            return Err(Error::NotAVcf {
-                found: as_text(first_bytes),
-            });
-        }
+        let source = VcfSource::of(source)?;
         let mut reader = VcfReader {
             source,
             options,
@@ -652,7 +688,6 @@ impl<R: BufRead + Send> VcfReader<R> {
             batches_filled: 0,
             line_number: 0,
             line_error: None,
-            written_by_bgzip,
             end_error: None,
             source_done: false,
             finished: false,
@@ -849,7 +884,6 @@ impl<R: BufRead + Send> VcfReader<R> {
             bytes_per_batch,
             line_number,
             line_error,
-            written_by_bgzip,
             end_error,
             source_done,
             #[cfg(test)]
@@ -878,7 +912,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                     // the end of a file that bgzip wrote has to be: the
                     // error waits for the variants that were read to be
                     // given.
-                    if *written_by_bgzip && !source.ends_with_the_bgzip_mark() {
+                    if source.was_cut_short() {
                         *end_error = Some(Error::VcfBgzipEndMissing);
                     }
                     break;
@@ -903,7 +937,7 @@ impl<R: BufRead + Send> VcfReader<R> {
                     // told the same thing by both. An error of the file
                     // system, a disc that fails, has another kind and stays
                     // the error of the input it is.
-                    if *written_by_bgzip && the_bytes_ran_out(&error) {
+                    if source.written_by_bgzip() && the_bytes_ran_out(&error) {
                         *end_error = Some(Error::VcfBgzipEndMissing);
                     } else {
                         *line_error = Some(Error::Io(error));
@@ -1267,12 +1301,16 @@ fn next_line_number(line_number: u64) -> u64 {
     line_number.saturating_add(1)
 }
 
-/// The first bytes of a source as text, for the message that says it is not
-/// a VCF: the ones that are not printable go in as their number.
-fn as_text(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return "nothing: it holds no byte".to_string();
-    }
+/// Bytes of a file as a message shows them, between backticks, with the
+/// ones that are not printable as their number, `\\xff`: a byte that is not
+/// text shown as text is the one character that stands for everything that
+/// could not be read, and a user looking for it in their file needs the
+/// byte.
+///
+/// The first [`BYTES_LOOKED_AT`] bytes at most, which is what a column of
+/// an individual, an allele number and the start of a file are worth
+/// showing of.
+fn shown(bytes: &[u8]) -> String {
     let mut text = String::new();
     for byte in bytes.iter().take(BYTES_LOOKED_AT) {
         if byte.is_ascii_graphic() || *byte == b' ' {
@@ -1282,6 +1320,14 @@ fn as_text(bytes: &[u8]) -> String {
         }
     }
     format!("`{text}`")
+}
+
+/// The first bytes of a source, for the message that says it is not a VCF.
+fn as_text(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "nothing: it holds no byte".to_string();
+    }
+    shown(bytes)
 }
 
 /// The next column of a data line, or the error that says the line is not
@@ -1535,8 +1581,9 @@ struct ByteColumns<'a> {
 }
 
 impl<'a> ByteColumns<'a> {
-    /// The columns of `bytes`, which are one column when `bytes` holds no
-    /// tab and none when there are no bytes at all.
+    /// The columns of `bytes`: one when there is no tab in them, and one
+    /// empty column when there are no bytes at all, since a column is what
+    /// lies between two tabs and the bytes of a line begin and end one.
     fn new(bytes: &'a [u8]) -> ByteColumns<'a> {
         ByteColumns {
             bytes,
@@ -1731,8 +1778,8 @@ fn fill_row_genotypes(
                 line,
                 place: VcfPlace::Individual(individual.clone()),
                 problem: format!(
-                    "`{column}` has no value where the FORMAT has GT",
-                    column = String::from_utf8_lossy(column),
+                    "{column} has no value where the FORMAT has GT",
+                    column = shown(column),
                 ),
             });
         };
@@ -1744,7 +1791,8 @@ fn fill_row_genotypes(
             line,
             place: VcfPlace::Line,
             problem: format!(
-                "it has {left_over} columns more than the {count} individuals of the header",
+                "it has {left_over} {columns} more than the {count} individuals of the header",
+                columns = if left_over == 1 { "column" } else { "columns" },
                 count = individuals.len(),
             ),
         });
@@ -1836,8 +1884,8 @@ fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str
     for byte in text {
         let Some(digit) = char::from(*byte).to_digit(10) else {
             return Err(wrong(format!(
-                "`{text}` is not an allele number, which is a run of digits",
-                text = String::from_utf8_lossy(text),
+                "{text} is not an allele number, which is a run of digits",
+                text = shown(text),
             )));
         };
         // Once the number is above the largest allele the answer is the
@@ -1847,8 +1895,8 @@ fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str
     }
     let Ok(allele) = i8::try_from(number) else {
         return Err(wrong(format!(
-            "the allele `{text}` is above {MAX_ALLELE}, the largest allele popnei holds",
-            text = String::from_utf8_lossy(text),
+            "the allele {text} is above {MAX_ALLELE}, the largest allele popnei holds",
+            text = shown(text),
         )));
     };
     // The allele is not negative, since its text was parsed as a `u32`.
@@ -2609,6 +2657,15 @@ mod tests {
         };
         assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Line));
         assert!(problem.contains('3'), "{problem}");
+        assert!(problem.contains("1 column more"), "{problem}");
+
+        // Two columns more, where the count is plural.
+        let vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { problem, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(problem.contains("2 columns more"), "{problem}");
     }
 
     #[test]
@@ -3864,6 +3921,10 @@ mod tests {
             (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string()))
         );
         assert!(problem.contains("digits"), "{problem}");
+        // The byte is shown as its number and not as the one character that
+        // stands for every byte that could not be read: a user looks for it
+        // in their file.
+        assert!(problem.contains("\\xff"), "{problem}");
     }
 
     #[test]

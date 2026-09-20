@@ -80,6 +80,35 @@ struct Arguments {
     bytes_per_batch: Option<usize>,
 }
 
+/// What the benchmark does and what its command line takes, which is what
+/// an argument it does not know and `--help` are answered with.
+const USAGE: &str = "\
+read_vcf <path to a VCF> [--threads n] [--runs n] [--lines-per-batch n]
+         [--bytes-per-batch n]
+
+It times whole reads of that VCF, plain or gzipped: opening the file,
+its header, its lines, the parse and the genotypes, block after block
+until the file ends. It asks for the genotypes alone, which is what a
+calculation over them asks for, and reads with the options popnei
+chooses: the ploidy 2, the variants that passed their filters alone,
+and blocks of the size popnei picks for the individuals of the file.
+
+  --threads n           how many threads the pool it reads in has, 1 by default
+  --runs n              how many times it reads the file, 5 by default
+  --lines-per-batch n   how many lines the reader parses together
+  --bytes-per-batch n   how many bytes of them it holds at most
+  --help                this
+
+The two bounds of a batch are the constants of io::vcf when the command
+line leaves them out, which is what a timing reported for popnei as it
+ships uses. It prints the wall time of each run and then the best, the
+median and the worst of them. The first run of a file that was just
+written reads it from the disc and the ones after it from the page
+cache, so a timing that is reported leaves the first run out or reads
+the file once before. The median is what to compare with the numbers of
+`docs/specs/io_vcf.md`, and the best and the worst say how much the
+machine was doing something else.";
+
 /// What to run, or the message that says what the command line should have
 /// been.
 fn arguments() -> Result<Arguments, String> {
@@ -105,15 +134,22 @@ fn arguments() -> Result<Arguments, String> {
             // to tell a harness that has tests too to run its benchmarks.
             // This one has only this benchmark and takes it as nothing.
             "--bench" => {}
+            "--help" | "-h" => return Err(USAGE.to_string()),
+            // An argument that is not one of those and looks like one is
+            // refused instead of being taken for the path of the VCF: a
+            // `--lines-per-batch=4096` that was read as a path and dropped
+            // left a run that timed the constants of the code and said
+            // nothing.
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "`{other}` is not an argument of this benchmark\n\n{USAGE}"
+                ));
+            }
             other => path = Some(PathBuf::from(other)),
         }
     }
     let Some(path) = path else {
-        return Err(
-            "no VCF was given: read_vcf <path> [--threads n] [--runs n] \
-             [--lines-per-batch n] [--bytes-per-batch n]"
-                .to_string(),
-        );
+        return Err(format!("no VCF was given\n\n{USAGE}"));
     };
     if threads == 0 || runs == 0 {
         return Err("--threads and --runs are 1 or more".to_string());
