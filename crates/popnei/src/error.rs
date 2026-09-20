@@ -5,6 +5,8 @@
 //! `#[non_exhaustive]`, so a module that is written later adds a case
 //! without breaking the code that matches on it.
 
+use std::path::PathBuf;
+
 use thiserror::Error as ThisError;
 
 use crate::io::vcf::VcfPlace;
@@ -82,6 +84,18 @@ pub enum Error {
         found: usize,
         /// The ploidy the reader was given.
         expected: usize,
+    },
+
+    /// The file of a VCF, or of another source of variants, could not be
+    /// opened. It carries the path, which `std::io::Error` does not, so
+    /// that a message names the file and a binding can put it where its
+    /// language keeps it, `OSError.filename` in Python.
+    #[error("the file {path} could not be opened: {source}")]
+    FileNotOpened {
+        /// The path that was asked for.
+        path: PathBuf,
+        /// Why the file could not be opened.
+        source: std::io::Error,
     },
 
     /// The bytes of a source could not be read.

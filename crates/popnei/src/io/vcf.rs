@@ -324,10 +324,13 @@ impl VcfReader<BufReader<File>> {
     ///
     /// # Errors
     ///
-    /// When the file cannot be opened or read, and everything
-    /// [`VcfReader::new`] fails with.
+    /// When the file cannot be opened, with the path in the error, and
+    /// everything [`VcfReader::new`] fails with.
     pub fn from_path(path: &Path, options: VcfOptions) -> Result<Self> {
-        let file = File::open(path)?;
+        let file = File::open(path).map_err(|error| Error::FileNotOpened {
+            path: path.to_path_buf(),
+            source: error,
+        })?;
         VcfReader::new(BufReader::new(file), options)
     }
 }
@@ -900,6 +903,30 @@ mod tests {
     /// together.
     fn one_byte_at_a_time(bytes: Vec<u8>) -> BufReader<Cursor<Vec<u8>>> {
         BufReader::with_capacity(1, Cursor::new(bytes))
+    }
+
+    #[test]
+    fn a_path_that_no_file_is_at_gives_an_error_that_carries_the_path() {
+        let path = reference_vcf("no_such_file.vcf");
+        let error = match VcfReader::from_path(&path, VcfOptions::default()) {
+            Ok(reader) => panic!("the reader was built over {:?}", reader.individuals()),
+            Err(error) => error,
+        };
+        let Error::FileNotOpened {
+            path: named,
+            source,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(named, path);
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        let message = Error::FileNotOpened {
+            path: named,
+            source,
+        }
+        .to_string();
+        assert!(message.contains("no_such_file.vcf"), "{message}");
     }
 
     #[test]
