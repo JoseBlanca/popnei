@@ -115,3 +115,40 @@ fresh checkout all carry it; `uv sync` in a tree that never saw the
 owner's path installs pyNei from GitHub at ef0ca6e, and pytest gives `38
 passed` there.
 
+Two findings held, both about the new paragraph of the `coding` skill
+against the code, and the subagent that wrote it corrected them in
+b63bd9b, 10 thousand tokens more:
+
+- It said that no call site of the Python binding crate maps an error by
+  hand. `crates/popnei-python/src/vcf.rs` has four, one of them only
+  because the functions that pyo3 exports return pyo3's own result. The
+  skill now states the rule, every function of a binding crate returns
+  the result of that crate and a call site maps an error only to add the
+  path of the file, and task 2.2 makes the code follow it.
+- It named two exceptions of Python where the binding crate raises three:
+  a `RuntimeError` for a defect of the binding. It names the three now,
+  and the four cases of each enum.
+
+The orchestrator had read that paragraph against the code and had not
+seen either. `docs/rust_core.md` also had pyNei as a path dependency, in
+item 2 of its list of decisions, and has the sentence of the architecture
+now: `grep -rn "path dependency\|sibling checkout" docs .claude/skills
+.claude/agents`, the plans and the reports aside, finds nothing.
+
+### For the owner
+
+- Three files that tell a reviewer where pyNei is still name the checkout
+  on this machine, `/Users/jose/devel/pynei`: the `spec` section of
+  `.claude/skills/code-review/categories.md`,
+  `.claude/agents/spec-reviewer.md` and
+  `.claude/skills/performance-review/profiling_environment.md`. That
+  checkout is at ef0ca6e today, the commit that the tests now pin, so no
+  number is wrong. When the checkout moves on, a reviewer will compare
+  with another pyNei than the tests. A reviewer also reads pyNei's tests
+  and its spike there, which the installed package does not have, so the
+  fix is not a change of path alone. Not changed: it is outside this
+  plan.
+- `npm pack` in `js/popnei` from a fresh checkout makes a tarball of
+  three files, with no code, unless `npm run build` was run first: the
+  package has no script that builds before a pack. Publishing is outside
+  this plan.
