@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Iterator
 
 from popnei import _core
-from popnei.block import Block, _block_of
+from popnei.block import Block, Field, _block_of
 
 
 class Variants:
@@ -44,7 +44,7 @@ class Variants:
 
     def iter_blocks(
         self,
-        fields: Iterable[str] = ("chrom", "pos"),
+        fields: Iterable[Field] = ("chrom", "pos"),
         num_vars_per_block: int | None = None,
     ) -> Iterator[Block]:
         """The variants of the source, block by block, from its start.
@@ -67,4 +67,11 @@ class Variants:
         read, the error comes in the place of the block that would have held
         it, and the variants of that block that were read are lost with it.
         """
+        if isinstance(fields, str):
+            # A string is a sequence of its letters, and asking for one
+            # field would be read as asking for `a`, `l`, `l`, `e`...
+            raise TypeError(
+                f"`fields` is a sequence of names and not one name: write "
+                f'fields=("{fields}",) for that one field'
+            )
         return map(_block_of, self._source.blocks(list(fields), num_vars_per_block))

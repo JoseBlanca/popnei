@@ -252,6 +252,16 @@ def test_a_field_that_is_not_one_of_the_five_is_refused(
         assert f"`{name}`" in str(refusal.value)
 
 
+def test_one_name_where_a_sequence_of_names_goes_is_refused(
+    reference_vcf_dir: Path,
+) -> None:
+    """A string is a sequence of its letters, and `a` is not a field."""
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+    with pytest.raises(TypeError, match="sequence") as refusal:
+        variants.iter_blocks(fields="alleles")
+    assert 'fields=("alleles",)' in str(refusal.value)
+
+
 def test_blocks_of_no_variant_are_refused(reference_vcf_dir: Path) -> None:
     """A block holds one variant at least, and `None` asks for the default."""
     variants = open_vcf(reference_vcf_dir / "cases.vcf")

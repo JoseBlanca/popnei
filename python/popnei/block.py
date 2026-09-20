@@ -7,8 +7,15 @@ which gives one block after another until the source is at its end.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy
+
+Field = Literal["chrom", "pos", "id", "alleles", "qual"]
+"""The name of a column of a block, which ``iter_blocks`` takes in `fields`.
+
+The genotypes are not among them: every block holds them.
+"""
 
 
 # Two blocks are the same one or they are not: `eq=False` keeps the
