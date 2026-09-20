@@ -14,6 +14,7 @@
 //! as tuples. The Python package builds the `Block` dataclass out of them,
 //! as `docs/specs/block.md` describes it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -24,7 +25,7 @@ use pyo3::types::{PyString, PyTuple};
 
 use popnei::block::{AllelesColumn, Block, BlockCollector, needs_of_the_fields};
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::VariantReader;
+use popnei::variant::{ChromTable, VariantReader};
 
 use crate::errors::PyPopneiError;
 
@@ -102,7 +103,7 @@ impl Blocks {
         // who asks for the blocks of a big VCF waits here, and a Ctrl-C
         // between two blocks is how they stop.
         py.check_signals()?;
-        let Some((block, chrom_names)) = py.detach(|| self.collect_next_block())? else {
+        let Some((block, chroms)) = py.detach(|| self.collect_next_block())? else {
             return Ok(None);
         };
         let Block {
@@ -110,7 +111,9 @@ impl Blocks {
             num_individuals,
             ploidy,
             gts,
-            chrom,
+            // The numbers of the chromosomes were turned into their names
+            // while the reader that holds the table was at hand.
+            chrom: _,
             pos,
             id,
             alleles,
@@ -127,9 +130,7 @@ impl Blocks {
                 ))
             })?;
         let gts = read_only(gts.into_pyarray(py))?;
-        let chrom = chrom
-            .map(|numbers| chrom_column(py, &numbers, &chrom_names))
-            .transpose()?;
+        let chrom = chroms.map(|chroms| chrom_column(py, &chroms)).transpose()?;
         let id = id.map(|ids| id_column(py, &ids)).transpose()?;
         let alleles = alleles
             .map(|column| alleles_column(py, &column))
@@ -143,8 +144,8 @@ impl Blocks {
 }
 
 impl Blocks {
-    /// The next block of the collector, with the names of the chromosomes
-    /// of its reader, or `None` when the VCF has no more variants.
+    /// The next block of the collector, with the chromosomes of its
+    /// variants, or `None` when the VCF has no more variants.
     ///
     /// The names are taken after the block was collected, as
     /// `docs/specs/block.md` says: the table of the reader grows while the
@@ -153,7 +154,7 @@ impl Blocks {
     /// while the Python objects are built: a thread that waited for the
     /// lock with the interpreter in hand would never get it back from this
     /// one.
-    fn collect_next_block(&self) -> Result<Option<(Block, Vec<String>)>, PyPopneiError> {
+    fn collect_next_block(&self) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
         let mut collector = self.collector.lock().map_err(|_| {
             PyPopneiError::Broken(
                 "the blocks of this pass cannot be read any more: a panic left the \
@@ -164,11 +165,11 @@ impl Blocks {
         let Some(block) = collector.next_block()? else {
             return Ok(None);
         };
-        let chroms = collector.reader().chroms();
-        let names = (0u32..)
-            .map_while(|number| chroms.name(number).map(str::to_owned))
-            .collect();
-        Ok(Some((block, names)))
+        let chroms = match block.chrom.as_deref() {
+            Some(numbers) => Some(ChromColumn::of(numbers, collector.reader().chroms())?),
+            None => None,
+        };
+        Ok(Some((block, chroms)))
     }
 }
 
@@ -208,31 +209,70 @@ fn read_only<'py, T>(array: Bound<'py, T>) -> PyResult<Bound<'py, T>> {
     Ok(array)
 }
 
-/// The name of the chromosome of every variant of a block, looked up in the
-/// table the reader had when the block was collected.
-fn chrom_column<'py>(
-    py: Python<'py>,
-    numbers: &[u32],
-    names: &[String],
-) -> PyResult<Bound<'py, PyTuple>> {
+/// The chromosomes of the variants of one block: the name of each
+/// chromosome the block holds, once, and which of those names each variant
+/// has.
+struct ChromColumn {
+    names: Vec<String>,
+    /// One index into `names` for each variant of the block.
+    of_each_variant: Vec<usize>,
+}
+
+impl ChromColumn {
+    /// The chromosomes that `numbers`, the column of a block, names in
+    /// `chroms`, the table of the reader that filled it.
+    ///
+    /// The table of a de novo assembly holds 10^4 scaffolds or more and a
+    /// block holds a few of them, so what is copied is the name of every
+    /// chromosome of the block and not the table.
+    fn of(numbers: &[u32], chroms: &ChromTable) -> Result<ChromColumn, PyPopneiError> {
+        let mut names = Vec::new();
+        let mut of_each_variant = Vec::with_capacity(numbers.len());
+        let mut where_each_number_went: HashMap<u32, usize> = HashMap::new();
+        for number in numbers {
+            let index = match where_each_number_went.get(number) {
+                Some(index) => *index,
+                None => {
+                    let Some(name) = chroms.name(*number) else {
+                        return Err(PyPopneiError::Broken(format!(
+                            "the chromosome number {number} of a block is not in the \
+                             table of the reader that gave it"
+                        )));
+                    };
+                    names.push(name.to_owned());
+                    let index = names.len().saturating_sub(1);
+                    where_each_number_went.insert(*number, index);
+                    index
+                }
+            };
+            of_each_variant.push(index);
+        }
+        Ok(ChromColumn {
+            names,
+            of_each_variant,
+        })
+    }
+}
+
+/// The name of the chromosome of every variant of a block.
+fn chrom_column<'py>(py: Python<'py>, chroms: &ChromColumn) -> PyResult<Bound<'py, PyTuple>> {
     // One Python string for each chromosome, which the variants of that
     // chromosome share: a block of 10000 variants of one chromosome holds
     // one name and not 10000.
-    let names: Vec<Bound<'py, PyString>> =
-        names.iter().map(|name| PyString::new(py, name)).collect();
-    let of_each_variant = numbers
+    let names: Vec<Bound<'py, PyString>> = chroms
+        .names
         .iter()
-        .map(|number| {
-            usize::try_from(*number)
-                .ok()
-                .and_then(|index| names.get(index))
-                .cloned()
-                .ok_or_else(|| {
-                    PyPopneiError::Broken(format!(
-                        "the chromosome number {number} of a block is not in the table \
-                         of the reader that gave it"
-                    ))
-                })
+        .map(|name| PyString::new(py, name))
+        .collect();
+    let of_each_variant = chroms
+        .of_each_variant
+        .iter()
+        .map(|index| {
+            names.get(*index).cloned().ok_or_else(|| {
+                PyPopneiError::Broken(format!(
+                    "the chromosome {index} of a block has no name beside it"
+                ))
+            })
         })
         .collect::<Result<Vec<_>, PyPopneiError>>()?;
     PyTuple::new(py, of_each_variant)
