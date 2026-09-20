@@ -17,7 +17,8 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use numpy::{IntoPyArray, PyArray1, PyArray3, PyArrayMethods};
+use numpy::ndarray::Array3;
+use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyString, PyTuple};
 
@@ -125,9 +126,17 @@ impl Blocks {
             alleles,
             qual,
         } = block;
-        let gts = gts
-            .into_pyarray(py)
-            .reshape([num_vars, num_individuals, ploidy])?;
+        // The three dimensions are given to the array as it is built and
+        // not by reshaping one of a single dimension, whose array would
+        // stay under the block's as a writable view of the same genotypes.
+        let gts =
+            Array3::from_shape_vec((num_vars, num_individuals, ploidy), gts).map_err(|error| {
+                PyPopneiError::Broken(format!(
+                    "a block of {num_vars} variants of {num_individuals} individuals of \
+                     the ploidy {ploidy} does not hold that many genotypes: {error}"
+                ))
+            })?;
+        let gts = read_only(gts.into_pyarray(py))?;
         let chrom = chrom
             .map(|numbers| chrom_column(py, &numbers, &chrom_names))
             .transpose()?;
@@ -135,14 +144,11 @@ impl Blocks {
         let alleles = alleles
             .map(|column| alleles_column(py, &column))
             .transpose()?;
-        Ok(Some((
-            gts,
-            chrom,
-            pos.map(|pos| pos.into_pyarray(py)),
-            id,
-            alleles,
-            qual.map(|qual| qual.into_pyarray(py)),
-        )))
+        let pos = pos.map(|pos| read_only(pos.into_pyarray(py))).transpose()?;
+        let qual = qual
+            .map(|qual| read_only(qual.into_pyarray(py)))
+            .transpose()?;
+        Ok(Some((gts, chrom, pos, id, alleles, qual)))
     }
 }
 
@@ -220,6 +226,16 @@ fn needs_of(fields: &[String]) -> Result<Needs, PyPopneiError> {
         needs = needs.union(of_the_core);
     }
     Ok(needs)
+}
+
+/// The array, which nothing writes into any more: a block is frozen, and
+/// its arrays hold the memory the core filled.
+fn read_only<'py, T>(array: Bound<'py, T>) -> PyResult<Bound<'py, T>> {
+    array
+        .as_any()
+        .getattr("flags")?
+        .setattr("writeable", false)?;
+    Ok(array)
 }
 
 /// The name of the chromosome of every variant of a block, looked up in the

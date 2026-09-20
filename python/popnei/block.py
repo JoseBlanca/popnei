@@ -28,8 +28,9 @@ class Block:
     0 is the reference allele and 1 and above the alternative ones, in the
     order in which the source declares them, and -1 an allele that was not
     called. The array is the one the core filled, which reaches numpy
-    without a copy, and it is read only: a calculation of your own writes
-    into an array of its own.
+    without a copy, and it is read only, as ``pos`` and ``qual`` are: a
+    calculation that writes works on ``numpy.array(block.gts)``, which is a
+    copy of its own.
     """
 
     num_vars: int
@@ -62,10 +63,6 @@ class Block:
 def _block_of(columns) -> Block:
     """The block of the columns that `popnei._core` gives for one block."""
     gts, chrom, pos, id_, alleles, qual = columns
-    # The array holds the allocation of the core, which nothing writes into
-    # again, and a user who got it cannot make it say something the source
-    # did not.
-    gts.flags.writeable = False
     return Block(
         gts=gts,
         num_vars=gts.shape[0],

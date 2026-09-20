@@ -158,6 +158,38 @@ def test_the_genotypes_are_an_int8_array_of_variants_individuals_and_ploidy(
         block.gts[0, 0, 0] = 1
 
 
+def _writable_arrays_under(array: numpy.ndarray) -> list[str]:
+    """The arrays that share the memory of `array` and can be written into.
+
+    An array made by reshaping or slicing another one keeps it as its
+    ``base``, and writing into that base writes into both.
+    """
+    writable = []
+    under: object = array
+    while isinstance(under, numpy.ndarray):
+        if under.flags.writeable:
+            writable.append(f"{under.shape} {under.dtype}")
+        under = under.base
+    return writable
+
+
+def test_no_array_a_user_reaches_from_a_block_can_be_written_into(
+    reference_vcf_dir: Path,
+) -> None:
+    """A block is frozen, and its arrays hold the memory of the core.
+
+    A view that was left writable is a way around both: the array under
+    `gts` shares its genotypes, so writing into that one changes what the
+    block says the source held.
+    """
+    variants = open_vcf(reference_vcf_dir / "many.vcf")
+    block = next(iter(variants.iter_blocks(fields=ALL_FIELDS, num_vars_per_block=100)))
+    for name in ("gts", "pos", "qual"):
+        assert _writable_arrays_under(getattr(block, name)) == [], name
+    with pytest.raises(ValueError, match="read-only"):
+        block.gts[0, 0, 0] = 1
+
+
 def test_the_blocks_are_cut_by_the_count_of_the_variants(
     reference_vcf_dir: Path,
 ) -> None:
