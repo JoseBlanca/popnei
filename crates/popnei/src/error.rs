@@ -217,6 +217,19 @@ pub enum Error {
         line: u64,
     },
 
+    /// The source of the VCF was written by bgzip and does not end with the
+    /// empty block of 28 bytes that marks the end of such a file, so its
+    /// last bytes are missing: a download that stopped, a copy that was cut
+    /// short. The variants that were read before it are given first, and
+    /// this comes where the reader would have said that there are no more.
+    ///
+    /// A gzip file that bgzip did not write has no such mark and is read to
+    /// its end.
+    #[error(
+        "the VCF was written by bgzip and its last 28 bytes are not the empty block that marks the end of a bgzipped file, so the file is cut short and the variants after the cut are not in it; the variants before it were given, and the file has to be fetched or copied again. bcftools says of the same file `no BGZF EOF marker; file may be truncated`"
+    )]
+    VcfBgzipEndMissing,
+
     /// The file of a VCF, or of another source of variants, could not be
     /// opened. It carries the path, which `std::io::Error` does not, so
     /// that a message names the file and a binding can put it where its

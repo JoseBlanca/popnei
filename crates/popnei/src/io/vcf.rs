@@ -56,6 +56,30 @@ pub const MAX_PLOIDY: usize = 255;
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 
+/// The empty gzip member of 28 bytes that bgzip writes at the end of a
+/// file, which says that the file is whole: a source that bgzip wrote and
+/// that does not end with it was cut short.
+///
+/// It is a member with the extra field `BC` of bgzip, no text and a CRC of
+/// 0, and htslib writes these same bytes in every file it closes.
+const BGZF_EOF: [u8; 28] = [
+    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00,
+    0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// Where the flags of a gzip header are, and the flag that says that the
+/// header carries an extra field, which is where bgzip writes its `BC`.
+const GZIP_FLAGS: usize = 3;
+const GZIP_HAS_AN_EXTRA_FIELD: u8 = 0x04;
+
+/// Where the extra field of a gzip header starts when there is one: after
+/// the ten bytes of the header and the two of its length.
+const GZIP_EXTRA_FIELD: usize = 12;
+
+/// The two bytes that name the extra field bgzip writes in every block of a
+/// file, `BC`, and which say that the file was written by bgzip.
+const BGZIP_EXTRA_FIELD: [u8; 2] = *b"BC";
+
 /// How many bytes are read from the source before it is handed on: the two
 /// of gzip, and enough of what comes after them for the message that says
 /// that the source is not a VCF. They are given back in front of the
@@ -249,16 +273,113 @@ impl<R: BufRead> BufRead for WithFirstBytes<R> {
     }
 }
 
+/// A source with the last [`BGZF_EOF`] bytes that went by to the decoder
+/// kept, which is what says whether a file that bgzip wrote ends with the
+/// mark of its end.
+///
+/// flate2 does not tell its caller where a gzip member ends, and the mark is
+/// an empty member, so what a reader can see of it is the bytes themselves.
+/// The source is read once and forward, so they are kept as they are
+/// consumed: 28 bytes of memory whatever the file is.
+struct WithTheLastBytes<R: BufRead> {
+    source: R,
+    /// The last bytes that were consumed, the oldest first, and fewer than
+    /// 28 of them until 28 have gone by.
+    last: Vec<u8>,
+}
+
+impl<R: BufRead> WithTheLastBytes<R> {
+    fn new(source: R) -> WithTheLastBytes<R> {
+        WithTheLastBytes {
+            source,
+            last: Vec::with_capacity(BGZF_EOF.len()),
+        }
+    }
+
+    /// Whether the last bytes that went by are the empty block that bgzip
+    /// writes at the end of a file.
+    fn ends_with_the_bgzip_mark(&self) -> bool {
+        self.last == BGZF_EOF
+    }
+}
+
+/// `bytes` are about to be consumed: `last` keeps the last 28 of what has
+/// gone by, counting them, and nothing is allocated after the first 28.
+fn keep_the_last(last: &mut Vec<u8>, bytes: &[u8]) {
+    let kept = bytes.len().min(BGZF_EOF.len());
+    // What goes of what was kept before, which is what has no place left
+    // once these bytes have theirs.
+    let goes = last
+        .len()
+        .saturating_add(kept)
+        .saturating_sub(BGZF_EOF.len());
+    last.drain(..goes.min(last.len()));
+    last.extend_from_slice(
+        bytes
+            .get(bytes.len().saturating_sub(kept)..)
+            .unwrap_or_default(),
+    );
+}
+
+impl<R: BufRead> std::io::Read for WithTheLastBytes<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let read = {
+            let mut buffer = self.fill_buf()?;
+            std::io::Read::read(&mut buffer, out)?
+        };
+        self.consume(read);
+        Ok(read)
+    }
+}
+
+impl<R: BufRead> BufRead for WithTheLastBytes<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.source.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        // The bytes that are about to go are the first `amount` of the
+        // buffer, and looking at the buffer again does not consume it. A
+        // buffer that cannot be filled again is one whose bytes are gone
+        // with an error of the input, which the reader gives its caller.
+        let WithTheLastBytes { source, last } = self;
+        if let Ok(buffer) = source.fill_buf() {
+            keep_the_last(
+                last,
+                buffer.get(..amount.min(buffer.len())).unwrap_or_default(),
+            );
+        }
+        source.consume(amount);
+    }
+}
+
 /// The bytes of the VCF, decompressed when the source was gzipped.
 enum VcfSource<R: BufRead> {
     /// The source as it was given, with its first bytes in front of it.
     Plain(WithFirstBytes<R>),
     /// The source through the decoder of gzip, which goes on to the next
-    /// member of the file when one ends.
-    Gzipped(BufReader<MultiGzDecoder<WithFirstBytes<R>>>),
+    /// member of the file when one ends, with the last bytes that went by
+    /// to it kept.
+    ///
+    /// The decoder and its two buffers are 249 bytes where a plain source
+    /// is 32, and every reader would carry the larger of the two, so this
+    /// one is behind a pointer: one allocation when a gzipped file is
+    /// opened, and the buffer of the lines is read through one indirection
+    /// more.
+    Gzipped(Box<BufReader<MultiGzDecoder<WithTheLastBytes<WithFirstBytes<R>>>>>),
 }
 
 impl<R: BufRead> VcfSource<R> {
+    /// Whether the compressed bytes that went by end with the empty block
+    /// that marks the end of a file that bgzip wrote. A source that is not
+    /// gzipped has no such mark and is not asked for one.
+    fn ends_with_the_bgzip_mark(&self) -> bool {
+        match self {
+            VcfSource::Plain(_) => true,
+            VcfSource::Gzipped(source) => source.get_ref().get_ref().ends_with_the_bgzip_mark(),
+        }
+    }
+
     /// The bytes that are already in the buffer, without consuming them.
     fn first_bytes(&mut self) -> std::io::Result<&[u8]> {
         match self {
@@ -441,6 +562,14 @@ pub struct VcfReader<R: BufRead + Send> {
     /// The error of the line that could not be read, which is given in the
     /// place of the block it would have been in.
     line_error: Option<Error>,
+    /// Whether bgzip wrote the source, which its first gzip member says and
+    /// which is what makes the mark of the end of a bgzipped file something
+    /// to ask for.
+    written_by_bgzip: bool,
+    /// The error the reader gives where it would have said that there are
+    /// no more variants: the source was cut short. Every variant that was
+    /// read is given first.
+    end_error: Option<Error>,
     /// Whether the source has been read to its end or could not be read.
     source_done: bool,
     /// Whether the reader gave its last block or an error. After either,
@@ -483,8 +612,14 @@ impl<R: BufRead + Send> VcfReader<R> {
         }
         let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
         let gzipped = source.first.starts_with(&GZIP_BYTES);
+        // Whether bgzip wrote the file is read from its first gzip member,
+        // which carries the extra field `BC` that bgzip writes in every
+        // block of a file.
+        let written_by_bgzip = gzipped && written_by_bgzip(&source.first);
         let mut source = if gzipped {
-            VcfSource::Gzipped(BufReader::new(MultiGzDecoder::new(source)))
+            VcfSource::Gzipped(Box::new(BufReader::new(MultiGzDecoder::new(
+                WithTheLastBytes::new(source),
+            ))))
         } else {
             VcfSource::Plain(source)
         };
@@ -511,6 +646,8 @@ impl<R: BufRead + Send> VcfReader<R> {
             batches_filled: 0,
             line_number: 0,
             line_error: None,
+            written_by_bgzip,
+            end_error: None,
             source_done: false,
             finished: false,
             parsing: false,
@@ -705,6 +842,8 @@ impl<R: BufRead + Send> VcfReader<R> {
             bytes_per_batch,
             line_number,
             line_error,
+            written_by_bgzip,
+            end_error,
             source_done,
             #[cfg(test)]
             batches_filled,
@@ -728,6 +867,13 @@ impl<R: BufRead + Send> VcfReader<R> {
             match source.read_line(text) {
                 Ok(0) => {
                     *source_done = true;
+                    // The source is at its end, which is where the mark of
+                    // the end of a file that bgzip wrote has to be: the
+                    // error waits for the variants that were read to be
+                    // given.
+                    if *written_by_bgzip && !source.ends_with_the_bgzip_mark() {
+                        *end_error = Some(Error::VcfBgzipEndMissing);
+                    }
                     break;
                 }
                 Ok(read) => {
@@ -886,7 +1032,13 @@ impl<R: BufRead + Send> VcfReader<R> {
             num_vars = num_vars.saturating_add(given);
         }
         if num_vars == 0 {
-            return Ok(None);
+            // Where the reader says that there are no more variants is
+            // where a source that was cut short says so, after every
+            // variant it did hold was given.
+            return match self.end_error.take() {
+                Some(error) => Err(error),
+                None => Ok(None),
+            };
         }
         block.num_vars = num_vars;
         Ok(Some(block))
@@ -1059,6 +1211,23 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     Ok(individuals.iter().map(|name| (*name).to_string()).collect())
 }
 
+/// Whether bgzip wrote the source, which its first gzip member says: bgzip
+/// writes the extra field `BC` in the header of every block it makes, and
+/// nothing else does.
+///
+/// `first` are the first bytes of the source, which is all that is looked
+/// at: bgzip writes that field first and writes no other, so a header whose
+/// extra field starts with another one is not one of bgzip's.
+fn written_by_bgzip(first: &[u8]) -> bool {
+    let has_an_extra_field = first
+        .get(GZIP_FLAGS)
+        .is_some_and(|flags| flags & GZIP_HAS_AN_EXTRA_FIELD != 0);
+    let names_the_field = first
+        .get(GZIP_EXTRA_FIELD..GZIP_EXTRA_FIELD.saturating_add(BGZIP_EXTRA_FIELD.len()))
+        .is_some_and(|name| name == BGZIP_EXTRA_FIELD);
+    has_an_extra_field && names_the_field
+}
+
 /// The number of the next line. A file of `u64::MAX` lines cannot be
 /// written, so the saturation is not reached and no error is worth adding
 /// for it.
@@ -1111,15 +1280,36 @@ fn parse_position(text: &str, line: u64) -> Result<u64> {
 }
 
 /// The quality of the variant, `None` when the column is a dot.
+///
+/// A quality that is a number and not a finite one is an error of its
+/// column: NaN is what a block holds for a variant with no quality, so a
+/// `nan` in the file would be read as a variant that has none, and an
+/// infinite quality is a probability of no variant of 0, which is not what
+/// phred scaling says. `inf`, `1e400`, which is above what a float of 64
+/// bits holds, and `1e39`, which is above what the 32 bits of the column of
+/// a block hold, all read as an infinite one. The owner decided this on 20
+/// September 2026; the option not taken was to keep what the float gave,
+/// which is what pyNei does.
 fn parse_quality(text: &str, line: u64) -> Result<Option<f32>> {
     if text == MISSING_VALUE {
         return Ok(None);
     }
-    text.parse().map(Some).map_err(|_| Error::VcfDataLine {
+    let wrong = |problem: String| Error::VcfDataLine {
         line,
         place: VcfPlace::Column("QUAL"),
-        problem: format!("`{text}` is not a quality"),
-    })
+        problem,
+    };
+    let Ok(quality) = text.parse::<f32>() else {
+        return Err(wrong(format!("`{text}` is not a quality")));
+    };
+    if !quality.is_finite() {
+        return Err(wrong(format!(
+            "`{text}` is not a finite quality, and a quality is minus ten times the \
+             base ten logarithm of the probability that there is no variant at that \
+             site; a variant with no quality has a dot there"
+        )));
+    }
+    Ok(Some(quality))
 }
 
 /// How many alleles REF and ALT declare, the reference and the alternative
@@ -2798,6 +2988,133 @@ mod tests {
                  {lines_per_batch} lines gives {error}"
             );
         }
+    }
+
+    // A quality that is not finite, and a source that bgzip wrote and that
+    // does not end with the mark of the end of a bgzipped file. Both are
+    // errors that the owner decided on 20 September 2026, and pyNei reads
+    // both files.
+
+    #[test]
+    fn a_quality_that_is_not_finite_is_refused() {
+        // `1e400` is above what a float of 64 bits holds and `1e39` above
+        // what one of 32 bits holds, which is what a block keeps, and both
+        // read as an infinite quality. NaN is what a block holds for a
+        // variant with no quality, so a NaN that was written in the file
+        // would be read as a variant that has none.
+        for quality in ["nan", "NaN", "inf", "-inf", "1e400", "1e39"] {
+            let line = format!("chr1 100 . A T {quality} PASS . GT 0/0 0/1 1/1");
+            let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
+            let Error::VcfDataLine {
+                line: number,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("the error of the quality `{quality}` is {error}");
+            };
+            assert_eq!(
+                (number, place),
+                (FIRST_DATA_LINE, VcfPlace::Column("QUAL")),
+                "{quality}"
+            );
+            assert!(problem.contains(quality), "{quality}: {problem}");
+        }
+    }
+
+    #[test]
+    fn a_quality_that_is_not_finite_is_read_when_the_quality_was_not_asked_for() {
+        // A column that is not parsed is not checked.
+        let vcf = vcf_of(&["chr1 100 . A T nan PASS . GT 0/0 0/1 1/1"]);
+        let mut reader = reader_over(&vcf, VcfOptions::default());
+        reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+        let rows = rows_of(&mut reader).expect("the rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pos, 100);
+        assert_eq!(rows[0].gts, [0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_quality_that_is_a_finite_number_is_read() {
+        // The largest quality a block holds, and the smallest: a file of
+        // real qualities has neither, and what they show is that the check
+        // refuses the infinite ones and nothing else.
+        let line = format!("chr1 100 . A T {} PASS . GT 0/0 0/1 1/1", f32::MAX);
+        let rows = rows_read(&vcf_of(&[&line]), VcfOptions::default());
+        assert_eq!(rows.first().map(|row| row.qual), Some(Some(f32::MAX)));
+    }
+
+    /// The bytes of one of the reference files, cut to `bytes` of them.
+    fn cut_to(name: &str, bytes: usize) -> Vec<u8> {
+        let whole = std::fs::read(reference_vcf(name)).unwrap();
+        whole.get(..bytes).unwrap_or_default().to_vec()
+    }
+
+    /// The variants a reader gives before the error it ends with, which is
+    /// what a source with no mark of its end gives: the variants first and
+    /// the error where the reader would have said that there are no more.
+    fn blocks_and_then_the_error(mut reader: VcfReader<Cursor<Vec<u8>>>) -> (Vec<usize>, Error) {
+        let mut sizes = Vec::new();
+        loop {
+            match reader.next_block() {
+                Ok(Some(block)) => sizes.push(block.num_vars),
+                Ok(None) => panic!("the reader ended with no error after {sizes:?}"),
+                Err(error) => return (sizes, error),
+            }
+        }
+    }
+
+    #[test]
+    fn a_bgzipped_source_without_the_mark_of_its_end_is_refused_after_its_variants() {
+        // `many.vcf.gz` without the empty block of 28 bytes that bgzip
+        // writes at the end of a file. Its 500 variants are given first,
+        // in five blocks of 100, and the error comes where the reader
+        // would have said that there are no more.
+        let cut = cut_to("many.vcf.gz", 21904 - 28);
+        let options = in_blocks_of(options(2, false), 100);
+        let (sizes, error) =
+            blocks_and_then_the_error(VcfReader::new(Cursor::new(cut), options).unwrap());
+        assert_eq!(sizes, [100; 5]);
+        let Error::VcfBgzipEndMissing = error else {
+            panic!("the error is {error}");
+        };
+        let message = error.to_string();
+        assert!(message.contains("bgzip"), "{message}");
+        assert!(message.contains("cut"), "{message}");
+    }
+
+    #[test]
+    fn a_bgzipped_source_cut_where_a_member_ends_gives_its_variants_and_then_the_error() {
+        // The first 12336 bytes of `many.vcf.gz` are its two first gzip
+        // members, 280 whole data lines: a decoder finds nothing wrong
+        // there, and what says that the file is cut short is the mark of
+        // the end that is not at its end.
+        let cut = cut_to("many.vcf.gz", 12336);
+        let options = in_blocks_of(options(2, false), 100);
+        let (sizes, error) =
+            blocks_and_then_the_error(VcfReader::new(Cursor::new(cut), options).unwrap());
+        assert_eq!(sizes, [100, 100, 80]);
+        assert!(
+            matches!(error, Error::VcfBgzipEndMissing),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn a_gzipped_source_that_bgzip_did_not_write_is_read_to_its_end() {
+        // A gzip file of one member, which has no mark of its end to
+        // miss: the reader knows that a source was made by bgzip from the
+        // extra field `BC` of its first member.
+        let plain = std::fs::read(reference_vcf("many.vcf")).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &plain).unwrap();
+        let gzipped = encoder.finish().unwrap();
+        assert!(gzipped.len() < plain.len());
+
+        let mut reader = VcfReader::new(Cursor::new(gzipped), VcfOptions::default()).unwrap();
+        let rows = rows_of(&mut reader).expect("the variants");
+        assert_eq!(rows, rows_of_file("many.vcf", VcfOptions::default()));
+        assert_eq!(rows.len(), 475);
     }
 
     // The blocks of a file: their sizes, and that what they hold does not
