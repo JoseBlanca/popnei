@@ -362,3 +362,146 @@ code does meanwhile:
    says "one error type for each operation that fails in its own way,
    not one for the crate". The code follows the specs. Recommended: keep
    the one enum and correct the skill.
+
+## Work package 4: blocks, and the Python and TypeScript sides
+
+Four tasks, four subagents, one after another and not side by side as
+the plan allowed for 4.2 and 4.3, for the reason given in work package
+1: both write the workspace manifest and `Cargo.lock`. Task 4.1, the
+collector in the core, 7b04ef9 for the spec and df0618f, 184 thousand
+tokens and 11 minutes. Task 4.2, the Python side, c3409ba, 195 thousand
+and 14 minutes. Task 4.3, the TypeScript side, d84ce87, 181 thousand and
+12 minutes. Task 4.4, the smoke test under pyodide, 315d406, by the
+subagent of task 1.4, resumed, 40 thousand more and 5 minutes. It
+finished as planned. pyNei is a development dependency by the absolute
+path `/Users/jose/devel/pynei`, the plan's meanwhile.
+
+### The deliverables, run by the orchestrator at 315d406 and again after the fixes
+
+1. `cargo test -p popnei --lib block:: -- --list` `14 tests`, 19 after
+   the fixes, where the plan asks for 6; `cargo test --workspace`
+   `79 passed`, then 84; fmt, clippy, `cargo wasm-check` clean.
+2. `uv run maturin develop && uv run pytest` `30 passed`, then 38, 8 of
+   them the comparison of popnei's blocks, joined, with pyNei's chunks,
+   joined, on `cases.vcf`, `cases.vcf.gz`, `many.vcf` and `many.vcf.gz`,
+   with blocks of 7 variants and of the default size; ruff clean.
+3. `npm run build` with no TypeScript error and `npm test` `tests 27`,
+   then `tests 39`, `fail 0`.
+4. The wheel of pyodide, 147 KB where it was 40 KB before numpy, and
+   `node tests/pyodide/smoke.mjs`, which reads `cases.vcf` and
+   `cases.vcf.gz` under pyodide 314.0.7 with its numpy 2.4.6 and finds
+   the genotypes of the spec's table, 3 variants by default and 4 with
+   every variant, exit 0, in 1.2 s once micropip and numpy are cached.
+
+### The review
+
+Seven reviewers over c0a9fa7..315d406: `spec`, `tests`, `numbers`,
+`errors`, `api`, `architecture` and `binding`; 147, 159, 134, 112, 99,
+145 and 123 thousand tokens. The findings that held went back to the
+three subagents that wrote each side, the core first: 6 commits from
+2e8e31a, 79 thousand tokens more; the Python side, 13 commits from
+04a1618, 129 thousand; the TypeScript side, 4 commits from 989d1d9, 97
+thousand.
+
+What held and was fixed, the ones that matter first:
+
+- A `num_vars_per_block` that a user gives killed the session.
+  `iter_blocks(num_vars_per_block=10**13)` on `cases.vcf` printed "memory
+  allocation of 80000000000000 bytes failed" and the interpreter exited
+  with 134; in wasm 4e9 genotypes trapped and left the module unusable.
+  The collector checked only that the size fits a `usize`, and a failed
+  allocation is an abort that no `except` catches. Four reviewers ran
+  it. Every column is now reserved with `try_reserve_exact` before
+  anything is read, and the same call is a `ValueError` at the first
+  block.
+- After the error of a reader the collector went on reading. It held
+  only because `VcfReader` stops itself: a reader that failed once and
+  then gave more variants got a block after its error. The vars file
+  reader could have been that reader.
+- TypeScript took numbers that Python refuses, because wasm-bindgen
+  turns a JavaScript number into a `usize` by truncation and modulo
+  2^32: `{ploidy: 2.5}` read with 2, `numVarsPerBlock: 4294967297` gave
+  blocks of 1 variant, and -1 an error about 4294967295. The package
+  checks every whole number before the call.
+- `Block.gts` was read only through its view alone: `gts.base` was
+  writeable over the same buffer, and the test tried only direct
+  assignment. The genotypes are built with their three dimensions in the
+  binding, still with no copy, and every array of a block is read only.
+- In the browser the VCF was held twice in the memory of wasm: 185.0 MB
+  after `openVcf` for a VCF of 91.9 MB, 93.1 MB now.
+- The Python binding copied the whole table of chromosomes for every
+  block, asked for or not. 20000 variants of 20 individuals with 20000
+  contigs, blocks of 100, no field asked for: 0.279 s, 0.176 s now,
+  against 0.166 s for the same file with one contig.
+- Which name of the API is which field of the reader was written twice,
+  the same 24 lines in the two binding crates. It is in the core,
+  `needs_of_the_fields`, and both call it.
+- A variant with another number of alleles than individuals x ploidy is
+  an error in the collector. A reader that broke that promise would have
+  been stopped by numpy in Python and read wrong with no sign in
+  TypeScript, where the genotypes cross flat.
+- Smaller: a bare string for `fields` was split into letters in both
+  languages, and is a `TypeError` in Python and an `Error` in
+  TypeScript; a negative ploidy was an `OverflowError` and is the
+  `ValueError` the spec promises; an error of the input lost its errno
+  and its path, so that `except IsADirectoryError` missed it;
+  `repr(block)` printed 300 KB; the Python classes reported `builtins`
+  as their module; a position above 2^53 was rounded on its way to
+  JavaScript with no error; the count of open passes that the TypeScript
+  tests lean on never came back to 0 for an iterator that was never
+  started; a trap inside wasm was hidden by the error of the `free()`
+  that followed it; `Variants` had no `[Symbol.dispose]`.
+- Tests that were missing: the default fields of a block in TypeScript,
+  which could be all five with every test passing, and that the arrays
+  of a block are copies that survive the growth of the memory of wasm.
+
+Two things the orchestrator decided, which change what a user sees and
+which the owner can reverse:
+
+- The TypeScript block has `numIndividuals` and `ploidy`. Its `gts` is
+  flat, and without them a block could not be indexed without the
+  `Variants` it came from. Three reviewers and the subagent of 4.3 asked
+  for it. The Python block needs neither, the shape of `gts` carries
+  them, and `docs/specs/block.md` says so.
+- `many.vcf` has ids and qualities, worked out from the index of the
+  variant with no random draw, so that no genotype changed and the
+  sixteen counts of the spec stand. Before, the comparison with pyNei of
+  those two columns rested on the 4 variants of `cases.vcf`: an id upper
+  cased in the core failed 4 of the 8 tests, and fails the 8 now. The
+  file is 117346 bytes and its gzip members hold 617, 65252, 51477 and 0
+  bytes of text, which the spec has.
+
+What held and was not changed: the id column of a block is a
+`Vec<String>`, one allocation per variant, which section 2 of the
+architecture dictates; a reviewer measured no cost, 0.284 s with every
+field and with the genotypes alone for 20000 variants x 1000
+individuals in release. `maturin develop` builds the core with the dev
+profile, so pytest runs an unoptimised core, 7.4 s through `iter_blocks`
+for a file the release core reads in 0.285 s; the measurement of work
+package 5 uses a release build.
+
+### How the work went
+
+The read only reviewers were sent to read in the plan's own worktree,
+and one of them checked out the commit under review there, which left
+the tree on a detached HEAD. The 19 commits of fixes that followed went
+onto that detached line, and the orchestrator's tick of task 4.4 onto
+the branch. The subagent of the Python fixes saw it and said so. Nothing
+was lost: the tick was cherry-picked onto the line and the branch moved
+to it, 78 commits, clean. From now on a reviewer that reads in the shared
+worktree is told to switch no commit, and a fixer to check that it is on
+the branch before it commits. `main` was not touched.
+
+### For the owner
+
+Besides the two decisions above, the three of work package 3 are still
+open. Two more reviewers, independently, reported the second one here: a
+QUAL of `nan` in the file is stored as the NaN that means that the
+variant has no quality, and the two cannot be told apart.
+
+What was learned about wasm-bindgen is in `js/popnei/README.md`, for the
+reference that the `coding` skill lacks: what crosses as a copy, that
+names are not turned to camelCase and a `pub const` cannot be exported,
+that a number is truncated at the boundary, that the `finally` of a
+generator does not run when it was never started, and what an argument
+of bytes costs.
