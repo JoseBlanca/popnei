@@ -151,8 +151,14 @@ impl ChromTable {
     pub fn intern(&mut self, name: &str) -> u32;
     pub fn name(&self, id: u32) -> Option<&str>;
     pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
 }
 ```
+
+A table holds at most `u32::MAX` names, which no genome comes near: a name
+interned beyond that gets the number `u32::MAX`, is not kept, and `name`
+gives `None` for it. `intern` returns a number and not a `Result` because
+every variant that is read calls it, and popnei does not panic.
 
 The record. Its fields are public because every reader writes them and
 every consumer reads them.
@@ -200,7 +206,11 @@ pub trait VariantReader: Send {
 The error of the crate. Each module adds its cases to one enum, marked
 `non_exhaustive`, and `Result<T>` is `std::result::Result<T, Error>`.
 This module adds one case, a consumer that did not get a field it
-depends on, with the name of the field.
+depends on. It carries the fields as a `Needs`, the ones that were asked
+for and are not in `filled`, which a consumer gets with
+`asked_for.difference(var.filled)`, and its message names them: a
+consumer that depends on two fields reports both in one error. So `Needs`
+prints the names of its fields.
 
 ## Open points
 
