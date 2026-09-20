@@ -324,3 +324,22 @@ count, although that file is read in blocks of 10. It is a corner that a
 user sees, decided by the subagent and kept by the orchestrator because
 it follows from "nothing is read when it is called but the header" of
 section 5 of the architecture; the owner can reverse it.
+
+Task 2.5, the two new errors, went to the same subagent: commit b67f652,
+48 thousand tokens and 8 minutes. Run by the orchestrator: `153 passed`,
+pytest `59 passed`, `npm test` `tests 44`, `fail 0`, both wasm targets
+checked. A quality of `1e39` is refused like `1e400`, since a quality of
+a block is a float of 32 bits and reads both as infinite. What a user
+sees of a file that was cut: the error comes after the variants, and
+through `iter_blocks` the variants that `reblock` was keeping for its
+next block are lost with it, as the block spec says of any error, so
+`many.vcf.gz` cut after its second gzip member gives a Python user, in
+blocks of 100, 200 of its 280 variants and then the error, where the
+reader itself gives the 280. The message says that the file is cut short
+and has to be fetched again.
+
+The order of the rest was changed, and the plan says so: the review of
+tasks 2.3 to 2.5 and task 3.1, the removal, run at the same time, in
+other trees and other files; then the fixes; then task 2.6, the
+measurement, with no build beside it and on the code that the plan
+leaves.

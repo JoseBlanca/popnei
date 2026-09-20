@@ -301,7 +301,7 @@ describes, no more. The three revised specs.
   `docs/specs/io_vcf.md`, which has the size of the blocks among the
   options of the reader and the error of a parse that did not come back.
   Serves deliverables 2, 3 and 5. Needs 2.2 and 2.3.
-- [ ] 2.5 The two new errors, in the core and seen from Python. From "The
+- [x] 2.5 The two new errors, in the core and seen from Python. From "The
   cases a reader of the rules would not guess", the last paragraph of
   the blocks in "How it is verified" and the cases of the error in "The
   Rust interface" of `docs/specs/io_vcf.md`. Serves deliverable 4.
@@ -311,7 +311,11 @@ describes, no more. The three revised specs.
   that the spec leaves to a measurement, each in a commit of its own with
   its numbers. Serves deliverable 6. Needs 2.4, and runs after 2.5: both
   write `crates/popnei/src/io/vcf.rs`, and a build beside a timing
-  changes the timing.
+  changes the timing. It also runs after task 3.1 and after the fixes of
+  the review of tasks 2.3 to 2.5, an order that the orchestrator chose
+  while the plan ran: the reviewers and task 3.1 work at the same time, in
+  other trees and other files, no build runs beside the timing, and what
+  is timed is the code that the plan leaves.
 
 **What could go wrong.** The profile of the reader as it is puts 95 in
 100 of the one thread time in the columns of the individuals read as
