@@ -991,7 +991,85 @@ mod tests {
         let Error::VcfHeader { problem } = error else {
             panic!("the error is {error}");
         };
-        assert!(problem.contains("#CHROM"), "{problem}");
+        // The other errors of a header name the #CHROM line too, so what
+        // this one has to say is that there is none.
+        assert!(problem.contains("no #CHROM line"), "{problem}");
+    }
+
+    #[test]
+    fn an_empty_source_is_refused() {
+        let error = error_of("", VcfOptions::default());
+        let Error::NotAVcf { found } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(found.contains("no byte"), "{found}");
+    }
+
+    #[test]
+    fn a_gzipped_source_that_is_not_a_vcf_is_refused() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, b"hello\n").unwrap();
+        let gzipped = encoder.finish().unwrap();
+        let error = match VcfReader::new(Cursor::new(gzipped), VcfOptions::default()) {
+            Ok(reader) => panic!("the reader was built over {:?}", reader.individuals()),
+            Err(error) => error,
+        };
+        let Error::NotAVcf { found } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(found.contains("hello"), "{found}");
+    }
+
+    #[test]
+    fn a_gzipped_source_cut_in_the_middle_of_a_member_is_refused() {
+        let bytes = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
+        // The first member of this file is its header and the second its
+        // four variants, so the cut is inside the second one.
+        let cut = bytes.len().saturating_sub(20);
+        let bytes = bytes.get(..cut).unwrap_or_default().to_vec();
+        let mut reader = VcfReader::new(Cursor::new(bytes), VcfOptions::default()).unwrap();
+        assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
+        let error = rows_of(&mut reader).unwrap_err();
+        assert!(
+            matches!(error, Error::Io(_)),
+            "a file cut in the middle of a gzip member gives {error}"
+        );
+    }
+
+    #[test]
+    fn a_last_line_with_no_end_of_line_is_read() {
+        let vcf = format!(
+            "{HEADER}chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n\
+             chr1\t200\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"
+        );
+        assert_eq!(
+            rows_read(&vcf, VcfOptions::default()),
+            vec![
+                row("chr1", 100, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
+                row("chr1", 200, "", &["A", "T"], None, &[0, 0, 0, 1, 1, 1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_after_an_error_and_after_the_last_variant_gives_no_variant() {
+        let mut reader = reader_over(
+            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]),
+            VcfOptions::default(),
+        );
+        let mut var = Variant::new();
+        assert!(reader.read_variant(&mut var).unwrap());
+        assert!(!reader.read_variant(&mut var).unwrap());
+        assert!(!reader.read_variant(&mut var).unwrap());
+
+        let mut reader = reader_over(
+            &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1"]),
+            VcfOptions::default(),
+        );
+        assert!(reader.read_variant(&mut var).is_err());
+        assert!(!reader.read_variant(&mut var).unwrap());
+        assert!(!reader.read_variant(&mut var).unwrap());
+        assert_eq!(var.filled, Needs::empty());
     }
 
     /// A reader over bytes held in memory, which is how the tests give a
