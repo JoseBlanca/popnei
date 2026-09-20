@@ -126,7 +126,16 @@ impl Blocks {
         // who asks for the blocks of a big VCF waits here, and a Ctrl-C
         // between two blocks is how they stop.
         py.check_signals()?;
-        let Some((block, chroms)) = py.detach(|| self.next_block())? else {
+        let read = py.detach(|| self.next_block())?;
+        // A Ctrl-C that arrived while the block was read is still pending:
+        // the interpreter was released and no bytecode ran to raise it. It
+        // is raised here, before numpy is called, because the first array of
+        // a process imports the C API of numpy, that import fails with the
+        // exception that is pending, and the numpy crate panics when it
+        // does: a user who asked for a Ctrl-C would get a `PanicException`,
+        // which no `except` of theirs catches and which ends the session.
+        py.check_signals()?;
+        let Some((block, chroms)) = read else {
             return Ok(None);
         };
         let Block {
