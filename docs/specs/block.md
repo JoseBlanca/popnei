@@ -44,6 +44,13 @@ reader, a filter and `reblock`: a reader that went on after an error
 would give the variants that follow the wrong one as if nothing had
 happened.
 
+A reader over another reader does not trust its source to keep that rule.
+`reblock` refuses a block of no variants, with the error that names the
+defect, and ends there: a source that gives one has nothing to say about
+whether the variants after it follow, and a reader that asked again would
+turn a source that always gives one into a loop that nothing but the end
+of the process breaks.
+
 A filter of variants decides which rows of a block stay and calls
 `retain_vars`, which compacts the genotypes and every column in place, in
 the order they had. Nothing is allocated, and the block keeps its
@@ -182,9 +189,22 @@ pass does, it gives what it was keeping as a shorter block first.
 `reblock` keeps at most one block from one call to the next, the variants
 that did not fill a block or the ones left after a cut, so its memory is
 two blocks. Joining copies the rows of the block that arrives after the
-ones that were waiting, and cutting copies the rows after the cut into a
-new block: one memcpy per block and none per variant. The read ahead
-thread of section 3 of the architecture is not in this item.
+ones that were waiting. Cutting copies out the rows that leave, into a
+block allocated for them, and the rest stays in the block that waits, with
+the row it starts at: so a block of 10000 variants cut into blocks of 100
+copies each row once and not once for every cut before it, and a block
+that is given holds the memory of its own rows and not of the block it was
+cut from, which is what a Python user keeps when they hold its genotypes.
+One memcpy per block given and none per variant. The read ahead thread of
+section 3 of the architecture is not in this item.
+
+Two things the rules above leave to this item. `retain_vars` runs `check`
+before it moves a row, since it moves the rows by their place in the
+arrays, and gives its error for a block that does not pass it, leaving the
+block as it was. And `variants` of a block that does not pass `check`
+stops at the first variant that is not in the arrays instead of failing,
+so a consumer that did not get its block from `reblock` or from a binding
+crate calls `check` before it walks the views.
 
 ### How it is verified
 
@@ -389,7 +409,7 @@ pub fn needs_of_the_fields<'a>(
 ) -> Result<Needs>;
 ```
 
-This module adds six cases to the error of the crate. A
+This module adds seven cases to the error of the crate. A
 `num_vars_per_block` of 0, which `Reblock::new` and every source that
 takes a size refuse. A block the machine cannot give the memory for: a
 reader that is given a size refuses one whose genotypes,
@@ -401,10 +421,11 @@ before it fills it, the positions of a variant among them, which are 8
 bytes whatever the individuals are, and gives the same error when the
 machine does not give it. A size that a caller wrote reaches neither an
 abort nor a panic. Blocks that do not fit together, which `reblock` finds
-when its source gives two with another number of individuals or another
-ploidy. A block whose arrays are not of its size, which `check` finds, with
-the array and the two sizes. A `keep` that has not one value for each
-variant of its block. And a name that is not a field of a block.
+when a block of its source has another number of individuals or another
+ploidy than the source says it has. A block of no variants, which
+`reblock` refuses. A block whose arrays are not of its size, which `check`
+finds, with the array and the two sizes. A `keep` that has not one value
+for each variant of its block. And a name that is not a field of a block.
 
 ## Open points
 
