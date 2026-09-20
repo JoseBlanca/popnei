@@ -110,7 +110,7 @@ mod tests {
     fn the_message_of_a_wrong_data_line_names_the_line_and_the_place() {
         let error = Error::VcfDataLine {
             line: 12,
-            place: VcfPlace::Column("POS".to_string()),
+            place: VcfPlace::Column("POS"),
             problem: "`x` is not a position".to_string(),
         };
         let message = error.to_string();

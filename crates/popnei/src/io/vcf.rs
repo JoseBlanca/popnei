@@ -4,9 +4,8 @@
 //! [`VcfReader::new`] takes any source of bytes and reads the header of the
 //! VCF, so the individuals are known before a variant is, and
 //! [`VcfReader::from_path`] does the same for a caller that has a path. The
-//! reader is a [`VariantReader`]: the consumer owns one
-//! [`Variant`](crate::variant::Variant) and lends it to `read_variant` again
-//! and again.
+//! reader is a [`VariantReader`]: the consumer owns one [`Variant`] and
+//! lends it to `read_variant` again and again.
 //!
 //! The source is gzipped when its first two bytes are those of gzip,
 //! whatever the name of the file. A VCF written by bgzip, which is what
@@ -60,7 +59,7 @@ const FIRST_COLUMNS: [&str; 9] = [
 pub enum VcfPlace {
     /// One of the nine first columns, by the name the `#CHROM` line gives
     /// it, `POS`.
-    Column(String),
+    Column(&'static str),
     /// The column of one individual, by its name.
     Individual(String),
     /// The line as a whole, when no one column is at fault.
@@ -129,9 +128,8 @@ impl<R: BufRead> VcfSource<R> {
 
 /// A reader over a VCF, which gives its variants one at a time.
 ///
-/// It holds the individuals and the names of the chromosomes it has seen,
-/// and the buffer of one line, which is refilled for every line of the
-/// file.
+/// It holds the individuals of the file and the names of the chromosomes
+/// it has given so far, each with its number.
 pub struct VcfReader<R: BufRead + Send> {
     source: VcfSource<R>,
     options: VcfOptions,
@@ -230,27 +228,31 @@ impl VcfReader<BufReader<File>> {
 /// be the nine of a VCF with genotypes.
 fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     let columns: Vec<&str> = chrom_line.split('\t').collect();
-    for (found, expected) in columns.iter().zip(FIRST_COLUMNS) {
-        if *found != expected {
-            return Err(Error::VcfHeader {
-                problem: format!(
-                    "its line {line_number} has `{found}` where a VCF with genotypes \
-                     has `{expected}`; the nine first columns are {first}",
-                    first = FIRST_COLUMNS.join(" "),
-                ),
-            });
+    for (index, expected) in FIRST_COLUMNS.iter().enumerate() {
+        match columns.get(index) {
+            Some(found) if found == expected => {}
+            Some(found) => {
+                return Err(Error::VcfHeader {
+                    problem: format!(
+                        "its line {line_number} has `{found}` where a VCF with genotypes \
+                         has `{expected}`; the nine first columns are {first}",
+                        first = FIRST_COLUMNS.join(" "),
+                    ),
+                });
+            }
+            None => {
+                return Err(Error::VcfHeader {
+                    problem: format!(
+                        "its line {line_number} has no `{expected}` column; the nine \
+                         first columns of a VCF with genotypes are {first}, and one \
+                         column per individual comes after them",
+                        first = FIRST_COLUMNS.join(" "),
+                    ),
+                });
+            }
         }
     }
-    let Some(individuals) = columns.get(FIRST_COLUMNS.len()..) else {
-        return Err(Error::VcfHeader {
-            problem: format!(
-                "its line {line_number} has {count} columns, and a VCF with genotypes \
-                 has the nine {first} and one column per individual after them",
-                count = columns.len(),
-                first = FIRST_COLUMNS.join(" "),
-            ),
-        });
-    };
+    let individuals = columns.get(FIRST_COLUMNS.len()..).unwrap_or_default();
     if individuals.is_empty() {
         return Err(Error::VcfHeader {
             problem: format!(
@@ -328,7 +330,7 @@ fn passed(filter: &str) -> bool {
 fn parse_position(text: &str, line: u64) -> Result<u64> {
     text.parse().map_err(|_| Error::VcfDataLine {
         line,
-        place: VcfPlace::Column("POS".to_string()),
+        place: VcfPlace::Column("POS"),
         problem: format!("`{text}` is not a position"),
     })
 }
@@ -340,7 +342,7 @@ fn parse_quality(text: &str, line: u64) -> Result<Option<f32>> {
     }
     text.parse().map(Some).map_err(|_| Error::VcfDataLine {
         line,
-        place: VcfPlace::Column("QUAL".to_string()),
+        place: VcfPlace::Column("QUAL"),
         problem: format!("`{text}` is not a quality"),
     })
 }
@@ -455,7 +457,7 @@ fn fill_genotypes<'a>(
     let Some(gt_index) = format.split(':').position(|key| key == "GT") else {
         return Err(Error::VcfDataLine {
             line,
-            place: VcfPlace::Column("FORMAT".to_string()),
+            place: VcfPlace::Column("FORMAT"),
             problem: format!("`{format}` has no GT key, and GT is the genotype"),
         });
     };
@@ -580,6 +582,23 @@ impl<R: BufRead + Send> VcfReader<R> {
             }
             return Ok(true);
         }
+    }
+}
+
+impl<R: BufRead + Send> fmt::Debug for VcfReader<R> {
+    /// What the reader was built with and where it has got to. The source
+    /// is left out, so that a reader over a source that has no `Debug` has
+    /// one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VcfReader")
+            .field("individuals", &self.individuals)
+            .field("options", &self.options)
+            .field("needs", &self.needs)
+            .field("chroms", &self.chroms)
+            .field("line_number", &self.line_number)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
     }
 }
 
@@ -1117,10 +1136,7 @@ mod tests {
         else {
             panic!("the error is {error}");
         };
-        assert_eq!(
-            (line, place),
-            (FIRST_DATA_LINE, VcfPlace::Column("FORMAT".to_string()))
-        );
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("FORMAT")));
         assert!(problem.contains("GT"), "{problem}");
     }
 
@@ -1136,10 +1152,7 @@ mod tests {
         else {
             panic!("the error is {error}");
         };
-        assert_eq!(
-            (line, place),
-            (FIRST_DATA_LINE, VcfPlace::Column("POS".to_string()))
-        );
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("POS")));
         assert!(problem.contains('x'), "{problem}");
     }
 

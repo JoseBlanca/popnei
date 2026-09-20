@@ -57,8 +57,13 @@ impl Needs {
     pub const ALLELES: Needs = Needs(8);
     /// The quality of the variant.
     pub const QUAL: Needs = Needs(16);
-    /// The five fields.
-    pub const ALL: Needs = Needs(1 | 2 | 4 | 8 | 16);
+    /// The five fields, built from the five constants, so that a field
+    /// added to this set later cannot be left out of it.
+    pub const ALL: Needs = Needs::GTS
+        .union(Needs::CHROM_POS)
+        .union(Needs::ID)
+        .union(Needs::ALLELES)
+        .union(Needs::QUAL);
 
     /// No field at all, which is what `filled` of a variant that was just
     /// cleared holds.
@@ -110,8 +115,10 @@ impl BitOrAssign for Needs {
 }
 
 impl fmt::Display for Needs {
-    /// The names of the fields of the set, `gts, qual`, and `nothing` when
-    /// it is empty.
+    /// The name of each field of the set between backticks, `` `gts`,
+    /// `qual` ``, and `nothing` when it is empty. The backticks are what
+    /// tells the reader of a message where one name ends, since one of the
+    /// five is `chrom and pos`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut written = false;
         for (field, name) in FIELD_NAMES {
@@ -119,7 +126,7 @@ impl fmt::Display for Needs {
                 if written {
                     formatter.write_str(", ")?;
                 }
-                formatter.write_str(name)?;
+                write!(formatter, "`{name}`")?;
                 written = true;
             }
         }
@@ -143,6 +150,7 @@ impl fmt::Debug for Needs {
 /// numbers are given in the order in which the names first appear among
 /// the variants the reader gives, so two passes over the same source give
 /// the same numbers.
+#[derive(Debug)]
 pub struct ChromTable {
     names: Vec<String>,
     numbers: HashMap<String, u32>,
@@ -212,6 +220,7 @@ impl Default for ChromTable {
 /// every consumer reads them. A field that is not in `filled` holds its
 /// empty value and never what the previous variant left in it, so a
 /// consumer that depends on a field checks `filled` first.
+#[derive(Debug)]
 pub struct Variant {
     /// A number of the [`ChromTable`] of the reader that filled this
     /// variant.
@@ -230,7 +239,10 @@ pub struct Variant {
     pub id: String,
     /// The reference allele first, then the alternative ones.
     pub alleles: Vec<String>,
-    /// The quality of the variant, `None` when the source gives none.
+    /// The quality of the variant, the QUAL column of a VCF, phred
+    /// scaled: minus ten times the base ten logarithm of the probability
+    /// that there is no variant at this site, so 30 is one in a thousand.
+    /// `None` when the source gives none.
     pub qual: Option<f32>,
     /// What the reader filled in the last read.
     pub filled: Needs,
@@ -256,11 +268,22 @@ impl Variant {
     /// the capacity of the buffers, which is what lets a reader refill a
     /// million variants without allocating.
     pub fn clear(&mut self) {
+        self.clear_but_the_alleles();
+        self.alleles.clear();
+    }
+
+    /// Every field but `alleles` to its empty value and `filled` to
+    /// nothing. The alleles are left as they are, for the reader that
+    /// writes over their strings instead of dropping them; it takes them
+    /// out of the variant itself. [`Variant::clear`] is this followed by
+    /// emptying `alleles`, so the list of the fields is written once and a
+    /// field that is added later cannot be cleared by one and not the
+    /// other.
+    pub fn clear_but_the_alleles(&mut self) {
         self.chrom = 0;
         self.pos = 0;
         self.gts.clear();
         self.id.clear();
-        self.alleles.clear();
         self.qual = None;
         self.filled = Needs::empty();
     }
@@ -426,6 +449,31 @@ mod tests {
         assert_eq!(var.gts.capacity(), gts_capacity);
         assert_eq!(var.id.capacity(), id_capacity);
         assert_eq!(var.alleles.capacity(), alleles_capacity);
+    }
+
+    /// The reader of a VCF writes the alleles over the strings the variant
+    /// holds, so it needs the fields emptied and the alleles left alone.
+    #[test]
+    fn a_variant_cleared_but_the_alleles_keeps_them_and_empties_the_rest() {
+        let mut var = Variant::new();
+        var.chrom = 4;
+        var.pos = 1_000_003;
+        var.gts.extend_from_slice(&[0, MISSING_ALLELE]);
+        var.id.push_str("rs4711");
+        var.alleles.push("A".to_string());
+        var.alleles.push("TTG".to_string());
+        var.qual = Some(37.5);
+        var.filled = Needs::ALL;
+
+        var.clear_but_the_alleles();
+
+        assert_eq!(var.chrom, 0);
+        assert_eq!(var.pos, 0);
+        assert!(var.gts.is_empty());
+        assert!(var.id.is_empty());
+        assert_eq!(var.qual, None);
+        assert_eq!(var.filled, Needs::empty());
+        assert_eq!(var.alleles, ["A", "TTG"]);
     }
 
     /// A reader of two variants of three individuals, written here to try
