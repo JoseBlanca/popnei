@@ -87,6 +87,13 @@ at a Python that emsdk downloaded, and nothing else has to be set:
     source ~/devel/emsdk/emsdk_env.sh
     ~/devel/pyodide-venv/bin/pyodide xbuildenv install 314.0.7
 
+`cargo wasm-check`, an alias in `.cargo/config.toml` since the review of
+work package 1, checks the core for the two wasm targets. It is among
+the checks of work packages 2 and 3, which otherwise build natively
+alone and would find what does not build for wasm two work packages
+later. It does not find a thread: `std::thread::spawn` compiles for
+`wasm32-unknown-unknown` and fails when it runs.
+
 There is no code, so none of the five commands of "Before the work is
 called done" of the `coding` skill runs today: `cargo test` answers
 "could not find `Cargo.toml`". The three cargo commands run from task
@@ -154,7 +161,7 @@ around it.
   the build command and the first node test. From sections 8 and 11 of
   the architecture. Serves deliverable 3. Needs 1.1. Side by side with
   1.2.
-- [ ] 1.4 The script that builds the wheel of pyodide, from the steps of
+- [x] 1.4 The script that builds the wheel of pyodide, from the steps of
   `spike/README.md` of the pyNei repository, the trial crate in Rust that
   `docs/rust_core.md` reports and that was built for pyodide, with the versions read from
   `pyodide config get` as `.claude/skills/coding/pyo3.md` asks, and the
@@ -184,7 +191,7 @@ there is a reader, and the comparison with pyNei is made in work package
    interface" of `docs/specs/variant.md`. Check: `cargo test -p popnei
    --lib variant:: -- --list` shows 3 tests or more, one for each of the
    three types that "How it is verified" names, and the three cargo
-   commands pass.
+   commands and `cargo wasm-check` pass.
 2. `VariantReader` works as a boxed trait object. Check: a cargo test
    with a reader written in the test, which gives two variants, read
    through a `Box<dyn VariantReader>`.
@@ -227,7 +234,8 @@ guard them.
    sixteen counts of the table of "How it is verified" as literals, for
    the plain and the gzipped file.
 4. All of it. Check: `cargo test -p popnei --lib io::vcf:: -- --list`
-   shows 25 tests or more, and the three cargo commands pass.
+   shows 25 tests or more, and the three cargo commands and `cargo
+   wasm-check` pass.
 
 **What it stands on.** Work package 2, whose types every task here
 uses, so its subagents read `docs/specs/variant.md` too, and the
