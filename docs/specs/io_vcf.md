@@ -52,8 +52,19 @@ decided on 20 September 2026 that the FILTER is honoured and that this is
 the default; pyNei ignores the column. That `.` counts as passed was
 decided here: many programs write `.` in every line, pyNei's own script
 for its reference VCF among them, and with `.` as a failure the default
-would give such a file no variants. `bcftools view -f .,PASS` is the same
-choice.
+would give such a file no variants.
+
+A FILTER that names more than one filter is where popnei and bcftools
+differ. popnei reads the whole column: it gives the variant when the column
+is `PASS` or `.` and no other. `bcftools view -f .,PASS` keeps a row when
+any of the filters the column names is one of those, so it keeps
+`PASS;q10`, a variant that failed `q10`, and popnei skips it. On the seven
+columns `PASS`, `.`, `q10`, `PASS;q10`, `pass`, `q10;PASS` and an empty
+one, popnei gives the first two and bcftools those two and the two that
+name `PASS` beside `q10`. Which is right depends on what the file means by
+naming both, which VCF does not say; popnei takes the strict reading, and a
+user who wants the other one has `only_passed` false and a filter of their
+own.
 
 The genotype of an individual is the value of the key `GT` in its column.
 The reader finds where `GT` is among the keys of the FORMAT column of
@@ -189,6 +200,19 @@ bcftools says "no BGZF EOF marker". The owner decided this on 20 September
 2026. A gzip file that bgzip did not make has no such mark and is read to
 its end.
 
+A bgzipped source that ends early is that error wherever it was cut, and
+the variants that were read before the cut are given first in every case.
+Where the cut falls decides how the reader learns of it. A cut where a
+member ends leaves a file the decoder finds nothing wrong with, and what
+says that it is cut short is the mark that is not at its end. A cut inside
+a member leaves the decoder without the bytes it needs: it gives the lines
+it could decompress and then fails, and that failure of a source that bgzip
+wrote is the same error, so a user whose download stopped is told that the
+file is cut short and not that a deflate stream is incomplete. An error of
+the file system, a disc that fails while the file is read, is not one of
+those: it stays the error of the input it is, with the blocks that were
+read before it given first.
+
 The header is every line that starts with `##`, which is skipped, and
 then the line that starts with `#CHROM`, whose first nine columns have to
 be the nine of a VCF with genotypes and whose other columns are the
@@ -213,8 +237,17 @@ ten columns are errors. So is a quality that is a number and not a finite
 one, `nan`, `inf` or `1e400`, which a float reads as infinite: it is an
 error of the QUAL column, because NaN is what a block holds for a variant
 with no quality. The owner decided this on 20 September 2026; the option
-not taken was to keep what the float gave. A line whose bytes are not text, not valid UTF-8,
-is an error of that line and not an error of the input: a VCF is text.
+not taken was to keep what the float gave. A line whose bytes are not text,
+not valid UTF-8, is an error of that line and not an error of the input: a
+VCF is text.
+
+The bytes of a line are read as text where its text is kept, which is its
+nine first columns, and the error above is theirs. The columns of the
+individuals are read as bytes and never as text, which is what "Speed"
+below asks for, so a byte that is not text in one of them is a byte that is
+not a digit where an allele number is: the error names that individual and
+not the line. With the genotypes not asked for, those columns are not
+looked at at all and such a line is read.
 Every error of a data line gives the number of the line in the file,
 counted from 1 with the header lines, and the column or the individual.
 
@@ -299,13 +332,17 @@ constants of the code, each with what was measured on it, and a caller
 that times the reader can set them. The reader as built has them at 1024
 lines and 8 MiB.
 
-The genotypes, the positions and the qualities of a line go straight into
-its row. The texts do not, because the rows of a column of texts are not
-of one size: the id and the alleles of a line are parsed into buffers of
-that line, and appended to the columns of the block in order, serially,
-after each batch, and only when they were asked for. The chromosomes get
-their numbers then too, in the order of the variants that are given, so
-the numbers do not depend on the threads.
+The genotypes of a line go straight into its row of the block, which is
+where nearly all the bytes of a VCF with genotypes end up. Everything else
+is parsed into buffers of that line and appended to the columns of the
+block in order, serially, after each batch: the position, the quality, the
+id and the alleles, each only when it was asked for, and the number of the
+chromosome, which is given then so that the numbers follow the order of the
+variants and not the order in which the lines were parsed. What that
+serial pass costs was measured on 21 September 2026 on the owner's Apple M5
+Pro, release, on the 403 MB VCF of "Speed" below: asking for every column
+instead of the genotypes alone adds 1 ms of 127 on 18 threads and 38 ms of
+650 on one, the ids being the one column that allocates for each variant.
 
 An error loses its block, as section 1 of the architecture has it: the
 blocks before the one with the wrong line are given, then the error comes
@@ -329,9 +366,7 @@ Only what `Needs` asks for is parsed, and a block has the columns that
 were asked for and no other, the chromosomes and the positions among them.
 A column that is not parsed is not checked: a position that is not a
 number is an error only with the chromosome and the position asked for,
-and a quality of `nan` only with the quality asked for. The reader as
-built parses the position of every line, which was the rule of the first
-version of this spec.
+and a quality of `nan` only with the quality asked for.
 What is checked whatever is asked for is the shape of the line: the nine
 first columns have to be there, the FORMAT has to have a `GT` key, and
 there has to be one column after the FORMAT at least. With the genotypes
@@ -341,12 +376,13 @@ two columns of individuals under a header with three, or one with a
 genotype of another ploidy, is given, and `gts` is empty.
 
 The reader is built over any `BufRead`, as section 1 of the architecture
-asks. It reads the first two bytes of the source to find the gzip and
-hands them back in front of it, because one look at the buffer of a
-source may give fewer than two bytes: a pipe, or the bytes of a file that
-a page hands over a few at a time. Nothing of the source is consumed, and
-the bytes after the first two are read from the buffer of the source
-itself. A function that takes a path opens the file and does the same,
+asks. It reads the first sixteen bytes of the source and hands them back
+in front of it: the two of gzip, the ones the message of a source that is
+not a VCF shows, and the bytes 12 and 13, where a file that bgzip wrote
+names its extra field `BC`. One look at the buffer of a source may give
+fewer bytes than that, one even: a pipe, or the bytes of a file that a page
+hands over a few at a time. Nothing of the source is consumed, and the
+bytes after the sixteenth are read from the buffer of the source itself. A function that takes a path opens the file and does the same,
 for the callers that have one; a file that cannot be opened is an error
 that carries the path.
 
@@ -547,7 +583,10 @@ more genotypes than a `usize` holds.
 
 A `num_vars_per_block` of `None`, the size that popnei chooses, is not
 checked there but when the first block is built, and the error is the same
-one. So a caller that opens a file to read its individuals, which is what
+one, with the words of a size that the caller did not write: it says that
+the size popnei chose for these individuals and this ploidy does not fit
+and that a `num_vars_per_block` that does is the way out, where the error
+of a size that was asked for says to ask for fewer variants in a block. So a caller that opens a file to read its individuals, which is what
 `open_vcf` and `openVcf` do, never fails for a size that nobody asked for:
 a header of 170000 individuals read with the ploidy 255 gives a default
 block of 100 variants whose genotypes are more than the 4295 million that a
