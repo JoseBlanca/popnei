@@ -9,6 +9,10 @@ The skills are under `.claude/skills/` and the subagents under
 will read is written, and a document or a GitHub issue goes to the
 `first-reader` subagent before it is handed over.
 
+An implementation plan is carried out in its own git worktree and branch,
+under `.claude/worktrees/`, as the `following-plans` skill says. Nothing is
+merged into `main`, and nothing is pushed to it, without the owner's order.
+
 ## Replies in chat
 
 The owner reads a reply to decide something or to learn something they

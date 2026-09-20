@@ -12,7 +12,7 @@ order of the work, which is the plan's, and it does not repeat
 `docs/architecture.md`, which it points to.
 
 The prose follows the `writing` skill. Read that first. This skill says
-what goes into a spec, in which order, and how much.
+what goes into a spec, in which order, and what stays out.
 
 ## The example
 
@@ -36,12 +36,13 @@ work out again what pyNei does. Every paragraph is for one of the two.
 A paragraph that is for neither, that defends a choice nobody questioned
 or shows how carefully the writer worked, goes out.
 
-## How much
+## No filler
 
-A spec is as long as the module is hard, and no longer. A filter that is
-ten lines of pyNei takes about a page. The mixed models of the GWAS take
-many. A spec that the owner does not read to the end has failed, however
-correct it is, and thoroughness is the usual reason.
+The number of lines is not the measure of a spec. Filler is. A spec has
+as many lines as it has things its two readers need, and none besides. A
+spec that the owner does not read to the end has failed, however correct
+it is, and what stops them is not its size but thoroughness for its own
+sake: every edge named, every part filled.
 
 The test for a sentence is this: would an implementer who has read the
 pyNei function and its tests get this wrong without it? Would the owner
@@ -194,8 +195,9 @@ Then read the list of open points against the text. Every **Open:** in the
 text is in the list, and nothing in the list is already decided somewhere
 in the text.
 
-Read it for length as the owner would, who has a day of other work. For
-each part ask what would be lost without it.
+Read it for filler as the owner would, who has a day of other work. For
+each part, and for each sentence that looks like diligence, ask what
+would be lost without it.
 
 Last, the review. The code is made from the spec, so a wrong sentence in
 it becomes wrong code, and the writer who misread a pyNei function will
