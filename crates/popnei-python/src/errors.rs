@@ -95,10 +95,14 @@ impl From<PyPopneiError> for PyErr {
                 format!("the file {path} could not be read: {source}"),
                 path,
             ),
+            // No largest number is named here. What the largest is depends
+            // on the argument, 255 for a ploidy, and the core says it of
+            // each: a bound of this crate beside it would give a user two
+            // limits for one argument, and the one they read first would be
+            // the one that is not theirs.
             PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
-                "`{name}` is {value}, and it says how many of something there are: 1 or \
-                 more, and at most {largest}",
-                largest = usize::MAX
+                "`{name}` is {value}, and it says how many of something there are: a \
+                 whole number of 1 or more that this machine can count"
             )),
             PyPopneiError::Broken(message) => PyRuntimeError::new_err(message),
             PyPopneiError::Python(error) => error,

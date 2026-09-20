@@ -54,6 +54,13 @@ _REFUSED_BLOCK_SIZES = [
 ]
 
 
+# The largest whole number this machine counts, which no message names: the
+# largest a user may write is the one of their argument, 255 alleles in a
+# genotype, and the core says that one. A message with both would give a
+# user two limits for one argument.
+_WHAT_THE_MACHINE_COUNTS = str(2**64 - 1)
+
+
 @pytest.mark.parametrize(("value", "in_the_message"), _REFUSED_PLOIDIES)
 def test_a_ploidy_that_counts_no_alleles_is_refused_with_what_was_written(
     reference_vcf_dir: Path, value: int, in_the_message: list[str]
@@ -63,6 +70,7 @@ def test_a_ploidy_that_counts_no_alleles_is_refused_with_what_was_written(
     message = str(refusal.value)
     for words in in_the_message:
         assert words in message, message
+    assert _WHAT_THE_MACHINE_COUNTS not in message, message
 
 
 @pytest.mark.parametrize(("value", "in_the_message"), _REFUSED_BLOCK_SIZES)
@@ -75,3 +83,4 @@ def test_a_block_of_a_number_of_variants_that_counts_nothing_is_refused(
     message = str(refusal.value)
     for words in in_the_message:
         assert words in message, message
+    assert _WHAT_THE_MACHINE_COUNTS not in message, message
