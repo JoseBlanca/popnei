@@ -14,7 +14,7 @@ From the root of the repository, from a clean checkout:
     node tests/pyodide/smoke.mjs
 
 The first command prints the path of the wheel it left in `dist/`. The
-third takes that wheel, installs it in pyodide and checks two things, and
+third takes that wheel, installs it in pyodide and checks three things, and
 exits with an error naming each one that differs:
 
 - `popnei.__version__` is the version in `[workspace.package]` of the
@@ -27,6 +27,17 @@ exits with an error naming each one that differs:
   column, so `open_vcf` with its default leaves it out and the test looks
   for the first, the third and the fourth; with `only_passed=False` it
   looks for the four.
+- A VCF of 170000 individuals and no variant, written inside pyodide and
+  opened with the ploidy 255, gives its individuals and its ploidy. This is
+  the check that belongs here and nowhere else: a count of things in wasm
+  is 32 bits and holds 4295 million, and the blocks of the size popnei
+  chooses for that file, 100 variants, are 4335 million genotypes. Opening
+  a file reads its header and asks for no block, so it answers; blocks of
+  10 variants are asked for and the file has no variant to put in one; and
+  blocks of 100, and the size popnei chooses, are refused with the
+  `ValueError` of a block the machine has not the memory for. The same case
+  is in `js/popnei/test/open.test.ts`, under node, where a count of things
+  is 64 bits and nothing is refused for its size.
 
 Neither `dist/` nor `node_modules/` is in git.
 
