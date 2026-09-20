@@ -303,6 +303,8 @@ impl BatchLine {
             spare_alleles,
             outcome,
         } = self;
+        #[cfg(test)]
+        tests::panic_if_the_test_asked_for_it(*number, rules);
         var.clear_but_the_alleles();
         spare_alleles.append(&mut var.alleles);
         chrom_name.clear();
@@ -378,6 +380,15 @@ pub struct VcfReader<R: BufRead + Send> {
     /// Whether the reader gave its last variant or an error. After either,
     /// every read gives no variant.
     finished: bool,
+    /// Whether a parse of a batch was begun and did not come back, which is
+    /// what a panic inside the parse leaves behind: the lines of that batch
+    /// hold what the batch before them left in them, so the reader cannot
+    /// go on.
+    parsing: bool,
+    /// The line whose parse panics, which the test of what a reader does
+    /// after a panic in its parse sets and nothing else can.
+    #[cfg(test)]
+    panic_at_line: Option<u64>,
 }
 
 impl<R: BufRead + Send> VcfReader<R> {
@@ -425,6 +436,9 @@ impl<R: BufRead + Send> VcfReader<R> {
             line_error: None,
             source_done: false,
             finished: false,
+            parsing: false,
+            #[cfg(test)]
+            panic_at_line: None,
         };
         reader.read_header()?;
         Ok(reader)
@@ -829,6 +843,11 @@ struct ParseRules<'a> {
     options: VcfOptions,
     needs: Needs,
     individuals: &'a [String],
+    /// The line whose parse panics. No VCF makes the parse panic, and this
+    /// is how the test of what a reader does after a panic in its parse
+    /// makes one happen; nothing outside the tests can set it.
+    #[cfg(test)]
+    panic_at_line: Option<u64>,
 }
 
 /// The variant of the data line `text`, the line `number` of the file,
@@ -855,6 +874,7 @@ fn parse_data_line(
         options,
         needs,
         individuals,
+        ..
     } = rules;
     if text.is_empty() {
         return Ok(false);
@@ -954,6 +974,13 @@ impl<R: BufRead + Send> VcfReader<R> {
         self.lines_per_batch = lines.max(1);
     }
 
+    /// The line whose parse panics, for the test of what a reader does
+    /// after a panic inside its parse. No VCF panics the parse.
+    #[cfg(test)]
+    fn panic_at_line(&mut self, line: u64) {
+        self.panic_at_line = Some(line);
+    }
+
     /// It reads the next lines of the source into the batch, over the text
     /// and the buffers of the batch before, and parses them.
     ///
@@ -972,6 +999,9 @@ impl<R: BufRead + Send> VcfReader<R> {
             line_number,
             line_error,
             source_done,
+            parsing,
+            #[cfg(test)]
+            panic_at_line,
             ..
         } = self;
         *next = 0;
@@ -1009,9 +1039,16 @@ impl<R: BufRead + Send> VcfReader<R> {
             options: *options,
             needs: *needs,
             individuals,
+            #[cfg(test)]
+            panic_at_line: *panic_at_line,
         };
         if let Some(lines) = batch.get_mut(..*filled) {
+            // A panic of a worker unwinds through here, and what says so
+            // afterwards is this flag, which is set until the parse comes
+            // back.
+            *parsing = true;
             parse_lines(lines, &rules);
+            *parsing = false;
         }
     }
 
@@ -1020,6 +1057,11 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// when the options ask for it, the variants that failed a filter are
     /// the lines of the batch that give no variant.
     fn next_variant(&mut self, var: &mut Variant) -> Result<bool> {
+        if self.parsing {
+            return Err(Error::VcfParseNotFinished {
+                line: self.line_number,
+            });
+        }
         if self.finished {
             return Ok(false);
         }
@@ -1135,12 +1177,16 @@ impl<R: BufRead + Send> VariantReader for VcfReader<R> {
             batch,
             filled,
             next,
+            #[cfg(test)]
+            panic_at_line,
             ..
         } = self;
         let rules = ParseRules {
             options: *options,
             needs: *needs,
             individuals,
+            #[cfg(test)]
+            panic_at_line: *panic_at_line,
         };
         if let Some(lines) = batch.get_mut(*next..*filled) {
             parse_lines(lines, &rules);
@@ -1156,6 +1202,17 @@ mod tests {
     use super::{MAX_PLOIDY, MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
+
+    /// The panic that the test of a reader whose parse did not come back
+    /// injects into the parse of one line. It is the only way to make the
+    /// parse panic: no VCF does it, and every error of a line is a value
+    /// that the line carries back.
+    pub(super) fn panic_if_the_test_asked_for_it(number: u64, rules: &super::ParseRules<'_>) {
+        assert!(
+            rules.panic_at_line != Some(number),
+            "the parse of the line {number} panicked, which this test asked for"
+        );
+    }
 
     /// The reference VCFs and what bcftools 1.24 read in them live at the
     /// root of the repository, beside the Python tests that read the same
@@ -2455,6 +2512,54 @@ mod tests {
             let expected_number = if row.chrom == "chr1" { 0 } else { 1 };
             assert_eq!(*number, expected_number, "{} {}", row.chrom, row.pos);
         }
+    }
+
+    #[test]
+    fn a_reader_whose_parse_did_not_come_back_gives_an_error_and_no_variant() {
+        // Eight data lines, in batches of four, and the parse of the third
+        // line of the second batch panics: the four variants of the first
+        // batch are given, and then the read that fills the second batch
+        // panics inside the parse and unwinds through the reader.
+        let lines: Vec<String> = (1..=8)
+            .map(|pos| format!("chr1 {pos}00 . A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut reader = reader_over(&vcf_of(&lines), VcfOptions::default());
+        reader.set_lines_per_batch(4);
+        // The three lines of the header come first, so the sixth data line
+        // is the line 9 of the file.
+        reader.panic_at_line(9);
+        let mut var = Variant::new();
+
+        let mut read = 0;
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let went_on = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            while reader.read_variant(&mut var).unwrap() {
+                read += 1;
+            }
+        }));
+        std::panic::set_hook(hook);
+        assert!(went_on.is_err(), "the parse did not panic");
+        assert_eq!(read, 4);
+
+        // The lines of the batch that was being parsed were never parsed,
+        // and a reader that went on would give the variants of the ones
+        // that were and drop the others without a word.
+        let error = reader.read_variant(&mut var).unwrap_err();
+        let Error::VcfParseNotFinished { line } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(line, 11);
+        // Every read after it gives the same error and not the false of a
+        // file that was read to its end, which a consumer would take for a
+        // VCF that ends there.
+        let again = reader.read_variant(&mut var).unwrap_err();
+        assert!(
+            matches!(again, Error::VcfParseNotFinished { line: 11 }),
+            "the second error is {again}"
+        );
+        assert_eq!(var.filled, Needs::empty());
     }
 
     #[cfg(not(target_family = "wasm"))]

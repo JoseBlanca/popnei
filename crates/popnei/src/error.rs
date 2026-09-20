@@ -140,6 +140,21 @@ pub enum Error {
         expected: usize,
     },
 
+    /// The parse of a batch of lines of a VCF did not come back, which is
+    /// what a panic inside it leaves behind: the lines of that batch were
+    /// never parsed, and a reader that went on would give the variants of
+    /// the lines that were and drop the others without a word. Nothing a
+    /// VCF holds panics the parse, so this says that popnei has a defect,
+    /// and the panic itself is what names it.
+    #[error(
+        "the parse of the lines of the VCF up to the line {line} did not come back, which a panic inside it leaves behind; the reader gives no more variants, because the lines it did not parse would be dropped without a word, and the panic that came before this error is what says where the defect is"
+    )]
+    VcfParseNotFinished {
+        /// The number of the last line that was read, counted from 1 with
+        /// the lines of the header.
+        line: u64,
+    },
+
     /// The file of a VCF, or of another source of variants, could not be
     /// opened. It carries the path, which `std::io::Error` does not, so
     /// that a message names the file and a binding can put it where its
