@@ -7,6 +7,7 @@
 
 use thiserror::Error as ThisError;
 
+use crate::io::vcf::VcfPlace;
 use crate::variant::Needs;
 
 /// Anything that went wrong in popnei.
@@ -22,6 +23,62 @@ pub enum Error {
         /// The fields that were asked for and are not in `filled`.
         fields: Needs,
     },
+
+    /// The source the VCF reader was given holds something else. A VCF
+    /// starts with `#`, and a gzipped one with the two bytes of gzip.
+    #[error("the source is not a VCF: it starts with {found}")]
+    NotAVcf {
+        /// The first bytes of the source, as text.
+        found: String,
+    },
+
+    /// The header of the VCF is not one popnei can read. It needs the
+    /// `#CHROM` line, its nine first columns and one individual or more
+    /// after them, each with its own name.
+    #[error("the header of the VCF cannot be read: {problem}")]
+    VcfHeader {
+        /// What is wrong with the header.
+        problem: String,
+    },
+
+    /// The ploidy the VCF reader was asked for is 0. It is the one thing
+    /// `VcfReader::new` refuses that does not come from the source.
+    #[error("the ploidy asked of the VCF reader is 0, and a genotype holds one allele or more")]
+    VcfPloidyIsZero,
+
+    /// A data line of the VCF is not one popnei can read.
+    #[error("line {line} of the VCF, {place}: {problem}")]
+    VcfDataLine {
+        /// The number of the line in the file, counted from 1 with the
+        /// lines of the header.
+        line: u64,
+        /// The column or the individual the problem is in.
+        place: VcfPlace,
+        /// What is wrong there.
+        problem: String,
+    },
+
+    /// A genotype of the VCF holds a number of alleles other than the
+    /// ploidy the reader was given. popnei does not read a VCF of mixed
+    /// ploidies: its calculations are not defined for one.
+    #[error(
+        "line {line} of the VCF, the column of {individual}: the genotype has {found} alleles and the ploidy asked for is {expected}"
+    )]
+    VcfGenotypePloidy {
+        /// The number of the line in the file, counted from 1 with the
+        /// lines of the header.
+        line: u64,
+        /// The name of the individual whose genotype it is.
+        individual: String,
+        /// How many alleles the genotype holds.
+        found: usize,
+        /// The ploidy the reader was given.
+        expected: usize,
+    },
+
+    /// The bytes of a source could not be read.
+    #[error("the source could not be read: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// What every operation of popnei that can fail returns.
@@ -30,6 +87,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::Error;
+    use crate::io::vcf::VcfPlace;
     use crate::variant::Needs;
 
     /// The message has to name the fields, because that is what tells the
@@ -43,5 +101,33 @@ mod tests {
         assert!(message.contains("alleles"), "{message}");
         assert!(message.contains("qual"), "{message}");
         assert!(!message.contains("gts"), "{message}");
+    }
+
+    /// A user who gets one of these has the file open in front of them, so
+    /// the message says which line and which column or individual to look
+    /// at.
+    #[test]
+    fn the_message_of_a_wrong_data_line_names_the_line_and_the_place() {
+        let error = Error::VcfDataLine {
+            line: 12,
+            place: VcfPlace::Column("POS".to_string()),
+            problem: "`x` is not a position".to_string(),
+        };
+        let message = error.to_string();
+        assert!(message.contains("12"), "{message}");
+        assert!(message.contains("POS"), "{message}");
+        assert!(message.contains("`x` is not a position"), "{message}");
+
+        let error = Error::VcfGenotypePloidy {
+            line: 9,
+            individual: "ind2".to_string(),
+            found: 4,
+            expected: 2,
+        };
+        let message = error.to_string();
+        assert!(message.contains("line 9"), "{message}");
+        assert!(message.contains("ind2"), "{message}");
+        assert!(message.contains("4 alleles"), "{message}");
+        assert!(message.contains("is 2"), "{message}");
     }
 }
