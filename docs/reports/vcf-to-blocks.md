@@ -44,6 +44,31 @@ they run one after the other. Both add a member to the root
 --workspace` of one would meet the half written crate of the other. One
 tree has one writer per file.
 
+Task 1.2, commit 63b6f66, one subagent run of 116 thousand tokens and 9
+minutes. The orchestrator ran the five checks again: fmt exit 0, clippy
+with no warning, `cargo test --workspace` `2 passed`, ruff `2 files
+already formatted` and `All checks passed!`, `maturin develop` `Installed
+popnei-0.1.0` and pytest `1 passed`. Four things it decided that the task
+did not say, each with its reason in the commit message:
+
+- The binding crate has `test = false` and `doctest = false`. `cargo test
+  --workspace` linked a test binary of it against the Python of the PATH,
+  Apple's 3.9.6, and failed at the link. The crate holds no calculation
+  and its tests are the pytest ones; clippy still checks it.
+- `.python-version` says 3.14.5 and not 3.14. On this Mac uv answers
+  `3.14` with the free threaded 3.14.7, the newest 3.14 it has, the same
+  trap `docs/rust_core.md` records for pyodide-build.
+- `[tool.uv] package = false`, so that maturin alone installs popnei. An
+  explicit `uv sync` takes the module out, and `uv run maturin develop`
+  has to follow it.
+- ruff is given `python/`, `tests/*.py` and `pyproject.toml`. Over the
+  whole repository ruff 0.16.8 also formats the Python inside Markdown
+  fences, 45 files, 32 of them under `.claude/` and 9 under `docs/`.
+
+It also confirmed what `.claude/skills/coding/pyo3.md` left to confirm:
+maturin builds the module without the `extension-module` feature of
+pyo3 and without a warning.
+
 For the owner: the manifests have no `license` field, because no
 document of the repository names a license. Nothing needs it until
 popnei is published.

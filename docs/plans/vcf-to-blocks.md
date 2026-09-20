@@ -143,7 +143,7 @@ around it.
   function, the lints and the settings that the `coding` skill asks of
   the core, a `.gitignore`, and `flate2` as a dependency. From section 8
   of the architecture. Serves deliverable 1.
-- [ ] 1.2 `crates/popnei-python` with pyo3 and its module
+- [x] 1.2 `crates/popnei-python` with pyo3 and its module
   `popnei._core`, `python/popnei`, `pyproject.toml` with maturin, ruff
   and pytest as development dependencies, and the first pytest test.
   From section 8 of the architecture and `.claude/skills/coding/pyo3.md`.
