@@ -69,14 +69,19 @@ the position travel together in the core, so asking for one fills both.
 Another name is a `ValueError`. `num_vars_per_block` is the number of
 variants of a block, and `None` is the rule above.
 
-`Block` is a frozen dataclass. `gts` is a read only numpy int8 array of
-variants x individuals x ploidy, and the binding crate hands the array of
-the core to numpy without copying it. `chrom` is a tuple of names, `pos`
+`Block` is a frozen dataclass. `gts` is a numpy int8 array of variants x
+individuals x ploidy, and the binding crate hands the array of the core to
+numpy without copying it. `chrom` is a tuple of names, `pos`
 a numpy uint64 array, `id` a tuple of strings with `None` for a variant
 that has none, `alleles` a tuple with, for each variant, the tuple of its
 alleles, the reference first, and `qual` a numpy float32 array with NaN
 for a variant that has none. A field that was not asked for is `None`.
 `num_vars` is the number of variants.
+
+The three arrays are read only, and so is every array a user can reach
+from them: a block is frozen, and an array that a reshape or a slice of
+the core's allocation left writable would be a way around that. The one a
+user works on is their own, `numpy.array(block.gts)`.
 
 It mirrors `Variants.iter_vars_chunks` of pyNei and its `VariantsChunk`.
 The differences: the names, since `docs/glossary.md` keeps "chunk" for
@@ -84,7 +89,8 @@ pyNei's, and so `num_vars_per_block` for `desired_num_vars_per_chunk`,
 which is now an argument of this method and not of the `Variants`; by
 default a block has the chromosomes and the positions and not the ids,
 the alleles and the qualities, which pyNei's chunk always has; a block has no pandas frame, its columns are tuples and arrays,
-because it is built in the binding crate and the Python layer stays thin;
+which the binding crate hands out and the Python package puts in the
+dataclass, so that no result of popnei is a class of the binding crate;
 it has no `Genotypes` object with its `to_012` and its masks, which in
 popnei are work of the core; and the fields other than the genotypes are
 asked for.

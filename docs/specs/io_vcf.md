@@ -100,9 +100,8 @@ again.
 In TypeScript, `openVcf(source, {ploidy = 2, onlyPassed = true})`,
 with the two options in an object, which is how TypeScript writes
 arguments that have a name and a default. `source` is a `Uint8Array` with
-the bytes of the file or a `File` that the user picked in the page, which
-can be read only inside a web worker, as section 11 of the architecture
-says.
+the bytes of the file; reading a `File` that a user picked in a page is
+under "Not in this spec".
 
 The differences from pyNei:
 
