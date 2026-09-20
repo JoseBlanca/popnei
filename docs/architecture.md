@@ -52,6 +52,13 @@ What this gives:
   asked for. A consumer checks `filled` before it trusts a field.
 - **Chromosome names are interned**, one `u32` per variant and one table
   per reader, not a string per variant.
+- **A reader reads from any source of bytes, not from a path.** The VCF
+  reader is generic over `BufRead`, and the vars file reader over
+  `Read + Seek`, because an arrow file keeps the index of its batches at
+  its end. Natively the source is a file. In a web application there is
+  no filesystem, and the source is a file that the user picked in the
+  page, or bytes in memory (section 11). The writers take any `Write` in
+  the same way.
 
 What it costs, accepted: a reader is not an `Iterator`, so the consumer
 writes `while reader.read_variant(&mut var)? { ... }` and the adapters are
@@ -101,8 +108,9 @@ variant cannot be held.
   the BLAS pool for the matrix products, never nested. A rayon worker that
   calls BLAS pins it to one thread; a big product is called from outside
   rayon.
-- In wasm there are no threads. Everything above must build and run
-  single threaded, rayon gated off the wasm targets.
+- In wasm there are no threads, neither in the wheel for pyodide nor, in
+  its first version, in the build for TypeScript. Everything above must
+  build and run single threaded, rayon gated off the wasm targets.
 
 ## 4. The genotypes
 
@@ -124,6 +132,9 @@ does that with a `BlockCollector` and hands the arrays over without
 copying. Results are built in Python: the frozen dataclasses with pandas
 frames and series, `pops` as a dict of name to samples, samples as tuples.
 The Python layer is the API, the results and the tests, nothing else.
+Under pyodide, the Python that runs in a browser tab, the same package
+runs on the core built as a wasm wheel.
+The other boundary, with TypeScript, is in section 11.
 
 ## 6. The vars file
 
@@ -146,17 +157,23 @@ file of another major version is refused with the version in the message.
 
 ## 8. The crates and the layout
 
-One repository, one cargo workspace, one wheel:
+One repository, one cargo workspace, and two things built from it: the
+wheel for Python and the wasm package for TypeScript, a package of npm,
+the registry that JavaScript projects install from, with the core
+compiled to WebAssembly. Its binding crate is written with wasm-bindgen,
+which generates the JavaScript that calls Rust functions (section 11).
 
 ```
 Cargo.toml                 the workspace
 crates/popnei/             the core crate, pure Rust, no pyo3, cargo test
-crates/popnei-python/      the binding crate, pyo3 + numpy, built by maturin
+crates/popnei-python/      the Python binding crate, pyo3 + numpy, built by maturin
+crates/popnei-js/          the JavaScript binding crate, wasm-bindgen
 python/popnei/             the Python package: API, results, Variants
+js/popnei/                 the TypeScript package: API, results, its tests
 tests/                     the Python tests, pytest, pyNei as the oracle
 tests/reference/           the reference data copied from pyNei and its script
 docs/
-pyproject.toml             maturin, manifest-path to the binding crate
+pyproject.toml             maturin, manifest-path to the Python binding crate
 ```
 
 pyNei is a development dependency of the Python side, a path dependency on
@@ -196,6 +213,70 @@ over a reader giving numpy chunks; `vars_from_vcf`, `write_vars`,
 signatures; and the tests: cargo tests of the reader and the filter, and
 pytest tests that parse the reference VCFs with both libraries and compare
 the chunks, that pyNei reads the vars file popnei writes, and that the
-filter gives the same variants. It is done when those pass natively and
-the binding crate builds as a wasm wheel with the steps in pyNei's
-`spike/README.md`.
+filter gives the same variants. On the TypeScript side it has the
+JavaScript binding crate with the VCF reader over bytes in memory, the
+missing data filter and the vars file writer, and a test under node that
+parses a reference VCF, filters it and writes a vars file that pyNei
+reads with the same variants. The skeleton is done when all those tests
+pass, the Python binding crate builds as a wasm wheel with the steps in
+pyNei's `spike/README.md`, and the wasm package builds.
+
+## 11. The TypeScript boundary
+
+A web application calls the core with no Python in the tab. None of what
+follows has been built or measured yet: the trial build that
+`rust_core.md` reports, its spike, made the wheel for pyodide only.
+
+The JavaScript binding crate, `crates/popnei-js`, is to TypeScript what
+the Python binding crate is to Python: it translates and holds no
+calculation. It is written with wasm-bindgen, the Rust tool that
+generates, from the Rust functions marked for export, the JavaScript that
+calls them and their TypeScript declarations. It is compiled for the
+target `wasm32-unknown-unknown`, WebAssembly with no operating system
+under it: no files, no threads, no C library. The wheel for pyodide is
+compiled for another target, `wasm32-unknown-emscripten`, where
+emscripten emulates all three. So the core is built for two wasm targets,
+and a dependency of the core has to build for both. One written in C
+builds under emscripten with its compiler and may not build for the
+direct target; the zstd compression of the vars file is the known case,
+an open question of `rust_core.md`.
+
+The TypeScript package, `js/popnei`, sits on the binding as the Python
+package does: the functions with the names and the arguments of the
+Python API, in camelCase, and the result objects. It is published to npm
+with the compiled core inside, and that is the wasm package.
+
+- **The calculations run in a web worker**, a thread of the page that
+  cannot touch what the page shows. A calculation of seconds on the main
+  thread of the page would freeze it for those seconds.
+- **A file that the user picked is read as the reader asks for it.** In a
+  web worker `FileReaderSync` reads a range of bytes of a file and
+  returns when it has them, which is what `Read` and `Seek` need, so the
+  binding wraps it as a source of bytes and a VCF larger than the memory
+  of the tab still streams. `FileReaderSync` does not exist outside a
+  worker. The other source is bytes already in memory, a `Uint8Array`,
+  for small files and for the tests under node.
+- **TypeScript never reads one variant at a time**, as Python does not.
+  It calls a calculation over a source, and the loop over the variants
+  runs inside wasm. An application that wants the genotypes gets blocks,
+  the genotypes as an `Int8Array` of variants x samples x ploidy with the
+  requested columns.
+- **Results cross as typed arrays, copied.** A `Float64Array` that is a
+  view into the memory of wasm stops being valid when that memory grows,
+  so the binding copies each result out. The results are per variant, per
+  sample or samples x samples, so the copy is small next to the
+  calculation. Sample and population names cross as arrays of strings,
+  `pops` as an object of population name to sample names, and the result
+  objects are built in TypeScript.
+- **A writer writes into memory.** The vars file writer fills a buffer
+  that the page offers as a download. A file that does not fit in memory
+  would need the private filesystem that the browser gives each site,
+  which a worker can write synchronously; that is left until an
+  application needs it.
+- **An error of the core is thrown as a JavaScript `Error`** with the
+  message it has in Rust, from one place in the binding crate.
+- **The tests** of the TypeScript package run under node, the JavaScript
+  runtime outside the browser, on the reference files of
+  `tests/reference/`. They expect the same numbers as the Python tests,
+  written into them as literals. The calculations themselves are tested
+  once, in the core crate.

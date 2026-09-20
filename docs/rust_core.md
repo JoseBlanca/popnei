@@ -249,6 +249,25 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
    wheels for three platforms and the wasm one, with the pinned emscripten
    and a non free threaded host Python.
 
+9. **A second binding, for TypeScript, compiled directly to wasm.**
+   Decided on 20 September 2026, after the rest of this document, and not
+   measured. popnei will also be used from web applications written in
+   TypeScript, and when the library is Rust a web application does not
+   need Python to call it. A second binding crate, written with
+   wasm-bindgen, which generates the JavaScript and the TypeScript
+   declarations for the Rust functions it exports, is compiled for
+   `wasm32-unknown-unknown` and published as an npm package. What the
+   application is spared is pyodide itself, with numpy and pandas: their
+   download and start before the first call, and a build tied to each
+   pyodide release as in decision 8. What it adds is a second public API
+   to keep in step with the Python one, its result objects in TypeScript,
+   and a second wasm target that every dependency of the core has to
+   build for. The wheel for pyodide stays, for the person who writes
+   Python in a notebook in the browser. The design is in section 11 of
+   `architecture.md`. The times of the table in 3.2 were taken under
+   pyodide, and the direct build is expected to be near them, the same
+   code on the same wasm engine; that has not been measured.
+
 ## 5. Open questions
 
 - **faer against OpenBLAS on x86.** If faer is level there, as its
@@ -269,7 +288,25 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
 - **Memory in the browser.** A 10000 sample kinship is 800 MB in float64
   and the projection matrix of the mixed model as much again; the 32 bit
   heap caps the browser at a few thousand samples for the mixed models
-  whatever the language.
+  whatever the language, under pyodide and in the direct build of
+  decision 9 alike.
+- **zstd in the direct wasm build.** The vars file is compressed with
+  zstd, and arrow-rs gets it from the `zstd` crate, which wraps the C
+  library. Under emscripten the C compiles with emscripten's compiler.
+  `wasm32-unknown-unknown` has no C library; the `zstd` crate is said to
+  build there with a clang that can emit wasm, which Apple's cannot, and
+  there are decoders in pure Rust but no encoder known to be as complete.
+  None of this has been tried here. It is the first thing to try when
+  the walking skeleton is built, because the skeleton writes a vars file
+  from TypeScript.
+- **Threads in the direct wasm build.** A page served with the two
+  headers that isolate it from other origins can share memory between
+  web workers, and the `wasm-bindgen-rayon` crate runs rayon on them. As
+  far as is known in September 2026 it needs nightly Rust, and pyodide
+  has no equivalent. If it works, the parser's gain from threads, 25x on
+  one thread against 123x with them natively, would reach the browser.
+  The first version is single threaded, and the serial versions that the
+  wheel for pyodide needs are the ones it runs.
 
 ## 6. How to reproduce the numbers
 

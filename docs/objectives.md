@@ -1,7 +1,9 @@
 # popnei: objectives
 
-popnei is a population genetics library written in Rust and used from
-Python, natively and in the browser under pyodide. It is the successor of
+popnei is a population genetics library written in Rust. It is used from
+Python, natively and in the browser under pyodide, the Python that runs
+in a tab, and from TypeScript in web applications, where the Rust is compiled to WebAssembly with no Python
+in between. It is the successor of
 pyNei, a working library in pure Python with numpy, pandas and pyarrow that
 reached the speed floor of interpreted array code, and it is named, as
 pyNei was, after Masatoshi Nei.
@@ -29,6 +31,8 @@ in a browser tab.
    that a test says what it expects and never needs the tool. pyNei is a
    development dependency, a path dependency on its sibling checkout, and
    the tests run both libraries on the same inputs where they overlap.
+   The TypeScript API is tested against the same literals, under node,
+   the JavaScript runtime outside the browser.
 
 2. **Usable from Python, the way pyNei is.** The public API mirrors
    pyNei's where it holds up: functions over a `Variants`, `pops` as a dict
@@ -37,10 +41,23 @@ in a browser tab.
    design asks for it, and when it does the divergence is written down.
    The Python layer is thin: the API, the result objects, the tests.
 
-3. **In the browser.** The core builds as a wasm wheel for pyodide, single
-   threaded, with no C dependency, and every calculation works there with
-   the memory a tab has. The wasm wheel is a release artifact tied to the
-   pyodide version and its emscripten, rebuilt for every pyodide release.
+3. **In the browser, for two users.** The first is a web application
+   written in TypeScript. For it the core is compiled directly to
+   WebAssembly and published as an npm package, the wasm package: the
+   compiled core, the JavaScript that loads it and the TypeScript
+   declarations of its functions. The tab loads no Python, so the
+   application does not wait for pyodide, numpy and pandas to download
+   and start, and its build does not follow the pyodide releases. The
+   TypeScript API carries the names of the Python one, its functions,
+   arguments and result fields, and gives the numbers as typed arrays
+   where Python gives pandas frames. The second user writes Python in a
+   notebook that runs in the tab, and gets the Python package under
+   pyodide, with the core built as a wasm wheel. That wheel is a release
+   artifact tied to the pyodide version and its emscripten, rebuilt for
+   every pyodide release. Both builds are single threaded in the first
+   version and have no C dependency, and every calculation works in both
+   with the memory a tab has. Whether the wasm package gets threads later
+   is an open question of `docs/rust_core.md`.
 
 4. **Fast where it matters.** A VCF parsed at the speed of compiled tools,
    per variant work in fused passes over the genotypes with rayon across
@@ -58,7 +75,8 @@ in a browser tab.
 - Not a general purpose genomics toolkit. No alignment, no variant
   calling, no annotation.
 - Not a command line program in the first version. The core crate is kept
-  free of Python so that one can be added, but the interface is Python.
+  free of Python and of JavaScript so that one can be added, but the
+  interfaces are Python and TypeScript.
 - Not a rewrite of pyNei's internals. pyNei's algorithms and results are
   the specification, its code is documentation, and its chunk design
   informs the stream of blocks, but the code starts empty.
@@ -67,8 +85,9 @@ in a browser tab.
 
 They are in `docs/rust_core.md`, with the measurements that led to each of
 them: a core crate in pure Rust and a binding crate with pyo3 in one cargo
-workspace, built by maturin into one wheel with the Python package; the
-parser first; a stream of blocks; one small linear algebra module with
+workspace, built by maturin into one wheel with the Python package; a
+second binding crate, with wasm-bindgen, built into the wasm package for
+TypeScript; the parser first; a stream of blocks; one small linear algebra module with
 BLAS and LAPACK natively and faer in wasm; rayon for the records and BLAS
 for the products, never nested; 2 bit packed genotypes as an option to
 measure; the pyodide wheel pinned to the pyodide version.
