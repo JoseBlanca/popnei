@@ -13,6 +13,10 @@
 # crate may need an unsafe block for an array, with #[expect] and a reason.
 unsafe_code = "deny"
 
+# Every pub item of a crate says what it is: the coding skill asks for a
+# doc comment on each, and nothing checked it.
+missing_docs = "deny"
+
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 
