@@ -272,44 +272,47 @@ impl AllelesColumn {
         Ok(())
     }
 
-    /// The alleles of the variants from `at` on, taken out of this column
-    /// into a new one, which is what cutting a block does with them. This
-    /// column keeps the first `at` variants and its capacity.
+    /// Where the alleles of the variants before `var` end in `allele_ends`:
+    /// the first allele of the variant `var`.
+    fn allele_before(&self, var: usize) -> usize {
+        var.checked_sub(1)
+            .and_then(|before| self.var_ends.get(before).copied())
+            .unwrap_or(0)
+    }
+
+    /// The alleles of `count` variants from `from` on, copied into a column
+    /// of their own, which is what cutting a block does with them. This
+    /// column is left as it is.
     ///
     /// # Errors
     ///
     /// When the machine does not give the memory of the new column.
-    fn try_split_off(&mut self, at: usize) -> std::result::Result<AllelesColumn, TryReserveError> {
-        let at = at.min(self.var_ends.len());
-        let allele_at = at
+    fn try_rows(
+        &self,
+        from: usize,
+        count: usize,
+    ) -> std::result::Result<AllelesColumn, TryReserveError> {
+        let from = from.min(self.var_ends.len());
+        let end = from.saturating_add(count).min(self.var_ends.len());
+        let allele_from = self.allele_before(from);
+        let allele_end = self.allele_before(end).max(allele_from);
+        let byte_from = self.byte_before(from);
+        let byte_end = allele_end
             .checked_sub(1)
-            .and_then(|before| self.var_ends.get(before).copied())
-            .unwrap_or(0);
-        let byte_at = self.byte_before(at);
+            .and_then(|last| self.allele_ends.get(last).copied())
+            .unwrap_or(byte_from);
         let mut texts = Vec::new();
-        texts.try_reserve_exact(self.texts.len().saturating_sub(byte_at))?;
-        texts.extend_from_slice(self.texts.get(byte_at..).unwrap_or(&[]));
+        let bytes = self.texts.get(byte_from..byte_end).unwrap_or(&[]);
+        texts.try_reserve_exact(bytes.len())?;
+        texts.extend_from_slice(bytes);
+        let ends = self.allele_ends.get(allele_from..allele_end).unwrap_or(&[]);
         let mut allele_ends = Vec::new();
-        allele_ends.try_reserve_exact(self.allele_ends.len().saturating_sub(allele_at))?;
-        allele_ends.extend(
-            self.allele_ends
-                .get(allele_at..)
-                .unwrap_or(&[])
-                .iter()
-                .map(|end| end.saturating_sub(byte_at)),
-        );
+        allele_ends.try_reserve_exact(ends.len())?;
+        allele_ends.extend(ends.iter().map(|end| end.saturating_sub(byte_from)));
+        let ends = self.var_ends.get(from..end).unwrap_or(&[]);
         let mut var_ends = Vec::new();
-        var_ends.try_reserve_exact(self.var_ends.len().saturating_sub(at))?;
-        var_ends.extend(
-            self.var_ends
-                .get(at..)
-                .unwrap_or(&[])
-                .iter()
-                .map(|end| end.saturating_sub(allele_at)),
-        );
-        self.texts.truncate(byte_at);
-        self.allele_ends.truncate(allele_at);
-        self.var_ends.truncate(at);
+        var_ends.try_reserve_exact(ends.len())?;
+        var_ends.extend(ends.iter().map(|end| end.saturating_sub(allele_from)));
         Ok(AllelesColumn {
             texts,
             allele_ends,
@@ -722,8 +725,12 @@ impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
 ///
 /// It keeps at most one block from one call to the next, so its memory is
 /// two blocks. Joining copies the rows of the block that arrives after the
-/// ones that were waiting, and cutting copies the rows after the cut: one
-/// copy of each column per block and none per variant.
+/// ones that were waiting. Cutting copies out the rows that leave, into a
+/// block allocated for them, and the rest stays in the block that waits,
+/// with the row it starts at: so a block of 10000 variants cut into blocks
+/// of 100 copies each row once and not once for every cut before it, and
+/// the block that is given holds the memory of its own rows and not of the
+/// block it was cut from.
 pub struct Reblock<R: BlockReader> {
     reader: R,
     num_vars_per_block: usize,
@@ -731,9 +738,13 @@ pub struct Reblock<R: BlockReader> {
     /// gives has to have for its rows to be joined with the others'.
     num_individuals: usize,
     ploidy: usize,
-    /// The variants that did not fill a block, or the ones left after a
-    /// cut. It holds one variant at least when it is there.
+    /// The block whose variants have not all been given: the one that did
+    /// not fill a block, or the one a cut is taking blocks out of. It holds
+    /// one variant at least when it is there.
     waiting: Option<Block>,
+    /// How many rows of the block that waits were given already. The rows
+    /// before it are not read again and their ids were taken out of it.
+    given: usize,
     /// Whether the source has no more blocks or gave an error. After
     /// either there is no block.
     finished: bool,
@@ -774,6 +785,7 @@ impl<R: BlockReader> Reblock<R> {
             num_individuals,
             ploidy,
             waiting: None,
+            given: 0,
             finished: false,
         })
     }
@@ -829,20 +841,63 @@ impl<R: BlockReader> Reblock<R> {
         Ok(())
     }
 
-    /// The block that is waiting, cut to the size that was asked for: the
-    /// first `num_vars_per_block` variants are given and the rest wait. A
-    /// block that has the size already is given as it is, with no copy.
-    fn cut(&mut self, mut waiting: Block) -> Result<Block> {
-        if waiting.num_vars <= self.num_vars_per_block {
-            return Ok(waiting);
+    /// How many rows of the block that waits have not been given yet.
+    fn rows_waiting(&self) -> usize {
+        self.waiting
+            .as_ref()
+            .map_or(0, |block| block.num_vars.saturating_sub(self.given))
+    }
+
+    /// The next `num_vars_per_block` rows of the block that waits, copied
+    /// out of it, and the rest left where they are. A block that has the
+    /// size and has given nothing goes through as it is, with no copy.
+    fn cut(&mut self) -> Result<Option<Block>> {
+        let Some(mut waiting) = self.waiting.take() else {
+            return Ok(None);
+        };
+        if self.given == 0 && waiting.num_vars == self.num_vars_per_block {
+            return Ok(Some(waiting));
         }
-        let left_over = split_block(&mut waiting, self.num_vars_per_block)
-            .inspect_err(|_| {
+        let block = match take_rows(&mut waiting, self.given, self.num_vars_per_block) {
+            Ok(block) => block,
+            Err(_) => {
                 self.finished = true;
-            })
-            .map_err(|_| self.too_large())?;
-        self.waiting = Some(left_over);
-        Ok(waiting)
+                return Err(self.too_large());
+            }
+        };
+        self.given = self.given.saturating_add(self.num_vars_per_block);
+        if self.given < waiting.num_vars {
+            self.waiting = Some(waiting);
+        } else {
+            self.given = 0;
+        }
+        Ok(Some(block))
+    }
+
+    /// What is left of the block that waits, as a block of its own: the
+    /// block itself when no cut took rows out of it, and a copy of the rows
+    /// that are left when one did.
+    fn rest(&mut self) -> Result<Option<Block>> {
+        let Some(mut waiting) = self.waiting.take() else {
+            return Ok(None);
+        };
+        let left = waiting.num_vars.saturating_sub(self.given);
+        if left == 0 {
+            self.given = 0;
+            return Ok(None);
+        }
+        let rest = match self.given {
+            0 => waiting,
+            given => match take_rows(&mut waiting, given, left) {
+                Ok(rest) => rest,
+                Err(_) => {
+                    self.finished = true;
+                    return Err(self.too_large());
+                }
+            },
+        };
+        self.given = 0;
+        Ok(Some(rest))
     }
 }
 
@@ -864,48 +919,68 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
             return Ok(None);
         }
         loop {
-            if let Some(waiting) = self.waiting.take() {
-                if waiting.num_vars >= self.num_vars_per_block {
-                    return self.cut(waiting).map(Some);
-                }
-                self.waiting = Some(waiting);
+            if self.rows_waiting() >= self.num_vars_per_block {
+                return self.cut();
             }
             let block = match self.reader.next_block() {
                 Ok(Some(block)) => block,
                 Ok(None) => {
                     self.finished = true;
-                    // What was waiting is the last block, shorter than the
-                    // size that was asked for.
-                    return Ok(self.waiting.take());
+                    // What is left of the block that waits is the last
+                    // block, shorter than the size that was asked for.
+                    return self.rest();
                 }
                 Err(error) => {
                     // The source ends at its error and is not called
                     // again, and what was waiting is lost with it.
                     self.finished = true;
                     self.waiting = None;
+                    self.given = 0;
                     return Err(error);
                 }
             };
             if let Err(error) = self.taken(&block) {
                 self.finished = true;
                 self.waiting = None;
+                self.given = 0;
                 return Err(error);
             }
-            match self.waiting.take() {
-                None => self.waiting = Some(block),
-                Some(mut waiting) => {
-                    if waiting.columns() != block.columns() {
-                        // The columns of the source changed, which a
-                        // change of `Needs` in the middle of a pass does:
-                        // what was waiting is given as a shorter block.
-                        self.waiting = Some(block);
-                        return Ok(Some(waiting));
-                    }
+            let same_columns = self
+                .waiting
+                .as_ref()
+                .is_some_and(|waiting| waiting.columns() == block.columns());
+            if self.waiting.is_none() {
+                self.waiting = Some(block);
+                self.given = 0;
+                continue;
+            }
+            if !same_columns {
+                // The columns of the source changed, which a change of
+                // `Needs` in the middle of a pass does: what is left of the
+                // block that waits is given as a shorter block.
+                let rest = self.rest().inspect_err(|_| {
+                    self.finished = true;
+                })?;
+                self.waiting = Some(block);
+                self.given = 0;
+                return Ok(rest);
+            }
+            match self.rest() {
+                Err(error) => {
+                    self.finished = true;
+                    return Err(error);
+                }
+                Ok(None) => {
+                    self.waiting = Some(block);
+                    self.given = 0;
+                }
+                Ok(Some(mut waiting)) => {
                     if let Err(error) = self.join(&mut waiting, block) {
                         self.finished = true;
                         return Err(error);
                     }
                     self.waiting = Some(waiting);
+                    self.given = 0;
                 }
             }
         }
@@ -973,59 +1048,97 @@ fn try_extend<T>(column: &mut Vec<T>, values: Vec<T>) -> std::result::Result<(),
     Ok(())
 }
 
-/// The variants of `block` from `at` on, taken out of it into a new block,
-/// which keeps the columns and the individuals of the one it came from.
-/// `block` keeps its first `at` variants and its capacity.
+/// `count` rows of `block` from the row `from` on, in a block of their own
+/// that holds the columns and the individuals of the one they came from and
+/// the memory of those rows alone.
+///
+/// `block` keeps its rows and its size: the caller of a cut says with the
+/// row it starts at which of them it has given away. The ids are the one
+/// column that is moved and not copied, an empty text left in the row that
+/// leaves, so that a cut allocates nothing for each row.
 ///
 /// # Errors
 ///
 /// When the machine does not give the memory of the new block.
-fn split_block(block: &mut Block, at: usize) -> std::result::Result<Block, TryReserveError> {
-    let num_vars = block.num_vars.saturating_sub(at);
-    // The block holds `at` + `num_vars` variants, so these places are in
-    // its arrays: `check` said so before it was taken.
+fn take_rows(
+    block: &mut Block,
+    from: usize,
+    count: usize,
+) -> std::result::Result<Block, TryReserveError> {
+    // The block passed `check` when it was taken, so its arrays hold its
+    // variants and these places are in them.
     let gts_per_var = block.num_individuals.saturating_mul(block.ploidy);
     let mut gts = Vec::new();
-    let gts_at = at.saturating_mul(gts_per_var);
     if !block.gts.is_empty() {
-        gts.try_reserve_exact(block.gts.len().saturating_sub(gts_at))?;
-        gts.extend_from_slice(block.gts.get(gts_at..).unwrap_or(&[]));
-        block.gts.truncate(gts_at);
+        let start = from.saturating_mul(gts_per_var);
+        let end = start.saturating_add(count.saturating_mul(gts_per_var));
+        let rows = block.gts.get(start..end).unwrap_or(&[]);
+        gts.try_reserve_exact(rows.len())?;
+        gts.extend_from_slice(rows);
     }
-    let alleles = match block.alleles.as_mut() {
-        Some(alleles) => Some(alleles.try_split_off(at)?),
+    let chrom = copied_rows(block.chrom.as_ref(), from, count)?;
+    let pos = copied_rows(block.pos.as_ref(), from, count)?;
+    let qual = copied_rows(block.qual.as_ref(), from, count)?;
+    let alleles = match block.alleles.as_ref() {
+        Some(column) => Some(column.try_rows(from, count)?),
         None => None,
     };
-    let left_over = Block {
-        num_vars,
+    let id = taken_rows(block.id.as_mut(), from, count)?;
+    Ok(Block {
+        num_vars: count,
         num_individuals: block.num_individuals,
         ploidy: block.ploidy,
         gts,
-        chrom: try_split_column(block.chrom.as_mut(), at)?,
-        pos: try_split_column(block.pos.as_mut(), at)?,
-        id: try_split_column(block.id.as_mut(), at)?,
+        chrom,
+        pos,
+        id,
         alleles,
-        qual: try_split_column(block.qual.as_mut(), at)?,
-    };
-    block.num_vars = at;
-    Ok(left_over)
+        qual,
+    })
 }
 
-/// The entries of `column` from `at` on, taken out of it into a new column
-/// whose memory is asked for with `try_reserve`. `Vec::split_off` allocates
-/// without asking, and a size that a caller wrote reaches it.
-fn try_split_column<T>(
-    column: Option<&mut Vec<T>>,
-    at: usize,
+/// `count` entries of `column` from `from` on, copied into a column of
+/// their own whose memory is asked for with `try_reserve`: `Vec::to_vec`
+/// allocates without asking, and a size that a caller wrote reaches it.
+fn copied_rows<T: Copy>(
+    column: Option<&Vec<T>>,
+    from: usize,
+    count: usize,
 ) -> std::result::Result<Option<Vec<T>>, TryReserveError> {
     let Some(column) = column else {
         return Ok(None);
     };
-    let at = at.min(column.len());
-    let mut left_over = Vec::new();
-    left_over.try_reserve_exact(column.len().saturating_sub(at))?;
-    left_over.extend(column.drain(at..));
-    Ok(Some(left_over))
+    let from = from.min(column.len());
+    let end = from.saturating_add(count).min(column.len());
+    let entries = column.get(from..end).unwrap_or(&[]);
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(entries.len())?;
+    rows.extend_from_slice(entries);
+    Ok(Some(rows))
+}
+
+/// `count` ids of `column` from `from` on, moved into a column of their
+/// own, each leaving an empty text where it was: an id is a `String`, and
+/// copying one is an allocation for one row.
+fn taken_rows(
+    column: Option<&mut Vec<String>>,
+    from: usize,
+    count: usize,
+) -> std::result::Result<Option<Vec<String>>, TryReserveError> {
+    let Some(column) = column else {
+        return Ok(None);
+    };
+    let from = from.min(column.len());
+    let end = from.saturating_add(count).min(column.len());
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(end.saturating_sub(from))?;
+    for index in from..end {
+        match column.get_mut(index) {
+            Some(id) => rows.push(std::mem::take(id)),
+            None => break,
+        }
+    }
+    Ok(Some(rows))
 }
 
 /// It builds blocks from a reader, one after another, each of the number of
@@ -2563,6 +2676,49 @@ mod tests {
             let view = block.variant(0).expect("the variant of the block");
             assert_view_is_the_row(&view, row);
         }
+    }
+
+    /// A cut copies out the rows it gives and leaves the rest where they
+    /// are: the block that waits is the one the source gave, at the same
+    /// address however many cuts were taken out of it, so a block of 500
+    /// variants cut into blocks of 1 copies each row once and not once for
+    /// every cut before it. And a block that was cut holds the memory of
+    /// its own rows alone, which is what a Python user keeps when they hold
+    /// its genotypes.
+    #[test]
+    fn a_cut_copies_the_rows_it_gives_and_leaves_the_rest_in_the_block_that_waits() {
+        // The 500 variants of `many.vcf` in one block of the source.
+        let source = collected_over("many.vcf", every_variant(), Needs::CHROM_POS, Some(500));
+        let mut reblock = Reblock::new(source, Some(1)).expect("the reblock");
+
+        let mut blocks = Vec::new();
+        let mut addresses_of_the_rest = Vec::new();
+        while let Some(block) = reblock.next_block().expect("a block") {
+            if let Some(waiting) = reblock.waiting.as_ref() {
+                addresses_of_the_rest.push(waiting.gts.as_ptr().addr());
+            }
+            blocks.push(block);
+        }
+
+        assert_eq!(blocks.len(), 500);
+        for block in &blocks {
+            // 1 variant x 50 individuals x 2 alleles, and no more memory
+            // than those.
+            assert_eq!(block.gts.len(), 100);
+            assert_eq!(block.gts.capacity(), 100);
+            assert_eq!(block.pos.as_ref().map(Vec::capacity), Some(1));
+        }
+        // The 499 blocks that were given while rows were still waiting:
+        // the same block of the source, neither copied nor allocated
+        // again.
+        assert_eq!(addresses_of_the_rest.len(), 499);
+        let first = addresses_of_the_rest[0];
+        assert!(
+            addresses_of_the_rest
+                .iter()
+                .all(|address| *address == first),
+            "the rest of the block was copied at a cut"
+        );
     }
 
     /// The trait says that a reader ends at its error and that a reader
