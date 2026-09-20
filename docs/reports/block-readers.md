@@ -203,3 +203,89 @@ held in memory, the genotypes asked for, one thread, release, the median
 of 3 runs: 0.576 s with the new parser and 1.229 s with the old one. The
 whole read adds the reading of the lines to that, and its target is
 0.55 s, or 0.605 s with the tenth that the spec allows.
+
+### The review of tasks 2.1 and 2.2
+
+Tasks 2.1 and 2.2 are one piece of code, the trait with `reblock` and the
+two bindings that hold it, so they were reviewed together while task 2.3
+was written: seven reviewers at 319d435, one for each category, each in a
+worktree of its own, 1.0 million tokens together (`spec` 154 thousand,
+`tests` 151, `numbers` 157, `errors` 140, `api` 133, `architecture` 142,
+`binding` 131). No reviewer found a wrong result. What held went back to
+the two subagents that wrote the code, test first, each new test seen to
+fail: the core in six commits from 11de065 to 9755872, 129 thousand
+tokens, and the bindings in five from 4e6b0f2 to f6bed12, 79 thousand.
+After them, run by the orchestrator: `cargo test --workspace` `143
+passed`, pytest `50 passed`, `npm test` `tests 40`, `fail 0`, both wasm
+targets checked, `cargo doc -p popnei --no-deps` with no warning.
+
+What was found that mattered, and is fixed:
+
+- A source that gives a block of no variants made `reblock` ask it again
+  for ever: two reviewers ran it, one stopped after 30 million calls. From
+  Python that loop would run with the interpreter released and the reader
+  locked, where Ctrl-C does not reach. `reblock` now refuses such a block,
+  with a new case of the error, the seventh of the block spec.
+- A cut of `reblock` copied everything after the cut, so the next cut
+  copied it again: one block of the 500 variants of `many.vcf` cut into
+  blocks of 1 allocated 14.6 MB where no cut allocates 0.6 MB, and each
+  block given kept the capacity of the whole source block, 50000
+  genotypes for the 10000 it held. Nothing cuts today; the vars file
+  reader will. A cut now copies the rows that leave, once, into a block
+  of their size.
+- A Ctrl-C while the first block of a process was read gave a
+  `PanicException`: the signal stayed pending until numpy's C interface
+  was first fetched, which panics on it. It is older than this plan. The
+  signals are now checked when the read returns, and
+  `tests/test_interrupt.py` interrupts a read in a subprocess; it failed
+  with that panic before the fix and passed 20 of 20 runs for the
+  subagent and 5 of 5 for the orchestrator.
+- A pass of a binding that failed on its own account, after the reader
+  gave it a block, read on at the next call: at the class that the wasm
+  package exports, a VCF of 6 variants with a position above 2^53 in its
+  third, in blocks of 2, gave the first block, the error, and then the
+  third block, the variant at position 400 lost without a word. Both
+  passes now end at any error, with a node test at that class.
+- `num_vars_per_block=-1` was answered with "0 or more, and at most
+  18446744073709551615", 0 being refused too, and 2^64 with Python's own
+  `OverflowError`, which names no argument. Four reviewers reported it; it
+  is older than this plan. Both arguments are now converted by the binding
+  crate, and `tests/test_counts.py` has five values for each.
+- Three reviewers found that no test cut a block that carried ids,
+  qualities or alleles, and that every allele of every fixture is one
+  byte, so that an offset counted in alleles where bytes were meant gave
+  the same answer. The code was right, which two of them showed with
+  alleles of 1 to 8 bytes; the tests now use the rows of
+  `differences.vcf`, and the test over `many.vcf` asks for every field and
+  compares with the file read one variant at a time, where it compared
+  the four sizes with each other.
+- Eleven guards and choices that could be taken out with every test
+  passing have a test each; the case of the spec in which `reblock` loses
+  what it kept, 28 blocks of 7 and then the error, has its test; the doc
+  comment of the trait, which the vars file reader and the filters will be
+  written from, says what `reblock` refuses at run time; the constructors
+  of the alleles column are visible inside the crate, which task 2.4
+  needs; the six places that go through the columns of a block one by one
+  stop compiling when a column is added and forgotten.
+
+`docs/specs/block.md` changed in 11de065, in commits of its own before
+the code: what `reblock` does with a block of no variants; what a cut
+copies; that `retain_vars` runs `check` before it moves a row; that the
+views of a block that does not pass `check` stop early, so a consumer that
+did not get its block from `reblock` or a binding calls `check` first; and
+seven cases of the error where there were six.
+
+Findings not taken:
+
+- Taking the `reblock`, or the check of a block, out of either binding
+  fails no test, because the source gives blocks of the size the user
+  asked for and `reblock` has nothing to cut or join. The fix proposed,
+  a source that always gives the default size, would copy every block of
+  every pass with a size of its own for the sake of the test. The first
+  filter, which leaves blocks of uneven sizes, will exercise it.
+- The ids of a block are a `String` each, one allocation per variant when
+  they are asked for, 672 more over the 500 variants of `many.vcf`. The
+  spec fixes that field; task 2.6 says whether it costs.
+- numpy's `into_pyarray` has no form that gives an error, so a failed
+  allocation there is a panic; the loops over variants inside the binding
+  crates and a Python pass with no `close` are older than the plan.
