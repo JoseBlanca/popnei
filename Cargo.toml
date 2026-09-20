@@ -1,0 +1,69 @@
+[workspace]
+resolver = "3"
+# The binding crates come with tasks 1.2, crates/popnei-python, and 1.3,
+# crates/popnei-js, of docs/plans/vcf-to-blocks.md.
+members = ["crates/popnei"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/JoseBlanca/popnei"
+
+[workspace.dependencies]
+popnei = { path = "crates/popnei", version = "0.1.0" }
+# The gzip of the VCF reader, with its default backend, miniz_oxide, which
+# is written in Rust and so builds for the two wasm targets.
+flate2 = "1"
+
+# The table of .claude/skills/coding/lints.toml, with the reasons for each
+# lint in .claude/skills/coding/SKILL.md. Every crate takes it with
+# [lints] workspace = true.
+
+[workspace.lints.rust]
+# The core crate also has #![forbid(unsafe_code)] in its lib.rs. The binding
+# crate may need an unsafe block for an array, with #[expect] and a reason.
+unsafe_code = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+# Integers: nothing that wraps or truncates in silence.
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+fallible_impl_from = "deny"
+# cast_precision_loss is left off: a count to f64 is exact below 2^53.
+
+# No panics in library code. The tests are exempted in clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+
+# Floats.
+float_cmp = "deny"
+# suboptimal_flops (nursery) stays off: it rewrites a * b + c into mul_add,
+# which rounds differently from what R and plink2 compute.
+
+# Types and API.
+wildcard_enum_match_arm = "deny"
+fn_params_excessive_bools = "deny"
+match_same_arms = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+# A lint is silenced with a reason, on the smallest item.
+allow_attributes_without_reason = "deny"
+
+[profile.test]
+opt-level = 2 # numerical tests; overflow checks stay on
+
+[profile.release]
+overflow-checks = false # the code does not rely on them: see the coding skill

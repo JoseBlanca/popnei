@@ -1,0 +1,13 @@
+[package]
+name = "popnei"
+description = "Population genetics: the core crate, pure Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+flate2.workspace = true
+
+[lints]
+workspace = true

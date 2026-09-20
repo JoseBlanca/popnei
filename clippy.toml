@@ -1,0 +1,8 @@
+# The lints that deny a panic hold for library code and not for the tests,
+# where a failed unwrap is how a test reports. From
+# .claude/skills/coding/lints.toml.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
