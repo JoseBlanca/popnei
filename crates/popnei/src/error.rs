@@ -68,6 +68,18 @@ pub enum Error {
         found_ploidy: usize,
     },
 
+    /// A reader gave a block of no variants, which no reader of popnei
+    /// does: every block a reader gives holds one variant at least, and a
+    /// reader with no more variants gives no block. `reblock` finds it and
+    /// gives no block after it, because a source that gives one says
+    /// nothing about whether the variants that follow are there, and a
+    /// reader that asked again would never come back from a source that
+    /// always gives one.
+    #[error(
+        "a reader gave a block of no variants, and every block holds 1 variant at least; the reader that gave it has a defect"
+    )]
+    ReaderGaveABlockOfNoVariants,
+
     /// An array of a block is not of the size the block says: its
     /// genotypes are not its variants times its individuals times its
     /// ploidy, or a column has not one entry for each variant. The fields

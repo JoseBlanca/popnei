@@ -788,10 +788,17 @@ impl<R: BlockReader> Reblock<R> {
     }
 
     /// That a block of the source is one whose rows can be joined with the
-    /// rows of the blocks before it: its arrays are of its size, and its
-    /// individuals and its ploidy are those of the source.
+    /// rows of the blocks before it: its arrays are of its size, it holds a
+    /// variant, and its individuals and its ploidy are the ones the source
+    /// says it has.
     fn taken(&self, block: &Block) -> Result<()> {
         block.check()?;
+        // A source that gives a block of no variants has a defect, and it
+        // is not asked again: over a source that always gives one, a
+        // `reblock` that asked again would never come back.
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
         if block.num_individuals != self.num_individuals || block.ploidy != self.ploidy {
             return Err(Error::BlocksDoNotFitTogether {
                 num_individuals: self.num_individuals,
@@ -848,9 +855,10 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
     /// # Errors
     ///
     /// When the source fails, which loses the variants that were waiting
-    /// too; when a block of the source is not of its own size or does not
-    /// fit the ones before it; and when the machine does not give the
-    /// memory of a block. After any of them there is no block.
+    /// too; when a block of the source is not of its own size, holds no
+    /// variant, or has other individuals or another ploidy than the source
+    /// says; and when the machine does not give the memory of a block.
+    /// After any of them there is no block.
     fn next_block(&mut self) -> Result<Option<Block>> {
         if self.finished {
             return Ok(None);
@@ -882,12 +890,6 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
                 self.finished = true;
                 self.waiting = None;
                 return Err(error);
-            }
-            // The contract says that no reader gives a block with no
-            // variant, and one that does gives the caller of `reblock`
-            // nothing.
-            if block.num_vars == 0 {
-                continue;
             }
             match self.waiting.take() {
                 None => self.waiting = Some(block),
@@ -2688,6 +2690,33 @@ mod tests {
         assert_view_is_the_row(&blocks[0].variant(1).expect("the variant"), 1);
         assert_view_is_the_row(&blocks[1].variant(0).expect("the variant"), 2);
         assert_view_is_the_row(&blocks[1].variant(1).expect("the variant"), 3);
+    }
+
+    /// Every reader keeps the rule that a block it gives holds one variant
+    /// at least, and `reblock` does not trust its source to keep it: a
+    /// source that gives a block of no variants has a defect, and asking
+    /// it again would spin for ever over a source that always gives one.
+    #[test]
+    fn reblock_refuses_a_block_of_no_variants_and_asks_its_source_no_more() {
+        // The block of no variants comes first and a block of one variant
+        // after it, which a `reblock` that went on would give.
+        let blocks = vec![cases_block(&[]), cases_block(&[0])];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(1)).expect("the reblock");
+
+        let error = match reblock.next_block() {
+            Ok(block) => panic!("the reblock gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "the error is {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("no variants"), "{message}");
+
+        assert_eq!(reblock.reader.calls, 1);
+        assert!(reblock.next_block().expect("no block").is_none());
+        assert_eq!(reblock.reader.calls, 1);
     }
 
     /// A block holds one variant at least, so a reader that was asked for
