@@ -13,11 +13,11 @@ pyNei was, after Masatoshi Nei.
 The calculations a population geneticist runs over variants: reading a VCF
 and keeping the variants in a fast file of its own, filtering by missing
 data, allele frequency, heterozygosity and linkage disequilibrium, per
-variant and per sample statistics, allele frequencies and diversity per
-population, distances between samples and between populations, principal
+variant and per individual statistics, allele frequencies and diversity per
+population, distances between individuals and between populations, principal
 components and coordinates, linkage disequilibrium, kinship, and
 association of the variants with a trait, continuous or binomial, with and
-without a kinship. Datasets of tens of samples to about ten thousand and
+without a kinship. Datasets of tens of individuals to about ten thousand and
 of tens of thousands of variants to a million, on a personal computer or
 in a browser tab.
 
@@ -36,8 +36,8 @@ in a browser tab.
 
 2. **Usable from Python, the way pyNei is.** The public API mirrors
    pyNei's where it holds up: functions over a `Variants`, `pops` as a dict
-   of name to samples, frozen result dataclasses with pandas frames and
-   series, sample names as tuples. It is allowed to diverge where the new
+   of name to individuals, frozen result dataclasses with pandas frames and
+   series, the names of the individuals as tuples. It is allowed to diverge where the new
    design asks for it, and when it does the divergence is written down.
    The Python layer is thin: the API, the result objects, the tests.
 

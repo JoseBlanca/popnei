@@ -38,13 +38,13 @@ A per variant calculation in numpy is a sequence of whole array operations,
 and each one is a pass over the chunk. The first version of the dosage
 matrix, `to_012`, reduced along the ploidy axis, `sum(gts != major,
 axis=2)`, and numpy reduces badly along an axis of length two: 1.8 ns per
-genotype, 18 ms per chunk of 5000 variants x 1000 samples, for each of the
+genotype, 18 ms per chunk of 5000 variants x 1000 individuals, for each of the
 two reductions. The same thing as operations between the two planes of
 alleles, `gts[:, :, 0]` and `gts[:, :, 1]`, took 2.5 ms. A fast path for the
 common case, only alleles 0 and 1 and no missing genotype, which one `max`
 and one `min` detect in 0.2 ms, removed the general allele counting as well.
 
-Over 100000 variants x 1000 samples, one thread:
+Over 100000 variants x 1000 individuals, one thread:
 
 | | first version | plane by plane | fast path | plink2 |
 |---|---|---|---|---|
@@ -87,7 +87,7 @@ handling in Python, one field at a time:
 
 | | pynei, Python | plink2 |
 |---|---|---|
-| parse 400 MB, 100000 variants x 1000 samples | 13.7 s | 0.27 s |
+| parse 400 MB, 100000 variants x 1000 individuals | 13.7 s | 0.27 s |
 
 A 50x gap, against the 3.5x left on the linear regression.
 
@@ -96,10 +96,10 @@ A 50x gap, against the 3.5x left on the linear regression.
 Everything BLAS and LAPACK bound is already at the speed of the library
 numpy calls: the kinship product `Z'Z`, the eigendecomposition of the
 kinship, the null fits of the mixed models, the per variant mixed model
-test, which is a block of variants against a samples x samples projection,
+test, which is a block of variants against an individuals x individuals projection,
 and the PCA. On the mixed models pynei is level with GMMAT, C++ under R, on
 one thread, 1.5 s against 1.6 s and 2.2 s over 100000 variants x 1000
-samples, and 3x faster with six threads. Once the samples number in the
+individuals, and 3x faster with six threads. Once the individuals number in the
 thousands these products are what dominates, and no language changes them.
 
 ### 2.5 statsmodels and scipy
@@ -121,7 +121,7 @@ eigenvalues agree to 1e-14.
 
 ### 3.1 Native
 
-Same 400 MB VCF, 100000 variants x 1000 samples:
+Same 400 MB VCF, 100000 variants x 1000 individuals:
 
 | | Python pynei | Rust, 1 thread | Rust, rayon 18 cores | plink2, 1 thread |
 |---|---|---|---|---|
@@ -166,7 +166,7 @@ Same data on both sides, one thread everywhere:
 The parser loses 18% in wasm. faer, which loses natively, wins in the
 browser, where numpy's pyodide build has no BLAS and runs a reference
 LAPACK: 8.8x on the product, 2.2x on the eigendecomposition up to 2000
-samples, 1.4x at 3000, where the 32 bit heap starts to weigh. So a Rust
+individuals, 1.4x at 3000, where the 32 bit heap starts to weigh. So a Rust
 core keeps the browser and gains there.
 
 Two traps found on the way. The host Python of pyodide-build must not be
@@ -275,9 +275,9 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
   wheels could ship faer alone, with no Fortran in CI. The spike's `zz` and
   `eigh` against numpy on the Linux box that runs the pyodide tests would
   settle it in a minute.
-- **The mixed model fits at many samples.** The logistic mixed model null
-  fit inverts a samples x samples matrix a few dozen times, 25 s at 5000
-  samples; it is correct and matches GMMAT, and a Rust core with the same
+- **The mixed model fits at many individuals.** The logistic mixed model null
+  fit inverts a individuals x individuals matrix a few dozen times, 25 s at 5000
+  individuals; it is correct and matches GMMAT, and a Rust core with the same
   algorithm would not change that. A cheaper inner loop is an algorithmic
   question, not a language one.
 - **Multiallelic variants.** pynei tests them as major allele against the
@@ -285,9 +285,9 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
   in effect and all of it when they act alike. A per allele joint model,
   one row per variant and allele, is the design if the panels have several
   common alleles per site. Independent of the language.
-- **Memory in the browser.** A 10000 sample kinship is 800 MB in float64
+- **Memory in the browser.** A kinship of 10000 individuals is 800 MB in float64
   and the projection matrix of the mixed model as much again; the 32 bit
-  heap caps the browser at a few thousand samples for the mixed models
+  heap caps the browser at a few thousand individuals for the mixed models
   whatever the language, under pyodide and in the direct build of
   decision 9 alike.
 - **zstd in the direct wasm build.** The vars file is compressed with
@@ -312,7 +312,7 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
 
 - The Python benchmarks: `calc_kinship` and `calc_gwas` over variants from
   `test/var_generators.py`, and the tool comparison over a panel simulated
-  by `test/gwas_reference/make_reference.py` with 1000 samples and 100000
+  by `test/gwas_reference/make_reference.py` with 1000 individuals and 100000
   variants, plink2 2.0 alpha 7 for arm64, R 4.6 with GMMAT and rrBLUP.
 - The numpy in wasm numbers: pyodide 314.0.7 installed with npm under node
   26, numpy loaded from the jsdelivr CDN.
