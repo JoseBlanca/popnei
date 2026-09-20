@@ -40,13 +40,15 @@ pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 /// individuals, never below [`MIN_NUM_VARS_PER_BLOCK`] and never above
 /// [`MAX_NUM_VARS_PER_BLOCK`].
 ///
+/// A source of no individual gives [`MAX_NUM_VARS_PER_BLOCK`], which is
+/// what the division by one individual would give too.
+///
 /// It is pyNei's `calc_num_vars_per_chunk` of `pynei/variants.py`: a block
 /// is sized by the genotypes it holds and not by its variants, because
-/// that is what the memory and the work depend on.
+/// that is what the memory and the work depend on. pyNei divides by
+/// `max(num_samples, 1)`, and so gives the same for no individual.
 #[must_use]
 pub fn default_num_vars_per_block(num_individuals: usize) -> usize {
-    // No individual at all asks for every variant a block takes, as the
-    // division by one individual would.
     let num_vars = GENOTYPES_PER_BLOCK
         .checked_div(num_individuals)
         .unwrap_or(MAX_NUM_VARS_PER_BLOCK);
@@ -719,6 +721,11 @@ mod tests {
         assert_eq!(default_num_vars_per_block(50), 10_000);
         assert_eq!(default_num_vars_per_block(1000), 5_000);
         assert_eq!(default_num_vars_per_block(100_000), 100);
+        // A source of no individual, which no VCF is: the division by one
+        // individual gives the same, as pyNei's `max(num_samples, 1)`
+        // does.
+        assert_eq!(default_num_vars_per_block(0), 10_000);
+        assert_eq!(default_num_vars_per_block(1), 10_000);
         assert_eq!(GENOTYPES_PER_BLOCK, 5_000_000);
         assert_eq!(MIN_NUM_VARS_PER_BLOCK, 100);
         assert_eq!(MAX_NUM_VARS_PER_BLOCK, 10_000);
