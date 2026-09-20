@@ -227,8 +227,22 @@ the trait that fills the next variant. What crosses is the lent
 `Variant`, and once the buffers of the reader and of the lent `Variant`
 have grown to the size of a line nothing is allocated from one variant to
 the next; a swap of the buffers of the two variants does that without a
-copy. In wasm the same code parses one line after another. How many lines
-a batch holds is a number to measure.
+copy. In wasm the same code parses one line after another.
+
+A batch is bounded by two numbers: how many lines it holds, and how many
+bytes of text those lines are. The second one is what keeps the memory of
+a reader from growing with the individuals of the file, since a line
+carries one genotype per individual, and a batch holds one line whatever
+it is. Both are constants of the code, each with what was measured on it,
+and a caller that times the reader can set them.
+
+A panic inside the parse of a batch leaves the reader with lines that
+were never parsed, so a reader whose parse did not come back gives an
+error at its next read and no more variants. Nothing a VCF can hold
+panics the parse; what this is for is that a panic of a defect of popnei
+becomes an exception that the caller may catch, and a reader that went on
+afterwards would give the variants of the lines that were parsed and drop
+the others without a word.
 
 The result does not depend on the number of threads. The variants come in
 the order of the file, the chromosome numbers are given when a variant is
@@ -454,9 +468,10 @@ genotype of another ploidy, with the line, the individual, the ploidy of
 the genotype and the one expected; a file that could not be opened, with
 its path and the `std::io::Error` as the source of the error, so that a
 binding can put the path where the language of the binding keeps it,
-`OSError.filename` in Python; and an error of the input, which wraps
-`std::io::Error`. In Python the first five are a `ValueError` and the
-last two an `OSError`.
+`OSError.filename` in Python; an error of the input, which wraps
+`std::io::Error`; and a parse of a batch that did not come back, with the
+number of the last line that was read. In Python the first five and the
+last are a `ValueError` and the other two an `OSError`.
 
 ## Speed
 
