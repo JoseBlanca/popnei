@@ -62,11 +62,11 @@ class Variants:
         where it would be.
 
         `num_vars_per_block` is how many variants a block holds, and
-        ``None`` asks for the number that gives a block about five million
-        genotypes, never fewer than 100 variants and never more than 10000.
-        The size changes nothing but where the cuts fall: the blocks of a
-        source, joined, are the same for any size, and only the last one can
-        be shorter than the rest.
+        ``None`` asks for the size the core works out from the number of
+        individuals, so that a block is a few million genotypes. The size
+        changes nothing but where the cuts fall: the blocks of a source,
+        joined, are the same for any size, and only the last one can be
+        shorter than the rest.
 
         Every call reads the source from its start. When a variant cannot be
         read, the error comes in the place of the block that would have held

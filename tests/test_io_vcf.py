@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy
 import pytest
-from popnei import open_vcf
+from popnei import Variants, _core, open_vcf
 
 # Every field a block can carry besides the genotypes.
 ALL_FIELDS = ("chrom", "pos", "id", "alleles", "qual")
@@ -205,6 +205,23 @@ def test_a_path_that_no_file_is_at_gives_an_oserror_that_carries_the_path(
         open_vcf(path)
     assert isinstance(refusal.value, FileNotFoundError)
     assert refusal.value.filename == str(path)
+
+
+def test_what_a_python_user_reads_is_written_in_the_package(
+    reference_vcf_dir: Path,
+) -> None:
+    """The private module explains nothing; the package is the API.
+
+    A user who calls ``help`` on what they can reach has to read the
+    signature, the defaults and the errors of the package, and the module
+    of the binding crate carries none of that.
+    """
+    assert _core.open_vcf.__doc__ is None
+    assert _core.VcfSource.__doc__ is None
+    assert _core.VcfSource.individuals.__doc__ is None
+    assert _core.Blocks.__doc__ is None
+    assert open_vcf.__doc__ is not None
+    assert Variants.iter_blocks.__doc__ is not None
 
 
 def test_what_a_variants_cannot_do_names_the_module_it_comes_from(

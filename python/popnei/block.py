@@ -18,15 +18,18 @@ The genotypes are not among them: every block holds them.
 """
 
 
-# Two blocks are the same one or they are not: `eq=False` keeps the
-# comparison of the arrays, which has no true or false for more than one
-# genotype, out of `==` and leaves a block hashable by what it is.
 @dataclass(frozen=True, eq=False, repr=False)
 class Block:
     """The variants of one block, each field a column of the block.
 
     A field other than the genotypes is there only when ``iter_blocks`` was
     asked for it, and ``None`` when it was not.
+
+    ``block == other`` is true for the same block and false for any other
+    one: two blocks are not compared column by column, because an array of
+    genotypes is neither equal nor unequal to another, it is equal element
+    by element. ``numpy.array_equal(block.gts, other.gts)`` is how the
+    genotypes of two blocks are compared.
     """
 
     gts: numpy.ndarray

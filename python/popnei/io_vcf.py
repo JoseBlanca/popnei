@@ -23,7 +23,8 @@ def open_vcf(
     for every individual and every variant, and a genotype of any other
     number of alleles is a ``ValueError`` when it is read: popnei does not
     read a VCF of mixed ploidies, because its calculations are not defined
-    for one.
+    for one. It is 1 or more and at most 255, and a ploidy outside that is a
+    ``ValueError`` at this call, before anything is read.
 
     `only_passed` leaves out the variants that failed a filter, those whose
     FILTER column is neither ``PASS`` nor a dot; a dot says that no filter

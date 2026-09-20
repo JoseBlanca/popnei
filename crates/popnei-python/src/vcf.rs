@@ -41,8 +41,10 @@ type BlockColumns<'py> = (
     Option<Bound<'py, PyArray1<f32>>>,
 );
 
-/// A VCF that was opened: its path, the options it is read with, and the
-/// individuals its header named.
+// A VCF that was opened: its path, the options it is read with, and the
+// individuals its header named. A `///` here would become the `__doc__` of
+// the class, and what a Python user reads belongs to the package, which is
+// the API.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct VcfSource {
     path: PathBuf,
@@ -52,19 +54,19 @@ pub(crate) struct VcfSource {
 
 #[pymethods]
 impl VcfSource {
-    /// The names of the individuals, in the order of the columns of the
-    /// VCF.
+    // The names of the individuals, in the order of the columns of the
+    // VCF.
     fn individuals(&self) -> Vec<String> {
         self.individuals.clone()
     }
 
-    /// How many alleles the genotype of one individual holds.
+    // How many alleles the genotype of one individual holds.
     fn ploidy(&self) -> usize {
         self.options.ploidy
     }
 
-    /// One pass over the file: it is opened again, and its blocks hold
-    /// `fields` besides the genotypes, `num_vars_per_block` variants each.
+    // One pass over the file: it is opened again, and its blocks hold
+    // `fields` besides the genotypes, `num_vars_per_block` variants each.
     #[pyo3(signature = (fields, num_vars_per_block))]
     fn blocks(
         &self,
@@ -92,7 +94,7 @@ impl VcfSource {
     }
 }
 
-/// One pass over a VCF, which gives its variants block by block.
+// One pass over a VCF, which gives its variants block by block.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
     collector: Mutex<BlockCollector<Box<dyn VariantReader>>>,
@@ -185,10 +187,9 @@ impl Blocks {
     }
 }
 
-/// The VCF at `path`, read with `ploidy` alleles in every genotype and, when
-/// `only_passed` is true, without the variants that failed a filter.
-///
-/// It reads the header, so the individuals are known when it returns.
+// The VCF at `path`, read with `ploidy` alleles in every genotype and, when
+// `only_passed` is true, without the variants that failed a filter. It
+// reads the header, so the individuals are known when it returns.
 #[pyfunction]
 pub(crate) fn open_vcf(
     py: Python<'_>,
