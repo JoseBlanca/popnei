@@ -4,7 +4,8 @@
 //! Three classes. [`VcfSource`] holds the bytes of a VCF and the options it
 //! is read with, and it reads the header when it is built, so bytes that are
 //! not a VCF fail at `openVcf`. [`Blocks`] is one pass over those bytes: it
-//! owns a reader and the collector of `popnei::block`, and every call of
+//! owns a reader of blocks of the core with a `Reblock` at its end, which
+//! gives the blocks the size that was asked for, and every call of
 //! `VcfSource::blocks` reads the bytes again from their start, which is what
 //! lets a user give the same `Variants` to one calculation after another.
 //! [`BlockColumns`] is one block on its way out.
@@ -25,9 +26,11 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::{AllelesColumn, Block, BlockCollector, needs_of_the_fields};
+use popnei::block::{
+    AllelesColumn, Block, BlockReader, CollectedBlocks, Reblock, needs_of_the_fields,
+};
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::VariantReader;
+use popnei::variant::Needs;
 
 use crate::errors::JsPopneiError;
 
@@ -94,9 +97,18 @@ impl VcfSource {
     ) -> Result<Blocks, JsPopneiError> {
         let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
         let source = Cursor::new(SharedBytes(Arc::clone(&self.bytes)));
-        let reader: Box<dyn VariantReader> = Box::new(VcfReader::new(source, self.options)?);
+        // The source is asked for the size the user wants, so the `Reblock`
+        // over it has nothing to cut or to join and every block goes through
+        // with no copy. It is there for the sources that give another size,
+        // a filter among them, and it is what `docs/specs/block.md` puts at
+        // the end of every `iterBlocks`. The source today is the adapter of
+        // the core over the reader of single variants; task 2.4 of
+        // `docs/plans/block-readers.md` puts the VCF reader itself there,
+        // which is the line that builds `blocks`.
+        let reader = VcfReader::new(source, self.options)?;
+        let blocks = CollectedBlocks::new(reader, needs, num_vars_per_block)?;
         Ok(Blocks {
-            collector: BlockCollector::new(reader, needs, num_vars_per_block)?,
+            reader: Box::new(Reblock::new(blocks, num_vars_per_block)?),
         })
     }
 }
@@ -104,7 +116,7 @@ impl VcfSource {
 /// One pass over a VCF, which gives its variants block by block.
 #[wasm_bindgen]
 pub struct Blocks {
-    collector: BlockCollector<Box<dyn VariantReader>>,
+    reader: Box<dyn BlockReader>,
 }
 
 #[wasm_bindgen]
@@ -112,20 +124,27 @@ impl Blocks {
     /// The next block of the pass, or `undefined` when the VCF has no more
     /// variants.
     ///
-    /// The names of the chromosomes are taken after the block was
-    /// collected, as `docs/specs/block.md` says: the table of the reader
-    /// grows while the file is read, and a block holds numbers of it.
+    /// The names of the chromosomes are taken after the block was given, as
+    /// `docs/specs/block.md` says: the table of the reader grows while the
+    /// file is read, and a block holds numbers of it.
+    ///
+    /// The block is checked before its genotypes cross as one `Int8Array`
+    /// of variants x individuals x ploidy: a block whose arrays are not of
+    /// its size would be read one genotype at the place of another, with
+    /// nothing to show it.
     ///
     /// # Errors
     ///
-    /// When a variant cannot be read, and when a position of the block is
-    /// above [`LARGEST_POSITION`]. The block that was being built is lost
-    /// with the error, and every call after it gives no block.
+    /// When a variant cannot be read, when the block is not of its own size,
+    /// and when a position of the block is above [`LARGEST_POSITION`]. The
+    /// block that was being built is lost with the error, and every call
+    /// after it gives no block.
     pub fn next_block(&mut self) -> Result<Option<BlockColumns>, JsPopneiError> {
-        let Some(block) = self.collector.next_block()? else {
+        let Some(block) = self.reader.next_block()? else {
             return Ok(None);
         };
-        let chroms = self.collector.reader().chroms();
+        block.check()?;
+        let chroms = self.reader.chroms();
         let names = |numbers: Vec<u32>| {
             numbers
                 .into_iter()
@@ -284,7 +303,13 @@ pub fn open_vcf(
     // never gives that back.
     let bytes = Arc::new(bytes);
     let source = Cursor::new(SharedBytes(Arc::clone(&bytes)));
-    let reader = VcfReader::new(source, options)?;
+    // The header is read when the reader is built, and the names it gave
+    // are asked of the adapter, which is what this crate holds a reader
+    // through. Task 2.4 of `docs/plans/block-readers.md` puts the VCF
+    // reader itself in the place of the adapter, and it answers this
+    // itself. No variant is read here, so the fields and the size of a
+    // block are the ones that ask for nothing.
+    let reader = CollectedBlocks::new(VcfReader::new(source, options)?, Needs::GTS, None)?;
     let individuals = reader.individuals().to_vec();
     Ok(VcfSource {
         bytes,

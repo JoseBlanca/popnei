@@ -1,13 +1,12 @@
 //! The errors of the core crate on their way to a JavaScript `Error`.
 //!
 //! `impl From<popnei::Error> for JsValue` cannot be written here, because
-//! neither type belongs to this crate, so the functions of the crate fail
+//! neither type belongs to this crate, so every function of the crate fails
 //! with [`JsPopneiError`], which does belong to it, and wasm-bindgen throws
-//! it as an `Error`. `?` on a call of the core crate works everywhere and no
-//! call site has a `map_err`, which is what
-//! `.claude/skills/coding/pyo3.md` asks of the Python binding crate and what
-//! section 11 of `docs/architecture.md` asks here: one place turns an error
-//! of the core into what JavaScript throws.
+//! it as an `Error`. `?` on a call of the core crate works everywhere, which
+//! is what `.claude/skills/coding/pyo3.md` asks of the Python binding crate
+//! and what section 11 of `docs/architecture.md` asks here: one place turns
+//! an error of the core into what JavaScript throws.
 
 use wasm_bindgen::{JsError, JsValue};
 

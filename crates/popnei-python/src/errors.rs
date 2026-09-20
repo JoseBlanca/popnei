@@ -1,10 +1,11 @@
 //! The errors of the core crate on their way to a Python exception.
 //!
 //! `impl From<popnei::Error> for PyErr` cannot be written here, because
-//! neither type belongs to this crate, so the functions of the crate fail
+//! neither type belongs to this crate, so every function of the crate fails
 //! with [`PyPopneiError`], which does belong to it, and pyo3 turns that one
-//! into the exception. `?` on a call of the core crate works everywhere and
-//! no call site has a `map_err`, which is what
+//! into the exception. `?` on a call of the core crate works everywhere, and
+//! a call site maps an error by hand only to add what the core does not
+//! have, the path of the file, which is what
 //! `.claude/skills/coding/pyo3.md` asks for.
 
 use std::path::Path;
@@ -39,6 +40,12 @@ pub(crate) enum PyPopneiError {
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
     Broken(String),
+    /// An exception the interpreter itself raised, on its way back to it as
+    /// it is: the `KeyboardInterrupt` of a Ctrl-C that `check_signals`
+    /// found between two blocks, and what building a tuple of the names of
+    /// the chromosomes of a block raised. This crate reads them and does
+    /// not choose them, so it carries them back untouched.
+    Python(PyErr),
 }
 
 impl PyPopneiError {
@@ -68,6 +75,15 @@ impl From<popnei::Error> for PyPopneiError {
     }
 }
 
+impl From<PyErr> for PyPopneiError {
+    /// So that `?` on a call of pyo3, `check_signals` or the building of a
+    /// tuple, works in a function that fails with this type, which every
+    /// function of this crate does.
+    fn from(error: PyErr) -> PyPopneiError {
+        PyPopneiError::Python(error)
+    }
+}
+
 impl From<PyPopneiError> for PyErr {
     fn from(error: PyPopneiError) -> PyErr {
         match error {
@@ -83,18 +99,21 @@ impl From<PyPopneiError> for PyErr {
                 largest = usize::MAX
             )),
             PyPopneiError::Broken(message) => PyRuntimeError::new_err(message),
+            PyPopneiError::Python(error) => error,
         }
     }
 }
 
 /// The exception of one error of the core crate, which a pyNei user
 /// recognises: `ValueError` for an argument that is wrong or a file whose
-/// content popnei cannot read, `OSError` for the file system.
+/// content popnei cannot read, `OSError` for the file system, and
+/// `RuntimeError` for the two that say a reader of the core has a defect.
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "popnei::Error is non_exhaustive, so a match on it outside the core crate \
               has to have a wildcard arm; a case that a later module adds is a ValueError, \
-              which is what every case that is not of the file system is"
+              which is what every case that is neither of the file system nor a defect of \
+              a reader is"
 )]
 fn exception_of(error: popnei::Error) -> PyErr {
     let message = error.to_string();
@@ -108,6 +127,15 @@ fn exception_of(error: popnei::Error) -> PyErr {
         // the calls that have it use. This one is left for a source that is
         // not a file, which Python has none of yet.
         popnei::Error::Io(_) => PyOSError::new_err(message),
+        // Blocks of one source that do not hold the same dataset, and a
+        // block whose arrays are not of its size, are defects of the reader
+        // that gave them and not values a user wrote: nothing a user asks
+        // for gives them. They are the `RuntimeError` of
+        // `PyPopneiError::Broken` and not the `ValueError` of the rest, so
+        // that a user who gets one reports it instead of looking for what
+        // they typed wrong.
+        popnei::Error::BlocksDoNotFitTogether { .. }
+        | popnei::Error::BlockArrayOfAnotherSize { .. } => PyRuntimeError::new_err(message),
         _ => PyValueError::new_err(message),
     }
 }

@@ -4,7 +4,8 @@
 //! Two classes. [`VcfSource`] holds the path of a VCF and the options it is
 //! read with, and it reads the header when it is built, so a file that is
 //! not a VCF fails at `open_vcf`. [`Blocks`] is one pass over that file: it
-//! owns a reader and the collector of `popnei::block`, and every call of
+//! owns a reader of blocks of the core with a `Reblock` at its end, which
+//! gives the blocks the size that was asked for, and every call of
 //! `VcfSource::blocks` opens the file again, which is what lets a user give
 //! the same `Variants` to one calculation after another.
 //!
@@ -23,9 +24,11 @@ use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyString, PyTuple};
 
-use popnei::block::{AllelesColumn, Block, BlockCollector, needs_of_the_fields};
+use popnei::block::{
+    AllelesColumn, Block, BlockReader, CollectedBlocks, Reblock, needs_of_the_fields,
+};
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::{ChromTable, VariantReader};
+use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
 
@@ -73,22 +76,31 @@ impl VcfSource {
         py: Python<'_>,
         fields: Vec<String>,
         num_vars_per_block: Option<i64>,
-    ) -> PyResult<Blocks> {
-        let needs =
-            needs_of_the_fields(fields.iter().map(String::as_str)).map_err(PyPopneiError::from)?;
+    ) -> Result<Blocks, PyPopneiError> {
+        let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
         let num_vars_per_block = num_vars_per_block
             .map(|asked_for| count_of("num_vars_per_block", asked_for))
             .transpose()?;
         let path = &self.path;
         let options = self.options;
-        let collector = py
-            .detach(|| -> Result<_, popnei::Error> {
-                let reader: Box<dyn VariantReader> = Box::new(VcfReader::from_path(path, options)?);
-                BlockCollector::new(reader, needs, num_vars_per_block)
+        let reader = py
+            .detach(|| -> Result<Box<dyn BlockReader>, popnei::Error> {
+                // The source is asked for the size the user wants, so the
+                // `Reblock` over it has nothing to cut or to join and every
+                // block goes through with no copy. It is there for the
+                // sources that give another size, a filter among them, and
+                // it is what `docs/specs/block.md` puts at the end of every
+                // `iter_blocks`. The source today is the adapter of the
+                // core over the reader of single variants; task 2.4 of
+                // `docs/plans/block-readers.md` puts the VCF reader itself
+                // there, which is the line that builds `blocks`.
+                let reader = VcfReader::from_path(path, options)?;
+                let blocks = CollectedBlocks::new(reader, needs, num_vars_per_block)?;
+                Ok(Box::new(Reblock::new(blocks, num_vars_per_block)?))
             })
             .map_err(|error| PyPopneiError::of_the_file(error, path))?;
         Ok(Blocks {
-            collector: Mutex::new(collector),
+            reader: Mutex::new(reader),
             path: path.clone(),
         })
     }
@@ -97,9 +109,9 @@ impl VcfSource {
 // One pass over a VCF, which gives its variants block by block.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
-    collector: Mutex<BlockCollector<Box<dyn VariantReader>>>,
-    /// The file the collector reads, for the errors of the file system,
-    /// which carry it where Python keeps it, `OSError.filename`.
+    reader: Mutex<Box<dyn BlockReader>>,
+    /// The file the reader reads, for the errors of the file system, which
+    /// carry it where Python keeps it, `OSError.filename`.
     path: PathBuf,
 }
 
@@ -109,12 +121,12 @@ impl Blocks {
         this
     }
 
-    fn __next__<'py>(&self, py: Python<'py>) -> PyResult<Option<BlockColumns<'py>>> {
+    fn __next__<'py>(&self, py: Python<'py>) -> Result<Option<BlockColumns<'py>>, PyPopneiError> {
         // A block of the default size is a few million genotypes, so a user
         // who asks for the blocks of a big VCF waits here, and a Ctrl-C
         // between two blocks is how they stop.
         py.check_signals()?;
-        let Some((block, chroms)) = py.detach(|| self.collect_next_block())? else {
+        let Some((block, chroms)) = py.detach(|| self.next_block())? else {
             return Ok(None);
         };
         let Block {
@@ -155,32 +167,38 @@ impl Blocks {
 }
 
 impl Blocks {
-    /// The next block of the collector, with the chromosomes of its
-    /// variants, or `None` when the VCF has no more variants.
+    /// The next block of the reader, with the chromosomes of its variants,
+    /// or `None` when the VCF has no more variants.
     ///
-    /// The names are taken after the block was collected, as
+    /// The names are taken after the block was given, as
     /// `docs/specs/block.md` says: the table of the reader grows while the
     /// file is read, and a block holds numbers of it. They are copied
     /// because the interpreter is released here and the lock is not held
     /// while the Python objects are built: a thread that waited for the
     /// lock with the interpreter in hand would never get it back from this
     /// one.
-    fn collect_next_block(&self) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
-        let mut collector = self.collector.lock().map_err(|_| {
+    ///
+    /// The block is checked here, before its genotypes go to numpy as one
+    /// array of variants x individuals x ploidy: a block whose arrays are
+    /// not of its size would be read one genotype at the place of another,
+    /// with nothing to show it.
+    fn next_block(&self) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
+        let mut reader = self.reader.lock().map_err(|_| {
             PyPopneiError::Broken(
                 "the blocks of this pass cannot be read any more: a panic left the \
                  reader half way through a block"
                     .to_string(),
             )
         })?;
-        let Some(block) = collector
+        let Some(block) = reader
             .next_block()
             .map_err(|error| PyPopneiError::of_the_file(error, &self.path))?
         else {
             return Ok(None);
         };
+        block.check()?;
         let chroms = match block.chrom.as_deref() {
-            Some(numbers) => Some(ChromColumn::of(numbers, collector.reader().chroms())?),
+            Some(numbers) => Some(ChromColumn::of(numbers, reader.chroms())?),
             None => None,
         };
         Ok(Some((block, chroms)))
@@ -196,14 +214,22 @@ pub(crate) fn open_vcf(
     path: PathBuf,
     ploidy: i64,
     only_passed: bool,
-) -> PyResult<VcfSource> {
+) -> Result<VcfSource, PyPopneiError> {
     let options = VcfOptions {
         ploidy: count_of("ploidy", ploidy)?,
         only_passed,
     };
     let individuals = py
         .detach(|| -> Result<_, popnei::Error> {
+            // The header is read when the reader is built, and the names it
+            // gave are asked of the adapter, which is what this crate holds
+            // a reader through. Task 2.4 of
+            // `docs/plans/block-readers.md` puts the VCF reader itself in
+            // the place of the adapter, and it answers this itself. No
+            // variant is read here, so the fields and the size of a block
+            // are the ones that ask for nothing.
             let reader = VcfReader::from_path(&path, options)?;
+            let reader = CollectedBlocks::new(reader, Needs::GTS, None)?;
             Ok(reader.individuals().to_vec())
         })
         .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
@@ -225,7 +251,7 @@ fn count_of(name: &'static str, value: i64) -> Result<usize, PyPopneiError> {
 
 /// The array, which nothing writes into any more: a block is frozen, and
 /// its arrays hold the memory the core filled.
-fn read_only<'py, T>(array: Bound<'py, T>) -> PyResult<Bound<'py, T>> {
+fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
         .getattr("flags")?
@@ -279,7 +305,10 @@ impl ChromColumn {
 }
 
 /// The name of the chromosome of every variant of a block.
-fn chrom_column<'py>(py: Python<'py>, chroms: &ChromColumn) -> PyResult<Bound<'py, PyTuple>> {
+fn chrom_column<'py>(
+    py: Python<'py>,
+    chroms: &ChromColumn,
+) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
     // One Python string for each chromosome, which the variants of that
     // chromosome share: a block of 10000 variants of one chromosome holds
     // one name and not 10000.
@@ -299,20 +328,23 @@ fn chrom_column<'py>(py: Python<'py>, chroms: &ChromColumn) -> PyResult<Bound<'p
             })
         })
         .collect::<Result<Vec<_>, PyPopneiError>>()?;
-    PyTuple::new(py, of_each_variant)
+    Ok(PyTuple::new(py, of_each_variant)?)
 }
 
 /// The id of every variant of a block, `None` for a variant that has none,
 /// which the core gives as an empty id.
-fn id_column<'py>(py: Python<'py>, ids: &[String]) -> PyResult<Bound<'py, PyTuple>> {
-    PyTuple::new(
+fn id_column<'py>(py: Python<'py>, ids: &[String]) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
+    Ok(PyTuple::new(
         py,
         ids.iter().map(|id| (!id.is_empty()).then_some(id.as_str())),
-    )
+    )?)
 }
 
 /// The alleles of every variant of a block, the reference one first.
-fn alleles_column<'py>(py: Python<'py>, column: &AllelesColumn) -> PyResult<Bound<'py, PyTuple>> {
+fn alleles_column<'py>(
+    py: Python<'py>,
+    column: &AllelesColumn,
+) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
     let of_each_variant = (0..column.num_vars())
         .map(|var| {
             PyTuple::new(
@@ -321,5 +353,5 @@ fn alleles_column<'py>(py: Python<'py>, column: &AllelesColumn) -> PyResult<Boun
             )
         })
         .collect::<PyResult<Vec<_>>>()?;
-    PyTuple::new(py, of_each_variant)
+    Ok(PyTuple::new(py, of_each_variant)?)
 }
