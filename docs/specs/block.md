@@ -226,23 +226,50 @@ impl<R: VariantReader> BlockCollector<R> {
 pub fn default_num_vars_per_block(num_individuals: usize) -> usize;
 
 /// The three numbers of that rule, each inherited from pyNei's
-/// `config.py` and measured for popnei by nobody.
+/// `config.py` and measured for popnei by nobody. No individual at all
+/// gives the largest, as pyNei's division by `max(num_samples, 1)` does.
 pub const GENOTYPES_PER_BLOCK: usize = 5_000_000;
 pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 ```
 
+The name of each column in Python and in TypeScript, and the fields a
+collector is asked for to fill the columns those names ask for. Both
+binding crates take the names from their user and call this, so that one
+list serves the two languages and a column added later cannot reach one
+of them and not the other.
+
+```rust
+/// In the order of the columns of `Block`. The genotypes are not among
+/// them: every block holds them.
+pub const FIELD_NAMES: [&str; 5] = ["chrom", "pos", "id", "alleles", "qual"];
+
+/// `GTS` and what the names ask for; the chromosome and the position
+/// travel together, so either name asks for both. A name that is not one
+/// of `FIELD_NAMES` is the error that names it and lists the five.
+pub fn needs_of_the_fields<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<Needs>;
+```
+
 `BlockCollector<Box<dyn VariantReader>>` is how the two binding crates
 hold it, so `VariantReader` is implemented for a box of itself.
 
-This module adds two cases to the error of the crate: a
-`num_vars_per_block` of 0, and a block whose genotypes are more than the
-addresses of the machine, `num_vars_per_block` times `num_individuals`
-times `ploidy` above what a `usize` holds, which `BlockCollector::new`
-refuses. Only a size the caller asked for reaches the second one, and it
-reaches it in wasm, where a `usize` is 32 bits and holds 4295 million:
-10000 variants of 250000 individuals of the ploidy 2 are 5000 million
-genotypes.
+This module adds four cases to the error of the crate. A
+`num_vars_per_block` of 0, which `BlockCollector::new` refuses. A block
+the machine cannot give the memory for: `new` refuses one whose
+genotypes, `num_vars_per_block` times `num_individuals` times `ploidy`,
+are more than a `usize` holds, which in wasm, where a `usize` is 32 bits
+and holds 4295 million, is 10000 variants of 250000 individuals of the
+ploidy 2; and the first `next_block` asks for the memory of every column
+of the block, the positions of a variant among them, which are 8 bytes
+whatever the individuals are, and gives the same error when the machine
+does not give it, before a variant is read. A size that a caller wrote
+reaches neither an abort nor a panic. A variant the reader filled with a
+number of alleles other than its individuals times its ploidy, which
+would be a block whose `gts` is not `num_vars` x `num_individuals` x
+`ploidy` and whose genotypes a consumer reads wrong. And a name that is
+not a field of a block.
 
 ## Open points
 
