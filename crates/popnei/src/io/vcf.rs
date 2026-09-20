@@ -1024,20 +1024,28 @@ fn error_reading_a_line(error: std::io::Error, number: u64) -> Error {
 
 impl<R: BufRead + Send> VcfReader<R> {
     /// How many lines the reader takes from the source before it parses
-    /// them, which is [`LINES_PER_BATCH`] until this is called. The tests
-    /// lower it, so that a file of a few hundred lines is read in several
-    /// batches and so that one line at a time, which is what wasm reads, is
-    /// read here too. A batch holds one line at least.
-    #[cfg(test)]
-    fn set_lines_per_batch(&mut self, lines: usize) {
+    /// them, which is [`LINES_PER_BATCH`] until this is called. A batch
+    /// holds one line at least, whatever this says.
+    ///
+    /// It is hidden from the documentation and it is not part of what
+    /// popnei promises: it is for the benchmark `benches/read_vcf.rs`,
+    /// which times a file with one batch after another, and for the tests,
+    /// which read a file of a few hundred lines in several batches and one
+    /// line at a time, the batch of wasm. What a read gives does not depend
+    /// on it.
+    #[doc(hidden)]
+    pub fn set_lines_per_batch(&mut self, lines: usize) {
         self.lines_per_batch = lines.max(1);
     }
 
     /// How many bytes of text the reader takes from the source before it
     /// parses what it read, which is [`BYTES_PER_BATCH`] until this is
     /// called. A batch holds one line at least, whatever this says.
-    #[cfg(test)]
-    fn set_bytes_per_batch(&mut self, bytes: usize) {
+    ///
+    /// Hidden and outside what popnei promises, like
+    /// [`VcfReader::set_lines_per_batch`], and for the same two callers.
+    #[doc(hidden)]
+    pub fn set_bytes_per_batch(&mut self, bytes: usize) {
         self.bytes_per_batch = bytes.max(1);
     }
 
