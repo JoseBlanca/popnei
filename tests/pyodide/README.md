@@ -4,7 +4,8 @@ pyodide is CPython built for WebAssembly, which runs in a browser tab and
 under node. popnei is installed in it as a wheel whose platform tag is
 `pyemscripten`, built from the same core crate and the same binding crate
 as the native wheel, and what this directory checks is that the wheel
-builds, installs and answers with the version of the core.
+builds, that it installs, and that inside pyodide popnei answers with the
+version of the core and reads a VCF as the specs say it does.
 
 From the root of the repository, from a clean checkout:
 
@@ -12,11 +13,22 @@ From the root of the repository, from a clean checkout:
     (cd tests/pyodide && npm install)
     node tests/pyodide/smoke.mjs
 
-The first command prints the path of the wheel it left in `dist/`; the
-third prints `popnei.__version__` as pyodide gives it and exits with an
-error when that is not the version in `[workspace.package]` of the
-`Cargo.toml` of the repository. Neither `dist/` nor `node_modules/` is in
-git.
+The first command prints the path of the wheel it left in `dist/`. The
+third takes that wheel, installs it in pyodide and checks two things, and
+exits with an error naming each one that differs:
+
+- `popnei.__version__` is the version in `[workspace.package]` of the
+  `Cargo.toml` of the repository.
+- `popnei.open_vcf` reads `tests/reference/vcf/cases.vcf`, and
+  `cases.vcf.gz`, into the four variants that the table of "How it is
+  verified" of `docs/specs/io_vcf.md` gives for that file. The position and
+  the genotypes of each of the four are in the test as literals, taken from
+  that table. The second of the four failed a filter, `q10` in its FILTER
+  column, so `open_vcf` with its default leaves it out and the test looks
+  for the first, the third and the fourth; with `only_passed=False` it
+  looks for the four.
+
+Neither `dist/` nor `node_modules/` is in git.
 
 ## What has to be installed
 
@@ -59,6 +71,12 @@ and checks `emcc` against it, so changing the cross build environment and
 the emsdk is enough on that side; the npm dependency is the one line to
 change by hand.
 
+A newer pyodide brings a newer numpy with it, and the smoke test prints
+which one answered. It has to be one that `dependencies` of
+`pyproject.toml` accepts and that the `numpy` crate of the binding crate
+supports; when it is not, the wheel still installs, and the failure comes
+when the genotypes are asked for.
+
 ## Two traps
 
 Both were found when the trial crate in Rust that `docs/rust_core.md`
@@ -82,11 +100,23 @@ reports was built for pyodide.
 
 ## What runs where
 
-The smoke test writes the wheel into the file system that emscripten gives
-the code running inside pyodide, which is not the one of node, and installs
-it from there with micropip, the package installer of pyodide. The `emfs:`
-prefix of the path is what asks micropip for a file of that file system
-instead of a package of an index. micropip itself is not in the npm package
-of pyodide: the first run downloads it from the CDN of pyodide and caches
-it under `node_modules/`, so that first run needs the network and the later
-ones do not.
+The code running inside pyodide sees the file system that emscripten gives
+it and not the one of node, and nothing of the repository is in it. So the
+smoke test writes the wheel there and installs it from there with micropip,
+the package installer of pyodide; the `emfs:` prefix of the path is what
+asks micropip for a file of that file system instead of a package of an
+index. It writes the two VCFs there as well, under `/vcf`, because
+`open_vcf` takes a path and opens it, as it does natively.
+
+Neither micropip nor numpy is in the npm package of pyodide: the first run
+downloads both from the CDN of pyodide and caches them under
+`node_modules/`, so that first run needs the network and the later ones do
+not. The whole test takes 1.2 s on the owner's Mac once they are cached.
+
+A block is a run of consecutive variants of a source, held as arrays, and
+it is how the genotypes leave popnei: they arrive in a numpy array of
+variants x individuals x ploidy. So popnei cannot be imported before numpy
+is loaded. pyodide 314.0.7 brings numpy 2.4.6, which is what `dependencies`
+of `pyproject.toml` asks for and what the `numpy` crate 0.29 of the binding
+crate was compiled against; the version the test prints is the one that
+answered.
