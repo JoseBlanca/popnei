@@ -166,7 +166,11 @@ error of a data line gives the number of the line in the file, counted
 from 1 with the header lines, and the column or the individual.
 
 A line that is skipped for its FILTER is not parsed beyond that column,
-so what is wrong in the rest of it is not found.
+so what is wrong in the rest of it is not found. The seven columns up to
+the FILTER are taken as text and read only when the variant is given, so
+what is wrong in them is not found either: a position that is not a
+number in a line that is skipped gives no error, and the name of the
+chromosome of such a line gets no number.
 
 The alleles of ALT are counted for every variant that is given, to check the allele
 numbers of the genotypes, also when `ALLELES` was not asked for and the
@@ -313,9 +317,10 @@ of 0. And these,
 which are not errors: `GT` second in the FORMAT, `DP:GT` with `3:0/1`;
 lines that end in `\r\n`; an empty line at the end; a header and no
 variant, which gives false at the first `read_variant`; a variant whose
-ALT declares two alleles and whose genotypes carry only the first; and a
+ALT declares two alleles and whose genotypes carry only the first; a
 line with `q10` and a tetraploid genotype, which the default skips and
-`only_passed` false refuses.
+`only_passed` false refuses; and a line with `q10` and the position `x`,
+which the default skips.
 
 What `Needs` does: with `GTS` alone, `filled` has the genotypes, the
 chromosome and the position and no more, and `alleles` is empty; with
