@@ -1967,6 +1967,44 @@ mod tests {
         assert!(collector.next_block().expect("no block").is_none());
     }
 
+    /// The columns of a block are asked of the machine when the block is
+    /// started, and a size that a caller wrote reaches neither an abort nor
+    /// a panic: the positions of a variant are 8 bytes whatever the
+    /// individuals are, so a block of that many variants is refused for
+    /// the memory of its columns although its genotypes were not asked
+    /// for. It is made over the VCF reader, which is the reader that
+    /// allocates blocks.
+    #[test]
+    fn a_block_of_more_memory_than_the_machine_gives_is_refused_when_it_is_started() {
+        // Three individuals of the ploidy 2 are six alleles in a variant,
+        // so a size of an eighth of `usize::MAX` is a multiplication that
+        // does not carry over and a column that no machine gives: the
+        // positions of those variants alone are eight times more bytes.
+        let size = usize::MAX / 8;
+        let vcf = vcf_of(&["chr1 100 rs1 A T . PASS . GT 0/0 0/1 1/1"]);
+        let mut reader =
+            reader_over_text(&vcf, VcfOptions::default(), Needs::CHROM_POS, Some(size));
+        // The genotypes are not among what this block would hold, and the
+        // columns of the chromosomes and the positions are.
+        reader.set_needs(Needs::CHROM_POS);
+
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the reader gave {block:?}"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((num_vars_per_block, num_individuals, ploidy), (size, 3, 2));
+
+        assert!(reader.next_block().expect("no block").is_none());
+    }
+
     /// The alleles of a block are one buffer of text with the end of each
     /// allele, and the buffers are reserved when the block is started: a
     /// column that grows while it is filled is the allocations that one
