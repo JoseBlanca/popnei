@@ -16,7 +16,7 @@
 //! as `docs/specs/block.md` describes it.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use numpy::ndarray::Array3;
@@ -100,16 +100,29 @@ impl VcfSource {
             })
             .map_err(|error| PyPopneiError::of_the_file(error, path))?;
         Ok(Blocks {
-            reader: Mutex::new(reader),
+            pass: Mutex::new(Pass {
+                reader,
+                finished: false,
+            }),
             path: path.clone(),
         })
     }
 }
 
+/// The reader of one pass and whether the pass is over: they are read and
+/// written together, under one lock, because a pass that is over gives no
+/// block whatever its reader would say.
+struct Pass {
+    reader: Box<dyn BlockReader>,
+    /// Whether the reader has no more blocks or a block was lost with an
+    /// error. After either there is no block.
+    finished: bool,
+}
+
 // One pass over a VCF, which gives its variants block by block.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
-    reader: Mutex<Box<dyn BlockReader>>,
+    pass: Mutex<Pass>,
     /// The file the reader reads, for the errors of the file system, which
     /// carry it where Python keeps it, `OSError.filename`.
     path: PathBuf,
@@ -124,8 +137,25 @@ impl Blocks {
     fn __next__<'py>(&self, py: Python<'py>) -> Result<Option<BlockColumns<'py>>, PyPopneiError> {
         // A block of the default size is a few million genotypes, so a user
         // who asks for the blocks of a big VCF waits here, and a Ctrl-C
-        // between two blocks is how they stop.
+        // between two blocks is how they stop. It costs no block, so the
+        // pass is not over after it; everything from the read on loses the
+        // block it happened in, and a pass that went on would give the
+        // variants that follow as if nothing had happened, which
+        // `docs/specs/block.md` asks of every reader that it not do.
         py.check_signals()?;
+        self.columns_of_the_next_block(py)
+            .inspect_err(|_| self.finish())
+    }
+}
+
+impl Blocks {
+    /// The columns of the next block, or `None` when the VCF has no more
+    /// variants. What ends the pass at an error is [`Blocks::__next__`],
+    /// which calls this one.
+    fn columns_of_the_next_block<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> Result<Option<BlockColumns<'py>>, PyPopneiError> {
         let read = py.detach(|| self.next_block())?;
         // A Ctrl-C that arrived while the block was read is still pending:
         // the interpreter was released and no bytecode ran to raise it. It
@@ -173,9 +203,17 @@ impl Blocks {
             .transpose()?;
         Ok(Some((gts, chrom, pos, id, alleles, qual)))
     }
-}
 
-impl Blocks {
+    /// The pass is over, and every call after this one gives no block.
+    ///
+    /// A lock that a panic left broken is already the end of the pass: every
+    /// read of it is the error of a reader that cannot be read any more.
+    fn finish(&self) {
+        if let Ok(mut pass) = self.pass.lock() {
+            pass.finished = true;
+        }
+    }
+
     /// The next block of the reader, with the chromosomes of its variants,
     /// or `None` when the VCF has no more variants.
     ///
@@ -192,22 +230,42 @@ impl Blocks {
     /// not of its size would be read one genotype at the place of another,
     /// with nothing to show it.
     fn next_block(&self) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
-        let mut reader = self.reader.lock().map_err(|_| {
+        let mut pass = self.pass.lock().map_err(|_| {
             PyPopneiError::Broken(
                 "the blocks of this pass cannot be read any more: a panic left the \
                  reader half way through a block"
                     .to_string(),
             )
         })?;
-        let Some(block) = reader
+        if pass.finished {
+            return Ok(None);
+        }
+        let block = pass.next_block(&self.path);
+        if !matches!(block, Ok(Some(_))) {
+            pass.finished = true;
+        }
+        block
+    }
+}
+
+impl Pass {
+    /// The next block of the reader, with the chromosomes of its variants,
+    /// read with `path` at hand for the errors of the file system. What ends
+    /// the pass is [`Blocks::next_block`], which calls this one.
+    fn next_block(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
+        let Some(block) = self
+            .reader
             .next_block()
-            .map_err(|error| PyPopneiError::of_the_file(error, &self.path))?
+            .map_err(|error| PyPopneiError::of_the_file(error, path))?
         else {
             return Ok(None);
         };
         block.check()?;
         let chroms = match block.chrom.as_deref() {
-            Some(numbers) => Some(ChromColumn::of(numbers, reader.chroms())?),
+            Some(numbers) => Some(ChromColumn::of(numbers, self.reader.chroms())?),
             None => None,
         };
         Ok(Some((block, chroms)))

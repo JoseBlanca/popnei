@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 # How many variants the VCF of the test holds, and how long the core takes
 # to read them as one block: 400000 lines of three individuals are 17 MB and
 # 0.3 s with the core that `maturin develop` builds, which is unoptimised.
@@ -58,6 +60,52 @@ sys.exit(2)
 """
 
 
+# What the process of the second test prints in each of the three cases: the
+# pass was over after the interrupt, it gave the block that follows the one
+# that was lost, and the interrupt arrived after the first block was given,
+# where no block was lost and the pass goes on.
+_THE_PASS_IS_OVER = "the pass is over"
+_ANOTHER_BLOCK = "the pass gave the block after the one that was lost"
+_AFTER_THE_BLOCK = "the interrupt arrived after the block"
+
+# The process that is interrupted while the first of two blocks is read and
+# then asks the pass for another block. The block the interrupt happened in
+# is lost, so a pass that gave the next one would hand out the variants that
+# follow the lost ones as if nothing had happened.
+_ASK_FOR_A_BLOCK_AFTER_AN_INTERRUPT = f"""
+import os
+import signal
+import sys
+import threading
+import time
+
+import popnei
+
+variants = popnei.open_vcf(sys.argv[1])
+blocks = variants.iter_blocks(num_vars_per_block={_NUM_VARS // 2})
+threading.Timer(
+    {_SECONDS_BEFORE_THE_INTERRUPT}, lambda: os.kill(os.getpid(), signal.SIGINT)
+).start()
+the_block_was_given = False
+try:
+    next(blocks)
+    the_block_was_given = True
+    time.sleep(2)
+except KeyboardInterrupt:
+    pass
+if the_block_was_given:
+    print("{_AFTER_THE_BLOCK}")
+    sys.exit(0)
+try:
+    next(blocks)
+except StopIteration:
+    print("{_THE_PASS_IS_OVER}")
+    sys.exit(0)
+print("{_ANOTHER_BLOCK}")
+sys.exit(2)
+"""
+
+
 def _vcf_of_many_variants(path: Path) -> Path:
     """A VCF of three individuals and `_NUM_VARS` variants, at `path`."""
     header = (
@@ -90,3 +138,26 @@ def test_a_ctrl_c_while_a_block_is_read_raises_keyboard_interrupt(tmp_path: Path
         f"stderr: {read.stderr}"
     )
     assert read.stdout.strip() == _INTERRUPTED, read.stdout
+
+
+def test_a_pass_gives_no_block_after_the_interrupt_that_lost_one(tmp_path: Path):
+    path = _vcf_of_many_variants(tmp_path / "many_variants.vcf")
+    read = subprocess.run(
+        [sys.executable, "-c", _ASK_FOR_A_BLOCK_AFTER_AN_INTERRUPT, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert read.returncode == 0, (
+        f"the process ended with {read.returncode}\nstdout: {read.stdout}\n"
+        f"stderr: {read.stderr}"
+    )
+    what_happened = read.stdout.strip()
+    if what_happened == _AFTER_THE_BLOCK:
+        # The interrupt lost no block, so the pass was right to go on and
+        # this run says nothing about the case. It has not happened in 20
+        # runs: the read of half of the file takes 0.15 s and the interrupt
+        # is sent 0.05 s after it starts.
+        pytest.skip(_AFTER_THE_BLOCK)
+    assert what_happened == _THE_PASS_IS_OVER, read.stdout

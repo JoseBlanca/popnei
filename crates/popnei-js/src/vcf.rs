@@ -109,6 +109,7 @@ impl VcfSource {
         let blocks = CollectedBlocks::new(reader, needs, num_vars_per_block)?;
         Ok(Blocks {
             reader: Box::new(Reblock::new(blocks, num_vars_per_block)?),
+            finished: false,
         })
     }
 }
@@ -117,6 +118,9 @@ impl VcfSource {
 #[wasm_bindgen]
 pub struct Blocks {
     reader: Box<dyn BlockReader>,
+    /// Whether the pass is over: the reader has no more blocks, or a block
+    /// was lost with an error. After either there is no block.
+    finished: bool,
 }
 
 #[wasm_bindgen]
@@ -138,8 +142,28 @@ impl Blocks {
     /// When a variant cannot be read, when the block is not of its own size,
     /// and when a position of the block is above [`LARGEST_POSITION`]. The
     /// block that was being built is lost with the error, and every call
-    /// after it gives no block.
+    /// after it gives no block: the errors of this pass happen after the
+    /// block was taken from the reader, which knows nothing of them, so it
+    /// is this pass that keeps the promise of `docs/specs/block.md` that
+    /// the variants after a wrong one are not handed out as if nothing had
+    /// happened.
     pub fn next_block(&mut self) -> Result<Option<BlockColumns>, JsPopneiError> {
+        if self.finished {
+            return Ok(None);
+        }
+        let columns = self.columns_of_the_next_block();
+        if !matches!(columns, Ok(Some(_))) {
+            self.finished = true;
+        }
+        columns
+    }
+}
+
+impl Blocks {
+    /// The columns of the next block of the reader, or `None` when it has no
+    /// more variants. What ends the pass is [`Blocks::next_block`], which
+    /// calls this one.
+    fn columns_of_the_next_block(&mut self) -> Result<Option<BlockColumns>, JsPopneiError> {
         let Some(block) = self.reader.next_block()? else {
             return Ok(None);
         };
