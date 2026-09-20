@@ -308,7 +308,8 @@ alternative allele, asked for with `GTS` alone; an allele of 128; a line
 with two columns of individuals under a header with three, and one with
 four; a FORMAT with no `GT`; a position `x`; a source that starts with
 neither `#` nor the gzip bytes; a header with no FORMAT column, and one
-with it and no individual; two individuals with the same name. And these,
+with it and no individual; two individuals with the same name; a ploidy
+of 0. And these,
 which are not errors: `GT` second in the FORMAT, `DP:GT` with `3:0/1`;
 lines that end in `\r\n`; an empty line at the end; a header and no
 variant, which gives false at the first `read_variant`; a variant whose
@@ -324,7 +325,8 @@ allocator when the reader is written, and it is not a test that stays.
 
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
-individuals that are not there and the repeated name, and at
+individuals that are not there, the repeated name and the ploidy of 0,
+and at
 `read_variant` for the rest, with the reader built over the bytes of the
 file. The pytest tests are made at `open_vcf` and the blocks of what it
 returns: the counts of the table above on `many.vcf`, with the default
@@ -370,12 +372,13 @@ impl<R: BufRead + Send> VariantReader for VcfReader<R> { /* ... */ }
 ```
 
 The cases this module adds to the error of the crate: the source is not a
-VCF, with what was found; a wrong header, with what is wrong; a wrong
-data line, with the number of the line, the column or the individual, and
-what is wrong; a genotype of another ploidy, with the line, the
-individual, the ploidy of the genotype and the one expected; and an error
-of the input, which wraps `std::io::Error`. In Python the first four are
-a `ValueError` and the last an `OSError`.
+VCF, with what was found; a wrong header, with what is wrong; a ploidy of
+0, which is the one thing `new` refuses that is not in the source; a
+wrong data line, with the number of the line, the column or the
+individual, and what is wrong; a genotype of another ploidy, with the
+line, the individual, the ploidy of the genotype and the one expected;
+and an error of the input, which wraps `std::io::Error`. In Python the
+first five are a `ValueError` and the last an `OSError`.
 
 ## Speed
 
