@@ -102,13 +102,31 @@ In TypeScript, `variants.iterBlocks({fields = ["chrom", "pos"],
 numVarsPerBlock})`
 is used in `for (const block of variants.iterBlocks())`, and a block is a
 plain object with `gts` an `Int8Array` of variants x individuals x ploidy
-in that order, `numVars`, `chrom`, `id` and `alleles` arrays, `pos` a
+in that order, `numVars`, `numIndividuals`, `ploidy`, `chrom`, `id` and
+`alleles` arrays, `pos` a
 `Float64Array` and `qual` a `Float32Array`,
-with `null` where Python has `None`. The arrays are copies out of the
+with `null` where Python has `None`. `numIndividuals` and `ploidy` are
+there because `gts` is one flat array: the alleles of the individual `i`
+of the variant `v` are the `ploidy` numbers that start at
+`(v * numIndividuals + i) * ploidy`, and without the two a block cannot
+be read without the `Variants` it came from. In Python the shape of the
+array carries them and the dataclass does not hold them again. The arrays
+are copies out of the
 memory of wasm. The positions are float64 where Python has uint64:
 JavaScript's array of unsigned 64 bit numbers gives a `BigInt` for each,
 which does not mix with its ordinary numbers in arithmetic, and a
-position is exact in a float64 up to 2^53.
+position is exact in a float64 up to 2^53. A position above 2^53 is an
+`Error`, which the binding crate finds once per block: rounding it would
+give a TypeScript user another position than a Python user, who gets the
+uint64 the source has.
+
+`fields` takes an array of names, and `numVarsPerBlock` a whole number of
+1 or more. A name that is not one of the five, a `fields` that is not an
+array, and a `numVarsPerBlock` with a fraction, below 1 or above 2^53 are
+an `Error` at the call of `iterBlocks`, which names the value that was
+given. A number of JavaScript is a float64 and reaches the core as an
+integer of 32 bits, so a size of 2^32 + 1 would otherwise be read as a
+block of one variant.
 
 ### What a reader of the rules would not guess
 
@@ -171,7 +189,15 @@ with `num_vars_per_block` of 7 and with the default. This is also the comparison
 The TypeScript test, under node, reads `cases.vcf` from a `Uint8Array`,
 asks for every field with blocks of 3 variants and every variant given,
 and compares the two blocks, of 3 variants and of 1, with the table of
-`cases.vcf` in `docs/specs/io_vcf.md`.
+`cases.vcf` in `docs/specs/io_vcf.md`. Three more: a block read with the
+default `fields` has the chromosomes and the positions and its three
+other columns are `null`; a block kept while enough more are read for the
+memory of wasm to grow, which the test checks it did, still holds what it
+held, which a column that was a view into that memory would not; and the
+arguments the package refuses, a `source` that is not a `Uint8Array`, a
+ploidy and a `numVarsPerBlock` that are not whole numbers of 1 or more,
+an `onlyPassed` that is not a boolean, and a `fields` that is one name
+and not an array of names.
 
 ## The Rust interface
 
