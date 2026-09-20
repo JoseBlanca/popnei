@@ -321,7 +321,7 @@ pyNei is depended on, or the absolute path meanwhile.
   `openVcf`, `Variants` and `iterBlocks` usable in a `for ... of`; the
   node tests. From the same parts of the three specs. Serves deliverable
   3. Needs 4.1. Side by side with 4.2.
-- [ ] 4.4 The smoke test under pyodide, extended to read `cases.vcf`.
+- [x] 4.4 The smoke test under pyodide, extended to read `cases.vcf`.
   Serves deliverable 4. Needs 4.2.
 
 **What could go wrong.** The name of a chromosome number is looked up
