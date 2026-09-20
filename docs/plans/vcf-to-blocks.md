@@ -361,7 +361,7 @@ takes to read the 400 MB VCF of `docs/rust_core.md`.
 
 **Tasks.**
 
-- [ ] 5.1 The batches: the lines read into a batch, parsed with rayon
+- [x] 5.1 The batches: the lines read into a batch, parsed with rayon
   under `cfg(not(target_family = "wasm"))` with the serial version
   beside it, handed out in order by swapping buffers with the lent
   `Variant`, the chromosome numbers given at that moment, and the two
