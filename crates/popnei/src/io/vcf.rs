@@ -210,6 +210,10 @@ pub struct VcfReader<R: BufRead + Send> {
     individuals: Vec<String>,
     chroms: ChromTable,
     needs: Needs,
+    /// The strings of the alleles of the variants read so far, taken out
+    /// of the variant at the start of every read and written over in the
+    /// next one that asks for the alleles.
+    spare_alleles: Vec<String>,
     /// The line being read, without its end of line.
     line: String,
     /// The number of that line in the file, counted from 1 with the lines
@@ -253,6 +257,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             individuals: Vec::new(),
             chroms: ChromTable::new(),
             needs: Needs::ALL,
+            spare_alleles: Vec::new(),
             line: String::new(),
             line_number: 0,
             finished: false,
@@ -432,26 +437,26 @@ fn allele_texts<'a>(reference: &'a str, alternatives: &'a str) -> impl Iterator<
     std::iter::once(reference).chain(alternatives.into_iter().flat_map(|texts| texts.split(',')))
 }
 
-/// The alleles of the variant, written over the strings that `alleles`
-/// holds already: once they have grown, a million variants cost no
-/// allocation, which is what section 1 of `docs/architecture.md` asks of a
-/// reader. `num_alleles` is how many texts there are.
+/// The alleles of the variant, written over the strings of `spare`, the
+/// ones the reader took out of the variant before this read.
+///
+/// A variant with more alleles than the one before it would allocate a
+/// string if the strings that are left over were dropped instead of kept:
+/// a second pass over `many.vcf` with every field asked for allocated 54
+/// times, once for each of its 54 variants with two alternative alleles.
+/// Section 1 of `docs/architecture.md` asks for none.
 fn fill_alleles(
     alleles: &mut Vec<String>,
+    spare: &mut Vec<String>,
     reference: &str,
     alternatives: &str,
-    num_alleles: usize,
 ) {
-    for (position, text) in allele_texts(reference, alternatives).enumerate() {
-        match alleles.get_mut(position) {
-            Some(allele) => {
-                allele.clear();
-                allele.push_str(text);
-            }
-            None => alleles.push(text.to_string()),
-        }
+    for text in allele_texts(reference, alternatives) {
+        let mut allele = spare.pop().unwrap_or_default();
+        allele.clear();
+        allele.push_str(text);
+        alleles.push(allele);
     }
-    alleles.truncate(num_alleles);
 }
 
 /// One allele of a genotype: a number of the alleles the variant declares,
@@ -579,6 +584,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             individuals,
             chroms,
             needs,
+            spare_alleles,
             line,
             line_number,
             finished,
@@ -629,9 +635,9 @@ impl<R: BufRead + Send> VcfReader<R> {
             if needs.contains(Needs::ALLELES) {
                 fill_alleles(
                     &mut var.alleles,
+                    spare_alleles,
                     reference_text,
                     alternatives_text,
-                    num_alleles,
                 );
                 var.filled |= Needs::ALLELES;
             }
@@ -678,18 +684,12 @@ impl<R: BufRead + Send> fmt::Debug for VcfReader<R> {
 
 impl<R: BufRead + Send> VariantReader for VcfReader<R> {
     fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-        // Everything but the alleles is emptied here; the alleles are
-        // written over in `fill_alleles`, which keeps their strings, and
-        // emptied when the reader does not fill them.
-        var.chrom = 0;
-        var.pos = 0;
-        var.gts.clear();
-        var.id.clear();
-        var.qual = None;
-        var.filled = Needs::empty();
-        if !self.needs.contains(Needs::ALLELES) {
-            var.alleles.clear();
-        }
+        // The strings of the alleles are moved into the reader instead of
+        // being dropped, and `fill_alleles` writes the alleles of the next
+        // variant over them. The variant is left with none, so a read that
+        // does not fill them leaves none behind.
+        var.clear_but_the_alleles();
+        self.spare_alleles.append(&mut var.alleles);
         match self.next_variant(var) {
             Ok(true) => Ok(true),
             Ok(false) => {
@@ -1372,6 +1372,28 @@ mod tests {
         assert_eq!(var.alleles, ["A", "T"]);
         assert_eq!(var.pos, 100);
         assert!(var.gts.is_empty());
+        assert_eq!(var.qual, None);
+    }
+
+    #[test]
+    fn a_reader_asked_for_the_genotypes_alone_empties_the_alleles_it_filled_before() {
+        let vcf = vcf_of(&[
+            "chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1",
+            "chr1 200 rs2 A T 29.5 PASS . GT 0/0 0/1 1/1",
+        ]);
+        let mut reader = reader_over(&vcf, VcfOptions::default());
+        let mut var = Variant::new();
+
+        assert!(reader.read_variant(&mut var).unwrap());
+        assert_eq!(var.alleles, ["A", "T"]);
+        assert_eq!(var.id, "rs1");
+        assert_eq!(var.filled, Needs::ALL);
+
+        reader.set_needs(Needs::GTS);
+        assert!(reader.read_variant(&mut var).unwrap());
+        assert_eq!(var.filled, Needs::GTS | Needs::CHROM_POS);
+        assert!(var.alleles.is_empty());
+        assert!(var.id.is_empty());
         assert_eq!(var.qual, None);
     }
 
