@@ -85,6 +85,27 @@ const LINES_PER_BATCH: usize = 1024;
 #[cfg(target_family = "wasm")]
 const LINES_PER_BATCH: usize = 1;
 
+/// How many bytes of text a batch holds at most, whatever the number of
+/// lines it was allowed.
+///
+/// A line of a VCF carries one genotype for every individual, so a bound
+/// in lines alone lets the memory of a reader grow with the panel: with
+/// the 1024 lines of [`LINES_PER_BATCH`], a reader of the VCF of "Speed"
+/// of `docs/specs/io_vcf.md`, 1000 individuals, holds 13.3 MB of resident
+/// memory, one of 10000 individuals 82.7 MB and one of 100000 individuals
+/// near 0.8 GB, which the review of work package 5 of
+/// `docs/plans/vcf-to-blocks.md` measured. The text of the lines is what
+/// that memory is made of, the variants parsed from them and the growth of
+/// the buffers by doubling, so bounding the text bounds all of it, at
+/// about three times this number.
+///
+/// 8 MiB is twice the 4.1 MB that 1024 lines of that 400 MB file hold, so
+/// the batches of a file of a thousand individuals are the 1024 lines they
+/// were and the timings of task 5.2 hold; a file of 10000 individuals gets
+/// about 200 lines in a batch and one of 100000 about 20. A batch holds
+/// one line whatever its bytes are.
+const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
+
 /// The nine first columns of the `#CHROM` line of a VCF with genotypes. The
 /// columns after them are the individuals.
 const FIRST_COLUMNS: [&str; 9] = [
@@ -369,6 +390,14 @@ pub struct VcfReader<R: BufRead + Send> {
     /// [`LINES_PER_BATCH`], which the tests lower to read a file in several
     /// batches.
     lines_per_batch: usize,
+    /// How many bytes of text those lines hold at most,
+    /// [`BYTES_PER_BATCH`]: the bound that a file of many individuals
+    /// reaches before the lines are counted.
+    bytes_per_batch: usize,
+    /// How many batches were filled, which is how the tests see that a
+    /// bound cut them.
+    #[cfg(test)]
+    batches_filled: u64,
     /// The number of the line that was read last, counted from 1 with the
     /// lines of the header.
     line_number: u64,
@@ -432,6 +461,9 @@ impl<R: BufRead + Send> VcfReader<R> {
             filled: 0,
             next: 0,
             lines_per_batch: LINES_PER_BATCH,
+            bytes_per_batch: BYTES_PER_BATCH,
+            #[cfg(test)]
+            batches_filled: 0,
             line_number: 0,
             line_error: None,
             source_done: false,
@@ -974,6 +1006,21 @@ impl<R: BufRead + Send> VcfReader<R> {
         self.lines_per_batch = lines.max(1);
     }
 
+    /// How many bytes of text the reader takes from the source before it
+    /// parses what it read, which is [`BYTES_PER_BATCH`] until this is
+    /// called. A batch holds one line at least, whatever this says.
+    #[cfg(test)]
+    fn set_bytes_per_batch(&mut self, bytes: usize) {
+        self.bytes_per_batch = bytes.max(1);
+    }
+
+    /// How many batches the reader has filled, which is what says whether a
+    /// bound cut them.
+    #[cfg(test)]
+    fn batches_filled(&self) -> u64 {
+        self.batches_filled
+    }
+
     /// The line whose parse panics, for the test of what a reader does
     /// after a panic inside its parse. No VCF panics the parse.
     #[cfg(test)]
@@ -996,17 +1043,29 @@ impl<R: BufRead + Send> VcfReader<R> {
             filled,
             next,
             lines_per_batch,
+            bytes_per_batch,
             line_number,
             line_error,
             source_done,
             parsing,
+            #[cfg(test)]
+            batches_filled,
             #[cfg(test)]
             panic_at_line,
             ..
         } = self;
         *next = 0;
         *filled = 0;
-        while *filled < *lines_per_batch {
+        #[cfg(test)]
+        {
+            *batches_filled = batches_filled.saturating_add(1);
+        }
+        // The text of the lines that were read, which bounds the batch
+        // beside their number: one line of a file of many individuals is
+        // where the memory of a reader would otherwise grow without a
+        // bound.
+        let mut bytes: usize = 0;
+        while *filled < *lines_per_batch && bytes < *bytes_per_batch {
             if batch.len() <= *filled {
                 batch.push(BatchLine::new());
             }
@@ -1020,12 +1079,15 @@ impl<R: BufRead + Send> VcfReader<R> {
                     *source_done = true;
                     break;
                 }
-                Ok(_) => {
+                Ok(read) => {
                     *line_number = number;
                     line.number = number;
                     // A batch holds `lines_per_batch` lines at most, so the
-                    // count does not reach the largest `usize`.
+                    // count does not reach the largest `usize`, and the
+                    // bytes of a batch stop growing at the line that
+                    // reaches the bound.
                     *filled = filled.saturating_add(1);
+                    bytes = bytes.saturating_add(read);
                 }
                 Err(error) => {
                     *line_number = number;
@@ -1199,7 +1261,7 @@ mod tests {
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
-    use super::{MAX_PLOIDY, MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
+    use super::{BYTES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
 
@@ -2607,6 +2669,31 @@ mod tests {
             // batch and is not given: an error ends the reader.
             assert!(!reader.read_variant(&mut var).unwrap());
         });
+    }
+
+    #[test]
+    fn a_bound_of_bytes_smaller_than_the_file_cuts_the_batches_and_changes_no_result() {
+        let expected = rows_of_file("many.vcf", VcfOptions::default());
+        assert_eq!(expected.len(), 475);
+        // `many.vcf` has 500 data lines of about 230 bytes each. A bound of
+        // one byte holds one line in every batch, which is the line a batch
+        // holds whatever the bound says; the batch of the last line stops
+        // at the bound without seeing the end of the file, so one more
+        // batch is filled, which reads no line: 501. The bound of the code,
+        // 8 MiB, takes the 500 lines and the end of the file in one.
+        for (bytes, batches) in [(1, 501), (BYTES_PER_BATCH, 1)] {
+            let mut reader =
+                VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default())
+                    .unwrap_or_else(|error| panic!("many.vcf: {error}"));
+            reader.set_bytes_per_batch(bytes);
+            let rows = rows_of(&mut reader).unwrap();
+            assert_eq!(rows, expected, "with {bytes} bytes a batch");
+            assert_eq!(
+                reader.batches_filled(),
+                batches,
+                "with {bytes} bytes a batch"
+            );
+        }
     }
 
     #[test]
