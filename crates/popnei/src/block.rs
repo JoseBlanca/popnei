@@ -13,6 +13,7 @@
 //! `docs/specs/block.md` has the design and section 2 of
 //! `docs/architecture.md` the reasons for the arrays.
 
+use std::collections::TryReserveError;
 use std::fmt;
 
 use crate::error::{Error, Result};
@@ -52,6 +53,14 @@ pub fn default_num_vars_per_block(num_individuals: usize) -> usize {
     num_vars.clamp(MIN_NUM_VARS_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK)
 }
 
+/// How many alleles the buffers of an alleles column are reserved for in
+/// each variant, and how many bytes for each of those alleles: the `A` and
+/// the `T` of a biallelic SNP, which is the commonest variant of a VCF. A
+/// block whose variants have more alleles, or longer ones, grows its
+/// buffers from there. Nobody has measured either number.
+const ALLELES_PER_VARIANT: usize = 2;
+const BYTES_PER_ALLELE: usize = 1;
+
 /// The alleles of the variants of one block, the reference allele of each
 /// variant first and then its alternative ones, as the text the source
 /// gave.
@@ -71,14 +80,31 @@ pub struct AllelesColumn {
 }
 
 impl AllelesColumn {
-    /// A column with no variant in it, whose buffer of ends is reserved
-    /// for `num_vars` of them.
-    fn with_num_vars(num_vars: usize) -> AllelesColumn {
-        AllelesColumn {
-            texts: String::new(),
-            allele_ends: Vec::new(),
-            var_ends: Vec::with_capacity(num_vars),
-        }
+    /// A column with no variant in it, whose three buffers are reserved for
+    /// `num_vars` variants of [`ALLELES_PER_VARIANT`] alleles of
+    /// [`BYTES_PER_ALLELE`] bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the machine does not give the memory of the buffers, which the
+    /// collector turns into the error of the crate that names the size that
+    /// was asked for.
+    fn with_num_vars(num_vars: usize) -> std::result::Result<AllelesColumn, TryReserveError> {
+        // A number of variants that makes these saturate is far above what
+        // any machine gives, and the reservation of it is the error.
+        let num_alleles = num_vars.saturating_mul(ALLELES_PER_VARIANT);
+        let num_bytes = num_alleles.saturating_mul(BYTES_PER_ALLELE);
+        let mut texts = String::new();
+        texts.try_reserve_exact(num_bytes)?;
+        let mut allele_ends = Vec::new();
+        allele_ends.try_reserve_exact(num_alleles)?;
+        let mut var_ends = Vec::new();
+        var_ends.try_reserve_exact(num_vars)?;
+        Ok(AllelesColumn {
+            texts,
+            allele_ends,
+            var_ends,
+        })
     }
 
     /// The alleles of one more variant, at the end of the column.
@@ -259,18 +285,24 @@ impl<R: VariantReader> BlockCollector<R> {
     ///
     /// # Errors
     ///
-    /// When the reader fails, and when it did not fill a field that was
-    /// asked for. The block that was being built is lost with the error,
-    /// and every call after it gives no block.
+    /// When the machine does not give the memory of the columns of the
+    /// block, which is asked for before a variant is read; when the reader
+    /// fails; when it did not fill a field that was asked for; and when it
+    /// filled a variant with a number of alleles other than its individuals
+    /// times its ploidy. The block that was being built is lost with the
+    /// error, and every call after it gives no block.
     pub fn next_block(&mut self) -> Result<Option<Block>> {
         if self.finished {
             return Ok(None);
         }
-        // The columns are allocated at the first variant, so that the call
-        // that finds the source at its end allocates nothing. The count of
-        // the variants is the one of the range, so that a block of
-        // `usize::MAX` variants needs no addition of our own.
-        let mut block: Option<Block> = None;
+        // The memory of the columns is asked for before the first variant
+        // is read, so that a size the caller wrote is refused before the
+        // source is touched. The count of the variants is the one of the
+        // range, so that a block of `usize::MAX` variants needs no addition
+        // of our own.
+        let mut block = self.start_block().inspect_err(|_| {
+            self.finished = true;
+        })?;
         for count in 1..=self.num_vars_per_block {
             // The trait says that a reader ends at its error, and the
             // collector ends too: what a reader that goes on gives after
@@ -299,11 +331,13 @@ impl<R: VariantReader> BlockCollector<R> {
                     ploidy: self.ploidy,
                 });
             }
-            let being_built = block.get_or_insert_with(|| self.start_block());
-            self.push_variant(being_built);
-            being_built.num_vars = count;
+            self.push_variant(&mut block);
+            block.num_vars = count;
         }
-        Ok(block)
+        if block.num_vars == 0 {
+            return Ok(None);
+        }
+        Ok(Some(block))
     }
 
     /// The reader the collector was built over, for the individuals, the
@@ -312,36 +346,60 @@ impl<R: VariantReader> BlockCollector<R> {
         &self.reader
     }
 
+    /// The error of a block whose memory the machine does not give, with
+    /// the size that was asked for.
+    fn too_large(&self) -> Error {
+        Error::BlockTooLarge {
+            num_vars_per_block: self.num_vars_per_block,
+            num_individuals: self.num_individuals,
+            ploidy: self.ploidy,
+        }
+    }
+
+    /// An empty column reserved for `num_items`, or `None` when `field` is
+    /// not among what the blocks of this collector hold.
+    ///
+    /// The memory is asked for with `try_reserve_exact`, which gives it
+    /// back as an error: `Vec::with_capacity` ends the process when the
+    /// machine has not the memory, and panics above what a `Vec` holds,
+    /// and a size that a caller of popnei wrote reaches both.
+    fn reserved_column<T>(&self, field: Needs, num_items: usize) -> Result<Option<Vec<T>>> {
+        if !self.needs.contains(field) {
+            return Ok(None);
+        }
+        let mut column = Vec::new();
+        column
+            .try_reserve_exact(num_items)
+            .map_err(|_| self.too_large())?;
+        Ok(Some(column))
+    }
+
     /// An empty block with every column the collector was asked for, each
-    /// allocated for a full block.
-    fn start_block(&self) -> Block {
+    /// reserved for a full block.
+    ///
+    /// # Errors
+    ///
+    /// When the machine does not give the memory of one of the columns.
+    fn start_block(&self) -> Result<Block> {
         let num_vars = self.num_vars_per_block;
-        Block {
+        let mut gts = Vec::new();
+        gts.try_reserve_exact(self.gts_per_block)
+            .map_err(|_| self.too_large())?;
+        let alleles = match self.needs.contains(Needs::ALLELES) {
+            true => Some(AllelesColumn::with_num_vars(num_vars).map_err(|_| self.too_large())?),
+            false => None,
+        };
+        Ok(Block {
             num_vars: 0,
             num_individuals: self.num_individuals,
             ploidy: self.ploidy,
-            gts: Vec::with_capacity(self.gts_per_block),
-            chrom: self
-                .needs
-                .contains(Needs::CHROM_POS)
-                .then(|| Vec::with_capacity(num_vars)),
-            pos: self
-                .needs
-                .contains(Needs::CHROM_POS)
-                .then(|| Vec::with_capacity(num_vars)),
-            id: self
-                .needs
-                .contains(Needs::ID)
-                .then(|| Vec::with_capacity(num_vars)),
-            alleles: self
-                .needs
-                .contains(Needs::ALLELES)
-                .then(|| AllelesColumn::with_num_vars(num_vars)),
-            qual: self
-                .needs
-                .contains(Needs::QUAL)
-                .then(|| Vec::with_capacity(num_vars)),
-        }
+            gts,
+            chrom: self.reserved_column(Needs::CHROM_POS, num_vars)?,
+            pos: self.reserved_column(Needs::CHROM_POS, num_vars)?,
+            id: self.reserved_column(Needs::ID, num_vars)?,
+            alleles,
+            qual: self.reserved_column(Needs::QUAL, num_vars)?,
+        })
     }
 
     /// The variant the reader last filled, copied into the columns of the
@@ -393,8 +451,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Block, BlockCollector, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
-        default_num_vars_per_block,
+        AllelesColumn, Block, BlockCollector, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK,
+        MIN_NUM_VARS_PER_BLOCK, default_num_vars_per_block,
     };
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -722,7 +780,7 @@ mod tests {
     /// a caller carries beyond what a `usize` holds. It is an error and not
     /// a panic, on a machine of 32 bit addresses as on one of 64.
     #[test]
-    fn a_block_of_more_genotypes_than_the_machine_addresses_is_refused() {
+    fn a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_collector_is_built() {
         // Two individuals of the ploidy 2 are four genotypes in every
         // variant, so every size above a quarter of `usize::MAX` is one.
         let error = match BlockCollector::new(
@@ -745,6 +803,65 @@ mod tests {
             (num_vars_per_block, num_individuals, ploidy),
             (usize::MAX, 2, 2)
         );
+    }
+
+    /// The columns of a block are asked of the machine when the block is
+    /// started, before a variant is read, and a size that a caller wrote
+    /// reaches neither an abort nor a panic. A source of no individual
+    /// holds no genotype, and its positions are 8 bytes in every variant,
+    /// so the genotypes of its blocks are 0 and their memory is not.
+    #[test]
+    fn a_block_of_more_memory_than_the_machine_gives_is_refused_before_a_variant_is_read() {
+        let mut collector = BlockCollector::new(
+            FakeReader::of_no_individual(4),
+            Needs::CHROM_POS,
+            Some(usize::MAX),
+        )
+        .expect("the collector");
+
+        let error = match collector.next_block() {
+            Ok(block) => panic!("the collector gave {block:?}"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (num_vars_per_block, num_individuals, ploidy),
+            (usize::MAX, 0, 2)
+        );
+
+        assert_eq!(collector.reader().reads, 0);
+        assert!(collector.next_block().expect("no block").is_none());
+    }
+
+    /// The alleles of a block are one buffer of text with the end of each
+    /// allele, and the buffers are reserved when the block is started: a
+    /// column that grows while it is filled is the allocations that one
+    /// buffer is there to spare.
+    #[test]
+    fn the_buffers_of_an_alleles_column_hold_a_block_of_biallelic_variants() {
+        let mut column = AllelesColumn::with_num_vars(1000).expect("the column");
+        let texts = column.texts.capacity();
+        let allele_ends = column.allele_ends.capacity();
+        let var_ends = column.var_ends.capacity();
+
+        let alleles = ["A".to_string(), "T".to_string()];
+        for _ in 0..1000 {
+            column.push(&alleles);
+        }
+
+        assert_eq!(column.texts.capacity(), texts);
+        assert_eq!(column.allele_ends.capacity(), allele_ends);
+        assert_eq!(column.var_ends.capacity(), var_ends);
+        assert_eq!(column.num_vars(), 1000);
+        assert_eq!(column.num_alleles(999), 2);
+        assert_eq!(column.allele(999, 1), "T");
     }
 
     /// The quality of each variant of a block, with the NaN of a variant
@@ -873,6 +990,8 @@ mod tests {
         fails_at: Option<usize>,
         /// Which variant it is about to give, counted from 1.
         next_var: usize,
+        /// How many times it was asked for a variant.
+        reads: usize,
         /// What the collector asked this reader for.
         needs: Needs,
     }
@@ -888,7 +1007,17 @@ mod tests {
                 fills,
                 fails_at: None,
                 next_var: 1,
+                reads: 0,
                 needs: Needs::empty(),
+            }
+        }
+
+        /// A reader whose source has no individual, and so no genotype: a
+        /// block of it holds the columns of its variants and nothing else.
+        fn of_no_individual(num_vars: usize) -> FakeReader {
+            FakeReader {
+                individuals: Vec::new(),
+                ..FakeReader::giving(num_vars, Fills::NoGenotypes)
             }
         }
 
@@ -908,6 +1037,7 @@ mod tests {
     impl VariantReader for FakeReader {
         fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
             var.clear();
+            self.reads = self.reads.saturating_add(1);
             let Some(left) = self.left.checked_sub(1) else {
                 return Ok(false);
             };

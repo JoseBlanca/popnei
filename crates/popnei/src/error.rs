@@ -32,13 +32,13 @@ pub enum Error {
     #[error("a collector was asked for blocks of 0 variants, and a block holds 1 variant at least")]
     BlockOfNoVariants,
 
-    /// The genotypes of one block, the variants of a block times the
-    /// individuals times the ploidy, are more than the machine addresses.
-    /// Only a size that a caller asked for reaches it, and it reaches it in
-    /// wasm, where a `usize` is 32 bits.
+    /// A block of that many variants needs more memory than the machine
+    /// gives: its genotypes, the variants times the individuals times the
+    /// ploidy, are more than a `usize` holds, or one of its columns was
+    /// asked of the machine and not given. Only a size that a caller asked
+    /// for reaches it.
     #[error(
-        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} holds more genotypes than this machine addresses, {largest} at most; ask for fewer variants in a block",
-        largest = usize::MAX
+        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} needs more memory than this machine gives; ask for fewer variants in a block"
     )]
     BlockTooLarge {
         /// How many variants a block was asked to hold.
