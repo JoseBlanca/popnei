@@ -329,8 +329,8 @@ the individuals of the file, since a line carries one genotype per
 individual, and a batch holds one line at least, however long that line
 is, so the reader always goes forward. Both bounds are
 constants of the code, each with what was measured on it, and a caller
-that times the reader can set them. The reader as built has them at 1024
-lines and 8 MiB.
+that times the reader can set them. The reader has them at 4096 lines and
+16 MiB, which "Speed" says what was measured on.
 
 The genotypes of a line go straight into its row of the block, which is
 where nearly all the bytes of a VCF with genotypes end up. Everything else
@@ -641,23 +641,33 @@ and the other two an `OSError`.
 The number to reach is that of the spike, the trial parser in Rust of
 section 3 of `docs/rust_core.md`, which parses a chunk of lines with rayon
 and writes each row straight into the array of the chunk, as this reader
-now does. The reader as built, which filled one `Variant` at a time, does
-not reach it. Measured on 20 September 2026 on the owner's Apple M5 Pro,
-18 cores, release, the file in the page cache, `GTS` asked for and the
-default options, the median of 5 runs of
+now does. The reader as built, which filled one `Variant` at a time, did
+not reach it, and the reader as it is now does. Measured on the owner's
+Apple M5 Pro, 18 cores, release, the file in the page cache, `GTS` asked
+for and the default options, the median of 5 runs of
 `crates/popnei/benches/read_vcf.rs`, on a VCF of 100000 variants and 1000
 individuals, 403 MB plain and 38 MB bgzipped, which
 `crates/popnei/benches/make_big_vcf.py` makes with `simulate_genotypes` and
 `write_vcf` of pyNei's `test/gwas_reference/make_reference.py`, a seed of
 42, 3 in 100 genotypes missing and `.` in every FILTER, so the default
-gives every variant:
+gives every variant. The reader as built and the spike were timed on 20
+September 2026, the reader as it is now on 21 September 2026, three sets
+of runs of each and more:
 
-| | the reader as built | the spike, same file, same day |
-|---|---|---|
-| plain, 1 thread | 1.24 s | 0.54 s |
-| plain, 18 threads | 0.160 s | 0.098 s |
-| bgzipped, 1 thread | 1.58 s | 0.84 s |
-| bgzipped, 18 threads | 0.50 s | 0.40 s |
+| | the reader as built | the spike, 20 September | the target | the reader now | met |
+|---|---|---|---|---|---|
+| plain, 1 thread | 1.24 s | 0.54 s | 0.594 s | 0.563 s | yes |
+| plain, 18 threads | 0.160 s | 0.098 s | 0.108 s | 0.093 s | yes |
+| bgzipped, 1 thread | 1.58 s | 0.84 s | 0.924 s | 0.890 s | yes |
+| bgzipped, 18 threads | 0.50 s | 0.40 s | 0.44 s | 0.394 s | yes |
+
+The spike was timed again on 21 September 2026, on the same files and the
+same machine, and was faster on three of the four: 0.523 s, 0.103 s,
+0.806 s and 0.392 s. Against those the target of the bgzipped read on one
+thread is 0.887 s, which the reader misses by 0.003 s; the fourteen sets
+of runs of that read spread from 0.859 to 0.940 s, so the measurement does
+not tell the two apart. The other three are met against the spike of
+either day, and on 18 threads the reader is faster than the spike.
 
 plink2 v2.0.0-a.7.7 reads the plain file in 0.273 s on one thread, and
 pyNei in 13.5 s. The spike does three things less than the reader: it
@@ -670,25 +680,37 @@ gzipped into 53 MB and does not say how it was compressed; bgzip makes 38
 MB of it, the session that built the reader could not make the file of 53
 MB again, and the bgzipped rows here stand in its place.
 
-Where the time of the reader as built goes, from a sampling profile of the
-run on one thread: 95 in 100 in the parse, almost all of it in the columns
-of the individuals, of which filling the genotypes is 46 in 100 of the
-self time, splitting a text at a character 25, searching a byte 16 and
-comparing strings 10. The nine first columns, the FILTER and the count of
-the alleles are under 1 in 100. So the hand out of the variants was not
-what cost, and rows written into a block will not close the gap alone.
-What the spike does and the reader as built does not is to parse the bytes
-of the columns of the individuals with `memchr`, with no text and no
-UTF-8 check on them; and a row of a fixed length, `num_individuals` x
-`ploidy`, makes the check of the ploidy of a genotype a check of length.
-That is what the implementer tries first, and measures, before any other
-work on speed. With threads the serial reading of the lines is the floor.
-`docs/reports/vcf-to-blocks.md` has the measurement: on a file of 5000
-variants of 1000 individuals the reading of the lines alone took 10.8 ms
-on one thread and 4.1 ms on eight, the whole parse 92.5 ms and 13.8 ms,
-and 4.1 + (92.5 - 10.8) / 8 = 14.3 ms predicts the 13.8. Batches of 256,
-1024 and 4096 lines, with the bound of 8 MiB, took 0.202, 0.158 and
-0.151 s on the file of the table on 18 threads.
+Where the time goes, from a sampling profile of the run on one thread
+taken with `/usr/bin/sample` over 30 s on 21 September 2026, of 23038
+samples of the thread that reads: 92 in 100 of the self time in the
+columns of the individuals; 6 in the read of the lines, which is the
+search for the end of a line in the buffer of the file, 3, the read from
+the file system, 2, and the copy of the line out of that buffer, 1; 1 in
+the nine first columns, which are parsed as text and not as bytes; and
+under 1 in 100 in the pass that finds the FILTER and in the genotypes of a
+new block set to missing. Nothing is appended serially after a batch here,
+since the benchmark asks for the genotypes alone.
+
+The read of the lines is serial, and on 18 threads it is what bounds the
+reader: it is 4308 of the 9363 samples of the thread that reads, and the
+18 workers of rayon are idle, waiting, in 61 in 100 of their samples. The
+read ahead thread of section 3 of `docs/architecture.md` is what removes
+that floor, and the targets above are met without it.
+`docs/reports/vcf-to-blocks.md` has the profile of the reader as built,
+which spent 95 in 100 of the one thread in the parse and split the columns
+of the individuals as text.
+
+The two bounds of a batch and the buffer the reader opens a path with were
+measured on 21 September 2026, on the file of the table, on 18 threads,
+three sets of runs of each, interleaved. Batches of 256, 1024, 2048 and
+4096 lines: 0.139, 0.105, 0.098 and 0.098 s, and bgzipped 0.476, 0.425 and
+0.411 s for 256, 1024 and 4096. The bound in bytes at 8 MiB and at 16 MiB
+with 4096 lines: 0.098 s and 0.094 plain, 0.411 s and 0.392 bgzipped. The
+buffer of the file at 8 KiB, 64 KiB, 256 KiB and 1 MiB, with 4096 lines
+and 16 MiB: 0.105, 0.095, 0.093 and 0.093 s. On one thread none of the
+three changes the read. The constants are 4096 lines, 16 MiB and 256 KiB,
+each with its measurement in its doc comment in
+`crates/popnei/src/io/vcf.rs`.
 
 ## Open points
 
