@@ -633,7 +633,7 @@ mod tests {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
-    use super::{VcfOptions, VcfPlace, VcfReader};
+    use super::{MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
 
@@ -1292,6 +1292,267 @@ mod tests {
         assert_eq!(var.alleles, ["A", "T"]);
         assert_eq!(var.id, "");
         assert_eq!(var.gts.capacity(), gts);
+    }
+
+    /// The ploidy of the 50 individuals of `many.vcf`, which
+    /// `tests/reference/vcf/make_reference.py` writes as diploid.
+    const MANY_PLOIDY: usize = 2;
+
+    /// How many columns the output of `bcftools query` has before the
+    /// genotypes: CHROM, POS, ID, REF, ALT, QUAL and FILTER, the seven of
+    /// the format that `make_reference.py` gave bcftools.
+    const COLUMNS_BEFORE_THE_GENOTYPES: usize = 7;
+
+    /// Where the FILTER is among them, counted from 0.
+    const FILTER_COLUMN: usize = 6;
+
+    /// What the tests of `many.vcf` compare, one variant of it: the name of
+    /// its chromosome, its position and the alleles of every genotype, the
+    /// ploidy of them for each individual.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Site {
+        chrom: String,
+        pos: u64,
+        gts: Vec<i8>,
+    }
+
+    /// One line of `many.bcftools.tsv`, what bcftools 1.24 printed for one
+    /// variant of `many.vcf`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ReferenceRow {
+        site: Site,
+        /// Whether its FILTER column is `PASS` or a dot, which is what the
+        /// reader gives by default.
+        passed: bool,
+    }
+
+    /// The alleles of a genotype as bcftools prints it, `0|1` or `./.`: the
+    /// numbers of the alleles the variant declares, and [`MISSING_ALLELE`]
+    /// for the dot of an allele that was not called.
+    fn alleles_of(genotype: &str) -> impl Iterator<Item = i8> + '_ {
+        genotype.split(['/', '|']).map(|allele| {
+            if allele == MISSING_VALUE {
+                MISSING_ALLELE
+            } else {
+                allele.parse().unwrap()
+            }
+        })
+    }
+
+    /// The rows of the file that `bcftools query` wrote beside a reference
+    /// VCF, one line per variant with the seven columns above and then the
+    /// GT of every individual.
+    fn reference_rows(name: &str) -> Vec<ReferenceRow> {
+        let text = std::fs::read_to_string(reference_vcf(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut rows = Vec::new();
+        for line in text.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let columns: Vec<&str> = line.split('\t').collect();
+            assert!(
+                columns.len() > COLUMNS_BEFORE_THE_GENOTYPES,
+                "{name}: `{line}` has {} columns",
+                columns.len()
+            );
+            rows.push(ReferenceRow {
+                site: Site {
+                    chrom: columns[0].to_string(),
+                    pos: columns[1].parse().unwrap(),
+                    gts: columns[COLUMNS_BEFORE_THE_GENOTYPES..]
+                        .iter()
+                        .flat_map(|genotype| alleles_of(genotype))
+                        .collect(),
+                },
+                passed: matches!(columns[FILTER_COLUMN], "PASS" | MISSING_VALUE),
+            });
+        }
+        rows
+    }
+
+    /// The chromosome, the position and the genotypes of the variants the
+    /// reader gave, with the name of the chromosome that `rows_of` already
+    /// took from the table of the reader.
+    fn sites_of(rows: &[Row]) -> Vec<Site> {
+        rows.iter()
+            .map(|row| Site {
+                chrom: row.chrom.clone(),
+                pos: row.pos,
+                gts: row.gts.clone(),
+            })
+            .collect()
+    }
+
+    /// The rows of bcftools the reader has to give with `options`: all of
+    /// them, or the ones whose FILTER passed.
+    fn expected_sites(rows: &[ReferenceRow], options: VcfOptions) -> Vec<Site> {
+        rows.iter()
+            .filter(|row| !options.only_passed || row.passed)
+            .map(|row| row.site.clone())
+            .collect()
+    }
+
+    /// The variants one by one, so that a file of 500 variants that differs
+    /// in one of them says which one and not that two long lists differ.
+    fn assert_the_same_sites(given: &[Site], expected: &[Site], read: &str) {
+        assert_eq!(
+            given.len(),
+            expected.len(),
+            "{read}: the number of variants"
+        );
+        for (index, (given, expected)) in given.iter().zip(expected).enumerate() {
+            assert_eq!(
+                given, expected,
+                "{read}: the variant {index}, counted from 0"
+            );
+        }
+    }
+
+    /// The eight counts of the table of `many.vcf` of "How it is verified"
+    /// of `docs/specs/io_vcf.md`, counted in the variants the reader gave.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Counts {
+        variants: u64,
+        variants_in_chr2: u64,
+        variants_with_two_alternative_alleles: u64,
+        /// The genotypes with an allele that was not called, the half
+        /// called ones among them.
+        missing_genotypes: u64,
+        /// The genotypes with an allele called and another one not.
+        half_called_genotypes: u64,
+        missing_alleles: u64,
+        called_alleles: u64,
+        /// The sum of the numbers of the alleles that were called, 0 for
+        /// the reference allele and 1 and 2 for the alternative ones. It is
+        /// the count that a genotype read at the wrong allele changes.
+        sum_of_the_called_alleles: u64,
+    }
+
+    /// A count of the tests as the number the table of the spec has. Every
+    /// count of a file of 500 variants of 50 individuals fits in a `u64`.
+    fn counted(number: usize) -> u64 {
+        u64::try_from(number).unwrap()
+    }
+
+    fn counts_of(rows: &[Row], ploidy: usize) -> Counts {
+        let genotypes = || rows.iter().flat_map(|row| row.gts.chunks_exact(ploidy));
+        let alleles = || rows.iter().flat_map(|row| row.gts.iter());
+        let called = |allele: &&i8| **allele != MISSING_ALLELE;
+        let missing_in = |genotype: &[i8]| {
+            genotype
+                .iter()
+                .filter(|allele| **allele == MISSING_ALLELE)
+                .count()
+        };
+        Counts {
+            variants: counted(rows.len()),
+            variants_in_chr2: counted(rows.iter().filter(|row| row.chrom == "chr2").count()),
+            // The reference allele and the two alternative ones.
+            variants_with_two_alternative_alleles: counted(
+                rows.iter().filter(|row| row.alleles.len() == 3).count(),
+            ),
+            missing_genotypes: counted(
+                genotypes()
+                    .filter(|genotype| missing_in(genotype) != 0)
+                    .count(),
+            ),
+            half_called_genotypes: counted(
+                genotypes()
+                    .filter(|genotype| {
+                        let missing = missing_in(genotype);
+                        missing != 0 && missing != genotype.len()
+                    })
+                    .count(),
+            ),
+            missing_alleles: counted(
+                alleles()
+                    .filter(|allele| **allele == MISSING_ALLELE)
+                    .count(),
+            ),
+            called_alleles: counted(alleles().filter(called).count()),
+            sum_of_the_called_alleles: alleles()
+                .filter(called)
+                .map(|allele| u64::from(allele.unsigned_abs()))
+                .sum(),
+        }
+    }
+
+    #[test]
+    fn every_variant_of_many_vcf_is_read_as_bcftools_read_it() {
+        let reference = reference_rows("many.bcftools.tsv");
+        assert_eq!(reference.len(), 500);
+        let options = options(MANY_PLOIDY, false);
+        let expected = expected_sites(&reference, options);
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let given = sites_of(&rows_of_file(name, options));
+            assert_the_same_sites(&given, &expected, &format!("{name}, every variant"));
+        }
+    }
+
+    #[test]
+    fn the_default_gives_the_variants_of_many_vcf_whose_filter_passed() {
+        let reference = reference_rows("many.bcftools.tsv");
+        let expected = expected_sites(&reference, VcfOptions::default());
+        // `bcftools view -f .,PASS` left 475 of the 500 variants.
+        assert_eq!(expected.len(), 475);
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let given = sites_of(&rows_of_file(name, VcfOptions::default()));
+            assert_the_same_sites(&given, &expected, &format!("{name}, the default"));
+        }
+    }
+
+    #[test]
+    fn the_first_genotypes_of_many_vcf_are_the_ones_of_the_spec() {
+        // The spec gives the first five genotypes of the first variant,
+        // chr1 1000, as `1/1 .|. 1/0 1/1 0/1`.
+        let first_five = [1, 1, MISSING_ALLELE, MISSING_ALLELE, 1, 0, 1, 1, 0, 1];
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, VcfOptions::default());
+            let first = &rows[0];
+            assert_eq!((first.chrom.as_str(), first.pos), ("chr1", 1000), "{name}");
+            assert_eq!(
+                first.gts.get(..first_five.len()),
+                Some(&first_five[..]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_counts_of_many_vcf_with_every_variant_given_are_the_ones_of_the_spec() {
+        let expected = Counts {
+            variants: 500,
+            variants_in_chr2: 250,
+            variants_with_two_alternative_alleles: 54,
+            missing_genotypes: 1511,
+            half_called_genotypes: 257,
+            missing_alleles: 2765,
+            called_alleles: 47235,
+            sum_of_the_called_alleles: 25954,
+        };
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, options(MANY_PLOIDY, false));
+            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_counts_of_many_vcf_with_the_default_are_the_ones_of_the_spec() {
+        let expected = Counts {
+            variants: 475,
+            variants_in_chr2: 238,
+            variants_with_two_alternative_alleles: 53,
+            missing_genotypes: 1431,
+            half_called_genotypes: 240,
+            missing_alleles: 2622,
+            called_alleles: 44878,
+            sum_of_the_called_alleles: 24831,
+        };
+        for name in ["many.vcf", "many.vcf.gz"] {
+            let rows = rows_of_file(name, VcfOptions::default());
+            assert_eq!(counts_of(&rows, MANY_PLOIDY), expected, "{name}");
+        }
     }
 
     #[test]
