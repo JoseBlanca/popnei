@@ -70,10 +70,13 @@ impl VcfSource {
         &self,
         py: Python<'_>,
         fields: Vec<String>,
-        num_vars_per_block: Option<usize>,
+        num_vars_per_block: Option<i64>,
     ) -> PyResult<Blocks> {
         let needs =
             needs_of_the_fields(fields.iter().map(String::as_str)).map_err(PyPopneiError::from)?;
+        let num_vars_per_block = num_vars_per_block
+            .map(|asked_for| count_of("num_vars_per_block", asked_for))
+            .transpose()?;
         let path = &self.path;
         let options = self.options;
         let collector = py.detach(|| -> Result<_, PyPopneiError> {
@@ -181,11 +184,11 @@ impl Blocks {
 pub(crate) fn open_vcf(
     py: Python<'_>,
     path: PathBuf,
-    ploidy: usize,
+    ploidy: i64,
     only_passed: bool,
 ) -> PyResult<VcfSource> {
     let options = VcfOptions {
-        ploidy,
+        ploidy: count_of("ploidy", ploidy)?,
         only_passed,
     };
     let individuals = py.detach(|| -> Result<_, PyPopneiError> {
@@ -197,6 +200,15 @@ pub(crate) fn open_vcf(
         options,
         individuals,
     })
+}
+
+/// The `value` that was given for the argument `name`, as a number of
+/// things: the one place where an argument that counts something crosses
+/// from Python, so that a number that counts nothing is refused by the name
+/// a user wrote and not by the conversion, whose `OverflowError` names
+/// neither the argument nor what is wrong with it.
+fn count_of(name: &'static str, value: i64) -> Result<usize, PyPopneiError> {
+    usize::try_from(value).map_err(|_| PyPopneiError::Count { name, value })
 }
 
 /// The array, which nothing writes into any more: a block is frozen, and

@@ -15,6 +15,16 @@ pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
     /// found in a file.
     Core(popnei::Error),
+    /// An argument that says how many of something there are, the ploidy or
+    /// the variants of a block, and holds a number that counts nothing: a
+    /// negative one, or one above what this machine counts, which in wasm
+    /// is 4295 million.
+    Count {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// What was given for it.
+        value: i64,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -31,6 +41,11 @@ impl From<PyPopneiError> for PyErr {
     fn from(error: PyPopneiError) -> PyErr {
         match error {
             PyPopneiError::Core(error) => exception_of(error),
+            PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
+                "`{name}` is {value}, and it says how many of something there are: 0 or \
+                 more, and at most {largest}",
+                largest = usize::MAX
+            )),
             PyPopneiError::Broken(message) => PyRuntimeError::new_err(message),
         }
     }

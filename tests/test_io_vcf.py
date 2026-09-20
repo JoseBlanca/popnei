@@ -206,6 +206,25 @@ def test_a_path_that_no_file_is_at_gives_an_oserror_that_carries_the_path(
     assert refusal.value.filename == str(path)
 
 
+def test_a_count_that_is_negative_is_refused_by_its_name(
+    reference_vcf_dir: Path,
+) -> None:
+    """A number of things that is below zero, which no argument takes.
+
+    It is a `ValueError` like the ploidy of 0 beside it, and not the
+    `OverflowError` of a conversion, and it names the argument and what was
+    given for it.
+    """
+    with pytest.raises(ValueError, match="ploidy") as refusal:
+        open_vcf(reference_vcf_dir / "cases.vcf", ploidy=-1)
+    assert "-1" in str(refusal.value)
+
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+    with pytest.raises(ValueError, match="num_vars_per_block") as refusal:
+        variants.iter_blocks(num_vars_per_block=-5)
+    assert "-5" in str(refusal.value)
+
+
 def test_a_ploidy_of_zero_is_refused(reference_vcf_dir: Path) -> None:
     """The one thing `open_vcf` refuses that does not come from the file."""
     with pytest.raises(ValueError, match="ploidy"):
