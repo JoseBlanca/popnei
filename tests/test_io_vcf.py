@@ -8,6 +8,7 @@ comparison with pyNei is in `test_block.py`, because Python sees what the
 reader read through the blocks.
 """
 
+import pickle
 from pathlib import Path
 
 import numpy
@@ -204,6 +205,19 @@ def test_a_path_that_no_file_is_at_gives_an_oserror_that_carries_the_path(
         open_vcf(path)
     assert isinstance(refusal.value, FileNotFoundError)
     assert refusal.value.filename == str(path)
+
+
+def test_what_a_variants_cannot_do_names_the_module_it_comes_from(
+    reference_vcf_dir: Path,
+) -> None:
+    """A handle holds an open reader of Rust, which no pickle carries.
+
+    A user who tries reads the name of the class in the refusal, and it
+    says where the class is from.
+    """
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+    with pytest.raises(TypeError, match=r"popnei\._core\.VcfSource"):
+        pickle.dumps(variants)
 
 
 def test_a_count_that_is_negative_is_refused_by_its_name(

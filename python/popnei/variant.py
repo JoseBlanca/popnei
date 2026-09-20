@@ -18,6 +18,11 @@ class Variants:
     pyNei calls a sample is here an individual, one organism that was
     genotyped. The genotypes come out of it through :meth:`iter_blocks` and
     through nothing else.
+
+    It cannot be pickled or copied: what it holds is an object of Rust with
+    the path and the options of the source. What travels between processes
+    is the path and the arguments of :func:`popnei.open_vcf`, and a
+    ``Variants`` is opened again at the other end.
     """
 
     def __init__(self, source: _core.VcfSource):

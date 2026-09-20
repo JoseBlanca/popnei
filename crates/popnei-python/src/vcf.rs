@@ -43,7 +43,7 @@ type BlockColumns<'py> = (
 
 /// A VCF that was opened: its path, the options it is read with, and the
 /// individuals its header named.
-#[pyclass(frozen)]
+#[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct VcfSource {
     path: PathBuf,
     options: VcfOptions,
@@ -90,7 +90,7 @@ impl VcfSource {
 }
 
 /// One pass over a VCF, which gives its variants block by block.
-#[pyclass(frozen)]
+#[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
     collector: Mutex<BlockCollector<Box<dyn VariantReader>>>,
 }
