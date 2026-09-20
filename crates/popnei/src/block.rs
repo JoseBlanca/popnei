@@ -36,6 +36,94 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 /// `MAX_NUM_VARS_PER_CHUNK`, measured for popnei by nobody.
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 
+/// Which of the two sizes of a block a reader is working with.
+///
+/// What a caller does about a block the machine cannot give the memory for
+/// depends on it, so the error carries it: a caller who asked for a size
+/// asks for fewer variants, and one who asked for none learns that the size
+/// popnei chose for these individuals does not fit and passes one that
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockSize {
+    /// The `num_vars_per_block` that the caller wrote.
+    AskedFor,
+    /// [`default_num_vars_per_block`] for the individuals of the source,
+    /// which is what a caller who asked for no size gets.
+    ChosenByPopnei,
+}
+
+impl BlockSize {
+    /// What a caller does about a block of this size that does not fit,
+    /// which is the end of the message of [`Error::BlockTooLarge`].
+    pub(crate) fn way_out(self) -> &'static str {
+        match self {
+            BlockSize::AskedFor => "ask for fewer variants in a block",
+            BlockSize::ChosenByPopnei => {
+                "popnei chose that size for these individuals and this ploidy; \
+                 ask for the blocks with a `num_vars_per_block` that fits"
+            }
+        }
+    }
+}
+
+/// How many variants a block of a reader over a source of `num_individuals`
+/// individuals of `ploidy` holds: the size the caller asked for, or
+/// [`default_num_vars_per_block`] when they asked for none, and which of
+/// the two it is.
+///
+/// Every reader that takes a size makes this check, and nothing of a source
+/// is read before it: a size that a caller wrote reaches neither an abort
+/// nor a panic.
+///
+/// # Errors
+///
+/// When the size is 0, and when the genotypes of one block are more than a
+/// `usize` counts.
+pub(crate) fn size_of_the_blocks(
+    num_vars_per_block: Option<usize>,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<(usize, BlockSize)> {
+    let (num_vars_per_block, size) = match num_vars_per_block {
+        Some(asked_for) => (asked_for, BlockSize::AskedFor),
+        None => (
+            default_num_vars_per_block(num_individuals),
+            BlockSize::ChosenByPopnei,
+        ),
+    };
+    check_the_size_of_a_block(num_vars_per_block, num_individuals, ploidy, size)?;
+    Ok((num_vars_per_block, size))
+}
+
+/// The genotypes of a full block, `num_vars_per_block` times
+/// `num_individuals` times `ploidy`, when the machine counts that many.
+///
+/// # Errors
+///
+/// When `num_vars_per_block` is 0, which is no block at all, and when the
+/// multiplication carries beyond what a `usize` holds, which in wasm, where
+/// a `usize` is 32 bits, is 10000 variants of 250000 individuals of the
+/// ploidy 2.
+pub(crate) fn check_the_size_of_a_block(
+    num_vars_per_block: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    size: BlockSize,
+) -> Result<usize> {
+    if num_vars_per_block == 0 {
+        return Err(Error::BlockOfNoVariants);
+    }
+    num_individuals
+        .checked_mul(ploidy)
+        .and_then(|alleles_per_var| alleles_per_var.checked_mul(num_vars_per_block))
+        .ok_or(Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
+            ploidy,
+            size,
+        })
+}
+
 /// How many variants a block holds for that many individuals when the
 /// caller asks for no number: [`GENOTYPES_PER_BLOCK`] divided by the
 /// individuals, never below [`MIN_NUM_VARS_PER_BLOCK`] and never above
@@ -513,6 +601,10 @@ impl Block {
                 num_vars_per_block: self.num_vars,
                 num_individuals: self.num_individuals,
                 ploidy: self.ploidy,
+                // The block is here, so its size is one that a reader was
+                // given and took: no machine allocated it, and what a
+                // caller does about it is ask for fewer variants.
+                size: BlockSize::AskedFor,
             })
     }
 
@@ -668,6 +760,7 @@ impl Block {
                     num_vars_per_block: *num_vars,
                     num_individuals: *num_individuals,
                     ploidy: *ploidy,
+                    size: BlockSize::AskedFor,
                 })?;
         if !gts.is_empty() && gts.len() != alleles_of_the_block {
             return Err(Error::BlockArrayOfAnotherSize {
@@ -820,6 +913,9 @@ impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
 pub struct Reblock<R: BlockReader> {
     reader: R,
     num_vars_per_block: usize,
+    /// Whether that size is the one its caller asked for, which the error
+    /// of a block the machine has no memory for names.
+    size: BlockSize,
     /// The individuals and the ploidy of the source, which every block it
     /// gives has to have for its rows to be joined with the others'.
     num_individuals: usize,
@@ -851,23 +947,12 @@ impl<R: BlockReader> Reblock<R> {
     pub fn new(reader: R, num_vars_per_block: Option<usize>) -> Result<Reblock<R>> {
         let num_individuals = reader.individuals().len();
         let ploidy = reader.ploidy();
-        let num_vars_per_block = match num_vars_per_block {
-            Some(0) => return Err(Error::BlockOfNoVariants),
-            Some(asked_for) => asked_for,
-            None => default_num_vars_per_block(num_individuals),
-        };
-        let too_large = || Error::BlockTooLarge {
-            num_vars_per_block,
-            num_individuals,
-            ploidy,
-        };
-        let alleles_per_var = num_individuals.checked_mul(ploidy).ok_or_else(too_large)?;
-        alleles_per_var
-            .checked_mul(num_vars_per_block)
-            .ok_or_else(too_large)?;
+        let (num_vars_per_block, size) =
+            size_of_the_blocks(num_vars_per_block, num_individuals, ploidy)?;
         Ok(Reblock {
             reader,
             num_vars_per_block,
+            size,
             num_individuals,
             ploidy,
             waiting: None,
@@ -882,6 +967,7 @@ impl<R: BlockReader> Reblock<R> {
             num_vars_per_block: self.num_vars_per_block,
             num_individuals: self.num_individuals,
             ploidy: self.ploidy,
+            size: self.size,
         }
     }
 
@@ -1245,9 +1331,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AllelesColumn, Block, BlockReader, FIELD_NAMES, FIELDS_OF_THE_NAMES, GENOTYPES_PER_BLOCK,
-        MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock, default_num_vars_per_block,
-        needs_of_the_fields,
+        AllelesColumn, Block, BlockReader, BlockSize, FIELD_NAMES, FIELDS_OF_THE_NAMES,
+        GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock,
+        check_the_size_of_a_block, default_num_vars_per_block, needs_of_the_fields,
+        size_of_the_blocks,
     };
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -1501,6 +1588,62 @@ mod tests {
         assert_eq!(num_gts_of(&blocks), [10_000, 10_000, 10_000, 10_000, 7_500]);
     }
 
+    /// The error of a block the machine cannot give the memory for says
+    /// which of the two sizes of a block it is about, because what a caller
+    /// does differs: a size they asked for is one they lower, and the size
+    /// popnei chose is one they replace with a size of their own.
+    ///
+    /// A `usize` is 64 bits natively and 32 in wasm, so the sizes that
+    /// overflow it here are not the ones a user of the browser meets: what
+    /// this checks is the three steps, which are the same on both.
+    #[test]
+    fn the_error_of_a_block_that_does_not_fit_says_whose_size_it_is() {
+        // Two individuals of the ploidy 2 are four alleles in every
+        // variant, so every size above a quarter of `usize::MAX` is one
+        // that does not fit.
+        let error = match size_of_the_blocks(Some(usize::MAX), 2, 2) {
+            Ok(size) => panic!("the size {size:?} was taken"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(matches!(error, Error::BlockTooLarge { .. }), "{message}");
+        assert!(message.contains("ask for fewer variants"), "{message}");
+
+        // A source of so many individuals that the size popnei chooses for
+        // them, the smallest it chooses, does not fit either.
+        let error = match size_of_the_blocks(None, usize::MAX / 4, 2) {
+            Ok(size) => panic!("the size {size:?} was taken"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        let Error::BlockTooLarge {
+            num_vars_per_block, ..
+        } = error
+        else {
+            panic!("the error is {message}");
+        };
+        assert_eq!(num_vars_per_block, MIN_NUM_VARS_PER_BLOCK);
+        assert!(message.contains("popnei chose"), "{message}");
+        assert!(message.contains("num_vars_per_block"), "{message}");
+        assert!(!message.contains("ask for fewer variants"), "{message}");
+
+        // And no block at all, which is neither of the two.
+        let error = match size_of_the_blocks(Some(0), 2, 2) {
+            Ok(size) => panic!("the size {size:?} was taken"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::BlockOfNoVariants), "{error}");
+
+        // A size that fits gives the number of the alleles of a full block,
+        // which is what a reader reserves.
+        let (num_vars_per_block, size) = size_of_the_blocks(Some(7), 2, 2).expect("the size");
+        assert_eq!((num_vars_per_block, size), (7, BlockSize::AskedFor));
+        assert_eq!(
+            check_the_size_of_a_block(7, 2, 2, size).expect("the alleles"),
+            28
+        );
+    }
+
     #[test]
     fn the_default_number_of_variants_of_a_block_is_its_genotypes_between_the_two_bounds() {
         // 5 million genotypes divided by the individuals, which the
@@ -1592,6 +1735,7 @@ mod tests {
             num_vars_per_block,
             num_individuals,
             ploidy,
+            ..
         } = error
         else {
             panic!("the error is {error}");
@@ -2672,6 +2816,7 @@ mod tests {
             num_vars_per_block,
             num_individuals,
             ploidy,
+            ..
         } = error
         else {
             panic!("the error is {error}");

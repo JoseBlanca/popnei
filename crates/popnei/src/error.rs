@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use thiserror::Error as ThisError;
 
+use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
 use crate::variant::Needs;
 
@@ -38,10 +39,18 @@ pub enum Error {
     /// A block of that many variants needs more memory than the machine
     /// gives: its genotypes, the variants times the individuals times the
     /// ploidy, are more than a `usize` holds, or one of its columns was
-    /// asked of the machine and not given. Only a size that a caller asked
-    /// for reaches it.
+    /// asked of the machine and not given.
+    ///
+    /// The size is the one a caller asked for, or the one popnei chose for
+    /// the individuals of the source when they asked for none: the VCF
+    /// reader refuses the first when it is built and finds the second when
+    /// it builds its first block, so that a file opened for its individuals
+    /// alone is never refused for a size that nobody asked for. `size` says
+    /// which of the two it is, and the message ends with what the caller
+    /// does about it.
     #[error(
-        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} needs more memory than this machine gives; ask for fewer variants in a block"
+        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} needs more memory than this machine gives; {way_out}",
+        way_out = size.way_out()
     )]
     BlockTooLarge {
         /// How many variants a block was asked to hold.
@@ -50,6 +59,9 @@ pub enum Error {
         num_individuals: usize,
         /// How many alleles the genotype of one individual holds.
         ploidy: usize,
+        /// Whether that size is the one the caller asked for or the one
+        /// popnei chose for these individuals.
+        size: BlockSize,
     },
 
     /// A reader gave a block of other individuals or of another ploidy

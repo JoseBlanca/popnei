@@ -30,7 +30,10 @@ use std::path::Path;
 
 use flate2::bufread::MultiGzDecoder;
 
-use crate::block::{AllelesColumn, Block, BlockReader, default_num_vars_per_block};
+use crate::block::{
+    AllelesColumn, Block, BlockReader, BlockSize, check_the_size_of_a_block,
+    default_num_vars_per_block, size_of_the_blocks,
+};
 use crate::error::{Error, Result};
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -532,6 +535,9 @@ pub struct VcfReader<R: BufRead + Send> {
     /// How many variants a block holds: the size the caller asked for, or
     /// [`default_num_vars_per_block`] for the individuals of the header.
     num_vars_per_block: usize,
+    /// Which of the two that size is, which the error of a block the
+    /// machine has no memory for names.
+    size: BlockSize,
     /// `num_individuals` x `ploidy`, the alleles of one variant, which is
     /// the row of a block that one line is parsed into.
     gts_per_variant: usize,
@@ -601,15 +607,14 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// two individuals have the same name; and when the source cannot be
     /// read.
     pub fn new(source: R, options: VcfOptions) -> Result<VcfReader<R>> {
-        if options.ploidy == 0 || options.ploidy > MAX_PLOIDY {
+        let ploidy = options.ploidy;
+        if ploidy == 0 || ploidy > MAX_PLOIDY {
             return Err(Error::VcfPloidyOutOfRange {
-                ploidy: options.ploidy,
+                ploidy,
                 largest: MAX_PLOIDY,
             });
         }
-        if options.num_vars_per_block == Some(0) {
-            return Err(Error::BlockOfNoVariants);
-        }
+
         let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
         let gzipped = source.first.starts_with(&GZIP_BYTES);
         // Whether bgzip wrote the file is read from its first gzip member,
@@ -636,6 +641,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             chroms: ChromTable::new(),
             needs: Needs::ALL,
             num_vars_per_block: 0,
+            size: BlockSize::ChosenByPopnei,
             gts_per_variant: 0,
             text: Vec::new(),
             batch: Vec::new(),
@@ -656,27 +662,22 @@ impl<R: BufRead + Send> VcfReader<R> {
         };
         reader.read_header()?;
         // The individuals are known now, so the alleles of one variant and
-        // the size of a block are too.
+        // the size of a block are too. A size the caller wrote is checked
+        // here, before a line of the file is read; the one popnei chooses
+        // is checked when the first block is built instead, so that a file
+        // opened for its individuals alone is never refused for a size that
+        // nobody asked for. `docs/specs/io_vcf.md` has the case.
         let num_individuals = reader.individuals.len();
-        reader.gts_per_variant = num_individuals
-            .checked_mul(options.ploidy)
-            .ok_or_else(|| reader.block_too_large(options.num_vars_per_block.unwrap_or(0)))?;
-        reader.num_vars_per_block = match options.num_vars_per_block {
-            Some(asked_for) => {
-                // A size the caller wrote is refused here, before a line of
-                // the file is read. The one popnei chooses is checked when
-                // the first block is built instead, so that a file opened
-                // for its individuals alone is never refused for a size
-                // that nobody asked for: `docs/specs/io_vcf.md` has the
-                // case.
-                reader
-                    .gts_per_variant
-                    .checked_mul(asked_for)
-                    .ok_or_else(|| reader.block_too_large(asked_for))?;
-                asked_for
-            }
-            None => default_num_vars_per_block(num_individuals),
+        (reader.num_vars_per_block, reader.size) = match options.num_vars_per_block {
+            Some(_) => size_of_the_blocks(options.num_vars_per_block, num_individuals, ploidy)?,
+            None => (
+                default_num_vars_per_block(num_individuals),
+                BlockSize::ChosenByPopnei,
+            ),
         };
+        reader.gts_per_variant = num_individuals
+            .checked_mul(ploidy)
+            .ok_or_else(|| reader.block_too_large(reader.num_vars_per_block))?;
         Ok(reader)
     }
 
@@ -720,6 +721,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             num_vars_per_block,
             num_individuals: self.individuals.len(),
             ploidy: self.options.ploidy,
+            size: self.size,
         }
     }
 }
@@ -795,12 +797,17 @@ impl<R: BufRead + Send> VcfReader<R> {
     fn start_block(&self) -> Result<Block> {
         let num_vars = self.num_vars_per_block;
         let too_large = || self.block_too_large(num_vars);
+        // The genotypes of a full block, which is where the size that
+        // popnei chose is checked: the caller asked for none, so nothing
+        // was refused when the reader was built.
+        let gts_per_block = check_the_size_of_a_block(
+            num_vars,
+            self.individuals.len(),
+            self.options.ploidy,
+            self.size,
+        )?;
         let mut gts = Vec::new();
         if self.needs.contains(Needs::GTS) {
-            let gts_per_block = self
-                .gts_per_variant
-                .checked_mul(num_vars)
-                .ok_or_else(too_large)?;
             gts.try_reserve_exact(gts_per_block)
                 .map_err(|_| too_large())?;
         }
@@ -929,8 +936,12 @@ impl<R: BufRead + Send> VcfReader<R> {
     }
 
     /// The rows of the lines of the batch appended to the block, after the
-    /// `first` variants it holds already, in the order of the file, and how
-    /// many they were.
+    /// variants it holds already, in the order of the file, and how many
+    /// they were.
+    ///
+    /// The count of the variants of the block is not written here:
+    /// `build_block` writes it on the one path where the block lives, and
+    /// on every other the block is lost with an error.
     ///
     /// The genotypes are in the block already: the parse wrote them
     /// straight into their rows. What is appended here is the columns,
@@ -943,7 +954,7 @@ impl<R: BufRead + Send> VcfReader<R> {
     /// The error of the first line of the batch whose parse failed, which
     /// is the first one of the file, since the batches are parsed one after
     /// another. The block is lost with it.
-    fn append_batch(&mut self, block: &mut Block, first: usize) -> Result<usize> {
+    fn append_batch(&mut self, block: &mut Block) -> Result<usize> {
         let VcfReader {
             chroms,
             batch,
@@ -951,7 +962,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             ..
         } = self;
         let rows = batch.get_mut(..*filled).unwrap_or_default();
-        for (given, line) in rows.iter_mut().enumerate() {
+        for line in rows.iter_mut() {
             if let Some(error) = line.error.take() {
                 return Err(error);
             }
@@ -971,9 +982,6 @@ impl<R: BufRead + Send> VcfReader<R> {
             if let Some(qual) = block.qual.as_mut() {
                 qual.push(row.qual);
             }
-            // The variants of a block are as many as the lines the reader
-            // read, so the count does not reach the largest `usize`.
-            block.num_vars = first.saturating_add(given).saturating_add(1);
         }
         Ok(*filled)
     }
@@ -1040,7 +1048,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             *parsing = true;
             parse_rows(rows, text, gts, &rules);
             *parsing = false;
-            let given = self.append_batch(&mut block, num_vars)?;
+            let given = self.append_batch(&mut block)?;
             num_vars = num_vars.saturating_add(given);
         }
         if num_vars == 0 {
@@ -2321,10 +2329,12 @@ mod tests {
     #[test]
     fn a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_reader_is_built() {
         let error = error_of(HEADER, in_blocks_of(VcfOptions::default(), usize::MAX));
+        let message = error.to_string();
         let Error::BlockTooLarge {
             num_vars_per_block,
             num_individuals,
             ploidy,
+            ..
         } = error
         else {
             panic!("the error is {error}");
@@ -2333,6 +2343,10 @@ mod tests {
             (num_vars_per_block, num_individuals, ploidy),
             (usize::MAX, 3, 2)
         );
+        // The size is the one the caller wrote, so what the message says to
+        // do about it is to write a smaller one.
+        assert!(message.contains("ask for fewer variants"), "{message}");
+        assert!(!message.contains("popnei chose"), "{message}");
     }
 
     /// The size that popnei chooses is not checked when the reader is
