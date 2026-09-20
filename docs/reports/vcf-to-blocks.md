@@ -221,8 +221,11 @@ of Python or TypeScript sees:
   rule is what keeps it from panicking.
 - The error of a field that was asked for and not filled carries the
   fields as a `Needs`, so a consumer that lacks two reports both.
-- `ChromTable::is_empty`, and `Default` for `ChromTable` and `Variant`,
-  which clippy asks for beside `len` and `new`.
+- `ChromTable::is_empty`, which clippy asks for beside `len`. The code
+  also got `Default` for `ChromTable` and `Variant`, beside their `new`;
+  an earlier version of this report said the spec had them too, on the
+  word of the subagent, and it had not. The review found it, and the
+  spec has them since 34f7d30.
 - `Needs` is written by hand, and `thiserror` is a new dependency of the
   core, which the `coding` skill asks errors to be written with. It
   builds for both wasm targets.
@@ -239,3 +242,123 @@ The review of this work package is made together with that of work
 package 3, as the `following-plans` skill allows when the two are one
 piece of code: the types have no caller until the VCF reader, and what
 a reviewer can say of them alone is little.
+
+## Work package 3: the VCF reader, on one thread
+
+Tasks 3.1 and 3.2 went to one subagent, commits fc9200a and 6b32bdd,
+each after a commit of the spec, 93996b4 and cdcac50; one run of 216
+thousand tokens and 19 minutes. Task 3.3 went to another subagent, so
+that the reader was tested by somebody who had not written it: commit
+10b8dd8, 127 thousand tokens and 5 minutes. It finished as planned.
+
+### The deliverables, run by the orchestrator at 10b8dd8
+
+`cargo test -p popnei --lib io::vcf:: -- --list` `36 tests`, where the
+plan asks for 25; `cargo test --workspace` `43 passed`; fmt exit 0,
+clippy no warning, `cargo wasm-check` finished. The tests read the three
+reference VCFs, plain and gzipped, with the literals of the spec, and
+every genotype, chromosome and position of `many.vcf` against the stored
+output of bcftools. The subagent of 3.3 put `GzDecoder` in the place of
+`MultiGzDecoder` and saw `many.vcf.gz` give 0 variants and both tests of
+the counts fail, which is what the spec says must happen.
+
+### The review, of work packages 2 and 3 together
+
+Six reviewers over 9cfdb70..10b8dd8: `spec`, `tests`, `numbers`,
+`errors`, `api` and `architecture`; 136, 145, 103, 100, 96 and 117
+thousand tokens. The `tests` reviewer made 40 mutations of the code and
+ran the tests on each. Every finding that held went back to the subagent
+that wrote the reader, which fixed them in 13 commits from 34f7d30, the
+specs first, with 132 thousand tokens more. After them: `cargo test
+--workspace` `65 passed`, `io::vcf::` `57 tests`, `variant::` `5 tests`,
+clippy no warning, `cargo wasm-check` and `cargo build --workspace`
+finished, `cargo doc -p popnei --no-deps` with no warning, pytest `2
+passed`, ruff clean.
+
+What held and was fixed, the ones that matter first:
+
+- The gzip bytes were looked for in one fill of the buffer, which may
+  hold one byte: `cases.vcf.gz` through a `BufReader` of capacity 1 was
+  refused as "not a VCF". A pipe or a source of bytes in the browser can
+  do that. Three reviewers reported it.
+- A variant with more alleles than the one before it allocated a
+  string. A counting allocator gave 54 allocations in the last 400
+  variants of a second pass over `many.vcf`, its 54 variants with two
+  alternative alleles, and 2 after the fix, the interning of `chr2`.
+  The reader now keeps the strings it does not use.
+- The reader repeated the list of fields of `Variant::clear`, so a field
+  added later would have kept the value of the variant before. There is
+  one list now, `Variant::clear_but_the_alleles`.
+- A FORMAT with no `GT` and a line with too few columns were errors only
+  when the genotypes were asked for, where the spec lists them with no
+  condition. The orchestrator took the spec's list: the nine fixed
+  columns, the `GT` key and one column after FORMAT are checked whatever
+  is asked for, and only the count and the contents of the columns of
+  the individuals wait for the genotypes. The spec says it now.
+- Accepted with no error, and refused now: an ALT with an empty piece,
+  which was counted as an allele that a genotype could carry; an
+  individual with no name, from a header that ends in a tab; `+1/0`.
+- A ploidy of `usize::MAX` panicked with "capacity overflow" at a
+  missing genotype, and 2^40 allocated until it was killed. A ploidy
+  above `MAX_PLOIDY`, 255, is refused. The orchestrator chose 255; no
+  organism is near it.
+- A line that is not UTF-8 was an error of the input with no line
+  number, an `OSError` in Python for a malformed line. It is an error of
+  the line with its number.
+- A file that is not there gave "No such file or directory" with no
+  name. The error has a case with the path, so that the Python binding
+  can fill `OSError.filename`.
+- The message of a genotype of another ploidy did not say that popnei
+  does not read a VCF of mixed ploidies, which the spec asks of it, and
+  said "1 alleles".
+- Six public items were in the code and not in the specs, and
+  `ChromTable`, `Variant` and `VcfReader` had no `Debug`.
+  `missing_docs` is denied now, in the workspace and in
+  `.claude/skills/coding/lints.toml`.
+- Two rules of the spec that no test would have noticed broken: that a
+  field no longer asked for is emptied, and that the columns of the
+  individuals are not looked at without the genotypes. Both have tests,
+  and so have a QUAL that is not a number, a gzip member cut in the
+  middle, a read after an error, a last line with no end and an empty
+  source.
+- One sentence that cdcac50 added to the spec claimed more than the code
+  does, and is corrected.
+
+What held and was not changed:
+
+- `VcfReader::from_path` is compiled for wasm too. It is needed there:
+  under pyodide, which is wasm, the files of emscripten are real to the
+  reader.
+- The message of fc9200a says that `cases.vcf.gz` and `many.vcf.gz` are
+  four and two gzip members. They are three and four, as the spec says.
+  The commit is not rewritten.
+- `/.` is read as a missing genotype, where bcftools refuses the line.
+  The rule of the leading separator and the rule of the single dot both
+  apply, and the spec does not say which wins.
+
+Passed on to work package 5: the chromosome is given its number while
+the line is parsed, and task 5.1 has to move that to the moment a
+variant is handed out, as the spec says, because the workers of rayon
+cannot share the table. And a first measurement, by the `architecture`
+reviewer, on a VCF it generated of 10000 variants x 1000 individuals,
+one thread, release, this machine, genotypes asked for: 0.134 s, which
+is 1.34 s for the 100000 variants of the spec's target of 0.55 s, nearly
+all of it in the genotypes. The fix of the allele numbers made the parse
+of a genotype one pass where it was two, and nothing was measured after.
+Task 5.2 measures on the real file.
+
+### For the owner
+
+Three decisions, asked in chat on 20 September 2026, each with what the
+code does meanwhile:
+
+1. A bgzipped file cut at the boundary of a gzip member gives fewer
+   variants and no error, where bcftools says "no BGZF EOF marker".
+   Recommended: detect it. Meanwhile it is as it is.
+2. A QUAL of `nan`, `inf` or `1e400` parses as a float and is taken, as
+   bcftools does. Recommended: refuse a quality that is not finite.
+   Meanwhile it is taken.
+3. The specs have one error enum for the crate, and the `coding` skill
+   says "one error type for each operation that fails in its own way,
+   not one for the crate". The code follows the specs. Recommended: keep
+   the one enum and correct the skill.
