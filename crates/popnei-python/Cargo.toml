@@ -23,6 +23,7 @@ test = false
 doctest = false
 
 [dependencies]
+numpy.workspace = true
 popnei.workspace = true
 pyo3.workspace = true
 

@@ -8,6 +8,9 @@ signatures are those of pyNei, the Python library popnei succeeds.
 """
 
 from popnei import _core
+from popnei.block import Block
+from popnei.io_vcf import open_vcf
+from popnei.variant import Variants
 
 __version__: str = _core.version()
 """The version of the core crate, ``major.minor.patch``.
@@ -16,4 +19,4 @@ A user who reports a result names the code that gave it with this, so it is
 the version of the Rust that did the work and not one written again here.
 """
 
-__all__ = ["__version__"]
+__all__ = ["Block", "Variants", "__version__", "open_vcf"]

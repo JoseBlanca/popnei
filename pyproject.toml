@@ -12,7 +12,11 @@ dynamic = ["version"]
 # 3.14, as pyNei asks for, and the version of the pyodide the wheel of
 # task 1.4 of docs/plans/vcf-to-blocks.md is built for.
 requires-python = ">=3.14"
-dependencies = []
+# numpy holds the genotypes, the positions and the qualities of a block: the
+# binding crate hands it the arrays of the core, so a user gets them without
+# a copy. It is the version pyNei asks for, so that the two libraries share
+# one numpy in the environment where they are compared.
+dependencies = ["numpy>=2.4.6"]
 
 [project.urls]
 repository = "https://github.com/JoseBlanca/popnei"
@@ -25,7 +29,20 @@ module-name = "popnei._core"
 python-source = "python"
 
 [dependency-groups]
-dev = ["maturin>=1.9,<2.0", "pytest>=8", "ruff>=0.14"]
+# pyNei is the oracle of the tests: they read the same VCFs with both
+# libraries and compare what the two give, as the specs under docs/specs/
+# ask.
+dev = ["maturin>=1.9,<2.0", "pyNei", "pytest>=8", "ruff>=0.14"]
+
+[tool.uv.sources]
+# An absolute path, which works on the owner's machine alone.
+# docs/objectives.md has pyNei as `../pynei`, the sibling checkout, and a
+# plan is carried out in a worktree under `.claude/worktrees/`, where that
+# relative path points nowhere. "What has to be in place" of
+# docs/plans/vcf-to-blocks.md leaves the owner the choice between this and
+# a dependency on pyNei's git repository at a commit, which would also fix
+# which pyNei is the oracle, and says to use this one meanwhile.
+pyNei = { path = "/Users/jose/devel/pynei" }
 
 [tool.uv]
 # maturin, and not uv, installs popnei into the environment: `uv run

@@ -30,6 +30,11 @@ pyo3 = "0.29.2"
 # Beside it, in the build script of the binding crate, for the link
 # arguments of an extension module. It is a part of pyo3 and moves with it.
 pyo3-build-config = "0.29.2"
+# The arrays the Python binding crate hands to numpy: the genotypes, the
+# positions and the qualities of a block leave the core as a Vec and reach
+# numpy without a copy. It is the version of the numpy crate that goes with
+# pyo3 0.29, and it moves with it.
+numpy = "0.29"
 # The JavaScript binding crate. The crate writes into the wasm file what
 # the `wasm-bindgen` command line then reads to generate the JavaScript,
 # and the two refuse to work together when their versions differ, so this

@@ -1,0 +1,70 @@
+"""The handle a user holds: a source of variants and its individuals."""
+
+from collections.abc import Iterable, Iterator
+
+from popnei import _core
+from popnei.block import Block, _block_of
+
+
+class Variants:
+    """A source of variants: a VCF with the options it is read with.
+
+    It holds no genotypes. A user gets one from :func:`popnei.open_vcf` and
+    gives it to as many calculations as they want: each one opens the source
+    again and runs its loop over the variants inside the Rust core, so the
+    dataset is never in memory as a whole.
+
+    It is pyNei's ``Variants`` under the word of ``docs/glossary.md``: what
+    pyNei calls a sample is here an individual, one organism that was
+    genotyped. The genotypes come out of it through :meth:`iter_blocks` and
+    through nothing else.
+    """
+
+    def __init__(self, source: _core.VcfSource):
+        """The handle over `source`, which :func:`popnei.open_vcf` builds."""
+        self._source = source
+        # The names come from the header, which was read once, so they are
+        # taken out of the core here and not at every use.
+        self._individuals = tuple(source.individuals())
+
+    @property
+    def individuals(self) -> tuple[str, ...]:
+        """The names of the individuals, in the order the source has them."""
+        return self._individuals
+
+    @property
+    def num_individuals(self) -> int:
+        """How many individuals the source holds."""
+        return len(self._individuals)
+
+    @property
+    def ploidy(self) -> int:
+        """How many alleles the genotype of one individual holds."""
+        return self._source.ploidy()
+
+    def iter_blocks(
+        self,
+        fields: Iterable[str] = ("chrom", "pos"),
+        num_vars_per_block: int | None = None,
+    ) -> Iterator[Block]:
+        """The variants of the source, block by block, from its start.
+
+        `fields` names what each block carries besides the genotypes, among
+        ``"chrom"``, ``"pos"``, ``"id"``, ``"alleles"`` and ``"qual"``, and
+        any other name is a ``ValueError``. The chromosome and the position
+        are one field of the reader, so asking for one fills both. A field
+        that is not asked for is never parsed, and the block has ``None``
+        where it would be.
+
+        `num_vars_per_block` is how many variants a block holds, and
+        ``None`` asks for the number that gives a block about five million
+        genotypes, never fewer than 100 variants and never more than 10000.
+        The size changes nothing but where the cuts fall: the blocks of a
+        source, joined, are the same for any size, and only the last one can
+        be shorter than the rest.
+
+        Every call reads the source from its start. When a variant cannot be
+        read, the error comes in the place of the block that would have held
+        it, and the variants of that block that were read are lost with it.
+        """
+        return map(_block_of, self._source.blocks(list(fields), num_vars_per_block))
