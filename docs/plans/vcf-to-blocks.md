@@ -255,7 +255,7 @@ reference files.
   the chromosome numbers. From "What it gives", the rest of "The cases a
   reader of the rules would not guess" and "How it is verified". Serves
   deliverable 2. Needs 3.1.
-- [ ] 3.3 The tests on `many.vcf` and `many.vcf.gz` against the stored
+- [x] 3.3 The tests on `many.vcf` and `many.vcf.gz` against the stored
   output of bcftools, with a helper of the tests that reads that output.
   Serves deliverables 3 and 4. Needs 3.2. A wrong genotype here is
   silent anywhere else, so it is a commit of its own, and deliverable 3
