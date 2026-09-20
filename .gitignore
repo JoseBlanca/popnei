@@ -3,5 +3,8 @@ dist/
 .venv/
 __pycache__/
 *.pyc
+# The module that `maturin develop` compiles and leaves beside the Python
+# package: popnei/_core.cpython-<version>-<platform>.so.
+python/popnei/_core*.so
 tmp/
 .claude/worktrees/

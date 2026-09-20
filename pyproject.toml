@@ -1,0 +1,62 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "popnei"
+description = "Population genetics over the variants of a dataset"
+readme = "README.md"
+# The version is the one of the core crate, which maturin reads from the
+# cargo manifest, so that it is written in one place only.
+dynamic = ["version"]
+# 3.14, as pyNei asks for, and the version of the pyodide the wheel of
+# task 1.4 of docs/plans/vcf-to-blocks.md is built for.
+requires-python = ">=3.14"
+dependencies = []
+
+[project.urls]
+repository = "https://github.com/JoseBlanca/popnei"
+
+[tool.maturin]
+manifest-path = "crates/popnei-python/Cargo.toml"
+# The private module the package imports, and the directory the package
+# itself is in, as .claude/skills/coding/pyo3.md asks.
+module-name = "popnei._core"
+python-source = "python"
+
+[dependency-groups]
+dev = ["maturin>=1.9,<2.0", "pytest>=8", "ruff>=0.14"]
+
+[tool.uv]
+# maturin, and not uv, installs popnei into the environment: `uv run
+# maturin develop` compiles the binding crate and puts the module beside
+# the package. Were uv to install the project as well, each `uv run` could
+# replace what `maturin develop` had just built. An explicit `uv sync`
+# takes the module out of the environment, because it is not in the lock
+# file, so `uv run maturin develop` comes after one.
+#
+# The interpreter is named with its patch version in `.python-version`,
+# 3.14.5 and not 3.14, because uv reads `3.14` as the newest interpreter of
+# that minor version it has, and on this Mac that one is the free threaded
+# build. The environment would be free threaded without anyone asking for
+# it, which is the trap of section 3.2 of docs/rust_core.md.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# The Python of popnei is the package and the tests, and ruff sees nothing
+# else. Named one by one because ruff 0.16 also formats the Python inside
+# the fenced blocks of a Markdown file, and the documents under `docs/` and
+# the skills under `.claude/` are prose that the `writing` skill governs.
+# `tests/reference` holds the VCFs and the script from pyNei that writes
+# them again, which stays as it came.
+include = ["pyproject.toml", "python/**/*.py", "tests/*.py"]
+extend-exclude = ["tests/reference"]
+
+[tool.ruff.lint]
+# The defaults, pycodestyle errors and pyflakes, with the order of the
+# imports, the rewrites for the oldest Python popnei supports, and the
+# checks of bugbear.
+extend-select = ["I", "UP", "B"]

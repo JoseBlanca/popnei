@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-# The binding crates come with tasks 1.2, crates/popnei-python, and 1.3,
-# crates/popnei-js, of docs/plans/vcf-to-blocks.md.
-members = ["crates/popnei"]
+# The JavaScript binding crate, crates/popnei-js, comes with task 1.3 of
+# docs/plans/vcf-to-blocks.md.
+members = ["crates/popnei", "crates/popnei-python"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,9 @@ popnei = { path = "crates/popnei", version = "0.1.0" }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
+# The Python binding crate. The names of pyo3 change from version to
+# version, and .claude/skills/coding/pyo3.md was written from this one.
+pyo3 = "0.29.2"
 
 # The table of .claude/skills/coding/lints.toml, with the reasons for each
 # lint in .claude/skills/coding/SKILL.md. Every crate takes it with

@@ -1,0 +1,29 @@
+[package]
+name = "popnei-python"
+description = "Population genetics: the Python binding crate, pyo3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+# The module a Python user never imports directly: popnei._core, built by
+# maturin, which pyproject.toml points at this manifest. The name of the
+# library is the last part of the name of the module.
+name = "_core"
+crate-type = ["cdylib"]
+# There are no cargo tests here: the calculations are tested in the core
+# crate and what this crate adds is tested from Python, as
+# .claude/skills/coding/pyo3.md says. A test binary would also have to link
+# libpython, which `cargo test --workspace` would look for through the
+# `python3` of the PATH, an interpreter that has nothing to do with the one
+# the wheel is built for.
+test = false
+doctest = false
+
+[dependencies]
+popnei.workspace = true
+pyo3.workspace = true
+
+[lints]
+workspace = true
