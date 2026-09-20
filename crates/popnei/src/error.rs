@@ -26,6 +26,29 @@ pub enum Error {
         fields: Needs,
     },
 
+    /// A collector of blocks was asked for blocks of 0 variants. A block
+    /// holds one variant at least, and the caller that wants the size
+    /// popnei chooses asks for none instead of asking for 0.
+    #[error("a collector was asked for blocks of 0 variants, and a block holds 1 variant at least")]
+    BlockOfNoVariants,
+
+    /// The genotypes of one block, the variants of a block times the
+    /// individuals times the ploidy, are more than the machine addresses.
+    /// Only a size that a caller asked for reaches it, and it reaches it in
+    /// wasm, where a `usize` is 32 bits.
+    #[error(
+        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} holds more genotypes than this machine addresses, {largest} at most; ask for fewer variants in a block",
+        largest = usize::MAX
+    )]
+    BlockTooLarge {
+        /// How many variants a block was asked to hold.
+        num_vars_per_block: usize,
+        /// How many individuals the source has.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
     /// The source the VCF reader was given holds something else. A VCF
     /// starts with `#`, and a gzipped one with the two bytes of gzip.
     #[error("the source is not a VCF: it starts with {found}")]
