@@ -1016,6 +1016,488 @@ fn parse_data_line(
     Ok(true)
 }
 
+/// What the parse of a data line into a row of a block needs to know, which
+/// is the same for every line of a file.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "task 2.4 of docs/plans/block-readers.md is what calls the row parser \
+                  from the reader; until then its tests are its only callers"
+    )
+)]
+struct RowRules<'a> {
+    /// Which fields are parsed. A column that is not asked for is not read
+    /// and not checked.
+    needs: Needs,
+    /// How many alleles every genotype of the file holds.
+    ploidy: usize,
+    /// The individuals of the header, in the order of their columns, by the
+    /// name that an error of one of them carries.
+    individuals: &'a [String],
+}
+
+/// One row of a block as one data line gives it, but for the genotypes,
+/// which go straight into the row of the block.
+///
+/// The chromosome is here as the name it has in the line: the number it
+/// gets belongs to the order of the variants that are given, and the reader
+/// gives it serially, after the rows of a batch were parsed side by side.
+/// The id and the alleles are here and not in the block for the same
+/// reason: the texts of a column are one buffer, which the rows are
+/// appended to in order.
+///
+/// The buffers of a row are written over by the next line parsed into it,
+/// so a reader that keeps one row for each line of a batch allocates
+/// nothing after its first batch.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "task 2.4 of docs/plans/block-readers.md is what puts these rows into the \
+                  blocks of the reader; until then the tests of the row parser are what read them"
+    )
+)]
+#[derive(Debug, Default)]
+struct ParsedRow {
+    /// The name of the chromosome, empty when the chromosome and the
+    /// position were not asked for.
+    chrom: String,
+    /// The position, 1 based as in the VCF, and 0 when it was not asked for.
+    pos: u64,
+    /// The id of the variant, empty when it has none and when it was not
+    /// asked for.
+    id: String,
+    /// The texts of the alleles, the reference first. Only the first
+    /// [`ParsedRow::num_allele_texts`] of them are of this line: the strings
+    /// after them are the ones of the lines parsed into this row before, and
+    /// they are kept so that a line with more alleles than the line before
+    /// it writes over a string instead of allocating one.
+    alleles: Vec<String>,
+    /// How many of the strings of `alleles` are of this line.
+    num_allele_texts: usize,
+    /// The quality, NaN when the variant has none and when it was not asked
+    /// for.
+    qual: f32,
+    /// How many alleles REF and ALT declare, which is counted for every line
+    /// that is parsed, whether or not the texts of the alleles are kept,
+    /// because it is what says whether an allele number of a genotype is one
+    /// of the alleles of the variant.
+    num_alleles: usize,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "task 2.4 of docs/plans/block-readers.md is what appends these alleles to \
+                  the column of a block; until then the tests are what read them"
+    )
+)]
+impl ParsedRow {
+    /// The texts of the alleles of the line that was parsed into this row,
+    /// the reference first, and none when the alleles were not asked for.
+    fn alleles(&self) -> &[String] {
+        self.alleles
+            .get(..self.num_allele_texts)
+            .unwrap_or_default()
+    }
+
+    /// The row with nothing of the line that was parsed into it before,
+    /// which the parse of a line calls before it writes anything.
+    fn clear(&mut self) {
+        self.chrom.clear();
+        self.pos = 0;
+        self.id.clear();
+        self.num_allele_texts = 0;
+        self.qual = f32::NAN;
+        self.num_alleles = 0;
+    }
+
+    /// The texts of the alleles of REF and ALT, written over the strings the
+    /// row holds.
+    fn fill_alleles(&mut self, reference: &str, alternatives: &str) {
+        for text in allele_texts(reference, alternatives) {
+            match self.alleles.get_mut(self.num_allele_texts) {
+                Some(allele) => {
+                    allele.clear();
+                    allele.push_str(text);
+                }
+                None => self.alleles.push(text.to_string()),
+            }
+            // The alleles of one line are at most its bytes, so the count
+            // does not reach the largest `usize`.
+            self.num_allele_texts = self.num_allele_texts.saturating_add(1);
+        }
+    }
+}
+
+/// The columns of a part of a data line, cut at the tabs, as bytes.
+///
+/// The tabs are searched for with `memchr`, which reads the bytes a machine
+/// word at a time, and not with a loop over one byte after another, which is
+/// what `[u8]::split` does. Which of the two is faster depends on how long a
+/// column is, and the columns of the individuals are where nearly all the
+/// bytes of a VCF with genotypes are. Both were timed on the owner's Apple
+/// M5 Pro, a release build, one thread, the lines in memory and the
+/// genotypes alone asked for, the median of three runs, on the two shapes a
+/// column of an individual has:
+///
+/// | the columns of the individuals | `memchr` | a loop over the bytes |
+/// |---|---|---|
+/// | `0/1`, the FORMAT `GT`, 100000 lines x 1000 individuals | 0.592 s | 0.560 s |
+/// | `0/1:20,30:50:99:0,120,1800`, the FORMAT `GT:AD:DP:GQ:PL`, 10000 lines x 1000 individuals | 0.069 s | 0.110 s |
+///
+/// The first file is `crates/popnei/benches/make_big_vcf.py`'s, the one of
+/// "Speed" of `docs/specs/io_vcf.md`, and the second is its first 10000
+/// lines with the four other values that a VCF of a variant caller carries
+/// added to every column. `memchr` costs 6 in 100 on columns of 3 bytes and
+/// gives 1.6 times on the columns of 26 that a called VCF has.
+struct ByteColumns<'a> {
+    /// The bytes the columns are cut from.
+    bytes: &'a [u8],
+    /// Where in `bytes` the column that comes next starts.
+    start: usize,
+    /// The tabs of `bytes` that have not been reached yet.
+    tabs: memchr::Memchr<'a>,
+    /// Whether the last column was given: the bytes after the last tab are
+    /// one column, and after it there are none.
+    done: bool,
+}
+
+impl<'a> ByteColumns<'a> {
+    /// The columns of `bytes`, which are one column when `bytes` holds no
+    /// tab and none when there are no bytes at all.
+    fn new(bytes: &'a [u8]) -> ByteColumns<'a> {
+        ByteColumns {
+            bytes,
+            start: 0,
+            tabs: memchr::memchr_iter(b'\t', bytes),
+            done: false,
+        }
+    }
+}
+
+impl<'a> Iterator for ByteColumns<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        if self.done {
+            return None;
+        }
+        let end = self.tabs.next().unwrap_or(self.bytes.len());
+        let column = self.bytes.get(self.start..end)?;
+        match end.checked_add(1) {
+            Some(after) if after <= self.bytes.len() => self.start = after,
+            _ => self.done = true,
+        }
+        Some(column)
+    }
+}
+
+/// The data line `line`, the line `number` of the file, parsed into one row
+/// of a block: its genotypes into `gts`, the `num_individuals` x `ploidy`
+/// alleles of that row, and the rest of its fields into `row`.
+///
+/// Nothing is shared between two lines, so the lines of a batch are parsed
+/// side by side, each into its own row. `gts` holds one allele for each
+/// individual of `rules` times the ploidy, and no allele when the genotypes
+/// were not asked for; the alleles of individual `i` are `gts[i * ploidy ..
+/// (i + 1) * ploidy]`.
+///
+/// The line comes as the source gave it, with or without its end of line,
+/// which is taken off here. A line that is empty, or one whose FILTER says
+/// that its variant failed a filter, gets no row at all, and the caller is
+/// what leaves it out: this parses the line it is given.
+///
+/// # Errors
+///
+/// Every error of a data line of `docs/specs/io_vcf.md`, with the number of
+/// the line and the column or the individual it is in. The row and the
+/// genotypes are then what the parse had written when it stopped, and the
+/// caller drops the block they are in.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "task 2.4 of docs/plans/block-readers.md is what parses the lines of a \
+                  batch with this; until then its tests are its only callers"
+    )
+)]
+fn parse_row(
+    line: &[u8],
+    number: u64,
+    rules: &RowRules<'_>,
+    gts: &mut [i8],
+    row: &mut ParsedRow,
+) -> Result<()> {
+    let RowRules {
+        needs,
+        ploidy,
+        individuals,
+    } = rules;
+    row.clear();
+    let line = without_the_bytes_of_the_line_end(line);
+    // The nine first columns are the ones whose text a block keeps, and
+    // they are the ones read as text: the columns of the individuals are
+    // read as bytes, which is what "Speed" of `docs/specs/io_vcf.md` asks
+    // for, and no UTF-8 is checked in them.
+    let (head, individual_columns) = match memchr::memchr_iter(b'\t', line).nth(8) {
+        Some(ninth_tab) => (
+            line.get(..ninth_tab).unwrap_or_default(),
+            // The tab is at `ninth_tab`, so there is a byte after it or the
+            // columns of the individuals are one empty column.
+            line.get(ninth_tab.saturating_add(1)..),
+        ),
+        None => (line, None),
+    };
+    let Ok(head) = std::str::from_utf8(head) else {
+        return Err(Error::VcfDataLine {
+            line: number,
+            place: VcfPlace::Line,
+            problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+        });
+    };
+
+    let mut columns = head.split('\t');
+    let chrom_text = next_column(&mut columns, "CHROM", number)?;
+    let pos_text = next_column(&mut columns, "POS", number)?;
+    let id_text = next_column(&mut columns, "ID", number)?;
+    let reference_text = next_column(&mut columns, "REF", number)?;
+    let alternatives_text = next_column(&mut columns, "ALT", number)?;
+    let quality_text = next_column(&mut columns, "QUAL", number)?;
+    next_column(&mut columns, "FILTER", number)?;
+
+    if needs.contains(Needs::CHROM_POS) {
+        row.pos = parse_position(pos_text, number)?;
+        row.chrom.push_str(chrom_text);
+    }
+    if needs.contains(Needs::ID) && id_text != MISSING_VALUE {
+        row.id.push_str(id_text);
+    }
+    // The alleles are counted for every line that is parsed, to check the
+    // allele numbers of its genotypes, also when the texts of the alleles
+    // are not kept.
+    row.num_alleles = count_alleles(reference_text, alternatives_text, number)?;
+    if needs.contains(Needs::ALLELES) {
+        row.fill_alleles(reference_text, alternatives_text);
+    }
+    if needs.contains(Needs::QUAL) {
+        row.qual = parse_quality(quality_text, number)?.unwrap_or(f32::NAN);
+    }
+    // The shape of the line is checked whatever was asked for: the nine
+    // first columns are there, the FORMAT has a GT key, and one column of
+    // an individual comes after it at least. What is in those columns, and
+    // how many of them there are, is read only when the genotypes are asked
+    // for.
+    //
+    // INFO is not read, and its column has to be there.
+    next_column(&mut columns, "INFO", number)?;
+    let format_text = next_column(&mut columns, "FORMAT", number)?;
+    let gt_index = gt_index_of(format_text, number)?;
+    let Some(individual_columns) = individual_columns else {
+        return Err(Error::VcfDataLine {
+            line: number,
+            place: VcfPlace::Line,
+            problem: format!(
+                "it has no individual column; a VCF with genotypes has the nine columns \
+                 {first} and one column per individual after them",
+                first = FIRST_COLUMNS.join(" "),
+            ),
+        });
+    };
+    if needs.contains(Needs::GTS) {
+        fill_row_genotypes(
+            gts,
+            individual_columns,
+            gt_index,
+            individuals,
+            *ploidy,
+            row.num_alleles,
+            number,
+        )?;
+    }
+    Ok(())
+}
+
+/// The line without the `\n` or the `\r\n` it ends in, when it has one. The
+/// genotype of the last individual is the one that would carry the `\r`.
+fn without_the_bytes_of_the_line_end(line: &[u8]) -> &[u8] {
+    let line = line.strip_suffix(b"\n").unwrap_or(line);
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// The genotype of every individual of the line, into the row `gts` of the
+/// block: the value of the key `GT` of each column, which an individual
+/// that drops its last values still has.
+///
+/// The row holds one allele for each individual of the header times the
+/// ploidy, and the alleles of individual `i` are `gts[i * ploidy .. (i + 1)
+/// * ploidy]`.
+fn fill_row_genotypes(
+    gts: &mut [i8],
+    individual_columns: &[u8],
+    gt_index: usize,
+    individuals: &[String],
+    ploidy: usize,
+    num_alleles: usize,
+    line: u64,
+) -> Result<()> {
+    let expected = individuals.len().checked_mul(ploidy);
+    if expected != Some(gts.len()) {
+        return Err(Error::BlockArrayOfAnotherSize {
+            array: "gts",
+            found: gts.len(),
+            expected: expected.unwrap_or(usize::MAX),
+        });
+    }
+    let mut columns = ByteColumns::new(individual_columns);
+    let mut genotypes = gts.chunks_exact_mut(ploidy);
+    for (read_so_far, individual) in individuals.iter().enumerate() {
+        let (Some(column), Some(genotype)) = (columns.next(), genotypes.next()) else {
+            return Err(Error::VcfDataLine {
+                line,
+                place: VcfPlace::Line,
+                problem: format!(
+                    "it has the columns of {read_so_far} individuals and the header has {count}",
+                    count = individuals.len(),
+                ),
+            });
+        };
+        let Some(text) = gt_of(column, gt_index) else {
+            return Err(Error::VcfDataLine {
+                line,
+                place: VcfPlace::Individual(individual.clone()),
+                problem: format!(
+                    "`{column}` has no value where the FORMAT has GT",
+                    column = String::from_utf8_lossy(column),
+                ),
+            });
+        };
+        fill_row_genotype(genotype, text, num_alleles, line, individual)?;
+    }
+    let left_over = columns.count();
+    if left_over != 0 {
+        return Err(Error::VcfDataLine {
+            line,
+            place: VcfPlace::Line,
+            problem: format!(
+                "it has {left_over} columns more than the {count} individuals of the header",
+                count = individuals.len(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The bytes of the value of the key `GT` in the column of one individual,
+/// which is the `gt_index`th of the values the column holds, and `None`
+/// when the column has fewer values than that.
+fn gt_of(column: &[u8], gt_index: usize) -> Option<&[u8]> {
+    let mut value = column;
+    for _ in 0..gt_index {
+        let at = memchr::memchr(b':', value)?;
+        value = value.get(at.saturating_add(1)..)?;
+    }
+    match memchr::memchr(b':', value) {
+        Some(at) => value.get(..at),
+        None => Some(value),
+    }
+}
+
+/// The alleles of the genotype of one individual, into the `ploidy` alleles
+/// of that individual in the row of the block.
+///
+/// A genotype written as a single dot is a missing genotype of the ploidy of
+/// the file, and any other number of alleles than the ploidy is an error,
+/// which the length of `genotype` is what says: it holds the ploidy the
+/// reader was asked for.
+fn fill_row_genotype(
+    genotype: &mut [i8],
+    text: &[u8],
+    num_alleles: usize,
+    line: u64,
+    individual: &str,
+) -> Result<()> {
+    // VCF 4.4 lets a genotype start with its separator, `/0/1`.
+    let text = match text.first() {
+        Some(b'/' | b'|') => text.get(1..).unwrap_or_default(),
+        _ => text,
+    };
+    if text == MISSING_VALUE.as_bytes() {
+        for allele in genotype.iter_mut() {
+            *allele = MISSING_ALLELE;
+        }
+        return Ok(());
+    }
+    let mut written: usize = 0;
+    let mut alleles = genotype.iter_mut();
+    for allele_text in text.split(|byte| *byte == b'/' || *byte == b'|') {
+        let allele = parse_row_allele(allele_text, num_alleles, line, individual)?;
+        if let Some(place) = alleles.next() {
+            *place = allele;
+        }
+        // The alleles of a genotype are at most the bytes of its text, so
+        // the count does not reach the largest `usize`.
+        written = written.saturating_add(1);
+    }
+    if written != genotype.len() {
+        return Err(Error::VcfGenotypePloidy {
+            line,
+            individual: individual.to_string(),
+            found: written,
+            expected: genotype.len(),
+        });
+    }
+    Ok(())
+}
+
+/// One allele of a genotype, as bytes: a number of the alleles the variant
+/// declares, or [`MISSING_ALLELE`] for a dot.
+///
+/// The bytes are never turned into text, so a byte that is not text is a
+/// byte that is not a digit, and the message shows it as the replacement
+/// character.
+fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str) -> Result<i8> {
+    if text == MISSING_VALUE.as_bytes() {
+        return Ok(MISSING_ALLELE);
+    }
+    let wrong = |problem: String| Error::VcfDataLine {
+        line,
+        place: VcfPlace::Individual(individual.to_string()),
+        problem,
+    };
+    if text.is_empty() {
+        return Err(wrong("`` is not an allele number".to_string()));
+    }
+    let mut number: u32 = 0;
+    for byte in text {
+        let Some(digit) = char::from(*byte).to_digit(10) else {
+            return Err(wrong(format!(
+                "`{text}` is not an allele number, which is a run of digits",
+                text = String::from_utf8_lossy(text),
+            )));
+        };
+        // Once the number is above the largest allele the answer is the
+        // same whatever its other digits are, so it stops growing there and
+        // the two operations cannot overflow.
+        number = number.saturating_mul(10).saturating_add(digit);
+    }
+    let Ok(allele) = i8::try_from(number) else {
+        return Err(wrong(format!(
+            "the allele `{text}` is above {MAX_ALLELE}, the largest allele popnei holds",
+            text = String::from_utf8_lossy(text),
+        )));
+    };
+    // The allele is not negative, since its text was parsed as a `u32`.
+    if usize::from(allele.unsigned_abs()) >= num_alleles {
+        return Err(wrong(format!(
+            "the allele {number} is not one of the {num_alleles} alleles that REF and ALT declare"
+        )));
+    }
+    Ok(allele)
+}
+
 /// What the reader gives when a line of the source could not be read: the
 /// bytes that are not text are an error of that line, with its number,
 /// since a VCF is text and the number of the line is what a user needs, and
@@ -1308,7 +1790,8 @@ mod tests {
 
     use super::{
         BYTES_PER_BATCH, BatchLine, LINES_PER_BATCH, LineOutcome, MAX_PLOIDY, MISSING_VALUE,
-        ParseRules, VcfOptions, VcfPlace, VcfReader, parse_lines, parse_lines_one_by_one,
+        ParseRules, ParsedRow, RowRules, VcfOptions, VcfPlace, VcfReader, parse_lines,
+        parse_lines_one_by_one, parse_row,
     };
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
@@ -2930,5 +3413,590 @@ mod tests {
         assert_eq!(first.gts.len(), MAX_PLOIDY.saturating_mul(3));
         assert_eq!(first.gts.first(), Some(&0));
         assert_eq!(first.gts.last(), Some(&MISSING_ALLELE));
+    }
+
+    // The row parser: one data line, as bytes, into one row of a block.
+    // What it gives has to be what the tables of "How it is verified" of
+    // `docs/specs/io_vcf.md` have, and the errors of a data line the ones
+    // that section lists. The cases that need a reader, the header, the
+    // gzip, the lines that the FILTER leaves out and the blocks, are tested
+    // where the reader is.
+
+    /// The individuals of the header of the tests, by the names that the
+    /// error of an individual carries.
+    fn three_individuals() -> Vec<String> {
+        ["ind1", "ind2", "ind3"]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect()
+    }
+
+    /// A data line written with spaces where the file has tabs.
+    fn data_line(line: &str) -> String {
+        line.replace(' ', "\t")
+    }
+
+    /// What a slot of the genotypes of a row holds before the parse, which
+    /// is no allele a VCF can give: a test that compares the genotypes sees
+    /// a slot the parse did not write.
+    const NOT_WRITTEN: i8 = i8::MIN;
+
+    /// One data line parsed into a row, with its genotypes, as
+    /// [`parse_row`] gives them.
+    fn parse_the_bytes(
+        line: &[u8],
+        needs: Needs,
+        ploidy: usize,
+        individuals: &[String],
+    ) -> Result<Row> {
+        let rules = RowRules {
+            needs,
+            ploidy,
+            individuals,
+        };
+        let mut gts = if needs.contains(Needs::GTS) {
+            vec![NOT_WRITTEN; individuals.len().saturating_mul(ploidy)]
+        } else {
+            Vec::new()
+        };
+        let mut row = ParsedRow::default();
+        parse_row(line, FIRST_DATA_LINE, &rules, &mut gts, &mut row)?;
+        Ok(Row {
+            chrom: row.chrom.clone(),
+            pos: row.pos,
+            id: row.id.clone(),
+            alleles: row.alleles().to_vec(),
+            qual: if row.qual.is_nan() {
+                None
+            } else {
+                Some(row.qual)
+            },
+            gts,
+        })
+    }
+
+    /// One data line, written with spaces where the file has tabs, parsed
+    /// into a row for the three individuals of the header of the tests.
+    fn parse_the_line(line: &str, needs: Needs, ploidy: usize) -> Result<Row> {
+        parse_the_bytes(
+            data_line(line).as_bytes(),
+            needs,
+            ploidy,
+            &three_individuals(),
+        )
+    }
+
+    /// The row of a data line that the parser reads.
+    fn row_of_the_line(line: &str, needs: Needs, ploidy: usize) -> Row {
+        match parse_the_line(line, needs, ploidy) {
+            Ok(row) => row,
+            Err(error) => panic!("the line was refused: {error}"),
+        }
+    }
+
+    /// The error of a data line that the parser refuses.
+    fn error_of_the_line(line: &str, needs: Needs, ploidy: usize) -> Error {
+        match parse_the_line(line, needs, ploidy) {
+            Ok(row) => panic!("the line gave the row {row:?}"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn the_four_lines_of_cases_vcf_are_parsed_into_their_rows() {
+        let lines = [
+            "chr1 100 rs1 A T 29.5 PASS . GT:DP 0/0:3 0/1:4 1/1:5",
+            "chr1 200 . A T . q10 . GT:DP ./.:. 0|1:3 .|0:2",
+            "chr1 300 . A G,T 67 PASS . GT 1/2 2|1 2/2",
+            "chr1 400 . T . 47 PASS . GT 0/0 0/0 0/0",
+        ];
+        let rows: Vec<Row> = lines
+            .iter()
+            .map(|line| row_of_the_line(line, Needs::ALL, 2))
+            .collect();
+        assert_eq!(rows, the_rows_of_cases());
+    }
+
+    #[test]
+    fn the_two_lines_of_differences_vcf_are_parsed_into_their_rows() {
+        let lines = [
+            "chr2 50 ms1 GTC G,GTCT 50 PASS . GT:DP 0/1:3 0/2 .",
+            "chr2 60 . A <DEL>,* . PASS . GT /0/1 |2|2 0/0",
+        ];
+        let rows: Vec<Row> = lines
+            .iter()
+            .map(|line| row_of_the_line(line, Needs::ALL, 2))
+            .collect();
+        assert_eq!(rows, the_rows_of_differences());
+    }
+
+    #[test]
+    fn a_genotype_of_another_ploidy_is_refused_with_its_individual() {
+        for (line, genotype_ploidy) in [
+            ("chr1 100 . A T . PASS . GT 0/0 0/0/1/1 1/1", 4),
+            ("chr1 100 . A T . PASS . GT 0/0 1 1/1", 1),
+        ] {
+            let error = error_of_the_line(line, Needs::ALL, 2);
+            let Error::VcfGenotypePloidy {
+                line: number,
+                individual,
+                found,
+                expected,
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(
+                (number, individual.as_str(), found, expected),
+                (FIRST_DATA_LINE, "ind2", genotype_ploidy, 2)
+            );
+        }
+    }
+
+    #[test]
+    fn a_tetraploid_line_read_with_the_ploidy_four_gives_four_alleles() {
+        let row = row_of_the_line(
+            "chr1 100 . A T . PASS . GT 0/0/1/1 0/1/1/1 ./././.",
+            Needs::ALL,
+            4,
+        );
+        assert_eq!(
+            row.gts,
+            vec![
+                0,
+                0,
+                1,
+                1,
+                0,
+                1,
+                1,
+                1,
+                MISSING_ALLELE,
+                MISSING_ALLELE,
+                MISSING_ALLELE,
+                MISSING_ALLELE
+            ]
+        );
+    }
+
+    #[test]
+    fn an_allele_the_variant_does_not_declare_is_refused_with_the_genotypes_alone() {
+        // The alleles of ALT are counted for every line, so that the allele
+        // numbers are checked also when the texts of the alleles are not
+        // kept: this line declares one alternative allele and its third
+        // genotype carries the allele 2.
+        let error = error_of_the_line("chr1 100 . A T . PASS . GT 0/0 0/1 1/2", Needs::GTS, 2);
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (line, place),
+            (FIRST_DATA_LINE, VcfPlace::Individual("ind3".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_allele_above_the_largest_one_is_refused() {
+        let mut alternatives = String::from("T");
+        for _ in 1..200 {
+            alternatives.push_str(",T");
+        }
+        let line = format!("chr1 100 . A {alternatives} . PASS . GT 0/0 0/1 1/128");
+        let error = error_of_the_line(&line, Needs::ALL, 2);
+        let Error::VcfDataLine {
+            line: number,
+            place,
+            problem,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (number, place),
+            (FIRST_DATA_LINE, VcfPlace::Individual("ind3".to_string()))
+        );
+        assert!(problem.contains("127"), "{problem}");
+    }
+
+    #[test]
+    fn a_line_with_another_number_of_columns_of_individuals_is_refused() {
+        for (line, count) in [
+            ("chr1 100 . A T . PASS . GT 0/0 0/1", "2"),
+            ("chr1 100 . A T . PASS . GT 0/0 0/1 1/1 0/0", "1"),
+        ] {
+            let error = error_of_the_line(line, Needs::ALL, 2);
+            let Error::VcfDataLine {
+                line: number,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!((number, place), (FIRST_DATA_LINE, VcfPlace::Line));
+            assert!(problem.contains(count), "{problem}");
+            assert!(problem.contains('3'), "{problem}");
+        }
+    }
+
+    #[test]
+    fn a_format_with_no_gt_is_refused_in_a_row() {
+        let error = error_of_the_line("chr1 100 . A T . PASS . DP 3 4 5", Needs::ALL, 2);
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("FORMAT")));
+    }
+
+    #[test]
+    fn a_column_of_an_individual_with_no_value_where_the_format_has_gt_is_refused() {
+        let error = error_of_the_line("chr1 100 . A T . PASS . DP:GT 3:0/1 4 5:1/1", Needs::ALL, 2);
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (line, place),
+            (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_position_that_is_not_a_number_is_refused_only_when_the_position_was_asked_for() {
+        let line = "chr1 x . A T . PASS . GT 0/0 0/1 1/1";
+        let error = error_of_the_line(line, Needs::ALL, 2);
+        let Error::VcfDataLine {
+            line: number,
+            place,
+            ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((number, place), (FIRST_DATA_LINE, VcfPlace::Column("POS")));
+
+        // A column that is not parsed is not checked.
+        let row = row_of_the_line(line, Needs::GTS, 2);
+        assert_eq!(row.pos, 0);
+        assert_eq!(row.gts, vec![0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_quality_that_is_not_a_number_is_refused_only_when_the_quality_was_asked_for() {
+        let line = "chr1 100 . A T x PASS . GT 0/0 0/1 1/1";
+        let error = error_of_the_line(line, Needs::ALL, 2);
+        let Error::VcfDataLine {
+            line: number,
+            place,
+            ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((number, place), (FIRST_DATA_LINE, VcfPlace::Column("QUAL")));
+
+        let row = row_of_the_line(line, Needs::GTS, 2);
+        assert_eq!(row.qual, None);
+    }
+
+    #[test]
+    fn an_allele_with_no_letter_in_it_is_refused_in_ref_and_in_alt() {
+        for (line, column) in [
+            ("chr1 100 . A T, . PASS . GT 0/0 0/1 1/1", "ALT"),
+            ("chr1 100 .  T . PASS . GT 0/0 0/1 1/1", "REF"),
+        ] {
+            let error = error_of_the_line(line, Needs::ALL, 2);
+            let Error::VcfDataLine {
+                line: number,
+                place,
+                ..
+            } = error
+            else {
+                panic!("the error is {error}");
+            };
+            assert_eq!((number, place), (FIRST_DATA_LINE, VcfPlace::Column(column)));
+        }
+    }
+
+    #[test]
+    fn a_line_whose_bytes_are_not_valid_utf8_is_refused() {
+        // The byte that is not text is in the REF column, as it is in the
+        // test of the reader over the same case.
+        let line = b"chr1\t200\t.\t\xffA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1";
+        let error = match parse_the_bytes(line, Needs::ALL, 2, &three_individuals()) {
+            Ok(row) => panic!("the line gave the row {row:?}"),
+            Err(error) => error,
+        };
+        let Error::VcfDataLine {
+            line: number,
+            place,
+            problem,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((number, place), (FIRST_DATA_LINE, VcfPlace::Line));
+        assert!(problem.contains("UTF-8"), "{problem}");
+    }
+
+    /// The columns of the individuals are read as bytes and are never text,
+    /// which "Speed" of `docs/specs/io_vcf.md` asks for, so a byte that is
+    /// not text in one of them is not found as bytes that are not UTF-8: it
+    /// is a byte that is not a digit where an allele number is, and the
+    /// error names the individual whose column it is in. The UTF-8 of the
+    /// line is checked over the nine first columns, which are the ones
+    /// whose text is kept.
+    #[test]
+    fn a_byte_that_is_not_text_in_the_column_of_an_individual_is_not_an_allele_number() {
+        let line = b"chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/\xff\t1/1";
+        let error = match parse_the_bytes(line, Needs::ALL, 2, &three_individuals()) {
+            Ok(row) => panic!("the line gave the row {row:?}"),
+            Err(error) => error,
+        };
+        let Error::VcfDataLine {
+            line: number,
+            place,
+            problem,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (number, place),
+            (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string()))
+        );
+        assert!(problem.contains("digits"), "{problem}");
+    }
+
+    #[test]
+    fn a_gt_that_is_not_the_first_key_of_the_format_is_read_into_a_row() {
+        let row = row_of_the_line(
+            "chr1 100 . A T . PASS . DP:GT 3:0/1 4:1/1 5:./.",
+            Needs::ALL,
+            2,
+        );
+        assert_eq!(row.gts, vec![0, 1, 1, 1, MISSING_ALLELE, MISSING_ALLELE]);
+    }
+
+    #[test]
+    fn a_line_that_ends_in_an_end_of_line_is_read_as_one_that_does_not() {
+        let line = data_line("chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1");
+        let individuals = three_individuals();
+        let bare = parse_the_bytes(line.as_bytes(), Needs::ALL, 2, &individuals).unwrap();
+        for ending in ["\n", "\r\n"] {
+            let ended = format!("{line}{ending}");
+            let row = parse_the_bytes(ended.as_bytes(), Needs::ALL, 2, &individuals).unwrap();
+            assert_eq!(row, bare, "the line that ends in {ending:?}");
+        }
+        assert_eq!(bare.gts, vec![0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_line_of_seven_columns_is_refused_when_the_genotypes_are_not_asked_for() {
+        let error = error_of_the_line("chr1 100 . A T . PASS", Needs::ID | Needs::ALLELES, 2);
+        let Error::VcfDataLine {
+            line,
+            place,
+            problem,
+            ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Line));
+        assert!(problem.contains("INFO"), "{problem}");
+    }
+
+    #[test]
+    fn a_format_of_dp_is_refused_when_the_genotypes_are_not_asked_for() {
+        let error = error_of_the_line(
+            "chr1 100 . A T . PASS . DP 3 4 5",
+            Needs::ID | Needs::ALLELES,
+            2,
+        );
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("FORMAT")));
+    }
+
+    #[test]
+    fn a_line_with_no_column_of_an_individual_is_refused() {
+        let error = error_of_the_line("chr1 100 . A T . PASS . GT", Needs::ID, 2);
+        let Error::VcfDataLine {
+            line,
+            place,
+            problem,
+            ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Line));
+        assert!(problem.contains("individual"), "{problem}");
+    }
+
+    #[test]
+    fn the_columns_of_the_individuals_are_not_read_when_the_genotypes_are_not_asked_for() {
+        // A genotype of another ploidy and a line with the columns of two
+        // individuals under a header with three: both are read, and `gts`
+        // is empty.
+        for line in [
+            "chr1 100 rs1 A T . PASS . GT 0/0/1/1 0/1 1/1",
+            "chr1 100 rs1 A T . PASS . GT 0/0 0/1",
+        ] {
+            let row = row_of_the_line(line, Needs::ID | Needs::ALLELES, 2);
+            assert_eq!(row.id, "rs1");
+            assert_eq!(row.alleles, ["A", "T"]);
+            assert!(row.gts.is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn only_the_fields_that_were_asked_for_are_parsed() {
+        let line = "chr1 100 rs1 A T 29.5 PASS . GT 0/0 0/1 1/1";
+
+        let genotypes_alone = row_of_the_line(line, Needs::GTS, 2);
+        assert_eq!(genotypes_alone.gts, vec![0, 0, 0, 1, 1, 1]);
+        assert_eq!(genotypes_alone.chrom, "");
+        assert_eq!(genotypes_alone.pos, 0);
+        assert_eq!(genotypes_alone.id, "");
+        assert!(genotypes_alone.alleles.is_empty());
+        assert_eq!(genotypes_alone.qual, None);
+
+        let texts = row_of_the_line(line, Needs::ID | Needs::ALLELES, 2);
+        assert!(texts.gts.is_empty());
+        assert_eq!(texts.id, "rs1");
+        assert_eq!(texts.alleles, ["A", "T"]);
+        assert_eq!(texts.chrom, "");
+        assert_eq!(texts.qual, None);
+
+        let places = row_of_the_line(line, Needs::CHROM_POS | Needs::QUAL, 2);
+        assert_eq!(places.chrom, "chr1");
+        assert_eq!(places.pos, 100);
+        assert_eq!(places.qual, Some(29.5));
+        assert_eq!(places.id, "");
+    }
+
+    #[test]
+    fn an_allele_that_no_genotype_carries_is_read() {
+        let row = row_of_the_line("chr1 100 . A G,T . PASS . GT 0/0 0/1 1/1", Needs::ALL, 2);
+        assert_eq!(row.alleles, ["A", "G", "T"]);
+        assert_eq!(row.gts, vec![0, 0, 0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn a_genotype_written_as_a_dot_is_missing_in_every_allele_of_the_ploidy() {
+        let row = row_of_the_line(
+            "chr1 100 . A T . PASS . GT . 0/1/1/1 ./././.",
+            Needs::GTS,
+            4,
+        );
+        assert_eq!(row.gts.get(..4), Some([MISSING_ALLELE; 4].as_slice()));
+        // A genotype of a dot for each allele is the same genotype written
+        // out, and one of two dots under the ploidy 4 is of another ploidy.
+        let error = error_of_the_line("chr1 100 . A T . PASS . GT . ./. 0/0/0/0", Needs::GTS, 4);
+        let Error::VcfGenotypePloidy { individual, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(individual, "ind2");
+    }
+
+    /// The row the parser is given holds one allele for each individual of
+    /// the header times the ploidy. A caller that gives it another number
+    /// has a defect, and its genotypes would be read one at the place of
+    /// another, so the parse refuses it instead of filling what it can.
+    #[test]
+    fn a_row_of_genotypes_that_is_not_of_the_size_of_the_line_is_refused() {
+        let individuals = three_individuals();
+        let rules = RowRules {
+            needs: Needs::GTS,
+            ploidy: 2,
+            individuals: &individuals,
+        };
+        let line = data_line("chr1 100 . A T . PASS . GT 0/0 0/1 1/1");
+        let mut gts = vec![NOT_WRITTEN; 4];
+        let mut row = ParsedRow::default();
+        let error =
+            parse_row(line.as_bytes(), FIRST_DATA_LINE, &rules, &mut gts, &mut row).unwrap_err();
+        let Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((array, found, expected), ("gts", 4, 6));
+    }
+
+    /// Every data line of the reference files, parsed by the row parser and
+    /// by the parser that fills one `Variant`, gives the same variant. A
+    /// wrong genotype is silent everywhere else, and the two parsers were
+    /// written from the same spec by different hands.
+    ///
+    /// It goes with the parser of one variant in work package 3 of
+    /// `docs/plans/block-readers.md`, and what guards the row parser
+    /// afterwards is the comparison of the reader with bcftools.
+    #[test]
+    fn the_row_parser_reads_the_reference_files_as_the_parser_of_one_variant_does() {
+        for name in ["cases.vcf", "differences.vcf", "many.vcf"] {
+            let text = std::fs::read_to_string(reference_vcf(name))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let chrom_line = text
+                .lines()
+                .find(|line| line.starts_with("#CHROM"))
+                .unwrap_or_else(|| panic!("{name} has no #CHROM line"));
+            let individuals = super::individuals_of(chrom_line, 1)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            let line_rules = ParseRules {
+                options: options(2, false),
+                needs: Needs::ALL,
+                individuals: &individuals,
+                panic_at_line: None,
+            };
+            let row_rules = RowRules {
+                needs: Needs::ALL,
+                ploidy: 2,
+                individuals: &individuals,
+            };
+            let mut data_lines = 0u64;
+            for (index, line) in text.lines().enumerate() {
+                if line.starts_with('#') {
+                    continue;
+                }
+                let number = u64::try_from(index).unwrap().saturating_add(1);
+                data_lines = data_lines.saturating_add(1);
+
+                let mut var = Variant::new();
+                let mut chrom_name = String::new();
+                let mut spare_alleles = Vec::new();
+                let gave = super::parse_data_line(
+                    line,
+                    number,
+                    &line_rules,
+                    &mut var,
+                    &mut chrom_name,
+                    &mut spare_alleles,
+                )
+                .unwrap_or_else(|error| panic!("{name} line {number}: {error}"));
+                assert!(gave, "{name} line {number} gave no variant");
+
+                let mut gts = vec![NOT_WRITTEN; individuals.len().saturating_mul(2)];
+                let mut row = ParsedRow::default();
+                super::parse_row(line.as_bytes(), number, &row_rules, &mut gts, &mut row)
+                    .unwrap_or_else(|error| panic!("{name} line {number}: {error}"));
+
+                assert_eq!(row.chrom, chrom_name, "{name} line {number}");
+                assert_eq!(row.pos, var.pos, "{name} line {number}");
+                assert_eq!(row.id, var.id, "{name} line {number}");
+                assert_eq!(row.alleles(), var.alleles, "{name} line {number}");
+                assert_eq!(gts, var.gts, "{name} line {number}");
+                match var.qual {
+                    Some(qual) => assert_eq!(row.qual.to_bits(), qual.to_bits()),
+                    None => assert!(row.qual.is_nan(), "{name} line {number}"),
+                }
+            }
+            assert!(data_lines > 0, "{name} has no data line");
+        }
     }
 }

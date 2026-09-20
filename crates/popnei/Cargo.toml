@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 flate2.workspace = true
+memchr.workspace = true
 thiserror.workspace = true
 
 # The VCF reader parses the lines of a batch on the threads of rayon, and

@@ -32,6 +32,15 @@ flate2 = "1"
 # code is behind the same cfg, with the serial version beside it. It is
 # pure Rust and pulls in crossbeam and either, all of them pure Rust too.
 rayon = "1"
+# The search of a byte in the bytes of a line of a VCF, which the row
+# parser of the VCF reader does for every column of every individual: the
+# tab that ends a column and the colon that ends the genotype in it. It
+# reads the bytes a machine word at a time, and by hand the same search is
+# a loop over one byte after another. It is pure Rust, it has no
+# dependency, and its use of the wide instructions of a machine is behind
+# a check of the target at compile time, so it builds for the two wasm
+# targets.
+memchr = "2"
 # The error of the core crate. It writes the Display and the
 # std::error::Error of the enum from the message on each variant, so that a
 # case added by a later module cannot be a variant whose message was
