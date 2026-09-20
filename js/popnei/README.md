@@ -3,12 +3,15 @@
 The TypeScript package of popnei, a population genetics library whose
 calculations are written in Rust: the core crate compiled to WebAssembly,
 the code that a browser or node calls it through, and the functions and
-the result objects an application uses. The functions that open a dataset
-and give its variants are being written; what the package exports today is
-`init`, which loads the WebAssembly, and `version`, the version of the
-core crate. Section 11 of `docs/architecture.md` has the design, and
+the result objects an application uses. What the package exports today is
+`init`, which loads the WebAssembly, `version`, the version of the core
+crate, and `openVcf`, which reads the header of a VCF held as bytes and
+gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
+by block. Section 11 of `docs/architecture.md` has the design,
 `crates/popnei-js` is the binding crate, the Rust that is compiled to
-WebAssembly and that holds no calculation of its own.
+WebAssembly and that holds no calculation of its own, and
+`docs/specs/io_vcf.md`, `docs/specs/block.md` and `docs/specs/variant.md`
+say what the three give.
 
 ## Building it
 
@@ -34,6 +37,41 @@ differ the command line stops and names both. A new command line,
 `cargo install wasm-bindgen-cli`, needs that line of the workspace
 manifest changed to its version.
 
+## What crosses between Rust and JavaScript
+
+What the binding crate exports and what the generated JavaScript and its
+declarations then hold, as it was found with wasm-bindgen 0.2.128:
+
+- The names are the Rust ones. A method `next_block` is `next_block` in
+  JavaScript, so the camelCase of the API is the package's doing and not
+  the generator's.
+- `Vec<i8>` arrives as an `Int8Array`, `Vec<f64>` as a `Float64Array`,
+  `Vec<u32>` as a `Uint32Array` and `Vec<String>` as an array of strings.
+  Each of them is copied out of the memory of the WebAssembly, and so is a
+  `Uint8Array` that goes the other way, into it.
+- `Option<T>` is `T | undefined`, and `undefined` is what the package turns
+  into the `null` that the specs give the columns a block does not hold.
+- A `Vec<Vec<String>>` does not compile: "the trait bound `String:
+  ErasableGeneric` is not satisfied". An array of arrays needs the `js-sys`
+  crate to build it, which this crate does not depend on, so the alleles of
+  a block cross as one array of texts with the number of alleles of each
+  variant beside it, which is how the core holds them, and the package cuts
+  the one with the other.
+- A `Result<T, E>` is thrown when `E` is `Into<JsValue>`, and
+  `JsError::new(message)` is the JavaScript `Error` a user catches. The
+  orphan rule keeps `From<popnei::Error> for JsValue` out of this crate, so
+  the errors of the core go through a type of the crate, as they do in the
+  Python binding crate.
+- Every exported struct gets a `free()` and a `[Symbol.dispose]()` in its
+  declaration, and the generated JavaScript registers each object in a
+  `FinalizationRegistry`, which frees one that was dropped without a
+  `free()` when the garbage collector reaches it.
+- `#[wasm_bindgen]` on a `pub const` does not compile: "will not work on
+  constants unless you are defining a
+  `#[wasm_bindgen(typescript_custom_section)]`". So the defaults of the
+  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md`, cross as
+  two functions that return the constants of the core.
+
 ## The tests
 
     npm test
@@ -41,12 +79,16 @@ manifest changed to its version.
 It runs the TypeScript compiler over `test/` and then the test runner of
 node itself, `node --test`, once the build has left `dist/` and `wasm/` in
 place. The tests import the name of the package, `popnei`, which node
-resolves to the built entry point of node, and assert that the version the
-package gives and the version in `package.json` are both the one of
-`[workspace.package]` of the `Cargo.toml` of the repository, that `init`
-loads the WebAssembly once, that a function called before `init` was
-awaited throws an `Error` that says so, and that the entry point of a page
-answers with the WebAssembly it fetches.
+resolves to the built entry point of node, and read the reference VCFs of
+`tests/reference/vcf/` at the root of the repository, the files the Python
+tests read. They assert that the version the package gives and the version
+in `package.json` are both the one of `[workspace.package]` of the
+`Cargo.toml` of the repository, that `init` loads the WebAssembly once,
+that a function called before `init` was awaited throws an `Error` that
+says so, that the entry point of a page answers with the WebAssembly it
+fetches and reads a VCF through it, and that the blocks of `cases.vcf` and
+`differences.vcf` hold the variants of the tables of
+`docs/specs/io_vcf.md`, with the default and with `onlyPassed` false.
 
 ## node and a page, from one build
 
@@ -101,15 +143,59 @@ importing from there instead. Neither has been tried here:
 ## Using it
 
 ```ts
-import { init, version } from "popnei";
+import { init, openVcf, version } from "popnei";
+import { readFile } from "node:fs/promises";
 
 await init();
 console.log(version());
+
+const variants = openVcf(new Uint8Array(await readFile("cases.vcf")), {
+  ploidy: 2,
+  onlyPassed: true,
+});
+console.log(variants.individuals, variants.numIndividuals, variants.ploidy);
+try {
+  for (const block of variants.iterBlocks({ fields: ["chrom", "pos"] })) {
+    // block.gts is an Int8Array of numVars x individuals x ploidy alleles,
+    // variant after variant, with -1 for an allele that was not called.
+    console.log(block.numVars, block.chrom, block.pos);
+  }
+} finally {
+  variants.free();
+}
 ```
 
 `init` has to be awaited before any other function of the package, which
 throw an `Error` that says so until it has. It loads the WebAssembly once:
 a second call gives the same promise as the first.
+
+`openVcf` takes the bytes of the file, plain or gzipped, and reads its
+header, so bytes that are not a VCF throw there and not at the first block.
+A `File` that a user picked in a page is read inside a web worker, which
+section 11 of `docs/architecture.md` has and this package does not do yet.
+Every call of `iterBlocks` reads the bytes again from their start, so the
+same `Variants` can be given to one calculation after another.
+
+## What has to be freed
+
+The objects of the core live in the memory of the WebAssembly, which the
+garbage collector of JavaScript does not see, so they are given back by
+hand:
+
+- The `Variants` of `openVcf` holds the bytes of the file until its
+  `free()` is called. Its names and its ploidy are in JavaScript and answer
+  after that; `iterBlocks` throws.
+- One pass over the variants holds the reader and the block being built.
+  The iterator of `iterBlocks` gives it back when the iteration ends, when
+  it is left with a `break` and when a block throws. An iterator that is
+  never iterated keeps it until the garbage collector reaches it:
+  wasm-bindgen registers what it generates in a `FinalizationRegistry`,
+  which frees it at a moment nobody chooses.
+- Each block is freed as soon as its columns are copied out, which is
+  before it reaches the loop of the user. What the user holds are the
+  copies: an `Int8Array` of genotypes, a `Float64Array` of positions and
+  arrays of strings, none of them a view into the memory of the
+  WebAssembly, which stops being valid when that memory grows.
 
 ## What it was built with
 

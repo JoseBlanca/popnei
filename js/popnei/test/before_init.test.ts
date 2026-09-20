@@ -10,10 +10,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { version } from "popnei";
+import { openVcf, version } from "popnei";
+
+import { vcfOf } from "./reference.ts";
 
 test("version throws before init was awaited", () => {
   assert.throws(() => version(), {
+    name: "Error",
+    message: /await init\(\)/,
+  });
+});
+
+test("openVcf throws before init was awaited", () => {
+  assert.throws(() => openVcf(vcfOf([])), {
     name: "Error",
     message: /await init\(\)/,
   });

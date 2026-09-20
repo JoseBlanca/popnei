@@ -6,7 +6,8 @@
  * `node.ts` and `web.ts` differ only in where they get the bytes of the
  * WebAssembly from, and each of them calls `wasmIsLoaded` when it has
  * them. Neither the functions nor the check are exported to a user
- * directly: both entry points re-export what a user calls.
+ * directly: both entry points re-export what a user calls, and every
+ * function of the package that calls into the core calls the check first.
  */
 
 import { version as versionOfTheCoreCrate } from "../wasm/popnei.js";
@@ -27,7 +28,7 @@ export function wasmIsLoaded(): void {
  *
  * @throws {Error} When `init` has not been awaited.
  */
-function theWasmHasToBeLoaded(): void {
+export function theWasmHasToBeLoaded(): void {
   if (!theWasmIsLoaded) {
     throw new Error(
       "popnei: await init() before calling any other function of the package",

@@ -19,6 +19,9 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+pub mod errors;
+pub mod vcf;
+
 /// The version of the core crate, `major.minor.patch`.
 ///
 /// The TypeScript package publishes it as its own `version`, so that a

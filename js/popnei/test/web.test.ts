@@ -16,8 +16,9 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import { versionOfTheCoreCrate } from "./manifest.ts";
+import { referenceVcf } from "./reference.ts";
 
-import { init, version } from "../dist/web.js";
+import { init, openVcf, version } from "../dist/web.js";
 
 globalThis.fetch = (async (address: URL | string) => {
   const wasm = await readFile(new URL(address));
@@ -29,4 +30,19 @@ globalThis.fetch = (async (address: URL | string) => {
 test("the entry point of a page fetches the WebAssembly and answers", async () => {
   await init();
   assert.equal(version(), await versionOfTheCoreCrate());
+});
+
+test("the entry point of a page reads a VCF and gives its blocks", async () => {
+  await init();
+  const variants = openVcf(await referenceVcf("cases.vcf"));
+  assert.deepEqual(variants.individuals, ["ind1", "ind2", "ind3"]);
+  const [block] = [...variants.iterBlocks()];
+  assert.ok(block !== undefined);
+  assert.deepEqual(block.chrom, ["chr1", "chr1", "chr1"]);
+  assert.deepEqual([...(block.pos ?? [])], [100, 300, 400]);
+  assert.deepEqual(
+    [...block.gts],
+    [0, 0, 0, 1, 1, 1, 1, 2, 2, 1, 2, 2, 0, 0, 0, 0, 0, 0],
+  );
+  variants.free();
 });
