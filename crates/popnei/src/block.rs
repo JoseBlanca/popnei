@@ -2516,6 +2516,11 @@ mod tests {
         assert!(first.gts().is_empty());
         assert_eq!(first.pos(), Some(100));
         assert_eq!(block.variants().count(), 4);
+        // The last variant of the block and the one after it, on a block
+        // whose views have no genotypes: there the number of the variant
+        // is the only bound there is.
+        assert!(block.variant(3).is_some());
+        assert!(block.variant(4).is_none());
     }
 
     /// The genotypes of a block are read as variants x individuals x
@@ -2545,11 +2550,89 @@ mod tests {
         assert!(message.contains("23"), "{message}");
         assert!(message.contains("24"), "{message}");
 
-        // A column of another size than the variants of the block.
-        let mut block = cases_block(&[0, 1, 2, 3]);
-        block.pos.as_mut().expect("the positions").pop();
-        let error = match block.check() {
+        // Each of the five columns, one entry short of the variants of the
+        // block: the error names the column that is short.
+        for array in FIELD_NAMES {
+            let mut block = cases_block(&[0, 1, 2, 3]);
+            match array {
+                "chrom" => drop(block.chrom.as_mut().expect("the chromosomes").pop()),
+                "pos" => drop(block.pos.as_mut().expect("the positions").pop()),
+                "id" => drop(block.id.as_mut().expect("the ids").pop()),
+                // The column of the alleles counts its variants itself, so
+                // one of three variants takes the place of one of four.
+                "alleles" => block.alleles = cases_block(&[0, 1, 2]).alleles,
+                _ => drop(block.qual.as_mut().expect("the qualities").pop()),
+            }
+            let error = match block.check() {
+                Ok(()) => panic!("a block whose `{array}` is short passed the check"),
+                Err(error) => error,
+            };
+            let Error::BlockArrayOfAnotherSize {
+                array: named,
+                found,
+                expected,
+            } = error
+            else {
+                panic!("the error of a short `{array}` is {error}");
+            };
+            assert_eq!((named, found, expected), (array, 3, 4));
+        }
+    }
+
+    /// The arrays of a block are counted in variants, and a block of more
+    /// variants than a `usize` holds genotypes for is the error of a block
+    /// too large and not an overflow.
+    #[test]
+    fn a_block_of_more_genotypes_than_a_usize_holds_fails_check() {
+        let of_the_size = |num_vars: usize, num_individuals: usize| Block {
+            num_vars,
+            num_individuals,
+            ploidy: 2,
+            gts: Vec::new(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+
+        // The individuals times the ploidy, the alleles of one variant.
+        let error = match of_the_size(1, usize::MAX).check() {
             Ok(()) => panic!("the block passed the check"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_individuals, ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(num_individuals, usize::MAX);
+
+        // And that times the variants of the block.
+        let error = match of_the_size(usize::MAX, 2).check() {
+            Ok(()) => panic!("the block passed the check"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_vars_per_block, ..
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(num_vars_per_block, usize::MAX);
+    }
+
+    /// `retain_vars` moves the rows by their place in the arrays, so it
+    /// checks the block before it moves one: a block whose arrays are not
+    /// of its size would be compacted with every row after the fault at
+    /// the place of another.
+    #[test]
+    fn retain_vars_refuses_a_block_whose_arrays_are_not_of_its_size() {
+        let mut block = cases_block(&[0, 1, 2, 3]);
+        block.gts.pop();
+        let error = match block.retain_vars(&[true, false, true, true]) {
+            Ok(()) => panic!("the block was compacted"),
             Err(error) => error,
         };
         let Error::BlockArrayOfAnotherSize {
@@ -2560,7 +2643,13 @@ mod tests {
         else {
             panic!("the error is {error}");
         };
-        assert_eq!((array, found, expected), ("pos", 3, 4));
+        assert_eq!((array, found, expected), ("gts", 23, 24));
+
+        // The block is left as it was: its four variants and the allele it
+        // was short.
+        assert_eq!(block.num_vars, 4);
+        assert_eq!(block.gts.len(), 23);
+        assert_eq!(block.pos.as_ref().map(Vec::len), Some(4));
     }
 
     /// A filter keeps some variants of a block and the block is compacted
@@ -2595,6 +2684,9 @@ mod tests {
 
         assert_eq!(block.num_vars, 0);
         block.check().expect("the block is of its size");
+        // A block of no variants holds every field it was built with, the
+        // genotypes among them, although its `gts` is empty.
+        assert_eq!(block.fields(), Needs::ALL);
         assert!(block.gts.is_empty());
         assert_eq!(block.chrom.as_deref(), Some([].as_slice()));
         assert_eq!(block.pos.as_deref(), Some([].as_slice()));
@@ -2618,6 +2710,21 @@ mod tests {
             panic!("the error is {error}");
         };
         assert_eq!((found, num_vars), (3, 4));
+        // A user who gets this reads both counts.
+        let message = error.to_string();
+        assert!(message.contains('3'), "{message}");
+        assert!(message.contains('4'), "{message}");
+
+        // And five values for the same four variants, which is the other
+        // way for a filter to be wrong.
+        let error = match block.retain_vars(&[true; 5]) {
+            Ok(()) => panic!("the block kept 5 values for 4 variants"),
+            Err(error) => error,
+        };
+        let Error::KeepOfAnotherSize { found, num_vars } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((found, num_vars), (5, 4));
 
         assert_eq!(block.num_vars, 4);
         let views: Vec<VariantRef<'_>> = block.variants().collect();
@@ -3045,6 +3152,75 @@ mod tests {
         assert_eq!(reblock.reader.calls, 1);
     }
 
+    /// The chromosome and the position are one field and two columns, so
+    /// `fields` says the same of a block that holds the chromosomes alone
+    /// and of one that holds the positions alone: neither field. Their
+    /// rows are still not rows that can be joined.
+    #[test]
+    fn reblock_does_not_join_blocks_whose_columns_differ_in_the_same_fields() {
+        let mut with_the_chromosomes = cases_block(&[0]);
+        with_the_chromosomes.pos = None;
+        let mut with_the_positions = cases_block(&[1]);
+        with_the_positions.chrom = None;
+        assert_eq!(
+            with_the_chromosomes.fields(),
+            with_the_positions.fields(),
+            "the two blocks hold the same fields"
+        );
+
+        let blocks = vec![with_the_chromosomes, with_the_positions];
+        let mut reblock = Reblock::new(GivenBlocks::of(blocks), Some(2)).expect("the reblock");
+        let given = blocks_given(&mut reblock).expect("the blocks");
+
+        assert_eq!(num_vars_of(&given), [1, 1]);
+        let first = given[0].variant(0).expect("the variant");
+        assert_eq!((first.chrom(), first.pos()), (Some(0), None));
+        let second = given[1].variant(0).expect("the variant");
+        assert_eq!((second.chrom(), second.pos()), (None, Some(200)));
+    }
+
+    /// A block of more genotypes than this machine addresses is refused
+    /// where the `Reblock` is built and before a block is read, on a
+    /// machine of 32 bit addresses as on one of 64.
+    #[test]
+    fn a_reblock_of_more_genotypes_than_a_usize_holds_is_refused_when_it_is_built() {
+        // The three individuals of the ploidy 2 of the reader are six
+        // alleles in every variant, so every size above a sixth of
+        // `usize::MAX` is one.
+        let error = match Reblock::new(GivenBlocks::of(Vec::new()), Some(usize::MAX)) {
+            Ok(reblock) => panic!("the reblock was built: {reblock:?}"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (num_vars_per_block, num_individuals, ploidy),
+            (usize::MAX, 3, 2)
+        );
+    }
+
+    /// Both binding crates hold their reader boxed, so what is asked of
+    /// the box reaches the reader inside it.
+    #[test]
+    fn what_is_asked_of_a_boxed_reader_reaches_the_reader_inside_it() {
+        let mut reader = Box::new(GivenBlocks::of(vec![cases_block(&[0])]));
+        BlockReader::set_needs(&mut reader, Needs::GTS | Needs::QUAL);
+        assert_eq!(reader.needs, Needs::GTS | Needs::QUAL);
+        assert_eq!(BlockReader::individuals(&reader), ["ind1", "ind2", "ind3"]);
+        assert_eq!(BlockReader::ploidy(&reader), 2);
+        assert_eq!(BlockReader::chroms(&reader).name(0), Some("chr1"));
+        let block = BlockReader::next_block(&mut reader)
+            .expect("the block")
+            .expect("a block");
+        assert_eq!(block.num_vars, 1);
+    }
+
     /// A block holds one variant at least, so a reader that was asked for
     /// blocks of 0 variants is refused where it is built.
     #[test]
@@ -3074,6 +3250,45 @@ mod tests {
             Ok(blocks) => blocks,
             Err(error) => panic!("{name}: the reader of blocks was not built: {error}"),
         }
+    }
+
+    /// An error loses the block it happened in, and `reblock` loses with
+    /// it the variants it was keeping for its next block. It is the case
+    /// of "What a reader of the rules would not guess" of
+    /// `docs/specs/block.md`, over a VCF written here.
+    #[test]
+    fn a_wrong_line_after_two_hundred_and_fifty_variants_leaves_twenty_eight_blocks_of_seven() {
+        let mut lines: Vec<String> = (1..=250)
+            .map(|variant| format!("chr1 {variant}00 rs{variant} A T . PASS . GT 0/0 0/1 1/1"))
+            .collect();
+        // The genotype of the 251st variant is of the ploidy 4 under a
+        // reader of the ploidy 2.
+        lines.push("chr1 25100 rs251 A T . PASS . GT 0/0 0/1 0/0/1/1".to_string());
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let vcf = vcf_of(&lines);
+
+        let reader = VcfReader::new(Cursor::new(vcf.into_bytes()), VcfOptions::default())
+            .expect("the reader");
+        let source = CollectedBlocks::new(reader, Needs::CHROM_POS, Some(100)).expect("the source");
+        let mut reblock = Reblock::new(source, Some(7)).expect("the reblock");
+
+        let mut blocks = Vec::new();
+        let error = loop {
+            match reblock.next_block() {
+                Ok(Some(block)) => blocks.push(block),
+                Ok(None) => panic!("the reblock ended with no error"),
+                Err(error) => break error,
+            }
+        };
+        // The two blocks of 100 variants that the source gave whole are 28
+        // blocks of 7, and the 4 variants that were left over are lost
+        // with the error.
+        assert_eq!(num_vars_of(&blocks), [7; 28]);
+        assert!(
+            matches!(error, Error::VcfGenotypePloidy { .. }),
+            "the error is {error}"
+        );
+        assert!(reblock.next_block().expect("no block").is_none());
     }
 
     /// `reblock` over a reader of a real file: the 500 variants of
