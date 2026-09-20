@@ -12,6 +12,11 @@ edition = "2024"
 # and passes the checks.
 rust-version = "1.98"
 repository = "https://github.com/JoseBlanca/popnei"
+# The three crates, the Python package and the TypeScript package are under
+# the MIT license, which the owner chose on 20 September 2026. The text is
+# in LICENSE at the root of the repository, and this line is the SPDX
+# identifier that cargo, crates.io and a tool that reads a manifest look at.
+license = "MIT"
 
 [workspace.dependencies]
 popnei = { path = "crates/popnei", version = "0.1.0" }

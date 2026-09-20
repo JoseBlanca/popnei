@@ -227,8 +227,9 @@ calculation. `ruff format` and `ruff check` clean.
   the spec with how it was got. Until then the test asserts only what the
   spec states, that a value exists or does not.
 - The cargo tests cover the core on their own. The pytest tests run pyNei
-  and popnei on the same input where they overlap, pyNei being a path
-  dependency, and compare as the spec says: exactly for counts and sets of
+  and popnei on the same input where they overlap, pyNei being a
+  development dependency at the commit that `pyproject.toml` names, and
+  compare as the spec says: exactly for counts and sets of
   variants, within the spec's tolerance for floats.
 - Every field and every parameter takes, in some test, a value that
   differs from the others and from its default. A suite in which the

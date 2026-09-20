@@ -235,9 +235,10 @@ docs/
 pyproject.toml             maturin, manifest-path to the Python binding crate
 ```
 
-pyNei is a development dependency of the Python side, a path dependency on
-`../pynei`, and the tests run both libraries on the same inputs where they
-overlap.
+pyNei is a development dependency of the Python side, taken from
+`https://github.com/JoseBlanca/pynei` at the commit that `[tool.uv.sources]`
+of `pyproject.toml` names, and the tests run both libraries on the same
+inputs where they overlap.
 
 ## 9. The modules of the core crate, and what of pyNei each one carries
 
