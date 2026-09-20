@@ -1,14 +1,18 @@
 # Plan: readers that give blocks
 
-September 2026. Draft, not approved. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
 reasons in section 1. This plan takes the code that
 `docs/plans/vcf-to-blocks.md` built, which has that single variant at its
-centre, to the new shape: a `BlockReader` trait, a VCF reader that parses
-its lines straight into the rows of a block, and no `Variant`,
-`VariantReader` or `BlockCollector`. It also carries out five smaller
+centre, to the new shape: a `BlockReader` trait, which everything that
+gives blocks implements, a VCF reader that parses its lines straight into
+the rows of a block, and none of the three things of the code as built:
+`Variant`, the single variant that the caller owns and a reader fills
+through `read_variant`; `VariantReader`, the trait with that method; and
+`BlockCollector`, which copies the variants of such a reader into
+blocks. It also carries out five smaller
 decisions that the owner took the same day. The owner answered its
 breakdown in chat on 20 September 2026.
 
@@ -17,11 +21,15 @@ owner's order. Another session of the assistant revised them for blocks
 the same day, each through the spec reviewer and the first reader, and
 the plan was then checked against them: every part of a spec that a task
 names is a heading they have, and `reblock` moved from the third work
-package to the second, because the revised `docs/specs/block.md` has
-`iter_blocks` always end in one, so the bindings need it. When this was
-written the revised specs were in the main checkout and not committed.
-They have to be committed before the plan runs, since it runs in a
-worktree made from `main`. The specs:
+package to the second, because the revised `docs/specs/block.md` puts a
+`reblock` at the end of every `iter_blocks`, so the bindings need it. The revised
+specs are on `main` since 8f19650, and the revised architecture, glossary
+and skills since cae6a4c. The session that will run the plan checked it
+once more against them as committed, at d211355, and what that changed is
+small: task 1.1 also corrects section 8 of the architecture, tasks 2.4
+and 2.5 name "The Rust interface" of the VCF reader spec, tasks 2.2 and
+2.3 run one after the other, and the paragraph below names a third
+change that a user sees. The specs:
 
 - `docs/specs/variant.md`, what is left of the variant module: the set of
   wanted fields, the table of chromosomes, the view of one variant of a
@@ -30,9 +38,14 @@ worktree made from `main`. The specs:
   `reblock`;
 - `docs/specs/io_vcf.md`, the VCF reader.
 
-When it is done nothing changes for a user but two errors that were not
-there and the speed: `open_vcf`, `openVcf`, `Variants` and `iter_blocks`
-are what they were, their tests pass untouched, and the VCF reader is
+When it is done three things change for a user, and the speed. Two errors
+that were not there. And a column that was not asked for is no longer
+checked, as "How it runs" of `docs/specs/io_vcf.md` decides: the reader
+as built parses the position of every line, so a position that is not a
+number is an error today whatever `fields` is, and after this plan it is
+an error only when `fields` has `"chrom"` or `"pos"`, which the default
+has. `open_vcf`, `openVcf`, `Variants` and `iter_blocks` are otherwise
+what they were, their tests pass untouched, and the VCF reader is
 measured again against the targets that it missed.
 
 ## In and out
@@ -105,16 +118,20 @@ Out, with where it goes:
   `bgzip -k` of it, outside the repository. The numbers that this plan
   compares with, from `docs/reports/vcf-to-blocks.md`, the owner's Apple
   M5 Pro, release, the file in the page cache, the genotypes asked for,
-  the median of 5 runs: 1.24 s on one thread and 0.160 s on 18 plain,
-  1.58 s and 0.50 s bgzipped; the spike of `docs/rust_core.md` on the same
-  file 0.54 s and 0.098 s, 0.84 s and 0.40 s.
+  the median of 5 runs. The reader as built: the plain file in 1.24 s on
+  one thread and 0.160 s on 18, the bgzipped one in 1.58 s on one thread
+  and 0.50 s on 18. The spike, the trial parser in Rust of
+  `docs/rust_core.md`, on the same files: plain 0.54 s and 0.098 s,
+  bgzipped 0.84 s and 0.40 s. "Speed" of `docs/specs/io_vcf.md` has the
+  table.
 - pyNei's commit ef0ca6e is on `origin/main` of
   `https://github.com/JoseBlanca/pynei`, checked on 20 September 2026.
 
 The checks that say the work is done fail today, as they must: `grep -rn
 "read_variant\|VariantReader\|BlockCollector" crates --include='*.rs' |
 wc -l` gives 98, in seven files, and the same for
-`"BlockReader\|VariantRef\|reblock"` gives 0; there is no `LICENSE` file
+`"BlockReader\|VariantRef\|reblock"`, the trait, the view of one variant
+of a block and the reader that resizes blocks, gives 0; there is no `LICENSE` file
 and no manifest names a license; `pyproject.toml` has pyNei at
 `/Users/jose/devel/pynei`.
 
@@ -142,9 +159,11 @@ packages add errors to the enum that the skill will then describe.
    carry it.
 2. pyNei by its repository. Check: `grep -n "Users/jose" pyproject.toml
    uv.lock` finds nothing; `uv sync` followed by `uv run maturin develop
-   && uv run pytest -k pynei` gives `8 passed`; `docs/objectives.md` says
-   what the dependency now is, in the two places where it says path
-   dependency.
+   && uv run pytest -k pynei` gives `8 passed`; the two documents that
+   say path dependency say what the dependency now is, objective 1 of
+   `docs/objectives.md` and section 8 of `docs/architecture.md`, and
+   `grep -rn "path dependency" docs/objectives.md docs/architecture.md`
+   finds nothing, where today it finds those two.
 3. The `coding` skill. Check: "Errors, and no panics" of
    `.claude/skills/coding/SKILL.md` says that the core crate has one
    error enum, `non_exhaustive`, to which each module adds its cases, and
@@ -153,8 +172,8 @@ packages add errors to the enum that the skill will then describe.
    each operation.
 
 **What it stands on.** The owner's decisions of 20 September 2026. The
-`coding` skill has edits of the other session that are not committed:
-deliverable 3 waits until they are.
+`coding` skill as committed at cae6a4c still asks, in "Errors, and no
+panics", for one error type for each operation.
 
 **Tasks.**
 
@@ -162,7 +181,8 @@ deliverable 3 waits until they are.
   the field in the workspace manifest, in `pyproject.toml` and in
   `package.json`; pyNei as a git source of uv at ef0ca6e, with the
   comment of `pyproject.toml` that explains the absolute path replaced;
-  the two sentences of `docs/objectives.md`. Serves deliverables 1 and 2.
+  the sentence of objective 1 of `docs/objectives.md` and the one of
+  section 8 of `docs/architecture.md`. Serves deliverables 1 and 2.
 - [ ] 1.2 The paragraph of the `coding` skill, written as the `writing`
   skill asks, with the reasons the owner took: one type is what the two
   bindings map, and `non_exhaustive` lets a module add a case without
@@ -260,8 +280,11 @@ describes, no more. The three revised specs.
 - [ ] 2.3 The row parser over bytes and its tests, a function with no
   reader around it. From "What it gives" and "The cases a reader of the
   rules would not guess" of `docs/specs/io_vcf.md`. Serves deliverable 2.
-  Side by side with 2.2: it touches `crates/popnei/src/io/vcf.rs` and no
-  manifest. A wrong genotype here is silent anywhere else, so it is a
+  It needs nothing of 2.2 and runs after it all the same: "Speed" of the
+  spec has the implementer search the bytes with `memchr`, which is not a
+  dependency today, so the task writes the manifest of the core crate and
+  `Cargo.lock`, and a core that is half written breaks the build of the
+  binding crates in the same tree. A wrong genotype here is silent anywhere else, so it is a
   commit of its own, and the comparison with bcftools of deliverable 3 is
   what guards it.
 - [ ] 2.4 `VcfReader` as a `BlockReader` on the row parser: the lines of
@@ -269,16 +292,22 @@ describes, no more. The three revised specs.
   numbers of the chromosomes, the errors in their order, the reader that
   refuses to go on after a parse that did not come back; the tests of
   the reader made at `next_block`; the bench reading through
-  `next_block`; and the table of the 65 tests. From "How it runs" and
-  "How it is verified" of `docs/specs/io_vcf.md`. Serves deliverables 2,
-  3 and 5. Needs 2.2 and 2.3.
-- [ ] 2.5 The two new errors, in the core and seen from Python. From the
-  parts of `docs/specs/io_vcf.md` that state them. Serves deliverable 4.
+  `next_block`; and the table of the 65 tests. From "How it runs",
+  "How it is verified" and "The Rust interface" of
+  `docs/specs/io_vcf.md`, which has the size of the blocks among the
+  options of the reader and the error of a parse that did not come back.
+  Serves deliverables 2, 3 and 5. Needs 2.2 and 2.3.
+- [ ] 2.5 The two new errors, in the core and seen from Python. From "The
+  cases a reader of the rules would not guess", the last paragraph of
+  the blocks in "How it is verified" and the cases of the error in "The
+  Rust interface" of `docs/specs/io_vcf.md`. Serves deliverable 4.
   Needs 2.4.
 - [ ] 2.6 The measurement, as "What measurement there is" of the
   `performance-review` skill asks. It changes no code but the constants
   that the spec leaves to a measurement, each in a commit of its own with
-  its numbers. Serves deliverable 6. Needs 2.4.
+  its numbers. Serves deliverable 6. Needs 2.4, and runs after 2.5: both
+  write `crates/popnei/src/io/vcf.rs`, and a build beside a timing
+  changes the timing.
 
 **What could go wrong.** The profile of the reader as it is puts 95 in
 100 of the one thread time in the columns of the individuals read as
