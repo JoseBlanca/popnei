@@ -267,7 +267,13 @@ impl<R: VariantReader> BlockCollector<R> {
         // `usize::MAX` variants needs no addition of our own.
         let mut block: Option<Block> = None;
         for count in 1..=self.num_vars_per_block {
-            if !self.reader.read_variant(&mut self.var)? {
+            // The trait says that a reader ends at its error, and the
+            // collector ends too: what a reader that goes on gives after
+            // one is not the source, and no caller of ours reads it.
+            let read = self.reader.read_variant(&mut self.var).inspect_err(|_| {
+                self.finished = true;
+            })?;
+            if !read {
                 self.finished = true;
                 break;
             }
@@ -702,7 +708,11 @@ mod tests {
     fn a_block_of_more_genotypes_than_the_machine_addresses_is_refused() {
         // Two individuals of the ploidy 2 are four genotypes in every
         // variant, so every size above a quarter of `usize::MAX` is one.
-        let error = match BlockCollector::new(NoGenotypes::new(0), Needs::GTS, Some(usize::MAX)) {
+        let error = match BlockCollector::new(
+            FakeReader::giving(0, Fills::Everything),
+            Needs::GTS,
+            Some(usize::MAX),
+        ) {
             Ok(collector) => panic!("the collector was built: {collector:?}"),
             Err(error) => error,
         };
@@ -819,38 +829,86 @@ mod tests {
         );
     }
 
-    /// A reader of two variants of two individuals that fills no genotype,
-    /// to try what a collector does with a field that was asked for and
-    /// that the reader does not give.
-    struct NoGenotypes {
+    /// What a reader written for these tests puts in the variants it
+    /// gives.
+    #[derive(Clone, Copy)]
+    enum Fills {
+        /// The chromosome, the position and the genotypes of its two
+        /// individuals.
+        Everything,
+        /// The chromosome and the position alone, which is a reader whose
+        /// source has no genotype to give.
+        NoGenotypes,
+    }
+
+    /// A reader of two individuals of the ploidy 2, written for these
+    /// tests: a VCF cannot be made to do what a collector has to stand.
+    struct FakeReader {
         individuals: Vec<String>,
         chroms: ChromTable,
+        /// How many variants it still has to give.
         left: usize,
+        fills: Fills,
+        /// The variant it fails at, counted from 1.
+        fails_at: Option<usize>,
+        /// Which variant it is about to give, counted from 1.
+        next_var: usize,
         /// What the collector asked this reader for.
         needs: Needs,
     }
 
-    impl NoGenotypes {
-        fn new(left: usize) -> NoGenotypes {
-            NoGenotypes {
+    impl FakeReader {
+        /// A reader of `num_vars` variants that fills each of them as
+        /// `fills` says.
+        fn giving(num_vars: usize, fills: Fills) -> FakeReader {
+            FakeReader {
                 individuals: vec!["ind1".to_string(), "ind2".to_string()],
                 chroms: ChromTable::new(),
-                left,
+                left: num_vars,
+                fills,
+                fails_at: None,
+                next_var: 1,
                 needs: Needs::empty(),
+            }
+        }
+
+        /// A reader of `num_vars` variants whose variant number `fails_at`,
+        /// counted from 1, is an error, and which gives the variants after
+        /// it. The trait says that a reader ends at its error, so a
+        /// collector that reads on after one reads what no reader of popnei
+        /// gives: this one shows what it would do with it.
+        fn failing_at(num_vars: usize, fails_at: usize) -> FakeReader {
+            FakeReader {
+                fails_at: Some(fails_at),
+                ..FakeReader::giving(num_vars, Fills::Everything)
             }
         }
     }
 
-    impl VariantReader for NoGenotypes {
+    impl VariantReader for FakeReader {
         fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
             var.clear();
             let Some(left) = self.left.checked_sub(1) else {
                 return Ok(false);
             };
             self.left = left;
+            let this_var = self.next_var;
+            self.next_var = this_var.saturating_add(1);
+            if self.fails_at == Some(this_var) {
+                return Err(Error::Io(std::io::Error::other(
+                    "the reader of the tests failed",
+                )));
+            }
             var.chrom = self.chroms.intern("chr1");
             var.pos = 100;
             var.filled = Needs::CHROM_POS;
+            match self.fills {
+                Fills::Everything => {
+                    var.gts.extend_from_slice(&[0, 1, 1, 1]);
+                    var.filled |= Needs::GTS;
+                }
+                Fills::NoGenotypes => {}
+            }
             Ok(true)
         }
 
@@ -875,24 +933,52 @@ mod tests {
     /// its reader for is what its blocks will hold.
     #[test]
     fn a_collector_asks_its_reader_for_its_columns_and_the_genotypes() {
+        let no_variant = || FakeReader::giving(0, Fills::Everything);
         let collector =
-            BlockCollector::new(NoGenotypes::new(0), Needs::QUAL, Some(2)).expect("the collector");
+            BlockCollector::new(no_variant(), Needs::QUAL, Some(2)).expect("the collector");
         assert_eq!(collector.reader().needs, Needs::GTS | Needs::QUAL);
 
         let collector =
-            BlockCollector::new(NoGenotypes::new(0), Needs::empty(), None).expect("the collector");
+            BlockCollector::new(no_variant(), Needs::empty(), None).expect("the collector");
         assert_eq!(collector.reader().needs, Needs::GTS);
 
         let collector =
-            BlockCollector::new(NoGenotypes::new(0), Needs::ALL, Some(2)).expect("the collector");
+            BlockCollector::new(no_variant(), Needs::ALL, Some(2)).expect("the collector");
         assert_eq!(collector.reader().needs, Needs::ALL);
+    }
+
+    /// The trait says that a reader ends at its error, and the collector
+    /// does not lean on it: a reader that goes on giving variants after one
+    /// gives the collector's caller no block after it.
+    #[test]
+    fn the_collector_gives_no_block_after_the_error_of_its_reader() {
+        let mut collector =
+            BlockCollector::new(FakeReader::failing_at(6, 3), Needs::CHROM_POS, Some(2))
+                .expect("the collector");
+
+        let first = collector
+            .next_block()
+            .expect("the first block")
+            .expect("a block");
+        assert_eq!(first.num_vars, 2);
+
+        let error = match collector.next_block() {
+            Ok(block) => panic!("the collector gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, Error::Io(_)), "the error is {error}");
+
+        // The reader has three variants left and gives them, and the
+        // collector gives no block.
+        assert!(collector.next_block().expect("no block").is_none());
+        assert!(collector.next_block().expect("no block").is_none());
     }
 
     /// The two binding crates hold their collector over a boxed reader,
     /// `BlockCollector<Box<dyn VariantReader>>`, so one is built here.
     #[test]
     fn a_field_that_was_asked_for_and_that_the_reader_does_not_fill_is_an_error() {
-        let reader: Box<dyn VariantReader> = Box::new(NoGenotypes::new(2));
+        let reader: Box<dyn VariantReader> = Box::new(FakeReader::giving(2, Fills::NoGenotypes));
         let mut collector =
             BlockCollector::new(reader, Needs::CHROM_POS, Some(2)).expect("the collector");
         assert_eq!(collector.reader().individuals(), ["ind1", "ind2"]);
