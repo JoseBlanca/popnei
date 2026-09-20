@@ -63,17 +63,27 @@ const MISSING_VALUE: &str = ".";
 /// How many lines the reader takes from the source before it parses them,
 /// on the threads of rayon.
 ///
-/// Nobody has measured it. What bounds it from above is the memory a batch
-/// holds, the text of its lines and the variants they were parsed into: on
-/// the VCF of "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000
-/// individuals in 400 MB, a line is 4 KB and its genotypes 2000 alleles, so
-/// 1024 lines are 4 MB of text and 2 MB of genotypes. What bounds it from
-/// below is that the lines of one batch are what the threads share: on the
-/// 18 cores of the machine of that section, 1024 lines are 56 lines a
-/// thread, so a thread that starts late costs the others a fraction of the
-/// batch and not a wait for half of it. The measurement of the reader on
-/// that file is task 5.2 of `docs/plans/vcf-to-blocks.md`, and it is what
-/// says whether this is the right number.
+/// It was measured on the VCF of "Speed" of `docs/specs/io_vcf.md`, 100000
+/// variants of 1000 individuals in 400 MB, with the benchmark
+/// `benches/read_vcf.rs`, on the 18 cores of the owner's Apple M5 Pro, the
+/// median of five runs. Batches of 256, 1024 and 4096 lines took 0.206,
+/// 0.160 and 0.147 s on 18 threads, and 1.28, 1.24 and 1.28 s on one;
+/// gzipped, where the decompression is one thread's work whatever the
+/// others do, 0.555, 0.497 and 0.458 s on 18 threads. Those are the
+/// numbers of task 5.2 of `docs/plans/vcf-to-blocks.md`, taken before
+/// [`BYTES_PER_BATCH`]; with it the same three take 0.202, 0.158 and 0.151
+/// s, the last one because 4096 lines of that file are 16.5 MB and the
+/// bound cuts them to about 2000. A batch of 4096 lines whole, with the
+/// bound raised to 32 MiB, takes 0.144 s.
+///
+/// 1024 stays. On one thread the three are the same read, and on 18 the
+/// 0.014 s between 1024 and 4096 buys four times the text in memory, while
+/// the target of the spec, 0.11 s on 18 threads, is missed by all three
+/// and by more than they differ: what to do about that is the owner's, and
+/// the benchmark takes `--lines-per-batch` for whoever tries again. What
+/// keeps the number from being much smaller is the 0.046 s that 256 lines
+/// cost: the lines of one batch are what the threads share, and 1024 of
+/// them are 56 a thread on 18 cores.
 #[cfg(not(target_family = "wasm"))]
 const LINES_PER_BATCH: usize = 1024;
 
