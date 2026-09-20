@@ -309,6 +309,30 @@ test("an iteration that throws gives back its pass too", () => {
   variants.free();
 });
 
+test("a position above 2^53 is refused, because a float64 rounds it", () => {
+  // 9007199254740993 is 2^53 + 1, the first whole number a float64 does not
+  // hold: it would reach a user as 9007199254740992, where a Python user of
+  // the same file reads the number the source has.
+  const variants = openVcf(
+    vcfOf(["chr1\t9007199254740993\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"]),
+  );
+  assert.throws(() => [...variants.iterBlocks()], {
+    name: "Error",
+    message: /9007199254740993/,
+  });
+  variants.free();
+});
+
+test("a position of 2^53 is read, the largest a float64 holds", () => {
+  const variants = openVcf(
+    vcfOf(["chr1\t9007199254740992\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"]),
+  );
+  const [block] = [...variants.iterBlocks()];
+  assert.ok(block !== undefined);
+  assert.deepEqual([...(block.pos ?? [])], [9007199254740992]);
+  variants.free();
+});
+
 test("variants that were freed cannot be read again", async () => {
   const variants = openVcf(await referenceVcf("cases.vcf"));
   variants.free();

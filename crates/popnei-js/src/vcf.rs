@@ -25,30 +25,40 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::{AllelesColumn, Block, BlockCollector};
+use popnei::block::{AllelesColumn, Block, BlockCollector, needs_of_the_fields};
 use popnei::io::vcf::{VcfOptions, VcfReader};
-use popnei::variant::{Needs, VariantReader};
+use popnei::variant::VariantReader;
 
 use crate::errors::JsPopneiError;
 
-/// The name each field of a block has in TypeScript, with the fields of the
-/// core it asks the reader for. The chromosome and the position are one
-/// field of the core, so either name fills both.
-const FIELD_NAMES: [(&str, Needs); 5] = [
-    ("chrom", Needs::CHROM_POS),
-    ("pos", Needs::CHROM_POS),
-    ("id", Needs::ID),
-    ("alleles", Needs::ALLELES),
-    ("qual", Needs::QUAL),
-];
+/// The largest position a block hands to JavaScript, 2^53.
+///
+/// The positions cross as float64, which holds every whole number up to
+/// this one and not the ones above it: 2^53 + 1 would arrive as 2^53.
+const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
+
+/// The bytes of a VCF, which every pass over it shares.
+///
+/// `Cursor` reads anything that gives a `&[u8]`, and an `Arc<Vec<u8>>` gives
+/// a `&Vec<u8>`, so this is the one line that turns the second into the
+/// first. What it holds is the `Vec` wasm-bindgen filled with the bytes of
+/// the `Uint8Array`, and nothing copies it again: a copy of a VCF of 80 MB
+/// stays in the memory of wasm for as long as the tab lives, because that
+/// memory grows and never shrinks.
+struct SharedBytes(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for SharedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
 
 /// A VCF that was opened: its bytes, the options it is read with, and the
 /// individuals its header named.
 #[wasm_bindgen]
 pub struct VcfSource {
-    /// The bytes of the whole file, shared with every pass over them: a
-    /// pass reads them again and none of them is copied.
-    bytes: Arc<[u8]>,
+    /// The bytes of the whole file, which every pass over them shares.
+    bytes: Arc<Vec<u8>>,
     options: VcfOptions,
     individuals: Vec<String>,
 }
@@ -82,8 +92,8 @@ impl VcfSource {
         fields: Vec<String>,
         num_vars_per_block: Option<usize>,
     ) -> Result<Blocks, JsPopneiError> {
-        let needs = needs_of(&fields)?;
-        let source = Cursor::new(Arc::clone(&self.bytes));
+        let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
+        let source = Cursor::new(SharedBytes(Arc::clone(&self.bytes)));
         let reader: Box<dyn VariantReader> = Box::new(VcfReader::new(source, self.options)?);
         Ok(Blocks {
             collector: BlockCollector::new(reader, needs, num_vars_per_block)?,
@@ -108,8 +118,9 @@ impl Blocks {
     ///
     /// # Errors
     ///
-    /// When a variant cannot be read. The block that was being built is
-    /// lost with the error, and every call after it gives no block.
+    /// When a variant cannot be read, and when a position of the block is
+    /// above [`LARGEST_POSITION`]. The block that was being built is lost
+    /// with the error, and every call after it gives no block.
     pub fn next_block(&mut self) -> Result<Option<BlockColumns>, JsPopneiError> {
         let Some(block) = self.collector.next_block()? else {
             return Ok(None);
@@ -150,7 +161,7 @@ impl Blocks {
             ploidy,
             gts: Some(gts),
             chrom: chrom.map(names).transpose()?,
-            pos: pos.map(positions_of),
+            pos: pos.map(positions_of).transpose()?,
             id,
             alleles,
             num_alleles_per_var,
@@ -206,9 +217,10 @@ impl BlockColumns {
 
     /// The genotypes, `num_vars` x `num_individuals` x `ploidy` alleles,
     /// variant after variant and inside a variant individual after
-    /// individual.
-    pub fn gts(&mut self) -> Vec<i8> {
-        self.gts.take().unwrap_or_default()
+    /// individual. Every block holds them, so `undefined` says that they
+    /// were read already, as it does for every other column.
+    pub fn gts(&mut self) -> Option<Vec<i8>> {
+        self.gts.take()
     }
 
     /// The name of the chromosome of each variant, or `undefined` when the
@@ -266,8 +278,13 @@ pub fn open_vcf(
         ploidy,
         only_passed,
     };
-    let bytes: Arc<[u8]> = Arc::from(bytes);
-    let reader = VcfReader::new(Cursor::new(Arc::clone(&bytes)), options)?;
+    // The `Vec` wasm-bindgen filled with the bytes of the `Uint8Array` is
+    // the one every pass reads: an `Arc<[u8]>` here would allocate the whole
+    // file again and copy it into the new buffer, and the memory of wasm
+    // never gives that back.
+    let bytes = Arc::new(bytes);
+    let source = Cursor::new(SharedBytes(Arc::clone(&bytes)));
+    let reader = VcfReader::new(source, options)?;
     let individuals = reader.individuals().to_vec();
     Ok(VcfSource {
         bytes,
@@ -291,33 +308,29 @@ pub fn default_only_passed() -> bool {
     popnei::io::vcf::DEFAULT_ONLY_PASSED
 }
 
-/// The fields of the core that the names of `fields` ask for, the genotypes
-/// among them, which every block holds.
-fn needs_of(fields: &[String]) -> Result<Needs, JsPopneiError> {
-    let mut needs = Needs::GTS;
-    for field in fields {
-        let found = FIELD_NAMES
-            .iter()
-            .find(|(name, _)| *name == field.as_str())
-            .map(|(_, of_the_core)| *of_the_core);
-        let Some(of_the_core) = found else {
-            let names = FIELD_NAMES.map(|(name, _)| format!("`{name}`")).join(", ");
-            return Err(JsPopneiError::Argument(format!(
-                "`{field}` is not a field of a block; the fields are {names}"
-            )));
-        };
-        needs = needs.union(of_the_core);
-    }
-    Ok(needs)
-}
-
 /// The positions of a block as the numbers of JavaScript, which are float64
 /// and hold a position of up to 2^53 exactly, as `docs/specs/block.md` says.
-fn positions_of(positions: Vec<u64>) -> Vec<f64> {
-    // A position above 2^53 would lose its last digits, and no genome comes
-    // near it: the longest chromosome that has been assembled is 2.5e8
-    // bases.
-    positions.into_iter().map(|pos| pos as f64).collect()
+///
+/// # Errors
+///
+/// When a position is above [`LARGEST_POSITION`]. A float64 would round it,
+/// and the same file read from Python gives the position the source has, so
+/// the two languages would disagree about where a variant is. No genome
+/// comes near that number: the longest chromosome that has been assembled
+/// is 2.5e8 bases.
+fn positions_of(positions: Vec<u64>) -> Result<Vec<f64>, JsPopneiError> {
+    positions
+        .into_iter()
+        .map(|pos| {
+            if pos > LARGEST_POSITION {
+                return Err(JsPopneiError::NotInJavaScript(format!(
+                    "the position {pos} of a variant is above {LARGEST_POSITION}, the \
+                     largest whole number a number of JavaScript holds"
+                )));
+            }
+            Ok(pos as f64)
+        })
+        .collect()
 }
 
 /// The alleles of every variant of a block, the reference one first, one

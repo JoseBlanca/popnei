@@ -74,8 +74,12 @@ export interface Block {
 export function blockOf(columns: BlockColumns): Block {
   const alleles = columns.alleles();
   const numAllelesPerVar = columns.num_alleles_per_var();
+  const gts = columns.gts();
+  if (gts === undefined) {
+    throw new Error("popnei: the genotypes of this block were read already");
+  }
   return {
-    gts: columns.gts(),
+    gts,
     numVars: columns.num_vars(),
     chrom: columns.chrom() ?? null,
     pos: columns.pos() ?? null,
