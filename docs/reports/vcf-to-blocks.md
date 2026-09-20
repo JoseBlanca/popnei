@@ -1,11 +1,109 @@
 # Work report: from a VCF to blocks
 
-The report of the run of `docs/plans/vcf-to-blocks.md`, on the branch
-`plan/vcf-to-blocks`, in the worktree `.claude/worktrees/vcf-to-blocks`.
-It is written while the work goes, a section after each work package.
-The run started on 20 September 2026, on the owner's Apple M5 Pro. The
-subagents that write the code run on Opus, as the owner ordered, and the
-orchestrator and the reviewers on the model of the session.
+The plan `docs/plans/vcf-to-blocks.md` is done, on the branch
+`plan/vcf-to-blocks`, 20 September 2026. Its five work packages
+finished as planned, each was reviewed and its findings fixed, and the
+final check passes from a clean clone. The speed targets of the spec are
+missed, which the plan foresaw as something to report and not to work
+on. The orchestrator, in this report, is the session of the assistant
+that ran the plan: it sent each task to a subagent, checked what came
+back and had it reviewed.
+
+While the last work package was being reviewed, another session of the
+assistant, the one in which the owner is writing the spec of the vars
+file, sent word that the owner decided on 20 September 2026 to drop the
+single variant as the interface of the core: readers will give blocks,
+and the `Variant` that a reader fills, `read_variant` and the
+`BlockCollector` go. This session has not heard it from the owner, and
+the plan was already at its end, so nothing was stopped or changed for
+it. If it stands, what that session expects to survive of this branch
+is the parse of a data line, the header, gzip, the errors, the batches
+of lines, both binding crates, both packages and every test made at
+`iter_blocks` and `iterBlocks`, since Python and TypeScript never saw a
+variant; and what changes is how the VCF reader hands out what it
+parsed, a row written into the arrays of a block where there is now a
+swap with the consumer's `Variant`, with the cargo tests made at
+`read_variant`. The numbers of the bench below are what the parse
+straight into a block will be compared with. Whether the branch is
+merged as it is, before that change, is part of the first thing asked
+of the owner.
+
+What exists now that did not: a cargo workspace with the core crate,
+the pyo3 binding and the Python package, the wasm-bindgen binding and
+the TypeScript package, and the build of the wheel for pyodide; in the
+core, the variant record and the reader trait, the VCF reader, plain and
+gzipped, parsed in batches on the threads of rayon natively and on one
+thread in wasm, and the collector of blocks; `popnei.open_vcf` and
+`openVcf`, which give a `Variants` whose `iter_blocks` gives the
+genotypes block by block. The reader reads the reference VCFs as
+bcftools 1.24 does, 500 variants of 50 individuals among them, and the
+blocks of a file, put one after another, equal the chunks that pyNei
+gives for it, put one after another, in every column. 92 cargo
+tests, 38 pytest tests, 39 node tests and a smoke test under pyodide.
+
+What is asked of the owner:
+
+1. The merge of `plan/vcf-to-blocks` into `main`, which is theirs to
+   order.
+2. The speed. On the 400 MB VCF of 100000 variants x 1000 individuals,
+   this Mac, release: 1.24 s on one thread against a target of 0.55 s,
+   and 0.160 s on 18 cores against 0.11 s. The spike, the trial parser
+   in Rust of `docs/rust_core.md` that the targets come from, gives
+   0.54 s and 0.098 s on the same file the same day, and pyNei takes
+   13.5 s. A profile puts 95 in 100 of the one thread time in the parse
+   of the columns of the individuals. If nothing is done the reader
+   stays 2.3 times slower than the spike on one thread and 1.6 on 18.
+   `.claude/skills/performance-review/` is how it would be taken up,
+   with `crates/popnei/benches/read_vcf.rs`, the bench that this plan
+   added. The gzipped target of the spec, 0.55 s for a gzipped file of
+   53 MB, cannot be compared with anything: this file gzips to 38 MB,
+   and the spike itself takes 0.84 s on it. That row of the spec and of
+   `docs/rust_core.md` needs another number or a note. The details are
+   under work package 5.
+3. Four decisions that the work went on without, each with what the
+   code does meanwhile:
+   - A bgzipped file cut at the boundary of a gzip member gives fewer
+     variants and no error, where bcftools says "no BGZF EOF marker".
+     Recommended: detect it.
+   - A QUAL of `nan`, `inf` or `1e400` is taken as a float, as bcftools
+     does, and `nan` is then the same as no quality. Four reviewers
+     reported it. Recommended: refuse a quality that is not finite.
+   - The specs have one error enum for the crate and the `coding` skill
+     asks for one error type for each operation. The code follows the
+     specs. Recommended: keep the enum and correct the skill.
+   - pyNei is a development dependency by the absolute path
+     `/Users/jose/devel/pynei`, because the `../pynei` of the objectives
+     points nowhere from a worktree. Recommended: pyNei's repository on
+     GitHub at a commit.
+4. Three things the orchestrator decided that a user sees, which the
+   owner can reverse: a ploidy above 255 is refused; the TypeScript
+   block has `numIndividuals` and `ploidy`; `many.vcf` has ids and
+   qualities, with its genotypes and the counts of the spec unchanged.
+5. Smaller: no license is chosen, and no manifest names one. The
+   `coding` skill has no reference for wasm-bindgen, and
+   `js/popnei/README.md` has what was learned, to write one from.
+
+What the next plan and the skills should take from this one. Every
+review found things that were wrong and that no check had seen, several
+of them by running the case: a session killed by an argument, a license
+nobody chose, a build that plain cargo could not make, a test that
+guarded nothing. The reviews cost more than the writing: 2.3 million
+tokens for 20 reviewers against 1.9 million for the subagents that wrote
+the 13 tasks and 0.6 million for those that fixed the findings, each
+figure added from the usage that every run of a subagent reports. Two
+pairs of tasks that the plan marked as side by side were
+run one after the other, because both of each pair wrote the workspace
+manifest and `Cargo.lock`: the next plan should mark tasks as side by
+side only when they share no manifest. The plan's check `cargo test -p
+popnei -- --list` ends with the count of the doc tests, 0, and needs
+`--lib`. Twice this report repeated what a subagent said without
+checking it, a manifest with no license and a spec that had two
+`Default`, and a reviewer found each: what a subagent says of a file is
+checked before it is written here. And a read only reviewer checked out
+a commit in the plan's own worktree and left it on a detached HEAD,
+which cost nothing but has to be told to every reviewer that reads
+there; the reviewers of the last work package each got a worktree of
+their own.
 
 ## Before the first task
 
@@ -505,3 +603,152 @@ names are not turned to camelCase and a `pub const` cannot be exported,
 that a number is truncated at the boundary, that the `finally` of a
 generator does not run when it was never started, and what an argument
 of bytes costs.
+
+## Work package 5: the parallel reader, and its speed
+
+Task 5.1, the batches, commits a24a4ee, a refactor that changes no
+result, and 41812a8; one subagent run of 227 thousand tokens and 20
+minutes. Task 5.2, the measurement, commit 159f758, another subagent,
+180 thousand tokens and 14 minutes. The work package finished as
+planned, and both targets of the spec that can be compared are missed.
+
+### The deliverables
+
+1. The reader reads 1024 lines, or 8 MiB of text if that comes first,
+   into slots that it owns, parses them on the threads of the rayon pool
+   it is called in, and hands the variants out in the order of the file
+   by swapping buffers with the lent `Variant`. A chromosome gets its
+   number when its variant is handed out. In wasm the same function
+   parses one line after another, and neither wasm build has rayon.
+   Check, run by the orchestrator: every test of work packages 3 and 4
+   passes untouched; `cargo test --workspace` `87 passed` at 41812a8 and
+   `92 passed` after the fixes, with the new tests of the same variants
+   and chromosome numbers in pools of 1 and of 4 threads, compared with
+   the stored output of bcftools too, and of a wrong line in the fourth
+   batch of 64 lines, which gives the good variants first and then its
+   error; pytest `38 passed`, `npm test` `tests 39`, `fail 0`, the wheel
+   of pyodide built and its smoke test passed.
+2. The check by hand of the allocations, with a counting allocator, a
+   second pass over `many.vcf` with every field asked for: 2 allocations,
+   8 bytes, in the last 400 variants, both the interning of `chr2` at
+   variant 251, and the same with the genotypes alone. A reviewer
+   confirmed the numbers and followed the allocations over 30 batches of
+   lines of changing lengths: new allocations stop after the third batch
+   and reallocations after the twenty third, all of them at the first
+   read of a batch, the buffers of the slots still growing, and none
+   between two variants of a batch.
+3. The measurement, below. The bench is
+   `crates/popnei/benches/read_vcf.rs`, run with `cargo bench --bench
+   read_vcf -- <path> --threads 18 --runs 5`, and `make_big_vcf.py`
+   beside it makes the file in 3 s.
+
+### The measurement
+
+The file: `simulate_genotypes` and `write_vcf` of
+`test/gwas_reference/make_reference.py` of pyNei, which
+`docs/rust_core.md` names as the origin of the panel, with seed 42, 1000
+individuals and 100000 variants, 3 in 100 of the genotypes missing, `.`
+in every FILTER. 403 MB, and 38 MB with bgzip. The original file cannot
+be made again bit for bit; this one has its shape. Apple M5 Pro, 18
+cores, release build, the file in the page cache, the genotypes asked
+for, the default options, the median of 5 runs; VS Code was open and the
+load average was 1.8. The spike is `spike/pynei_spike` of pyNei, built
+from a copy outside that repository, on the same file and the same day.
+
+| | popnei | the spike | the target, and a tenth above it | met |
+|---|---|---|---|---|
+| plain, 1 thread | 1.24 s | 0.54 s | 0.55 s, 0.605 s | no |
+| plain, 18 threads | 0.160 s | 0.098 s | 0.11 s, 0.121 s | no |
+| bgzipped, 1 thread | 1.58 s | 0.84 s | 0.55 s, 0.605 s | no |
+| bgzipped, 18 threads | 0.50 s | 0.40 s | none | |
+
+plink2 v2.0.0-a.7.7, `--vcf <file> --make-pgen --threads 1`: 0.273 s,
+the mean of 5 runs. It is the 0.27 s of `docs/rust_core.md`, and the
+spike gives its own 0.55 s and 0.11 s, so this file is as hard as the
+one those numbers came from, and the difference is popnei's: 2.3 times
+the spike on one thread and 1.6 on 18. Against pyNei's 13.5 s it is 11
+times faster on one thread and 84 on 18. The orchestrator ran the bench
+again: 1.25 to 1.31 s on 1 thread and 0.159 to 0.161 s on 18, and after
+the fixes of the review 1.27 s and 0.158 s.
+
+Where the time goes on one thread, from a sampling profile of 15107
+samples: 95.5 in 100 in the parse and 4.5 in reading the bytes and
+cutting the lines. Of the self time, the filling of the genotypes has
+45.7 in 100, the split of a text at a character 25.2, the search of a
+byte 15.6 and the comparison of strings 10.0. The nine first columns,
+the FILTER and the count of the alleles are under 1 in 100 together. The
+spike makes three checks less than the reader, the ploidy of each
+genotype, its allele numbers against ALT, and the FILTER, and they are
+not where the 0.7 s went.
+The columns of the 1000 individuals are.
+
+On 18 threads the batch is a barrier: no line of the next batch is read
+while this one is parsed and handed out. A reviewer measured, on 5000
+variants of 1000 individuals, 10.8 ms for the read of the lines alone on
+one thread and 4.1 ms on eight, against 92.5 ms and 13.8 ms with the
+genotypes, and 4.1 + (92.5 - 10.8) / 8 = 14.3 ms predicts the 13.8 ms: the
+serial read is the floor, and the read ahead thread of section 3 of the
+architecture is what would remove it.
+
+The size of a batch, which the spec leaves to a measurement: 256, 1024
+and 4096 lines give 0.206, 0.160 and 0.147 s on 18 threads and 1.28,
+1.24 and 1.28 s on one. 1024 stays: 4096 gains 8 in 100 on 18 threads,
+loses 3 on one, and no size reaches the target.
+
+The gzipped target of the spec does not reproduce with anything. The
+spec and `docs/rust_core.md` give 0.55 s for a gzipped file of 53 MB.
+This file bgzips to 38 MB, 37 MB with plain gzip, and the spike itself
+takes 0.84 s on it. That row is of a file that nobody can make again.
+
+### The review
+
+Three reviewers over a24a4ee, 41812a8 and 159f758, each in a worktree of
+its own: `spec`, `tests`, and `architecture` with the errors; 155, 124
+and 112 thousand tokens. The findings that held went back to the
+subagent of 5.1, 11 commits from 9cb1d93, 93 thousand tokens more.
+
+- A panic in a worker of rayon left the reader going on with lines
+  dropped and no error: a reviewer injected one at line 1501 of 3000,
+  caught it, and read 2996 variants, the positions 1501 to 1504 lost. No
+  input can make the parse panic today, but pyo3 turns a panic into an
+  exception that an `except Exception` swallows. A reader whose parse did
+  not come back now gives an error at every later read.
+- The batch was bounded in lines and not in bytes, so the memory of a
+  reader grew with the individuals: 13.3 MB of resident memory for 1000
+  individuals, measured, where the doc comment of the constant said
+  6 MB, 82.7 MB for 10000, and near 0.8 GB for 100000. A batch
+  is now 8 MiB of text at most, which leaves the 1024 lines of the
+  400 MB file as they were, and the bench says it costs nothing.
+- Three uses of rayon, in two tests and in the bench, were not behind
+  the `cfg` of the wasm targets: `cargo wasm-check` passed because it
+  checked the library alone. The alias checks all targets now, and both
+  wasm targets pass.
+- The test named for the reuse of the buffers guarded nothing since the
+  batches: throwing every buffer away at the swap passed all 87 tests.
+  The test is now the reviewer's probe, 3 distinct buffers for 8 lines
+  in batches of 2, and 8 with that mutation.
+- No test ran the serial parse natively, none noticed a batch of one
+  line, the errors that the batching moved were tested with one batch
+  alone, and the bench could not vary the size of a batch, which the
+  subagent of 5.2 had changed by hand. All have tests or arguments now.
+  The doc of the constant said that nobody had measured it, in the
+  commit that measured it.
+
+What held and was not changed: the message of 41812a8 says the first
+batch of a second pass costs 3396 allocations and 403 KB, and a reviewer
+counted 3458 and 376 KB with its own harness; the two numbers that the
+spec leans on, above, reproduced exactly.
+
+## The final check
+
+From a clean clone of the branch at 59bf624, outside the repository:
+`cargo fmt --all --check` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` no warning; `cargo test --workspace` `92
+passed`; `cargo wasm-check`, both wasm targets, every target of the
+crate, finished; `uv run ruff format --check` `8 files already
+formatted`, `uv run ruff check` `All checks passed!`; `uv run maturin
+develop && uv run pytest` `38 passed`; `npm run build` and `npm test` in
+`js/popnei` `tests 39`, `pass 39`, `fail 0`;
+`scripts/build_pyodide_wheel.sh` built the wheel and
+`node tests/pyodide/smoke.mjs`, after `npm install` beside it, read
+`cases.vcf` and `cases.vcf.gz` under pyodide and exited with 0.
