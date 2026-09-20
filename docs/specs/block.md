@@ -66,8 +66,11 @@ memory in use is one block.
 `fields` names what each block carries besides the genotypes, among
 `"chrom"`, `"pos"`, `"id"`, `"alleles"` and `"qual"`. The chromosome and
 the position travel together in the core, so asking for one fills both.
-Another name is a `ValueError`. `num_vars_per_block` is the number of
-variants of a block, and `None` is the rule above.
+Another name is a `ValueError`. `fields` is a sequence of names, and one
+name written where the sequence goes, `fields="alleles"`, is a
+`TypeError`: a string is a sequence of its letters, and popnei would
+otherwise look for a field called `a`. `num_vars_per_block` is the number
+of variants of a block, and `None` is the rule above.
 
 `Block` is a frozen dataclass. `gts` is a numpy int8 array of variants x
 individuals x ploidy, and the binding crate hands the array of the core to
