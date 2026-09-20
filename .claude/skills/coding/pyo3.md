@@ -116,16 +116,28 @@ builds the frozen dataclasses.
 
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
-`enum PyPopneiError`, which holds the one error enum of the core in one
-case and in the others what this crate refuses before the core sees it,
-with a `From<popnei::Error>` and one `From<PyPopneiError> for PyErr`. The
-functions of the crate return
-`Result<T, PyPopneiError>`, so that `?` works and no call site has a
-`map_err`. That one conversion chooses the exception: `ValueError` for a
-bad argument or a malformed file, `FileNotFoundError` and `OSError` for
-the file system, as a pyNei user would expect from pyNei. The message is
-the `Display` of the core error, which already has the path, the line and
-the field.
+`enum PyPopneiError`, with a `From<popnei::Error>` and one
+`From<PyPopneiError> for PyErr`. Its four cases are the error of the core;
+a read that failed, with the path that the core was not given; an argument
+that says how many of something there are and counts nothing, which this
+crate refuses before the core sees it; and a defect of this crate, a lock
+that a panic left broken or a chromosome that is not in the table it came
+from.
+
+Every function of the crate returns `Result<T, PyPopneiError>`, the
+`#[pyfunction]` and the `#[pymethods]` that pyo3 exports among them, so
+that `?` carries an error of the core across. A call site maps one by hand
+only to add what the core does not have: `PyPopneiError::of_the_file` puts
+the path into a read that failed.
+
+The one conversion chooses the exception a pyNei user expects from pyNei.
+`OSError` for the file system, built with the number the system gave, so
+that it is the `FileNotFoundError`, the `IsADirectoryError` or the
+`PermissionError` of that number and carries the file in `filename`.
+`RuntimeError` for a defect of this crate. `ValueError` for everything
+else, a bad argument or a malformed file, which is also what a case added
+to the enum of the core later gets. The message is the `Display` of the
+core error, which already has the path, the line and the field.
 
 A panic in Rust reaches Python as `PanicException`, which derives from
 `BaseException`, is not caught by `except Exception`, and usually ends the

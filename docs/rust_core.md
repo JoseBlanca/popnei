@@ -197,9 +197,9 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
    crate in pure Rust with no pyo3, tested with `cargo test`, and a thin
    binding crate that maturin builds into one wheel together with the
    Python package, the mixed layout of pydantic-core and polars. pyNei is
-   a development dependency of the Python side, a path dependency on the
-   sibling checkout, and the tests run both on the same inputs: pyNei is
-   the oracle. The reference datasets and the script that made them are
+   a development dependency of the Python side, taken from its git
+   repository at the commit that `pyproject.toml` names, and the tests run
+   both on the same inputs: pyNei is the oracle. The reference datasets and the script that made them are
    copied over, so the tests stay self contained. The core reads and
    writes the vars file with arrow-rs, in a format of its own since 20
    September 2026, when the owner decided that it owes pyNei's nothing;

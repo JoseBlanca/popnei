@@ -158,15 +158,25 @@ compiler drop the bounds checks.
   `crates/popnei-js/src/errors.rs`. Neither can implement `From` for the
   error type of its language, because neither that type nor
   `popnei::Error` belongs to it, so each has an enum that does,
-  `PyPopneiError` and `JsPopneiError`, which holds the error of the core
-  in one case and in the others what the binding refuses on its own; the
-  functions of the crate return it, so `?` works and no call site has a
-  `map_err`. Python gets the exception a pyNei user expects: `OSError`
-  built with the number the system gave and the file in `filename`,
-  `ValueError` for an argument or for a file whose content popnei cannot
-  read. JavaScript has one exception for everything a library refuses, so
-  every case becomes an `Error` with the message the error has in Rust.
-  `pyo3.md`, beside this file, has the Python side.
+  `PyPopneiError` and `JsPopneiError`. One of its cases holds the error of
+  the core, and the others hold what only the binding knows: an argument
+  it refuses before the core sees it, a value its language cannot hold, a
+  read that failed and the path the core was not given, and a defect of
+  the binding itself, a lock that a panic left broken. Every function of
+  the crate returns that `Result`, the entry points that pyo3 and
+  wasm-bindgen export among them, so `?` carries an error of the core
+  across. A call site maps one by hand only to add what the core does not
+  have, which in the Python crate is the path of the file, with
+  `PyPopneiError::of_the_file`.
+- Python gets the exception a pyNei user expects: `OSError` for a file
+  that could not be opened or read, built with the number the system gave
+  and the file in `filename`; `RuntimeError` for a defect of the binding,
+  which is not a wrong value of the user; `ValueError` for everything
+  else, an argument or a file whose content popnei cannot read, and for a
+  case of the enum of the core that nobody has written yet. JavaScript has
+  one exception for everything a library refuses, so its four cases all
+  become an `Error` with the message the error has in Rust. `pyo3.md`,
+  beside this file, has the Python side.
 
 ## Types, names and defaults
 
