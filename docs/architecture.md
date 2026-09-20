@@ -1,79 +1,106 @@
 # The architecture: how the variants flow
 
-September 2026. The data flow model of popnei, decided before any code, and
-the map of the modules. The objectives are in `objectives.md` and the
-measurements that led here in `rust_core.md`.
+September 2026. The data flow model of popnei and the map of the modules.
+It was decided before any code, and revised on 20 September 2026: the
+variants flow in blocks from the source to the calculation, where the first
+version had a single variant that each reader filled. What was revised and
+why is at the end of section 1. The objectives are in `objectives.md` and
+the measurements that led here in `rust_core.md`.
 
-## 1. The record level: a reader fills a variant the caller owns
+## 1. A reader gives blocks
 
-The primary interface is the one Rust's own I/O uses, `BufRead::read_line`,
-`csv::Reader::read_record`, noodles' `read_record`: the caller owns a
-`Variant` and lends it to a reader, which fills it and says whether there
-was one.
+A block is a run of consecutive variants held as arrays, the genotypes of
+all of them in one array and each other field in a column (section 2).
+Everything that gives variants gives them in blocks, through one trait:
+the VCF reader, the vars file reader, and a filter, which is a reader over
+another reader.
 
 ```rust
-pub trait VariantReader {
-    /// It fills `var` with the next variant. false when there are no more.
-    fn read_variant(&mut self, var: &mut Variant) -> Result<bool>;
+pub trait BlockReader: Send {
+    /// The next block, or None when there are no more.
+    fn next_block(&mut self) -> Result<Option<Block>>;
     fn individuals(&self) -> &[String];
     fn ploidy(&self) -> usize;
     fn chroms(&self) -> &ChromTable;
     /// Which fields the caller wants filled. The rest may be skipped.
     fn set_needs(&mut self, needs: Needs);
 }
-
-pub struct Variant {
-    pub chrom: u32,                 // an id into the reader's ChromTable
-    pub pos: u64,
-    pub gts: Vec<i8>,               // individuals x ploidy, MISSING_ALLELE is -1
-    pub id: String,
-    pub alleles: Vec<String>,       // ref first, as in the VCF
-    pub qual: Option<f32>,
-    pub filled: Needs,              // what the reader actually filled
-}
 ```
 
 What this gives:
 
-- **No allocations in the steady state.** The buffers inside the
-  `Variant`, the genotype vector, the id, the alleles, are allocated once
-  and reused, cleared and refilled, for a million variants.
-- **Filters are readers over readers.** A variant filter holds its source
-  and pulls from it until a variant passes, then hands that one back. A
-  filter of individuals compacts the genotypes in place. Neither copies.
-- **The reader owns its own buffers**, the line buffer, the batches it
-  parses ahead, one set per thread when it fans out, and so does a
-  writer. The lent `Variant` is the only thing that crosses.
+- **One shape from the source to the calculation.** Both sources are
+  blocks inside. The vars file is a sequence of record batches, and a
+  batch is a block. The VCF reader reads the lines of a block and parses
+  them on the threads of rayon, each thread writing its row straight into
+  the arrays of the block, which is how the spike of `rust_core.md` got
+  its 0.55 s on one thread and 0.11 s on 18 cores. Nothing is taken apart
+  into single variants and put together again.
+- **The threads have the variants they need.** The per variant work, the
+  counts, the masks, the filters, the statistics, runs with rayon over the
+  rows of the block in hand. The matrix work, the kinship, the GWAS, the
+  PCA, the LD, takes the same block as a matrix, because a matrix product
+  over a block runs 5x to 10x faster than the same work variant by
+  variant.
+- **Filters are readers over readers.** A variant filter takes a block
+  from its source, decides which rows stay, with rayon over the rows,
+  compacts every column in place and gives the block on. A filter of
+  individuals compacts the genotypes of each row in place. Neither
+  allocates a block. A block left with no variants is not given; the
+  filter takes the next.
+- **One variant is a view into a block.** A calculation that works variant
+  by variant loops over `block.variants()`, which are slices and allocate
+  nothing, and the row helpers, the dosages, the masks, the allele counts
+  of one variant, work on that view. What such a calculation keeps from
+  one block to the next does not grow with the variants: for a mean, a sum
+  and a count, to which it adds what rayon reduced over the rows of each
+  block.
 - **Only what is asked for is filled.** `Needs` is a bit set, `GTS`,
-  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`. Most consumers ask for the
-  genotypes alone. The VCF reader always fills chrom and pos, they cost
-  nothing next to a thousand genotype fields, and skips the rest unless
-  asked; the vars file reader does not decompress the columns nobody
-  asked for. A consumer checks `filled` before it trusts a field.
+  `CHROM_POS`, `ID`, `ALLELES`, `QUAL`, and a column that nobody asked for
+  is `None` in the block. Most consumers ask for the genotypes alone. The
+  VCF reader then does not parse the other columns, and the vars file
+  reader does not decompress them. A change of `Needs` holds from the next
+  block that the reader builds, so a block that was read ahead keeps the
+  columns it was built with.
 - **Chromosome names are interned**, one `u32` per variant and one table
-  per reader, not a string per variant.
+  per reader, not a string per variant. A filter gives the table of its
+  source.
 - **A reader reads from any source of bytes, not from a path.** The VCF
   reader is generic over `BufRead`, and the vars file reader over
   `Read + Seek`, because an arrow file keeps the index of its batches at
   its end. Natively the source is a file. In a web application there is
   no filesystem, and the source is a file that the user picked in the
-  page, or bytes in memory (section 11). The writers take any `Write` in
-  the same way.
+  page, or bytes in memory (section 11). The writers take blocks and any
+  `Write` in the same way.
 
-What it costs, accepted: a reader is not an `Iterator`, so the consumer
-writes `while reader.read_variant(&mut var)? { ... }` and the adapters are
-our own. And "one variant at a time" is the interface, not the memory
-footprint of the parser, which parses ahead in batches.
+What it costs, accepted:
 
-## 2. The block level: for the calculations that want matrices
+- A filter leaves blocks of uneven size, and the consumers that care about
+  the size put `reblock` before them (section 2).
+- An error in one variant loses its block: the blocks before it are given,
+  and then the error. With a VCF that has a wrong line after 250 good ones
+  and blocks of 100, the caller gets two blocks and the error.
+- The memory of a stage is a block, about 10 MB of genotypes at ploidy 2,
+  and with the read ahead of section 3 two or three are alive at a time.
 
-The kinship, the GWAS, the PCA, the LD and the distances between
-individuals want a block of variants as contiguous arrays, because a matrix product
-over a block runs 5x to 10x faster than the same work variant by variant.
-A `BlockCollector` builds blocks from any `VariantReader`, one memcpy of a
-few kilobytes per variant, and a block native source, the vars file
-reader with its record batches, hands its batches to the collector
-without the copy.
+What was revised. The first version of this document had two levels: a
+record level, where the caller owned one `Variant` and lent it to a reader
+that filled it, `read_variant`, as `BufRead::read_line` fills a string,
+and a block level for the matrix work, with a collector that copied the
+variants of a reader into a block. The owner dropped the record level on
+20 September 2026, for three reasons. A consumer that holds one lent
+variant cannot run rayon across variants, so the statistics and the
+filters needed a block anyway to use the threads that the objectives ask
+for. Both sources are blocks inside, so the single variant was a narrow
+point between two arrays, undone on each side. And the file that users
+will usually read is the vars file, not the VCF that the record level was
+thought for. The copies were not the reason: on the vars file of 20000
+variants and 1000 individuals of `docs/specs/io_vars.md`, decompressing
+the genotypes took arrow-rs 18.8 ms, and copying them variant by variant
+into a record and from there into a block brought it to 19.6 ms, on one
+thread of the owner's Apple M5 Pro.
+
+## 2. The block
 
 ```rust
 pub struct Block {
@@ -84,30 +111,47 @@ pub struct Block {
     pub qual: Option<Vec<f32>>,
 }
 impl Block {
-    pub fn variant(&self, i: usize) -> VariantRef<'_>;    // slices, no allocation
-    pub fn copy_variant_into(&self, i: usize, var: &mut Variant);  // back to a record
+    pub fn variants(&self) -> impl Iterator<Item = VariantRef<'_>>;  // slices, no allocation
+    pub fn retain_vars(&mut self, keep: &[bool]) -> Result<()>;      // a filter compacts in place
 }
 ```
 
-Blocks are owned and move through a pipeline; a stage that removes rows
-compacts in place, and `reblock` restores the size. The block is the unit
-of memory, a few thousand variants or about 5 million genotypes as in
-pyNei, and the unit of parallelism, rayon over its rows. Stages that look
-ahead, the LD filter, or that reorder, are block consumers, because a lent
-variant cannot be held.
+Blocks are owned, and a reader gives each one away. That is what lets the
+binding crate hand the genotype array to numpy without copying it, a read
+ahead thread move a block to the thread that consumes it, and a filter
+compact it in place. What a new allocation for each block costs was
+measured on that same vars file: copying each decompressed batch, 10 MB,
+into a vector allocated for it added 0.4 ms to the 18.8 ms of the
+decompression of its four batches. A consumer that is done with a block
+can give it back to be refilled, if a measurement ever asks for it.
+
+A block holds about 5 million genotypes, and no fewer than 100 variants
+and no more than 10000, the numbers of pyNei's chunks, which nobody has
+measured for popnei. A source gives blocks of the size it is asked for,
+and the last one is the only one that can be shorter. The vars file
+reader gives the batches of its file as they are. `reblock` is a reader
+over a reader that cuts and joins the blocks of its source to a size, and
+it goes before the consumers that care: the matrix work, after a filter
+took rows out; the vars file writer, which writes one batch per block; and
+the end of `iter_blocks`, so that a user gets blocks of one size. The per variant
+calculations take the blocks as they come.
+
+The block is the unit of memory and the unit of parallelism, rayon over
+its rows. Stages that look ahead, the LD filter, or that reorder, hold
+more than one block.
 
 ## 3. Threads
 
-- Inside a reader or a writer: the VCF reader reads lines into a batch and
-  parses them with rayon, then hands them out one by one; the writer
-  formats a batch of lines in parallel and writes them in order. Each
-  thread has its own buffers.
+- Inside a reader or a writer: the VCF reader reads the lines of a block
+  and parses them with rayon, each thread writing its own row of the
+  block; the VCF writer formats the rows of a block in parallel and writes
+  them in order. Each thread has its own buffers.
 - Between stages: a read ahead thread between the reader and the
-  consumer, one block or one batch ahead, as pyNei does.
-- Inside a block consumer: rayon over the rows for the per variant work,
-  the BLAS pool for the matrix products, never nested. A rayon worker that
-  calls BLAS pins it to one thread; a big product is called from outside
-  rayon.
+  consumer, one block ahead, as pyNei does.
+- Inside a consumer, a filter or a calculation: rayon over the rows of a
+  block for the per variant work, the BLAS pool for the matrix products,
+  never nested. A rayon worker that calls BLAS pins it to one thread; a
+  big product is called from outside rayon.
 - In wasm there are no threads, neither in the wheel for pyodide nor, in
   its first version, in the build for TypeScript. Everything above must
   build and run single threaded, rayon gated off the wasm targets.
@@ -125,14 +169,12 @@ so, as pyNei does.
 ## 5. The Python boundary
 
 The Python `Variants` object holds a reader and has no genotypes of its
-own. A calculation takes it and runs its loop over the variants inside
-the core, at the record level or over blocks as the calculation needs, so
-no calculation pays for a call from Python per variant. This departs from
-pyNei, whose `Variants` yields chunks, arrays of a few thousand variants,
-and whose calculations are written over them. In popnei a block exists
-only for the calculations that want matrices, the PCA, the kinship, and
-for the user who asks for the genotypes. A user holds neither variants
-nor an iterator of them. The one way
+own. A calculation takes it and runs its loop over the blocks of that
+reader inside the core, so no calculation pays for a call from Python per
+block or per variant. This departs from pyNei, whose `Variants` yields
+chunks, arrays of a few thousand variants, to calculations that are
+written over them in Python. A user holds neither variants nor an
+iterator of them. The one way
 genotypes come out is `Variants.iter_blocks(fields=...)`, which gives
 blocks, the genotypes as an int8 array of variants x individuals x ploidy
 that the binding crate hands to numpy without copying, with the columns
@@ -150,17 +192,21 @@ The other boundary, with TypeScript, is in section 11.
 
 ## 6. The vars file
 
-The vars file is the contract between pyNei and popnei, and each has to
-read what the other writes. Format 2.0, as `pynei/src/pynei/io_vars.py`
-writes it: one arrow IPC file, feather v2, zstd, one record batch per
-chunk; the schema metadata holds, under the key `pynei`, a json with
-`var_format_version`, `samples`, `num_samples`, `ploidy` and
-`num_vars_per_chunk`; each batch carries under `pynei_chunk` a json with
-the range of chroms and positions it holds; the columns are `chrom`,
-`pos`, `id`, `qual`, `alleles` as a list of strings per variant, and `gts`
-as a fixed size list of `num_samples * ploidy` int8 per variant, whose
-flat buffer is the genotype array itself. The keys keep pyNei's word,
-samples, for what popnei calls individuals. Written and read with arrow-rs.
+The vars file is popnei's own file of variants, and its format is in
+`docs/specs/io_vars.md`. The owner decided on 20 September 2026 that it
+owes nothing to the vars file of pyNei, which it took its shape from:
+pyNei will not be used once popnei exists, and neither library reads the
+files of the other. It is one arrow IPC file, feather v2, compressed with
+lz4, which is pure Rust in arrow-rs where zstd is C, with one record batch
+per block; the schema metadata holds, under the key `popnei`, a json with
+`format_version`, `individuals`, `ploidy` and `num_vars_per_block`; the
+footer holds, under `popnei_batches`, the number of variants of each batch
+and, for each chromosome in it, the smallest and the largest position, so
+that a reader asked for a region skips the batches outside it; the columns
+are `chrom`, `pos`, `id`, `qual`, `alleles` as a list of strings per
+variant, and `gts` as a fixed size list of `num_individuals * ploidy` int8
+per variant, whose flat buffer is the genotype array itself. Any program
+with an arrow library opens it as a table. Written and read with arrow-rs.
 
 ## 7. Errors
 
@@ -197,11 +243,11 @@ overlap.
 
 | module | what it holds | pyNei functions it replaces |
 |---|---|---|
-| `variant` | `Variant`, `Needs`, `ChromTable`, `MISSING_ALLELE`, the row helpers: dosages, missing and het masks, allele counts of one row | `Genotypes.to_012`, `gt_counts` |
-| `io::vcf` | the reader, parallel by batches, gzip; the writer | `vars_from_vcf`, and a writer pyNei does not have |
-| `io::vars` | the arrow file reader, projection by `Needs`, batches for the collector; the writer | `load_vars`, `write_vars` |
-| `filters` | readers over readers: missing data, maf, observed het, individuals; the LD filter on blocks | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
-| `block` | `Block`, `BlockCollector`, `reblock`, `VariantRef` | the chunks and `_resize_chunks` |
+| `variant` | `Needs`, `ChromTable`, `MISSING_ALLELE`, `VariantRef`, the view of one variant of a block, and the row helpers over it: dosages, missing and het masks, allele counts | `Genotypes.to_012`, `gt_counts` |
+| `io::vcf` | the reader, which parses the lines of a block in parallel, gzip; the writer | `vars_from_vcf`, and a writer pyNei does not have |
+| `io::vars` | the arrow file reader, projection by `Needs`, a batch of the file as a block; the writer; a format of popnei's own | `load_vars`, `write_vars` |
+| `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
+| `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
 | `dists` | Kosman between individuals on blocks, Jost's D between pops | `calc_pairwise_kosman_dists`, `calc_jost_dest_pop_dists` |
 | `linalg` | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares; backends: BLAS and LAPACK natively, faer in wasm | numpy.linalg |
@@ -218,19 +264,21 @@ what sits on it.
 ## 10. The walking skeleton
 
 The smallest path that exercises every layer once, and the first thing
-built: the workspace and the two crates; `Variant`, `Needs` and the
-`ChromTable`; the VCF reader, parallel, with gzip; the missing data
-filter; the vars file writer; the `BlockCollector`; the Python `Variants`
-over a reader, with `iter_blocks`; `open_vcf`, `write_vars`,
-`load_vars` and `filter_by_missing_data` in the Python package with pyNei's
-signatures; and the tests: cargo tests of the reader and the filter, and
-pytest tests that parse the reference VCFs with both libraries and compare
-popnei's blocks with pyNei's chunks, that pyNei reads the vars file popnei writes, and that the
-filter gives the same variants. On the TypeScript side it has the
+built: the workspace and the two crates; `Block`, `BlockReader`, `Needs`
+and the `ChromTable`; the VCF reader, parallel, with gzip; the missing
+data filter; the vars file writer and reader; `reblock`; the Python
+`Variants` over a reader, with `iter_blocks`; `open_vcf`, `write_vars`,
+`open_vars` and `filter_by_missing_data` in the Python package, with
+pyNei's signatures where the specs keep them; and the tests: cargo tests of
+the reader and the filter, and pytest tests that parse the reference VCFs
+with both libraries and compare popnei's blocks with pyNei's chunks, that
+pyarrow opens the vars file popnei writes and finds the variants of the
+VCF in it, that the file read back gives the blocks of the VCF, and that
+the filter gives the same variants. On the TypeScript side it has the
 JavaScript binding crate with the VCF reader over bytes in memory, the
-missing data filter and the vars file writer, and a test under node that
-parses a reference VCF, filters it and writes a vars file that pyNei
-reads with the same variants. The skeleton is done when all those tests
+missing data filter and the vars file writer and reader, and a test under
+node that parses a reference VCF, filters it, writes a vars file and reads
+it back with the same variants. The skeleton is done when all those tests
 pass, the Python binding crate builds as a wasm wheel with the steps in
 pyNei's `spike/README.md`, and the wasm package builds.
 
@@ -251,8 +299,8 @@ compiled for another target, `wasm32-unknown-emscripten`, where
 emscripten emulates all three. So the core is built for two wasm targets,
 and a dependency of the core has to build for both. One written in C
 builds under emscripten with its compiler and may not build for the
-direct target; the zstd compression of the vars file is the known case,
-an open question of `rust_core.md`.
+direct target; zstd was the known case, and it is why the vars file is
+compressed with lz4, which is pure Rust (`docs/specs/io_vars.md`).
 
 The TypeScript package, `js/popnei`, sits on the binding as the Python
 package does: the functions with the names and the arguments of the

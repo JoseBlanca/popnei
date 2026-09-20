@@ -23,8 +23,8 @@ the word of population genetics. VCF calls it a sample, and it is a
 column of a VCF, and pyNei calls it a sample too, `samples`,
 `num_samples`, `filter_samples`. In popnei the word is individual in the
 prose and in the identifiers, `individuals`, `num_individuals`, and
-"sample" is written only for a name of pyNei, for a key of the vars file,
-which keeps pyNei's, and for a statistical sample. Inside the core an
+"sample" is written only for a name of pyNei and for a statistical
+sample. Inside the core an
 individual is an index into the individuals of the reader. Not used:
 sample, accession.
 
@@ -84,31 +84,34 @@ individuals array of them. pyNei: `to_012` and "the 012 matrix".
 
 ## How the data moves
 
-**record.** A variant as one item of the stream that a reader gives, the
-`Variant` struct that the caller owns and the reader fills. The genetics is
-written with "variant". "Record" is for the flow of the data.
-
 **block.** Consecutive variants held as contiguous arrays, the `Block`
-struct, which the calculations that want matrices consume. A block holds
+struct, which is how the variants flow from a source to a calculation: a
+reader gives blocks, a filter compacts them and a calculation consumes
+them, as rows or as a matrix. One variant of a block is a view into it,
+`VariantRef`, and "row" is that variant as a line of the arrays. A block holds
 about 5 million genotypes, the size pyNei gives its chunks, which is a few
 thousand variants.
 pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
 the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
-used: batch, which is arrow's word for the unit of the
-vars file, and window.
+used: batch, which is written for two other things, arrow's unit of the
+vars file, and the lines that the VCF reader reads and parses together,
+several to a block; and window. A vars file is written
+with one batch for each block, and read back in blocks of any size.
 
-**record level** and **block level.** The two ways a calculation runs, of
-sections 1 and 2 of `architecture.md`. At the record level it sees one
-variant at a time and what it keeps from one variant to the next does not
-grow with the number of variants. At the block level it gets blocks.
+**region.** A stretch of one chromosome, from a smallest to a largest
+position, both included. The vars file keeps, for each of its batches, the
+region of every chromosome that has variants in it.
 
-**reader.** Anything that gives variants one at a time through the
-`VariantReader` trait: the VCF reader, the vars file reader, and a filter,
-which is a reader over another reader.
+**reader.** Anything that gives blocks through the `BlockReader` trait: the
+VCF reader, the vars file reader, and a filter or `reblock`, which are
+readers over another reader. Not used: record, record level and block
+level, the words of the first version of `architecture.md`, which had a
+single variant that a reader filled.
 
-**vars file.** The arrow file in which pyNei and popnei keep variants,
-which each of them has to read as the other writes it. Its format is in
-section 6 of `architecture.md`.
+**vars file.** The arrow file in which popnei keeps variants, feather v2,
+which any program with an arrow library opens as a table. Its format is
+popnei's own, in `docs/specs/io_vars.md`. pyNei has a file of the same
+name and another format, and neither library reads the other's.
 
 ## The layers
 

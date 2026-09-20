@@ -40,8 +40,8 @@ Look for these:
    round: an open point that the text settles somewhere else, or that the
    writer could have decided alone.
 5. A conflict with `docs/architecture.md` or with `docs/objectives.md`: a
-   type that is not the one the architecture gives, a calculation put at
-   the block level that runs at the record level, a dependency the wasm
+   type that is not the one the architecture gives, a reader that gives
+   anything but blocks, a dependency the wasm
    build cannot have. And a name that `docs/glossary.md` gives to another
    thing, or a thing the glossary names that the spec calls otherwise.
 6. A check of "How it is verified" that does not say at which function it

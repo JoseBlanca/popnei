@@ -200,8 +200,10 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
    a development dependency of the Python side, a path dependency on the
    sibling checkout, and the tests run both on the same inputs: pyNei is
    the oracle. The reference datasets and the script that made them are
-   copied over, so the tests stay self contained. The vars file format is
-   part of the contract and the core reads and writes it, with arrow-rs.
+   copied over, so the tests stay self contained. The core reads and
+   writes the vars file with arrow-rs, in a format of its own since 20
+   September 2026, when the owner decided that it owes pyNei's nothing;
+   it is in `docs/specs/io_vars.md`.
 
 3. **The parser goes first.** It is the largest gain by far, 25x on one
    thread and 123x with threads, it survives wasm almost whole, and it can
@@ -211,12 +213,14 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
    the reference VCFs before that parser goes.
 
 4. **A stream of blocks.** Per variant work, the counts, the masks, the
-   filters, the dosages, runs record by record, with rayon across records,
-   and needs no arrays. The BLAS bound work, the kinship, the mixed model
-   test, the PCA, consumes blocks of a few thousand variants, because a
-   record at a time turns a matrix product into matrix vector products
+   filters, the dosages, runs with rayon across the rows of a block. The
+   BLAS bound work, the kinship, the mixed model test, the PCA, consumes
+   the same blocks of a few thousand variants as matrices, because a
+   variant at a time turns a matrix product into matrix vector products
    that run 5x to 10x slower. The block is the current chunk with its
-   arrays made internal.
+   arrays made internal. Until 20 September 2026 this decision had the per
+   variant work run record by record, on a single variant that each reader
+   filled; section 1 of `docs/architecture.md` says why that was dropped.
 
 5. **The linear algebra has two backends behind one small module.** The
    operations pynei needs are few: matrix product, symmetric
@@ -229,7 +233,7 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
    loop. In wasm, where there is no BLAS, faer. Whether faer is also good
    enough natively on x86 is open, see below.
 
-6. **Who owns the threads.** rayon owns the per record work. BLAS has its
+6. **Who owns the threads.** rayon owns the per variant work. BLAS has its
    own pool for the big products. The two must not nest: a rayon worker
    that calls BLAS pins it to one thread, and a big product that BLAS
    parallelizes is called from outside rayon. In wasm there are no threads
@@ -290,15 +294,15 @@ wasm targets with `cfg(not(target_family = "wasm"))`.
   heap caps the browser at a few thousand individuals for the mixed models
   whatever the language, under pyodide and in the direct build of
   decision 9 alike.
-- **zstd in the direct wasm build.** The vars file is compressed with
-  zstd, and arrow-rs gets it from the `zstd` crate, which wraps the C
-  library. Under emscripten the C compiles with emscripten's compiler.
-  `wasm32-unknown-unknown` has no C library; the `zstd` crate is said to
-  build there with a clang that can emit wasm, which Apple's cannot, and
-  there are decoders in pure Rust but no encoder known to be as complete.
-  None of this has been tried here. It is the first thing to try when
-  the walking skeleton is built, because the skeleton writes a vars file
-  from TypeScript.
+- **zstd in the direct wasm build.** Closed on 20 September 2026: the
+  vars file is compressed with lz4 in every build, which arrow-rs gets
+  from `lz4_flex`, pure Rust. zstd was tried first. arrow-rs gets it from
+  the `zstd` crate, which wraps the C library, and for
+  `wasm32-unknown-unknown` it compiled and failed to link with Apple's
+  clang, which does not emit wasm, and built and ran under node with the
+  clang of the emscripten SDK in `CC_wasm32_unknown_unknown`. lz4 needs
+  none of that, at the price of a file 2.2 times larger. The measurements
+  are in `docs/specs/io_vars.md`.
 - **Threads in the direct wasm build.** A page served with the two
   headers that isolate it from other origins can share memory between
   web workers, and the `wasm-bindgen-rayon` crate runs rayon on them. As

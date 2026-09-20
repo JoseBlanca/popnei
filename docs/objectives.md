@@ -66,9 +66,9 @@ in a browser tab.
    against plink2 and GMMAT, before and after every change that claims it.
 
 5. **Streaming.** The variants go through the library as a stream of
-   records grouped in blocks of a few thousand, so that a dataset never has
-   to fit in memory, the per record work needs no arrays, and the matrix
-   bound work gets the blocks it needs.
+   blocks of a few thousand, so that a dataset never has to fit in memory,
+   the per variant work has the rows to spread over the threads, and the
+   matrix bound work gets the blocks it needs.
 
 ## Non goals
 

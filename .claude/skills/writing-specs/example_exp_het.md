@@ -148,9 +148,10 @@ alleles, as 3.5 genotypes, give 1.0029 (**Open 3**, below).
 
 ### How it runs
 
-At the record level. Per variant, the counts of each allele over the sample
+Over the rows of each block, with rayon across them, and it needs no
+`reblock` before it. Per variant, the counts of each allele over the sample
 indices of a population come from the row helper of the `variant` module, and
-the value follows from those counts alone. What is kept from one variant to the
+the value follows from those counts alone. What is kept from one block to the
 next is the accumulator of the `calc_per_var_distribs` item: per population a
 sum, a count of the variants that had a value, and the histogram bins. The
 memory does not grow with the variants or with the samples. pyNei's chunk wide
@@ -274,8 +275,8 @@ histogram counts them, where the same variant among called ones gets no value.
 The options are to reproduce it, which costs popnei a notion of the alleles of
 a whole block that this calculation does not otherwise need and makes the value
 of a variant depend on where the block boundaries fell, or to give no value
-whenever the population has no called allele, which is what a record level
-implementation does by itself and changes what a user sees only for a block
+whenever the population has no called allele, which is what an
+implementation that works row by row does by itself and changes what a user sees only for a block
 with nothing called in any sample. Recommendation: give no value. Meanwhile the
 implementer writes it that way; the comparison against pyNei is safe, since the
 reference panel drops 3 in 100 genotypes of 200 samples and no block of it is
@@ -303,7 +304,7 @@ exponent alone and take the called alleles from the data, which is the `ExpHet`
 above; or to drop the argument and always use the ploidy of the variants, which
 loses nothing if nobody passes it. Recommendation: keep it as the exponent
 alone. It is the same as pyNei whenever the argument matches the data, and it
-is what the record level code gives for free. Meanwhile the implementer writes
+is what the code that works row by row gives for free. Meanwhile the implementer writes
 that and compares against pyNei only at the data's own ploidy.
 
 **Open 4: what an `ExpHet` accepts.** Its fields are public and nothing checks

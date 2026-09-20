@@ -146,7 +146,7 @@ Each is a checklist under `checklists/`.
 | `data_layout` | hot code walks collections of structs, shares atomics between threads, or there is a suspicion of cache misses or false sharing |
 | `concurrency` | the code uses rayon, threads, locks, atomics, channels, or calls BLAS from a thread |
 | `hot_loops` | tight loops over genotypes or bytes, float reductions, filters that branch on the data, slice indexing, iterator chains |
-| `io_and_syscalls` | the VCF reader or writer, the vars file, gzip, any per record I/O |
+| `io_and_syscalls` | the VCF reader or writer, the vars file, gzip, any per block I/O |
 | `linalg_and_wasm` | the `linalg` module or what calls it, the size or layout of a block, the wasm build |
 | `python_boundary` | the binding crate, the Python package, or a timing taken from Python |
 

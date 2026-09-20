@@ -52,8 +52,8 @@ rate divides by all the samples and not by the called ones is, because it
 changes which variants pass and nobody would guess it.
 
 The parts below are the order of a spec and not a form to fill. A part
-with nothing to say is a line or is left out: "It runs at the record level
-and keeps nothing from one variant to the next."
+with nothing to say is a line or is left out: "It runs over the rows of each
+block and keeps nothing from one block to the next."
 
 A spec that describes more than one person can build in one go is split
 into two specs along a line the code will also have.
@@ -146,10 +146,10 @@ says only what is its own.
    only when something happens that the reader would not guess.
 4. What pyNei does that is odd, with the function and the file, and
    whether popnei reproduces it. To reproduce pyNei is the default.
-5. How it runs, when there is something to say: at the record level or the
-   block level of the architecture, what is kept from one variant or block
-   to the next, and the memory when it grows with the samples or the
-   variants.
+5. How it runs, when there is something to say: over the rows of a block
+   or on the block as a matrix, whether it needs `reblock` before it, what
+   is kept from one block to the next, and the memory when it grows with
+   the samples or the variants.
 6. How it is verified. The reference program with its version and command,
    the dataset, the few cases whose numbers go into the tests as literals,
    and how they are compared: exactly, for counts and for sets of

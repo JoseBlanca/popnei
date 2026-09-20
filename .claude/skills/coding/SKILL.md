@@ -182,12 +182,13 @@ compiler drop the bounds checks.
 
 ## What the architecture asks of the code
 
-- At the record level nothing is allocated per variant. The buffers of a
-  `Variant` are allocated once and refilled. A `Vec` created inside the
-  loop over the variants is a defect, not a style point.
-- A calculation asks for the fields it reads with `Needs`, and checks
-  `filled` when it depends on one.
-- rayon runs over the records or over the rows of a block. The matrix
+- The variants flow in blocks, and one variant is a view into a block.
+  Nothing is allocated per variant: a `Vec` created inside the loop over
+  the rows of a block is a defect, not a style point. A filter compacts
+  the block it was given and does not build another.
+- A calculation asks for the fields it reads with `Needs`, and checks that
+  the column is there when it depends on one.
+- rayon runs over the rows of a block. The matrix
   products run on BLAS natively. The two are never nested: a rayon worker
   that calls BLAS has it pinned to one thread, and a big product is called
   from outside rayon. The library never builds the global pool of rayon.
