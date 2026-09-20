@@ -293,10 +293,15 @@ The chromosome number of both is 0, since `chr2` is the first name of
 that file.
 
 `many.vcf`, 500 variants of 50 individuals drawn with a fixed seed,
-115 KB, and `many.vcf.gz`, which bgzip wrote as 4 gzip members with 617,
-65250, 49014 and 0 bytes of text, so a decoder that stops at the first
+117 KB, and `many.vcf.gz`, which bgzip wrote as 4 gzip members with 617,
+65252, 51477 and 0 bytes of text, so a decoder that stops at the first
 one fails these tests. 450 of its variants have `PASS`, 25 have `.` and
-25 have `q10`; the first with `q10` is chr1 1259. Every genotype,
+25 have `q10`; the first with `q10` is chr1 1259. 333 of them have an
+id and 400 a quality, 200 of those with a decimal, so that the
+comparison with pyNei covers the id and the quality of 500 variants and
+not of the 4 of `cases.vcf` alone; the id, the quality and the FILTER of
+a variant follow its place in the file and no draw of the generator, so
+that they can be given to it without a genotype moving. Every genotype,
 chromosome and position is compared with `many.bcftools.tsv`, and these
 counts, worked out from that file, are literals:
 
