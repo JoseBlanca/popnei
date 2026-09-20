@@ -343,3 +343,43 @@ tasks 2.3 to 2.5 and task 3.1, the removal, run at the same time, in
 other trees and other files; then the fixes; then task 2.6, the
 measurement, with no build beside it and on the code that the plan
 leaves.
+
+## Work package 3: the record level goes
+
+Task 3.1 ran while the reviewers of tasks 2.3 to 2.5 read the VCF reader,
+which is in another file, and went to the subagent that wrote the block
+module: commits c5a5041, one test written over the VCF reader before the
+test that it replaces went, and 56f5251, the removal; 74 thousand tokens
+and 10 minutes.
+
+### The deliverables, run by the orchestrator at 56f5251
+
+1. No record level. `grep -rn
+   "read_variant\|VariantReader\|BlockCollector\|CollectedBlocks" crates
+   --include='*.rs'` finds nothing, where the plan started with 98 lines,
+   and `"BlockReader\|VariantRef\|reblock"` gives 137, where it gave 0.
+   `cargo doc -p popnei --no-deps` has no warning, and the pages of the
+   `variant` module are `ChromTable`, `Needs`, `VariantRef` and the two
+   constants: no `Variant`. One case of the error went,
+   `VariantOfAnotherSize`; what it guarded holds of a block now, and
+   `Block::check` finds it. Neither binding crate named a case that went.
+2. Everything still passes: `cargo test --workspace` `143 passed`, 154
+   before the removal and 11 tests gone with what they called; pytest `59
+   passed`; `npm test` `tests 44`, `fail 0`; both wasm targets checked;
+   the wheel of pyodide built and its smoke test exited with 0, by the
+   subagent, and again in the final check.
+
+The eleven tests that went are in the second table at the end of this
+report, each with what it checked and the test that checks it now. One
+rule would have lost its only test, a block refused for the memory of its
+columns and not only of its genotypes, and got a test over the VCF reader
+first. Two things have no test any more and need none: the reader that
+stood on the collector, and the capacity of the buffers of a variant that
+was filled again and again, whose rule the spec of the VCF reader leaves
+to a check by hand.
+
+The case of the error for a consumer that did not get a field it depends
+on was called `FieldsNotFilled`, after the variant that a reader filled.
+It is `FieldsNotInTheBlock` now. Nothing gives it yet, and no binding
+crate or test outside `error.rs` names it; it is a public name of the
+core, so the owner may want another.

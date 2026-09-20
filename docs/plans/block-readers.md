@@ -350,7 +350,7 @@ variant that a reader filled.
 
 **Tasks.**
 
-- [ ] 3.1 The removal: `Variant` and `VariantReader` out of
+- [x] 3.1 The removal: `Variant` and `VariantReader` out of
   `crates/popnei/src/variant.rs`, `BlockCollector` and the reader of
   task 2.1 out of `crates/popnei/src/block.rs`, the cases of the error
   that go, the tests that went with them, each named in the work report
