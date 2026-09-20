@@ -188,7 +188,9 @@ panics", for one error type for each operation.
 - [ ] 1.2 The paragraph of the `coding` skill, written as the `writing`
   skill asks, with the reasons the owner took: one type is what the two
   bindings map, and `non_exhaustive` lets a module add a case without
-  breaking a caller. Serves deliverable 3.
+  breaking a caller. The line of "errors" in
+  `.claude/skills/code-review/categories.md` that asks a reviewer for one
+  error type per operation is corrected with it. Serves deliverable 3.
 
 **What could go wrong.** `uv` fetches pyNei from GitHub, so the first
 `uv sync` needs the network, and pyNei's own dependencies, pandas and
