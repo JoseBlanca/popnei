@@ -220,6 +220,21 @@ def test_what_a_variants_cannot_do_names_the_module_it_comes_from(
         pickle.dumps(variants)
 
 
+def test_a_directory_where_a_vcf_goes_gives_the_error_of_the_file_system(
+    reference_vcf_dir: Path,
+) -> None:
+    """A directory opens and cannot be read, which is `IsADirectoryError`.
+
+    The error comes from reading and not from opening, and it carries the
+    number the file system gave, which is what makes Python build the
+    exception of that cause, and the path.
+    """
+    with pytest.raises(OSError) as refusal:
+        open_vcf(reference_vcf_dir)
+    assert isinstance(refusal.value, IsADirectoryError)
+    assert refusal.value.filename == str(reference_vcf_dir)
+
+
 def test_a_count_that_is_negative_is_refused_by_its_name(
     reference_vcf_dir: Path,
 ) -> None:

@@ -79,12 +79,15 @@ impl VcfSource {
             .transpose()?;
         let path = &self.path;
         let options = self.options;
-        let collector = py.detach(|| -> Result<_, PyPopneiError> {
-            let reader: Box<dyn VariantReader> = Box::new(VcfReader::from_path(path, options)?);
-            Ok(BlockCollector::new(reader, needs, num_vars_per_block)?)
-        })?;
+        let collector = py
+            .detach(|| -> Result<_, popnei::Error> {
+                let reader: Box<dyn VariantReader> = Box::new(VcfReader::from_path(path, options)?);
+                BlockCollector::new(reader, needs, num_vars_per_block)
+            })
+            .map_err(|error| PyPopneiError::of_the_file(error, path))?;
         Ok(Blocks {
             collector: Mutex::new(collector),
+            path: path.clone(),
         })
     }
 }
@@ -93,6 +96,9 @@ impl VcfSource {
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Blocks {
     collector: Mutex<BlockCollector<Box<dyn VariantReader>>>,
+    /// The file the collector reads, for the errors of the file system,
+    /// which carry it where Python keeps it, `OSError.filename`.
+    path: PathBuf,
 }
 
 #[pymethods]
@@ -165,7 +171,10 @@ impl Blocks {
                     .to_string(),
             )
         })?;
-        let Some(block) = collector.next_block()? else {
+        let Some(block) = collector
+            .next_block()
+            .map_err(|error| PyPopneiError::of_the_file(error, &self.path))?
+        else {
             return Ok(None);
         };
         let chroms = match block.chrom.as_deref() {
@@ -191,10 +200,12 @@ pub(crate) fn open_vcf(
         ploidy: count_of("ploidy", ploidy)?,
         only_passed,
     };
-    let individuals = py.detach(|| -> Result<_, PyPopneiError> {
-        let reader = VcfReader::from_path(&path, options)?;
-        Ok(reader.individuals().to_vec())
-    })?;
+    let individuals = py
+        .detach(|| -> Result<_, popnei::Error> {
+            let reader = VcfReader::from_path(&path, options)?;
+            Ok(reader.individuals().to_vec())
+        })
+        .map_err(|error| PyPopneiError::of_the_file(error, &path))?;
     Ok(VcfSource {
         path,
         options,
