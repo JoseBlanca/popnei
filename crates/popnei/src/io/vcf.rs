@@ -41,6 +41,12 @@ pub const DEFAULT_ONLY_PASSED: bool = true;
 /// The two bytes every gzipped file starts with.
 const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 
+/// How many bytes are read from the source before it is handed on: the two
+/// of gzip, and enough of what comes after them for the message that says
+/// that the source is not a VCF. They are given back in front of the
+/// source, so reading them costs no byte of it.
+const BYTES_LOOKED_AT: usize = 16;
+
 /// What a column of a VCF holds when it has no value: the id of a variant
 /// with no id, an ALT with no alternative allele, an allele that was not
 /// called.
@@ -98,13 +104,81 @@ impl Default for VcfOptions {
     }
 }
 
+/// A source with the bytes that were read from it to find the gzip put
+/// back in front of it, so that nothing of it was consumed.
+///
+/// One look at the buffer of a source may give fewer bytes than the two of
+/// gzip: a pipe, and a `BufRead` of a small buffer, give one at a time, and
+/// looking again gives the same one, since looking does not consume. So the
+/// two bytes are read and handed back here. After them the bytes come from
+/// the buffer of the source itself and are not copied.
+struct WithFirstBytes<R: BufRead> {
+    /// The bytes read from the source before it was handed over.
+    first: Vec<u8>,
+    /// How many of them have been consumed.
+    consumed: usize,
+    source: R,
+}
+
+impl<R: BufRead> WithFirstBytes<R> {
+    /// It reads `wanted` bytes of `source`, or every byte of it when it
+    /// holds fewer, and gives them back in front of it.
+    fn new(source: R, wanted: usize) -> std::io::Result<WithFirstBytes<R>> {
+        let mut source = source;
+        let mut first = Vec::with_capacity(wanted);
+        while let Some(missing) = wanted.checked_sub(first.len()).filter(|left| *left > 0) {
+            let buffer = source.fill_buf()?;
+            if buffer.is_empty() {
+                break;
+            }
+            let take = buffer.len().min(missing);
+            first.extend_from_slice(buffer.get(..take).unwrap_or_default());
+            source.consume(take);
+        }
+        Ok(WithFirstBytes {
+            first,
+            consumed: 0,
+            source,
+        })
+    }
+}
+
+impl<R: BufRead> std::io::Read for WithFirstBytes<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let read = {
+            let mut buffer = self.fill_buf()?;
+            std::io::Read::read(&mut buffer, out)?
+        };
+        self.consume(read);
+        Ok(read)
+    }
+}
+
+impl<R: BufRead> BufRead for WithFirstBytes<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        let left = self.first.get(self.consumed..).unwrap_or_default();
+        if left.is_empty() {
+            return self.source.fill_buf();
+        }
+        Ok(left)
+    }
+
+    fn consume(&mut self, amount: usize) {
+        if self.consumed < self.first.len() {
+            self.consumed = self.consumed.saturating_add(amount).min(self.first.len());
+        } else {
+            self.source.consume(amount);
+        }
+    }
+}
+
 /// The bytes of the VCF, decompressed when the source was gzipped.
 enum VcfSource<R: BufRead> {
-    /// The source as it was given.
-    Plain(R),
+    /// The source as it was given, with its first bytes in front of it.
+    Plain(WithFirstBytes<R>),
     /// The source through the decoder of gzip, which goes on to the next
     /// member of the file when one ends.
-    Gzipped(BufReader<MultiGzDecoder<R>>),
+    Gzipped(BufReader<MultiGzDecoder<WithFirstBytes<R>>>),
 }
 
 impl<R: BufRead> VcfSource<R> {
@@ -160,8 +234,8 @@ impl<R: BufRead + Send> VcfReader<R> {
         if options.ploidy == 0 {
             return Err(Error::VcfPloidyIsZero);
         }
-        let mut source = source;
-        let gzipped = source.fill_buf()?.starts_with(&GZIP_BYTES);
+        let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
+        let gzipped = source.first.starts_with(&GZIP_BYTES);
         let mut source = if gzipped {
             VcfSource::Gzipped(BufReader::new(MultiGzDecoder::new(source)))
         } else {
@@ -292,7 +366,7 @@ fn as_text(bytes: &[u8]) -> String {
         return "nothing: it holds no byte".to_string();
     }
     let mut text = String::new();
-    for byte in bytes.iter().take(16) {
+    for byte in bytes.iter().take(BYTES_LOOKED_AT) {
         if byte.is_ascii_graphic() || *byte == b' ' {
             text.push(char::from(*byte));
         } else {
@@ -649,7 +723,7 @@ impl<R: BufRead + Send> VariantReader for VcfReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
     use super::{MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
@@ -703,6 +777,24 @@ mod tests {
         assert_eq!(bytes.get(..2), Some([0x1f, 0x8b].as_slice()));
         let reader = VcfReader::new(Cursor::new(bytes), VcfOptions::default()).unwrap();
         assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
+    }
+
+    /// A source whose buffer holds one byte at a time, which is what a pipe
+    /// can give and what a page that hands over the bytes of a file a few
+    /// at a time would be: the two bytes of gzip are never in its buffer
+    /// together.
+    fn one_byte_at_a_time(bytes: Vec<u8>) -> BufReader<Cursor<Vec<u8>>> {
+        BufReader::with_capacity(1, Cursor::new(bytes))
+    }
+
+    #[test]
+    fn a_source_that_gives_one_byte_at_a_time_is_read_gzipped_and_plain() {
+        for name in ["cases.vcf", "cases.vcf.gz"] {
+            let bytes = std::fs::read(reference_vcf(name)).unwrap();
+            let mut reader = VcfReader::new(one_byte_at_a_time(bytes), options(2, false)).unwrap();
+            assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"], "{name}");
+            assert_eq!(rows_of(&mut reader).unwrap(), the_rows_of_cases(), "{name}");
+        }
     }
 
     #[test]
