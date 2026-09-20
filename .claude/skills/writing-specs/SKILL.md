@@ -76,8 +76,9 @@ into two specs along a line the code will also have.
    were answered after the writing. By now pyNei has been read and the
    reference program has been run, because which checks there are is
    known only when it has. Two things. The first is what the
-   item adds that others will call, the Python function and the types and
-   functions of the core crate, each in a line, with the one at which each
+   item adds that others will call, the Python function, the TypeScript
+   function and the types and functions of the core crate, each in a
+   line, with the one at which each
    check of "How it is verified" will be made. The second is any open
    point whose other answer would change the parts around it and not one
    sentence: whether an argument exists, whether a behaviour of pyNei that
@@ -131,7 +132,13 @@ says only what is its own.
    objectives ask for each one to be written down. A difference
    that changes a value a user sees or the public API is an open point. A
    smaller one, the order of the populations in a result, is decided here
-   with its reason.
+   with its reason. Then its TypeScript function, in a line: the name,
+   which is the Python one in camelCase, and the shape of the result
+   where Python gives a pandas frame or series, which typed array and
+   which names beside it. The TypeScript API mirrors the Python one, as
+   the objectives say, so what the two share is said once, for Python. A
+   difference between the two that a user sees is written down like a
+   difference from pyNei.
 3. The cases where the result is not what the formula or the rule would
    make a reader expect, and the cases pyNei's tests assert. Missing
    genotypes nearly always belong here. The others, a population with too
