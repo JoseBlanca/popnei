@@ -305,7 +305,7 @@ pyNei is depended on, or the absolute path meanwhile.
 - [x] 4.1 The module `block` and its cargo tests. From
   `docs/specs/block.md`, everything but "In Python and in TypeScript".
   Serves deliverable 1.
-- [ ] 4.2 The Python side: in the binding crate, a class that holds the
+- [x] 4.2 The Python side: in the binding crate, a class that holds the
   source and its options and one that gives blocks, with the genotypes
   handed to numpy without a copy and the errors of the core turned into
   `ValueError` and `OSError`; in the package, `open_vcf`, `Variants` and
