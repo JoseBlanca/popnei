@@ -1478,6 +1478,13 @@ mod tests {
         assert!(found.contains("hello"), "{found}");
     }
 
+    /// The batches to read a file of a few lines in, so that a test of
+    /// what the reader does at a line is made with that line in a batch of
+    /// its own, at the start of a batch, in the middle of one and with the
+    /// whole file in one: the batching is what carries the lines and the
+    /// errors of a file to the reads that give them.
+    const BATCHES_TO_TRY: [usize; 4] = [LINES_PER_BATCH, 4, 2, 1];
+
     #[test]
     fn a_gzipped_source_cut_in_the_middle_of_a_member_is_refused() {
         let bytes = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
@@ -1485,13 +1492,18 @@ mod tests {
         // four variants, so the cut is inside the second one.
         let cut = bytes.len().saturating_sub(20);
         let bytes = bytes.get(..cut).unwrap_or_default().to_vec();
-        let mut reader = VcfReader::new(Cursor::new(bytes), VcfOptions::default()).unwrap();
-        assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
-        let error = rows_of(&mut reader).unwrap_err();
-        assert!(
-            matches!(error, Error::Io(_)),
-            "a file cut in the middle of a gzip member gives {error}"
-        );
+        for lines_per_batch in BATCHES_TO_TRY {
+            let mut reader =
+                VcfReader::new(Cursor::new(bytes.clone()), VcfOptions::default()).unwrap();
+            reader.set_lines_per_batch(lines_per_batch);
+            assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
+            let error = rows_of(&mut reader).unwrap_err();
+            assert!(
+                matches!(error, Error::Io(_)),
+                "a file cut in the middle of a gzip member read in batches of \
+                 {lines_per_batch} lines gives {error}"
+            );
+        }
     }
 
     #[test]
@@ -2136,23 +2148,30 @@ mod tests {
     fn a_data_line_whose_bytes_are_not_text_is_refused_with_its_number() {
         let mut vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]).into_bytes();
         vcf.extend_from_slice(b"chr1\t200\t.\t\xffA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n");
-        let mut reader = VcfReader::new(Cursor::new(vcf), VcfOptions::default()).unwrap();
-        let mut var = Variant::new();
+        for lines_per_batch in BATCHES_TO_TRY {
+            let mut reader =
+                VcfReader::new(Cursor::new(vcf.clone()), VcfOptions::default()).unwrap();
+            reader.set_lines_per_batch(lines_per_batch);
+            let mut var = Variant::new();
 
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.pos, 100);
+            // The line that cannot be read is the one after a good one,
+            // whatever batch they fall in: the variant of the good line is
+            // given first and the error comes at the read after it.
+            assert!(reader.read_variant(&mut var).unwrap(), "{lines_per_batch}");
+            assert_eq!(var.pos, 100, "{lines_per_batch}");
 
-        let error = reader.read_variant(&mut var).unwrap_err();
-        let Error::VcfDataLine {
-            line,
-            place,
-            problem,
-        } = error
-        else {
-            panic!("the error is {error}");
-        };
-        assert_eq!((line, place), (5, VcfPlace::Line));
-        assert!(problem.contains("UTF-8"), "{problem}");
+            let error = reader.read_variant(&mut var).unwrap_err();
+            let Error::VcfDataLine {
+                line,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("in batches of {lines_per_batch} lines the error is {error}");
+            };
+            assert_eq!((line, place), (5, VcfPlace::Line), "{lines_per_batch}");
+            assert!(problem.contains("UTF-8"), "{lines_per_batch}: {problem}");
+        }
     }
 
     #[test]
