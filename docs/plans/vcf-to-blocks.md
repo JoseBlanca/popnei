@@ -243,13 +243,13 @@ reference files.
 
 **Tasks.**
 
-- [ ] 3.1 The source and the header: finding the gzip bytes without
+- [x] 3.1 The source and the header: finding the gzip bytes without
   consuming them, `MultiGzDecoder`, `VcfOptions`, the `#CHROM` line, the
   individuals, the cases of the error that this module adds, and
   `from_path`. From "The Rust interface" and the first two paragraphs of
   "The cases a reader of the rules would not guess" of
   `docs/specs/io_vcf.md`. Serves deliverable 1.
-- [ ] 3.2 The data line: the columns, the FILTER, the genotypes with
+- [x] 3.2 The data line: the columns, the FILTER, the genotypes with
   their separators, the ploidy, the allele numbers against ALT and
   against 127, `Needs`, the line numbers of the errors, and the order of
   the chromosome numbers. From "What it gives", the rest of "The cases a
