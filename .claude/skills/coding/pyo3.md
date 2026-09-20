@@ -114,10 +114,12 @@ builds the frozen dataclasses.
 
 ## Errors and panics
 
-`impl From<popnei::SomeError> for PyErr` cannot be written in this crate,
-because neither type is ours. So the crate has one newtype,
-`struct PyPopneiError(...)`, with a `From` for each error type of the core
-and one `From<PyPopneiError> for PyErr`, and its functions return
+`impl From<popnei::Error> for PyErr` cannot be written in this crate,
+because neither type is ours. So the crate has an error type of its own,
+`enum PyPopneiError`, which holds the one error enum of the core in one
+case and in the others what this crate refuses before the core sees it,
+with a `From<popnei::Error>` and one `From<PyPopneiError> for PyErr`. The
+functions of the crate return
 `Result<T, PyPopneiError>`, so that `?` works and no call site has a
 `map_err`. That one conversion chooses the exception: `ValueError` for a
 bad argument or a malformed file, `FileNotFoundError` and `OSError` for

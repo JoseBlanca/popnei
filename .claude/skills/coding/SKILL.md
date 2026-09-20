@@ -131,17 +131,42 @@ compiler drop the bounds checks.
 - `Result` everywhere, fail fast, as section 7 of the architecture says. A
   malformed line of a VCF is an error with the line number and the field,
   not a warning and a skipped record.
-- Errors are typed, with `thiserror`. One error type for each operation
-  that fails in its own way, not one for the crate. The variants name what
-  was being done, `ReadHeader`, `ParseGenotype`, and carry what is needed
-  to find the cause: the path, the line, the field, the value.
-- A public error type is `#[non_exhaustive]`, and it does not hold the
-  error type of a dependency in a public variant.
+- The core crate has one error type, the enum `Error` of
+  `crates/popnei/src/error.rs`, written with `thiserror`, and its
+  `Result<T>` is `std::result::Result<T, Error>`. Every module adds its
+  own cases to it. A case names what was being done, `VcfHeader`,
+  `VcfGenotypePloidy`, and carries what finds the cause: the path, the
+  line, the column or the individual, the value. The owner decided on 20
+  September 2026 for one enum, and not for one error type for each
+  operation that fails in its own way, on two grounds. One type is what
+  each of the two binding crates maps, so a case added in the core has one
+  place in each language where its exception is chosen, and nothing else
+  to change. And the enum is `#[non_exhaustive]`, so a module written
+  later adds a case without breaking the code that matches on it.
+- `non_exhaustive` makes every `match` on `Error` outside the core crate
+  need a wildcard arm, and `wildcard_enum_match_arm` is a denied lint. So
+  that arm carries an `#[expect]` whose reason says what a case nobody has
+  written yet gets there: in Python, a `ValueError`.
+- The enum holds the error type of no dependency in a public case, so that
+  a user of the core does not depend on which version of a library popnei
+  uses inside. `std::io::Error`, which is in `FileNotOpened` and in `Io`,
+  is of the standard library and not of a dependency.
 - A `Result` is never dropped. `let _ =` on one needs a reason in a
   comment.
-- The conversion to Python exceptions lives in the binding crate, in one
-  newtype, as `pyo3.md` describes, and chooses the exception a pyNei user
-  would expect: `ValueError` for a bad argument, `OSError` for a file.
+- Each binding crate turns `popnei::Error` into what its language throws,
+  in one file: `crates/popnei-python/src/errors.rs` and
+  `crates/popnei-js/src/errors.rs`. Neither can implement `From` for the
+  error type of its language, because neither that type nor
+  `popnei::Error` belongs to it, so each has an enum that does,
+  `PyPopneiError` and `JsPopneiError`, which holds the error of the core
+  in one case and in the others what the binding refuses on its own; the
+  functions of the crate return it, so `?` works and no call site has a
+  `map_err`. Python gets the exception a pyNei user expects: `OSError`
+  built with the number the system gave and the file in `filename`,
+  `ValueError` for an argument or for a file whose content popnei cannot
+  read. JavaScript has one exception for everything a library refuses, so
+  every case becomes an `Error` with the message the error has in Rust.
+  `pyo3.md`, beside this file, has the Python side.
 
 ## Types, names and defaults
 
