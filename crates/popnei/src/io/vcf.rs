@@ -341,6 +341,14 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     }
     let mut seen = HashSet::with_capacity(individuals.len());
     for name in individuals {
+        if name.is_empty() {
+            return Err(Error::VcfHeader {
+                problem: format!(
+                    "an individual of its line {line_number} has no name, which is what \
+                     a #CHROM line that ends in a tab has"
+                ),
+            });
+        }
         if !seen.insert(*name) {
             return Err(Error::VcfHeader {
                 problem: format!("two individuals of its line {line_number} are called `{name}`"),
@@ -424,6 +432,28 @@ fn parse_quality(text: &str, line: u64) -> Result<Option<f32>> {
         place: VcfPlace::Column("QUAL"),
         problem: format!("`{text}` is not a quality"),
     })
+}
+
+/// How many alleles REF and ALT declare, the reference and the alternative
+/// ones.
+///
+/// An allele with no letter in it, which is what an empty REF, an empty ALT
+/// or an ALT that ends in a comma gives, is an error of its column:
+/// bcftools reads no alternative allele in `T,`, and an allele of no
+/// letters would take a number that a genotype could then carry.
+fn count_alleles(reference: &str, alternatives: &str, line: u64) -> Result<usize> {
+    let wrong = |column: &'static str| Error::VcfDataLine {
+        line,
+        place: VcfPlace::Column(column),
+        problem: "it has an allele with no letter in it".to_string(),
+    };
+    if reference.is_empty() {
+        return Err(wrong("REF"));
+    }
+    if allele_texts(reference, alternatives).any(str::is_empty) {
+        return Err(wrong("ALT"));
+    }
+    Ok(allele_texts(reference, alternatives).count())
 }
 
 /// The texts of the alleles of a variant, the reference first and then the
@@ -637,7 +667,7 @@ impl<R: BufRead + Send> VcfReader<R> {
             // The alleles are counted for every variant that is given, to
             // check the allele numbers of its genotypes, also when the
             // texts of the alleles are not kept.
-            let num_alleles = allele_texts(reference_text, alternatives_text).count();
+            let num_alleles = count_alleles(reference_text, alternatives_text, number)?;
             if needs.contains(Needs::ALLELES) {
                 fill_alleles(
                     &mut var.alleles,
@@ -1396,6 +1426,39 @@ mod tests {
         let mut reader = reader_over(vcf, VcfOptions::default());
         reader.set_needs(Needs::ID | Needs::ALLELES);
         rows_of(&mut reader)
+    }
+
+    #[test]
+    fn an_alt_that_ends_in_a_comma_is_refused() {
+        let vcf = vcf_of(&["chr1 100 . A T, . PASS . GT 0/0 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("ALT")));
+    }
+
+    #[test]
+    fn a_ref_with_no_letter_in_it_is_refused() {
+        // The REF of this line is empty: two tabs, one after the other.
+        let vcf = vcf_of(&["chr1 100 .  T . PASS . GT 0/0 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("REF")));
+    }
+
+    #[test]
+    fn an_individual_with_no_name_is_refused() {
+        let vcf = "##fileformat=VCFv4.4
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\t
+";
+        let error = error_of(vcf, VcfOptions::default());
+        let Error::VcfHeader { problem } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(problem.contains("no name"), "{problem}");
     }
 
     #[test]
