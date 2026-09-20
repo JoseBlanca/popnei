@@ -9,7 +9,8 @@
 
 import type { Blocks, VcfSource } from "../wasm/popnei.js";
 
-import type { Block } from "./block.js";
+import { namesOfFields, wholeNumberOfOneOrMore } from "./arguments.js";
+import type { Block, Field } from "./block.js";
 import { blockOf } from "./block.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 
@@ -21,28 +22,29 @@ export interface IterBlocksOptions {
    * position are one field of the reader, so asking for one fills both, and
    * any other name is an `Error`. `["chrom", "pos"]` when it is not given.
    */
-  fields?: readonly string[];
+  fields?: readonly Field[];
   /**
-   * How many variants a block holds. When it is not given, the number that
-   * gives a block about five million genotypes, never fewer than 100
-   * variants and never more than 10000.
+   * How many variants a block holds, a whole number of 1 or more. When it
+   * is not given, the size the core works out from the number of
+   * individuals.
    */
   numVarsPerBlock?: number;
 }
 
 /** What each block carries when `iterBlocks` is not asked for fields. */
-const FIELDS_OF_A_BLOCK = ["chrom", "pos"];
+const FIELDS_OF_A_BLOCK: Field[] = ["chrom", "pos"];
 
 /**
- * How many passes over a source hold memory of wasm that has not been freed.
+ * How many iterations of blocks are running, each holding the memory of
+ * wasm of its reader and of the block it is building.
  *
- * It is for the tests of the package and is not exported to a user: a pass
- * is counted from the call of `iterBlocks` that opened it until its
- * generator ends, is left with a `break` or throws.
+ * It is counted inside the generator, from the first `next` of an iteration
+ * until it ends, is left with a `break` or throws, and it is for the tests
+ * of the package: no entry point exports it.
  */
 let openPasses = 0;
 
-/** How many passes over a source have not been freed. For the tests. */
+/** How many iterations of blocks are running. For the tests. */
 export function numberOfOpenPasses(): number {
   return openPasses;
 }
@@ -105,32 +107,51 @@ export class Variants {
    *
    * The pass holds memory of wasm, which is freed when the iteration ends,
    * when it is left with a `break` or when it throws. An iterator that is
-   * never iterated keeps that memory until the garbage collector reaches
-   * it.
+   * never iterated at all keeps that memory until the garbage collector
+   * reaches it: wasm-bindgen registers what it generates in a
+   * `FinalizationRegistry`, which frees it at a moment nobody chooses.
    *
-   * @throws {Error} When a name of `fields` is not a field of a block, when
-   * `numVarsPerBlock` is 0, when the source was freed, and when `init` has
-   * not been awaited. Each of them is thrown by this call and not by the
-   * first block.
+   * @throws {Error} When `fields` is not an array of names, when a name of
+   * it is not a field of a block, when `numVarsPerBlock` is not a whole
+   * number of 1 or more, when the source was freed, and when `init` has not
+   * been awaited. Each of them is thrown by this call and not by the first
+   * block.
    */
   iterBlocks(options: IterBlocksOptions = {}): IterableIterator<Block> {
     theWasmHasToBeLoaded();
     const source = this.#sourceThatWasNotFreed();
-    const fields = [...(options.fields ?? FIELDS_OF_A_BLOCK)];
-    const pass = source.blocks(fields, options.numVarsPerBlock);
-    openPasses += 1;
-    return blocksOfThePass(pass);
+    const fields = namesOfFields(
+      "fields",
+      options.fields === undefined ? FIELDS_OF_A_BLOCK : options.fields,
+    );
+    const numVarsPerBlock =
+      options.numVarsPerBlock === undefined
+        ? undefined
+        : wholeNumberOfOneOrMore("numVarsPerBlock", options.numVarsPerBlock);
+    return blocksOfThePass(source.blocks(fields, numVarsPerBlock));
   }
 
   /**
    * Gives back the memory of wasm the source holds.
    *
    * Every call of `iterBlocks` after it throws. The names of the
-   * individuals and the ploidy still answer: they are in JavaScript.
+   * individuals and the ploidy still answer: they are in JavaScript. A
+   * second call is not an error: it has nothing left to give back.
    */
   free(): void {
     this.#source?.free();
     this.#source = null;
+  }
+
+  /**
+   * The same as `free`, for `using variants = openVcf(bytes)`, which frees
+   * the source at the end of the block it is written in.
+   *
+   * Every class wasm-bindgen generates has it, and a `Variants` that had
+   * only `free` would be left in the memory of wasm by that line.
+   */
+  [Symbol.dispose](): void {
+    this.free();
   }
 
   /** The source, or the `Error` of a source that was freed. */
@@ -151,8 +172,13 @@ export class Variants {
  *
  * The `finally` runs when the iteration ends, when the caller leaves it with
  * a `break`, which calls `return` on the generator, and when a block throws.
+ * It does not run for an iterator that was never started, which is why the
+ * pass is counted here and not in `iterBlocks`: a generator that never ran
+ * its first line has no `finally` to run either.
  */
 function* blocksOfThePass(pass: Blocks): Generator<Block, void, undefined> {
+  openPasses += 1;
+  let theIterationFailed = false;
   try {
     for (;;) {
       const columns = pass.next_block();
@@ -167,8 +193,20 @@ function* blocksOfThePass(pass: Blocks): Generator<Block, void, undefined> {
       }
       yield block;
     }
+  } catch (error) {
+    theIterationFailed = true;
+    throw error;
   } finally {
-    pass.free();
     openPasses -= 1;
+    try {
+      pass.free();
+    } catch (freeingFailed) {
+      // A free of an object of wasm that is still borrowed throws, which a
+      // panic inside the core leaves behind. The error that is on its way
+      // out says what went wrong; this one would hide it.
+      if (!theIterationFailed) {
+        throw freeingFailed;
+      }
+    }
   }
 }

@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import loadTheWasm from "../wasm/popnei.js";
 import { wasmIsLoaded } from "./core.js";
 
-export type { Block } from "./block.js";
+export type { Block, Field } from "./block.js";
 export { version } from "./core.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";

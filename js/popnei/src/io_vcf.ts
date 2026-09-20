@@ -6,6 +6,7 @@ import {
   open_vcf as openVcfOfTheCore,
 } from "../wasm/popnei.js";
 
+import { aBoolean, bytes as bytesOf, wholeNumberOfOneOrMore } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import { Variants } from "./variant.js";
 
@@ -47,15 +48,25 @@ export interface OpenVcfOptions {
  * filter as arguments, which pyNei has not; pyNei takes the ploidy from the
  * first genotype of the file and gives every variant.
  *
- * @throws {Error} When the bytes are not a VCF popnei can read, when the
- * ploidy is 0 or above 255, and when `init` has not been awaited.
+ * @throws {Error} When `source` is not a `Uint8Array`, when `ploidy` is not
+ * a whole number of 1 or more, when `onlyPassed` is not a boolean, when the
+ * bytes are not a VCF popnei can read, when the ploidy is above 255, and
+ * when `init` has not been awaited.
  */
 export function openVcf(
   source: Uint8Array,
   options: OpenVcfOptions = {},
 ): Variants {
   theWasmHasToBeLoaded();
-  const ploidy = options.ploidy ?? defaultPloidy();
-  const onlyPassed = options.onlyPassed ?? defaultOnlyPassed();
-  return new Variants(openVcfOfTheCore(source, ploidy, onlyPassed));
+  const ploidy =
+    options.ploidy === undefined
+      ? defaultPloidy()
+      : wholeNumberOfOneOrMore("ploidy", options.ploidy);
+  const onlyPassed =
+    options.onlyPassed === undefined
+      ? defaultOnlyPassed()
+      : aBoolean("onlyPassed", options.onlyPassed);
+  return new Variants(
+    openVcfOfTheCore(bytesOf("source", source), ploidy, onlyPassed),
+  );
 }

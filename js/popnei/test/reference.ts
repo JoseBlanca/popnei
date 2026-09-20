@@ -30,6 +30,20 @@ export async function referenceVcf(name: string): Promise<Uint8Array> {
  * Its header is the one of `cases.vcf`, without the `##` lines that no
  * reader of popnei looks at.
  */
+/**
+ * The bytes of a VCF of three diploid individuals with `numVars` variants
+ * of one alternative allele, for a test that needs a file of some megabytes
+ * and does not care what is in it.
+ */
+export function manyVariantsVcf(numVars: number): Uint8Array {
+  const lines = Array.from(
+    { length: numVars },
+    (_unused, variant) =>
+      `chr1\t${variant + 1}\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1`,
+  );
+  return vcfOf(lines);
+}
+
 export function vcfOf(dataLines: readonly string[]): Uint8Array {
   const header = [
     "##fileformat=VCFv4.4",

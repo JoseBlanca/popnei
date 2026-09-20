@@ -10,6 +10,13 @@
 import type { BlockColumns } from "../wasm/popnei.js";
 
 /**
+ * The name of a column of a block, which `iterBlocks` takes in `fields`.
+ *
+ * The genotypes are not among them: every block holds them.
+ */
+export type Field = "chrom" | "pos" | "id" | "alleles" | "qual";
+
+/**
  * The variants of one block, each field a column of the block.
  *
  * A field other than the genotypes is there only when `iterBlocks` was asked
@@ -17,11 +24,10 @@ import type { BlockColumns } from "../wasm/popnei.js";
  */
 export interface Block {
   /**
-   * The genotypes, `numVars` x the individuals of the source x the ploidy
-   * alleles, variant after variant and inside a variant individual after
-   * individual: the alleles of the individual `i` of the variant `v` of a
-   * source of `n` individuals and ploidy `p` are the `p` numbers that start
-   * at `(v * n + i) * p`.
+   * The genotypes, `numVars` x `numIndividuals` x `ploidy` alleles, variant
+   * after variant and inside a variant individual after individual: the
+   * alleles of the individual `i` of the variant `v` are the `ploidy`
+   * numbers that start at `(v * numIndividuals + i) * ploidy`.
    *
    * 0 is the reference allele and 1 and above the alternative ones, in the
    * order in which the source declares them, and -1 an allele that was not
@@ -32,6 +38,12 @@ export interface Block {
 
   /** How many variants the block holds. */
   numVars: number;
+
+  /** How many individuals the source has, the same for every variant. */
+  numIndividuals: number;
+
+  /** How many alleles the genotype of one individual holds. */
+  ploidy: number;
 
   /** The name of the chromosome of each variant. */
   chrom: string[] | null;
@@ -81,6 +93,8 @@ export function blockOf(columns: BlockColumns): Block {
   return {
     gts,
     numVars: columns.num_vars(),
+    numIndividuals: columns.num_individuals(),
+    ploidy: columns.ploidy(),
     chrom: columns.chrom() ?? null,
     pos: columns.pos() ?? null,
     // The core gives an empty text for a variant with no id, and a user of

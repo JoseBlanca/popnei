@@ -71,6 +71,36 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   `#[wasm_bindgen(typescript_custom_section)]`". So the defaults of the
   API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md`, cross as
   two functions that return the constants of the core.
+- A number of JavaScript that goes in as a `usize` is a float64 turned
+  into an integer of 32 bits with no error: the fraction is thrown away
+  and what is left is kept modulo 2^32. A ploidy of 2.5 and one of
+  2^32 + 2 both arrived as 2, a size of 2^32 + 1 as blocks of one variant,
+  -1 as 4294967295 and NaN as 0. An argument that is not a `Uint8Array`
+  where bytes are asked for is read as whatever its memory holds, and one
+  that is not an object of the right class throws a `TypeError` of the
+  generated code that names none of the two. So the package checks every
+  argument before the call, in `src/arguments.ts`, as the Python package
+  leaves pyo3 to do.
+- An argument of bytes costs a copy of the file going in: wasm-bindgen
+  allocates a `Vec<u8>` of the length of the `Uint8Array` inside the
+  memory of wasm and copies it there. That memory grows and never shrinks,
+  so a second copy of the same file stays for as long as the page lives,
+  which is why `open_vcf` keeps the `Vec` it was given and shares it with
+  every pass: an 80 MB VCF costs 80 MB of the tab and not 160 MB.
+- A panic of Rust in wasm is a trap: the call ends where it is, the memory
+  of wasm keeps what it held, and an object that was borrowed at that
+  moment stays borrowed, so a later `free()` of it throws "attempted to
+  take ownership of Rust value while it was borrowed" instead of giving
+  the memory back. That was seen in the review of this work package, over
+  the real error of a block the memory could not hold, which the core now
+  refuses with an error and not an abort. What is left of the instance
+  after a trap has not been measured here.
+- The `finally` of a generator does not run when the generator was never
+  started, and `free()` of an object of wasm that is still borrowed throws
+  "attempted to take ownership of Rust value while it was borrowed", which
+  in a `finally` hides the error on its way out. The iteration of blocks
+  counts its pass inside the generator for the first, and throws what the
+  free says only when nothing else is being thrown, for the second.
 
 ## The tests
 
@@ -88,7 +118,11 @@ that a function called before `init` was awaited throws an `Error` that
 says so, that the entry point of a page answers with the WebAssembly it
 fetches and reads a VCF through it, and that the blocks of `cases.vcf` and
 `differences.vcf` hold the variants of the tables of
-`docs/specs/io_vcf.md`, with the default and with `onlyPassed` false.
+`docs/specs/io_vcf.md`, with the default and with `onlyPassed` false. Two
+of them watch the memory of the WebAssembly, which they reach through the
+loader `wasm/popnei.js` generates: that a block kept while enough more are
+read for that memory to grow still holds what it held, and that an
+iteration gives its pass back however it ends.
 
 ## node and a page, from one build
 
@@ -156,8 +190,10 @@ const variants = openVcf(new Uint8Array(await readFile("cases.vcf")), {
 console.log(variants.individuals, variants.numIndividuals, variants.ploidy);
 try {
   for (const block of variants.iterBlocks({ fields: ["chrom", "pos"] })) {
-    // block.gts is an Int8Array of numVars x individuals x ploidy alleles,
-    // variant after variant, with -1 for an allele that was not called.
+    // block.gts is an Int8Array of numVars x numIndividuals x ploidy
+    // alleles, variant after variant, with -1 for an allele that was not
+    // called: the alleles of the individual i of the variant v start at
+    // (v * block.numIndividuals + i) * block.ploidy.
     console.log(block.numVars, block.chrom, block.pos);
   }
 } finally {
@@ -176,6 +212,14 @@ section 11 of `docs/architecture.md` has and this package does not do yet.
 Every call of `iterBlocks` reads the bytes again from their start, so the
 same `Variants` can be given to one calculation after another.
 
+The arguments are checked before they reach the core, and each of these is
+an `Error` that says what was given: a `source` that is not a
+`Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
+of 1 or more and at most 4294967295, an `onlyPassed` that is not a
+boolean, a `fields` that is not an array of names, and a name that is not
+one of the five columns. In TypeScript `fields` takes the five names and
+nothing else, so a typo does not compile.
+
 ## What has to be freed
 
 The objects of the core live in the memory of the WebAssembly, which the
@@ -183,14 +227,17 @@ garbage collector of JavaScript does not see, so they are given back by
 hand:
 
 - The `Variants` of `openVcf` holds the bytes of the file until its
-  `free()` is called. Its names and its ploidy are in JavaScript and answer
+  `free()` is called, which `using variants = openVcf(bytes)` does at the
+  end of its block. Its names and its ploidy are in JavaScript and answer
   after that; `iterBlocks` throws.
 - One pass over the variants holds the reader and the block being built.
   The iterator of `iterBlocks` gives it back when the iteration ends, when
   it is left with a `break` and when a block throws. An iterator that is
-  never iterated keeps it until the garbage collector reaches it:
+  made and never iterated keeps it until the garbage collector reaches it:
   wasm-bindgen registers what it generates in a `FinalizationRegistry`,
-  which frees it at a moment nobody chooses.
+  which frees it at a moment nobody chooses. The `finally` that frees it
+  cannot do that one, because a generator that never ran its first line
+  never runs its last either.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and
