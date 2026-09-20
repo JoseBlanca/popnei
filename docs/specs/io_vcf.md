@@ -1,13 +1,22 @@
 # The io::vcf module: the VCF reader
 
 September 2026. The VCF reader is how variants get into popnei: it reads a
-VCF, plain or gzipped, and gives its variants one at a time, with the
-genotypes as small integers. There is no code. This spec develops the
-reader of the row `io::vcf` of the table in section 9 of
-`docs/architecture.md`. It depends on `docs/specs/variant.md`, which has
-the `Variant` that the reader fills, the `Needs` that say which fields a
-consumer wants, and the `VariantReader` trait that the reader implements.
-The VCF writer of the same row is an item that is not written yet.
+VCF, plain or gzipped, and gives its variants in blocks, runs of
+consecutive variants held as arrays, with the genotypes as small integers.
+This spec develops the reader of the row `io::vcf` of the table in section
+9 of `docs/architecture.md`. It depends on `docs/specs/block.md`, which has
+the `Block` that the reader gives and the `BlockReader` trait that it
+implements, and on `docs/specs/variant.md`, which has the `Needs` that say
+which fields a consumer wants and the table of the chromosome names. The
+VCF writer of the same row is an item that is not written yet.
+
+There is code, built from the first version of this spec, in which the
+reader filled one `Variant` at a time for its caller. The owner dropped the
+single variant on 20 September 2026, for the reasons at the end of section
+1 of the architecture. What a line of a VCF means, what is refused and the
+reference files are as they were built and reviewed; what changes is "How
+it runs", how the tests reach the reader, and the speed, which the reader
+as built does not reach.
 
 An individual is what `docs/glossary.md` calls one organism that was
 genotyped. VCF calls it a sample, and the columns of a VCF after FORMAT
@@ -17,15 +26,15 @@ are here the columns of the individuals.
 
 ### What it gives
 
-From each data line of a VCF, one variant:
+From each data line of a VCF, one variant, a row of the block:
 
-| column of the VCF | field of the `Variant` |
+| column of the VCF | column of the `Block` |
 |---|---|
 | CHROM | `chrom`, the number of the name in the reader's table of chromosomes |
 | POS | `pos` |
 | ID | `id`, empty when the column is `.` |
 | REF and ALT | `alleles`, the reference first; only the reference when ALT is `.` |
-| QUAL | `qual`, `None` when the column is `.` |
+| QUAL | `qual`, NaN when the column is `.` |
 | the GT of each individual | `gts` |
 | FILTER | decides whether the variant is given at all |
 | INFO and the other values of each individual | not read |
@@ -38,7 +47,7 @@ By default the reader gives only the variants that passed their filters:
 those whose FILTER is `PASS`, or `.`, which in a VCF says that no filter
 was applied. A variant with anything else there is skipped as if its line
 were not in the file. With `only_passed` false every variant is given,
-and nothing in the `Variant` says which ones had failed. The owner
+and nothing in the block says which ones had failed. The owner
 decided on 20 September 2026 that the FILTER is honoured and that this is
 the default; pyNei ignores the column. That `.` counts as passed was
 decided here: many programs write `.` in every line, pyNei's own script
@@ -51,9 +60,13 @@ The reader finds where `GT` is among the keys of the FORMAT column of
 each line, and an individual that drops its last values, which VCF
 allows, still has its `GT`. The alleles of a genotype are separated by
 `/` or by `|`, which says that they are phased; the reader takes both and
-keeps no phase, because a `Variant` has nowhere to hold it. VCF 4.4 lets a
+keeps no phase, because a block has nowhere to hold it. VCF 4.4 lets a
 genotype start with a separator, `/0/1` or `|1|1`, and the reader reads
 those as `0/1` and `1|1`. An allele written `.` is `MISSING_ALLELE`, -1.
+The separator at the start is taken off before anything else is looked at,
+so `/.` is the genotype `.`, a missing one; bcftools refuses that line,
+and the reader as built reads it, which the reviews of that code left as
+it was.
 
 Every allele number of a genotype has to be one of the alleles that REF
 and ALT declare: with one alternative allele, 0 and 1. A larger number is
@@ -137,6 +150,12 @@ The differences from pyNei:
   a data line. In pyNei it is a `NotImplementedError`.
 - A genotype that starts with a separator is read. pyNei refuses it.
 - An empty line is skipped. pyNei fails on it with an `IndexError`.
+- A quality that is not finite is an error. pyNei reads `nan` as a variant
+  with no quality, and `inf` and `1e400` as an infinite one.
+- A bgzipped file with no mark of its end is an error. pyNei reads
+  `many.vcf.gz` without its last 28 bytes as it reads the whole file, 500
+  variants and no complaint; bcftools 1.24 stops with "no BGZF EOF marker;
+  file may be truncated".
 
 ### The cases a reader of the rules would not guess
 
@@ -154,6 +173,21 @@ the variants of the gzipped files. So the reader uses a decoder that goes on to 
 Rust; its zlib backends are C and do not build for the wasm package.
 After the decompression, or with no compression, the first byte has to be
 `#`; if not, the error says that the source is not a VCF.
+
+A file made by bgzip ends with an empty block of 28 bytes that marks its
+end. The reader knows that a source was made by bgzip from its first gzip
+member, which carries the extra field `BC` that bgzip writes in every
+block, and such a source that does not end with the empty block is an
+error. The source is read once and forward, so the reader watches the
+compressed bytes as they go by to the decoder and keeps the last 28, and
+that the mark is missing is known only when the source ends: every
+variant is given first, and the error comes where the reader would have
+said that there are no more, which is when bcftools says it too.
+Without it, a file that was cut where one gzip member ends and the next
+begins, a download that stopped, gives fewer variants and no error, where
+bcftools says "no BGZF EOF marker". The owner decided this on 20 September
+2026. A gzip file that bgzip did not make has no such mark and is read to
+its end.
 
 The header is every line that starts with `##`, which is skipped, and
 then the line that starts with `#CHROM`, whose first nine columns have to
@@ -175,7 +209,11 @@ alleles, as in pyNei, whose `test_an_allele_over_the_limit_is_refused`
 asserts a `NotImplementedError`. An allele number is a run of digits, so
 `+1` is not one. A FORMAT with no `GT`, a position that is not a number,
 a quality that is neither a number nor a dot, and a line with fewer than
-ten columns are errors. A line whose bytes are not text, not valid UTF-8,
+ten columns are errors. So is a quality that is a number and not a finite
+one, `nan`, `inf` or `1e400`, which a float reads as infinite: it is an
+error of the QUAL column, because NaN is what a block holds for a variant
+with no quality. The owner decided this on 20 September 2026; the option
+not taken was to keep what the float gave. A line whose bytes are not text, not valid UTF-8,
 is an error of that line and not an error of the input: a VCF is text.
 Every error of a data line gives the number of the line in the file,
 counted from 1 with the header lines, and the column or the individual.
@@ -218,47 +256,89 @@ allele, and `test_vcf_parser` asserts them. bcftools 1.24 prints them
 back with no complaint. popnei refuses them, so pyNei's test VCF is not
 among the files the two are compared on.
 
+It holds a position in 32 bits. `_parse_vcf_vars_chunk` of
+`pynei/io_vcf.py` builds the position column with `config.PANDAS_INT_DTYPE`,
+which is pandas' `Int32Dtype`; `config.py` has a `PANDAS_POS_DTYPE` of 64
+bits that only a test uses. On a VCF of one variant, a position of 2147483647 is read and
+one of 2147483648 raises `TypeError: cannot safely cast non-equivalent int64
+to int32`. popnei holds a `u64` and does not reproduce it, and the two are
+compared on positions below that number, which those of the reference VCFs
+are.
+
 ### How it runs
 
-At the record level, as a `VariantReader`. Natively it reads a batch of
-lines, parses them with rayon into variants of its own, and hands them
-out in the order of the file, one for each `read_variant`, the method of
-the trait that fills the next variant. What crosses is the lent
-`Variant`, and once the buffers of the reader and of the lent `Variant`
-have grown to the size of a line nothing is allocated from one variant to
-the next; a swap of the buffers of the two variants does that without a
-copy. In wasm the same code parses one line after another.
+As a `BlockReader`. For each block it reads lines from the source until it
+has as many variants to give as the block takes, `num_vars_per_block`, and
+parses them into the arrays of that block, each line into its own row.
+Natively the lines are parsed on the threads of rayon, and since no two
+lines write the same row nothing is shared between them; in wasm the same
+code parses one line after another.
 
-A batch is bounded by two numbers: how many lines it holds, and how many
-bytes of text those lines are. The second one is what keeps the memory of
-a reader from growing with the individuals of the file, since a line
-carries one genotype per individual, and a batch holds one line whatever
-it is. Both are constants of the code, each with what was measured on it,
-and a caller that times the reader can set them.
+Which row a line gets is known before it is parsed. A line that is skipped
+for its FILTER and an empty line have no row, so while the lines are cut
+from the source a serial pass finds the FILTER of each, the text between
+its sixth and its seventh tab, and numbers the ones that will be given.
+The pass gives no error. A line with fewer than seven columns has no
+FILTER to find, so it gets a row, and the parse gives the error of a line
+with too few columns, the same one whatever `only_passed` is. With
+`only_passed` false the pass is made too, and all it takes out is the
+empty lines.
+
+The text of the lines of a block is not read at once. A block is about 5
+million genotypes whatever the individuals are, at 4 bytes of text each
+about 20 MB, so the reader takes the lines in batches, bounded by how many
+lines a batch holds and by how many bytes of text they are, and parses
+each batch into the rows of the block that follow the ones already filled.
+A batch ends where its block does, so with small blocks the block is what
+bounds it.
+The bound in bytes is what keeps the memory of a reader from growing with
+the individuals of the file, since a line carries one genotype per
+individual, and a batch holds one line at least, however long that line
+is, so the reader always goes forward. Both bounds are
+constants of the code, each with what was measured on it, and a caller
+that times the reader can set them. The reader as built has them at 1024
+lines and 8 MiB.
+
+The genotypes, the positions and the qualities of a line go straight into
+its row. The texts do not, because the rows of a column of texts are not
+of one size: the id and the alleles of a line are parsed into buffers of
+that line, and appended to the columns of the block in order, serially,
+after each batch, and only when they were asked for. The chromosomes get
+their numbers then too, in the order of the variants that are given, so
+the numbers do not depend on the threads.
+
+An error loses its block, as section 1 of the architecture has it: the
+blocks before the one with the wrong line are given, then the error comes
+in the place of that block, and after it the reader gives no more. When
+two lines are wrong the error is that of the one that comes first in the
+file: the batches are parsed one after another, and of the lines of a
+batch that failed the reader takes the first.
 
 A panic inside the parse of a batch leaves the reader with lines that
 were never parsed, so a reader whose parse did not come back gives an
-error at its next read and no more variants. Nothing a VCF can hold
-panics the parse; what this is for is that a panic of a defect of popnei
-becomes an exception that the caller may catch, and a reader that went on
+error at its next call and no more blocks. Nothing a VCF can hold panics
+the parse; what this is for is that a panic of a defect of popnei becomes
+an exception that the caller may catch, and a reader that went on
 afterwards would give the variants of the lines that were parsed and drop
 the others without a word.
 
-The result does not depend on the number of threads. The variants come in
-the order of the file, the chromosome numbers are given when a variant is
-handed out and not when it is parsed, and when a line is wrong the
-variants before it are given first and the error comes at the
-`read_variant` that would have given that line.
+The result does not depend on the number of threads, nor on the bounds of
+a batch.
 
-Only what `Needs` asks for is parsed, except the chromosome and the
-position, which are always filled. What is checked whatever is asked for
-is the shape of the line: the nine first columns have to be there, the
-FORMAT has to have a `GT` key, and there has to be one column after the
-FORMAT at least. With the genotypes not asked for, the reader does not
-look at the columns of the individuals: how many of them there are and
-what is in them is not read, so a line with two columns of individuals
-under a header with three, or one with a genotype of another ploidy, is
-given.
+Only what `Needs` asks for is parsed, and a block has the columns that
+were asked for and no other, the chromosomes and the positions among them.
+A column that is not parsed is not checked: a position that is not a
+number is an error only with the chromosome and the position asked for,
+and a quality of `nan` only with the quality asked for. The reader as
+built parses the position of every line, which was the rule of the first
+version of this spec.
+What is checked whatever is asked for is the shape of the line: the nine
+first columns have to be there, the FORMAT has to have a `GT` key, and
+there has to be one column after the FORMAT at least. With the genotypes
+not asked for, the reader does not look at the columns of the individuals:
+how many of them there are and what is in them is not read, so a line with
+two columns of individuals under a header with three, or one with a
+genotype of another ploidy, is given, and `gts` is empty.
 
 The reader is built over any `BufRead`, as section 1 of the architecture
 asks. It reads the first two bytes of the source to find the gzip and
@@ -370,7 +450,7 @@ the columns of two individuals under a header with three, which are read.
 And these,
 which are not errors: `GT` second in the FORMAT, `DP:GT` with `3:0/1`;
 lines that end in `\r\n`; an empty line at the end; a header and no
-variant, which gives false at the first `read_variant`; a variant whose
+variant, which gives no block at the first `next_block`; a variant whose
 ALT declares two alleles and whose genotypes carry only the first; a
 line with `q10` and a tetraploid genotype, which the default skips and
 `only_passed` false refuses; a line with `q10` and the position `x`,
@@ -378,20 +458,37 @@ which the default skips; a last line with no end of line; and a source
 that gives one byte at a time, gzipped and plain, which a reader that
 looked for the two bytes of gzip in one look at the buffer would refuse.
 
-What `Needs` does: with `GTS` alone, `filled` has the genotypes, the
-chromosome and the position and no more, and `alleles` is empty; with
-`ID` and `ALLELES` and no `GTS`, `gts` is empty; and a reader asked for
-everything and then for `GTS` alone leaves the alleles of the variant it
-filled before empty. That a second pass over
-`many.vcf` allocates nothing is checked once by hand with a counting
-allocator when the reader is written, and it is not a test that stays.
+What `Needs` does: with `GTS` alone, a block has the genotypes and no
+column; with `ID` and `ALLELES` and no `GTS`, those two columns and an
+empty `gts`; and a reader asked for everything and then for `GTS` alone
+gives its next block without the columns. That the allocations of a pass
+over `many.vcf` with `GTS` alone asked for are a few for each block and
+none for each variant is checked once by hand with a counting allocator
+when the reader is written, and it is not a test that stays. With the ids
+asked for there is one for each variant, since the ids of a block are a
+`String` each.
+
+The blocks: `many.vcf` with blocks of 100 and the default options gives
+five blocks, of 100, 100, 100, 100 and 75 variants, and with every variant
+given five of 100; with blocks of 1000, one of 475. What the blocks hold,
+joined, is the same with blocks of 1, 7, 100 and 1000, with batches of 1,
+3 and 1024 lines, and on 1 thread and on 4. A VCF written in the test with
+a tetraploid genotype in its third variant, read in blocks of 2, gives one
+block and then the error, and then no block; with a second wrong line
+after it, the error is still that of the third variant. A source that is
+the bytes of `many.vcf.gz` without its last 28 gives its five blocks and
+then the error that names the mark of the end of a bgzipped file, and one
+cut after its second gzip member gives the blocks of its 280 variants and
+then that error; `many.vcf` compressed with gzip and not with bgzip is read.
+A quality of `nan`, of `inf` and of `1e400` is an error of the QUAL
+column.
 
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
 individuals that are not there, the repeated name, the name that is not
 there and the ploidy out of range, at `from_path` for the file that is
 not there, and at
-`read_variant` for the rest, with the reader built over the bytes of the
+`next_block` for the rest, with the reader built over the bytes of the
 file. The pytest tests are made at `open_vcf` and the blocks of what it
 returns: the counts of the table above on `many.vcf`, with the default
 and with `only_passed=False`; the two rows of `differences.vcf`; a file
@@ -420,8 +517,11 @@ pub struct VcfOptions {
     pub ploidy: usize,
     /// Skip the variants whose FILTER is neither PASS nor a dot.
     pub only_passed: bool,
+    /// How many variants a block has, 1 or more, or None for
+    /// `default_num_vars_per_block` for the individuals of the header.
+    pub num_vars_per_block: Option<usize>,
 }
-impl Default for VcfOptions { /* 2, true */ }
+impl Default for VcfOptions { /* 2, true, None */ }
 ```
 
 Where in a data line something is wrong, which the error of a data line
@@ -440,8 +540,9 @@ pub enum VcfPlace {
 ```
 
 The reader. `new` reads the header, so the individuals are known when it
-returns, and it fails when the source is not a VCF with genotypes or the
-ploidy is 0.
+returns, and it fails when the source is not a VCF with genotypes, the
+ploidy is out of range, or the size of the blocks is one that
+`docs/specs/block.md` refuses.
 
 ```rust
 pub struct VcfReader<R: BufRead + Send> { /* private */ }
@@ -456,7 +557,17 @@ impl VcfReader<BufReader<File>> {
     pub fn from_path(path: &Path, options: VcfOptions) -> Result<Self>;
 }
 
-impl<R: BufRead + Send> VariantReader for VcfReader<R> { /* ... */ }
+/// The two bounds of a batch of lines. Hidden from the documentation and
+/// outside what popnei promises: they are for the benchmark, which times a
+/// file with one bound after another, and for the tests, which read a file
+/// of a few hundred lines in several batches and one line at a time, the
+/// batch of wasm. What a reader gives does not depend on them.
+impl<R: BufRead + Send> VcfReader<R> {
+    pub fn set_lines_per_batch(&mut self, lines: usize);
+    pub fn set_bytes_per_batch(&mut self, bytes: usize);
+}
+
+impl<R: BufRead + Send> BlockReader for VcfReader<R> { /* ... */ }
 ```
 
 The cases this module adds to the error of the crate: the source is not a
@@ -469,37 +580,74 @@ the genotype and the one expected; a file that could not be opened, with
 its path and the `std::io::Error` as the source of the error, so that a
 binding can put the path where the language of the binding keeps it,
 `OSError.filename` in Python; an error of the input, which wraps
-`std::io::Error`; and a parse of a batch that did not come back, with the
-number of the last line that was read. In Python the first five and the
-last are a `ValueError` and the other two an `OSError`.
+`std::io::Error`; a bgzipped source with no mark of its end; and a parse
+of a batch that did not come back, with the number of the last line that
+was read. In Python the first five and the last two are a `ValueError`
+and the other two an `OSError`.
 
 ## Speed
 
-The dataset and the numbers of section 3.1 of `docs/rust_core.md`, on the
-owner's Apple M5 Pro: a VCF of 100000 variants x 1000 individuals,
-400 MB, which pyNei parses in 13.5 s, plink2 in 0.27 s on one thread, and
-the spike in 0.55 s on one thread and 0.11 s on 18 cores; gzipped, 53 MB,
-the spike took 0.55 s on one thread too, and with threads the
-decompression, which is serial, is what bounds it. The spike filled the
-genotypes, the chromosome and the position, as a calculation that asks
-for `GTS` does, and it did three things less than the reader: it checked
-neither the ploidy of each genotype nor its allele numbers against ALT,
-and it did not read the FILTER. `docs/rust_core.md` gives
-`test/gwas_reference/make_reference.py` of pyNei as what simulated that
-panel, and its `write_vcf` puts `.` in the FILTER of every variant, so
-the default gives them all and the two do the same work on the
-genotypes. The number to reach with `GTS` asked for and the default
-options is the spike's, 0.55 s on one thread and 0.11 s on 18, or no more than a
-tenth above them. Whether the checks cost more than that is what the
-first measurement says, and it comes before any work on speed.
+The number to reach is that of the spike, the trial parser in Rust of
+section 3 of `docs/rust_core.md`, which parses a chunk of lines with rayon
+and writes each row straight into the array of the chunk, as this reader
+now does. The reader as built, which filled one `Variant` at a time, does
+not reach it. Measured on 20 September 2026 on the owner's Apple M5 Pro,
+18 cores, release, the file in the page cache, `GTS` asked for and the
+default options, the median of 5 runs of
+`crates/popnei/benches/read_vcf.rs`, on a VCF of 100000 variants and 1000
+individuals, 403 MB plain and 38 MB bgzipped, which
+`crates/popnei/benches/make_big_vcf.py` makes with `simulate_genotypes` and
+`write_vcf` of pyNei's `test/gwas_reference/make_reference.py`, a seed of
+42, 3 in 100 genotypes missing and `.` in every FILTER, so the default
+gives every variant:
+
+| | the reader as built | the spike, same file, same day |
+|---|---|---|
+| plain, 1 thread | 1.24 s | 0.54 s |
+| plain, 18 threads | 0.160 s | 0.098 s |
+| bgzipped, 1 thread | 1.58 s | 0.84 s |
+| bgzipped, 18 threads | 0.50 s | 0.40 s |
+
+plink2 v2.0.0-a.7.7 reads the plain file in 0.273 s on one thread, and
+pyNei in 13.5 s. The spike does three things less than the reader: it
+checks neither the ploidy of each genotype nor its allele numbers against
+ALT, and it does not read the FILTER. The number to reach is the spike's
+of that table, or no more than a tenth above it, which is the rule that
+the first version of this spec set, with the numbers that the spike gave
+then, 0.55 s and 0.11 s. `docs/rust_core.md` has a row for that VCF
+gzipped into 53 MB and does not say how it was compressed; bgzip makes 38
+MB of it, the session that built the reader could not make the file of 53
+MB again, and the bgzipped rows here stand in its place.
+
+Where the time of the reader as built goes, from a sampling profile of the
+run on one thread: 95 in 100 in the parse, almost all of it in the columns
+of the individuals, of which filling the genotypes is 46 in 100 of the
+self time, splitting a text at a character 25, searching a byte 16 and
+comparing strings 10. The nine first columns, the FILTER and the count of
+the alleles are under 1 in 100. So the hand out of the variants was not
+what cost, and rows written into a block will not close the gap alone.
+What the spike does and the reader as built does not is to parse the bytes
+of the columns of the individuals with `memchr`, with no text and no
+UTF-8 check on them; and a row of a fixed length, `num_individuals` x
+`ploidy`, makes the check of the ploidy of a genotype a check of length.
+That is what the implementer tries first, and measures, before any other
+work on speed. With threads the serial reading of the lines is the floor.
+`docs/reports/vcf-to-blocks.md` has the measurement: on a file of 5000
+variants of 1000 individuals the reading of the lines alone took 10.8 ms
+on one thread and 4.1 ms on eight, the whole parse 92.5 ms and 13.8 ms,
+and 4.1 + (92.5 - 10.8) / 8 = 14.3 ms predicts the 13.8. Batches of 256,
+1024 and 4096 lines, with the bound of 8 MiB, took 0.202, 0.158 and
+0.151 s on the file of the table on 18 threads.
 
 ## Open points
 
-None. The owner decided on 20 September 2026 the four that there were:
+None. The owner decided on 20 September 2026 the six that there were:
 the ploidy as an argument and the refusal of mixed ploidies, the variants
 that failed a filter left out by default, an allele number that is not
-declared as an error, and no error for a VCF with no variants. Each is
-written where it applies, with the option that was not taken.
+declared as an error, no error for a VCF with no variants, a quality that
+is not finite as an error, and a bgzipped source with no mark of its end
+as an error. Each is written where it applies, with the option that was
+not taken when there was one.
 
 ## Not in this spec
 

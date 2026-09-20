@@ -1,46 +1,63 @@
-# The block module: blocks of variants and their collector
+# The block module: blocks of variants, the reader trait and reblock
 
 September 2026. A block is a run of consecutive variants held as arrays,
-the genotypes of all of them in one. The calculations that want matrices,
-the PCA, the kinship, consume blocks, and a block is also the only way
-genotypes leave the core: a Python or a TypeScript user who wants them
-asks a `Variants` for its blocks. There is no code. This spec develops
-the row `block` of the table in section 9 of `docs/architecture.md` and
-section 2 of that document. It depends on `docs/specs/variant.md`, which
-has the `Variant`, the `Needs` that say which fields are wanted and the
-`VariantReader` trait. It covers the block, the collector that builds
-blocks from a reader, and `iter_blocks` in Python and TypeScript. The
-other things of the row, a view of one variant of a block, putting blocks
-back to their size after a filter took rows out, and blocks that come
-from the vars file without a copy, are items that are not written yet.
+the genotypes of all of them in one. It is how the variants flow through
+popnei, from a source to a calculation: a reader gives blocks, a filter
+compacts them, a calculation walks their rows or takes them as a matrix,
+and a block is also the only way genotypes leave the core, for the Python
+or TypeScript user who asks a `Variants` for them. This spec develops the
+row `block` of the table in section 9 of `docs/architecture.md` and
+sections 1 and 2 of that document. It depends on `docs/specs/variant.md`,
+which has the `Needs` that say which fields are wanted, the `ChromTable` of
+the chromosome names and `VariantRef`, the view of one variant of a block.
+It covers the block, the trait of everything that gives blocks, `reblock`,
+which puts blocks back to a size, and `iter_blocks` in Python and
+TypeScript.
 
-## The block and its collector
+There is code, built from the first version of this spec, in which a
+collector built blocks by copying the variants that a reader gave one at a
+time. The owner dropped the single variant and its collector on 20
+September 2026, for the reasons at the end of section 1 of the
+architecture. `Block`, `AllelesColumn`, the default size, the names of the
+fields and `iter_blocks` stay as they were built.
+
+## The block, its readers and reblock
 
 ### What it gives
 
-A collector takes any reader and gives blocks: it reads variants one at a
-time into a `Variant` of its own and copies each one into the arrays of
-the block it is building, until the block has the number of variants that
-was asked for or the reader has no more. The last block of a source is
-the only one that can be shorter. A reader with no variants gives no
-block.
-
 A block holds the genotypes as one array of `i8`, variant after variant,
-and inside a variant as the `Variant` has them, individual after
-individual, `ploidy` alleles each; a missing allele is `MISSING_ALLELE`,
--1. It holds the other fields as one column each, the chromosome numbers,
-the positions, the ids, the alleles and the qualities, and a column is
-there only when the collector was asked for it. The collector passes to
-its reader what it was asked for, as any consumer does, so a column
-nobody wants is never parsed.
+and inside a variant individual after individual, `ploidy` alleles each; a
+missing allele is `MISSING_ALLELE`, -1. It holds the other fields as one
+column each, the chromosome numbers, the positions, the ids, the alleles
+and the qualities, and a column is there only when it was asked for and
+the source has it, as `docs/specs/variant.md` says.
 
-Blocks are owned, as section 2 of the architecture says: the collector
-gives each one away and starts a new one. At the default size and ploidy
-2 that is one allocation of 10 MB of genotypes for each block.
+A reader is anything that gives blocks: the VCF reader, the vars file
+reader, a filter over another reader, `reblock`. It gives each block away
+and the block is the caller's, as section 2 of the architecture says and
+for its reasons. A reader never gives a block with no variants, gives
+`None` when it has no more, and `None` again at every call after that.
+After an error it gives `None` too, at every call, and a reader over
+another reader does not call its source again once that source gave an
+error. Each reader keeps this itself, the VCF reader, the vars file
+reader, a filter and `reblock`: a reader that went on after an error
+would give the variants that follow the wrong one as if nothing had
+happened.
 
-A field that was asked for and that the reader did not fill, which
-`filled` of the `Variant` tells, is the error of `docs/specs/variant.md`
-that names the field, and not a column that is silently absent.
+A filter of variants decides which rows of a block stay and calls
+`retain_vars`, which compacts the genotypes and every column in place, in
+the order they had. Nothing is allocated, and the block keeps its
+capacity. When no variant of a block stays, the filter does not give that
+block: it takes the next one from its source, and goes on until a block
+has a variant left or the source has no more.
+
+`reblock` is a reader over a reader that gives the variants of its source
+in blocks of one size, the last one aside: it joins the blocks that are
+too short and cuts the ones that are too long. It goes where the size
+matters, which section 2 of the architecture lists: before the matrix work
+when a filter took variants out, before the vars file writer, and at the
+end of `iter_blocks`. A block that already has the size, with nothing
+waiting from the one before, goes through as it is, with no copy.
 
 How many variants a block has, when the caller does not say, follows
 pyNei's `calc_num_vars_per_chunk` of `pynei/variants.py`: 5 million
@@ -60,8 +77,10 @@ Variants.iter_blocks(
 `Variants` is the handle of `docs/specs/variant.md`, and this is its only
 method that gives genotypes. It is for the user who wants the genotypes
 for an analysis of their own, and for the tests. No calculation of popnei
-goes through it. Every call starts a new pass over the source, and the
-memory in use is one block.
+goes through it. Every call starts a new pass over the source, with a
+`reblock` at its end, so the blocks a user gets have the size that was
+asked for, the last one aside, also when a filter took variants out on the
+way. The memory in use is two blocks at most.
 
 `fields` names what each block carries besides the genotypes, among
 `"chrom"`, `"pos"`, `"id"`, `"alleles"` and `"qual"`. The chromosome and
@@ -72,7 +91,11 @@ name written where the sequence goes, `fields="alleles"`, is a
 otherwise look for a field called `a`. `num_vars_per_block` is the number
 of variants of a block, and `None` is the rule above.
 
-`Block` is a frozen dataclass. `gts` is a numpy int8 array of variants x
+`Block` is a frozen dataclass, declared with `eq=False` and with a
+`__repr__` of its own: an array is neither equal nor unequal to another,
+so the `==` that a dataclass writes would raise, and the `repr` it writes
+prints every genotype, 300 KB for a block of `many.vcf`, into any
+traceback. `gts` is a numpy int8 array of variants x
 individuals x ploidy, and the binding crate hands the array of the core to
 numpy without copying it. `chrom` is a tuple of names, `pos`
 a numpy uint64 array, `id` a tuple of strings with `None` for a variant
@@ -89,9 +112,11 @@ user works on is their own, `numpy.array(block.gts)`.
 It mirrors `Variants.iter_vars_chunks` of pyNei and its `VariantsChunk`.
 The differences: the names, since `docs/glossary.md` keeps "chunk" for
 pyNei's, and so `num_vars_per_block` for `desired_num_vars_per_chunk`,
-which is now an argument of this method and not of the `Variants`; by
+which pyNei takes here too and also keeps as a property of the `Variants`,
+which popnei's does not have; by
 default a block has the chromosomes and the positions and not the ids,
-the alleles and the qualities, which pyNei's chunk always has; a block has no pandas frame, its columns are tuples and arrays,
+the alleles and the qualities, which a chunk that pyNei read from a VCF
+always has; a block has no pandas frame, its columns are tuples and arrays,
 which the binding crate hands out and the Python package puts in the
 dataclass, so that no result of popnei is a class of the binding crate;
 it has no `Genotypes` object with its `to_012` and its masks, which in
@@ -137,45 +162,70 @@ blocks of a source, joined, are the same for any `num_vars_per_block`.
 A block is cut by the count of variants alone. A chromosome that ends in
 the middle of a block does not end the block.
 
-The chromosome numbers of a block are those of the reader's table, which
-grows while the source is read, so the name of a number is looked up
-after the block was collected and not before.
+The chromosome numbers of a block are those of the table of the reader it
+came from, which grows while the source is read, so the name of a number
+is looked up after the block was given and not before.
 
-When the reader gives an error, the collector gives that error and not
-the block it was building: the variants of that block that were already
-read are lost with it. With a VCF that has a wrong line after 250 good
-ones and blocks of 100, the caller gets two blocks and then the error,
-and every call after it gives no block.
+An error loses the block it happened in. With a VCF that has a wrong line
+after 250 good ones, read in blocks of 100, the caller gets two blocks and
+then the error, and every call after it gives no block. `reblock` loses
+also what it was keeping for its next block: over that same reader, with
+blocks of 7, it gives the 28 blocks that the 200 variants fill, and then
+the error, and the 4 variants that were left over are not given.
+
+`reblock` joins blocks only when they have the same columns. When the
+columns of its source change, which a change of `Needs` in the middle of a
+pass does, it gives what it was keeping as a shorter block first.
 
 ### How it runs
 
-At the block level of the architecture, over any `VariantReader`. What
-is kept from one block to the next is the `Variant` that the collector
-lends to its reader. The read ahead thread of section 3 of the
-architecture, which collects the next block while the consumer works on
-the one in hand, is not in this item.
+`reblock` keeps at most one block from one call to the next, the variants
+that did not fill a block or the ones left after a cut, so its memory is
+two blocks. Joining copies the rows of the block that arrives after the
+ones that were waiting, and cutting copies the rows after the cut into a
+new block: one memcpy per block and none per variant. The read ahead
+thread of section 3 of the architecture is not in this item.
 
 ### How it is verified
 
-There is no number here for a reference program: a block holds what the
+There is no number here for a reference program: a block holds what its
 reader gave, and what the VCF reader gives is checked against bcftools in
-`docs/specs/io_vcf.md`. The checks are that collecting loses and changes
-nothing, on the reference VCFs of that spec, in `tests/reference/vcf/`.
+`docs/specs/io_vcf.md`. The checks are that cutting, joining and
+compacting lose and change nothing, on the reference VCFs of that spec,
+in `tests/reference/vcf/`.
 
-The cargo tests, made at the collector's `next_block` over a `VcfReader`
-on `many.vcf`, but for the default sizes: with blocks of 100 variants and the default options of the
-reader, which give 475 of its 500 variants, there are five blocks, of
-100, 100, 100, 100 and 75 variants; with every variant given, five of
-100; with blocks of 1000, one of 475. The genotypes, positions and
-chromosome numbers of the blocks, joined, are those that `read_variant`
-gives one by one, for blocks of 1, of 7, of 100 and of 1000 variants.
-With the genotypes alone asked for no other column is there, the
-chromosomes and the positions neither, although the VCF reader fills them
-in every `Variant`. `default_num_vars_per_block` gives 10000 variants for
-50 individuals, 5000 for 1000 and 100 for 100000. A reader
-with no variants gives no block. A VCF written in the test, with a
-tetraploid genotype in its third variant and blocks of 2, gives one
-block and then the error.
+The cargo tests of `reblock`, made at its `next_block` over a `VcfReader`
+on `many.vcf` that gives blocks of 100: with every variant given and
+blocks of 7 there are 72 blocks, 71 of 7 and one of 3; with blocks of 1,
+500; with blocks of 1000, one of 500; and with blocks of 100, five of
+100. The genotypes, the positions and the chromosome numbers of the
+blocks, joined, are the same for the four sizes. Over a reader written in
+the test, which gives blocks built by hand from the four rows of the
+`cases.vcf` table of `docs/specs/io_vcf.md`, one variant in each, and
+keeps the address of the genotypes of every block it gave: blocks of 3
+give one of 3 and one of 1 that hold the four rows, every column of them;
+and blocks of 1 give the four blocks of the reader themselves, their
+genotypes at the addresses the reader kept, which is how the test sees
+that a block of the right size goes through with no copy. A reader written
+in the test that gives an error once and would give a block at its next
+call is called by `reblock` once and no more.
+A VCF written in the test, with a tetraploid genotype in its line 251 of
+variants and read in blocks of 100, gives through a `reblock` of 7 the 28
+blocks and then the error.
+
+The cargo tests of the block, made at `retain_vars`, at `variants` and at
+`check`, on a block built by hand from the four rows of that table with
+every column: its views give, each, the genotypes, the position, the id,
+the alleles and the quality of its row, `None` for the fields of a column
+that is taken out of the block, and there is no view for a fifth variant;
+a block whose `gts` lost its last allele fails `check`; keeping
+the first, the third and the fourth leaves a block of 3 variants whose
+views give the rows 1, 3 and 4 of that table, the alleles and the ids
+among them; keeping none leaves a block with `num_vars` 0 and empty
+columns; and a `keep` of three values for the four variants is an error
+that leaves the block as it was.
+`default_num_vars_per_block` gives 10000 variants for 50 individuals, 5000
+for 1000 and 100 for 100000.
 
 Against pyNei, a pytest test made at `open_vcf(...).iter_blocks(...)`:
 `cases.vcf`, `cases.vcf.gz`, `many.vcf` and `many.vcf.gz` are read with
@@ -218,10 +268,18 @@ impl AllelesColumn {
 }
 ```
 
-The block, as section 2 of the architecture has it, with the individuals
-under the word of the glossary. A column is `None` when it was not asked
-for. An id that is empty and a quality that is NaN are a variant that has
-none.
+The block, as section 2 of the architecture has it. A column is `None`
+when it was not asked for or the source lacks it. An id that is empty and
+a quality that is NaN are a variant that has none. The fields are public
+because every reader builds blocks: `gts` has `num_vars` x
+`num_individuals` x `ploidy` alleles, or none when the genotypes were not
+asked for, and every column that is there has `num_vars` entries. Public
+fields let a reader with a defect build a block that breaks that, so
+`check` says whether a block keeps it, and it is called where a wrong
+block would be read wrong with no sign: by both binding crates before the
+genotypes of a block cross to numpy or to an `Int8Array`, where they
+travel flat, by `reblock` on every block it takes, and by the vars file
+writer.
 
 ```rust
 pub struct Block {
@@ -237,24 +295,68 @@ pub struct Block {
     pub alleles: Option<AllelesColumn>,
     pub qual: Option<Vec<f32>>,
 }
+impl Block {
+    /// Which fields the block holds: the columns that are there, and GTS
+    /// when `gts` is not empty or the block has no variants.
+    pub fn fields(&self) -> Needs;
+    /// The views of its variants, in order.
+    pub fn variants(&self) -> impl Iterator<Item = VariantRef<'_>>;
+    /// None when the block has no variant `i`.
+    pub fn variant(&self, i: usize) -> Option<VariantRef<'_>>;
+    /// It keeps the variants whose `keep` is true, in their order, in the
+    /// genotypes and in every column, in place, and sets `num_vars` to how
+    /// many stayed. A `gts` that is empty, of a block built without the
+    /// genotypes, stays empty. `keep` has one value for each variant of
+    /// the block; when it has not, that is an error and the block is as
+    /// it was.
+    pub fn retain_vars(&mut self, keep: &[bool]) -> Result<()>;
+    /// That `gts` holds `num_vars` x `num_individuals` x `ploidy` alleles,
+    /// or none, and every column that is there `num_vars` entries.
+    pub fn check(&self) -> Result<()>;
+}
 ```
 
-The collector. It owns its reader, and gives it back to who wants the
-table of chromosomes or the individuals.
+The per variant work that uses the threads runs rayon over the rows of
+`gts`, `par_chunks(num_individuals * ploidy)`, since the genotypes are all
+most calculations read; `variants` is for the work that reads the other
+fields too. A row has one allele at least: every source refuses a ploidy
+of 0 and a file with no individuals.
+
+The trait of everything that gives blocks, with the contract of "What it
+gives". It can be used as a boxed trait object, `Box<dyn BlockReader>`:
+neither a pyo3 class nor a wasm-bindgen class can be generic, so both
+binding crates hold their reader that way, the trait has no generic method
+and no method that takes or returns `Self`, and it is implemented for
+`Box<dyn BlockReader>` too, so that what is generic over a reader, a
+filter or `reblock`, takes a boxed one. It asks for `Send`, because the
+read ahead thread of section 3 of the architecture moves a reader into
+another thread.
 
 ```rust
-pub struct BlockCollector<R: VariantReader> { /* private */ }
-
-impl<R: VariantReader> BlockCollector<R> {
-    /// `needs` is what each block will hold; GTS is always part of it.
-    /// `num_vars_per_block` is 1 or more, or None for the default size.
-    pub fn new(
-        reader: R, needs: Needs, num_vars_per_block: Option<usize>,
-    ) -> Result<Self>;
-    /// The next block, or None when the reader has no more variants.
-    pub fn next_block(&mut self) -> Result<Option<Block>>;
-    pub fn reader(&self) -> &R;
+pub trait BlockReader: Send {
+    /// The next block, which has one variant at least, or None when there
+    /// are no more.
+    fn next_block(&mut self) -> Result<Option<Block>>;
+    fn individuals(&self) -> &[String];
+    fn ploidy(&self) -> usize;
+    fn chroms(&self) -> &ChromTable;
+    /// ALL until it is called. It holds from the next block that is built.
+    fn set_needs(&mut self, needs: Needs);
 }
+```
+
+`reblock`.
+
+```rust
+pub struct Reblock<R: BlockReader> { /* private */ }
+
+impl<R: BlockReader> Reblock<R> {
+    /// `num_vars_per_block` is 1 or more, or None for the default size for
+    /// the individuals of `reader`.
+    pub fn new(reader: R, num_vars_per_block: Option<usize>) -> Result<Self>;
+}
+
+impl<R: BlockReader> BlockReader for Reblock<R> { /* ... */ }
 
 /// The default number of variants of a block for that many individuals:
 /// the genotypes of a block divided by the individuals, and never fewer
@@ -269,15 +371,14 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 ```
 
-The name of each column in Python and in TypeScript, and the fields a
-collector is asked for to fill the columns those names ask for. Both
-binding crates take the names from their user and call this, so that one
-list serves the two languages and a column added later cannot reach one
-of them and not the other.
+The name of each column in Python and in TypeScript, and the fields that
+those names ask for. Both binding crates take the names from their user
+and call this, so that one list serves the two languages and a column
+added later cannot reach one of them and not the other.
 
 ```rust
 /// In the order of the columns of `Block`. The genotypes are not among
-/// them: every block holds them.
+/// them: every block a user gets holds them.
 pub const FIELD_NAMES: [&str; 5] = ["chrom", "pos", "id", "alleles", "qual"];
 
 /// `GTS` and what the names ask for; the chromosome and the position
@@ -288,38 +389,42 @@ pub fn needs_of_the_fields<'a>(
 ) -> Result<Needs>;
 ```
 
-`BlockCollector<Box<dyn VariantReader>>` is how the two binding crates
-hold it, so `VariantReader` is implemented for a box of itself.
-
-This module adds four cases to the error of the crate. A
-`num_vars_per_block` of 0, which `BlockCollector::new` refuses. A block
-the machine cannot give the memory for: `new` refuses one whose
-genotypes, `num_vars_per_block` times `num_individuals` times `ploidy`,
-are more than a `usize` holds, which in wasm, where a `usize` is 32 bits
-and holds 4295 million, is 10000 variants of 250000 individuals of the
-ploidy 2; and the first `next_block` asks for the memory of every column
-of the block, the positions of a variant among them, which are 8 bytes
-whatever the individuals are, and gives the same error when the machine
-does not give it, before a variant is read. A size that a caller wrote
-reaches neither an abort nor a panic. A variant the reader filled with a
-number of alleles other than its individuals times its ploidy, which
-would be a block whose `gts` is not `num_vars` x `num_individuals` x
-`ploidy` and whose genotypes a consumer reads wrong. And a name that is
-not a field of a block.
+This module adds six cases to the error of the crate. A
+`num_vars_per_block` of 0, which `Reblock::new` and every source that
+takes a size refuse. A block the machine cannot give the memory for: a
+reader that is given a size refuses one whose genotypes,
+`num_vars_per_block` times `num_individuals` times `ploidy`, are more than
+a `usize` holds, which in wasm, where a `usize` is 32 bits and holds 4295
+million, is 10000 variants of 250000 individuals of the ploidy 2; and a
+reader asks for the memory of every column of a block with `try_reserve`
+before it fills it, the positions of a variant among them, which are 8
+bytes whatever the individuals are, and gives the same error when the
+machine does not give it. A size that a caller wrote reaches neither an
+abort nor a panic. Blocks that do not fit together, which `reblock` finds
+when its source gives two with another number of individuals or another
+ploidy. A block whose arrays are not of its size, which `check` finds, with
+the array and the two sizes. A `keep` that has not one value for each
+variant of its block. And a name that is not a field of a block.
 
 ## Open points
 
 None. The owner decided on 20 September 2026 that Python and TypeScript
 get the genotypes through `iter_blocks(fields=...)` and through nothing
 else; the options not taken were an iterator of single variants and one
-function that returns the whole matrix.
+function that returns the whole matrix. The same day he decided that the
+variants flow in blocks from the source to the calculation; the option not
+taken, which the first version of this spec had, was a collector that
+built the blocks from single variants.
 
 ## Not in this spec
 
-- A view of one variant of a block and the copy of it back into a
-  `Variant`, `reblock`, and the blocks that the vars file reader gives
-  without a copy: later items of this spec.
+- Taking individuals out of a block, which the filter of individuals
+  needs: with that filter, in `docs/specs/filters.md`.
 - The read ahead thread: with the first calculation that consumes blocks.
+- Giving a block back to its reader to be filled again, which section 2
+  of the architecture leaves until a measurement asks for it.
 - The dosages, the masks and the counts of a block: the row helpers of
   `docs/specs/variant.md` and the calculations that use them.
-- Asking for the blocks of one chromosome or of a region: not planned.
+- Asking for the blocks of one chromosome or of a region: the vars file
+  keeps what that needs, `docs/specs/io_vars.md`, and the function is not
+  written.
