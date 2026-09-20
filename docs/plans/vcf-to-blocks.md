@@ -367,7 +367,7 @@ takes to read the 400 MB VCF of `docs/rust_core.md`.
   `Variant`, the chromosome numbers given at that moment, and the two
   new tests. From "How it runs" of `docs/specs/io_vcf.md` and section 3
   of the architecture. Serves deliverables 1 and 2.
-- [ ] 5.2 The measurement, taken as "What measurement there is" of the
+- [x] 5.2 The measurement, taken as "What measurement there is" of the
   `performance-review` skill asks: the file written with `write_vcf` of
   `test/gwas_reference/make_reference.py` of pyNei, which
   `docs/rust_core.md` names as its origin, the four times, and plink2 on
