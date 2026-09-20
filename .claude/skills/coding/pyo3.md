@@ -136,10 +136,14 @@ The one conversion chooses the exception a pyNei user expects from pyNei.
 `OSError` for the file system, built with the number the system gave, so
 that it is the `FileNotFoundError`, the `IsADirectoryError` or the
 `PermissionError` of that number and carries the file in `filename`.
-`RuntimeError` for a defect of this crate, and for the cases of the core
-that say a reader has one, blocks of a source that do not hold the same
-dataset and a block whose arrays are not of its size: a user who gets one
-reports it and has nothing of their own to correct. `ValueError` for
+`RuntimeError` for a defect of this crate, and for the three cases with
+which `docs/specs/block.md` says that a reader has one: blocks of a source
+that do not hold the same dataset, a block whose arrays are not of its size
+and a block of no variants. A user who gets one reports it and has nothing
+of their own to correct. Not every defect of popnei is one of these: a spec
+says which exception each case of its module is, and the parse of a VCF
+that did not come back is a `ValueError` by `docs/specs/io_vcf.md`.
+`ValueError` for
 everything else, a bad argument or a malformed file, which is also what a
 case added to the enum of the core later gets. The message is the
 `Display` of the core error, which already has the path, the line and the

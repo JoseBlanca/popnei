@@ -129,15 +129,16 @@ fn exception_of(error: popnei::Error) -> PyErr {
         // the calls that have it use. This one is left for a source that is
         // not a file, which Python has none of yet.
         popnei::Error::Io(_) => PyOSError::new_err(message),
-        // Blocks of one source that do not hold the same dataset, and a
-        // block whose arrays are not of its size, are defects of the reader
-        // that gave them and not values a user wrote: nothing a user asks
-        // for gives them. They are the `RuntimeError` of
-        // `PyPopneiError::Broken` and not the `ValueError` of the rest, so
-        // that a user who gets one reports it instead of looking for what
-        // they typed wrong.
+        // The three cases with which `docs/specs/block.md` says that a
+        // reader has a defect: blocks of one source that do not hold the
+        // same dataset, a block whose arrays are not of its size, and a
+        // block of no variants. Nothing a user asks for gives them, so they
+        // are the `RuntimeError` of `PyPopneiError::Broken` and not the
+        // `ValueError` of the rest, and a user who gets one reports it
+        // instead of looking for what they typed wrong.
         popnei::Error::BlocksDoNotFitTogether { .. }
-        | popnei::Error::BlockArrayOfAnotherSize { .. } => PyRuntimeError::new_err(message),
+        | popnei::Error::BlockArrayOfAnotherSize { .. }
+        | popnei::Error::ReaderGaveABlockOfNoVariants => PyRuntimeError::new_err(message),
         _ => PyValueError::new_err(message),
     }
 }

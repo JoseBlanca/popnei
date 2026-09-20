@@ -171,10 +171,12 @@ compiler drop the bounds checks.
 - Python gets the exception a pyNei user expects: `OSError` for a file
   that could not be opened or read, built with the number the system gave
   and the file in `filename`; `RuntimeError` for a defect of the binding
-  or of a reader, which is not a wrong value of the user; `ValueError`
+  and for the cases with which `docs/specs/block.md` says that a reader
+  has one, which are not a wrong value of the user; `ValueError`
   for everything else, an argument or a file whose content popnei cannot
   read, and for a case of the enum of the core that nobody has written
-  yet. JavaScript has one exception for everything a library refuses, so
+  yet. Which exception a case of a module is, is the spec of that module's
+  to say. JavaScript has one exception for everything a library refuses, so
   its four cases all become an `Error` with the message the error has in
   Rust. `pyo3.md`, beside this file, has the Python side.
 
