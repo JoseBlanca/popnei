@@ -10,9 +10,12 @@
 //! the names of the Python API in camelCase and the result objects.
 //!
 //! Every function here is marked with `#[wasm_bindgen]`, which generates
-//! the `extern "C"` entry point that WebAssembly calls. That generated
-//! code is `unsafe`, so each of them silences the lint that denies unsafe
-//! code in the workspace, with the reason on the function itself.
+//! the entry point that the generated JavaScript calls and the TypeScript
+//! declaration of the function. What it generates passes the lints of the
+//! workspace as it is, for the wasm target and for the native one, the
+//! `unsafe_code` that is denied among them, so no function here silences
+//! one: an `#[expect(unsafe_code)]` added here is itself an error, "this
+//! lint expectation is unfulfilled".
 
 use wasm_bindgen::prelude::wasm_bindgen;
 

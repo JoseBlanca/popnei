@@ -18,32 +18,7 @@ import { test } from "node:test";
 
 import { init, version } from "popnei";
 
-const REPO_DIR = new URL("../../../", import.meta.url);
-
-/**
- * Read the version of `crates/popnei` from the workspace manifest.
- *
- * The crate takes `version.workspace = true`, so the version is written
- * once, in `[workspace.package]` of the `Cargo.toml` of the repository.
- * node has no reader of TOML, the format of that file, so the section is
- * taken as the lines between its heading and the next one, and the line
- * that gives the version is matched in it.
- */
-async function versionOfTheCoreCrate(): Promise<string> {
-  const manifest = await readFile(new URL("Cargo.toml", REPO_DIR), "utf8");
-  const afterTheHeading = manifest.split("\n[workspace.package]\n")[1];
-  assert.ok(
-    afterTheHeading !== undefined,
-    "the workspace manifest has no [workspace.package] section",
-  );
-  const section = afterTheHeading.split("\n[")[0] ?? "";
-  const version = /^version = "([^"]+)"$/m.exec(section)?.[1];
-  assert.ok(
-    version !== undefined,
-    "the [workspace.package] section of the workspace manifest gives no version",
-  );
-  return version;
-}
+import { versionOfTheCore, versionOfTheCoreCrate } from "./manifest.ts";
 
 /** Read the version this package would be published to npm under. */
 async function versionOfThePackage(): Promise<string> {
@@ -61,4 +36,25 @@ test("the version the package gives is the version of the core crate", async () 
 
 test("the version of the package is the version of the core crate", async () => {
   assert.equal(await versionOfThePackage(), await versionOfTheCoreCrate());
+});
+
+test("the version is read from a manifest that writes it with no spaces", () => {
+  const manifest = [
+    "[workspace]",
+    'members = ["crates/popnei"]',
+    "",
+    "[workspace.dependencies]",
+    'popnei = { path = "crates/popnei", version = "0.0.1" }',
+    "",
+    "[workspace.package]",
+    'version="9.9.9"',
+    'edition = "2024"',
+    "",
+  ].join("\n");
+  assert.equal(versionOfTheCore(manifest), "9.9.9");
+});
+
+test("init loads the WebAssembly once and gives back the same promise", () => {
+  const loading = init();
+  assert.equal(init(), loading);
 });

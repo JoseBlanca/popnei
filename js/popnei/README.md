@@ -38,12 +38,15 @@ manifest changed to its version.
 
     npm test
 
-It runs the test runner of node itself, `node --test`, over `test/`, after
-the build has left `dist/` and `wasm/` in place. The tests import the name
-of the package, `popnei`, which node resolves to the built entry point,
-and assert that the version the package gives and the version in
-`package.json` are both the one of `[workspace.package]` of the
-`Cargo.toml` of the repository.
+It runs the TypeScript compiler over `test/` and then the test runner of
+node itself, `node --test`, once the build has left `dist/` and `wasm/` in
+place. The tests import the name of the package, `popnei`, which node
+resolves to the built entry point of node, and assert that the version the
+package gives and the version in `package.json` are both the one of
+`[workspace.package]` of the `Cargo.toml` of the repository, that `init`
+loads the WebAssembly once, that a function called before `init` was
+awaited throws an `Error` that says so, and that the entry point of a page
+answers with the WebAssembly it fetches.
 
 ## node and a page, from one build
 
@@ -61,11 +64,29 @@ which export the same functions:
   loader fetch the wasm file beside the JavaScript.
 
 node chooses the first through the condition `node` of the field `exports`
-of `package.json`, and everything else gets the second.
+of `package.json`, and everything else gets the second. Both are tested
+under node, the second with a `fetch` that reads the file, because a
+browser is not run here.
 
-The two other targets are built by running the same command line again
-with another `--target` and another `--out-dir`, and importing from there
-instead. Neither has been tried here:
+## What a bundler does with the wasm file
+
+The address the loader fetches is
+`new URL("popnei_bg.wasm", import.meta.url)`, written in
+`wasm/popnei.js`. What a bundler makes of it was tried with two:
+
+- vite 8.3.0 writes the wasm file among what it builds and rewrites the
+  address to it. Nothing else has to be done.
+- esbuild 0.28.2, `--bundle --format=esm --platform=browser`, leaves the
+  address as it is and copies no file, so `await init()` fetches an
+  address where the server has nothing and fails. A user of esbuild copies
+  `js/popnei/wasm/popnei_bg.wasm` beside the bundle that esbuild writes,
+  which is what `import.meta.url` is the address of.
+
+webpack was not tried.
+
+The two other targets of wasm-bindgen are built by running the same
+command line again with another `--target` and another `--out-dir`, and
+importing from there instead. Neither has been tried here:
 
 - `--target nodejs` writes CommonJS, `exports.version` and
   `require('fs')`, which loads the wasm file when it is imported, with no
@@ -73,9 +94,9 @@ instead. Neither has been tried here:
   cannot import it without renaming it to `.cjs` or putting it under a
   directory with a `package.json` of its own that says `commonjs`.
 - `--target bundler` writes an ES module that imports the wasm file as a
-  module, `import * as wasm from "./popnei_bg.wasm"`, which the bundler
-  instantiates, again with no `init`. webpack 5 reads that import on its
-  own; vite and rollup need a plugin for it.
+  module, `import * as wasm from "./popnei_bg.wasm"`, for the bundler to
+  instantiate, again with no `init`. A bundler that cannot import a wasm
+  file as a module needs a plugin for it.
 
 ## Using it
 

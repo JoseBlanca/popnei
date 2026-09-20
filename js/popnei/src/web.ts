@@ -5,9 +5,10 @@
  *
  * A bundler resolves the package to this file through the field `exports`
  * of `package.json`, node gets `node.ts` instead, and the two export the
- * same functions. A bundler that is given `wasm/popnei.js` follows the
- * `new URL("popnei_bg.wasm", import.meta.url)` inside it and copies the
- * WebAssembly beside what it builds.
+ * same functions. Whether the wasm file ends up where that loader looks
+ * for it is the bundler's doing, and they differ: the README of the
+ * package has what vite and esbuild were seen to do with the
+ * `new URL("popnei_bg.wasm", import.meta.url)` that the loader holds.
  */
 
 import loadTheWasm from "../wasm/popnei.js";

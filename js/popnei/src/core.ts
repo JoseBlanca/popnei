@@ -19,6 +19,23 @@ export function wasmIsLoaded(): void {
 }
 
 /**
+ * Throws unless the WebAssembly of the core is loaded.
+ *
+ * Every function of the package that calls into the core calls this one
+ * first: what the generated JavaScript throws before `init` names none of
+ * the two.
+ *
+ * @throws {Error} When `init` has not been awaited.
+ */
+function theWasmHasToBeLoaded(): void {
+  if (!theWasmIsLoaded) {
+    throw new Error(
+      "popnei: await init() before calling any other function of the package",
+    );
+  }
+}
+
+/**
  * The version of the core crate, `major.minor.patch`, which is the version
  * of this package.
  *
@@ -29,10 +46,6 @@ export function wasmIsLoaded(): void {
  * @throws {Error} When `init` has not been awaited.
  */
 export function version(): string {
-  if (!theWasmIsLoaded) {
-    throw new Error(
-      "popnei: await init() before calling any other function of the package",
-    );
-  }
+  theWasmHasToBeLoaded();
   return versionOfTheCoreCrate();
 }

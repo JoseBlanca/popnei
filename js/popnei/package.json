@@ -2,9 +2,10 @@
   "name": "popnei",
   "version": "0.1.0",
   "description": "Population genetics over the variants of a dataset",
-  "license": "MIT",
   "repository": "https://github.com/JoseBlanca/popnei",
   "type": "module",
+  "main": "./dist/node.js",
+  "types": "./dist/node.d.ts",
   "exports": {
     ".": {
       "node": {
@@ -26,7 +27,7 @@
     "build": "npm install --no-fund --no-audit && npm run build:wasm && npm run build:ts",
     "build:wasm": "cargo build --package popnei-js --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir wasm --out-name popnei ../../target/wasm32-unknown-unknown/release/popnei_js.wasm",
     "build:ts": "tsc --project tsconfig.json && tsc --project tsconfig.test.json",
-    "test": "node --test test/"
+    "test": "tsc --project tsconfig.test.json && node --test test/"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
