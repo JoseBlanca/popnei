@@ -1,12 +1,74 @@
 # Work report: readers that give blocks
 
-The plan `docs/plans/block-readers.md` is under way, on the branch
+The plan `docs/plans/block-readers.md` is done, on the branch
 `plan/block-readers`, in the worktree `.claude/worktrees/block-readers`,
-since 20 September 2026. The orchestrator, in this report, is the session
-of the assistant that runs the plan: it sends each task to a subagent,
-checks what comes back and has it reviewed. What the owner reads first,
-whether the plan is done, what exists now and what is asked of them, is
-written here when the plan ends.
+21 September 2026. Its three work packages finished as planned, each was
+reviewed and its findings fixed, and the final check passes from a clean
+clone. The four speed targets of the VCF reader spec are met, one of them
+at its edge. The orchestrator, in this report, is the session of the
+assistant that ran the plan: it sent each task to a subagent, checked
+what came back and had it reviewed.
+
+What exists now that did not. The variants flow in blocks, runs of
+consecutive variants held as arrays, from the file to whoever reads them,
+and nothing is left of the single variant that a reader filled, of its
+trait or of the collector that copied such variants into blocks: a search
+of the code for their names finds nothing, where it found 98 lines. In
+the core there is one trait for everything that gives blocks, the view of
+one variant of a block, a block that compacts itself in place and checks
+its own arrays, and `reblock`, the reader over a reader that cuts and
+joins blocks to a size. The VCF reader parses its lines as bytes straight
+into the rows of a block, on the threads natively and one after another
+in wasm, and both bindings hold it as a boxed reader with a `reblock` at
+the end of every pass. It reads the 403 MB VCF of 100000 variants x 1000
+individuals, on the owner's Apple M5 Pro, release, in 0.56 to 0.62 s on
+one thread and 0.093 s on 18 cores, where the reader before this plan
+took 1.24 s and 0.160 s and the target was 0.594 s and 0.108 s; the
+bgzipped file in 0.89 s and 0.394 s, against 1.58 s and 0.50 s and
+targets of 0.924 s and 0.44 s. Two files that were read before are
+refused: one with a quality that is not finite, and a bgzipped one that
+was cut short, wherever it was cut. The repository is under the MIT
+license, takes pyNei from its GitHub repository at ef0ca6e, and its
+`coding` skill describes the one error enum that the code has. 153 cargo
+tests, 61 pytest tests, 8 of them against pyNei, 45 node tests and a
+smoke test under pyodide, where the plan started with 92, 38 and 39.
+
+For a user nothing else changed: `open_vcf`, `openVcf`, `Variants` and
+`iter_blocks` are what they were, and no test or file of the two packages
+that was there changed, but the smoke test of pyodide, to which one check
+was added.
+What did change for them is under "For the owner" of work package 2, with
+the six decisions that the work went on without.
+
+What is asked of the owner:
+
+1. The merge of `plan/block-readers` into `main`, which is theirs to
+   order. The session that plans the vars file module waits for it.
+2. The six decisions under "For the owner" of work package 2, each with
+   its options and a recommendation. The first is the one with a wrong
+   result behind it: a bgzip file with one length of its header corrupted
+   to a precise value reads as a file with no variants and no error, and
+   its fix, reading a bgzip file by the sizes that its members state, is
+   also the way to decompress on several threads. None of the six stops
+   the merge.
+3. What the orchestrator and the subagents decided that a user sees,
+   listed in the same place, and the five commits that changed the specs
+   of the block and of the VCF reader, which the owner has not read: most
+   correct a sentence that said what the code does not do, and the code
+   was right.
+4. Whether a batch of the VCF reader keeps 16 MiB of text or goes back to
+   8: the measurement raised it, which buys 4 in 100 on 18 threads, 0.098
+   s to 0.094 on the plain file, and costs about 12 MB of memory in a
+   reader. Recommended: keep it, since 35 MB for a reader is small beside
+   a block of 10 MB of genotypes and the matrices of any calculation.
+
+What the next plan and the skills should take from this one is under
+"How the work went": the reviews cost 2.2 million tokens against 1.3
+million for the writing, and found a loop with no end, a copy that grew
+with the square of the cuts, a panic on Ctrl-C and variants read after an
+error, none of which a check had seen; a task's prompt should say "test
+first, and see it fail" and ask for the report of how each test failed;
+and one subagent can carry three tasks of one file with profit.
 
 ## Before the first task
 
@@ -105,8 +167,15 @@ enum with one case for the one error of the core.
 
 ### The review
 
-One reviewer, `spec`, in a worktree of its own at a16ea06, 63 thousand
-tokens: the work package has no code to break, so `tests` had nothing to
+One reviewer, of the category `spec`, in a worktree of its own at a16ea06,
+63 thousand tokens. A review of popnei sends one reviewer for each
+category of the `code-review` skill, each of which starts with nothing but
+the code and the spec: `spec` reads the code against what it was written
+from and runs the cases, `tests` breaks the code to see whether a test
+fails, `numbers` reads the arithmetic, `errors` looks for panics and reads
+the messages, `api` the names and the doc comments, `architecture` the
+allocations and the threads, `binding` the two binding crates. Here one
+was enough: the work package has no code to break, so `tests` had nothing to
 run, and the numbers its commits claim are few and were checked by the
 orchestrator above. It confirmed by running them: the `LICENSE` is the
 MIT text of SPDX, whole; the native wheel and the source distribution
@@ -456,7 +525,8 @@ of the line, where the nine first columns are checked and a byte that is
 not text in the column of an individual is "not an allele number" with
 the name of that individual; that the positions and the qualities are
 written from the threads, where only the genotypes are, the rest being
-appended after each batch at a cost of 1 ms of 127 on 18 threads; that two
+appended after each batch, which adds 1 ms to the 127 ms that the read of
+the 403 MB file takes on 18 threads; that two
 bytes of the source are looked at, where it is sixteen. The seventh is
 the decision of the first item above, which extends the owner's decision
 on the mark of the end to a cut inside a member.
@@ -485,3 +555,382 @@ Findings not taken, each because its fix is the owner's:
 - A position written `+5` is read as 5, as pyNei reads it; the spec says
   that an allele number is a run of digits and says nothing of a
   position.
+
+### The measurement, task 2.6
+
+A fresh subagent, 222 thousand tokens and 32 minutes, with nothing else
+building on the machine; commits 3c4bf5d, 52e506f and 5cbf389, one
+constant each, and e297e63, the table of "Speed" of the spec. Its whole
+account, with every command as it was run, the sweeps, the memory and the
+two profiles, is `docs/reports/block-readers-measurement.md`. What the
+owner needs of it is here.
+
+The file is the VCF of 100000 variants x 1000 individuals of the bench,
+403 MB plain and 38 MB bgzipped; the owner's Apple M5 Pro, 18 cores,
+release, the file in the page cache, the genotypes alone asked for, the
+default options, `cargo bench --bench read_vcf -- <file> --threads N
+--runs 5`, the median of 5 runs, three sets of each and fourteen of the
+bgzipped read on one thread, on 21 September 2026, with load averages of
+1.4 to 2.4: `mediaanalysisd`, a background process of macOS, ran
+throughout. The reader
+before this plan and the spike of 20 September are from
+`docs/reports/vcf-to-blocks.md`; the target is that spike's time and a
+tenth more, as "Speed" of the spec has it.
+
+| | before this plan | the spike, 20 September | the target | the reader now, and its sets | met |
+|---|---|---|---|---|---|
+| plain, 1 thread | 1.24 s | 0.54 s | 0.594 s | 0.563 s, 0.560 to 0.563 | yes, see below |
+| plain, 18 threads | 0.160 s | 0.098 s | 0.108 s | 0.093 s, 0.093 to 0.094 | yes |
+| bgzipped, 1 thread | 1.58 s | 0.84 s | 0.924 s | 0.890 s, 0.859 to 0.940 | yes |
+| bgzipped, 18 threads | 0.50 s | 0.40 s | 0.44 s | 0.394 s, 0.393 to 0.396 | yes |
+
+The orchestrator ran the bench again after the subagent, with a load
+average of 1.7, right after a run of all the checks: 0.093 s and 0.397 s
+on 18 threads and 0.875 s bgzipped on one, which agree, and the plain
+file on one thread in four medians of 0.622, 0.569, 0.614 and 0.614 s,
+which do not: one of the four is where the subagent's three were, and
+three are 3 to 5 in 100 above the target. The subagent saw the same two
+clusters in the bgzipped read on one thread, near 0.866 and near 0.913 s,
+with no load average to tell them apart. So on one thread the reader is
+at the target or a twentieth above it, depending on something of the
+machine that nobody has named; which core a single thread lands on is a
+guess that was not tested. Against the reader before this plan, which the
+orchestrator timed at 1.307 s on the same machine the day before, it is
+2.1 to 2.3 times faster on one thread, and 1.7 times on 18.
+
+The spike was built again from a copy outside both repositories and
+timed the same day: 0.523, 0.103, 0.806 and 0.392 s. On 18 threads the
+reader is now faster than the spike on the plain file, 0.093 s against
+0.103, and the same on the bgzipped one; on one thread it is 8 in 100
+behind it, and it makes three checks that the spike does not: the ploidy
+of each genotype, its allele numbers against ALT, and the FILTER.
+
+The three constants that the spec leaves to a measurement, each changed
+in a commit of its own with its numbers, plain file, 18 threads: the
+buffer of a file that is opened by its path, 8 KiB to 256 KiB, a new
+named constant, 0.118 s to 0.106, flat beyond; the lines of a batch, 1024
+to 4096, 0.105 s to 0.098, and 0.139 s with 256; the text of a batch, 8
+MiB to 16 MiB, 0.098 s to 0.094, and 0.411 s to 0.392 bgzipped. None
+costs anything on one thread. Together they cost memory: the most bytes
+alive at once in a reader, by a counting allocator, went from 16.6 MB to
+35.7 MB for 1000 individuals and from 22.5 MB to 34.6 MB for 10000, a
+file of 3000 variants and 120 MB written for this; the maximum resident
+size of the bench went from 20.0 to 33.5 MB for the 1000 individuals and
+from 24.4 to 32.8 MB for the 10000. The
+memory still does not grow with the individuals, which is what the bound
+in bytes is for. The last of the three buys 4 in 100 on 18 threads for
+about 12 MB, and is the one the owner may want back at 8 MiB. None of it
+reaches wasm, which reads one line at a time from bytes in memory.
+
+Where the time goes, from `/usr/bin/sample` over 30 s: on one thread
+91.6 in 100 of the 23038 samples are in the columns of the individuals,
+6.1 in the read of the lines, 1.3 in the nine first columns. On 18
+threads the read of the lines, which is serial, is 4308 of the 9363
+samples of the thread that reads, and the 18 workers wait in 61 in 100 of
+theirs: it is still the floor, as the report of the plan before this one
+found, and the read ahead thread of section 3 of the architecture is what
+removes it. The targets are met without it.
+
+### The deliverables of work package 2, run by the orchestrator at e297e63
+
+1. The trait, what a block gains, the view of one variant and `reblock`:
+   `cargo test -p popnei --lib block -- --list` gives `53 tests`, among
+   them the ones "How it is verified" of the block spec lists, made at
+   `retain_vars`, `variants` and `check`, the two of `reblock` over a
+   reader written in the test, and
+   `a_boxed_reader_of_blocks_is_read_through_reblock`; all pass.
+2. The row parser: `cargo test -p popnei --lib io::vcf -- --list` gives
+   `110 tests`, where the file had 65 before the plan. The first table at
+   the end of this report has each of the 65 with the test that took its
+   place; the orchestrator checked with a script that every old test has
+   a row and that every test the table names is in the code, and the
+   `tests` reviewer read the rows against the two versions of the file.
+3. `VcfReader` is a reader of blocks: the tests on `cases.vcf`,
+   `differences.vcf`, `many.vcf` and their gzipped forms against the
+   stored output of bcftools and the sixteen counts of the spec, the sizes
+   of the blocks, the pools of 1 and of 4 threads, the wrong line, and the
+   serial parse against the parallel one are among those 110, and pass.
+4. The two new errors: cargo tests, `tests/test_truncated_and_infinite.py`
+   and `js/popnei/test/cut_short.test.ts`; both are a `ValueError`.
+5. Both bindings hold a boxed reader of blocks: pytest `61 passed`, 38
+   before the plan; `npm test` `tests 45`, `fail 0`, 39 before; between
+   a11aea9 and e297e63 no file of `python/`, `js/popnei/src/`, `tests/` or
+   `js/popnei/test/` that was there changed, but the smoke test of
+   pyodide, to which one check was added, and seven files of tests are
+   new; the wheel
+   of pyodide builds and its smoke test exits with 0; a search of the two
+   binding crates for `VariantReader` and `BlockCollector` finds nothing.
+6. The measurement: above.
+
+### How the work went
+
+Every task was done at its first sending, and no subagent had to be
+replaced. The tokens, each figure from the usage that a run of a subagent
+reports: 1.3 million for the eight runs that wrote the tasks (tasks 1.1
+and 1.2 together 113 thousand, 2.1 207, 2.2 185, 2.3 202, 2.4 241, 2.5
+48, 3.1 74, 2.6 222), 0.36 million for the five that fixed what the
+reviews found, and 2.2 million for 15 reviewers. The reviews cost more
+than the writing again, and again found what no check had seen: a loop
+with no end, a copy that grows with the square of the cuts, a panic on
+Ctrl-C, variants read after an error, a truncated file told of a deflate
+stream, 19 rules that no test held to.
+
+The subagent of task 2.1 wrote the code before the tests, against the
+`coding` skill, and said so. Its review found eleven guards that no test
+held to, and the fixes went back with "test first and seen to fail" in
+the message, which every later task and fix then did and reported. The
+prompt of a task should say it from the start.
+
+Tasks 2.3, 2.4 and 2.5, and the fixes of their review, went to one
+subagent, which kept what it had learned of the parser: 593 thousand
+tokens at its end, and no sign that it had lost the start.
+
+What the lessons of the plan before this one gave: no two subagents wrote
+in the tree at once, every reviewer had a worktree of its own, and the
+branch was never left; the orchestrator committed the plan and the report
+by the name of their files while a subagent worked, with no collision.
+Twice the orchestrator's own check of a subagent's text missed what a
+reviewer then found, the paragraph of the `coding` skill and the
+allocation counts of task 2.4, which a reviewer could not reproduce, 347
+allocations for a pass over `many.vcf` with the genotypes alone against
+the 292 that the subagent reported; those counts are not in this report, and the ones that are,
+one allocation for each block and none for each variant with the
+genotypes alone, are the `architecture` reviewer's own.
+
+### For the owner
+
+The decisions that the work went on without, each with what the code does
+meanwhile and what the orchestrator recommends:
+
+1. A bgzip file with the length of the extra field of one member
+   corrupted to one precise value reads as a file with no variants and
+   no error. The options: leave it, since it takes that precise
+   corruption and the reader before this plan had it too; or read a bgzip
+   file by the size that each member states, as bcftools does, which
+   replaces the decoder that the spec names, about a day of work, and is
+   also the way to decompress on several threads, where the bgzipped file
+   now takes 0.394 s on 18 threads against 0.093 s plain. Recommended:
+   the second, as a plan of its own with the read ahead thread.
+2. Through `iter_blocks` a file that was cut gives fewer variants before
+   its error than the reader does, and none with the default size of the
+   blocks when the file is shorter than a block, because `reblock` loses
+   what it was keeping, which the block spec decides for any error. The
+   options: leave it, since the error always comes and a file that was
+   cut is of no use; or have `reblock` give what it kept as a last short
+   block before it passes the error on, for every error, which reverses
+   that rule of the block spec. Recommended: leave it, and say in "The
+   cases a reader of the rules would not guess" of the VCF reader spec
+   what a user of `iter_blocks` gets.
+3. The errors of a data line name the line and the column and not the
+   file. Recommended: the binding crates put the path in front of the
+   message of every error of a file, since they have it.
+4. A parse that did not come back is a `ValueError`, by the VCF reader
+   spec, and the `coding` skill keeps `RuntimeError` for a defect of
+   popnei. Neither binding reaches it today: a panic of the parse is a
+   `PanicException` in Python. Recommended: `RuntimeError`, one line of
+   the spec and one arm of the Python binding crate.
+5. A quality that is missing is NaN inside the core, by the block spec,
+   and "Floats" of the `coding` skill asks for an `Option` inside the
+   core and NaN at the boundary with Python alone. The doc comment of the
+   view says that a caller tests for NaN before any arithmetic.
+   Recommended: decide it with the first calculation that reads the
+   qualities.
+6. The constructors of the alleles column of a block are visible inside
+   the crate and not outside it, so a reader of blocks written outside
+   popnei cannot fill the alleles. Recommended: leave it until somebody
+   writes one.
+
+What the orchestrator and the subagents decided that a user sees, which
+the owner can reverse: a bgzipped file cut inside a gzip member is the
+error of the mark of the end, a `ValueError`, where it was an `OSError`
+about a deflate stream; the default size of the blocks is checked when
+the first block is built and not when the file is opened; a reader that
+gives a block of no variants is a new case of the error,
+`ReaderGaveABlockOfNoVariants`, a `RuntimeError` in Python with the two
+other defects of a reader; `FieldsNotFilled` is `FieldsNotInTheBlock`; a
+quality of `1e39` is refused like `1e400`; a size or a ploidy that Python
+cannot fit in 64 bits is a `ValueError` that names the argument, where it
+was Python's `OverflowError`; the three constants of the measurement,
+above. And what changed in the specs, always in commits of their own:
+`docs/specs/block.md` in 11de065 and f9dc27d, `docs/specs/io_vcf.md` in
+9e20eb7, 93b0710 and e297e63.
+
+Smaller, and outside this plan: the three files that send a reviewer to
+the checkout of pyNei on this machine, and `npm pack` that packs no code
+without a build before it, both under work package 1; the spec and the
+message of the cut file call a gzip member of a bgzip file a "block",
+which is bgzip's word and also the glossary's word for the variants; a
+position written `+5` is read as 5, as pyNei reads it; the ids of a block
+are a `String` each, one allocation for each variant when they are asked
+for, which the measurement did not reach because the bench asks for the
+genotypes alone; a pass of Python has no `close`, so a pass that is
+abandoned keeps its file open until the collector runs; and the
+directory `/Users/jose/devel/popnei-bench/`, with the files of the bench,
+the builds of the sweeps and a clean clone, which can be deleted after
+the merge.
+
+## The final check
+
+From a clean clone of the branch at e297e63, outside the repository, on
+21 September 2026: `cargo fmt --all --check` exit 0; `cargo clippy
+--workspace --all-targets -- -D warnings` no warning; `cargo test
+--workspace` `153 passed`; `cargo wasm-check`, both wasm targets, every
+target of the crate, finished; `uv sync`, which fetched pyNei from GitHub
+at ef0ca6e, then `uv run ruff format --check` `12 files already
+formatted`, `uv run ruff check` `All checks passed!`, `uv run maturin
+develop && uv run pytest` `61 passed`; `npm run build` and `npm test` in
+`js/popnei` `tests 45`, `pass 45`, `fail 0`; `bash
+scripts/build_pyodide_wheel.sh` built the wheel and `node
+tests/pyodide/smoke.mjs` exited with 0, its new case among the lines it
+printed; the search of `crates` for `read_variant`, `VariantReader` and
+`BlockCollector` gives 0 lines, where the plan started with 98, and the
+one for `BlockReader`, `VariantRef` and `reblock` gives 137, where it
+gave 0; `LICENSE` is there, nothing of `/Users/jose` is in
+`pyproject.toml` or `uv.lock`, and `cargo doc -p popnei --no-deps` has
+no warning. The commits after e297e63 change this report and the plan
+alone.
+
+## The 65 tests that the VCF reader had before the plan, and what took their place
+
+Task 2.4 of `docs/plans/block-readers.md` rewrote the VCF reader: it gives
+blocks and no longer fills one `Variant` at a time. `crates/popnei/src/io/vcf.rs`
+had 65 tests at commit a11aea9, made at `read_variant` and at
+`VcfReader::new`, and had 95 when task 2.4 ended; it has 110 at the end of
+the plan. This table has, for each of the 65, the
+test that took its place, where it is made, and what it covers that the old
+one did not. Two of the 65 went with no test of the same name, and the last
+rows say which and why.
+
+Where a test is made: `new` is `VcfReader::new`, `from_path` is
+`VcfReader::from_path`, `next_block` is the reader through the trait
+`BlockReader`, and `parse_row` is the parser of one data line into one row
+of a block, which task 2.3 built and whose tests are made at a line with no
+reader around it.
+
+| the test at a11aea9 | the test now | made at |
+|---|---|---|
+| the_individuals_of_a_plain_and_of_a_gzipped_vcf_are_read | the same name | `from_path` |
+| the_gzip_bytes_are_found_in_a_source_that_is_not_a_file | the same name | `new` |
+| a_path_that_no_file_is_at_gives_an_error_that_carries_the_path | the same name | `from_path` |
+| a_source_that_gives_one_byte_at_a_time_is_read_gzipped_and_plain | the same name | `new` and `next_block` |
+| a_source_that_starts_with_neither_a_hash_nor_the_gzip_bytes_is_refused | the same name | `new` |
+| a_header_with_no_format_column_is_refused | the same name | `new` |
+| a_header_with_a_format_column_and_no_individual_is_refused | the same name | `new` |
+| two_individuals_with_the_same_name_are_refused | the same name | `new` |
+| a_header_that_ends_before_the_chrom_line_is_refused | the same name | `new` |
+| an_empty_source_is_refused | the same name | `new` |
+| a_gzipped_source_that_is_not_a_vcf_is_refused | the same name | `new` |
+| a_gzipped_source_cut_in_the_middle_of_a_member_is_refused | the same name | `next_block` |
+| a_last_line_with_no_end_of_line_is_read | the same name, and a_line_that_ends_in_an_end_of_line_is_read_as_one_that_does_not | `next_block`, `parse_row` |
+| a_read_after_an_error_and_after_the_last_variant_gives_no_variant | a_block_after_an_error_and_after_the_last_block_is_no_block | `next_block` |
+| the_four_variants_of_cases_vcf_are_read_when_every_variant_is_given | the same name, and the_four_lines_of_cases_vcf_are_parsed_into_their_rows | `next_block`, `parse_row` |
+| the_default_leaves_out_the_variant_of_cases_vcf_that_failed_its_filter | the same name | `next_block` |
+| the_leading_separators_and_the_dot_of_differences_vcf_are_read | the same name, and the_two_lines_of_differences_vcf_are_parsed_into_their_rows | `next_block`, `parse_row` |
+| the_chromosomes_are_numbered_in_the_order_of_the_variants_that_are_given | the same name, now over blocks of 1, 2 and 100 variants, since the numbers are given serially after each batch | `next_block` |
+| a_tetraploid_genotype_with_a_ploidy_of_two_is_refused | the same name, and a_genotype_of_another_ploidy_is_refused_with_its_individual | `next_block`, `parse_row` |
+| a_haploid_genotype_with_a_ploidy_of_two_is_refused_after_the_variants_before_it | a_haploid_genotype_with_a_ploidy_of_two_is_refused_after_the_blocks_before_it | `next_block` |
+| a_tetraploid_vcf_read_with_a_ploidy_of_four_is_read | the same name, and a_tetraploid_line_read_with_the_ploidy_four_gives_four_alleles | `next_block`, `parse_row` |
+| an_allele_that_the_variant_does_not_declare_is_refused | the same name, and an_allele_the_variant_does_not_declare_is_refused_with_the_genotypes_alone | `next_block`, `parse_row` |
+| an_allele_above_the_largest_one_popnei_holds_is_refused | the same name, and an_allele_above_the_largest_one_is_refused | `next_block`, `parse_row` |
+| a_line_with_the_genotypes_of_two_individuals_under_a_header_of_three_is_refused | the same name, and a_line_with_another_number_of_columns_of_individuals_is_refused | `next_block`, `parse_row` |
+| a_line_with_the_genotypes_of_four_individuals_under_a_header_of_three_is_refused | the same name, and a_line_with_another_number_of_columns_of_individuals_is_refused | `next_block`, `parse_row` |
+| a_format_with_no_gt_is_refused | the same name, and a_format_with_no_gt_is_refused_in_a_row | `next_block`, `parse_row` |
+| a_position_that_is_not_a_number_is_refused | the same name, and a_position_that_is_not_a_number_is_read_when_the_position_was_not_asked_for, which is the rule that changed | `next_block` |
+| a_quality_that_is_not_a_number_is_refused | the same name, and a_quality_that_is_not_a_number_is_refused_only_when_the_quality_was_asked_for | `next_block`, `parse_row` |
+| an_allele_number_is_a_run_of_digits_and_nothing_else | the same name | `next_block` |
+| an_allele_number_that_no_i8_holds_is_refused_for_being_above_the_largest | the same name | `next_block` |
+| a_gt_that_is_not_the_first_key_of_the_format_is_read | the same name, and a_gt_that_is_not_the_first_key_of_the_format_is_read_into_a_row | `next_block`, `parse_row` |
+| a_vcf_whose_lines_end_in_a_carriage_return_is_read | the same name | `next_block` |
+| an_empty_line_at_the_end_is_skipped | the same name | `next_block` |
+| a_vcf_with_a_header_and_no_variant_gives_no_variant_and_no_error | a_vcf_with_a_header_and_no_variant_gives_no_block_and_no_error | `next_block` |
+| an_allele_that_alt_declares_and_no_genotype_carries_is_read | the same name, and an_allele_that_no_genotype_carries_is_read | `next_block`, `parse_row` |
+| a_line_that_failed_its_filter_is_skipped_before_its_genotypes_are_read | the same name | `next_block` |
+| a_line_that_ends_before_its_filter_is_refused_with_the_default | the same name | `next_block` |
+| a_line_that_failed_its_filter_is_not_read_before_its_filter_either | the same name | `next_block` |
+| with_the_genotypes_alone_the_id_and_the_alleles_are_not_filled | with_the_genotypes_alone_a_block_has_no_column, and only_the_fields_that_were_asked_for_are_parsed | `next_block`, `parse_row` |
+| with_the_id_and_the_alleles_alone_the_genotypes_are_not_filled | with_the_id_and_the_alleles_alone_a_block_has_those_two_columns_and_no_genotype, and only_the_fields_that_were_asked_for_are_parsed | `next_block`, `parse_row` |
+| a_data_line_whose_bytes_are_not_text_is_refused_with_its_number | the same name, and a_line_whose_bytes_are_not_valid_utf8_is_refused | `next_block`, `parse_row` |
+| a_header_line_whose_bytes_are_not_text_is_refused | the same name | `new` |
+| an_alt_that_ends_in_a_comma_is_refused | the same name, and an_allele_with_no_letter_in_it_is_refused_in_ref_and_in_alt | `next_block`, `parse_row` |
+| a_ref_with_no_letter_in_it_is_refused | the same name, and an_allele_with_no_letter_in_it_is_refused_in_ref_and_in_alt | `next_block`, `parse_row` |
+| an_individual_with_no_name_is_refused | the same name | `new` |
+| a_line_of_seven_columns_is_refused_with_the_genotypes_not_asked_for | the same name, and a_line_of_seven_columns_is_refused_when_the_genotypes_are_not_asked_for | `next_block`, `parse_row` |
+| a_format_with_no_gt_is_refused_with_the_genotypes_not_asked_for | the same name, and a_format_of_dp_is_refused_when_the_genotypes_are_not_asked_for | `next_block`, `parse_row` |
+| what_is_in_the_columns_of_the_individuals_is_not_read_without_the_genotypes | the same name, and the_columns_of_the_individuals_are_not_read_when_the_genotypes_are_not_asked_for | `next_block`, `parse_row` |
+| a_reader_asked_for_the_genotypes_alone_empties_the_alleles_it_filled_before | a_reader_asked_for_the_genotypes_alone_gives_its_next_block_without_the_columns | `next_block` |
+| the_buffers_of_a_variant_are_written_over_from_one_variant_to_the_next | none of that name: see below | |
+| the_genotypes_of_a_variant_come_back_in_the_buffers_of_the_variants_before_it | none of that name: see below | |
+| every_variant_of_many_vcf_is_read_as_bcftools_read_it | the same name | `next_block` |
+| the_default_gives_the_variants_of_many_vcf_whose_filter_passed | the same name | `next_block` |
+| the_first_genotypes_of_many_vcf_are_the_ones_of_the_spec | the same name | `next_block` |
+| the_counts_of_many_vcf_with_every_variant_given_are_the_ones_of_the_spec | the same name | `next_block` |
+| the_counts_of_many_vcf_with_the_default_are_the_ones_of_the_spec | the same name | `next_block` |
+| many_vcf_gives_the_same_variants_in_a_pool_of_one_thread_and_in_one_of_four | the same name | `next_block` |
+| a_reader_whose_parse_did_not_come_back_gives_an_error_and_no_variant | a_reader_whose_parse_did_not_come_back_gives_an_error_and_no_block | `next_block` |
+| a_wrong_line_of_a_later_batch_comes_after_the_variants_that_were_read_before_it | a_wrong_line_of_a_later_batch_comes_after_the_blocks_that_were_read_before_it | `next_block` |
+| the_lines_parsed_one_after_another_give_what_the_threads_give | the same name, over `parse_rows` and `parse_rows_one_by_one` and the 500 lines of many.vcf | the parse of a batch |
+| a_batch_holds_more_than_one_line_where_there_are_threads | the same name | the constant `LINES_PER_BATCH` |
+| a_bound_of_bytes_smaller_than_the_file_cuts_the_batches_and_changes_no_result | the same name, with the file in one block of 1000 variants | `next_block` |
+| a_file_read_one_line_at_a_time_gives_what_it_gives_in_one_batch | the same name | `next_block` |
+| a_ploidy_of_zero_and_one_above_the_largest_are_refused | the same name | `new` |
+| the_largest_ploidy_is_read | the same name | `next_block` |
+
+### The two that went
+
+`the_buffers_of_a_variant_are_written_over_from_one_variant_to_the_next` and
+`the_genotypes_of_a_variant_come_back_in_the_buffers_of_the_variants_before_it`
+were about the `Variant` that the consumer owned and lent to the reader: that
+its buffers were written over instead of allocated again, and that the
+buffers of the variants of a batch came back to the reader through the swap
+of every read. There is no such variant now. What they were guarding, that a
+reader of a file of any length allocates nothing for each variant, is
+guarded by `the_rows_of_a_batch_are_the_ones_the_next_batch_is_parsed_into`,
+at `next_block`: `many.vcf` read in batches of 8 lines gives its 475
+variants, the reader keeps 8 rows and no more, and it filled more than 60
+batches into them.
+
+### What else moved
+
+Two tests of `crates/popnei/src/block.rs` were about the VCF reader through
+the collector and are in `io::vcf` now, where the reader is:
+`a_reader_with_no_variants_gives_no_block`, which is
+`a_vcf_with_a_header_and_no_variant_gives_no_block_and_no_error`, and
+`the_error_of_the_third_variant_comes_after_the_block_of_the_two_before_it`,
+which keeps its name and now reads two wrong lines, so that it also shows
+that the error is the one of the first of them. The other tests of
+`block.rs` that read a reference VCF through `BlockCollector` are made at
+the VCF reader itself, with the same assertions: the sizes of the blocks of
+`many.vcf`, what they hold joined, the columns of `cases.vcf`, the blocks of
+a tetraploid VCF and the two tests of `reblock` over a real file.
+
+## The eleven tests that went with the record level, task 3.1
+
+21 September 2026. Task 3.1 of `docs/plans/block-readers.md` took the
+single variant that a reader filled, `Variant`, the `VariantReader` trait,
+the `BlockCollector` that copied its variants into blocks and the
+`CollectedBlocks` that gave those blocks as a `BlockReader`, out of the
+core crate. Eleven tests called them and went with them: 154 cargo tests
+before the removal, 143 after.
+
+This table is what a reviewer of the tests reads against. For each test
+that went: what it checked, and the test that checks it now, by its name
+and its file, or why nothing of it is left to check. The commit before the
+removal, "the memory of the columns of a block is refused over the reader
+that allocates", wrote the one test that had to exist first, because the
+rule it checks still holds and no other test had it.
+
+The names of files below are relative to the root of the repository.
+
+| The test that went | What it checked | What checks it now |
+|---|---|---|
+| `block::tests::a_collector_of_blocks_of_no_variant_is_refused` | A reader given a size of 0 is refused where it is built, with `BlockOfNoVariants`, whose message names the 0. | `block::tests::a_reblock_of_blocks_of_no_variant_is_refused` for `Reblock::new`, and `io::vcf::tests::a_reader_of_blocks_of_no_variant_is_refused` for the VCF reader, both in the crate `popnei`. |
+| `block::tests::a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_collector_is_built` | The variants of a block times the individuals times the ploidy is a multiplication that a size a caller wrote carries beyond a `usize`, and that is an error where the reader is built and not a panic. | `block::tests::a_reblock_of_more_genotypes_than_a_usize_holds_is_refused_when_it_is_built` and `io::vcf::tests::a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_reader_is_built`. |
+| `block::tests::a_block_of_more_memory_than_the_machine_gives_is_refused_before_a_variant_is_read` | A block is refused for the memory of its columns and not only for genotypes that no `usize` counts: the positions of a variant are 8 bytes whatever the individuals are, so a source of no individual, whose blocks hold no genotype, is still refused. | `block::tests::a_block_of_more_memory_than_the_machine_gives_is_refused_when_it_is_started`, written in the commit before the removal over the VCF reader, with the chromosomes and the positions asked for and not the genotypes. A source of no individual is gone with the collector: a VCF with no individual is refused by its header. |
+| `block::tests::a_collector_asks_its_reader_for_its_columns_and_the_genotypes` | What a reader of blocks asks its source for is what its blocks hold, the genotypes among them. | `block::tests::a_reader_asked_for_the_genotypes_alone_gives_a_block_with_no_other_column`, and `io::vcf::tests::with_the_genotypes_alone_a_block_has_no_column`, `io::vcf::tests::with_the_id_and_the_alleles_alone_a_block_has_those_two_columns_and_no_genotype` and `io::vcf::tests::what_is_in_the_columns_of_the_individuals_is_not_read_without_the_genotypes` for the reader that parses only what it was asked for. |
+| `block::tests::a_variant_of_a_number_of_alleles_other_than_the_individuals_is_an_error` | A reader that gives a variant of a number of alleles other than its individuals times its ploidy is an error, `VariantOfAnotherSize`, and not a block whose genotypes are each at the place of another. | The rule holds of a block and not of a variant now, and `Block::check` is what finds it: `block::tests::a_block_whose_genotypes_lost_an_allele_fails_check` and `block::tests::reblock_refuses_a_block_whose_arrays_are_not_of_its_size`. The case `VariantOfAnotherSize` went with the test. |
+| `block::tests::the_collector_gives_no_block_after_the_error_of_its_reader` | A reader over another reader gives no block after its source failed, and does not lean on the source stopping itself. | `block::tests::reblock_calls_a_source_that_failed_once_and_no_more`, which also counts the calls to the source. |
+| `block::tests::the_blocks_of_a_reader_of_single_variants_are_a_reader_of_blocks` | `CollectedBlocks` was a `BlockReader`: its individuals, its ploidy, its chromosomes, its blocks of the size asked for and the `None` at the end. | Nothing: the thing it tested is gone. The VCF reader is the `BlockReader` that its tests read, `io::vcf::tests::the_blocks_of_many_vcf_have_the_sizes_of_the_spec` and the others made at `next_block`. |
+| `block::tests::a_field_that_was_asked_for_and_that_the_reader_does_not_fill_is_an_error` | Two things: a reader held as `Box<dyn VariantReader>` works through the box; and a consumer that did not get a field it depends on gets the error that names it. | The box: `block::tests::what_is_asked_of_a_boxed_reader_reaches_the_reader_inside_it` and `block::tests::a_boxed_reader_of_blocks_is_read_through_reblock`, both over `Box<dyn BlockReader>`. The error: it is now `FieldsNotInTheBlock`, which a consumer builds from `asked_for.difference(block.fields())`, and no consumer is written yet; `error::tests::the_message_of_a_field_the_block_does_not_hold_names_the_field` keeps its message tested, and `block::tests::the_views_of_a_block_give_none_for_a_column_it_does_not_hold` checks what `Block::fields` reports of a block that lacks a column. |
+| `variant::tests::a_cleared_variant_is_empty_and_keeps_the_capacity_of_its_buffers` | `Variant::clear` empties every field and keeps the capacity of the buffers, so a reader refilling a million variants allocates nothing after the first few. | Nothing: no variant is refilled any more. The rule it served, that a reader allocates a few times for each block and not for each variant, has no test that stays: "How it is verified" of `docs/specs/io_vcf.md` decides that it is checked by hand with a counting allocator when a reader is written. |
+| `variant::tests::a_variant_cleared_but_the_alleles_keeps_them_and_empties_the_rest` | The same, for the reader that wrote over the strings of the alleles instead of dropping them. | Nothing: the alleles of a block are one buffer of text, `AllelesColumn`, whose buffers are checked by `block::tests::the_buffers_of_an_alleles_column_hold_a_block_of_biallelic_variants`. |
+| `variant::tests::two_variants_are_read_through_a_boxed_reader` | Three things: a reader through `Box<dyn VariantReader>`; the chromosomes numbered in the order in which their names first appear; and a reader asked for other fields between two reads giving the next one without the columns that were dropped. | The box: `block::tests::what_is_asked_of_a_boxed_reader_reaches_the_reader_inside_it`. The chromosomes: `variant::tests::a_chrom_table_numbers_the_names_in_the_order_they_first_appear` and `io::vcf::tests::the_chromosomes_are_numbered_in_the_order_of_the_variants_that_are_given`. The change of fields: `io::vcf::tests::a_reader_asked_for_the_genotypes_alone_gives_its_next_block_without_the_columns`. |

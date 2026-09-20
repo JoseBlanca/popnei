@@ -1,8 +1,8 @@
 # Plan: readers that give blocks
 
-September 2026. Approved by the owner on 20 September 2026 and under way
-on the branch `plan/block-readers`, with its work report in
-`docs/reports/block-readers.md`. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026 and done on 21
+September 2026, on the branch `plan/block-readers`, with its work report
+in `docs/reports/block-readers.md`. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
@@ -306,7 +306,7 @@ describes, no more. The three revised specs.
   the blocks in "How it is verified" and the cases of the error in "The
   Rust interface" of `docs/specs/io_vcf.md`. Serves deliverable 4.
   Needs 2.4.
-- [ ] 2.6 The measurement, as "What measurement there is" of the
+- [x] 2.6 The measurement, as "What measurement there is" of the
   `performance-review` skill asks. It changes no code but the constants
   that the spec leaves to a measurement, each in a commit of its own with
   its numbers. Serves deliverable 6. Needs 2.4, and runs after 2.5: both
