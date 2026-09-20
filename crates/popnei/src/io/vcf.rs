@@ -535,12 +535,24 @@ fn parse_allele(text: &str, num_alleles: usize, line: u64, individual: &str) -> 
         place: VcfPlace::Individual(individual.to_string()),
         problem,
     };
-    let Ok(number) = text.parse::<u32>() else {
-        return Err(wrong(format!("`{text}` is not an allele number")));
-    };
+    if text.is_empty() {
+        return Err(wrong("`` is not an allele number".to_string()));
+    }
+    let mut number: u32 = 0;
+    for byte in text.as_bytes() {
+        let Some(digit) = char::from(*byte).to_digit(10) else {
+            return Err(wrong(format!(
+                "`{text}` is not an allele number, which is a run of digits"
+            )));
+        };
+        // Once the number is above the largest allele the answer is the
+        // same whatever its other digits are, so it stops growing there
+        // and the two operations cannot overflow.
+        number = number.saturating_mul(10).saturating_add(digit);
+    }
     let Ok(allele) = i8::try_from(number) else {
         return Err(wrong(format!(
-            "the allele {number} is above {MAX_ALLELE}, the largest allele popnei holds"
+            "the allele `{text}` is above {MAX_ALLELE}, the largest allele popnei holds"
         )));
     };
     // The allele is not negative, since its text was parsed as a `u32`.
@@ -569,19 +581,31 @@ fn fill_genotype(
         gts.extend(std::iter::repeat_n(MISSING_ALLELE, ploidy));
         return Ok(());
     }
-    // The alleles are counted before any of them is read, so that a
-    // genotype of another ploidy leaves nothing in `gts`.
-    let found = text.split(['/', '|']).count();
+    // The alleles are read in one pass over the text, and what was pushed
+    // is taken off again when the genotype turns out to be of another
+    // ploidy or one of its alleles is wrong, so that a genotype leaves
+    // either all of its alleles in `gts` or none.
+    let start = gts.len();
+    for allele in text.split(['/', '|']) {
+        match parse_allele(allele, num_alleles, line, individual) {
+            Ok(allele) => gts.push(allele),
+            Err(error) => {
+                gts.truncate(start);
+                return Err(error);
+            }
+        }
+    }
+    // `gts` only grew in the loop above, so the subtraction does not
+    // saturate: it is how many alleles this genotype pushed.
+    let found = gts.len().saturating_sub(start);
     if found != ploidy {
+        gts.truncate(start);
         return Err(Error::VcfGenotypePloidy {
             line,
             individual: individual.to_string(),
             found,
             expected: ploidy,
         });
-    }
-    for allele in text.split(['/', '|']) {
-        gts.push(parse_allele(allele, num_alleles, line, individual)?);
     }
     Ok(())
 }
@@ -1337,6 +1361,54 @@ mod tests {
         };
         assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("POS")));
         assert!(problem.contains('x'), "{problem}");
+    }
+
+    #[test]
+    fn a_quality_that_is_not_a_number_is_refused() {
+        let vcf = vcf_of(&["chr1 100 . A T x PASS . GT 0/0 0/1 1/1"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine {
+            line,
+            place,
+            problem,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Column("QUAL")));
+        assert!(problem.contains('x'), "{problem}");
+    }
+
+    #[test]
+    fn an_allele_number_is_a_run_of_digits_and_nothing_else() {
+        // `+1` and `-1` are numbers that Rust's own parser reads, and the
+        // VCF has neither; an allele of no digit at all is not one either.
+        for genotype in ["0/+1", "0/-1", "0/1x", "0/", "/", "0/1.5"] {
+            let line = format!("chr1 100 . A T . PASS . GT 0/0 {genotype} 1/1");
+            let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
+            let Error::VcfDataLine { line, place, .. } = error else {
+                panic!("the error of `{genotype}` is {error}");
+            };
+            assert_eq!(
+                (line, place),
+                (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string())),
+                "{genotype}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_allele_number_that_no_i8_holds_is_refused_for_being_above_the_largest() {
+        // 4294967296 does not fit in the u32 the number was parsed into,
+        // and the answer is the same as for 128: it is above 127.
+        for genotype in ["0/128", "0/4294967296", "0/99999999999999999999"] {
+            let line = format!("chr1 100 . A T . PASS . GT 0/0 {genotype} 1/1");
+            let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
+            let Error::VcfDataLine { problem, .. } = error else {
+                panic!("the error of `{genotype}` is {error}");
+            };
+            assert!(problem.contains("127"), "{genotype}: {problem}");
+        }
     }
 
     #[test]

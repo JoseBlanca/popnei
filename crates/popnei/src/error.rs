@@ -70,7 +70,7 @@ pub enum Error {
     /// ploidy the reader was given. popnei does not read a VCF of mixed
     /// ploidies: its calculations are not defined for one.
     #[error(
-        "line {line} of the VCF, the column of {individual}: the genotype has {found} alleles and the ploidy asked for is {expected}"
+        "line {line} of the VCF, the column of {individual}: its genotype is of the ploidy {found} and the reader was asked for the ploidy {expected}; popnei does not read a VCF whose genotypes are of different ploidies, and the ploidy is an argument of the reader"
     )]
     VcfGenotypePloidy {
         /// The number of the line in the file, counted from 1 with the
@@ -135,7 +135,12 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("line 9"), "{message}");
         assert!(message.contains("ind2"), "{message}");
-        assert!(message.contains("4 alleles"), "{message}");
-        assert!(message.contains("is 2"), "{message}");
+        assert!(message.contains("ploidy 4"), "{message}");
+        assert!(message.contains("ploidy 2"), "{message}");
+        // The reader can be asked for another ploidy, and a VCF of mixed
+        // ploidies is refused whatever it is asked for: a user who gets
+        // this needs to be told both.
+        assert!(message.contains("different ploidies"), "{message}");
+        assert!(message.contains("argument"), "{message}");
     }
 }
