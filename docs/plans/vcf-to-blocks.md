@@ -1,7 +1,8 @@
 # Plan: from a VCF to blocks, in Rust, Python and TypeScript
 
 September 2026. Approved by the owner on 20 September 2026, who ordered
-it run with the code written by subagents on Opus. This plan builds
+it run with the code written by subagents on Opus. Under way since that
+day, with its report in `docs/reports/vcf-to-blocks.md`. This plan builds
 the first code of popnei: the workspace with its four builds, the variant
 record, the VCF reader, and the blocks through which genotypes reach
 Python and TypeScript. It is built from three specs, all reviewed and
