@@ -11,11 +11,6 @@
 //! [`Reblock`] is the reader over a reader that cuts and joins the blocks
 //! of its source to one size.
 //!
-//! [`BlockCollector`], which builds blocks by copying the variants that a
-//! reader of single variants gives one at a time, and [`CollectedBlocks`],
-//! which gives its blocks as a [`BlockReader`], go out with the single
-//! variant in work package 3 of `docs/plans/block-readers.md`.
-//!
 //! `docs/specs/block.md` has the design and section 2 of
 //! `docs/architecture.md` the reasons for the arrays.
 
@@ -23,7 +18,7 @@ use std::collections::TryReserveError;
 use std::fmt;
 
 use crate::error::{Error, Result};
-use crate::variant::{ChromTable, Needs, Variant, VariantReader, VariantRef};
+use crate::variant::{ChromTable, Needs, VariantRef};
 
 /// How many genotypes a block holds when the caller asks for no number of
 /// variants, 5 million, which is `DEF_NUM_GTS_PER_CHUNK` of pyNei's
@@ -1243,327 +1238,6 @@ fn taken_rows(
     Ok(Some(rows))
 }
 
-/// It builds blocks from a reader, one after another, each of the number of
-/// variants that was asked for.
-///
-/// It owns its reader and gives it back to whoever wants the individuals,
-/// the ploidy or the table of the chromosomes. What it keeps from one block
-/// to the next is the [`Variant`] it lends to the reader; each block is
-/// allocated when it is started and given away when it is full.
-pub struct BlockCollector<R: VariantReader> {
-    reader: R,
-    /// What each block holds, the genotypes among them.
-    needs: Needs,
-    num_vars_per_block: usize,
-    num_individuals: usize,
-    ploidy: usize,
-    /// `num_individuals` x `ploidy`, the alleles of one variant, which the
-    /// trait asks of every reader and the collector checks in each one.
-    gts_per_variant: usize,
-    /// `num_vars_per_block` x `num_individuals` x `ploidy`, the genotypes
-    /// a full block holds, which every block is allocated for.
-    gts_per_block: usize,
-    /// The variant the reader is lent, again and again.
-    var: Variant,
-    /// Whether the reader has no more variants or gave an error. After
-    /// either there is no block.
-    finished: bool,
-}
-
-impl<R: VariantReader> BlockCollector<R> {
-    /// The collector over `reader`, which it asks for `needs` and the
-    /// genotypes.
-    ///
-    /// `needs` is what each block will hold besides the genotypes, which
-    /// are always part of it, and a field that is not in it is a column
-    /// that the block does not have and that the reader is never asked to
-    /// parse. `num_vars_per_block` is how many variants a block holds, 1 or
-    /// more, and `None` is [`default_num_vars_per_block`] for the
-    /// individuals of the reader.
-    ///
-    /// # Errors
-    ///
-    /// When `num_vars_per_block` is 0, and when the genotypes of one block,
-    /// the variants times the individuals times the ploidy, are more than
-    /// the machine addresses.
-    pub fn new(mut reader: R, needs: Needs, num_vars_per_block: Option<usize>) -> Result<Self> {
-        let num_individuals = reader.individuals().len();
-        let ploidy = reader.ploidy();
-        let num_vars_per_block = match num_vars_per_block {
-            Some(0) => return Err(Error::BlockOfNoVariants),
-            Some(asked_for) => asked_for,
-            None => default_num_vars_per_block(num_individuals),
-        };
-        let too_large = || Error::BlockTooLarge {
-            num_vars_per_block,
-            num_individuals,
-            ploidy,
-        };
-        let gts_per_variant = num_individuals.checked_mul(ploidy).ok_or_else(too_large)?;
-        let gts_per_block = gts_per_variant
-            .checked_mul(num_vars_per_block)
-            .ok_or_else(too_large)?;
-        let needs = needs.union(Needs::GTS);
-        reader.set_needs(needs);
-        Ok(BlockCollector {
-            reader,
-            needs,
-            num_vars_per_block,
-            num_individuals,
-            ploidy,
-            gts_per_variant,
-            gts_per_block,
-            var: Variant::new(),
-            finished: false,
-        })
-    }
-
-    /// The next block, or `None` when the reader has no more variants.
-    ///
-    /// The last block of a source is the only one that can hold fewer
-    /// variants than were asked for, and a reader with no variants gives no
-    /// block at all.
-    ///
-    /// # Errors
-    ///
-    /// When the machine does not give the memory of the columns of the
-    /// block, which is asked for before a variant is read; when the reader
-    /// fails; when it did not fill a field that was asked for; and when it
-    /// filled a variant with a number of alleles other than its individuals
-    /// times its ploidy. The block that was being built is lost with the
-    /// error, and every call after it gives no block.
-    pub fn next_block(&mut self) -> Result<Option<Block>> {
-        if self.finished {
-            return Ok(None);
-        }
-        // The memory of the columns is asked for before the first variant
-        // is read, so that a size the caller wrote is refused before the
-        // source is touched. The count of the variants is the one of the
-        // range, so that a block of `usize::MAX` variants needs no addition
-        // of our own.
-        let mut block = self.start_block().inspect_err(|_| {
-            self.finished = true;
-        })?;
-        for count in 1..=self.num_vars_per_block {
-            // The trait says that a reader ends at its error, and the
-            // collector ends too: what a reader that goes on gives after
-            // one is not the source, and no caller of ours reads it.
-            let read = self.reader.read_variant(&mut self.var).inspect_err(|_| {
-                self.finished = true;
-            })?;
-            if !read {
-                self.finished = true;
-                break;
-            }
-            let not_filled = self.needs.difference(self.var.filled);
-            if !not_filled.is_empty() {
-                self.finished = true;
-                return Err(Error::FieldsNotFilled { fields: not_filled });
-            }
-            // The genotypes of a block are read as variants x individuals
-            // x ploidy, and a variant of another number of alleles would
-            // move every genotype after it without a sign of it.
-            if self.var.gts.len() != self.gts_per_variant {
-                self.finished = true;
-                return Err(Error::VariantOfAnotherSize {
-                    found: self.var.gts.len(),
-                    expected: self.gts_per_variant,
-                    num_individuals: self.num_individuals,
-                    ploidy: self.ploidy,
-                });
-            }
-            self.push_variant(&mut block);
-            block.num_vars = count;
-        }
-        if block.num_vars == 0 {
-            return Ok(None);
-        }
-        Ok(Some(block))
-    }
-
-    /// The reader the collector was built over, for the individuals, the
-    /// ploidy and the names of the chromosome numbers of a block.
-    pub fn reader(&self) -> &R {
-        &self.reader
-    }
-
-    /// What the blocks from the next one on will hold, and what the reader
-    /// is asked for. The genotypes are part of it whatever is given: a
-    /// collector copies the genotypes of every variant it reads.
-    pub fn set_needs(&mut self, needs: Needs) {
-        self.needs = needs.union(Needs::GTS);
-        self.reader.set_needs(self.needs);
-    }
-
-    /// The error of a block whose memory the machine does not give, with
-    /// the size that was asked for.
-    fn too_large(&self) -> Error {
-        Error::BlockTooLarge {
-            num_vars_per_block: self.num_vars_per_block,
-            num_individuals: self.num_individuals,
-            ploidy: self.ploidy,
-        }
-    }
-
-    /// An empty column reserved for `num_items`, or `None` when `field` is
-    /// not among what the blocks of this collector hold.
-    ///
-    /// The memory is asked for with `try_reserve_exact`, which gives it
-    /// back as an error: `Vec::with_capacity` ends the process when the
-    /// machine has not the memory, and panics above what a `Vec` holds,
-    /// and a size that a caller of popnei wrote reaches both.
-    fn reserved_column<T>(&self, field: Needs, num_items: usize) -> Result<Option<Vec<T>>> {
-        if !self.needs.contains(field) {
-            return Ok(None);
-        }
-        let mut column = Vec::new();
-        column
-            .try_reserve_exact(num_items)
-            .map_err(|_| self.too_large())?;
-        Ok(Some(column))
-    }
-
-    /// An empty block with every column the collector was asked for, each
-    /// reserved for a full block.
-    ///
-    /// # Errors
-    ///
-    /// When the machine does not give the memory of one of the columns.
-    fn start_block(&self) -> Result<Block> {
-        let num_vars = self.num_vars_per_block;
-        let mut gts = Vec::new();
-        gts.try_reserve_exact(self.gts_per_block)
-            .map_err(|_| self.too_large())?;
-        let alleles = match self.needs.contains(Needs::ALLELES) {
-            true => Some(AllelesColumn::with_num_vars(num_vars).map_err(|_| self.too_large())?),
-            false => None,
-        };
-        Ok(Block {
-            num_vars: 0,
-            num_individuals: self.num_individuals,
-            ploidy: self.ploidy,
-            gts,
-            chrom: self.reserved_column(Needs::CHROM_POS, num_vars)?,
-            pos: self.reserved_column(Needs::CHROM_POS, num_vars)?,
-            id: self.reserved_column(Needs::ID, num_vars)?,
-            alleles,
-            qual: self.reserved_column(Needs::QUAL, num_vars)?,
-        })
-    }
-
-    /// The variant the reader last filled, copied into the columns of the
-    /// block. The reader gives the `num_individuals` x `ploidy` alleles of
-    /// every variant that the trait asks of it, so the genotypes are one
-    /// copy of a few kilobytes.
-    fn push_variant(&self, block: &mut Block) {
-        block.gts.extend_from_slice(&self.var.gts);
-        if let Some(chrom) = block.chrom.as_mut() {
-            chrom.push(self.var.chrom);
-        }
-        if let Some(pos) = block.pos.as_mut() {
-            pos.push(self.var.pos);
-        }
-        if let Some(id) = block.id.as_mut() {
-            id.push(self.var.id.clone());
-        }
-        if let Some(alleles) = block.alleles.as_mut() {
-            alleles.push(&self.var.alleles);
-        }
-        if let Some(qual) = block.qual.as_mut() {
-            // A variant with no quality is a NaN in the column, which is
-            // what Python and TypeScript are given for it.
-            qual.push(self.var.qual.unwrap_or(f32::NAN));
-        }
-    }
-}
-
-/// The blocks a [`BlockCollector`] builds, as a [`BlockReader`].
-///
-/// It goes out in work package 3 of `docs/plans/block-readers.md`, with the
-/// single variant and the collector: it is here so that everything that
-/// takes a reader of blocks, the binding crates among them, can be written
-/// and tested before the VCF reader gives blocks itself.
-///
-/// What it does not keep of the contract of [`BlockReader`]: a block of it
-/// always holds the genotypes, because a collector copies the genotypes of
-/// every variant it reads, so a `set_needs` without
-/// [`Needs::GTS`](crate::variant::Needs::GTS) still gives them.
-pub struct CollectedBlocks<R: VariantReader> {
-    collector: BlockCollector<R>,
-}
-
-impl<R: VariantReader> CollectedBlocks<R> {
-    /// The blocks of `reader`, each of `num_vars_per_block` variants and
-    /// holding `needs` and the genotypes.
-    ///
-    /// # Errors
-    ///
-    /// The ones of [`BlockCollector::new`]: a `num_vars_per_block` of 0,
-    /// and a block of more genotypes than this machine addresses.
-    pub fn new(reader: R, needs: Needs, num_vars_per_block: Option<usize>) -> Result<Self> {
-        Ok(CollectedBlocks {
-            collector: BlockCollector::new(reader, needs, num_vars_per_block)?,
-        })
-    }
-}
-
-impl<R: VariantReader> BlockReader for CollectedBlocks<R> {
-    /// The next block of the collector, which holds one variant at least,
-    /// gives `None` when the reader has no more and `None` at every call
-    /// after an error.
-    ///
-    /// # Errors
-    ///
-    /// The ones of [`BlockCollector::next_block`]: the reader failed, it
-    /// did not fill a field that was asked for, it filled a variant of
-    /// another number of alleles, or the machine did not give the memory
-    /// of a column.
-    fn next_block(&mut self) -> Result<Option<Block>> {
-        self.collector.next_block()
-    }
-
-    fn individuals(&self) -> &[String] {
-        self.collector.reader().individuals()
-    }
-
-    fn ploidy(&self) -> usize {
-        self.collector.reader().ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        self.collector.reader().chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        self.collector.set_needs(needs);
-    }
-}
-
-impl<R: VariantReader> fmt::Debug for CollectedBlocks<R> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CollectedBlocks")
-            .field("collector", &self.collector)
-            .finish()
-    }
-}
-
-impl<R: VariantReader> fmt::Debug for BlockCollector<R> {
-    /// What the collector was asked for and where it has got to. The reader
-    /// is left out, so that a collector over a reader that has no `Debug`
-    /// has one.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("BlockCollector")
-            .field("needs", &self.needs)
-            .field("num_vars_per_block", &self.num_vars_per_block)
-            .field("num_individuals", &self.num_individuals)
-            .field("ploidy", &self.ploidy)
-            .field("finished", &self.finished)
-            .finish_non_exhaustive()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -1571,13 +1245,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AllelesColumn, Block, BlockCollector, BlockReader, CollectedBlocks, FIELD_NAMES,
-        FIELDS_OF_THE_NAMES, GENOTYPES_PER_BLOCK, MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK,
-        Reblock, default_num_vars_per_block, needs_of_the_fields,
+        AllelesColumn, Block, BlockReader, FIELD_NAMES, FIELDS_OF_THE_NAMES, GENOTYPES_PER_BLOCK,
+        MAX_NUM_VARS_PER_BLOCK, MIN_NUM_VARS_PER_BLOCK, Reblock, default_num_vars_per_block,
+        needs_of_the_fields,
     };
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::{ChromTable, MISSING_ALLELE, Needs, Variant, VariantReader, VariantRef};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs, VariantRef};
 
     /// The reference VCFs live at the root of the repository, beside the
     /// Python tests that read the same files, and not inside this crate.
@@ -1693,8 +1367,9 @@ mod tests {
         assert_eq!(num_gts_of(&blocks), [47_500]);
     }
 
-    /// One variant as `read_variant` gives it, which is what the blocks,
-    /// joined, have to hold whatever their size.
+    /// The genotypes, the chromosome and the position of one variant,
+    /// which is what the blocks, joined, have to hold whatever their
+    /// size.
     #[derive(Debug, PartialEq, Eq)]
     struct Site {
         chrom: u32,
@@ -1811,9 +1486,10 @@ mod tests {
     }
 
     #[test]
-    fn a_collector_asked_for_the_genotypes_alone_gives_a_block_with_no_other_column() {
-        // The VCF reader fills the chromosome and the position of every
-        // variant it gives, and the block still has no column for them.
+    fn a_reader_asked_for_the_genotypes_alone_gives_a_block_with_no_other_column() {
+        // The VCF reader parses the chromosome and the position of every
+        // line it gives a row to, and the block still has no column for
+        // them.
         let blocks = blocks_read("many.vcf", VcfOptions::default(), Needs::GTS, Some(100));
         for block in &blocks {
             assert!(block.chrom.is_none());
@@ -1885,86 +1561,6 @@ mod tests {
         };
         reader.set_needs(needs.union(Needs::GTS));
         reader
-    }
-
-    #[test]
-    fn a_collector_of_blocks_of_no_variant_is_refused() {
-        let error = match BlockCollector::new(
-            FakeReader::giving(2, Fills::Everything),
-            Needs::GTS,
-            Some(0),
-        ) {
-            Ok(collector) => panic!("the collector was built: {collector:?}"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, Error::BlockOfNoVariants), "{error}");
-        let message = error.to_string();
-        assert!(message.contains('0'), "{message}");
-    }
-
-    /// The genotypes of a block are its variants times the individuals
-    /// times the ploidy, which is a multiplication that a size asked for by
-    /// a caller carries beyond what a `usize` holds. It is an error and not
-    /// a panic, on a machine of 32 bit addresses as on one of 64.
-    #[test]
-    fn a_block_of_more_genotypes_than_a_usize_holds_is_refused_when_the_collector_is_built() {
-        // Two individuals of the ploidy 2 are four genotypes in every
-        // variant, so every size above a quarter of `usize::MAX` is one.
-        let error = match BlockCollector::new(
-            FakeReader::giving(0, Fills::Everything),
-            Needs::GTS,
-            Some(usize::MAX),
-        ) {
-            Ok(collector) => panic!("the collector was built: {collector:?}"),
-            Err(error) => error,
-        };
-        let Error::BlockTooLarge {
-            num_vars_per_block,
-            num_individuals,
-            ploidy,
-        } = error
-        else {
-            panic!("the error is {error}");
-        };
-        assert_eq!(
-            (num_vars_per_block, num_individuals, ploidy),
-            (usize::MAX, 2, 2)
-        );
-    }
-
-    /// The columns of a block are asked of the machine when the block is
-    /// started, before a variant is read, and a size that a caller wrote
-    /// reaches neither an abort nor a panic. A source of no individual
-    /// holds no genotype, and its positions are 8 bytes in every variant,
-    /// so the genotypes of its blocks are 0 and their memory is not.
-    #[test]
-    fn a_block_of_more_memory_than_the_machine_gives_is_refused_before_a_variant_is_read() {
-        let mut collector = BlockCollector::new(
-            FakeReader::of_no_individual(4),
-            Needs::CHROM_POS,
-            Some(usize::MAX),
-        )
-        .expect("the collector");
-
-        let error = match collector.next_block() {
-            Ok(block) => panic!("the collector gave {block:?}"),
-            Err(error) => error,
-        };
-        let Error::BlockTooLarge {
-            num_vars_per_block,
-            num_individuals,
-            ploidy,
-        } = error
-        else {
-            panic!("the error is {error}");
-        };
-        assert_eq!(
-            (num_vars_per_block, num_individuals, ploidy),
-            (usize::MAX, 0, 2)
-        );
-
-        assert_eq!(collector.reader().reads, 0);
-        assert!(collector.next_block().expect("no block").is_none());
     }
 
     /// The columns of a block are asked of the machine when the block is
@@ -2129,144 +1725,6 @@ mod tests {
         );
     }
 
-    /// What a reader written for these tests puts in the variants it
-    /// gives.
-    #[derive(Clone, Copy)]
-    enum Fills {
-        /// The chromosome, the position and the genotypes of its two
-        /// individuals.
-        Everything,
-        /// The chromosome and the position alone, which is a reader whose
-        /// source has no genotype to give.
-        NoGenotypes,
-        /// One allele fewer than the two individuals of the ploidy 2 have,
-        /// which is a reader with a defect.
-        OneAlleleTooFew,
-    }
-
-    /// A reader of two individuals of the ploidy 2, written for these
-    /// tests: a VCF cannot be made to do what a collector has to stand.
-    struct FakeReader {
-        individuals: Vec<String>,
-        chroms: ChromTable,
-        /// How many variants it still has to give.
-        left: usize,
-        fills: Fills,
-        /// The variant it fails at, counted from 1.
-        fails_at: Option<usize>,
-        /// Which variant it is about to give, counted from 1.
-        next_var: usize,
-        /// How many times it was asked for a variant.
-        reads: usize,
-        /// What the collector asked this reader for.
-        needs: Needs,
-    }
-
-    impl FakeReader {
-        /// A reader of `num_vars` variants that fills each of them as
-        /// `fills` says.
-        fn giving(num_vars: usize, fills: Fills) -> FakeReader {
-            FakeReader {
-                individuals: vec!["ind1".to_string(), "ind2".to_string()],
-                chroms: ChromTable::new(),
-                left: num_vars,
-                fills,
-                fails_at: None,
-                next_var: 1,
-                reads: 0,
-                needs: Needs::empty(),
-            }
-        }
-
-        /// A reader whose source has no individual, and so no genotype: a
-        /// block of it holds the columns of its variants and nothing else.
-        fn of_no_individual(num_vars: usize) -> FakeReader {
-            FakeReader {
-                individuals: Vec::new(),
-                ..FakeReader::giving(num_vars, Fills::NoGenotypes)
-            }
-        }
-
-        /// A reader of `num_vars` variants whose variant number `fails_at`,
-        /// counted from 1, is an error, and which gives the variants after
-        /// it. The trait says that a reader ends at its error, so a
-        /// collector that reads on after one reads what no reader of popnei
-        /// gives: this one shows what it would do with it.
-        fn failing_at(num_vars: usize, fails_at: usize) -> FakeReader {
-            FakeReader {
-                fails_at: Some(fails_at),
-                ..FakeReader::giving(num_vars, Fills::Everything)
-            }
-        }
-    }
-
-    impl VariantReader for FakeReader {
-        fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-            var.clear();
-            self.reads = self.reads.saturating_add(1);
-            let Some(left) = self.left.checked_sub(1) else {
-                return Ok(false);
-            };
-            self.left = left;
-            let this_var = self.next_var;
-            self.next_var = this_var.saturating_add(1);
-            if self.fails_at == Some(this_var) {
-                return Err(Error::Io(std::io::Error::other(
-                    "the reader of the tests failed",
-                )));
-            }
-            var.chrom = self.chroms.intern("chr1");
-            var.pos = 100;
-            var.filled = Needs::CHROM_POS;
-            match self.fills {
-                Fills::Everything => {
-                    var.gts.extend_from_slice(&[0, 1, 1, 1]);
-                    var.filled |= Needs::GTS;
-                }
-                Fills::NoGenotypes => {}
-                Fills::OneAlleleTooFew => {
-                    var.gts.extend_from_slice(&[0, 1, 1]);
-                    var.filled |= Needs::GTS;
-                }
-            }
-            Ok(true)
-        }
-
-        fn individuals(&self) -> &[String] {
-            &self.individuals
-        }
-
-        fn ploidy(&self) -> usize {
-            2
-        }
-
-        fn chroms(&self) -> &ChromTable {
-            &self.chroms
-        }
-
-        fn set_needs(&mut self, needs: Needs) {
-            self.needs = needs;
-        }
-    }
-
-    /// A column nobody wants is never parsed, so what the collector asks
-    /// its reader for is what its blocks will hold.
-    #[test]
-    fn a_collector_asks_its_reader_for_its_columns_and_the_genotypes() {
-        let no_variant = || FakeReader::giving(0, Fills::Everything);
-        let collector =
-            BlockCollector::new(no_variant(), Needs::QUAL, Some(2)).expect("the collector");
-        assert_eq!(collector.reader().needs, Needs::GTS | Needs::QUAL);
-
-        let collector =
-            BlockCollector::new(no_variant(), Needs::empty(), None).expect("the collector");
-        assert_eq!(collector.reader().needs, Needs::GTS);
-
-        let collector =
-            BlockCollector::new(no_variant(), Needs::ALL, Some(2)).expect("the collector");
-        assert_eq!(collector.reader().needs, Needs::ALL);
-    }
-
     /// The names a Python and a TypeScript user writes in `fields` are the
     /// names of the columns of a block, and which field of the core each
     /// one asks for is knowledge of the domain that the core keeps: the
@@ -2323,65 +1781,6 @@ mod tests {
             matches!(error, Err(Error::NotAFieldOfABlock { .. })),
             "`gts` gave {error:?}"
         );
-    }
-
-    /// The genotypes of a block are read as variants x individuals x
-    /// ploidy, so a variant of another number of alleles would be read
-    /// wrong: numpy refuses the reshape in Python, and in TypeScript the
-    /// genotypes cross flat and nothing says that they moved.
-    #[test]
-    fn a_variant_of_a_number_of_alleles_other_than_the_individuals_is_an_error() {
-        let mut collector = BlockCollector::new(
-            FakeReader::giving(3, Fills::OneAlleleTooFew),
-            Needs::empty(),
-            Some(2),
-        )
-        .expect("the collector");
-
-        let error = match collector.next_block() {
-            Ok(block) => panic!("the collector gave {block:?}"),
-            Err(error) => error,
-        };
-        let Error::VariantOfAnotherSize {
-            found,
-            expected,
-            num_individuals,
-            ploidy,
-        } = error
-        else {
-            panic!("the error is {error}");
-        };
-        assert_eq!((found, expected), (3, 4));
-        assert_eq!((num_individuals, ploidy), (2, 2));
-
-        assert!(collector.next_block().expect("no block").is_none());
-    }
-
-    /// The trait says that a reader ends at its error, and the collector
-    /// does not lean on it: a reader that goes on giving variants after one
-    /// gives the collector's caller no block after it.
-    #[test]
-    fn the_collector_gives_no_block_after_the_error_of_its_reader() {
-        let mut collector =
-            BlockCollector::new(FakeReader::failing_at(6, 3), Needs::CHROM_POS, Some(2))
-                .expect("the collector");
-
-        let first = collector
-            .next_block()
-            .expect("the first block")
-            .expect("a block");
-        assert_eq!(first.num_vars, 2);
-
-        let error = match collector.next_block() {
-            Ok(block) => panic!("the collector gave {block:?}"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, Error::Io(_)), "the error is {error}");
-
-        // The reader has three variants left and gives them, and the
-        // collector gives no block.
-        assert!(collector.next_block().expect("no block").is_none());
-        assert!(collector.next_block().expect("no block").is_none());
     }
 
     /// One row of the table of `cases.vcf` of "How it is verified" of
@@ -3312,37 +2711,6 @@ mod tests {
         assert!(message.contains('0'), "{message}");
     }
 
-    /// `CollectedBlocks`, the blocks of a reader of single variants, is
-    /// what the binding crates held their reader through until the VCF
-    /// reader gave blocks itself. It goes in work package 3 of
-    /// `docs/plans/block-readers.md` with the collector and the single
-    /// variant, and until then this is what keeps it read.
-    #[test]
-    fn the_blocks_of_a_reader_of_single_variants_are_a_reader_of_blocks() {
-        let mut blocks = CollectedBlocks::new(
-            FakeReader::giving(3, Fills::Everything),
-            Needs::CHROM_POS,
-            Some(2),
-        )
-        .expect("the reader of blocks");
-        assert_eq!(blocks.individuals(), ["ind1", "ind2"]);
-        assert_eq!(blocks.ploidy(), 2);
-        assert!(blocks.chroms().is_empty());
-        blocks.set_needs(Needs::CHROM_POS);
-
-        let first = blocks
-            .next_block()
-            .expect("the first block")
-            .expect("a block");
-        assert_eq!((first.num_vars, first.gts.len()), (2, 8));
-        let last = blocks
-            .next_block()
-            .expect("the last block")
-            .expect("a block");
-        assert_eq!(last.num_vars, 1);
-        assert!(blocks.next_block().expect("no block").is_none());
-    }
-
     /// The blocks of one of the reference VCFs, which `reblock` takes as
     /// its source.
     fn source_over(
@@ -3438,24 +2806,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// The two binding crates hold their collector over a boxed reader,
-    /// `BlockCollector<Box<dyn VariantReader>>`, so one is built here.
-    #[test]
-    fn a_field_that_was_asked_for_and_that_the_reader_does_not_fill_is_an_error() {
-        let reader: Box<dyn VariantReader> = Box::new(FakeReader::giving(2, Fills::NoGenotypes));
-        let mut collector =
-            BlockCollector::new(reader, Needs::CHROM_POS, Some(2)).expect("the collector");
-        assert_eq!(collector.reader().individuals(), ["ind1", "ind2"]);
-        assert_eq!(collector.reader().ploidy(), 2);
-        let error = match collector.next_block() {
-            Ok(block) => panic!("the collector gave {block:?}"),
-            Err(error) => error,
-        };
-        let Error::FieldsNotFilled { fields } = error else {
-            panic!("the error is {error}");
-        };
-        assert_eq!(fields, Needs::GTS);
     }
 }

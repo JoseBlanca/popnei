@@ -16,13 +16,16 @@ use crate::variant::Needs;
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum Error {
-    /// The consumer depends on fields that the reader did not fill. A
-    /// reader may leave out a field that was asked for when its source has
-    /// none, an array of genotypes that has no alleles, and the consumer
-    /// finds it in `filled` of the variant.
-    #[error("the reader did not fill the fields that were asked for: {fields}")]
-    FieldsNotFilled {
-        /// The fields that were asked for and are not in `filled`.
+    /// A consumer depends on fields that the block it was given does not
+    /// hold. A field is missing when nobody asked the reader for it, and
+    /// when its source has none to give: a source built from an array of
+    /// genotypes has no alleles. The consumer finds which ones with
+    /// `asked_for.difference(block.fields())`, and one error names them
+    /// all, so that a consumer that depends on two fields reports both.
+    #[error("the block does not hold the fields this needs: {fields}")]
+    FieldsNotInTheBlock {
+        /// The fields that were asked for and that the block does not
+        /// hold.
         fields: Needs,
     },
 
@@ -121,25 +124,6 @@ pub enum Error {
     NotAFieldOfABlock {
         /// The name that was given and is not a field of a block.
         name: String,
-    },
-
-    /// A reader filled a variant with a number of alleles other than its
-    /// individuals times its ploidy, which the trait of a reader asks of
-    /// it. It is a defect of that reader: a block of such variants has
-    /// genotypes that a consumer reads wrong, each one at the place of
-    /// another.
-    #[error(
-        "the reader gave a variant of {found} alleles, and the {num_individuals} individuals of its source of the ploidy {ploidy} are {expected} alleles in every variant"
-    )]
-    VariantOfAnotherSize {
-        /// How many alleles the variant holds.
-        found: usize,
-        /// How many it has to hold, the individuals times the ploidy.
-        expected: usize,
-        /// How many individuals the reader says its source has.
-        num_individuals: usize,
-        /// How many alleles the genotype of one individual holds.
-        ploidy: usize,
     },
 
     /// The source the VCF reader was given holds something else. A VCF
@@ -259,8 +243,8 @@ mod tests {
     /// The message has to name the fields, because that is what tells the
     /// caller which reader to ask or which calculation to drop.
     #[test]
-    fn the_message_of_a_field_that_was_not_filled_names_the_field() {
-        let error = Error::FieldsNotFilled {
+    fn the_message_of_a_field_the_block_does_not_hold_names_the_field() {
+        let error = Error::FieldsNotInTheBlock {
             fields: Needs::ALLELES | Needs::QUAL,
         };
         let message = error.to_string();
