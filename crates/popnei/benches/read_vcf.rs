@@ -36,6 +36,16 @@
 //! says what it is and how it is run. It takes about four minutes and
 //! leaves 403 MB; `bgzip -k` on it makes the gzipped one, 38 MB.
 
+#![cfg_attr(
+    target_family = "wasm",
+    allow(
+        dead_code,
+        unused_imports,
+        reason = "the benchmark is native: in wasm only its empty main is compiled, and \
+                  what the timing is made of is left unused"
+    )
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -122,6 +132,15 @@ fn seconds(time: Duration) -> String {
     format!("{:.3} s", time.as_secs_f64())
 }
 
+/// The benchmark builds a pool of threads and reads a file of the disk,
+/// and wasm has neither; rayon is not a dependency of the wasm targets
+/// either. This is what `cargo check --target wasm32-unknown-unknown
+/// --all-targets` compiles of it, so that the command which checks that
+/// nothing of the crate has left wasm behind can check the benchmarks too.
+#[cfg(target_family = "wasm")]
+fn main() {}
+
+#[cfg(not(target_family = "wasm"))]
 fn main() -> ExitCode {
     let arguments = match arguments() {
         Ok(arguments) => arguments,

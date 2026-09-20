@@ -2403,9 +2403,11 @@ mod tests {
     /// its chromosome, read inside a rayon pool of `threads` threads and in
     /// batches of `lines_per_batch` lines.
     ///
-    /// The pool is built here and is not rayon's global one, which is what
-    /// the reader uses and which has one thread per core of the machine:
-    /// `install` runs the reader on this one instead.
+    /// The pool is built here and is not rayon's global one, which has one
+    /// thread per core of the machine: `install` runs the reader on this
+    /// one instead. rayon is a dependency of the targets that are not wasm,
+    /// so this and what uses it are compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
     fn many_vcf_read_in_a_pool(threads: usize, lines_per_batch: usize) -> Vec<(u32, Row)> {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -2431,6 +2433,7 @@ mod tests {
         })
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn many_vcf_gives_the_same_variants_in_a_pool_of_one_thread_and_in_one_of_four() {
         // 64 lines a batch, and the file has 500 data lines, so the pool of
@@ -2454,6 +2457,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn a_wrong_line_of_a_later_batch_comes_after_the_variants_that_were_read_before_it() {
         let mut lines: Vec<String> = (1..=200)
