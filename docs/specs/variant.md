@@ -7,8 +7,8 @@ a reader fills, and the trait that anything that gives variants
 implements. There is no code. This spec develops the row `variant` of the
 table in section 9 of `docs/architecture.md` and section 1 of that
 document, which has the reasons for a record that is lent and refilled.
-It depends on no other spec. It covers the record, the trait, and what a
-Python or a TypeScript user sees of them. The row helpers of the same
+It depends on no other spec. It covers the record, the trait, and the
+`Variants` handle that a Python or a TypeScript user holds. The row helpers of the same
 module, the dosages, the missing and het masks and the allele counts of
 one variant, are items that are not written yet; they come with the first
 filter that needs them.
@@ -40,36 +40,32 @@ really holds.
 
 ### What a Python and a TypeScript user see
 
-pyNei has no object for one variant. Its `Variants` yields chunks, a few
-thousand variants as arrays, and its calculations are written over them.
-In popnei the loop of a calculation runs inside the core, and what a user
-holds is this:
+Neither sees a variant. pyNei's `Variants` yields chunks, a few thousand
+variants as arrays, and its calculations are written over them in Python.
+In popnei the loop of every filter and every calculation runs inside the
+core, and what a user holds is a handle.
 
-`Variants`, in Python, is a handle on a source of variants, a VCF path
-with its ploidy, a vars file. It holds no genotypes. It has
-`individuals`, a tuple of names, `num_individuals` and `ploidy`; the first
-two are pyNei's `samples` and `num_samples` under the word that
-`docs/glossary.md` gives, individual. It
-can be passed to any number of calculations and iterated any number of
-times: every pass opens a new reader on the source. The other differences from
-pyNei: it has no `iter_vars_chunks` and no `desired_num_vars_per_chunk`,
-and iterating it gives `Variant` objects.
+`Variants`, in Python, is that handle: a source of variants, a VCF path
+with its options, later a vars file, and the filters that were put on it.
+It holds no genotypes. A user gets one from `open_vcf`, of
+`docs/specs/io_vcf.md`, and passes it to the filters, which return
+another `Variants`, and to the calculations. It can be passed to any
+number of them: every pass opens a new reader on the source. It has
+`individuals`, a tuple of names, `num_individuals` and `ploidy`; the
+first two are pyNei's `samples` and `num_samples` under the word that
+`docs/glossary.md` gives, individual. The other differences from pyNei:
+it has no `desired_num_vars_per_chunk`, and it is not iterated over
+variants. The only way genotypes come out of it is `iter_blocks`, of
+`docs/specs/block.md`, which gives them as arrays of a few thousand
+variants, for the user who wants them for an analysis of their own and
+for the tests. The owner decided this on 20 September 2026; the option
+not taken was an iterator of single variants, each copied into a Python
+object.
 
-`Variant`, in Python, is a frozen dataclass that a user gets when
-iterating a `Variants`: `chrom`, the name and not the number, `pos`, `id`,
-which is `None` when the source has none, `alleles`, a tuple of strings
-with the reference first, `qual`, a float or `None`, and `gts`, a read
-only numpy int8 array of individuals x ploidy. It owns its data: the binding
-crate fills a Rust `Variant` of its own at each step and copies it into a
-new Python object, because Python may keep a variant after the next one
-is read, and a lent one cannot be kept. This path is for looking at the
-data and for the tests. No calculation goes through it.
-
-In TypeScript, `Variants` is a class with `individuals`, `numIndividuals` and
-`ploidy`, usable in `for (const variant of variants)`, and each variant is
-a plain object `{chrom, pos, id, alleles, qual, gts}` with `gts` an
-`Int8Array` of individuals x ploidy, individual after individual, copied out of the
-memory of wasm, and `null` where Python has `None`.
+In TypeScript, `Variants` is a class with `individuals`, `numIndividuals`
+and `ploidy`, and `iterBlocks`. It lives in the memory of wasm, which the
+garbage collector of JavaScript does not see, so it has a `free()` method
+that the application calls when it is done with it.
 
 ### Fields that were not asked for, and sources that lack one
 
@@ -85,7 +81,7 @@ empty `id`, no alleles, `None` for the quality, and never what the
 previous variant left in it.
 
 A variant with no id, `.` in a VCF, has an empty `id` with the `ID` flag
-in `filled`. Python gives `None` and TypeScript `null` for it.
+in `filled`.
 
 A reader can be asked for other fields between two reads, and the change
 holds from the next read on. A reader over another reader passes on what
@@ -97,6 +93,9 @@ it was asked for, plus what it needs itself.
 `Box<dyn VariantReader>`. Neither a pyo3 class nor a wasm-bindgen class
 can be generic, so both binding crates hold their reader that way, and the
 trait has no generic method and no method that takes or returns `Self`.
+`VariantReader` is implemented for `Box<dyn VariantReader>` too, so that
+what is generic over a reader, the collector of `docs/specs/block.md`,
+takes a boxed one.
 It asks for `Send`, because the read ahead thread of section 3 of the
 architecture moves a reader into another thread.
 
@@ -205,10 +204,9 @@ depends on, with the name of the field.
 
 ## Open points
 
-None. What this spec decides follows from section 1 of the architecture,
-and the owner decided on 20 September 2026 that Python and TypeScript get
-single variants and no chunks; the option not taken was pyNei's, a
-`Variants` that yields chunks as arrays.
+None. What this spec decides follows from section 1 of the architecture
+and from the decision of the owner, of 20 September 2026, that is written
+under "What a Python and a TypeScript user see".
 
 ## Not in this spec
 
@@ -219,5 +217,3 @@ single variants and no chunks; the option not taken was pyNei's, a
 - A `Variants` built from an array of genotypes, pyNei's
   `Variants.from_gt_array`: with the first calculation whose tests need
   it.
-- What a variant costs to cross into Python. It has not been measured,
-  and it matters only to a user who loops over variants in Python.

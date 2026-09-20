@@ -80,17 +80,20 @@ pyNei repository.
 ### Its Python and TypeScript functions
 
 ```python
-def vars_from_vcf(
+def open_vcf(
     vcf_path: str | Path, ploidy: int = 2, only_passed: bool = True
 ) -> Variants
 ```
 
-It mirrors `vars_from_vcf` of `pynei/io_vcf.py`. It reads the header when
-it is called, so a file that is not a VCF fails there and not at the
-first calculation, and the `Variants` it returns is the handle of
-`docs/specs/variant.md`: every pass over it opens the file again.
+It mirrors `vars_from_vcf` of `pynei/io_vcf.py` under another name, which
+the owner decided on 20 September 2026: nothing is read when it is
+called but the header, and what it returns is not pyNei's `Variants` of
+chunks. It reads the header, so a file that is not a VCF fails at the
+call and not at the first calculation, and the `Variants` it returns is
+the handle of `docs/specs/variant.md`: every pass over it opens the file
+again.
 
-In TypeScript, `varsFromVcf(source, {ploidy = 2, onlyPassed = true})`,
+In TypeScript, `openVcf(source, {ploidy = 2, onlyPassed = true})`,
 with the two options in an object, which is how TypeScript writes
 arguments that have a name and a default. `source` is a `Uint8Array` with
 the bytes of the file or a `File` that the user picked in the page, which
@@ -99,12 +102,14 @@ says.
 
 The differences from pyNei:
 
+- The name, `open_vcf` for `vars_from_vcf`.
 - The `ploidy` argument is new, and the rule above with it. pyNei takes
   the ploidy from the first genotype, and gets 2 for every file (see
   "What pyNei does that is odd").
 - The `only_passed` argument is new, and by default the variants that
   failed a filter are not given. pyNei gives them all.
-- `desired_num_vars_per_chunk` is gone, because there are no chunks.
+- `desired_num_vars_per_chunk` is gone. The size of the blocks is
+  `num_vars_per_block` of `iter_blocks`, of `docs/specs/block.md`.
 - An allele number that REF and ALT do not declare is an error. pyNei
   reads it.
 - A VCF with a header and no variants gives no variants, like a file
@@ -115,7 +120,7 @@ The differences from pyNei:
   reference. A line with more is an error too. pyNei fails on it with an
   `IndexError`, unless the genotype that is left over is homozygous for
   the reference, which it skips without looking where it goes.
-- Two individuals with the same name are an error when `vars_from_vcf` is
+- Two individuals with the same name are an error when `open_vcf` is
   called. In pyNei the call returns and the error comes with the first
   chunk.
 - An allele number above 127 is a `ValueError`, like the other errors of
@@ -284,16 +289,15 @@ counts, worked out from that file, are literals:
 The first five genotypes of the first variant, chr1 1000, are `1/1 .|.
 1/0 1/1 0/1`. The plain and the gzipped file give the same.
 
-Against pyNei: a pytest test reads `cases.vcf`, `cases.vcf.gz`, `many.vcf`
-and `many.vcf.gz` with both libraries, popnei with `only_passed=False`
-because pyNei gives every variant, and compares the variants that
-popnei's `Variants` gives when it is iterated with the rows of pyNei's
-chunks, every field, exactly, and `individuals`, `num_individuals` and
-`ploidy` with pyNei's `samples`, `num_samples` and `ploidy`. For a
-missing id or quality pyNei's chunk has `pandas.NA` and popnei's variant
-`None`, and the test takes the two as equal. pyNei read `many.vcf` and
-`many.vcf.gz` as bcftools did when this was written, and it refuses
-`differences.vcf` at its leading separator.
+Against pyNei: Python sees what the reader read only through
+`iter_blocks`, so the comparison of every field of every variant of
+`cases.vcf`, `cases.vcf.gz`, `many.vcf` and `many.vcf.gz` with pyNei's
+chunks is the pytest test of "How it is verified" of
+`docs/specs/block.md`, with `only_passed=False` because pyNei gives
+every variant. The same test compares `individuals`, `num_individuals`
+and `ploidy` with pyNei's `samples`, `num_samples` and `ploidy`. pyNei
+read `many.vcf` and `many.vcf.gz` as bcftools did when this was written,
+and it refuses `differences.vcf` at its leading separator.
 
 The errors, each a cargo test on a VCF written in the test, which checks
 the kind of the error and the line and the individual it names: a
@@ -322,13 +326,14 @@ The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
 individuals that are not there and the repeated name, and at
 `read_variant` for the rest, with the reader built over the bytes of the
-file. The pytest tests are made at `vars_from_vcf` and the
-iteration of what it returns, and they include the default and
-`only_passed=False` on `many.vcf` against the table above, and the error
-of the tetraploid file, a `ValueError`. The TypeScript test, under node,
-reads `cases.vcf` and `differences.vcf` with `varsFromVcf` from a
-`Uint8Array` and compares with the two tables above, with the default and
-with `onlyPassed` false.
+file. The pytest tests are made at `open_vcf` and the blocks of what it
+returns: the counts of the table above on `many.vcf`, with the default
+and with `only_passed=False`; the two rows of `differences.vcf`; a file
+that is not a VCF, which is a `ValueError` at the call; and the
+tetraploid file, a `ValueError` when the blocks are asked for. The
+TypeScript test, under node, reads `cases.vcf` and `differences.vcf` with
+`openVcf` from a `Uint8Array` and compares their blocks with the two
+tables above, with the default and with `onlyPassed` false.
 
 ## The Rust interface
 
@@ -409,8 +414,8 @@ written where it applies, with the option that was not taken.
   no use for them.
 - Choosing variants by the name of the filter they failed: `only_passed`
   is all there is.
-- `Variants`, `Variant` and what Python and TypeScript see of them:
-  `docs/specs/variant.md`.
+- `Variants`, the handle that `open_vcf` returns: `docs/specs/variant.md`.
+  `iter_blocks`, which gives its genotypes: `docs/specs/block.md`.
 - The reader of the vars file, popnei's own file of variants:
   `docs/specs/io_vars.md`.
 - A web worker and the reading of a `File` by ranges in TypeScript:

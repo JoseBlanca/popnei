@@ -92,8 +92,8 @@ written with "variant". "Record" is for the flow of the data.
 struct, which the calculations that want matrices consume. A block holds
 about 5 million genotypes, the size pyNei gives its chunks, which is a few
 thousand variants.
-pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. The
-Python `Variants` of popnei yields single variants and no chunks. Not
+pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
+the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
 used: batch, which is arrow's word for the unit of the
 vars file, and window.
 

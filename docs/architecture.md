@@ -130,18 +130,17 @@ the core, at the record level or over blocks as the calculation needs, so
 no calculation pays for a call from Python per variant. This departs from
 pyNei, whose `Variants` yields chunks, arrays of a few thousand variants,
 and whose calculations are written over them. In popnei a block exists
-only inside the calculations that want matrices, the PCA, the kinship,
-and Python never sees one. A `Variants` is also a Python iterator of single variants, for looking at
-the data and for the tests, which compare those variants with the rows of
-pyNei's chunks. A variant that Python holds cannot be the lent one of
-section 1, because Python may keep it after the next one is read. So at
-each step the binding crate fills a `Variant` of its own, reused as in
-section 1, and copies it into a new Python object, the genotypes as an
-int8 array of individuals x ploidy with the fields that were asked for. The
-csv crate and rust-htslib do the same in Rust: `read_record` fills a
-record of the caller, and `records()` is an iterator that allocates one
-per item, for the caller who prefers the convenience. What a variant
-costs to cross into Python has not been measured. Results are built in Python: the frozen dataclasses with pandas
+only for the calculations that want matrices, the PCA, the kinship, and
+for the user who asks for the genotypes. A user holds neither variants
+nor an iterator of them. The one way
+genotypes come out is `Variants.iter_blocks(fields=...)`, which gives
+blocks, the genotypes as an int8 array of variants x individuals x ploidy
+that the binding crate hands to numpy without copying, with the columns
+that were asked for. It is for the user who wants the genotypes for an
+analysis of their own, and for the tests, which compare those blocks with
+pyNei's chunks. The function that gives a `Variants` from a VCF is
+`open_vcf`, because nothing is read when it is called but the header.
+Results are built in Python: the frozen dataclasses with pandas
 frames and series, `pops` as a dict of name to individuals, the names of the individuals as
 tuples.
 The Python layer is the API, the results and the tests, nothing else.
@@ -222,11 +221,11 @@ The smallest path that exercises every layer once, and the first thing
 built: the workspace and the two crates; `Variant`, `Needs` and the
 `ChromTable`; the VCF reader, parallel, with gzip; the missing data
 filter; the vars file writer; the `BlockCollector`; the Python `Variants`
-over a reader, which gives single variants when iterated; `vars_from_vcf`, `write_vars`,
+over a reader, with `iter_blocks`; `open_vcf`, `write_vars`,
 `load_vars` and `filter_by_missing_data` in the Python package with pyNei's
 signatures; and the tests: cargo tests of the reader and the filter, and
 pytest tests that parse the reference VCFs with both libraries and compare
-popnei's variants with the rows of pyNei's chunks, that pyNei reads the vars file popnei writes, and that the
+popnei's blocks with pyNei's chunks, that pyNei reads the vars file popnei writes, and that the
 filter gives the same variants. On the TypeScript side it has the
 JavaScript binding crate with the VCF reader over bytes in memory, the
 missing data filter and the vars file writer, and a test under node that
@@ -272,9 +271,9 @@ with the compiled core inside, and that is the wasm package.
   for small files and for the tests under node.
 - **The loop of a calculation runs inside wasm**, as it runs inside the
   core for Python. TypeScript calls a calculation over a source. An
-  application that wants to look at the variants gets them one at a
-  time, the genotypes as an `Int8Array` of individuals x ploidy with the
-  fields that were asked for.
+  application that wants the genotypes gets blocks from `iterBlocks`,
+  the genotypes as an `Int8Array` of variants x individuals x ploidy
+  with the fields that were asked for.
 - **Results cross as typed arrays, copied.** A `Float64Array` that is a
   view into the memory of wasm stops being valid when that memory grows,
   so the binding copies each result out. The results are per variant, per
