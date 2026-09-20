@@ -1289,8 +1289,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BYTES_PER_BATCH, BatchLine, LineOutcome, MAX_PLOIDY, MISSING_VALUE, ParseRules, VcfOptions,
-        VcfPlace, VcfReader, parse_lines, parse_lines_one_by_one,
+        BYTES_PER_BATCH, BatchLine, LINES_PER_BATCH, LineOutcome, MAX_PLOIDY, MISSING_VALUE,
+        ParseRules, VcfOptions, VcfPlace, VcfReader, parse_lines, parse_lines_one_by_one,
     };
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
@@ -2805,6 +2805,29 @@ mod tests {
             .filter(|line| matches!(line.outcome, LineOutcome::Variant))
             .count();
         assert_eq!(variants, 500);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_batch_holds_more_than_one_line_where_there_are_threads() {
+        // Every test of this file passes with one line in a batch: what a
+        // read gives does not depend on how many lines were parsed together
+        // or on how many threads parsed them, which is what the reader
+        // promises. So nothing here notices a reader that stopped reading
+        // ahead, and what would notice is the time it takes: the benchmark
+        // `benches/read_vcf.rs` on the 400 MB VCF of 100000 variants of
+        // 1000 individuals took 1.24 s on one thread and 0.160 s on the 18
+        // cores of the owner's machine in task 5.2 of
+        // `docs/plans/vcf-to-blocks.md`, and with one line in a batch there
+        // is nothing for the other 17 to do.
+        // The assertion is over a constant, and clippy asks for a const
+        // block, which would refuse to compile instead of failing as a
+        // test: a test that fails is what names this file and this reason.
+        let lines_per_batch = std::hint::black_box(LINES_PER_BATCH);
+        assert!(
+            lines_per_batch > 1,
+            "a batch of {lines_per_batch} line gives the threads of rayon one line to share"
+        );
     }
 
     #[test]
