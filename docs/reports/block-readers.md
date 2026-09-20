@@ -189,3 +189,17 @@ the file. Two cases of the error that say a reader has a defect are a
 `RuntimeError` in Python. No test sees that choice: neither binding crate
 can build cargo tests, and no reader that Python reaches gives those
 errors.
+
+Task 2.3, the parser of one data line, as bytes, into one row of a block:
+commit 71b0d9d, one subagent, 202 thousand tokens and 15 minutes. Run by
+the orchestrator: the checks of the `coding` skill, `132 passed`, 25 of
+them new, `38 passed`, `tests 39`, `fail 0`, both wasm targets checked
+with `memchr`, which is the one new dependency, pure Rust. Nothing calls
+the parser yet but its tests, one of which parses every data line of the
+three reference VCFs with the new parser and with the old one and
+compares them; it goes with the old parser in work package 3. The
+subagent timed the parse alone, the 100000 lines of the file of the bench
+held in memory, the genotypes asked for, one thread, release, the median
+of 3 runs: 0.576 s with the new parser and 1.229 s with the old one. The
+whole read adds the reading of the lines to that, and its target is
+0.55 s, or 0.605 s with the tenth that the spec allows.

@@ -281,7 +281,7 @@ describes, no more. The three revised specs.
   of `python/`, `js/popnei/src/`, `tests/` or `js/popnei/test/` changes.
   From "In Python and in TypeScript" of `docs/specs/block.md`. Serves
   deliverable 5. Needs 2.1.
-- [ ] 2.3 The row parser over bytes and its tests, a function with no
+- [x] 2.3 The row parser over bytes and its tests, a function with no
   reader around it. From "What it gives" and "The cases a reader of the
   rules would not guess" of `docs/specs/io_vcf.md`. Serves deliverable 2.
   It needs nothing of 2.2 and runs after it all the same: "Speed" of the
