@@ -346,12 +346,20 @@ impl BatchLine {
 
 /// The lines of a batch, each parsed into the variant of its own line.
 ///
-/// Natively they are parsed on the threads of rayon's global pool: no two
-/// lines share a buffer, and what depends on the order of the file, the
-/// number of the chromosome, is given later, when the variant is handed
-/// out, so neither the variants nor the numbers depend on how many threads
-/// there are. In wasm there are none and the same lines are parsed one
-/// after another; a batch there holds one line.
+/// Natively they are parsed on threads of rayon: no two lines share a
+/// buffer, and what depends on the order of the file, the number of the
+/// chromosome, is given later, when the variant is handed out, so neither
+/// the variants nor the numbers depend on how many threads there are. In
+/// wasm there are none and the same lines are parsed one after another; a
+/// batch there holds one line.
+///
+/// The threads are those of the pool the caller is running in, and rayon's
+/// global pool, one thread per core, only when the caller is in none. That
+/// is what lets a test and the benchmark read the same file on a pool of
+/// one thread and on a pool of many, with `install`. A reader that a
+/// consumer has moved to a thread of its own, the read ahead thread of
+/// section 3 of `docs/architecture.md`, is in no pool on that thread and
+/// parses on the global one, whatever pool the consumer itself is in.
 #[cfg(not(target_family = "wasm"))]
 fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
     use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
