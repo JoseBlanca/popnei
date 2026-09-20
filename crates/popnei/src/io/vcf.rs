@@ -371,6 +371,25 @@ fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
 /// after another, which is what wasm does: it has no threads.
 #[cfg(target_family = "wasm")]
 fn parse_lines(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
+    parse_lines_one_by_one(lines, rules);
+}
+
+/// The lines of a batch parsed one after another.
+///
+/// It is compiled for every target and not for wasm alone, so that the
+/// cargo tests, which run natively, can parse the same lines with it and
+/// with the threads and compare what the two give. Before that it was
+/// compiled for wasm alone, and what ran it was the node tests and the
+/// smoke test of pyodide, over the 4 and the 2 data lines of their files.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "in wasm it is the parse of a batch; natively it is what the test that \
+                  compares the two ways of parsing calls"
+    )
+)]
+fn parse_lines_one_by_one(lines: &mut [BatchLine], rules: &ParseRules<'_>) {
     for line in lines {
         line.parse(rules);
     }
@@ -1269,7 +1288,10 @@ mod tests {
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
-    use super::{BYTES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE, VcfOptions, VcfPlace, VcfReader};
+    use super::{
+        BYTES_PER_BATCH, BatchLine, LineOutcome, MAX_PLOIDY, MISSING_VALUE, ParseRules, VcfOptions,
+        VcfPlace, VcfReader, parse_lines, parse_lines_one_by_one,
+    };
     use crate::error::{Error, Result};
     use crate::variant::{MISSING_ALLELE, Needs, Variant, VariantReader};
 
@@ -2677,6 +2699,80 @@ mod tests {
             // batch and is not given: an error ends the reader.
             assert!(!reader.read_variant(&mut var).unwrap());
         });
+    }
+
+    /// The data lines of a reference VCF as a batch, each in a line of its
+    /// own with its number in the file, which is what the reader gives the
+    /// parse.
+    fn a_batch_of(name: &str) -> Vec<BatchLine> {
+        let text = std::fs::read_to_string(reference_vcf(name))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mut batch = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let mut in_the_batch = BatchLine::new();
+            in_the_batch.text.push_str(line);
+            in_the_batch.text.push('\n');
+            // The lines of a file are counted from 1.
+            in_the_batch.number = u64::try_from(index).unwrap().saturating_add(1);
+            batch.push(in_the_batch);
+        }
+        batch
+    }
+
+    /// What one line of a batch was parsed into, to be compared with what
+    /// the other way of parsing gave for the same line.
+    fn parsed(line: &BatchLine) -> (&str, &str, u64, &[i8], &str, &[String], Option<f32>) {
+        let outcome = match line.outcome {
+            LineOutcome::NoVariant => "no variant",
+            LineOutcome::Variant => "a variant",
+            LineOutcome::Wrong(_) => "wrong",
+        };
+        (
+            outcome,
+            &line.chrom_name,
+            line.var.pos,
+            &line.var.gts,
+            &line.var.id,
+            &line.var.alleles,
+            line.var.qual,
+        )
+    }
+
+    #[test]
+    fn the_lines_parsed_one_after_another_give_what_the_threads_give() {
+        let individuals: Vec<String> =
+            match VcfReader::from_path(&reference_vcf("many.vcf"), VcfOptions::default()) {
+                Ok(reader) => reader.individuals().to_vec(),
+                Err(error) => panic!("many.vcf: {error}"),
+            };
+        let rules = ParseRules {
+            options: options(MANY_PLOIDY, false),
+            needs: Needs::ALL,
+            individuals: &individuals,
+            panic_at_line: None,
+        };
+        let mut on_the_threads = a_batch_of("many.vcf");
+        let mut one_by_one = a_batch_of("many.vcf");
+        assert_eq!(on_the_threads.len(), 500);
+
+        parse_lines(&mut on_the_threads, &rules);
+        parse_lines_one_by_one(&mut one_by_one, &rules);
+
+        for (index, (threads, one)) in on_the_threads.iter().zip(&one_by_one).enumerate() {
+            assert_eq!(
+                parsed(threads),
+                parsed(one),
+                "the line {index}, counted from 0"
+            );
+        }
+        let variants = one_by_one
+            .iter()
+            .filter(|line| matches!(line.outcome, LineOutcome::Variant))
+            .count();
+        assert_eq!(variants, 500);
     }
 
     #[test]
