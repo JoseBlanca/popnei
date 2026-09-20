@@ -205,6 +205,12 @@ is about. It checks the claims about pyNei against the code, recomputes
 the numbers, looks for what is missing, for points that should be open or
 should not be, for conflicts with the architecture, and for what could go.
 
+A change made to a spec after its review is checked against every other
+place that speaks of the same quantity: search the spec for the name and
+for the number. A sentence added to one part can contradict a worked
+figure in another, and a spec that gives two answers is read as the one
+the implementer finds first.
+
 Evaluate each finding before acting on it. The reviewer can be wrong, and
 it has not read everything the writer read. Check its evidence, take what
 makes the spec more right or easier to build from, and leave the rest.

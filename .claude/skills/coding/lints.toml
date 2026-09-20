@@ -1,0 +1,81 @@
+# The lint table of popnei. It goes into the Cargo.toml of the workspace,
+# and each crate takes it with
+#
+#     [lints]
+#     workspace = true
+#
+# The reasons are in .claude/skills/coding/SKILL.md. Written in September
+# 2026 before any code existed: to be tried on the walking skeleton, and a
+# lint that proves too noisy is changed here with the count that showed it.
+
+[workspace.lints.rust]
+# The core crate also has #![forbid(unsafe_code)] in its lib.rs. The binding
+# crate may need an unsafe block for an array, with #[expect] and a reason.
+unsafe_code = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+# Integers: nothing that wraps or truncates in silence.
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+fallible_impl_from = "deny"
+# cast_precision_loss is left off: a count to f64 is exact below 2^53.
+
+# No panics in library code. The tests are exempted in clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+
+# Floats.
+float_cmp = "deny"
+# suboptimal_flops (nursery) stays off: it rewrites a * b + c into mul_add,
+# which rounds differently from what R and plink2 compute.
+
+# Types and API.
+wildcard_enum_match_arm = "deny"
+fn_params_excessive_bools = "deny"
+match_same_arms = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+# A lint is silenced with a reason, on the smallest item.
+allow_attributes_without_reason = "deny"
+
+# And beside the workspace Cargo.toml, a clippy.toml with:
+#
+#     allow-unwrap-in-tests = true
+#     allow-expect-in-tests = true
+#     allow-panic-in-tests = true
+#     allow-indexing-slicing-in-tests = true
+#     allow-dbg-in-tests = true
+#
+# A test module needs this line only when it does INTEGER arithmetic, since
+# the lint ignores floats. Leave it out otherwise: an allow that is not
+# needed is invisible.
+#     #![allow(clippy::arithmetic_side_effects, reason = "small literals in tests")]
+#
+# With -D warnings an #[expect] on a line where the lint does not fire is an
+# error, unfulfilled_lint_expectations. That is wanted: it keeps the expects
+# honest.
+#
+# Tried on tmp/coding_trial in September 2026, the allele counting and
+# ExpHet::of_var, 230 lines: arithmetic_side_effects fired 3 times and
+# indexing_slicing 2, all in the loop over the genotypes of one variant, one
+# #[expect] with its bound; every other lint 0 times.
+
+# The profiles, for the same Cargo.toml:
+#
+#     [profile.test]
+#     opt-level = 2        # numerical tests; overflow checks stay on
+#
+#     [profile.release]
+#     overflow-checks = false   # the code does not rely on them: see the skill

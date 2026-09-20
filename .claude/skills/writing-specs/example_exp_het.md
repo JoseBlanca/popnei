@@ -140,8 +140,11 @@ the exponent k and as the number of alleles the samples are expected to hold,
 `len(pop) * ploidy - missing_alleles`, while the `min_num_samples` test keeps
 the ploidy of the data, which is the one `_count_alleles_per_var` uses. Measured
 with `ploidy=4` on four diploid samples with allele counts 5 and 3: a plain
-0.8276 and an unbiased 0.9459, where the 8 alleles the samples really hold
-would give 0.8276 · 4/3 = 1.1035 (**Open 3**, below).
+0.8276 and an unbiased 0.9459, which is 0.8276 · 8/7, from n = 16/4 = 4. The 8
+alleles the samples really hold, as 4 genotypes of the data's ploidy, give the
+same n and the same 0.9459. The two part when an allele is missing: with counts
+4 and 3 pyNei gives an unbiased 0.9919, from n = 15/4, where the 7 called
+alleles, as 3.5 genotypes, give 1.0029 (**Open 3**, below).
 
 ### How it runs
 
@@ -175,8 +178,8 @@ founder, so here the flag changes nothing: the two reports are identical files.
 Against `_calc_exp_het_per_var(chunk, pops, min_num_samples=20)` on
 `sim_missing.vars`, over the 1200 variants and the 3 populations, the largest
 absolute difference is 5.0e-7 in each population, with no missing value on
-either side, so the tests compare within 1e-6 absolute, half a unit of the last
-of the six digits plink2 prints. The numbers written into the first of those
+either side, half a unit of the last of the six digits plink2 prints, so the
+tests compare within 1e-6 absolute, one unit of that digit. The numbers written into the first of those
 tests as literals are those of variant `var0000`: in p0, 39 homozygotes for the
 reference, 8 heterozygotes, 1 homozygote for the alternative and an expected
 heterozygosity of 0.186632; in p1, 15, 34, 18 and 0.498998; in p2, 81, 2, 0
@@ -225,7 +228,8 @@ pub struct ExpHet {
     /// the caller asks for another one.
     pub exponent: usize,
     /// The ploidy of the variants, which turns the alleles a pop has called
-    /// into genotypes for the min_num_samples test.
+    /// into called genotypes, n, for the min_num_samples test and for the
+    /// unbiased factor. The exponent is never used for n.
     pub ploidy: usize,
     /// How many called genotypes a pop needs at a variant to get a value.
     pub min_num_samples: u32,
@@ -254,7 +258,7 @@ with a half called one.
 
 ## Open points
 
-The owner decides these three. Until then the implementer follows the
+The owner decides these four. Until then the implementer follows the
 "meanwhile" of each.
 
 **Open 1: a chunk in which no genotype is called.** pyNei gives every variant
@@ -295,7 +299,27 @@ alone. It is the same as pyNei whenever the argument matches the data, and it
 is what the record level code gives for free. Meanwhile the implementer writes
 that and compares against pyNei only at the data's own ploidy.
 
+**Open 4: what an `ExpHet` accepts.** Its fields are public and nothing checks
+them. Measured on a trial implementation of this spec: an `exponent` of 0 gives
+a plain -2.0 and an unbiased NaN for counts 2, 1, 1, a NaN born inside the
+core; a `ploidy` of 0 turns the `min_num_samples` test off, and a population
+with one called allele passes a `min_num_samples` of 20; and an `exponent` of
+1e8 takes 0.2 s for one variant of one population. The row helper of the
+`variant` module already refuses a ploidy of 0 with an error. The options are
+to leave the fields public and say that the caller guarantees both are 1 or
+more; to make them `NonZeroUsize`; or to make them private behind
+`ExpHet::new(...) -> Result<ExpHet, ExpHetError>`, which refuses a 0 and an
+exponent above a bound, and gives the Python user a `ValueError` for
+`ploidy=0`. Recommendation: the constructor, because it is the one place where
+the argument of the user arrives. Meanwhile the implementer keeps the public
+fields and documents that both are 1 or more.
+
 ## Not in this spec
+
+- The last bin of the histogram. At ploidy 2 the unbiased value can come out one
+  unit in the last place above 1, 2.2e-16, when every called copy is a different
+  allele. A histogram that ends at exactly 1.0 would drop that variant while the
+  mean counts it. It belongs to the item for `calc_per_var_distribs`.
 
 - `calc_per_var_distribs` itself, the mean, the histogram, the threads and how
   fast the per variant pass has to be: the item of this spec for that function,
