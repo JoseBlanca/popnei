@@ -49,6 +49,25 @@ pub enum Error {
         ploidy: usize,
     },
 
+    /// A reader filled a variant with a number of alleles other than its
+    /// individuals times its ploidy, which the trait of a reader asks of
+    /// it. It is a defect of that reader: a block of such variants has
+    /// genotypes that a consumer reads wrong, each one at the place of
+    /// another.
+    #[error(
+        "the reader gave a variant of {found} alleles, and the {num_individuals} individuals of its source of the ploidy {ploidy} are {expected} alleles in every variant"
+    )]
+    VariantOfAnotherSize {
+        /// How many alleles the variant holds.
+        found: usize,
+        /// How many it has to hold, the individuals times the ploidy.
+        expected: usize,
+        /// How many individuals the reader says its source has.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
     /// The source the VCF reader was given holds something else. A VCF
     /// starts with `#`, and a gzipped one with the two bytes of gzip.
     #[error("the source is not a VCF: it starts with {found}")]

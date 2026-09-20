@@ -190,6 +190,9 @@ pub struct BlockCollector<R: VariantReader> {
     num_vars_per_block: usize,
     num_individuals: usize,
     ploidy: usize,
+    /// `num_individuals` x `ploidy`, the alleles of one variant, which the
+    /// trait asks of every reader and the collector checks in each one.
+    gts_per_variant: usize,
     /// `num_vars_per_block` x `num_individuals` x `ploidy`, the genotypes
     /// a full block holds, which every block is allocated for.
     gts_per_block: usize,
@@ -224,14 +227,15 @@ impl<R: VariantReader> BlockCollector<R> {
             Some(asked_for) => asked_for,
             None => default_num_vars_per_block(num_individuals),
         };
-        let gts_per_block = num_individuals
-            .checked_mul(ploidy)
-            .and_then(|per_variant| per_variant.checked_mul(num_vars_per_block))
-            .ok_or(Error::BlockTooLarge {
-                num_vars_per_block,
-                num_individuals,
-                ploidy,
-            })?;
+        let too_large = || Error::BlockTooLarge {
+            num_vars_per_block,
+            num_individuals,
+            ploidy,
+        };
+        let gts_per_variant = num_individuals.checked_mul(ploidy).ok_or_else(too_large)?;
+        let gts_per_block = gts_per_variant
+            .checked_mul(num_vars_per_block)
+            .ok_or_else(too_large)?;
         let needs = needs.union(Needs::GTS);
         reader.set_needs(needs);
         Ok(BlockCollector {
@@ -240,6 +244,7 @@ impl<R: VariantReader> BlockCollector<R> {
             num_vars_per_block,
             num_individuals,
             ploidy,
+            gts_per_variant,
             gts_per_block,
             var: Variant::new(),
             finished: false,
@@ -281,6 +286,18 @@ impl<R: VariantReader> BlockCollector<R> {
             if !not_filled.is_empty() {
                 self.finished = true;
                 return Err(Error::FieldsNotFilled { fields: not_filled });
+            }
+            // The genotypes of a block are read as variants x individuals
+            // x ploidy, and a variant of another number of alleles would
+            // move every genotype after it without a sign of it.
+            if self.var.gts.len() != self.gts_per_variant {
+                self.finished = true;
+                return Err(Error::VariantOfAnotherSize {
+                    found: self.var.gts.len(),
+                    expected: self.gts_per_variant,
+                    num_individuals: self.num_individuals,
+                    ploidy: self.ploidy,
+                });
             }
             let being_built = block.get_or_insert_with(|| self.start_block());
             self.push_variant(being_built);
@@ -839,6 +856,9 @@ mod tests {
         /// The chromosome and the position alone, which is a reader whose
         /// source has no genotype to give.
         NoGenotypes,
+        /// One allele fewer than the two individuals of the ploidy 2 have,
+        /// which is a reader with a defect.
+        OneAlleleTooFew,
     }
 
     /// A reader of two individuals of the ploidy 2, written for these
@@ -908,6 +928,10 @@ mod tests {
                     var.filled |= Needs::GTS;
                 }
                 Fills::NoGenotypes => {}
+                Fills::OneAlleleTooFew => {
+                    var.gts.extend_from_slice(&[0, 1, 1]);
+                    var.filled |= Needs::GTS;
+                }
             }
             Ok(true)
         }
@@ -945,6 +969,38 @@ mod tests {
         let collector =
             BlockCollector::new(no_variant(), Needs::ALL, Some(2)).expect("the collector");
         assert_eq!(collector.reader().needs, Needs::ALL);
+    }
+
+    /// The genotypes of a block are read as variants x individuals x
+    /// ploidy, so a variant of another number of alleles would be read
+    /// wrong: numpy refuses the reshape in Python, and in TypeScript the
+    /// genotypes cross flat and nothing says that they moved.
+    #[test]
+    fn a_variant_of_a_number_of_alleles_other_than_the_individuals_is_an_error() {
+        let mut collector = BlockCollector::new(
+            FakeReader::giving(3, Fills::OneAlleleTooFew),
+            Needs::empty(),
+            Some(2),
+        )
+        .expect("the collector");
+
+        let error = match collector.next_block() {
+            Ok(block) => panic!("the collector gave {block:?}"),
+            Err(error) => error,
+        };
+        let Error::VariantOfAnotherSize {
+            found,
+            expected,
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((found, expected), (3, 4));
+        assert_eq!((num_individuals, ploidy), (2, 2));
+
+        assert!(collector.next_block().expect("no block").is_none());
     }
 
     /// The trait says that a reader ends at its error, and the collector
