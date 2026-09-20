@@ -177,7 +177,7 @@ compiler drop the bounds checks.
   read, and for a case of the enum of the core that nobody has written
   yet. Which exception a case of a module is, is the spec of that module's
   to say. JavaScript has one exception for everything a library refuses, so
-  its four cases all become an `Error` with the message the error has in
+  its three cases all become an `Error` with the message the error has in
   Rust. `pyo3.md`, beside this file, has the Python side.
 
 ## Types, names and defaults

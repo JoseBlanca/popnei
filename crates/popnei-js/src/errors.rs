@@ -11,13 +11,16 @@
 use wasm_bindgen::{JsError, JsValue};
 
 /// What a function of this crate fails with.
+///
+/// It has no case for an argument this crate refuses on its own: the
+/// TypeScript package checks every argument before the call, in
+/// `js/popnei/src/arguments.ts`, because a number of JavaScript reaches a
+/// whole number of the core as 32 bits with no error, and it throws the
+/// `Error` itself.
 pub enum JsPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
     /// found in the bytes it was given.
     Core(popnei::Error),
-    /// An argument this crate refuses on its own, before the core sees it,
-    /// with the message a user reads.
-    Argument(String),
     /// Something the core read that JavaScript does not hold: a position
     /// above 2^53, which a float64 rounds.
     NotInJavaScript(String),
@@ -38,14 +41,12 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the four cases are one `Error`, where Python tells a `ValueError`
+    /// the three cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
             JsPopneiError::Core(error) => error.to_string(),
-            JsPopneiError::Argument(message)
-            | JsPopneiError::NotInJavaScript(message)
-            | JsPopneiError::Broken(message) => message,
+            JsPopneiError::NotInJavaScript(message) | JsPopneiError::Broken(message) => message,
         };
         JsError::new(&message).into()
     }
