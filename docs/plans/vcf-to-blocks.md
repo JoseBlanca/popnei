@@ -1,6 +1,7 @@
 # Plan: from a VCF to blocks, in Rust, Python and TypeScript
 
-September 2026. Draft, not yet approved by the owner. This plan builds
+September 2026. Approved by the owner on 20 September 2026, who ordered
+it run with the code written by subagents on Opus. This plan builds
 the first code of popnei: the workspace with its four builds, the variant
 record, the VCF reader, and the blocks through which genotypes reach
 Python and TypeScript. It is built from three specs, all reviewed and
@@ -70,7 +71,11 @@ wasm-bindgen and the toolchain of pyodide is at the end of this part.
   tests/reference/vcf/make_reference.py` writes them again and `git
   status` shows no change.
 
-What installs the three that were missing when the plan was written:
+What installed the three that were missing when the plan was written.
+The first `./emsdk install` needs a Python of 3.10 or later, and on this
+Mac the only `python3` of the PATH is Apple's 3.9, so it was run with
+`EMSDK_PYTHON` set to the 3.14.5 of uv; after it, `emsdk_env.sh` points
+at a Python that emsdk downloaded, and nothing else has to be set:
 
     rustup target add wasm32-unknown-unknown
     cargo install wasm-bindgen-cli
