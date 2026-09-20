@@ -47,18 +47,23 @@ subagent knows nothing of the session:
 - the path of the worktree, and that all its work happens there, on the
   branch that is checked out. It is not given `isolation: "worktree"`,
   which would start it from `main` in a tree of its own;
-- the whole work package, copied from the plan, with the task to do
-  marked, so that it has the deliverables its task serves and sees what
-  the tasks beside it do and it must not;
-- the path of the spec and of `docs/architecture.md`, which it reads
-  itself;
+- the path of the plan in the worktree, the number of its task, and that
+  it reads the whole work package of that task there, so that it has the
+  deliverables its task serves and sees what the tasks beside it do and
+  it must not. The work package is not copied into the prompt. The
+  subagent can read the file, and a copy per task fills the context of
+  the orchestrator with its own plan, many times over;
+- the path of the spec, of `docs/architecture.md` and of
+  `docs/glossary.md`, which it reads itself;
 - the skills to follow: `coding`, and `writing` for its doc comments and
   its commit message;
 - what is already there from earlier tasks that it builds on;
 - what the orchestrator knows and the code does not show: an open point
   the owner answered, a decision taken two tasks ago;
 - to commit its work when the checks pass, one commit for the task, and
-  not to touch the plan or the report;
+  not to touch the plan or the report. When the task made it add
+  something to the spec, that is a commit of its own before the commit of
+  the code;
 - what to send back, in under 300 words: what it built, the commit, the
   last line of each check, what it did differently from the task and why,
   anything it found that the orchestrator or the owner should know, and
@@ -83,7 +88,9 @@ results and not at code:
 - The checks of the `coding` skill, run by the orchestrator, reading only
   their last lines.
 - What the task said would be there when it was done: the named tests
-  exist and pass, the function can be called.
+  exist and pass, the function can be called. A cargo command that ran 0
+  tests exits with 0, so read the counts in its `test result` line and
+  not only that it passed.
 - What it did differently from the task: is it small, or does it change
   what a later task builds on?
 
@@ -171,7 +178,9 @@ After each work package, a short section:
   that surprised, a part of the spec that proved thin, a risk for what
   comes next.
 - How the work went: a task that had to be sent twice, a skill that was
-  unclear or wrong. This is what improves the skills and the next plan.
+  unclear or wrong, and the tokens each task's subagent used, which the
+  result of the `Agent` tool gives. This is what improves the skills and
+  the next plan: the tokens are how the right size of a task gets known.
 
 When the plan is done, the top of the report gets what the owner reads
 first: whether the plan is done, what exists now that did not, what is

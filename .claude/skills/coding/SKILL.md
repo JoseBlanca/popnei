@@ -33,8 +33,10 @@ same reading.
 
 When the spec does not say what should happen in a case, the choice is not
 made in silence. A choice that changes a value a user sees or the public
-API goes to the owner as an open point of the spec. A smaller one is made,
-written in the spec, and named in the commit message.
+API goes to the owner as an open point of the spec. A smaller one is made
+and written in the spec, in a commit of its own that comes before the
+commit of the code and the tests, as the `writing-specs` skill says, and
+it is named in the commit message of the code.
 
 ## The order of the work
 
@@ -146,7 +148,8 @@ compiler drop the bounds checks.
 - A name says what the value is: `called_alleles`, `max_missing_rate`,
   never `n`, `data`, `tmp`, `val`. The symbols of a formula, `p`, `k`,
   stay in the doc comment that gives the formula. Where pyNei has a name
-  for the thing, that is the name.
+  for the thing, that is the name, and `docs/glossary.md` has the names
+  of the things of the domain, `pop`, `gts`, a block and not a chunk.
 - The same thing has the same name everywhere in the three layers.
 - Where `docs/architecture.md` or the spec gives a signature or a field,
   that is the signature, a bare `usize` index and a `bool` field included.

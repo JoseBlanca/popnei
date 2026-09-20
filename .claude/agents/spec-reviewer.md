@@ -14,10 +14,10 @@ becomes wrong code. Another subagent has already checked that the text can
 be understood. Your question is whether it is right and whether it is
 complete.
 
-Read the spec, then `docs/objectives.md`, `docs/architecture.md` and
-`.claude/skills/writing-specs/SKILL.md` in the popnei repository, and then
-the pyNei code and tests the spec is about, under
-`/Users/jose/devel/pynei/`. You may run pyNei from its checkout, with
+Read the spec, then `docs/objectives.md`, `docs/architecture.md`,
+`docs/glossary.md` and `.claude/skills/writing-specs/SKILL.md` in the
+popnei repository, and then the pyNei code and tests the spec is about,
+under `/Users/jose/devel/pynei/`. You may run pyNei from its checkout, with
 `uv run python` there, to see what it does in a case. Write nothing inside
 either repository; scratch files go under `tmp/` in popnei.
 
@@ -42,8 +42,12 @@ Look for these:
 5. A conflict with `docs/architecture.md` or with `docs/objectives.md`: a
    type that is not the one the architecture gives, a calculation put at
    the block level that runs at the record level, a dependency the wasm
-   build cannot have.
-6. What could go. A part that an implementer who has read the pyNei
+   build cannot have. And a name that `docs/glossary.md` gives to another
+   thing, or a thing the glossary names that the spec calls otherwise.
+6. A check of "How it is verified" that does not say at which function it
+   is made, or that is made at a private helper when a function of "The
+   Rust interface" or the Python function shows the same number.
+7. What could go. A part that an implementer who has read the pyNei
    function would not miss, and that does not help the owner decide
    anything.
 

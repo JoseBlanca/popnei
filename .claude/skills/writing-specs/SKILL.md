@@ -68,7 +68,27 @@ into two specs along a line the code will also have.
    expect: a default, a NaN, a population that is dropped, a half called
    genotype that counts as a whole one, an argument used in one place and
    not in another. These are what the spec is most needed for.
-3. Make the sketch the writing skill asks for.
+3. Make the sketch the writing skill asks for. The names of the things of
+   the domain are those of `docs/glossary.md`: a population and not a
+   group, a block for popnei's and a chunk for pyNei's. A term the spec
+   needs and the glossary lacks is added there.
+4. Ask the owner, in a reply in chat, what would rewrite the spec if it
+   were answered after the writing. By now pyNei has been read and the
+   reference program has been run, because which checks there are is
+   known only when it has. Two things. The first is what the
+   item adds that others will call, the Python function and the types and
+   functions of the core crate, each in a line, with the one at which each
+   check of "How it is verified" will be made. The second is any open
+   point whose other answer would change the parts around it and not one
+   sentence: whether an argument exists, whether a behaviour of pyNei that
+   the rest is built on is reproduced. Each is asked as the writing skill
+   asks for a decision. An open point that moves one value or one
+   paragraph is not asked now. It stays in the spec with its "meanwhile",
+   which costs the owner one reading and not two. Write the spec when
+   they have answered. What they answered is in the spec as decided, with
+   that the owner decided it, the date, and the option that was not
+   taken, so that the decision can be found later. When there is nothing
+   of either kind to ask, say so in a line and go on.
 
 A claim about what pyNei does comes from code that was read, and names the
 function and the file. A claim about what a reference program does comes
@@ -86,7 +106,10 @@ pyNei is written down", and not by its number.
 ## The parts of a spec
 
 One spec for each module, the rows of the table in section 9 of
-`docs/architecture.md`, in `docs/specs/<module>.md`.
+`docs/architecture.md`, in `docs/specs/<module>.md`. The items of a module
+are usually written at different times. An item that is added to a spec
+brings no opening, open points or "Not in this spec" of its own: it adds
+to the ones the spec has, and its open points take the next numbers.
 
 **The opening.** What the module gives to a user of popnei, in a paragraph.
 The date, that there is no code yet or what there is, the row of the
@@ -126,11 +149,17 @@ says only what is its own.
    variants, or within a tolerance that has a reason, usually the digits
    the program prints. The test that runs pyNei and popnei on the same
    input. One small worked example with its numbers, which becomes the
-   first cargo test. When pyNei checks the item against nothing outside
-   the project, only numbers worked out by hand, the spec says so, and
-   which outside program could check it is an open point, because the
-   objectives ask for a reference outside the project for every
-   calculation.
+   first cargo tests. Each check names the function it is made at, and
+   that is the highest one at which the number can be seen: the Python
+   function for the comparison with pyNei, a function of "The Rust
+   interface" for the literals of the cargo tests. A test pins the
+   signature of the function it calls, so a check made at a private
+   helper keeps that helper from changing, and one made at the public
+   function leaves everything under it free. When pyNei checks the item
+   against nothing outside the project, only numbers worked out by hand,
+   the spec says so, and which outside program could check it is an open
+   point, because the objectives ask for a reference outside the project
+   for every calculation.
 
 **The Rust interface.** The types and the signatures that another module or
 the binding crate will call, in a code block, with a sentence before each
@@ -179,7 +208,12 @@ is decided and not listed. Few open points, each one worth the owner's
 time: what changes a result a user sees, or the public API.
 
 While nothing has been built from a spec, a changed decision is changed in
-the text and git keeps the history.
+the text and git keeps the history. Once code has been built from it the
+spec still changes first: a changed decision, an open point the owner
+answered, a case the code found that the spec did not have, goes into the
+spec in a commit of its own, and the commit that changes the code and the
+tests comes after it. The spec is where the differences from pyNei and the
+origin of every literal are written down, so it is never behind the code.
 
 ## Before handing it over
 

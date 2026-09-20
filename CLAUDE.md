@@ -1,8 +1,9 @@
 # popnei: how the assistant works here
 
 What popnei is and what it is for is in `docs/objectives.md`, the data flow
-and the modules in `docs/architecture.md`, and the measurements behind the
-decisions in `docs/rust_core.md`.
+and the modules in `docs/architecture.md`, the measurements behind the
+decisions in `docs/rust_core.md`, and the name popnei uses for each thing
+of its domain in `docs/glossary.md`.
 
 The skills are under `.claude/skills/` and the subagents under
 `.claude/agents/`. The `writing` skill is read before anything a person

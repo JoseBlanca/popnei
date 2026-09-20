@@ -128,7 +128,9 @@ inside it. The reader lacks four kinds of names:
   the words go in the text before the table.
 
 One name for each thing. Before a new name is added, count the ones the
-document already uses for it.
+document already uses for it. For the things of the domain, a population,
+a block, a half called genotype, the name is the one `docs/glossary.md`
+gives. The glossary chooses the word and the text still explains it.
 
 ### What the reader came for goes first
 

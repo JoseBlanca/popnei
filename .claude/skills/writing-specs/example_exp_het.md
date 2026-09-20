@@ -215,6 +215,13 @@ variants with a value are 0.3125 and 0.25 plain, 0.416667 and 0.333333
 unbiased. The per variant values are the ones `test_calc_exp_het` asserts; the
 means come from a run of pyNei at commit ef0ca6e with these two populations.
 
+The per variant values of this table and the plink2 literals of `var0000` are
+checked at `ExpHet::of_var`, on the counts the row helper gives for each
+population. No function above it shows the value of one variant:
+`calc_per_var_distribs` gives the mean and the histogram. The means are checked
+through that function, in the cargo tests of its item and, against pyNei, in
+the pytest test above.
+
 ## The Rust interface
 
 How the expected heterozygosity of a variant is worked out, and whether the

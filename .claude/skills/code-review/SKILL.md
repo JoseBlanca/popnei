@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: How code is reviewed in popnei and what is done with the findings. Use it after a step of an implementation plan is written and before it is committed as done, or when the owner asks for a review of a commit, a branch or a module. The session that asks for the review sends one reviewer subagent per category, each with a fresh context, then evaluates every finding and fixes the ones that hold.
+description: How code is reviewed in popnei and what is done with the findings. Use it after the tasks of a work package of an implementation plan are committed and before the work package is reported as done, or when the owner asks for a review of a commit, a branch or a module. The session that asks for the review sends one reviewer subagent per category, each with a fresh context, then evaluates every finding and fixes the ones that hold.
 ---
 
 # Code review

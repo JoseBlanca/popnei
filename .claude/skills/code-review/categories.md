@@ -100,7 +100,8 @@ comments as `.claude/skills/writing/SKILL.md` asks for them.
 
 - Read every new name as someone who has not seen the code: does it say
   what the value is? Is the same thing called the same in Rust, in the
-  binding and in Python, and as pyNei calls it?
+  binding and in Python, as pyNei calls it and as `docs/glossary.md`
+  names it?
 - Signatures and fields against `docs/architecture.md` and the spec.
 - Defaults: a named constant with its source, or hidden in a constructor,
   a `Default`, an `Option` that becomes a value?
