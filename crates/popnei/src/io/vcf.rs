@@ -1859,8 +1859,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BYTES_PER_BATCH, BatchRow, LINES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE, ParsedRow, RowRules,
-        VcfOptions, VcfPlace, VcfReader, parse_row, parse_rows, parse_rows_one_by_one,
+        BYTES_PER_BATCH, BatchRow, GZIP_FLAGS, LINES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE,
+        ParsedRow, RowRules, VcfOptions, VcfPlace, VcfReader, WithTheLastBytes, parse_row,
+        parse_rows, parse_rows_one_by_one, written_by_bgzip,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2758,6 +2759,36 @@ mod tests {
     }
 
     #[test]
+    fn the_blocks_after_the_error_of_the_first_line_of_a_file_are_no_blocks() {
+        // The wrong line first and three good ones after it, in blocks of
+        // one variant: a reader that did not end at its error would give
+        // the three, which is what `docs/specs/block.md` refuses of every
+        // reader.
+        let vcf = vcf_of(&[
+            "chr1 100 . A T . PASS . GT 0/0 0/1 1",
+            "chr1 200 . A T . PASS . GT 0/0 0/1 1/1",
+            "chr1 300 . A T . PASS . GT 0/0 0/1 1/1",
+            "chr1 400 . A T . PASS . GT 0/0 0/1 1/1",
+        ]);
+        let mut reader = reader_over(&vcf, in_blocks_of(VcfOptions::default(), 1));
+
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the reader gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::VcfGenotypePloidy { line: 4, .. }),
+            "the error is {error}"
+        );
+        for call in 1..=3 {
+            assert!(
+                reader.next_block().expect("no block").is_none(),
+                "the call {call} after the error"
+            );
+        }
+    }
+
+    #[test]
     fn a_block_after_an_error_and_after_the_last_block_is_no_block() {
         let mut reader = reader_over(
             &vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]),
@@ -3106,6 +3137,39 @@ mod tests {
         }
     }
 
+    /// The last 28 bytes that went by to the decoder are what says whether
+    /// a file that bgzip wrote ends with the mark of its end, and they are
+    /// kept as the bytes are consumed, in chunks of whatever size the
+    /// decoder asks for: fewer than 28, exactly 28, and more.
+    #[test]
+    fn the_last_bytes_of_a_source_are_the_last_of_what_went_by_in_any_chunks() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        for chunk in [1, 27, 28, 40, 256] {
+            let mut source = WithTheLastBytes::new(Cursor::new(bytes.clone()));
+            let mut read = Vec::new();
+            let mut left = bytes.len();
+            while left > 0 {
+                let take = chunk.min(left);
+                let mut into = vec![0u8; take];
+                std::io::Read::read_exact(&mut source, &mut into).expect("the bytes");
+                read.extend_from_slice(&into);
+                left = left.saturating_sub(take);
+            }
+            assert_eq!(read, bytes, "in chunks of {chunk}");
+            // The last 28 of the 256 bytes, which is what a mark of the end
+            // would be compared with.
+            assert_eq!(source.last, bytes[228..], "in chunks of {chunk}");
+        }
+
+        // Fewer bytes than the mark have gone by: they are kept as they
+        // are, and no mark is found in them.
+        let mut source = WithTheLastBytes::new(Cursor::new(vec![7u8; 10]));
+        let mut into = [0u8; 10];
+        std::io::Read::read_exact(&mut source, &mut into).expect("the bytes");
+        assert_eq!(source.last, [7u8; 10]);
+        assert!(!source.ends_with_the_bgzip_mark());
+    }
+
     #[test]
     fn a_bgzipped_source_without_the_mark_of_its_end_is_refused_after_its_variants() {
         // `many.vcf.gz` without the empty block of 28 bytes that bgzip
@@ -3232,6 +3296,52 @@ mod tests {
             panic!("the error is {error}");
         };
         assert!(error.to_string().contains("disc"), "{error}");
+    }
+
+    /// What says that bgzip wrote a source is the extra field `BC` in the
+    /// header of its first gzip member, which is a flag that says that
+    /// there is an extra field and the two bytes that name it. Neither half
+    /// says it alone: a gzip with another extra field has the flag, and a
+    /// gzip with no extra field can hold those two bytes where the name of
+    /// one would be.
+    #[test]
+    fn a_gzip_with_another_extra_field_was_not_written_by_bgzip() {
+        // A gzip header with the extra field `QQ` of two bytes: the ten
+        // bytes of the header with the flag of an extra field, the length
+        // of the field, its name, the length of its bytes and its bytes.
+        let mut header = vec![0x1f, 0x8b, 0x08, 0x04, 0, 0, 0, 0, 0, 0xff];
+        header.extend_from_slice(&[0x06, 0x00, b'Q', b'Q', 0x02, 0x00, 0x00, 0x00]);
+        assert!(!written_by_bgzip(&header), "the extra field `QQ`");
+
+        // The same bytes with the flag taken off, which is a header that
+        // holds no extra field at all whatever comes after it.
+        let mut with_no_flag = header.clone();
+        with_no_flag[GZIP_FLAGS] = 0x00;
+        assert!(!written_by_bgzip(&with_no_flag), "no flag");
+
+        // And the header of `many.vcf.gz`, which bgzip wrote.
+        let bgzipped = std::fs::read(reference_vcf("many.vcf.gz")).unwrap();
+        assert!(written_by_bgzip(&bgzipped), "many.vcf.gz");
+        let mut without_the_flag = bgzipped.clone();
+        without_the_flag[GZIP_FLAGS] = 0x00;
+        assert!(!written_by_bgzip(&without_the_flag), "many.vcf.gz, no flag");
+    }
+
+    /// A gzip file whose first member carries an extra field that is not
+    /// bgzip's is read to its end and asked for no mark: a reader that took
+    /// the flag alone for bgzip's would refuse it.
+    #[test]
+    fn a_gzip_with_another_extra_field_is_read_to_its_end() {
+        let plain = std::fs::read(reference_vcf("cases.vcf")).unwrap();
+        let mut encoder = flate2::GzBuilder::new()
+            .extra(vec![b'Q', b'Q', 0x02, 0x00, 0x00, 0x00])
+            .write(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &plain).unwrap();
+        let gzipped = encoder.finish().unwrap();
+        assert!(!written_by_bgzip(&gzipped));
+
+        let mut reader = VcfReader::new(Cursor::new(gzipped), options(2, false)).unwrap();
+        assert_eq!(rows_of(&mut reader).expect("the rows"), the_rows_of_cases());
     }
 
     #[test]
@@ -3514,6 +3624,21 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_allele_popnei_holds_is_read() {
+        // 127 alternative alleles and the reference one, and a genotype
+        // that carries the last of them. 128 is the allele above it, which
+        // the test below refuses.
+        let mut alternatives = String::from("T");
+        for _ in 1..127 {
+            alternatives.push_str(",T");
+        }
+        let line = format!("chr1 100 . A {alternatives} . PASS . GT 0/0 127/0 1/1");
+        let row = row_of_the_line(&line, Needs::ALL, 2);
+        assert_eq!(row.alleles.len(), 128);
+        assert_eq!(row.gts, [0, 0, 127, 0, 1, 1]);
+    }
+
+    #[test]
     fn an_allele_above_the_largest_one_is_refused() {
         let mut alternatives = String::from("T");
         for _ in 1..200 {
@@ -3569,13 +3694,55 @@ mod tests {
     #[test]
     fn a_column_of_an_individual_with_no_value_where_the_format_has_gt_is_refused() {
         let error = error_of_the_line("chr1 100 . A T . PASS . DP:GT 3:0/1 4 5:1/1", Needs::ALL, 2);
-        let Error::VcfDataLine { line, place, .. } = error else {
+        let Error::VcfDataLine {
+            line,
+            place,
+            problem,
+        } = error
+        else {
             panic!("the error is {error}");
         };
         assert_eq!(
             (line, place),
             (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string()))
         );
+        // The column of that individual holds one value and the FORMAT
+        // names two, so there is no genotype in it. A column whose value
+        // where the GT is is empty is another line and another error, the
+        // one of an allele number with no digit in it, which the test
+        // below has.
+        assert!(problem.contains("has no value"), "{problem}");
+        assert!(problem.contains('4'), "{problem}");
+    }
+
+    #[test]
+    fn a_column_of_an_individual_that_is_empty_is_not_an_allele_number() {
+        // A line that ends in a tab has an empty column at its end, and a
+        // line with two tabs one after another has one in the middle: both
+        // are a column, and neither holds a genotype.
+        for (line, individual) in [
+            ("chr1 100 . A T . PASS . GT 0/0 0/1 ", "ind3"),
+            ("chr1 100 . A T . PASS . GT 0/0  1/1", "ind2"),
+        ] {
+            let error = error_of_the_line(line, Needs::ALL, 2);
+            let Error::VcfDataLine {
+                line: number,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("the error of `{line}` is {error}");
+            };
+            assert_eq!(
+                (number, place),
+                (
+                    FIRST_DATA_LINE,
+                    VcfPlace::Individual(individual.to_string())
+                ),
+                "{line}"
+            );
+            assert!(problem.contains("is not an allele number"), "{problem}");
+        }
     }
 
     #[test]
@@ -4427,5 +4594,24 @@ mod tests {
         assert_eq!(rows.len(), 475);
         assert_eq!(reader.batch.len(), 8);
         assert!(reader.batches_filled() > 60, "{}", reader.batches_filled());
+        // The text of the lines of a batch is written over by the next
+        // batch, so what the reader holds is the lines of one batch and not
+        // the file: `many.vcf` is 110879 bytes and eight of its lines are
+        // about 1900.
+        assert!(
+            reader.text.capacity() < 8192,
+            "the text of a batch of eight lines holds {} bytes",
+            reader.text.capacity()
+        );
+        // And what bounds it for a file of many individuals, whose lines
+        // are longer, is the bound in bytes.
+        let mut reader = reader_of_file("many.vcf", in_blocks_of(VcfOptions::default(), 1000));
+        reader.set_bytes_per_batch(1024);
+        assert_eq!(rows_of(&mut reader).unwrap().len(), 475);
+        assert!(
+            reader.text.capacity() < 4096,
+            "with a bound of 1024 bytes a batch holds {} bytes",
+            reader.text.capacity()
+        );
     }
 }
