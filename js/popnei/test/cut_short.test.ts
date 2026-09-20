@@ -44,6 +44,28 @@ test("a bgzipped VCF without the mark of its end is refused after its variants",
   }
 });
 
+test("a bgzipped VCF cut inside a member is refused after its variants", () => {
+  // The members of `many.vcf.gz` end at the bytes 310, 12336, 21876 and
+  // 21904, so this cut is inside the third one: the decoder runs out of
+  // bytes there, and what a user is told is that the file is cut short.
+  const cut = MANY_GZ.slice(0, 21000);
+  const variants = openVcf(cut, { onlyPassed: false });
+  try {
+    let read = 0;
+    assert.throws(() => {
+      for (const block of variants.iterBlocks({ numVarsPerBlock: 100 })) {
+        read += block.numVars;
+      }
+    }, /cut short/);
+    // 480 data lines arrived whole, of which the four blocks of 100 that
+    // the pass filled are given: the 80 that were left over are lost with
+    // the error, as `docs/specs/block.md` says of `reblock`.
+    assert.equal(read, 400);
+  } finally {
+    variants.free();
+  }
+});
+
 test("a quality that is not finite is refused, and only when it is asked for", () => {
   const bytes = vcfOf(["chr1\t10\t.\tA\tT\tnan\tPASS\t.\tGT\t0/0\t0/1\t1/1"]);
   const variants = openVcf(bytes);

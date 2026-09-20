@@ -87,6 +87,21 @@ def test_a_bgzipped_vcf_cut_where_a_member_ends_gives_its_variants_and_then_fail
     assert "cut short" in message
 
 
+def test_a_bgzipped_vcf_cut_inside_a_member_gives_its_variants_and_then_fails(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A download that stopped inside a block of bgzip, which is where it
+    stops nearly always: the decoder runs out of bytes there, and what a
+    user is told is that the file is cut short and not that a deflate
+    stream is incomplete. The 21000 bytes that arrived hold 480 whole data
+    lines, of which `reblock` gives the four blocks of 100 it filled."""
+    path = _cut(reference_vcf_dir, tmp_path, 21000)
+    read, message = _variants_before_the_error(path)
+    assert read == 400
+    assert "cut short" in message
+    assert "deflate" not in message
+
+
 def test_a_gzipped_vcf_that_bgzip_did_not_write_is_read_to_its_end(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:

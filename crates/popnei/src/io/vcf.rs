@@ -887,8 +887,20 @@ impl<R: BufRead + Send> VcfReader<R> {
                 }
                 Err(error) => {
                     *line_number = number;
-                    *line_error = Some(Error::Io(error));
                     *source_done = true;
+                    // A source that bgzip wrote and whose bytes ran out was
+                    // cut short, wherever the cut falls: a cut inside a
+                    // gzip member is this error of the decoder, and one
+                    // where a member ends is the mark that is not at the
+                    // end of the file. A user whose download stopped is
+                    // told the same thing by both. An error of the file
+                    // system, a disc that fails, has another kind and stays
+                    // the error of the input it is.
+                    if *written_by_bgzip && the_bytes_ran_out(&error) {
+                        *end_error = Some(Error::VcfBgzipEndMissing);
+                    } else {
+                        *line_error = Some(Error::Io(error));
+                    }
                     break;
                 }
             }
@@ -1209,6 +1221,18 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
         }
     }
     Ok(individuals.iter().map(|name| (*name).to_string()).collect())
+}
+
+/// Whether an error of the input is the bytes of the source running out in
+/// the middle of what was being read.
+///
+/// It is what flate2 gives for a gzip member that is cut short, "incomplete
+/// deflate stream" while a member is being decompressed and "unexpected end
+/// of file" in the header or the trailer of one, both of the kind
+/// `UnexpectedEof`. An error of the file system has another kind, so a disc
+/// that fails is not read as a file that was cut short.
+fn the_bytes_ran_out(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::UnexpectedEof
 }
 
 /// Whether bgzip wrote the source, which its first gzip member says: bgzip
@@ -1831,7 +1855,7 @@ fn parse_row_allele(text: &[u8], num_alleles: usize, line: u64, individual: &str
 #[cfg(test)]
 mod tests {
     use std::fs::File;
-    use std::io::{BufReader, Cursor};
+    use std::io::{BufRead, BufReader, Cursor};
     use std::path::{Path, PathBuf};
 
     use super::{
@@ -2973,7 +2997,9 @@ mod tests {
     fn a_gzipped_source_cut_in_the_middle_of_a_member_is_refused() {
         let bytes = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
         // The first member of this file is its header and the second its
-        // four variants, so the cut is inside the second one.
+        // four variants, so the cut is inside the second one. bgzip wrote
+        // the file, so what the reader says of it is that it was cut short,
+        // and not what the decoder found, an incomplete deflate stream.
         let cut = bytes.len().saturating_sub(20);
         let bytes = bytes.get(..cut).unwrap_or_default().to_vec();
         for lines_per_batch in BATCHES_TO_TRY {
@@ -2983,11 +3009,27 @@ mod tests {
             assert_eq!(reader.individuals(), ["ind1", "ind2", "ind3"]);
             let error = rows_of(&mut reader).unwrap_err();
             assert!(
-                matches!(error, Error::Io(_)),
+                matches!(error, Error::VcfBgzipEndMissing),
                 "a file cut in the middle of a gzip member read in batches of \
                  {lines_per_batch} lines gives {error}"
             );
         }
+    }
+
+    #[test]
+    fn a_gzip_that_bgzip_did_not_write_and_that_is_cut_is_an_error_of_the_input() {
+        // Nothing says of such a file where it should end, so what a reader
+        // has of it is what the decoder found: the bytes ran out.
+        let plain = std::fs::read(reference_vcf("cases.vcf")).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &plain).unwrap();
+        let gzipped = encoder.finish().unwrap();
+        let cut = gzipped.len().saturating_sub(20);
+        let bytes = gzipped.get(..cut).unwrap_or_default().to_vec();
+
+        let mut reader = VcfReader::new(Cursor::new(bytes), VcfOptions::default()).unwrap();
+        let error = rows_of(&mut reader).unwrap_err();
+        assert!(matches!(error, Error::Io(_)), "the error is {error}");
     }
 
     // A quality that is not finite, and a source that bgzip wrote and that
@@ -3098,6 +3140,98 @@ mod tests {
             matches!(error, Error::VcfBgzipEndMissing),
             "the error is {error}"
         );
+    }
+
+    /// A source that gives `bytes` bytes and then fails, which is the disc
+    /// that a file is read from failing, and not a file that was cut short:
+    /// the two are told apart by the error the source gives.
+    struct FailsAfter<R: BufRead> {
+        source: R,
+        /// How many bytes are left before it fails.
+        left: usize,
+    }
+
+    impl<R: BufRead> std::io::Read for FailsAfter<R> {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let read = {
+                let mut buffer = self.fill_buf()?;
+                std::io::Read::read(&mut buffer, out)?
+            };
+            self.consume(read);
+            Ok(read)
+        }
+    }
+
+    impl<R: BufRead> BufRead for FailsAfter<R> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.left == 0 {
+                return Err(std::io::Error::other("the disc of the test failed"));
+            }
+            let buffer = self.source.fill_buf()?;
+            let take = buffer.len().min(self.left);
+            Ok(&buffer[..take])
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.left = self.left.saturating_sub(amount);
+            self.source.consume(amount);
+        }
+    }
+
+    #[test]
+    fn a_bgzipped_source_cut_inside_a_member_is_the_error_of_the_mark_of_its_end() {
+        // A cut inside a gzip member leaves the decoder without the bytes
+        // it needs, where a cut where a member ends leaves it content: the
+        // two are the same file for a user, one whose download stopped, and
+        // the same error. The lines the decoder could give are given first.
+        //
+        // The members of `many.vcf.gz` end at the bytes 310, 12336, 21876
+        // and 21904, so these three cuts are inside the second member, the
+        // third, which is the last one with data lines, and the empty one
+        // that marks the end.
+        for (cut, blocks) in [
+            (1000, vec![11]),
+            (21000, vec![100, 100, 100, 100, 80]),
+            (21890, vec![100; 5]),
+        ] {
+            let bytes = cut_to("many.vcf.gz", cut);
+            let options = in_blocks_of(options(2, false), 100);
+            let (sizes, error) =
+                blocks_and_then_the_error(VcfReader::new(Cursor::new(bytes), options).unwrap());
+            assert_eq!(sizes, blocks, "cut at {cut}");
+            assert!(
+                matches!(error, Error::VcfBgzipEndMissing),
+                "cut at {cut}: the error is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_that_fails_while_it_is_read_is_an_error_of_the_input() {
+        // The disc that a file is read from failing is not a file that was
+        // cut short: the blocks that were read are given and the error is
+        // the one of the input, whatever the error of a source that ends
+        // early would have been.
+        let whole = std::fs::read(reference_vcf("many.vcf.gz")).unwrap();
+        let source = FailsAfter {
+            source: Cursor::new(whole),
+            left: 13000,
+        };
+        let options = in_blocks_of(options(2, false), 100);
+        let mut reader = VcfReader::new(source, options).unwrap();
+        let mut sizes = Vec::new();
+        let error = loop {
+            match reader.next_block() {
+                Ok(Some(block)) => sizes.push(block.num_vars),
+                Ok(None) => panic!("the reader ended with no error after {sizes:?}"),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(sizes, [100, 100]);
+        let Error::Io(error) = error else {
+            panic!("the error is {error}");
+        };
+        assert!(error.to_string().contains("disc"), "{error}");
     }
 
     #[test]
