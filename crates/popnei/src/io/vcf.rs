@@ -97,29 +97,36 @@ const MISSING_VALUE: &str = ".";
 /// How many lines the reader takes from the source before it parses them,
 /// on the threads of rayon.
 ///
-/// It was measured on the VCF of "Speed" of `docs/specs/io_vcf.md`, 100000
-/// variants of 1000 individuals in 400 MB, with the benchmark
-/// `benches/read_vcf.rs`, on the 18 cores of the owner's Apple M5 Pro, the
-/// median of five runs. Batches of 256, 1024 and 4096 lines took 0.206,
-/// 0.160 and 0.147 s on 18 threads, and 1.28, 1.24 and 1.28 s on one;
-/// gzipped, where the decompression is one thread's work whatever the
-/// others do, 0.555, 0.497 and 0.458 s on 18 threads. Those are the
-/// numbers of `docs/reports/vcf-to-blocks.md`, taken before
-/// [`BYTES_PER_BATCH`]; with it the same three take 0.202, 0.158 and 0.151
-/// s, the last one because 4096 lines of that file are 16.5 MB and the
-/// bound cuts them to about 2000. A batch of 4096 lines whole, with the
-/// bound raised to 32 MiB, takes 0.144 s.
+/// The lines of one batch are what the threads share, and a batch ends
+/// where its block does, so the last batch of a block holds what is left of
+/// it and is the one the threads share worst: with 1024 lines the block of
+/// 2500 variants that this reader gives for a file of 1000 diploid
+/// individuals, [`crate::block::GENOTYPES_PER_BLOCK`] over its genotypes per
+/// variant, is read in batches of 1024, 1024 and 452 lines, and 452 lines
+/// are 25 to a thread on 18 cores. A batch of 4096 lines covers such a
+/// block whole when [`BYTES_PER_BATCH`] lets it.
 ///
-/// 1024 stays. On one thread the three are the same read, and on 18 the
-/// 0.014 s between 1024 and 4096 buys four times the text in memory, while
-/// the target of the spec, 0.11 s on 18 threads, is missed by all three
-/// and by more than they differ: what to do about that is the owner's, and
-/// the benchmark takes `--lines-per-batch` for whoever tries again. What
-/// keeps the number from being much smaller is the 0.046 s that 256 lines
-/// cost: the lines of one batch are what the threads share, and 1024 of
-/// them are 56 a thread on 18 cores.
+/// Measured on 21 September 2026 on the owner's Apple M5 Pro, 18 cores,
+/// release, the file in the page cache, the genotypes alone and the default
+/// options, the median of 5 runs of `benches/read_vcf.rs` on the VCF of
+/// "Speed" of `docs/specs/io_vcf.md`, 100000 variants of 1000 individuals
+/// in 403 MB, three sets of runs for each size, interleaved: 256, 1024,
+/// 2048 and 4096 lines read it in 0.139, 0.105, 0.098 and 0.098 s on 18
+/// threads, and bgzipped, 38 MB, where the decompression is one thread's
+/// work whatever the others do, 256, 1024 and 4096 in 0.476, 0.425 and
+/// 0.411 s. On one thread the sizes are the same read, plain 0.58 to 0.62 s
+/// and bgzipped 0.90 to 0.95 s, which is the spread of the machine between
+/// one set of runs and the next. `docs/reports/vcf-to-blocks.md` has the
+/// numbers of the reader before this one, which filled one variant at a
+/// time.
+///
+/// 4096 and 2048 are the same read because the bound in bytes is what
+/// decides at both: 2500 lines of that file are 10.1 MB. 4096 is the
+/// number, so that the bound in bytes is the one thing that cuts a block
+/// into batches, and the benchmark takes `--lines-per-batch` for whoever
+/// measures again.
 #[cfg(not(target_family = "wasm"))]
-const LINES_PER_BATCH: usize = 1024;
+const LINES_PER_BATCH: usize = 4096;
 
 /// How many lines the reader takes from the source before it parses them
 /// in wasm, where there are no threads: one, which is the reader that
@@ -133,21 +140,18 @@ const LINES_PER_BATCH: usize = 1;
 /// lines it was allowed.
 ///
 /// A line of a VCF carries one genotype for every individual, so a bound
-/// in lines alone lets the memory of a reader grow with the panel: with
-/// the 1024 lines of [`LINES_PER_BATCH`], a reader of the VCF of "Speed"
-/// of `docs/specs/io_vcf.md`, 1000 individuals, holds 13.3 MB of resident
-/// memory, one of 10000 individuals 82.7 MB and one of 100000 individuals
-/// near 0.8 GB, which the review of work package 5 in
-/// `docs/reports/vcf-to-blocks.md` measured. The text of the lines is what
-/// that memory is made of, the variants parsed from them and the growth of
-/// the buffers by doubling, so bounding the text bounds all of it, at
-/// about three times this number.
+/// in lines alone lets the memory of a reader grow with the panel: the
+/// review of work package 5 in `docs/reports/vcf-to-blocks.md` measured, on
+/// the reader before this one and with a bound of 1024 lines and none in
+/// bytes, 13.3 MB of resident memory for 1000 individuals, 82.7 MB for
+/// 10000 and near 0.8 GB for 100000. The text of the lines is what that
+/// memory is made of, the variants parsed from them and the growth of
+/// the buffers by doubling, so bounding the text bounds all of it.
 ///
-/// 8 MiB is twice the 4.1 MB that 1024 lines of that 400 MB file hold, so
-/// the batches of a file of a thousand individuals are the 1024 lines they
-/// were and the timings of that report hold; a file of 10000 individuals gets
-/// about 200 lines in a batch and one of 100000 about 20. A batch holds
-/// one line whatever its bytes are.
+/// 8 MiB cuts the [`LINES_PER_BATCH`] lines of a batch wherever a line is
+/// longer than 2 KiB: of the VCF of "Speed" of `docs/specs/io_vcf.md`, 1000
+/// individuals and about 4 KB a line, a batch gets about 2077 lines of the
+/// 4096 it was allowed. A batch holds one line whatever its bytes are.
 const BYTES_PER_BATCH: usize = 8 * 1024 * 1024;
 
 /// How many bytes of the file [`VcfReader::from_path`] holds between two
