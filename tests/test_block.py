@@ -179,6 +179,30 @@ def test_a_block_names_the_chromosomes_of_its_own_variants(write_vcf) -> None:
     ]
 
 
+def test_a_block_tells_what_it_holds_without_printing_it(
+    reference_vcf_dir: Path,
+) -> None:
+    """What a user sees in a session or in a traceback.
+
+    A block of 10000 variants holds as many chromosomes, ids and alleles,
+    which printed are hundreds of kilobytes of one line.
+    """
+    block = next(
+        iter(
+            open_vcf(reference_vcf_dir / "many.vcf").iter_blocks(
+                fields=ALL_FIELDS, num_vars_per_block=100
+            )
+        )
+    )
+    printed = repr(block)
+    assert len(printed) < 200, printed
+    assert "100 variants" in printed
+    assert "(100, 50, 2)" in printed
+    for name in ALL_FIELDS:
+        assert name in printed
+    assert "chr1" not in printed
+
+
 def _writable_arrays_under(array: numpy.ndarray) -> list[str]:
     """The arrays that share the memory of `array` and can be written into.
 

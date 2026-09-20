@@ -7,7 +7,7 @@ which gives one block after another until the source is at its end.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 import numpy
 
@@ -21,7 +21,7 @@ The genotypes are not among them: every block holds them.
 # Two blocks are the same one or they are not: `eq=False` keeps the
 # comparison of the arrays, which has no true or false for more than one
 # genotype, out of `==` and leaves a block hashable by what it is.
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, repr=False)
 class Block:
     """The variants of one block, each field a column of the block.
 
@@ -65,6 +65,22 @@ class Block:
     QUAL of a VCF: 30 is one chance in a thousand that there is no variant
     at that site. It is NaN for a variant whose source gives no quality.
     """
+
+    def __repr__(self) -> str:
+        """What the block holds, and not the variants it holds.
+
+        The one a dataclass writes prints every genotype, chromosome, id and
+        allele, which for a block of 10000 variants is hundreds of
+        kilobytes in a session or in a traceback.
+        """
+        columns = ", ".join(
+            name for name in get_args(Field) if getattr(self, name) is not None
+        )
+        return (
+            f"<Block of {self.num_vars} variants, "
+            f"gts {self.gts.dtype} {self.gts.shape}, "
+            f"columns {columns or 'none'}>"
+        )
 
 
 def _block_of(columns) -> Block:
