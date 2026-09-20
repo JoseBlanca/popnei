@@ -69,6 +69,26 @@ It also confirmed what `.claude/skills/coding/pyo3.md` left to confirm:
 maturin builds the module without the `extension-module` feature of
 pyo3 and without a warning.
 
+Task 1.3, commit f03f6b6, one subagent run of 111 thousand tokens and 9
+minutes. The orchestrator ran again the three cargo checks, which pass
+with the new member, `npm run build` in `js/popnei`, which ends at the
+TypeScript compiler with no error, and `npm test`, `pass 2`, `fail 0`.
+The core built for `wasm32-unknown-unknown` with wasm-bindgen at the
+first try, which was the risk this work package was put first for. What
+it decided: one build of wasm-bindgen, `--target web`, and two entry
+points that the `node` condition of `exports` in `package.json` chooses
+between, node reading the `.wasm` file from disk and a page or a bundler
+fetching it; `version()` called before `await init()` throws a named
+`Error`. What it learned, for the reference on wasm-bindgen that the
+`coding` skill lacks: the generated code passes `forbid(unsafe_code)`;
+natively the crate needs only `test = false`; `--target web` under node
+fails with `fetch failed` on a `file:` URL, which is why node has its own
+entry; `--target nodejs` gives CommonJS, which a package with `"type":
+"module"` cannot use; `--target bundler` imports the `.wasm` as a module
+and needs no `init`; the `.d.ts` carries the Rust doc comments. Not
+tried: `--target bundler` and a real page. `@types/node` is 24, because
+npm has no types for node 26.
+
 For the owner: the manifests have no `license` field, because no
 document of the repository names a license. Nothing needs it until
 popnei is published.

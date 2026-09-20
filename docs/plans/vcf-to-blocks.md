@@ -148,7 +148,7 @@ around it.
   and pytest as development dependencies, and the first pytest test.
   From section 8 of the architecture and `.claude/skills/coding/pyo3.md`.
   Serves deliverable 2. Needs 1.1. Side by side with 1.3.
-- [ ] 1.3 `crates/popnei-js` with wasm-bindgen, pinned to the version of
+- [x] 1.3 `crates/popnei-js` with wasm-bindgen, pinned to the version of
   the command line that is installed, `js/popnei` with its
   `package.json`, the TypeScript compiler as a development dependency,
   the build command and the first node test. From sections 8 and 11 of
