@@ -18,6 +18,12 @@ popnei = { path = "crates/popnei", version = "0.1.0" }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
+# The error of the core crate. It writes the Display and the
+# std::error::Error of the enum from the message on each variant, so that a
+# case added by a later module cannot be a variant whose message was
+# forgotten. It is a derive macro that runs on the host, with nothing of it
+# in the built library, so it builds for the two wasm targets.
+thiserror = "2"
 # The Python binding crate. The names of pyo3 change from version to
 # version, and .claude/skills/coding/pyo3.md was written from this one.
 pyo3 = "0.29.2"

@@ -9,11 +9,17 @@
 //! of `docs/architecture.md` lays out.
 //!
 //! A variant is one site of the genome with its alleles and the genotype of
-//! every individual at it. The modules that read variants, hold them in
-//! blocks and calculate over them are being written; `docs/architecture.md`
-//! has their order.
+//! every individual at it. The `variant` module has it, with the trait that
+//! anything giving variants implements; the modules that read them, hold
+//! them in blocks and calculate over them are being written, and
+//! `docs/architecture.md` has their order.
 
 #![forbid(unsafe_code)]
+
+pub mod error;
+pub mod variant;
+
+pub use error::{Error, Result};
 
 /// The version of this crate, `major.minor.patch`, as its manifest gives
 /// it.
