@@ -1599,6 +1599,20 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_ends_before_its_filter_is_refused_with_the_default() {
+        // Whether this line would be skipped cannot be known: the FILTER
+        // is the seventh column and the line has four. The columns up to
+        // the FILTER have to be there, and only what is inside them is
+        // read late.
+        let vcf = vcf_of(&["chr1 10 . A"]);
+        let error = error_reading(&vcf, VcfOptions::default());
+        let Error::VcfDataLine { line, place, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (FIRST_DATA_LINE, VcfPlace::Line));
+    }
+
+    #[test]
     fn a_line_that_failed_its_filter_is_not_read_before_its_filter_either() {
         let vcf = vcf_of(&[
             "chr9 x . A T . q10 . GT 0/0 0/1 1/1",
