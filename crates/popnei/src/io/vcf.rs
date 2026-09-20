@@ -200,6 +200,11 @@ impl<R: BufRead> VcfSource<R> {
 
     /// The next line, with its end of line, appended to `line`. 0 at the
     /// end of the source.
+    ///
+    /// Bytes that are not valid UTF-8 come back as an error of the input
+    /// whose kind says so, which the callers turn into an error of the line
+    /// they were reading, since a VCF is text and the number of the line is
+    /// what a user needs.
     fn read_line(&mut self, line: &mut String) -> std::io::Result<usize> {
         match self {
             VcfSource::Plain(source) => source.read_line(line),
@@ -284,13 +289,25 @@ impl<R: BufRead + Send> VcfReader<R> {
     fn read_header(&mut self) -> Result<()> {
         loop {
             self.line.clear();
-            let read = self.source.read_line(&mut self.line)?;
+            let number = next_line_number(self.line_number);
+            let read = self.source.read_line(&mut self.line).map_err(|error| {
+                if is_not_text(&error) {
+                    Error::VcfHeader {
+                        problem: format!(
+                            "the bytes of its line {number} are not valid UTF-8, and a \
+                             VCF is text"
+                        ),
+                    }
+                } else {
+                    Error::Io(error)
+                }
+            })?;
             if read == 0 {
                 return Err(Error::VcfHeader {
                     problem: "it has no #CHROM line".to_string(),
                 });
             }
-            self.line_number = next_line_number(self.line_number);
+            self.line_number = number;
             let text = without_the_line_end(&self.line);
             if text.starts_with("##") {
                 continue;
@@ -368,6 +385,12 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
         }
     }
     Ok(individuals.iter().map(|name| (*name).to_string()).collect())
+}
+
+/// Whether the error of an input is bytes that are not valid UTF-8, which
+/// is what `read_line` gives for a line of a VCF that is not text.
+fn is_not_text(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::InvalidData
 }
 
 /// The line without the `\n` or the `\r\n` it ends in. The genotype of the
@@ -642,12 +665,23 @@ impl<R: BufRead + Send> VcfReader<R> {
         }
         loop {
             line.clear();
-            if source.read_line(line)? == 0 {
+            let number = next_line_number(*line_number);
+            let read = source.read_line(line).map_err(|error| {
+                if is_not_text(&error) {
+                    Error::VcfDataLine {
+                        line: number,
+                        place: VcfPlace::Line,
+                        problem: "its bytes are not valid UTF-8, and a VCF is text".to_string(),
+                    }
+                } else {
+                    Error::Io(error)
+                }
+            })?;
+            if read == 0 {
                 *finished = true;
                 return Ok(false);
             }
-            *line_number = next_line_number(*line_number);
-            let number = *line_number;
+            *line_number = number;
             let text = without_the_line_end(line);
             if text.is_empty() {
                 continue;
@@ -1438,6 +1472,44 @@ mod tests {
         let mut reader = reader_over(vcf, VcfOptions::default());
         reader.set_needs(Needs::ID | Needs::ALLELES);
         rows_of(&mut reader)
+    }
+
+    #[test]
+    fn a_data_line_whose_bytes_are_not_text_is_refused_with_its_number() {
+        let mut vcf = vcf_of(&["chr1 100 . A T . PASS . GT 0/0 0/1 1/1"]).into_bytes();
+        vcf.extend_from_slice(b"chr1\t200\t.\t\xffA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1\n");
+        let mut reader = VcfReader::new(Cursor::new(vcf), VcfOptions::default()).unwrap();
+        let mut var = Variant::new();
+
+        assert!(reader.read_variant(&mut var).unwrap());
+        assert_eq!(var.pos, 100);
+
+        let error = reader.read_variant(&mut var).unwrap_err();
+        let Error::VcfDataLine {
+            line,
+            place,
+            problem,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((line, place), (5, VcfPlace::Line));
+        assert!(problem.contains("UTF-8"), "{problem}");
+    }
+
+    #[test]
+    fn a_header_line_whose_bytes_are_not_text_is_refused() {
+        let mut vcf = b"##fileformat=VCFv4.4\n##contig=<ID=\xffchr1>\n".to_vec();
+        vcf.extend_from_slice(HEADER.as_bytes());
+        let error = match VcfReader::new(Cursor::new(vcf), VcfOptions::default()) {
+            Ok(reader) => panic!("the reader was built over {:?}", reader.individuals()),
+            Err(error) => error,
+        };
+        let Error::VcfHeader { problem } = error else {
+            panic!("the error is {error}");
+        };
+        assert!(problem.contains("UTF-8"), "{problem}");
+        assert!(problem.contains('2'), "{problem}");
     }
 
     #[test]
