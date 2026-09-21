@@ -185,7 +185,7 @@ impl<R: BufRead> BgzfReader<R> {
 
     /// `amount` bytes of what [`BgzfReader::fill`] gave are read and are not
     /// given again.
-    pub(crate) fn consume(&mut self, amount: usize) {
+    fn consume(&mut self, amount: usize) {
         self.consumed = self.consumed.saturating_add(amount).min(self.text.len());
     }
 
@@ -681,8 +681,9 @@ fn take_from<R: BufRead>(source: &mut R, out: &mut [u8]) -> Result<usize> {
 /// # Errors
 ///
 /// When the source cannot be read and when the machine does not give the
-/// memory. `amount` is at most the bytes of one member, which the caller
-/// has checked.
+/// memory. `amount` comes from the file and is at most 65535, since what
+/// states it is two bytes of the header of a member: the length of its
+/// extra field, or a size that was checked against the header before it.
 fn take_from_into<R: BufRead>(source: &mut R, out: &mut Vec<u8>, amount: usize) -> Result<usize> {
     room_for(out, amount)?;
     let mut filled: usize = 0;

@@ -15,10 +15,10 @@
 //! The source is gzipped when its first two bytes are those of gzip,
 //! whatever the name of the file. A VCF written by bgzip, which is what
 //! nearly every gzipped VCF is, is many gzip members one after another,
-//! each of which states its size, and it is read by those sizes, through
-//! [`crate::io::bgzf`]: a decoder that goes from one member to the next on
-//! its own gives the variants of a corrupted file and says nothing went
-//! wrong. A gzip file that bgzip did not write is read with flate2's
+//! each of which states its size, and it is read by those sizes, by the
+//! reader of the members of `io::bgzf`: a decoder that goes from one member
+//! to the next on its own gives the variants of a corrupted file and says
+//! nothing went wrong. A gzip file that bgzip did not write is read with flate2's
 //! `MultiGzDecoder`, which goes on to the next member when one ends: a
 //! decoder that stopped at the first one would give the header of such a
 //! file and no variant.
@@ -356,12 +356,12 @@ enum VcfSource<R: BufRead> {
     /// A source that bgzip did not write, through the decoder of gzip,
     /// which goes on to the next member of the file when one ends.
     ///
-    /// The decoder with its buffers is 288 bytes over a `Cursor<Vec<u8>>`,
-    /// where the plain source over the same bytes is 64, and a reader of a
-    /// file that is not gzipped would carry the larger of the two, so this
-    /// one is behind a pointer: one allocation when a gzipped file is
-    /// opened, and the buffer of the lines is read through one indirection
-    /// more.
+    /// Over a `Cursor<Vec<u8>>` the decoder with its buffers is 264 bytes
+    /// and the reader of the members 192, where the plain source over the
+    /// same bytes is 64, and a reader of a file that is not gzipped would
+    /// carry the largest of the three. So both are behind a pointer and
+    /// this enum is 64: one allocation when a gzipped file is opened, and
+    /// the buffer of the lines read through one indirection more.
     Gzipped(Box<BufReader<MultiGzDecoder<WithFirstBytes<R>>>>),
     /// A source that bgzip wrote, through the reader of its members, which
     /// cuts each of them by the size its header states and checks it. It is
@@ -1268,16 +1268,13 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
 /// subfield `BC` with the size of that member, and nothing else writes it.
 ///
 /// `first` are the first bytes of the source, which hold the whole extra
-/// field of that header. The subfields are walked, since BGZF lets a member
-/// carry others beside the `BC`, before it or after it: bgzip writes the
-/// `BC` first and htslib looks for it there, so a file whose first member
-/// carries another subfield before it is one that bgzip did not write and
-/// that is a bgzip file all the same, and a reader that took it for a plain
-/// gzip would check no member of it and not its end either.
-///
-/// A subfield after the `BC` that ends after the extra field does leaves
-/// this true: the source is one whose members are to be cut by their sizes,
-/// and the reader of the members is what refuses that member.
+/// field of that header, and [`crate::io::bgzf::the_extra_field`] is where
+/// its subfields are walked, for this and for every member after it. Only
+/// the `BC` is asked for here: a file whose first member has a subfield
+/// that is wrong is one whose members are to be cut by their sizes all the
+/// same, and the reader of the members is what refuses that member, where a
+/// reader that took the file for a plain gzip would check no member of it
+/// and not its end either.
 fn written_by_bgzip(first: &[u8]) -> bool {
     let Some(extra_field) = bytes_of_the_extra_field(first)
         .and_then(|bytes| first.get(GZIP_EXTRA_FIELD..GZIP_EXTRA_FIELD.checked_add(bytes)?))
@@ -4016,6 +4013,12 @@ mod tests {
         // September 2026 that none may. The bytes of the time stamp of a
         // header are among them, and a file that differs in one of those
         // alone is read.
+        //
+        // What it does not say: which check of a member refuses which file,
+        // since with one check taken out another refuses the same file, and
+        // the tests above, one for each check, are what hold those; and
+        // anything about a member that was removed, repeated or moved,
+        // which nothing in a BGZF file records and no reader can see.
         let whole = std::fs::read(reference_vcf("cases.vcf.gz")).unwrap();
         assert_eq!(whole.len(), 399);
         let expected = the_rows_of_cases();
