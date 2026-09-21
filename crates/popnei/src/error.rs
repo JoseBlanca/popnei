@@ -163,6 +163,46 @@ pub enum Error {
         num_vars: usize,
     },
 
+    /// The threshold of a filter of variants is not a number from 0 to 1,
+    /// both included: it is NaN, it is below 0 or it is above 1. The number
+    /// of the variant that the threshold is compared with is one count of
+    /// the variant divided by another, so no other threshold says anything
+    /// about which variants a user wants.
+    ///
+    /// It is the number a user writes, in `filter_by_maf(0.95)` and in the
+    /// two other methods, so it is refused at the call that adds the
+    /// filter. pyNei takes any number: with a negative one no variant
+    /// passes, and with one above 1 every variant that has a number does,
+    /// so a 95 written for 0.95 filters nothing and says nothing.
+    #[error(
+        "the threshold of the {kind} filter is {threshold}, and a threshold is a number from 0 to 1, both included: the number of the variant it is compared with is one count of the variant divided by another"
+    )]
+    VarFilterThresholdOutOfRange {
+        /// Which filter it is: `missing_data`, `maf` or `obs_het`, the name
+        /// its counts have for a Python and a TypeScript user.
+        kind: &'static str,
+        /// The threshold that was given for it.
+        threshold: f64,
+    },
+
+    /// A second filter of a kind that the variants are filtered by already.
+    /// Two threshold filters of one kind keep the variants that the
+    /// stricter of the two keeps alone, so a second one says that the user
+    /// has lost track of the filters their variants carry, which running
+    /// the cell of a notebook twice gives. pyNei takes it and adds the
+    /// counts of the two together.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of that kind, with a threshold of {threshold}, keeps the variants that the stricter of the two keeps alone; the filters that are set are in the steps of the variants"
+    )]
+    VarFilterOfAKindThatIsSet {
+        /// The kind that is filtered twice: `missing_data`, `maf` or
+        /// `obs_het`.
+        kind: &'static str,
+        /// The threshold of the filter that was refused, which is the one
+        /// the caller wrote.
+        threshold: f64,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

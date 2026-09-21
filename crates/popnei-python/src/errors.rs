@@ -271,12 +271,18 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
-        // first genotype. What is wrong with them is wrong whatever file is
-        // read, so they name no file although they are refused while one is
-        // being opened.
+        // first genotype. The two of `docs/specs/filters.md` are of the
+        // same kind: the threshold of a filter that is not a number from 0
+        // to 1, and a second filter of a kind the variants are filtered by
+        // already, which a user gets at the call that adds the filter. What
+        // is wrong with them is wrong whatever file is read, so they name
+        // no file although some of them are refused while one is being
+        // opened.
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
-        | popnei::Error::VcfPloidyOutOfRange { .. } => PyValueError::new_err(message),
+        | popnei::Error::VcfPloidyOutOfRange { .. }
+        | popnei::Error::VarFilterThresholdOutOfRange { .. }
+        | popnei::Error::VarFilterOfAKindThatIsSet { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
