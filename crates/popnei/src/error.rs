@@ -322,7 +322,8 @@ pub enum Error {
     VarsNullValue {
         /// The name of the column.
         column: &'static str,
-        /// Which variant of the file it is, counted from 1.
+        /// Which variant of the file it is, counted from 1, over the whole
+        /// file and not inside its batch.
         var: u64,
     },
 
@@ -348,8 +349,11 @@ pub enum Error {
         "the batch {batch} of the vars file holds {found} variants and its entry of the `popnei_batches` key of the footer says {expected}"
     )]
     VarsBatchNumVars {
-        /// Which batch of the file it is, counted from 1.
-        batch: usize,
+        /// Which batch of the file it is, counted from 1. It is a `u64` as
+        /// the variant of [`Error::VarsNullValue`] is: both count over the
+        /// whole file, which a machine that counts to 4295 million reads
+        /// too.
+        batch: u64,
         /// How many variants it holds.
         found: usize,
         /// How many its entry says.
@@ -502,8 +506,11 @@ pub enum Error {
         "the batch {batch} of the vars file could not be read, so the file is damaged and has to be fetched or copied again: {problem}"
     )]
     VarsBatchNotRead {
-        /// Which batch of the file it is, counted from 1.
-        batch: usize,
+        /// Which batch of the file it is, counted from 1. It is a `u64` as
+        /// the variant of [`Error::VarsNullValue`] is: both count over the
+        /// whole file, which a machine that counts to 4295 million reads
+        /// too.
+        batch: u64,
         /// What arrow-rs said about it.
         problem: String,
     },
