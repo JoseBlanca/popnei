@@ -10,8 +10,8 @@
 //! file with a record batch for each block, which any program with an arrow
 //! library opens as a table. What is there of it is what the file says about
 //! itself, the two keys whose values are json, its writer, which takes the
-//! blocks of any reader, and the opening of a file, which says what it
-//! holds; the blocks that a file gives are being written.
+//! blocks of any reader, and its reader, which says what a file holds and
+//! gives each of its batches as a block.
 //! `docs/specs/io_vars.md` has the format and section 6 of
 //! `docs/architecture.md` where it sits.
 

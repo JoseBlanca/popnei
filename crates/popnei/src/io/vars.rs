@@ -1431,7 +1431,14 @@ impl<R: Read + Seek> VarsReader<R> {
             let Some(at) = self.blocks.get(self.next).copied() else {
                 return Ok(None);
             };
-            let expected = self.batches.get(self.next).map_or(0, |info| info.num_vars);
+            // The entries of the footer were counted against the batches
+            // when the file was opened, so every batch has one.
+            let Some(expected) = self.batches.get(self.next).map(|info| info.num_vars) else {
+                return Err(Error::VarsBatchesDoNotMatch {
+                    found: self.batches.len(),
+                    expected: self.blocks.len(),
+                });
+            };
             let place = BatchPlace {
                 batch: counted_from_one(self.next),
                 vars_before: self.vars_before,
