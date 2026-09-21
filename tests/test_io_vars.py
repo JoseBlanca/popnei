@@ -947,6 +947,32 @@ def test_write_vars_writes_again_what_open_vars_reads_with_another_size_of_block
     _assert_the_same_variants(_joined(open_vars(path)), _joined(open_vars(many_vars)))
 
 
+def test_write_vars_names_the_source_when_the_vars_file_it_reads_is_damaged(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """Both files of the call are vars files, and one of them is damaged.
+
+    What went wrong is the batch of the source, so the exception carries
+    that path and not the path of the file the call was writing, which is
+    taken away as after any error.
+    """
+    source = tmp_path / "source.vars"
+    write_vars(open_vcf(reference_vcf_dir / "cases.vcf", only_passed=False), source)
+    written = bytearray(source.read_bytes())
+    batch = _where_the_first_batch_is(written)
+    written[batch : batch + BYTES_ZEROED_IN_THE_BATCH] = bytes(
+        BYTES_ZEROED_IN_THE_BATCH
+    )
+    source.write_bytes(written)
+    path = tmp_path / "again.vars"
+
+    with pytest.raises(OSError, match="batch") as refusal:
+        write_vars(open_vars(source), path)
+
+    assert refusal.value.filename == str(source)
+    assert not path.exists()
+
+
 def test_what_a_user_reads_of_open_vars_is_written_in_the_package() -> None:
     """The private module explains nothing; the package is the API."""
     assert _core.open_vars.__doc__ is None

@@ -174,11 +174,31 @@ pub(crate) fn write_vars(
     Ok(())
 }
 
-/// `error` with the file it is about: the vars file that was being written
-/// when the write is what failed, and the file that was being read
-/// otherwise.
+/// `error` with the file it is about, since a user reads which of the two
+/// files of the call went wrong from the exception.
+///
+/// The file being written is what the cases of the writer are about: a
+/// write the file system or arrow-rs refused, a file whose genotypes would
+/// hold no allele, a block with more text or more alleles in one column
+/// than a column of a batch takes, and the two defects of a block that does
+/// not fit the file that is being written. Everything else happened while
+/// the source was read and names the source, the wrong lines of a VCF and
+/// the batches of a vars file among them, and so does a case that a later
+/// module adds, since the writer's are all here.
+///
+/// Two more name no file at all, a `num_vars_per_block` of 0 and one whose
+/// block is more than this machine counts: what is wrong with an argument
+/// is wrong whatever file is read, and `errors.rs` drops the path they are
+/// given.
 fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) -> PyPopneiError {
-    let of_the_write = matches!(error, popnei::Error::VarsFileNotWritten { .. });
+    let of_the_write = matches!(
+        error,
+        popnei::Error::VarsFileNotWritten { .. }
+            | popnei::Error::VarsFileOfNoGenotypes { .. }
+            | popnei::Error::VarsTextTooLarge { .. }
+            | popnei::Error::VarsBlockDoesNotFit { .. }
+            | popnei::Error::VarsBlockColumns { .. }
+    );
     PyPopneiError::of_the_file(error, if of_the_write { written } else { read })
 }
 
