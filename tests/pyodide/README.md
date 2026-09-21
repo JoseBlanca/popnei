@@ -14,7 +14,7 @@ From the root of the repository, from a clean checkout:
     node tests/pyodide/smoke.mjs
 
 The first command prints the path of the wheel it left in `dist/`. The
-third takes that wheel, installs it in pyodide and checks three things, and
+third takes that wheel, installs it in pyodide and checks four things, and
 exits with an error naming each one that differs:
 
 - `popnei.__version__` is the version in `[workspace.package]` of the
@@ -27,6 +27,13 @@ exits with an error naming each one that differs:
   column, so `open_vcf` with its default leaves it out and the test looks
   for the first, the third and the fourth; with `only_passed=False` it
   looks for the four.
+- `popnei.write_vars` writes those four variants into a vars file, the
+  arrow file of `docs/specs/io_vars.md`, at a path of the file system of
+  emscripten, and the bytes of that file begin and end with `ARROW1`, which
+  an arrow IPC file does. It is the crates of arrow that write those bytes,
+  so the check says that they linked into the wheel of emscripten and ran
+  there; what the file holds is checked natively, by the pytest tests of
+  `tests/test_io_vars.py`.
 - A VCF of 170000 individuals and no variant, written inside pyodide and
   opened with the ploidy 255, gives its individuals and its ploidy. This is
   the check that belongs here and nowhere else: a count of things in wasm

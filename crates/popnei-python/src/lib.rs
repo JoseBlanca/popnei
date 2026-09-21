@@ -10,6 +10,7 @@
 use pyo3::prelude::*;
 
 mod errors;
+mod vars;
 mod vcf;
 
 // The version of the core crate, `major.minor.patch`, which the Python
@@ -31,6 +32,8 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_ONLY_PASSED: bool = popnei::io::vcf::DEFAULT_ONLY_PASSED;
 
+    #[pymodule_export]
+    use super::vars::write_vars;
     #[pymodule_export]
     use super::vcf::{Blocks, VcfSource, open_vcf};
     #[pymodule_export]

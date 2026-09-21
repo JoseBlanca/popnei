@@ -39,7 +39,15 @@ python-source = "python"
 # pyNei is the oracle of the tests: they read the same VCFs with both
 # libraries and compare what the two give, as the specs under docs/specs/
 # ask.
-dev = ["maturin>=1.9,<2.0", "pyNei", "pytest>=8", "ruff>=0.14"]
+#
+# pyarrow is the arrow implementation that Apache Arrow publishes, and it
+# is the reference outside the project for the vars file, the arrow file
+# popnei writes its variants into: the tests of `write_vars` open with it
+# what popnei wrote, as any other program would, and read its columns, its
+# nulls and its two keys. "How it is verified" of docs/specs/io_vars.md
+# asks for 23 as the lowest version and runs the tests on the pyarrow of
+# uv.lock.
+dev = ["maturin>=1.9,<2.0", "pyNei", "pyarrow>=23", "pytest>=8", "ruff>=0.14"]
 
 [tool.uv.sources]
 # pyNei's own repository at one commit, which the owner chose on 20

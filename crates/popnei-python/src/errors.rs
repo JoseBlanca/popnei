@@ -45,6 +45,14 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// A path that a file is already at, given to a call that writes one.
+    /// This crate refuses it before the core is called and writes nothing,
+    /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
+    /// pyNei.
+    PathTaken {
+        /// The path the caller gave.
+        path: PathBuf,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -112,6 +120,16 @@ impl From<PyPopneiError> for PyErr {
             PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of 1 or more that this machine can count"
+            )),
+            // A file that is already at the path is a wrong argument of the
+            // call and not an error of the file system, so it is a
+            // `ValueError`, whose message starts with the path as that of
+            // every error of a file does.
+            PyPopneiError::PathTaken { path } => PyValueError::new_err(of_the_file(
+                "a file is already there, and popnei writes no file over another one: \
+                 write to another path, or take that file away"
+                    .to_owned(),
+                Some(path),
             )),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))

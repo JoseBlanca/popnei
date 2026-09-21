@@ -1,12 +1,14 @@
 // Loads pyodide under node, installs into it the wheel that
-// scripts/build_pyodide_wheel.sh left in dist/, and checks three things:
+// scripts/build_pyodide_wheel.sh left in dist/, and checks four things:
 // that the version popnei answers with is the one of the core crate, which
 // is in [workspace.package] of the Cargo.toml of the repository; that
 // `open_vcf` reads tests/reference/vcf/cases.vcf and cases.vcf.gz there as
-// the table of "How it is verified" of docs/specs/io_vcf.md says; and that
-// a VCF whose blocks of the size popnei chooses would not fit in what a
-// wasm build counts is opened all the same. It exits with an error when
-// anything differs.
+// the table of "How it is verified" of docs/specs/io_vcf.md says; that
+// `write_vars` writes those variants into a vars file, which is what says
+// that arrow-rs was linked into this wheel and ran; and that a VCF whose
+// blocks of the size popnei chooses would not fit in what a wasm build
+// counts is opened all the same. It exits with an error when anything
+// differs.
 //
 // README.md, beside this file, says how to run it.
 
@@ -99,7 +101,24 @@ def variants_as_rows(vcf_path, only_passed):
     return json.dumps(rows)
 `;
 
-// How many individuals the header of the third check names, and the ploidy
+// The six bytes that an arrow IPC file begins and ends with. A vars file is
+// one, written by arrow-rs, so finding them says that the crates of arrow
+// were linked into this wheel and ran inside pyodide.
+const ARROW_MARK = "ARROW1";
+
+// The variants of a VCF written into a vars file inside pyodide, at a path
+// of the file system of emscripten, which `write_vars` opens as it does a
+// path natively.
+const WRITE_A_VARS_FILE = `
+import popnei
+
+
+def write_a_vars_file(vcf_path, vars_path):
+    variants = popnei.open_vcf(vcf_path, only_passed=False)
+    popnei.write_vars(variants, vars_path)
+`;
+
+// How many individuals the header of the fourth check names, and the ploidy
 // it is read with, the largest a reader of popnei takes. A block of the
 // size popnei chooses for so many individuals is 100 variants, and its
 // genotypes are 100 x 170000 x 255, 4335 million, where a count of things
@@ -211,6 +230,26 @@ for (const name of ["cases.vcf", "cases.vcf.gz"]) {
       console.log(`${what}: ${expected.length} variants, as the spec says`);
     }
   }
+}
+
+pyodide.runPython(WRITE_A_VARS_FILE);
+const varsPath = "/vcf/cases.vars";
+pyodide.runPython(`write_a_vars_file("/vcf/cases.vcf", "${varsPath}")`);
+const varsFile = pyodide.FS.readFile(varsPath);
+const decoder = new TextDecoder();
+const startsWith = decoder.decode(varsFile.slice(0, ARROW_MARK.length));
+const endsWith = decoder.decode(varsFile.slice(-ARROW_MARK.length));
+if (startsWith !== ARROW_MARK || endsWith !== ARROW_MARK) {
+  failures.push(
+    `the vars file written in pyodide starts with "${startsWith}" and ends` +
+      ` with "${endsWith}", and an arrow IPC file has "${ARROW_MARK}" at` +
+      " both ends",
+  );
+} else {
+  console.log(
+    `cases.vcf written as a vars file of ${varsFile.length} bytes, with` +
+      ` "${ARROW_MARK}" at both ends`,
+  );
 }
 
 pyodide.runPython(OPEN_A_HEADER_OF_MANY_INDIVIDUALS);

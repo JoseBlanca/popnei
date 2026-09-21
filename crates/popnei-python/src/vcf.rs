@@ -109,6 +109,21 @@ impl VcfSource {
     }
 }
 
+impl VcfSource {
+    /// The VCF this source reads, which the errors of a call that reads it
+    /// name. It is of this crate and not of `#[pymethods]`: a Python user
+    /// holds the path they gave.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The options every pass over the VCF reads it with, the ploidy of its
+    /// genotypes and whether the variants that failed a filter are given.
+    pub(crate) fn options(&self) -> VcfOptions {
+        self.options
+    }
+}
+
 /// The reader of one pass and whether the pass is over: they are read and
 /// written together, under one lock, because a pass that is over gives no
 /// block whatever its reader would say.
@@ -330,7 +345,10 @@ pub(crate) fn open_vcf(
 /// argument and the value. An object that is not a whole number at all,
 /// `2.5` or `"two"`, keeps the `TypeError` of pyo3, which says what it was
 /// given.
-fn count_of(name: &'static str, value: &Bound<'_, PyAny>) -> Result<usize, PyPopneiError> {
+pub(crate) fn count_of(
+    name: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<usize, PyPopneiError> {
     match value.extract::<usize>() {
         Ok(count) => Ok(count),
         Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
