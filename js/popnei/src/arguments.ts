@@ -96,7 +96,7 @@ export function namesOfFields(argument: string, value: unknown): string[] {
 }
 
 /** What was given, for the message of an argument that was refused. */
-function whatWasGiven(value: unknown): string {
+export function whatWasGiven(value: unknown): string {
   if (typeof value === "string") {
     return `the string \`${value}\``;
   }

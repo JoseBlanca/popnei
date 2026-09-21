@@ -7,12 +7,35 @@
  * generator that `iterBlocks` gives.
  */
 
-import type { Blocks, VcfSource } from "../wasm/popnei.js";
+import type { Blocks, VarsSource, VcfSource } from "../wasm/popnei.js";
 
-import { namesOfFields, wholeNumberOfOneOrMore } from "./arguments.js";
+import {
+  namesOfFields,
+  whatWasGiven,
+  wholeNumberOfOneOrMore,
+} from "./arguments.js";
 import type { Block, Field } from "./block.js";
 import { blockOf } from "./block.js";
 import { theWasmHasToBeLoaded } from "./core.js";
+
+/**
+ * A source of variants in the memory of wasm: a VCF that `openVcf` opened,
+ * or a vars file that `openVars` did.
+ *
+ * The two answer the same calls, so everything a `Variants` does works over
+ * either of them.
+ */
+export type SourceOfVariants = VcfSource | VarsSource;
+
+/**
+ * The key of the method that hands the source of a `Variants` to the
+ * functions of the package that write it, `writeVars` of `io_vars.ts`.
+ *
+ * It is a symbol declared here and exported by nothing, so what a user of
+ * the package sees is the same as before it was added, and a method with a
+ * name would be one more thing they can call.
+ */
+const THE_SOURCE: unique symbol = Symbol("popnei: the source of a Variants");
 
 /** What each block of `iterBlocks` carries, and how many variants it holds. */
 export interface IterBlocksOptions {
@@ -50,30 +73,32 @@ export function numberOfOpenPasses(): number {
 }
 
 /**
- * A source of variants: a VCF with the options it is read with.
+ * A source of variants: a VCF with the options it is read with, or a vars
+ * file.
  *
- * It holds no genotypes. A user gets one from `openVcf` and gives it to as
- * many calculations as they want: each one reads the source again and runs
- * its loop over the variants inside the Rust core, so the dataset is never
- * in memory as a whole. The genotypes come out of it through `iterBlocks`
- * and through nothing else.
+ * It holds no genotypes. A user gets one from `openVcf` or from `openVars`
+ * and gives it to as many calculations as they want: each one reads the
+ * source again and runs its loop over the variants inside the Rust core, so
+ * the dataset is never in memory as a whole. The genotypes come out of it
+ * through `iterBlocks` and through nothing else.
  *
  * It is pyNei's `Variants` under the word of `docs/glossary.md`: what pyNei
  * calls a sample is here an individual, one organism that was genotyped.
  */
 export class Variants {
-  /** The VCF in the memory of wasm, and `null` once `free` took it. */
-  #source: VcfSource | null;
+  /** The file in the memory of wasm, and `null` once `free` took it. */
+  #source: SourceOfVariants | null;
   #individuals: readonly string[];
   #ploidy: number;
 
   /**
-   * The handle over `source`, which `openVcf` builds.
+   * The handle over `source`, which `openVcf` and `openVars` build.
    *
    * The names of the individuals and the ploidy are read here, from the
-   * header that was read once, so that they answer without the core.
+   * header of the VCF or the schema of the vars file that was read once, so
+   * that they answer without the core.
    */
-  constructor(source: VcfSource) {
+  constructor(source: SourceOfVariants) {
     this.#source = source;
     this.#individuals = Object.freeze(source.individuals());
     this.#ploidy = source.ploidy();
@@ -154,8 +179,16 @@ export class Variants {
     this.free();
   }
 
+  /**
+   * The source, for the functions of the package that write it. The symbol
+   * that names it is this module's, so no user reaches it.
+   */
+  [THE_SOURCE](): SourceOfVariants {
+    return this.#sourceThatWasNotFreed();
+  }
+
   /** The source, or the `Error` of a source that was freed. */
-  #sourceThatWasNotFreed(): VcfSource {
+  #sourceThatWasNotFreed(): SourceOfVariants {
     if (this.#source === null) {
       throw new Error(
         "popnei: these variants were freed, so the source cannot be read again",
@@ -163,6 +196,26 @@ export class Variants {
     }
     return this.#source;
   }
+}
+
+/**
+ * The source that `value` holds, when it is a `Variants` that was not
+ * freed, for the functions of the package that read or write a source.
+ *
+ * @throws {Error} When `value` is not a `Variants`, which names what was
+ * given, and when it was freed.
+ */
+export function sourceOfTheVariants(
+  argument: string,
+  value: unknown,
+): SourceOfVariants {
+  if (!(value instanceof Variants)) {
+    throw new Error(
+      `popnei: \`${argument}\` is what openVcf or openVars gives, and ` +
+        `${whatWasGiven(value)} was given`,
+    );
+  }
+  return value[THE_SOURCE]();
 }
 
 /**

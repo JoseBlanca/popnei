@@ -1,11 +1,14 @@
 /**
- * The VCFs the tests read: the reference files of the repository, and the
- * small ones a test writes for a case that no reference file has.
+ * The files the tests read: the reference files of the repository, and the
+ * small VCFs a test writes for a case that no reference file has.
  *
- * The reference files are those of `docs/specs/io_vcf.md`, in
+ * The reference VCFs are those of `docs/specs/io_vcf.md`, in
  * `tests/reference/vcf/` at the root of the repository, which
  * `tests/reference/vcf/make_reference.py` writes and bcftools was run on.
- * The Python tests read the same files.
+ * The reference vars files are those of `docs/specs/io_vars.md`, in
+ * `tests/reference/vars/`, which `tests/reference/vars/make_reference.py`
+ * writes with pyarrow because popnei cannot write them. The Python tests
+ * read the same files.
  *
  * It is not a test file: node's test runner runs the files whose name ends
  * in `.test.ts`.
@@ -18,9 +21,19 @@ const REFERENCE_VCF_DIR = new URL(
   import.meta.url,
 );
 
+const REFERENCE_VARS_DIR = new URL(
+  "../../../tests/reference/vars/",
+  import.meta.url,
+);
+
 /** The bytes of the reference VCF `name`, `cases.vcf` or `many.vcf.gz`. */
 export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));
+}
+
+/** The bytes of the reference vars file `name`, `zstd.vars`. */
+export async function referenceVars(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_VARS_DIR)));
 }
 
 /**

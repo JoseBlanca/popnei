@@ -5,13 +5,18 @@ calculations are written in Rust: the core crate compiled to WebAssembly,
 the code that a browser or node calls it through, and the functions and
 the result objects an application uses. What the package exports today is
 `init`, which loads the WebAssembly, `version`, the version of the core
-crate, and `openVcf`, which reads the header of a VCF held as bytes and
+crate, `openVcf`, which reads the header of a VCF held as bytes and
 gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
-by block. Section 11 of `docs/architecture.md` has the design,
-`crates/popnei-js` is the binding crate, the Rust that is compiled to
-WebAssembly and that holds no calculation of its own, and
-`docs/specs/io_vcf.md`, `docs/specs/block.md` and `docs/specs/variant.md`
-say what the three give.
+by block, `writeVars`, which gives back the bytes of a vars file with every
+variant of a `Variants`, and `openVars`, which opens such bytes as another
+`Variants`. A vars file is one arrow IPC file, also called feather v2,
+which pandas, R and polars open as a table with no popnei installed: it is
+where a user keeps their variants once the VCF has been read. Section 11
+of `docs/architecture.md` has the design, `crates/popnei-js` is the binding
+crate, the Rust that is compiled to WebAssembly and that holds no
+calculation of its own, and `docs/specs/io_vcf.md`,
+`docs/specs/io_vars.md`, `docs/specs/block.md` and `docs/specs/variant.md`
+say what they give.
 
 ## Building it
 
@@ -85,8 +90,22 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   allocates a `Vec<u8>` of the length of the `Uint8Array` inside the
   memory of wasm and copies it there. That memory grows and never shrinks,
   so a second copy of the same file stays for as long as the page lives,
-  which is why `open_vcf` keeps the `Vec` it was given and shares it with
-  every pass: an 80 MB VCF costs 80 MB of the tab and not 160 MB.
+  which is why `open_vcf` and `open_vars` keep the `Vec` they were given
+  and share it with every pass: an 80 MB VCF costs 80 MB of the tab and
+  not 160 MB. Measured on a vars file of 26.9 MB, 20000 variants of 1000
+  diploid individuals written in batches of 1000: `openVars` grows the
+  memory of wasm by 27.1 MB, the file and nothing else, and a pass over
+  its genotypes by 12.2 MB, the batches it decodes. A reader built over a
+  copy of those bytes instead grew it by 39.1 MB at that pass, 26.9 MB
+  more, which is the file.
+- A `Vec<u8>` coming back is a copy going out, so the bytes of a file that
+  is written are in the memory of wasm and in the `Uint8Array` at once.
+  While `write_vars` runs, that memory holds the source, the block being
+  written and the file that is growing: writing the 26.9 MB file above
+  from a VCF of 76.9 MB grew the memory of wasm by 106.8 MB with batches
+  of 1000 variants and by 158.5 MB with batches of 10000, beyond the
+  76.9 MB of the source. The size of the batches is what an application
+  that runs out of memory has to lower.
 - A panic of Rust in wasm is a trap: the call ends where it is, the memory
   of wasm keeps what it held, and an object that was borrowed at that
   moment stays borrowed, so a later `free()` of it throws "attempted to
@@ -94,7 +113,13 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   the memory back. That was seen in the review of this work package, over
   the real error of a block the memory could not hold, which the core now
   refuses with an error and not an abort. What is left of the instance
-  after a trap has not been measured here.
+  after a trap has not been measured here. A vars file that was damaged
+  after it was written is what can still reach one: the core checks the
+  message of every batch before arrow-rs sees it, and a sweep of damaged
+  files, in "How it is verified" of the reader of `docs/specs/io_vars.md`,
+  found 2783 of 1299990 that reach two asserts inside arrow-rs all the
+  same. Natively a `catch_unwind` turns those into an error, and in wasm
+  nothing catches them.
 - The `finally` of a generator does not run when the generator was never
   started, and `free()` of an object of wasm that is still borrowed throws
   "attempted to take ownership of Rust value while it was borrowed", which
@@ -118,11 +143,17 @@ that a function called before `init` was awaited throws an `Error` that
 says so, that the entry point of a page answers with the WebAssembly it
 fetches and reads a VCF through it, and that the blocks of `cases.vcf` and
 `differences.vcf` hold the variants of the tables of
-`docs/specs/io_vcf.md`, with the default and with `onlyPassed` false. Two
-of them watch the memory of the WebAssembly, which they reach through the
-loader `wasm/popnei.js` generates: that a block kept while enough more are
-read for that memory to grow still holds what it held, and that an
-iteration gives its pass back however it ends.
+`docs/specs/io_vcf.md`, with the default and with `onlyPassed` false.
+`test/vars.test.ts` writes those four variants into a vars file with
+`writeVars` and reads them back with `openVars`, and reads
+`tests/reference/vars/zstd.vars`, the file compressed with zstd that
+popnei cannot write and refuses at its first block. Three of the tests
+watch the memory of the WebAssembly, which they reach through the loader
+`wasm/popnei.js` generates: that a block kept while enough more are read
+for that memory to grow still holds what it held, that an iteration gives
+its pass back however it ends, and that twelve passes over one vars file
+open at once grow that memory by less than the file, which a reader that
+copied the bytes for each pass would not.
 
 ## node and a page, from one build
 
@@ -212,13 +243,47 @@ section 11 of `docs/architecture.md` has and this package does not do yet.
 Every call of `iterBlocks` reads the bytes again from their start, so the
 same `Variants` can be given to one calculation after another.
 
+The variants of that handle are written into a vars file, and read back,
+with the two functions of `docs/specs/io_vars.md`:
+
+```ts
+import { init, openVars, openVcf, writeVars } from "popnei";
+
+await init();
+const fromTheVcf = openVcf(new Uint8Array(await readFile("cases.vcf")));
+// The bytes of the whole file, which a page offers as a download: a tab
+// has no filesystem. The batches hold 10000 variants each, and without
+// `numVarsPerBlock` the size popnei chooses for the individuals.
+const bytes = writeVars(fromTheVcf, { numVarsPerBlock: 10000 });
+fromTheVcf.free();
+
+const fromTheFile = openVars(bytes);
+for (const block of fromTheFile.iterBlocks({ fields: ["qual"] })) {
+  console.log(block.numVars, block.qual);
+}
+fromTheFile.free();
+```
+
+`writeVars` reads the whole source once and writes every column a VCF has,
+the chromosome, the position, the id, the alleles, the quality and the
+genotypes, whether or not the user will read them, so that the file can
+stand in for the VCF in any later analysis. `openVars` reads the schema of
+the file and its footer, so bytes that are not a vars file throw there and
+not at the first block; a file whose buffers are compressed with zstd
+opens and throws at its first block, because arrow decompresses a batch
+when it reads it and no build of popnei carries the code that reads zstd.
+A `Variants` of a vars file is a source like the one of a VCF: it goes to
+`iterBlocks` and back to `writeVars`, which writes the file again with
+another size of batch.
+
 The arguments are checked before they reach the core, and each of these is
 an `Error` that says what was given: a `source` that is not a
 `Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
-boolean, a `fields` that is not an array of names, and a name that is not
-one of the five columns. In TypeScript `fields` takes the five names and
-nothing else, so a typo does not compile.
+boolean, a `fields` that is not an array of names, a name that is not one
+of the five columns, and a `variants` that is not what `openVcf` or
+`openVars` gave. In TypeScript `fields` takes the five names and nothing
+else, so a typo does not compile.
 
 ## What has to be freed
 
@@ -226,10 +291,11 @@ The objects of the core live in the memory of the WebAssembly, which the
 garbage collector of JavaScript does not see, so they are given back by
 hand:
 
-- The `Variants` of `openVcf` holds the bytes of the file until its
-  `free()` is called, which `using variants = openVcf(bytes)` does at the
-  end of its block. Its names and its ploidy are in JavaScript and answer
-  after that; `iterBlocks` throws.
+- The `Variants` of `openVcf` and of `openVars` holds the bytes of the
+  file until its `free()` is called, which `using variants =
+  openVcf(bytes)` does at the end of its block. Its names and its ploidy
+  are in JavaScript and answer after that; `iterBlocks` and `writeVars`
+  throw.
 - One pass over the variants holds the reader and the block being built.
   The iterator of `iterBlocks` gives it back when the iteration ends, when
   it is left with a `break` and when a block throws. An iterator that is
