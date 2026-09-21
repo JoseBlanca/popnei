@@ -288,6 +288,14 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+A file written here is larger than the same one written by popnei outside
+the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
+batches of 100, is 53650 bytes written in wasm and 49426 bytes written
+natively. The compression is lz4 in both, from `lz4_flex`, which hashes
+four bytes of the input on a 32 bit target and five on a 64 bit one and so
+finds other repetitions. Both files hold the same table and each library
+reads both, and no test compares the two sizes.
+
 The arguments are checked before they reach the core, and each of these is
 an `Error` that says what was given: a `source` that is not a
 `Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number

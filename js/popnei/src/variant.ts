@@ -47,9 +47,9 @@ export interface IterBlocksOptions {
    */
   fields?: readonly Field[];
   /**
-   * How many variants a block holds, a whole number of 1 or more. When it
-   * is not given, the size the core works out from the number of
-   * individuals.
+   * How many variants a block holds, a whole number of 1 or more and at
+   * most 4294967295. When it is not given, the size the core works out from
+   * the number of individuals.
    */
   numVarsPerBlock?: number;
 }
@@ -159,9 +159,10 @@ export class Variants {
   /**
    * Gives back the memory of wasm the source holds.
    *
-   * Every call of `iterBlocks` after it throws. The names of the
-   * individuals and the ploidy still answer: they are in JavaScript. A
-   * second call is not an error: it has nothing left to give back.
+   * Every call of `iterBlocks` after it throws, and so does a `writeVars`
+   * of these variants. The names of the individuals and the ploidy still
+   * answer: they are in JavaScript. A second call is not an error: it has
+   * nothing left to give back.
    */
   free(): void {
     this.#source?.free();

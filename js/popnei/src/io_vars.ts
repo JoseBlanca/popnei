@@ -10,9 +10,9 @@ import { Variants, sourceOfTheVariants } from "./variant.js";
 export interface WriteVarsOptions {
   /**
    * How many variants one batch of the file holds, the last one aside, a
-   * whole number of 1 or more. When it is not given, the size popnei
-   * chooses for the number of individuals of the source, which is the size
-   * of its blocks.
+   * whole number of 1 or more and at most 4294967295. When it is not given,
+   * the size popnei chooses for the number of individuals of the source,
+   * which is the size of its blocks.
    */
   numVarsPerBlock?: number;
 }
@@ -31,10 +31,14 @@ export interface WriteVarsOptions {
  * `iterBlocks`. Only the columns that a pass asks for are decompressed, and
  * the variants themselves are read again at every pass, from the same bytes.
  *
- * It reads the schema of the file and its footer, so bytes that are not a
- * vars file, one of a format version popnei does not read, one whose columns
- * are not those of a vars file and one whose individuals name nobody are an
- * `Error` here and not at the first calculation. What is in the batches is
+ * It reads the schema of the file and its footer, so these are an `Error`
+ * here and not at the first calculation: bytes that are not a vars file, a
+ * format version popnei does not read, a column it knows that is of another
+ * type, a file with no `gts` column or whose `gts` holds another number of
+ * alleles for each variant than the individuals and the ploidy of the file
+ * give, and one whose individuals name nobody. A column popnei does not
+ * know is read past and is no error, which is what lets a later version of
+ * the format add one. What is in the batches is
  * read block by block and refused there: a batch that popnei cannot read, of
  * a file damaged after it was written, and a file whose buffers are
  * compressed with zstd, which no build of popnei carries the code to read;
