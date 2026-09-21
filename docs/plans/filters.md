@@ -1,6 +1,7 @@
 # Plan: the three threshold filters and the counts of a pass
 
-21 September 2026. Draft, not yet approved by the owner. This plan builds
+21 September 2026. Approved by the owner on 21 September 2026 and under
+way, with its work report in `docs/reports/filters.md`. This plan builds
 the filters that keep the variants of a dataset by their missing rate, by
 their major allele frequency and by their observed heterozygosity, as
 steps that a user puts on a `Variants`, and the counts that every result
@@ -82,7 +83,8 @@ Out, with where it goes:
   in `js/popnei`, `npm run build` and `npm test` `tests 62`, `fail 0`.
   These are the counts that "more than" is counted from below. The
   orchestrator also runs `bash scripts/build_pyodide_wheel.sh && node
-  tests/pyodide/smoke.mjs`, which was not run when the plan was written.
+  tests/pyodide/smoke.mjs`, which was not run when the plan was written;
+  in a new worktree it needs `npm install` in `tests/pyodide` first.
 - bcftools 1.24: `which bcftools` gives `/opt/homebrew/bin/bcftools`, and
   `bcftools --version` says 1.24. The three commands of "How it is
   verified" of the filters were run on `tests/reference/vcf/many.vcf` on
