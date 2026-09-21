@@ -3,8 +3,11 @@
 The plan `docs/plans/block-readers.md` is done, on the branch
 `plan/block-readers`, in the worktree `.claude/worktrees/block-readers`,
 21 September 2026. Its three work packages finished as planned, each was
-reviewed and its findings fixed, and the final check passes from a clean
-clone. The four speed targets of the VCF reader spec are met, one of them
+reviewed and its findings fixed. The owner then read this report and
+answered what it left him, and a fourth work package carried out his
+answers the same day; it is at the end of this report, before the final
+check, and the list of what is asked of him below is what is left after
+it. The final check passes from a clean clone. The four speed targets of the VCF reader spec are met, one of them
 at its edge. The orchestrator, in this report, is the session of the
 assistant that ran the plan: it sent each task to a subagent, checked
 what came back and had it reviewed.
@@ -29,9 +32,14 @@ targets of 0.924 s and 0.44 s. Two files that were read before are
 refused: one with a quality that is not finite, and a bgzipped one that
 was cut short, wherever it was cut. The repository is under the MIT
 license, takes pyNei from its GitHub repository at ef0ca6e, and its
-`coding` skill describes the one error enum that the code has. 153 cargo
-tests, 61 pytest tests, 8 of them against pyNei, 45 node tests and a
-smoke test under pyodide, where the plan started with 92, 38 and 39.
+`coding` skill describes the one error enum that the code has. A
+bgzipped file is read by the size that each of its gzip members states,
+each member checked, so that a file that is corrupted is an error and not
+an empty file; in Python a file that was cut short or is corrupted is an
+`OSError` with its name, a defect of popnei a `RuntimeError`, and every
+error of a file names the file. 173 cargo tests, 72 pytest tests, 8 of
+them against pyNei, 46 node tests and a smoke test under pyodide, where
+the plan started with 92, 38 and 39.
 
 For a user nothing else changed: `open_vcf`, `openVcf`, `Variants` and
 `iter_blocks` are what they were, and no test or file of the two packages
@@ -42,29 +50,30 @@ the six decisions that the work went on without.
 
 What is asked of the owner:
 
-1. The merge of `plan/block-readers` into `main`, which is theirs to
-   order. The session that plans the vars file module waits for it.
-2. The six decisions under "For the owner" of work package 2, each with
-   its options and a recommendation. The first is the one with a wrong
-   result behind it: a bgzip file with one length of its header corrupted
-   to a precise value reads as a file with no variants and no error, and
-   its fix, reading a bgzip file by the sizes that its members state, is
-   also the way to decompress on several threads. None of the six stops
-   the merge.
-3. What the orchestrator and the subagents decided that a user sees,
-   listed in the same place, and the five commits that changed the specs
-   of the block and of the VCF reader, which the owner has not read: most
-   correct a sentence that said what the code does not do, and the code
-   was right.
-4. Whether a batch of the VCF reader keeps 16 MiB of text or goes back to
-   8: the measurement raised it, which buys 4 in 100 on 18 threads, 0.098
-   s to 0.094 on the plain file, and costs about 12 MB of memory in a
-   reader. Recommended: keep it, since 35 MB for a reader is small beside
-   a block of 10 MB of genotypes and the matrices of any calculation.
+1. Nothing stops the merge, which he ordered on 21 September 2026,
+   without the timings of work package 4.
+2. The speed of the reader as the last fixes left it, which nobody has
+   timed: another job had the machine. The bgzipped file is the one that
+   changed, and the one set taken before those fixes says it is no
+   slower, 0.378 s on 18 threads against 0.394 s. It is for the
+   performance reviews to come, with the two things that would make the
+   reader faster: the read ahead thread, and the decompression of the
+   members on several threads, which the reader of the members is now
+   split for.
+3. One option that work package 4 leaves: a subclass of `OSError` for a
+   file that was cut or corrupted, so that a pipeline that wants to fetch
+   the file again catches it by name and not by `errno` being `None`.
+4. The commits that changed the specs, which the owner has not read:
+   `docs/specs/block.md` in 11de065 and f9dc27d, `docs/specs/io_vcf.md`
+   in 9e20eb7, 93b0710, e297e63, d37f5b1 and b00be26. Most correct a
+   sentence that said what the code does not do; the last two are his
+   decisions of 21 September.
+5. The answers he gave are recorded at the head of work package 4. "For
+   the owner" of work package 2 is as it was written before them.
 
 What the next plan and the skills should take from this one is under
-"How the work went": the reviews cost 2.2 million tokens against 1.3
-million for the writing, and found a loop with no end, a copy that grew
+"How the work went": the reviews of the first three work packages cost 2.2
+million tokens against 1.3 million for the writing, and found a loop with no end, a copy that grew
 with the square of the cuts, a panic on Ctrl-C and variants read after an
 error, none of which a check had seen; a task's prompt should say "test
 first, and see it fail" and ask for the report of how each test failed;
@@ -769,25 +778,264 @@ directory `/Users/jose/devel/popnei-bench/`, with the files of the bench,
 the builds of the sweeps and a clean clone, which can be deleted after
 the merge.
 
+## Work package 4: the owner's decisions of 21 September 2026
+
+The owner read this report on 21 September 2026 and answered in chat what
+it left him, with a rule, an error never passes silently, and a
+convention for the exceptions of Python: a `ValueError` is a wrong input
+of a function, a `RuntimeError` a defect of popnei, an `OSError` a file
+that cannot be read, that was cut short or that is corrupted. He asked
+for the work of those decisions before the merge, and the orchestrator
+added this work package to the plan, in fa063d0. His answers, by the
+numbers of "For the owner" of work package 2: the corrupted bgzip file is
+an error, now; a file that was cut gives its error in the iteration as
+soon as the cut is found. The orchestrator read that as the rule of the
+block spec kept, that when an error comes `reblock`, the reader that
+puts the blocks to a size at the end of every `iter_blocks`, loses the
+block it had not yet filled and does not give it first, and told him so,
+since it is what makes a short file that was cut give no variant at all
+with the default size of the blocks; every error of a file names the file;
+a parse that did not come back is a `RuntimeError`; a missing quality is
+NaN inside the core too; the constructors of the alleles column stay
+inside the crate. Of what was decided without him: a bgzipped file that
+was cut is an `OSError` and not a `ValueError`; the rest stays, the
+16 MiB of a batch among it.
+
+Task 4.1, the reader of a bgzip file by the sizes of its members, went to
+a fresh subagent: commits d37f5b1, the spec, and aed0273, the code; 306
+thousand tokens and 31 minutes. A file that bgzip wrote is a row of gzip
+members, each with at most 64 KB of text, and an empty one of 28 fixed
+bytes that marks the end. The header of each member has an extra field,
+and in it a subfield called `BC` that holds the size of the member; at
+its end a member has the CRC32 of its text, a checksum, and the length of
+that text. The decoder that popnei used goes from one member to the next
+on its own and never reads that size. Such a file is now cut into its
+members by the size that the header of each states, and each
+member is decompressed on its own, with flate2's raw deflate, and checked:
+that its data ends where the member does, its CRC32, and the length of
+its text. The cut and the decompression are two steps, which is what
+decompressing on several threads would stand on; that is not built. A
+gzip file that bgzip did not write keeps the decoder it had. What watched
+the last 28 compressed bytes go by is gone: a source is whole when its
+last member holds no text. No dependency was added. Run by the
+orchestrator: `cargo test --workspace` `161 passed`, `1 ignored`, pytest
+`61 passed`, `npm test` `tests 45`, `fail 0`, both wasm targets checked.
+
+The file of the review, `many.vcf.gz` with its bytes 320 and 321 changed
+from `06 00` to `44 54`, read by the orchestrator from Python: before
+this task no variant and no error, and now the error that names the
+member, where it starts and what is wrong with it, "the size it states,
+12026 bytes, leaves no room for its data after the 12 bytes of its
+header, the 21572 of its extra field", and says that the file has to be
+fetched again. The report had said that reading by the sizes of the
+members is what bcftools does. The orchestrator ran `bcftools view -H` of
+bcftools 1.24 on that file: 0 variants, no message, exit 0. popnei is
+stricter than bcftools here, and the spec says so. pyNei gives
+`ValueError: Empty VCF file, it has no variants`.
+
+The test that the owner's rule rests on changes every byte of
+`cases.vcf.gz` to each of its 255 other values, 101745 files, and asks of
+each either an error or exactly the variants of the whole file: 96562
+errors, 5183 read as the whole file, none silent, where the reader before
+had one. It runs in 1.2 s and is a test like any other. The same over the
+first two members of `many.vcf.gz` and its end mark, 3.15 million files,
+none silent, takes 14 s in release on 18 threads and is a test that is
+run on request. Both counts are the subagent's; the orchestrator ran the
+first as part of `cargo test`.
+
+Task 4.2, the exceptions of Python and the name of the file, went to the
+subagent that wrote the bindings: commits 35527ab, 842ea22, 3464932 and
+2bc1ae5, 74 thousand tokens and 11 minutes. Run by the orchestrator:
+`161 passed`, pytest `65 passed`, `npm test` `tests 46`, `fail 0`. A
+bgzipped file that was cut short or that is corrupted is an `OSError`
+with the path in `filename` and no number; a parse that did not come
+back is a `RuntimeError`; the message of a `ValueError` and of a
+`RuntimeError` of a file starts with its path, "/tmp/x/wrong_line.vcf:
+line 3 of the VCF, the column POS: `x` is not a position", and an
+argument that is refused names no file. Python prints an `OSError` that
+has no number as "[Errno None] message: 'path'", which is its own format.
+JavaScript reads bytes in memory and has no path to give.
+
+### The review
+
+Seven reviewers at 2bc1ae5, one for each category, each in a worktree of
+its own, 0.96 million tokens together (`spec` 133 thousand, `tests` 208,
+`numbers` 114, `errors` 164, `api` 108, `architecture` 116, `binding`
+114). What held went back to the two subagents, test first: the core in
+eight commits from b00be26 to 3ea216a, 147 thousand tokens, and the
+bindings in seven from 884f8a6 to fe79f32, 73 thousand. After them, run
+by the orchestrator: `cargo test --workspace` `173 passed`, `1 ignored`,
+pytest `72 passed`, `npm test` `tests 46`, `fail 0`, `cargo wasm-check`
+with no warning, `cargo doc -p popnei --no-deps` with no warning.
+
+What was found that mattered, and is fixed:
+
+- One file was still read with other variants than it holds and no
+  error, and four of the seven reviewers found it, each from its own
+  side. What said that bgzip wrote a file was its `BC` subfield at the
+  bytes 12 and 13, where bgzip puts it; BGZF lets another subfield come
+  first, and such a file was taken for a plain gzip, with no check of its
+  members and no check of its end: `many.vcf.gz` so changed gave no
+  variant with the length of the review, 220 with another, and the
+  variants up to the cut when it was cut where a member ends, always with
+  no error. htslib asks for `BC` at byte 12 too, so bgzip never writes
+  such a file and bcftools reads it the same silent way. The `BC` of the
+  first member is now found wherever it is.
+- Eight of the twelve checks of a member could be taken out with all 161
+  tests passing, the one that catches the file of the review among them,
+  because another check then refused that file; with three of them gone a
+  corrupted member was read with no error. The sweep of every byte
+  catches the CRC32 check and no other: a corruption whose text still
+  comes out right is, by its rule, the variants of the whole file. So it
+  proves that no change of one byte gives other variants in silence, and
+  not that each check is reached; its doc comment says so now, and each
+  check has a test that asserts the message it gives. Two checks were
+  missing and were added: a subfield after `BC` that runs past the extra
+  field, and a text longer than a member holds.
+- After a corrupted member the reader of the members handed out, at its
+  next call, the text whose CRC32 had failed. The VCF reader stops at its
+  first error, so no user saw it; the module is written to be built on.
+  It gives no text after an error.
+- The new module of the core that reads the members, `io::bgzf`, keeps
+  the cut of a member and its decompression as two steps, so that some
+  later plan can decompress several members at once on several threads.
+  The two steps could not be run apart: they shared one buffer, and
+  a second cut before the first decompression gave the text of member 2
+  under the CRC32 of member 1. The decompression is a function that
+  borrows what it needs and no reader, and a test runs it on two threads
+  at once.
+- Both messages of a bgzipped file ended with "The variants before it
+  were given", which is not so for a user of `iter_blocks`: with the
+  default size of the blocks a file that was cut or corrupted gives a
+  Python or node user no variant at all, the whole file being one short
+  block that `reblock` was keeping, 0 of the 456 that the reader gives of
+  `many.vcf.gz` cut at 21000 bytes. The owner decided that `reblock`
+  keeps its rule, so the sentence went out of the messages, the spec says
+  "the reader gives", the docstrings of `open_vcf` and `iter_blocks` say
+  what a user gets, and a pytest test holds the four counts of the spec,
+  500, 497, 500 and 0 variants before the error with blocks of 1, 7, 100
+  and the default, where only the 100 had one.
+- A bgzipped file cut inside its first member was told that its header
+  has no `#CHROM` line, a `ValueError`; it is the error of a file that
+  was cut short. Bytes after the mark of the end were told that the file
+  is cut short; they are a corrupted file. The messages say "member"
+  where they said "block", and the glossary has the word.
+- In Python: a ploidy out of range named the file, though it is an
+  argument that the user typed; a path whose bytes are not UTF-8 came
+  back mangled in `filename`, which a reviewer showed with a file that is
+  not there, since this file system refuses to make one; the number of
+  the system was said twice, "[Errno 2] ... (os error 2)"; a filter that
+  gives a mask of another length than its block, a defect of popnei, was
+  a `ValueError`, which the orchestrator had asked for before the owner
+  gave his convention; two statements of the skills were false, nine
+  cases of the VCF reader where there are ten, and that every message has
+  the path in front.
+- `cargo wasm-check` exited with 0 and warned, for both wasm targets, of
+  the imports of a test that is not compiled there. The orchestrator saw
+  it in the output of its own check. The command now denies warnings, as
+  `cargo clippy` does.
+
+`docs/specs/io_vcf.md` changed in d37f5b1 and b00be26, in commits of
+their own, with `docs/glossary.md` and the table of the modules of
+`docs/architecture.md`. Besides how a bgzip file is read and which
+exception each case is, it now says where the owner's rule cannot be
+kept: every member of a bgzip file is valid on its own and none records
+its place, so a member that is removed, repeated or moved cannot be seen;
+a reviewer ran it on `many.vcf.gz`, 220 variants, 780, and the same 500
+in another order, with no error in popnei nor in bcftools.
+
+Findings not taken, and what is left for the owner:
+
+- A file that was cut or corrupted and a file that is not there are both
+  an `OSError`, and a pipeline that wants to fetch a file again can tell
+  them apart only by `errno` being `None`. A subclass of `OSError` that a
+  user catches by name would settle it; pyNei defines no exception of its
+  own. Not built: it is a name of the public API.
+- The `RuntimeError` of a parse that did not come back has no test: no
+  file gives it, and the binding crate is a module that the interpreter
+  loads, which no test binary can link without changing how it is built.
+- A plain gzip that was cut gives an error of the input and no variant,
+  where a bgzip gives the variants first; nothing in the spec says which
+  it should be.
+
+### The deliverables of work package 4, run by the orchestrator at fe79f32
+
+1. A bgzip file is read by the sizes of its members: the file of the
+   review gives an error in a cargo test, in `tests/test_corrupted_bgzip.py`
+   and in a node test, and from Python in the orchestrator's own hands;
+   the sweep of every byte of `cases.vcf.gz` is one of the `173 passed`;
+   the tests of the gzipped and bgzipped files that were there pass
+   untouched; a gzip that bgzip did not write is read; `cargo wasm-check`
+   passes with no warning.
+2. The exceptions of Python: pytest `72 passed`, among them an `OSError`
+   whose `filename` is the path for `many.vcf.gz` cut at 12336 bytes,
+   inside a member and without its last 28 bytes, and for the corrupted
+   file; a wrong data line a `ValueError` whose message starts with the
+   path.
+3. The documents agree with the code: the VCF reader spec, the glossary,
+   the table of the modules of the architecture, and "Errors, and no
+   panics" and "Floats" of the `coding` skill, which has the owner's
+   convention and his rule in his words, and the quality as the one
+   missing value that is NaN inside the core.
+4. The speed: not measured, by the owner's order. While the fixes of the
+   review were made another job of the owner's took ten of the 18 cores,
+   with load averages of 8 to 13, and he chose to merge without the
+   timings. What there is: the subagent of task 4.1, before the fixes of
+   the review, on a machine with a load average of 2.4 to 2.8, the
+   bgzipped file of the bench, release, the median of 5 runs, two sets:
+   0.861 and 0.910 s on one thread, where task 2.6 had 0.890 s, and
+   0.378 s twice on 18 threads, where it had 0.394 s. The new reader
+   makes 6251 fewer allocations over that file than the decoder it
+   replaced, one for each member, and a reviewer's profile of one thread
+   puts 65 in 100 of the read in the parse, 31 in the inflate and 1 in the
+   CRC32. Nobody has timed the reader as the fixes left it.
+
+### How the work went, in work package 4
+
+Both tasks were done at their first sending. The tokens: 380 thousand for
+the two tasks, 220 thousand for the two rounds of fixes, 957 thousand for
+the seven reviewers. The review found what the plan was reopened for, a
+file read in silence, still there in another form, and four reviewers
+found it without being told where to look: the owner's rule was in the
+prompt of each, and each went looking for a file that breaks it.
+
+The orchestrator told the owner that reading a bgzip file by the sizes of
+its members is what bcftools does to the same effect, without having run
+it. The subagent of task 4.1 ran it: bcftools reads the corrupted file as
+no variants with no message. The orchestrator ran it too, corrected the
+plan, and told the owner.
+
+The report of one round of a subagent never reached the orchestrator,
+only the notice that it had ended. The orchestrator read the branch
+instead of the report, which is what it should do in any case.
+
+A reviewer wrote a script into the scratch directory of the orchestrator
+and wrote over a file of the same name there, a helper that was no longer
+needed. The prompt of a reviewer names its own worktree as the only place
+to write; it should name the scratch directories too.
+
 ## The final check
 
-From a clean clone of the branch at e297e63, outside the repository, on
-21 September 2026: `cargo fmt --all --check` exit 0; `cargo clippy
---workspace --all-targets -- -D warnings` no warning; `cargo test
---workspace` `153 passed`; `cargo wasm-check`, both wasm targets, every
-target of the crate, finished; `uv sync`, which fetched pyNei from GitHub
-at ef0ca6e, then `uv run ruff format --check` `12 files already
-formatted`, `uv run ruff check` `All checks passed!`, `uv run maturin
-develop && uv run pytest` `61 passed`; `npm run build` and `npm test` in
-`js/popnei` `tests 45`, `pass 45`, `fail 0`; `bash
-scripts/build_pyodide_wheel.sh` built the wheel and `node
-tests/pyodide/smoke.mjs` exited with 0, its new case among the lines it
-printed; the search of `crates` for `read_variant`, `VariantReader` and
-`BlockCollector` gives 0 lines, where the plan started with 98, and the
-one for `BlockReader`, `VariantRef` and `reblock` gives 137, where it
-gave 0; `LICENSE` is there, nothing of `/Users/jose` is in
-`pyproject.toml` or `uv.lock`, and `cargo doc -p popnei --no-deps` has
-no warning. The commits after e297e63 change this report and the plan
+From a clean clone of the branch at fe79f32, the last commit that changes
+code, outside the repository, on 21 September 2026: `cargo fmt --all
+--check` exit 0; `cargo clippy --workspace --all-targets -- -D warnings`
+no warning; `cargo test --workspace` `173 passed`, `1 ignored`, the sweep
+of 3.15 million files that is run on request; `cargo wasm-check`, both
+wasm targets, every target of the crate, finished with no warning, which
+it now denies; `uv sync`, which fetched pyNei from GitHub at ef0ca6e,
+then `uv run ruff format --check` `13 files already formatted`, `uv run
+ruff check` `All checks passed!`, `uv run maturin develop && uv run
+pytest` `72 passed`; `npm run build` and `npm test` in `js/popnei` `tests
+46`, `pass 46`, `fail 0`; `bash scripts/build_pyodide_wheel.sh` built the
+wheel and `node tests/pyodide/smoke.mjs` exited with 0, the header of
+170000 individuals among the lines it printed; the search of `crates` for
+`read_variant`, `VariantReader` and `BlockCollector` gives 0 lines, where
+the plan started with 98, and the one for `BlockReader`, `VariantRef` and
+`reblock` gives 137, where it gave 0; `LICENSE` is there, nothing of
+`/Users/jose` is in `pyproject.toml` or `uv.lock`, and `cargo doc -p
+popnei --no-deps` has no warning. The same check had passed at e297e63,
+the end of the first three work packages, with `153 passed`, `61 passed`
+and `tests 45`. The commits after fe79f32 change this report and the plan
 alone.
 
 ## The 65 tests that the VCF reader had before the plan, and what took their place

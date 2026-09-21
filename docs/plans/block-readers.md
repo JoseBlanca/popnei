@@ -1,11 +1,11 @@
 # Plan: readers that give blocks
 
-September 2026. Approved by the owner on 20 September 2026 and under way
-on the branch `plan/block-readers`, with its work report in
-`docs/reports/block-readers.md`: its three work packages were done on 21
-September 2026, and the owner, who read the report that day, answered
-the decisions it left him and asked for their work before the merge,
-which is work package 4. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026 and done on 21
+September 2026, on the branch `plan/block-readers`, with its work report
+in `docs/reports/block-readers.md`. Its three work packages were done
+that day; the owner read the report, answered the decisions it left him
+and asked for their work before the merge, which is work package 4, done
+the same day but for its timings, which he dropped. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
@@ -444,7 +444,11 @@ questions of `docs/reports/block-readers.md`:
   and the two paragraphs of the `coding` skill. Serves deliverables 2 and
   3. Needs 4.1.
 - [ ] 4.3 The four timings. Serves deliverable 4. Needs 4.1 and 4.2, and
-  the fixes of their review.
+  the fixes of their review. Not done, by the owner's order of 21
+  September 2026: another job of his had ten of the 18 cores of the
+  machine, and he chose to merge without the timings, the speed being for
+  the performance reviews to come. The work report has the one set that
+  was taken on a quiet machine, before the fixes of the review.
 
 **What could go wrong.** flate2 does not say where a gzip member ends,
 which is why the members are cut by the size their headers state and each
