@@ -38,7 +38,7 @@ use arrow_ipc::{
     Block as ArrowBlock, CompressionType, Footer, MessageHeader, MetadataVersion,
     RecordBatch as BatchMessage, root_as_footer, root_as_message,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
 use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
@@ -1592,7 +1592,7 @@ impl<R: Read + Seek> VarsReader<R> {
         // What the message of the batch says about its buffers, checked
         // against the bytes that are there before arrow-rs reads any of
         // them by their place.
-        message_fits(&bytes, metadata_len, place)?;
+        message_fits(&bytes, metadata_len, &self.schema, place)?;
         let decoder = FileDecoder::new(Arc::clone(&self.schema), self.version)
             .with_projection(places.to_vec());
         // The net under the checks above: arrow-rs reads a length of the
@@ -1717,15 +1717,18 @@ impl VarsReader<BufReader<File>> {
 /// 144115188075855871 bytes ends the process, which nothing catches. What
 /// is checked: the message is one of a batch; its rows are the variants its
 /// entry of the footer gives; every buffer lies inside the body; every
-/// compressed buffer says a length that lz4 can give from the bytes it
-/// holds; and no field node says more values than the body holds bits.
+/// compressed buffer says a length that the column it belongs to can hold,
+/// which for the genotypes is the rows times the individuals times the
+/// ploidy, and, where the schema does not give that number, one that lz4
+/// can give from the bytes it holds; and no field node says more values
+/// than the body holds bits.
 ///
 /// # Errors
 ///
 /// The batch could not be read, with the batch and what does not fit, and
 /// the batch holds another number of variants than its entry of the footer
 /// when its message says so.
-fn message_fits(bytes: &[u8], metadata_len: i32, place: BatchPlace) -> Result<()> {
+fn message_fits(bytes: &[u8], metadata_len: i32, schema: &Schema, place: BatchPlace) -> Result<()> {
     let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
     // A message that starts with the mark of a continuation has its length
     // after it, and one that has not starts with that length.
@@ -1769,7 +1772,8 @@ fn message_fits(bytes: &[u8], metadata_len: i32, place: BatchPlace) -> Result<()
                 .map(|whole| whole.saturating_sub(message_len))
         })
         .unwrap_or(0);
-    buffers_fit(&batch, bytes, metadata_len, body, &damaged)?;
+    let holds = what_the_buffers_hold(schema.fields(), u64::try_from(found).unwrap_or(u64::MAX));
+    buffers_fit(&batch, bytes, metadata_len, body, &holds, &damaged)?;
     // A field node says how many values a column holds, which arrow-rs
     // turns into the length of an array: a value takes a bit at the very
     // least, so one that says more than the body holds bits is damaged.
@@ -1791,6 +1795,144 @@ fn message_fits(bytes: &[u8], metadata_len: i32, place: BatchPlace) -> Result<()
     Ok(())
 }
 
+/// What one buffer of a batch holds at most once it is decompressed.
+///
+/// arrow-rs asks the machine for the memory a compressed buffer says it
+/// holds before it decompresses it, so what the column of that buffer can
+/// hold is the bound that matters: under wasm a `gts` buffer that says
+/// 3000000000 bytes is a trap that ends the tab, and one that says
+/// 2000000000 leaves the memory of the tab grown for its life, although
+/// both give an error in the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferHolds {
+    /// That many bytes, which the schema of the file and the rows of the
+    /// batch give.
+    Bytes(u64),
+    /// What the schema does not say: the texts of a column of texts, the
+    /// values of a list, whose count its offsets give, and every buffer of
+    /// a column whose type popnei does not walk. What bounds those is what
+    /// lz4 gives for the bytes the buffer holds, and the 2147483647 bytes
+    /// the offsets of a column of texts address.
+    WhatLz4Gives,
+}
+
+/// What each buffer of a batch of `fields` of `rows` rows holds at most, in
+/// the order the IPC format lays them out: a depth first walk of the
+/// columns, the buffer of the nulls of each before the rest of its own, and
+/// the buffers of the values of a list after those of the list.
+///
+/// The walk stops at a column whose type popnei does not know the buffers
+/// of, since it cannot say where the buffers of the columns after it start:
+/// those are not in the list and are bounded by what lz4 gives.
+fn what_the_buffers_hold(fields: &Fields, rows: u64) -> Vec<BufferHolds> {
+    let mut holds = Vec::new();
+    for field in fields {
+        if !buffers_of_the_field(field, Some(rows), &mut holds) {
+            break;
+        }
+    }
+    holds
+}
+
+/// The buffers of one column, and of the columns inside it, after the ones
+/// already in `holds`; `false` when popnei does not know the buffers of its
+/// type, which leaves `holds` without them.
+///
+/// `rows` is `None` for the values of a list, which are as many as the
+/// offsets of that list say and not as many as the batch has rows: their
+/// buffers are counted, so the ones after them keep their place, and none
+/// of them is bounded.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "arrow has forty types and a version of arrow-rs adds more; what popnei walks is \
+              the handful named here and the ones of a fixed width, and every other one stops \
+              the walk"
+)]
+fn buffers_of_the_field(field: &Field, rows: Option<u64>, holds: &mut Vec<BufferHolds>) -> bool {
+    let bytes = |per_row: u64, and: u64| match rows {
+        Some(rows) => BufferHolds::Bytes(rows.saturating_mul(per_row).saturating_add(and)),
+        None => BufferHolds::WhatLz4Gives,
+    };
+    // The nulls of a column are a bit for each row, which arrow writes as
+    // no buffer at all when there is none.
+    let nulls = match rows {
+        Some(rows) => BufferHolds::Bytes(bits_in_bytes(rows)),
+        None => BufferHolds::WhatLz4Gives,
+    };
+    match field.data_type() {
+        // No buffer at all: every row of such a column is a null.
+        DataType::Null => true,
+        DataType::Boolean => {
+            holds.push(nulls);
+            holds.push(nulls);
+            true
+        }
+        DataType::Utf8 | DataType::Binary => {
+            holds.push(nulls);
+            // One offset of 32 bits for each row and one after the last.
+            holds.push(bytes(4, 4));
+            holds.push(BufferHolds::WhatLz4Gives);
+            true
+        }
+        DataType::LargeUtf8 | DataType::LargeBinary => {
+            holds.push(nulls);
+            holds.push(bytes(8, 8));
+            holds.push(BufferHolds::WhatLz4Gives);
+            true
+        }
+        DataType::FixedSizeBinary(width) => {
+            holds.push(nulls);
+            holds.push(bytes(u64::try_from(*width).unwrap_or(u64::MAX), 0));
+            true
+        }
+        DataType::List(inside) | DataType::Map(inside, _) => {
+            holds.push(nulls);
+            holds.push(bytes(4, 4));
+            buffers_of_the_field(inside, None, holds)
+        }
+        DataType::LargeList(inside) => {
+            holds.push(nulls);
+            holds.push(bytes(8, 8));
+            buffers_of_the_field(inside, None, holds)
+        }
+        DataType::FixedSizeList(inside, width) => {
+            holds.push(nulls);
+            let values =
+                rows.map(|rows| rows.saturating_mul(u64::try_from(*width).unwrap_or(u64::MAX)));
+            buffers_of_the_field(inside, values, holds)
+        }
+        DataType::Struct(inside) => {
+            holds.push(nulls);
+            for field in inside {
+                if !buffers_of_the_field(field, rows, holds) {
+                    return false;
+                }
+            }
+            true
+        }
+        // Every type of arrow that holds a value of a fixed width: the
+        // numbers, the dates, the times and the decimals. `primitive_width`
+        // is what says which, and the types it gives no width for are the
+        // ones whose buffers popnei does not walk.
+        other => match other.primitive_width() {
+            Some(width) => {
+                holds.push(nulls);
+                holds.push(bytes(u64::try_from(width).unwrap_or(u64::MAX), 0));
+                true
+            }
+            // A dictionary, a union, a view or a type arrow adds later:
+            // popnei does not know how many buffers it takes, so the
+            // buffers of it and of the columns after it are not bounded.
+            None => false,
+        },
+    }
+}
+
+/// How many bytes that many bits take.
+fn bits_in_bytes(bits: u64) -> u64 {
+    bits.saturating_add(7).saturating_div(8)
+}
+
 /// That every buffer of the message lies inside the body of the batch, and
 /// that a compressed one says a length that lz4 can give from the bytes it
 /// holds.
@@ -1803,12 +1945,13 @@ fn buffers_fit(
     bytes: &[u8],
     metadata_len: i32,
     body: u64,
+    holds: &[BufferHolds],
     damaged: &impl Fn(String) -> Error,
 ) -> Result<()> {
     let compressed_with_lz4 = batch
         .compression()
         .is_some_and(|how| how.codec() == CompressionType::LZ4_FRAME);
-    for buffer in batch.buffers().into_iter().flatten() {
+    for (place, buffer) in batch.buffers().into_iter().flatten().enumerate() {
         let (offset, length) = (buffer.offset(), buffer.length());
         let ends_at = u64::try_from(offset)
             .ok()
@@ -1841,12 +1984,17 @@ fn buffers_fit(
         let compressed = u64::try_from(length)
             .unwrap_or(0)
             .saturating_sub(u64::try_from(UNCOMPRESSED_LENGTH_BYTES).unwrap_or(0));
-        let at_most = compressed
+        let loose = compressed
             .saturating_mul(LZ4_BYTES_FOR_A_BYTE)
-            .saturating_add(LZ4_FRAME_SLACK);
+            .saturating_add(LZ4_FRAME_SLACK)
+            .min(MAX_COLUMN_BYTES);
+        let at_most = match holds.get(place).copied() {
+            Some(BufferHolds::Bytes(bytes)) => bytes,
+            Some(BufferHolds::WhatLz4Gives) | None => loose,
+        };
         if says < 0 || u64::try_from(says).unwrap_or(u64::MAX) > at_most {
             return Err(damaged(format!(
-                "a buffer of its message holds {compressed} bytes compressed with lz4 and says it is {says} bytes decompressed, where lz4 gives {LZ4_BYTES_FOR_A_BYTE} bytes for each byte at most"
+                "a buffer of its message holds {compressed} bytes compressed with lz4 and says it is {says} bytes decompressed, and its column holds {at_most}"
             )));
         }
     }
@@ -2625,16 +2773,18 @@ mod tests {
     };
     use arrow_buffer::{NullBuffer, ScalarBuffer};
     use arrow_ipc::reader::FileReader;
+    use arrow_ipc::root_as_message;
     use arrow_ipc::writer::FileWriter;
     use arrow_schema::{DataType, Field, Schema};
 
     use super::{
         ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
-        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN,
-        QUAL_COLUMN, Region, VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter,
-        alleles_column, batches_as_json, batches_from_json, block_of_the_batch, block_too_large,
-        chrom_column, counted_from_one, id_column, metadata_as_json, metadata_from_json,
-        num_vars_of_the_file, projection_of, schema_of, write_vars,
+        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, POPNEI_BATCHES_KEY,
+        POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES, VarsColumn,
+        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
+        batches_from_json, block_of_the_batch, block_too_large, chrom_column, counted_from_one,
+        id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file, projection_of,
+        schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
@@ -6136,6 +6286,89 @@ mod tests {
             sweep.others
         );
         println!("{sweep:?}");
+    }
+
+    /// Where the length of the last buffer of the first batch of the file
+    /// is declared: the eight bytes arrow writes before the bytes it
+    /// compressed, which say how long that buffer is once it is
+    /// decompressed. The last buffer of a batch of the six columns holds
+    /// the genotypes, which is the large one.
+    fn the_length_of_the_genotypes(bytes: &[u8]) -> usize {
+        let at = opened(bytes.to_vec())
+            .expect("the file is a vars file")
+            .blocks[0];
+        let offset = usize::try_from(at.offset).expect("the offset of the batch");
+        let metadata_len = usize::try_from(at.metadata_len).expect("the message of the batch");
+        let starts_at = offset.saturating_add(MESSAGE_START_BYTES);
+        let message = root_as_message(&bytes[starts_at..]).expect("the message of the batch");
+        let batch = message
+            .header_as_record_batch()
+            .expect("the message is one of a batch");
+        let last = batch
+            .buffers()
+            .expect("the buffers of the batch")
+            .iter()
+            .next_back()
+            .expect("the last buffer");
+        let in_the_body = usize::try_from(last.offset()).expect("the offset of the buffer");
+        offset
+            .saturating_add(metadata_len)
+            .saturating_add(in_the_body)
+    }
+
+    /// Those bytes with the length that the buffer of the genotypes
+    /// declares changed to `says`.
+    fn genotypes_that_say(bytes: &[u8], says: i64) -> Vec<u8> {
+        let at = the_length_of_the_genotypes(bytes);
+        let mut changed = bytes.to_vec();
+        changed[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)]
+            .copy_from_slice(&says.to_le_bytes());
+        changed
+    }
+
+    /// A buffer of a batch says how long it is once it is decompressed, and
+    /// arrow-rs asks the machine for that memory before it decompresses it:
+    /// under wasm a length of 3000000000 is a trap that ends the tab, and
+    /// one of 2000000000 leaves the memory of the tab grown for its life.
+    /// So the reader holds each buffer to what its column can hold, which
+    /// the schema and the rows of the batch give: the genotypes are the
+    /// variants times the individuals times the ploidy bytes and no more.
+    #[test]
+    fn a_buffer_that_says_it_holds_more_than_its_column_is_refused_before_arrow_reads_it() {
+        // A file of a thousand variants, whose genotypes are 6000 bytes and
+        // are compressed: arrow writes the buffers it could not make
+        // smaller, which the four variants of `cases.vcf` give, as they are
+        // and says -1 where their length would be.
+        let mut chroms = ChromTable::new();
+        let rows: Vec<&Row> = vec![&CASES[0]; 1000];
+        let block = block_of(&rows, &mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let whole = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
+        let at = the_length_of_the_genotypes(&whole);
+        let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
+            &whole[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
+        )
+        .map(i64::from_le_bytes)
+        .expect("what the buffer of the genotypes says");
+        // The thousand variants of the three individuals of the ploidy 2.
+        assert_eq!(says, 6000);
+
+        for says in [6001, 3_000_000_000] {
+            let error = refused_at_the_block(genotypes_that_say(&whole, says));
+            let Error::VarsBatchNotRead { batch, problem } = &error else {
+                panic!("the buffer that says {says} bytes gave {error}");
+            };
+            assert_eq!(*batch, 1);
+            assert!(problem.contains(&says.to_string()), "{problem}");
+            // The error is the one of the reader, given before arrow-rs
+            // asked the machine for the memory the buffer says, and not the
+            // one arrow-rs gives once it has.
+            assert!(problem.contains("its column holds"), "{problem}");
+        }
+
+        // And the file whose buffer says what it holds is read.
+        let (blocks, _) = blocks_read(whole, Needs::ALL);
+        assert_eq!(num_vars_of(&blocks), [1000]);
     }
 
     /// A batch whose arrays are a window into longer ones is read through
