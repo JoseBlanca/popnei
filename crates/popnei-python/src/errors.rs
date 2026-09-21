@@ -158,10 +158,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // A file that was cut short and one that is corrupted are errors of
         // the file and not of what a user wrote, so they are an `OSError`
         // too, with no number: nothing of the system refused anything, and
-        // what is wrong is in the bytes of the file.
-        popnei::Error::VcfBgzipEndMissing | popnei::Error::VcfBgzipCorrupted { .. } => {
-            os_error(None, message, path)
-        }
+        // what is wrong is in the bytes of the file. A vars file that was
+        // damaged after it was written is one of the two: it ends before
+        // what it says it holds, or a batch of it cannot be decoded.
+        popnei::Error::VcfBgzipEndMissing
+        | popnei::Error::VcfBgzipCorrupted { .. }
+        | popnei::Error::VarsFileCutShort { .. }
+        | popnei::Error::VarsBatchNotRead { .. } => os_error(None, message, path),
         // The cases that say popnei has a defect: the three with which
         // `docs/specs/block.md` says that a reader has one, blocks of a
         // source that do not hold the same dataset, a block whose arrays
@@ -171,11 +174,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // batch of lines that did not come back, which a panic inside it
         // leaves behind. Nothing a user asks for gives them, so a user who
         // gets one reports it instead of looking for what they typed wrong.
+        // The three of the vars file writer are of the same kind: a block
+        // that does not hold the individuals of the file, one whose columns
+        // are not those of the first block written, and a chromosome number
+        // that the table given with the block has no name for. `write_vars`
+        // gives the writer the individuals, the fields and the table of one
+        // reader, so a user reaches them only through a reader with a
+        // defect.
         popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::KeepOfAnotherSize { .. }
-        | popnei::Error::VcfParseNotFinished { .. } => {
+        | popnei::Error::VcfParseNotFinished { .. }
+        | popnei::Error::VarsBlockDoesNotFit { .. }
+        | popnei::Error::VarsBlockColumns { .. }
+        | popnei::Error::VarsChromNameMissing { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The arguments a user writes: how many variants a block holds,

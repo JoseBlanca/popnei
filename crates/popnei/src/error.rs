@@ -250,6 +250,210 @@ pub enum Error {
         problem: String,
     },
 
+    /// The source the vars file reader was given is not one: it does not
+    /// start as an arrow IPC file, its schema has no `popnei` key, the
+    /// value of that key is not json or does not hold one of its four
+    /// values, or its footer has no `popnei_batches` key. A vars file of
+    /// pyNei is refused here, as a file without the `popnei` key.
+    #[error("the source is not a vars file: {problem}")]
+    NotAVarsFile {
+        /// What of a vars file it lacks.
+        problem: String,
+    },
+
+    /// The vars file says its format is of a version whose first part is
+    /// not the one popnei reads. A file whose second part is another one,
+    /// a later one too, is read: that is what lets a later version of the
+    /// format add a column without making the files or the readers that
+    /// are there useless.
+    #[error(
+        "the vars file says its format is the version {found}, and popnei reads the files whose version starts with {read}; a file of a later version is read by a later popnei"
+    )]
+    VarsFormatVersion {
+        /// The whole version the file gives, `2.0`.
+        found: String,
+        /// The first part of the version popnei reads, `1`.
+        read: &'static str,
+    },
+
+    /// A column of the vars file is of another arrow type than the one that
+    /// column holds. A column popnei does not know is ignored, as the rule
+    /// of the versions asks; one of the six it knows is read as its type
+    /// and as no other.
+    #[error(
+        "the `{column}` column of the vars file is of the arrow type {found}, and popnei reads it as {expected}"
+    )]
+    VarsColumnType {
+        /// The name of the column.
+        column: &'static str,
+        /// The arrow type it has in the file.
+        found: String,
+        /// The arrow type popnei reads it as.
+        expected: String,
+    },
+
+    /// The `gts` column of the vars file holds another number of alleles
+    /// for each variant than the individuals and the ploidy of its `popnei`
+    /// key give. That width is what turns the flat buffer of the column
+    /// into variants, so a file whose two say different things is refused
+    /// and not read one allele beside another.
+    #[error(
+        "the `gts` column of the vars file holds {found} alleles for each variant, and the {num_individuals} individuals of the ploidy {ploidy} that its `popnei` key names hold {expected}"
+    )]
+    VarsGtsWidth {
+        /// How many alleles the column holds for each variant.
+        found: usize,
+        /// How many the `popnei` key gives, the individuals times the
+        /// ploidy.
+        expected: usize,
+        /// How many individuals that key names.
+        num_individuals: usize,
+        /// The ploidy it gives.
+        ploidy: usize,
+    },
+
+    /// A column of the vars file has no value for one of its variants,
+    /// where every variant has one: the chromosome, the position, the
+    /// alleles and the genotypes. A null `id` is the empty id and a null
+    /// `qual` is a variant with no quality, and neither is an error.
+    #[error(
+        "the `{column}` column of the vars file has no value for its variant {var}, and every variant has one"
+    )]
+    VarsNullValue {
+        /// The name of the column.
+        column: &'static str,
+        /// Which variant of the file it is, counted from 1.
+        var: u64,
+    },
+
+    /// The `popnei_batches` key of the footer of the vars file has one
+    /// entry for each batch, and this file has another number of one than
+    /// of the other, so no entry can be trusted to be that of its batch.
+    #[error(
+        "the `popnei_batches` key of the footer of the vars file has {found} entries and the file has {expected} batches; there is one entry for each batch"
+    )]
+    VarsBatchesDoNotMatch {
+        /// How many entries the key has.
+        found: usize,
+        /// How many batches the file has.
+        expected: usize,
+    },
+
+    /// A batch of the vars file holds another number of variants than its
+    /// entry of the footer gives. The number of variants of a file is read
+    /// from those entries without reading a batch, so a batch that does not
+    /// hold what its entry says is refused when it is read and the number
+    /// the file announces is never a wrong one that goes unnoticed.
+    #[error(
+        "the batch {batch} of the vars file holds {found} variants and its entry of the `popnei_batches` key of the footer says {expected}"
+    )]
+    VarsBatchNumVars {
+        /// Which batch of the file it is, counted from 1.
+        batch: usize,
+        /// How many variants it holds.
+        found: usize,
+        /// How many its entry says.
+        expected: usize,
+    },
+
+    /// The buffers of the vars file are compressed with zstd, which no
+    /// build of popnei carries: arrow takes zstd from a crate that wraps
+    /// the C library, and popnei builds for WebAssembly with no second
+    /// compiler. Arrow decompresses a batch when it is read, so this comes
+    /// with the first block and not when the file is opened.
+    #[error(
+        "the buffers of the vars file are compressed with zstd, and popnei reads the files compressed with lz4 and the files with no compression; the file has to be written again with one of those two"
+    )]
+    VarsZstd,
+
+    /// The `popnei` key of the vars file names one individual twice. The
+    /// names are how a user asks for an individual, and two of one name
+    /// would be one individual for the user and two columns of genotypes in
+    /// the file.
+    #[error(
+        "the `popnei` key of the vars file names the individual `{name}` twice, and each individual of a file has its own name"
+    )]
+    VarsIndividualTwice {
+        /// The name that is there twice.
+        name: String,
+    },
+
+    /// A block given to the vars file writer holds another number of
+    /// individuals or another ploidy than the writer was built for. The
+    /// `popnei` key of the file is written before the first batch, so every
+    /// batch holds the individuals that key names. `write_vars` gives the
+    /// writer the individuals of its reader, so a user reaches this only
+    /// through a reader with a defect.
+    #[error(
+        "the writer of the vars file was built for {num_individuals} individuals of the ploidy {ploidy} and was given a block of {found_num_individuals} individuals of the ploidy {found_ploidy}; the `popnei` key of a file names the individuals of every one of its batches"
+    )]
+    VarsBlockDoesNotFit {
+        /// How many individuals the writer was built for.
+        num_individuals: usize,
+        /// The ploidy it was built for.
+        ploidy: usize,
+        /// How many individuals the block holds.
+        found_num_individuals: usize,
+        /// The ploidy of the block.
+        found_ploidy: usize,
+    },
+
+    /// A block given to the vars file writer holds other columns than the
+    /// first block it was given. Every batch of an arrow file shares one
+    /// schema, and the first block written is what fixes the columns of the
+    /// file.
+    #[error(
+        "the first block written into the vars file holds {first} and a later one holds {found}, so they differ in {differ}; every batch of an arrow file has the columns of one schema, which the first block written fixes",
+        differ = first.difference(*found).union(found.difference(*first))
+    )]
+    VarsBlockColumns {
+        /// The fields of the first block written, which are the columns of
+        /// the file.
+        first: Needs,
+        /// The fields of the block that was given now.
+        found: Needs,
+    },
+
+    /// A block given to the vars file writer holds a chromosome number that
+    /// the table of names given with it has no name for. The file holds the
+    /// name of the chromosome as text in every row, so a number with no
+    /// name cannot be written. The table is the one of the reader the block
+    /// came from and has the names of every block that reader gave, so a
+    /// user reaches this only through a reader with a defect.
+    #[error(
+        "a block given to the writer of the vars file holds the chromosome number {number}, and the table of chromosome names given with it has no name for it"
+    )]
+    VarsChromNameMissing {
+        /// The number that has no name.
+        number: u32,
+    },
+
+    /// The vars file starts as an arrow file and ends before what it says
+    /// it holds: a download that stopped, a copy that was cut short. The
+    /// variants after the cut are not in it, and a reader that gave the
+    /// ones before would give fewer variants than the file was written with
+    /// and say nothing.
+    #[error(
+        "the vars file starts as an arrow file and was cut short, so the variants after the cut are not in it and it has to be fetched or copied again: {problem}"
+    )]
+    VarsFileCutShort {
+        /// What was being read when the bytes ran out, as arrow-rs says it.
+        problem: String,
+    },
+
+    /// A batch of the vars file could not be decoded or decompressed. Its
+    /// bytes are not what the file says they are, so the file was damaged
+    /// after it was written.
+    #[error(
+        "the batch {batch} of the vars file could not be read, so the file is damaged and has to be fetched or copied again: {problem}"
+    )]
+    VarsBatchNotRead {
+        /// Which batch of the file it is, counted from 1.
+        batch: usize,
+        /// What arrow-rs said about it.
+        problem: String,
+    },
+
     /// The file of a VCF, or of another source of variants, could not be
     /// opened. It carries the path, which `std::io::Error` does not, so
     /// that a message names the file and a binding can put it where its

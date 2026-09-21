@@ -41,6 +41,35 @@ rayon = "1"
 # a check of the target at compile time, so it builds for the two wasm
 # targets.
 memchr = "2"
+# The vars file of docs/specs/io_vars.md, popnei's own file of variants,
+# which is one arrow IPC file: arrow-ipc writes it and reads it, arrow-schema
+# holds its columns and the two keys of json that say what it holds,
+# arrow-array the columns of one batch, and arrow-buffer the bytes behind
+# them, which is what lets the genotypes of a block become the buffer of the
+# `gts` column with no copy. None of the four has a default feature, and the
+# only one turned on is the lz4 of arrow-ipc, the compression popnei writes
+# and reads, which arrow-ipc takes from lz4_flex, pure Rust with no build
+# script. zstd, the other compression of the format, is an optional
+# dependency of arrow-ipc that wraps the C library and that nothing here
+# turns on, so no build of popnei carries it and `cargo tree -p popnei |
+# grep -i zstd` finds nothing: "The compression" of the spec has what that
+# costs, a file 2.2 times larger, and why. The four are pure Rust and build
+# for the two wasm targets, and what they add that popnei did not have is
+# pure Rust too, lz4_flex, flatbuffers, chrono, half, hashbrown, ahash and
+# the num crates among them.
+arrow-array = { version = "60", default-features = false }
+arrow-buffer = { version = "60", default-features = false }
+arrow-ipc = { version = "60", default-features = false, features = ["lz4"] }
+arrow-schema = { version = "60", default-features = false }
+# The values of the two keys of a vars file, which are json: `popnei` in the
+# schema and `popnei_batches` in the footer. It parses the value of each and
+# escapes the texts popnei writes into them, the names of the individuals and
+# of the chromosomes. Of its features only `std` is on: `preserve_order`
+# would pull in indexmap, and popnei writes the keys of an object itself, in
+# the order in which the spec gives them. It is pure Rust, what it pulls in,
+# serde_core, itoa, zmij and memchr, is pure Rust too, and it builds for the
+# two wasm targets.
+serde_json = { version = "1", default-features = false, features = ["std"] }
 # The error of the core crate. It writes the Display and the
 # std::error::Error of the enum from the message on each variant, so that a
 # case added by a later module cannot be a variant whose message was
