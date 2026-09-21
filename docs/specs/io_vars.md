@@ -439,6 +439,19 @@ values inside a list a field of their own that can hold nulls, as "What it
 holds" says, and no value popnei writes is one. A null `id` is the empty id
 and a null `qual` is no quality.
 
+A `qual` that is a value and is not a finite number, a NaN or an infinity, is
+an error naming the column and the variant. NaN is what the column of a block
+holds for a variant with no quality, so a NaN in the file would be read as a
+variant that has none, and an infinite quality is a probability of no variant
+of 0, which is not what phred scaling says; the VCF reader refuses both for
+the same reason, as `docs/specs/io_vcf.md` has it, and what rests on it is the
+rule of "Floats" of the `coding` skill that a NaN in that column means no
+quality. No writer of popnei makes such a file and another program can. The
+session that ran `docs/plans/vars-file.md` decided it on 21 September 2026;
+the option not taken was to let those values into the block, which gives a
+calculation over the qualities an infinity to work with and turns a NaN into a
+variant with no quality.
+
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
@@ -519,6 +532,7 @@ with arrow-rs: a file with no `popnei` key; a `format_version` of `2.0`, whose
 message holds `2.0`; a `gts` width of 7 with 3 individuals and a `ploidy` of
 2; a file with no `gts` column; a file whose `individuals` name nobody and
 whose `gts` holds no allele; a `pos` column of `Int32`; a null position; a
+quality that is a NaN and one that is an infinity, both with the variant; a
 file with two batches and one entry in `popnei_batches`; bytes that are not an
 arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
@@ -635,7 +649,7 @@ one is in Python. The owner gave the convention on 21 September 2026: a
 popnei, and an `OSError` a file that cannot be read, that was cut short or
 that is corrupted.
 
-Eleven are a `ValueError`, since a file whose content is not what a vars file
+Twelve are a `ValueError`, since a file whose content is not what a vars file
 holds is a wrong input like a wrong argument: the source is not a vars file,
 with what it lacks, which is the header of an arrow file, the `popnei` key of
 the schema, the json of its value, one of that key's four values, the `gts`
@@ -644,6 +658,7 @@ column or the
 1, with the version found; a column of another type, with the column and the
 two types; a `gts` width that does not match the `popnei` key, with both
 widths; a null where there can be none, with the column and the variant; a
+`qual` that is a value and is not finite, with the value and the variant; a
 footer whose entries are not as many as the batches, with both counts; a
 batch that holds another number of variants than its entry of the footer,
 with the batch and both counts; a file whose buffers are compressed with
