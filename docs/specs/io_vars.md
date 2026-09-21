@@ -494,6 +494,23 @@ A batch that does not hold the `num_vars` its entry of the footer gives is an
 error when that batch is read, so that the number of variants that the file
 announces is never a wrong one that goes unnoticed.
 
+A batch whose message does not fit the bytes that came with it is refused
+before arrow-rs reads any of them, as a batch that could not be read. arrow-rs
+takes the offsets and the lengths of that message as they are: it reads a
+buffer at the byte the message gives, and asks the machine for the memory that
+the first eight bytes of a compressed buffer say before it decompresses it. So
+a file damaged there reaches a panic inside arrow-rs, which in a notebook or a
+browser tab ends the session, or an allocation of 144115188075855871 bytes,
+which ends the process and which nothing catches. What the reader checks: the
+message is one of a batch; the rows it says are the variants of its entry of
+the footer; every buffer of it lies inside the body of the batch; every buffer
+compressed with lz4 says a length that lz4 can give from the bytes it holds,
+which is 255 for each byte at most; and no column of it says more values than
+the body holds bits. Natively, what those checks do not see is held by
+`catch_unwind` around the call into arrow-rs, which gives the same error; in
+wasm, where a panic ends the program and unwinds nothing, the checks are the
+whole of it.
+
 Two individuals with the same name are an error, as they are for the VCF
 reader.
 
@@ -560,6 +577,22 @@ the kind of the error and what it names. These are read and are not errors: a
 `format_version` of `1.7`; a file with a seventh column, `depth`; a file
 written with no compression. And a file written with batches of 100 gives
 blocks of 100, which the test checks with no `reblock` in between.
+
+A cargo test sweeps a vars file of the four variants of `cases.vcf` written in
+the test: every byte of it set in turn to four values, the low bit and the
+high bit flipped, 0 and 255, and each of the files that makes read with every
+field. Each gives its variants or an error, and none reaches a panic that
+comes out of the reader or an allocation that ends the process, which an
+abort would take the test binary with it. The same sweep with every byte set
+to each of the 255 other values is a test that is run by hand, as
+`docs/specs/io_vcf.md` has one for `cases.vcf.gz`. A file that is read with no
+error and holds other variants is counted and is not a failure: a byte of a
+compressed buffer that decompresses into other genotypes is what a checksum of
+the format would catch, and the format has none. On 21 September 2026, with
+arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 550055
+gave an error, 726033 were read as the whole file, 23902 were read as another
+file with no error, 2783 reached a panic inside arrow-rs that `catch_unwind`
+held, and none ended the process.
 
 The TypeScript test is the round trip under node of "The writer".
 
