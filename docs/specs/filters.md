@@ -393,7 +393,8 @@ default, so that a reader over a reader that forgets to pass on the counts
 of its source does not compile.
 
 A binding crate builds the chain of a pass with `chain_of` of "The Rust
-interface" and keeps it while the consumer runs. When the consumer returns, the binding crate reads the counts from
+interface" and keeps it while the consumer runs. When the consumer
+returns, the binding crate reads the counts from
 the chain and hands them to the Python or the TypeScript package, which
 puts them in the result in the order of the steps, the reverse of the one
 the chain gives. The `num_vars` of the same `PassStats` is not a count of
@@ -532,8 +533,9 @@ them on with the genotypes added.
 /// # Errors
 ///
 /// What `VarFilter::new` refuses, a threshold that is not a number from 0
-/// to 1, and what `FilteredReader::new` refuses, a criterion of a kind
-/// that the chain holds already.
+/// to 1, and what `FilteredReader::new` refuses, a criterion of the kind
+/// of one before it in `criteria` or of a filter that `reader` holds
+/// already.
 pub fn chain_of(
     reader: Box<dyn BlockReader>,
     criteria: &[VarFilteringCriterion],
@@ -564,7 +566,20 @@ range and a second filter of one kind, with the kind, which both binding
 crates give their user as the wrong input of a function. A user has to
 get the second one when they call the method that adds the filter, and no
 reader exists then, so the binding crate looks for the kind among the
-steps of the `Variants` and gives that error itself.
+steps of the `Variants` with this function, which both crates call as they
+call `chain_of`: which filters can stand together is of the filters and
+not of Python or of TypeScript.
+
+```rust
+/// The error of a second filter of one kind when `new` is of the kind of
+/// one of `set`, the criteria of the filters that are set already. The
+/// error carries both thresholds, the one of `new` and the one that is
+/// set, which a chain of readers cannot say and the criteria can.
+pub fn refuse_a_second_filter_of_a_kind(
+    set: &[VarFilteringCriterion],
+    new: VarFilteringCriterion,
+) -> Result<()>;
+```
 
 ## Speed
 
