@@ -172,7 +172,7 @@ comes first because it changes the trait that the filter of work package
   in the readers of the tests. From "The Rust interface" of
   `docs/specs/block.md` and of `docs/specs/filters.md`. Serves
   deliverable 1.
-- [ ] 1.2 The Python side. In `crates/popnei-python`, the pass of
+- [x] 1.2 The Python side. In `crates/popnei-python`, the pass of
   `source.rs` counts the variants of the blocks it gives and gives that
   count and the `filtering_stats` of its chain, and `write_vars` gives
   the same for its pass. In `python/popnei`, `PassStats` and

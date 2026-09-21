@@ -37,6 +37,35 @@ test --workspace` `254 passed`, 2 ignored; `cargo test -p popnei --lib --
 filtering_stats --list` `5 tests`; fmt, clippy and `cargo wasm-check`
 pass. 126414 tokens.
 
+Task 1.2, commits 2160dcf and 6291c58. `iter_blocks` gives a `Blocks`
+with `pass_stats`, `write_vars` a `VarsWritten`, and a `Variants` has
+`steps` and a `repr`, `<Variants of tests/reference/vcf/many.vcf, no
+steps>`. The list of steps lives in the binding crate, in a class
+`_core.Steps` that the `Variants` of the package holds, and every pass
+builds its chain from it. Run by the orchestrator: `cargo test
+--workspace` `257 passed`; `uv run pytest` `115 passed`, 16 of them in
+`tests/test_pass_stats.py`; fmt, clippy, ruff and `cargo wasm-check`
+pass. One test that was there changed, the one of `tests/test_io_vars.py`
+that calls `_core.write_vars` itself, which now takes the steps. 262494
+tokens, before the commit of the specs.
+
+For the owner, from task 1.2:
+
+- The core's `write_vars` returns the sink and how many variants it
+  wrote, where "The Rust interface" of `docs/specs/io_vars.md` had the
+  sink alone, and `BlockReader` is implemented for `&mut R`. The binding
+  crate does not loop over the blocks of a write, so only the core can
+  count them, and it has to keep the chain to read the counts of the
+  filters, as "How it runs" of the counts asks. The orchestrator had the
+  two specs corrected, in 6291c58, without stopping: it is a signature of
+  the core that no user sees, and the owner's decision that every
+  consumer returns its counts cannot be built on the old one. His to
+  reverse.
+- `copy.copy(variants)` gives a handle that shares the steps of the
+  original, so a filter added to the copy shows on the original.
+  `docs/specs/filters.md` leaves a copy of a `Variants` out, and nothing
+  tests it.
+
 How the work went. The orchestrator committed the tick of task 3.1 with
 `git add <paths>` and `git commit` with no paths while the subagent of
 1.1 had its files staged, and the commit took them. The commit was local,
