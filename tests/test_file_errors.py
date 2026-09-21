@@ -89,11 +89,22 @@ def test_the_message_of_bytes_that_are_not_a_vcf_starts_with_the_file(
 
 def test_an_argument_that_is_refused_names_no_file(reference_vcf_dir: Path) -> None:
     """What a user wrote is wrong wherever the file is, and the file has
-    nothing to do with it: `fields` and `num_vars_per_block` are refused by
-    their own words."""
-    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+    nothing to do with it: `fields`, `num_vars_per_block` and `ploidy` are
+    refused by their own words."""
+    path = reference_vcf_dir / "cases.vcf"
+    variants = open_vcf(path)
     for asked_for in ({"fields": ("depth",)}, {"num_vars_per_block": 0}):
         with pytest.raises(ValueError) as refusal:
             list(variants.iter_blocks(**asked_for))
         message = str(refusal.value)
+        assert str(reference_vcf_dir) not in message, message
+    # The ploidy is refused when the file is opened, because the reader
+    # needs it to read the first genotype, and it is what the user typed
+    # all the same: 0 alleles in a genotype, and 256 above the 255 that an
+    # allele of popnei counts.
+    for ploidy in (0, 256):
+        with pytest.raises(ValueError) as refusal:
+            open_vcf(path, ploidy=ploidy)
+        message = str(refusal.value)
+        assert str(ploidy) in message, message
         assert str(reference_vcf_dir) not in message, message

@@ -154,13 +154,15 @@ fn exception_of(error: popnei::Error, path: Option<String>) -> PyErr {
         | popnei::Error::VcfParseNotFinished { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
-        // How many variants a block holds is an argument of `iter_blocks`,
-        // and what is wrong with it is wrong whatever file is read, so
-        // these two name no file although they are refused while one is
+        // The arguments a user writes: how many variants a block holds,
+        // and how many alleles a genotype of the file has, which the reader
+        // is given when the file is opened because it needs it to read the
+        // first genotype. What is wrong with them is wrong whatever file is
+        // read, so they name no file although they are refused while one is
         // being opened.
-        popnei::Error::BlockOfNoVariants | popnei::Error::BlockTooLarge { .. } => {
-            PyValueError::new_err(message)
-        }
+        popnei::Error::BlockOfNoVariants
+        | popnei::Error::BlockTooLarge { .. }
+        | popnei::Error::VcfPloidyOutOfRange { .. } => PyValueError::new_err(message),
         _ => PyValueError::new_err(of_the_file(message, path)),
     }
 }
