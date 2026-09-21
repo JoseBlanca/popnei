@@ -673,12 +673,17 @@ zstd; two individuals of one name, with the name; a file of no individual or
 of the ploidy 0, with both numbers, which is a writer asked for such a file
 and a reader of one whose `popnei` key names nobody; and a block with more
 text in one of its
-columns than the 2147483647 bytes an arrow column of texts holds, with the
-column, the bytes it holds and that number. The last one is the size of a
+columns than the 2147483647 bytes an arrow column of texts holds, or more
+alleles in its `alleles` column than the 2147483647 a list column of a
+batch holds, with the column, what it holds and that number. The last one
+is the size of a
 batch and not of the file: the way out is a smaller `num_vars_per_block`,
 which the message says. arrow-rs panics when a column of texts goes past
-it, so the writer counts the bytes of each of the three columns of texts of
-a block before it fills one, and writes nothing of that block.
+it, and when the entries of a list column do, so the writer counts the
+bytes of each of the three columns of texts of a block before it fills
+one, and the alleles of its `alleles` column, whose entries are more than
+its bytes when an allele is an empty text; it writes nothing of that
+block.
 
 Four are an `OSError`: an error of a source that is read, which wraps
 `std::io::Error`; a vars file that could not be written, with what went
