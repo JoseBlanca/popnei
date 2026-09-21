@@ -2,9 +2,12 @@
 
 A filter is a step of a :class:`popnei.Variants`: a method of it that adds
 itself to the list of steps and returns nothing, and that every pass over
-the source runs inside the Rust core. The three threshold filters, over the
-missing rate of a variant, over its major allele frequency and over its
-observed heterozygosity, are being written.
+the source runs inside the Rust core. The three threshold filters are
+:meth:`popnei.Variants.filter_by_missing_data`, over the missing rate of a
+variant, :meth:`popnei.Variants.filter_by_maf`, over its major allele
+frequency, and :meth:`popnei.Variants.filter_by_obs_het`, over its observed
+heterozygosity, and each of them keeps the variants whose number is at most
+the threshold it was given.
 
 What is here is what a user reads of them: the :class:`Step` that a filter
 is in the steps of a ``Variants``, and the :class:`FilteringStats` that the

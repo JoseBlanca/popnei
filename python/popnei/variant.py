@@ -116,8 +116,11 @@ class Variants:
     between processes is the path and the arguments of
     :func:`popnei.open_vcf` or of :func:`popnei.open_vars`, and a
     ``Variants`` is opened again at the other end. ``copy.copy`` gives a
-    second handle over the same source, which reads the same variants: a
-    handle holds nothing of a pass, so the two are used as one is.
+    second handle over the same source, which reads the same variants and
+    shares its steps: a filter put on either of them is on both, and a
+    handle holds nothing of a pass, so the two are used as one is. A user
+    who wants a second set of thresholds over one file opens it again,
+    which reads the header and nothing else.
     """
 
     def __init__(self, source: _core.VcfSource | _core.VarsSource):
@@ -165,6 +168,83 @@ class Variants:
         return tuple(
             Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
         )
+
+    def filter_by_missing_data(self, max_allowed_missing_rate: float) -> None:
+        """Keep the variants whose missing rate is at most
+        `max_allowed_missing_rate`.
+
+        The missing rate of a variant is its missing genotypes divided by
+        all the individuals of the dataset, and not by the ones that were
+        called at it. A genotype is missing when one of its alleles at least
+        was not called, so ``0/.`` in a VCF is a missing genotype, as it is
+        in pyNei and in bcftools.
+
+        The call adds a step and gives nothing back. What runs it is the
+        next pass over the source, which every consumer makes: a filter
+        added between two of them holds for the second, and one added while
+        a pass runs holds from the pass after it.
+
+        `max_allowed_missing_rate` has no default, where pyNei's is 0.0,
+        which keeps only the variants with every genotype called. A
+        threshold that is not a number from 0 to 1, both included, or that
+        is NaN, is a ``ValueError`` here, which names the argument and the
+        value, and a call with no threshold a ``TypeError``. A second filter
+        of this kind on the same ``Variants`` is a ``ValueError`` too, with
+        the threshold that is set: two thresholds of one kind keep what the
+        stricter of them keeps alone, so the second says that the steps are
+        not what their user thinks, which running the cell of a notebook
+        twice gives. :attr:`steps` is what they hold.
+        """
+        self._steps.filter_by_missing_data(max_allowed_missing_rate)
+
+    def filter_by_maf(self, max_allowed_maf: float) -> None:
+        """Keep the variants whose major allele frequency is at most
+        `max_allowed_maf`.
+
+        The major allele frequency of a variant, "maf" in pyNei and in
+        popnei, is the count of its commonest allele divided by its called
+        alleles, where most of the literature and plink2 give those letters
+        to the minor allele. Every allele of a multiallelic variant has its
+        own count, and an allele is counted wherever it was called, in a
+        half called genotype too. A filter at 0.95 takes out the variants
+        that hardly vary among these individuals. A variant with no called
+        allele has no major allele frequency and is not kept, whatever the
+        threshold.
+
+        It asks for no minimum of called data, as pyNei does not: a variant
+        with one called genotype has the frequency of the alleles of that
+        genotype. A user who does not want the variants that have little
+        called data puts :meth:`filter_by_missing_data` before this one.
+
+        The call adds a step and gives nothing back, and it refuses what
+        :meth:`filter_by_missing_data` refuses: a threshold that is not a
+        number from 0 to 1, a call with no threshold, and a second filter of
+        this kind.
+        """
+        self._steps.filter_by_maf(max_allowed_maf)
+
+    def filter_by_obs_het(self, max_allowed_obs_het: float) -> None:
+        """Keep the variants whose observed heterozygosity is at most
+        `max_allowed_obs_het`.
+
+        The observed heterozygosity of a variant is its heterozygous
+        genotypes divided by its called ones, where a genotype is
+        heterozygous when it is called and its alleles are not all the same,
+        at any ploidy. It takes out the variants in which too many
+        individuals are heterozygous, which in most datasets are paralogous
+        regions read as one site. A variant with no called genotype has no
+        observed heterozygosity and is not kept, whatever the threshold.
+
+        It asks for no minimum of called data, as pyNei does not: a variant
+        with one called genotype, heterozygous, has an observed
+        heterozygosity of 1.
+
+        The call adds a step and gives nothing back, and it refuses what
+        :meth:`filter_by_missing_data` refuses: a threshold that is not a
+        number from 0 to 1, a call with no threshold, and a second filter of
+        this kind.
+        """
+        self._steps.filter_by_obs_het(max_allowed_obs_het)
 
     def iter_blocks(
         self,

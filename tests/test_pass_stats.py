@@ -7,11 +7,11 @@ given and kept. `docs/specs/variant.md` has the `PassStats` they come in,
 that a filter is, and `docs/specs/io_vars.md` the `VarsWritten` that
 `write_vars` gives.
 
-No filter is built yet, so every `filtering` here is empty and every
-`steps` is `()`: what the counts of a filter are is asserted by
-`tests/test_filters.py`, when the three filters exist. The numbers are those
-of `many.vcf` of `docs/specs/io_vcf.md`, 500 variants of 50 individuals read
-with every variant given.
+No test here puts a filter on a `Variants`, so every `filtering` is empty
+and every `steps` is `()`: what a filter counts and what it keeps are
+asserted by `tests/test_filters.py`. The numbers are those of `many.vcf` of
+`docs/specs/io_vcf.md`, 500 variants of 50 individuals read with every
+variant given.
 """
 
 import dataclasses

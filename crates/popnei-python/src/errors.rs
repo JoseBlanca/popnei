@@ -45,6 +45,17 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// A threshold of a filter that is not a number from 0 to 1, under the
+    /// name of the argument a user wrote it in: the core refuses it and
+    /// names the filter by its kind, `maf`, and what a user has to look at
+    /// is the call they wrote, `filter_by_maf(1.5)`.
+    Threshold {
+        /// The name of the argument, as a Python user writes it,
+        /// `max_allowed_maf`.
+        name: &'static str,
+        /// What was given for it, which is NaN, below 0 or above 1.
+        threshold: f64,
+    },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -133,6 +144,15 @@ impl From<PyPopneiError> for PyErr {
             PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of 1 or more that this machine can count"
+            )),
+            // The threshold of a filter, which is the number a user wrote
+            // in the call that adds it: the message names the argument, and
+            // the rule it broke is the core's, which refuses the same
+            // thresholds when a pass builds its filters.
+            PyPopneiError::Threshold { name, threshold } => PyValueError::new_err(format!(
+                "`{name}` is {threshold:?}, and a threshold is a number from 0 to 1, both \
+                 included: the number of the variant it is compared with is one count of \
+                 the variant divided by another"
             )),
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
