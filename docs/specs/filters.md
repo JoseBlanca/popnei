@@ -540,35 +540,54 @@ it should cost is the owner's to set. The numbers are of 21 September
 `aarch64-apple-darwin`, a build of `cargo bench`, over the 400 MB VCF of
 `docs/rust_core.md`, 100000 variants of 1000 individuals whose genotypes
 are missing at a rate of 0.03, and over the vars file popnei writes of it,
-both already in the page cache. Each is the median of 5 runs of a whole
-pass with the genotypes alone asked for, timed by
+both already in the page cache. A number is of 5 runs of a whole pass with
+the genotypes alone asked for, timed by
 `crates/popnei/benches/filter_vars.rs`. What the filter costs is that pass
-less the pass with no filter, the two run back to back; the first column
-is the pass with no filter of the pair of the second.
+less the pass with no filter, the two run back to back, and each pair was
+run four times: every cell is the range the medians of the four sets
+spread over, so each threshold stands against the pass with no filter of
+its own pairs.
 
-| | the pass with no filter | the missing data filter at 0.1 | at 0.03 |
+| | the pass with no filter | with the filter | what the filter costs |
 |---|---|---|---|
-| the VCF, 1 thread | 0.565 s | 0.050 s more | 0.077 s more |
-| the VCF, 18 threads | 0.095 s | 0.007 s more | 0.012 s more |
-| the vars file, 1 thread | 0.101 s | 0.056 s more | 0.059 s more |
-| the vars file, 18 threads | 0.101 s | 0.014 s more | 0.017 s more |
+| the VCF, 1 thread, at 0.1 | 0.558 to 0.569 s | 0.617 to 0.639 s | 0.058 to 0.070 s |
+| the VCF, 1 thread, at 0.03 | 0.548 to 0.573 s | 0.616 to 0.646 s | 0.049 to 0.085 s |
+| the VCF, 18 threads, at 0.1 | 0.095 s | 0.101 to 0.103 s | 0.006 to 0.008 s |
+| the VCF, 18 threads, at 0.03 | 0.095 to 0.097 s | 0.107 to 0.108 s | 0.011 to 0.013 s |
+| the vars file, 1 thread, at 0.1 | 0.102 s | 0.158 to 0.159 s | 0.056 to 0.057 s |
+| the vars file, 1 thread, at 0.03 | 0.102 s | 0.162 s | 0.060 s |
+| the vars file, 18 threads, at 0.1 | 0.102 s | 0.115 to 0.116 s | 0.013 to 0.014 s |
+| the vars file, 18 threads, at 0.03 | 0.102 to 0.103 s | 0.119 to 0.120 s | 0.017 to 0.018 s |
 
 At 0.1 the filter keeps every one of the 100000 variants and at 0.03 it
-keeps 54773, so the difference between the two thresholds is what taking
-the 45227 it drops out of the blocks costs. The vars file is read in
-0.101 s on one thread and on 18, since its reader runs on the thread that
-calls it and only the filter reads the rows of a block on the pool.
+keeps 54773, so the difference between the two thresholds is what
+compacting the blocks costs, 0.003 to 0.005 s in the rows where the sets
+are stable enough to show it; over the VCF on one thread the sets spread
+by more than that and the two thresholds cannot be told apart there. The
+vars file is read in 0.102 s on one thread and on 18, since its reader
+runs on the thread that calls it and only the filter reads the rows of a
+block on the pool.
+
+What is measured is the filter against a pass that reads no genotype of
+its own, so for a calculation that reads them after the filter these
+numbers are an upper bound on what the filter adds: how much less it is
+was not measured.
 
 pyNei's pass over the same VCF takes 14.05 s and its
-`filter_by_missing_data` costs it 0.415 s at 0.1 and 0.400 s at 0.03.
+`filter_by_missing_data` costs it 0.415 s at 0.1 and 0.400 s at 0.03; that
+pass also builds a pandas frame of the chromosome, the position, the id
+and the quality, and the alleles beside it, for every chunk.
 `bcftools view -H`, with its records sent to `/dev/null` in both passes,
-takes 1.431 s and its `-i "F_MISSING<=0.1"` costs it 0.119 s; at 0.03 its
-pass with the filter takes 0.202 s less than the one without, because it
-writes 54773 records of text instead of 100000, where popnei's pass writes
-none. The three keep the same variants, 100000 at 0.1 and 54773 at 0.03.
-`docs/reports/filters-measurement.md` has every set of runs with the load
-average it was taken at, and how pyNei's difference was told apart from
-the drift of the machine over a pass of 14 s.
+takes 1.431 s and its `-i "F_MISSING<=0.1"` costs it 0.119 s; that pass
+writes back out as text, on one thread, every record it keeps, which is
+why at 0.03 it takes 0.202 s less with the filter than without, writing
+54773 records instead of 100000. So the difference of each program against
+itself is like for like and the three whole passes are three different
+pieces of work. The three keep the same variants, 100000 at 0.1 and 54773
+at 0.03. `docs/reports/filters-measurement.md` has every set of runs with
+the load average it was taken at, how pyNei's difference was told apart
+from the drift of the machine over a pass of 14 s, and what it leaves to a
+performance review.
 
 ## Open points
 
