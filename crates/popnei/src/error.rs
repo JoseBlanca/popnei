@@ -428,6 +428,26 @@ pub enum Error {
         number: u32,
     },
 
+    /// The vars file could not be written: the sink refused the bytes, a
+    /// disc that filled up among them, or arrow-rs could not write what it
+    /// was given.
+    ///
+    /// It is not [`Error::Io`], which is a source that could not be read. A
+    /// call that writes a vars file reads another file, and which of the
+    /// two went wrong is what a user acts on, so the write says that it was
+    /// the write.
+    #[error("the vars file could not be written: {problem}")]
+    VarsFileNotWritten {
+        /// What went wrong, as the system or arrow-rs said it.
+        problem: String,
+        /// The error the file system gave, when the cause is one and not a
+        /// defect of what arrow-rs was handed. A binding crate builds the
+        /// exception of its language with the number it carries, which is
+        /// what makes it the `PermissionError` or the `OSError` of that
+        /// number in Python.
+        source: Option<std::io::Error>,
+    },
+
     /// The vars file starts as an arrow file and ends before what it says
     /// it holds: a download that stopped, a copy that was cut short. The
     /// variants after the cut are not in it, and a reader that gave the

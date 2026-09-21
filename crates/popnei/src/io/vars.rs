@@ -901,34 +901,43 @@ fn gts_column(gts: Vec<i8>, alleles_per_var: i32) -> Result<ArrayRef> {
 /// What arrow-rs said while the vars file was being written, as the error
 /// of the crate.
 ///
-/// What fails while a file is written is the output, so the
-/// `std::io::Error` of the system is kept as it is, with the number it
-/// carries: that number is what a binding crate builds the exception of its
-/// language with.
+/// The error the file system gave is kept with the number it carries, since
+/// that number is what a binding crate builds the exception of its language
+/// with; what arrow-rs says of anything else goes in as text.
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "arrow-rs has twenty cases of its error and popnei tells one of them, the error of \
-              the output, from every other"
+              the file system, from every other"
 )]
 fn not_written(problem: ArrowError) -> Error {
     match problem {
-        ArrowError::IoError(_, failure) => Error::Io(failure),
-        other => Error::Io(std::io::Error::other(other)),
+        ArrowError::IoError(_, failure) => Error::VarsFileNotWritten {
+            problem: failure.to_string(),
+            source: Some(failure),
+        },
+        other => Error::VarsFileNotWritten {
+            problem: other.to_string(),
+            source: None,
+        },
     }
 }
 
 /// The error of a writer whose sink is gone, which is what is left after
 /// the header of the file could not be written.
 fn the_sink_is_gone() -> Error {
-    Error::Io(std::io::Error::other(
-        "the header of the vars file could not be written, and the writer has nothing left to \
-         write on",
-    ))
+    Error::VarsFileNotWritten {
+        problem: "the header of the file could not be written, and the writer has nothing left \
+                  to write on"
+            .to_owned(),
+        source: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::cell::RefCell;
+    use std::io::{Cursor, Write};
+    use std::rc::Rc;
     use std::sync::Arc;
 
     use arrow_array::cast::AsArray;
@@ -1603,6 +1612,82 @@ mod tests {
         // No size was asked for, so the blocks hold the number of variants
         // popnei chooses for 3 individuals, the largest it chooses.
         assert_eq!(file.metadata.num_vars_per_block, 10_000);
+    }
+
+    /// The number the system gives when a disc fills up, `ENOSPC`, which
+    /// is 28 on macOS and on Linux.
+    const NO_SPACE_LEFT: i32 = 28;
+
+    /// A sink that keeps what it was written into a buffer the test holds
+    /// and fails once it has taken `takes` bytes, which is what a disc that
+    /// fills up under the writer does. It fails with the number of the
+    /// system, as a file would.
+    #[derive(Clone)]
+    struct SinkThatFills {
+        written: Rc<RefCell<Vec<u8>>>,
+        takes: usize,
+    }
+
+    impl SinkThatFills {
+        fn of(takes: usize) -> SinkThatFills {
+            SinkThatFills {
+                written: Rc::new(RefCell::new(Vec::new())),
+                takes,
+            }
+        }
+    }
+
+    impl Write for SinkThatFills {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let mut written = self.written.borrow_mut();
+            let left = self.takes.saturating_sub(written.len());
+            if left == 0 {
+                return Err(std::io::Error::from_raw_os_error(NO_SPACE_LEFT));
+            }
+            let taken = bytes.len().min(left);
+            written.extend_from_slice(&bytes[..taken]);
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A sink that fails is a vars file that could not be written and not a
+    /// source that could not be read: which of the two files of the call
+    /// went wrong is what a user reads from the exception, and the number
+    /// the system gave is what the exception is built with.
+    #[test]
+    fn a_sink_that_fails_is_the_error_of_a_vars_file_that_could_not_be_written() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let sink = SinkThatFills::of(200);
+
+        let error = match write_vars(reader, sink.clone(), Some(3)) {
+            Ok(_) => panic!("the file was written on a sink that fails"),
+            Err(error) => error,
+        };
+
+        let Error::VarsFileNotWritten { problem, source } = &error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            source.as_ref().and_then(std::io::Error::raw_os_error),
+            Some(NO_SPACE_LEFT)
+        );
+        assert!(problem.contains("os error 28"), "{problem}");
+        let message = error.to_string();
+        assert!(message.contains("could not be written"), "{message}");
+
+        // What the doc comment of `write_vars` says the caller is left
+        // with: the bytes that were written are on the sink, and they are
+        // not a file that can be read.
+        let written = sink.written.borrow().clone();
+        assert_eq!(written.len(), 200);
+        assert_eq!(written.get(..6), Some(b"ARROW1".as_slice()));
+        assert!(FileReader::try_new(Cursor::new(written), None).is_err());
     }
 
     /// A vars file of the blocks given, written with `write_block` and the
