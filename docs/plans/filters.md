@@ -234,7 +234,7 @@ table, and the comparison with pyNei that runs is the one of work package
 
 **Tasks.**
 
-- [ ] 2.1 `count_gts`, `count_alleles`, their two types and the two
+- [x] 2.1 `count_gts`, `count_alleles`, their two types and the two
   cases of the error, in `crates/popnei/src/variant.rs` and `error.rs`,
   with the arm of each binding crate's `errors.rs`. From "The counts of
   one variant" and "The Rust interface" of `docs/specs/variant.md`; they
@@ -245,6 +245,12 @@ table, and the comparison with pyNei that runs is the one of work package
   it.
 
 ## Work package 3: the three filters and the counts of a pass
+
+Its review is in two parts, a change of 21 September 2026: work package
+2 and tasks 3.2 and 3.3, the counts and the filter of the core that is
+built on them, which are one piece of code, are reviewed together when
+3.3 is done; tasks 3.4 and 3.5, the two bindings, with 3.1, when 3.5 is
+done.
 
 **What it gives.** A user calls `variants.filter_by_missing_data(0.04)`,
 `filter_by_maf(0.8)` and `filter_by_obs_het(0.5)`, in Python, and the

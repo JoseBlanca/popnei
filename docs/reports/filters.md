@@ -164,6 +164,38 @@ How the work went, besides the commit above: tasks 1.2 and 1.3 cost
 279083 and 273909 tokens, twice the core task; the seven reviewers
 114325 to 178423 each; the fixes 70724 more of the subagent of 1.3.
 
+## Work package 2: the counts of one variant
+
+Task 2.1, commits 37ac866, the sentence of `docs/specs/variant.md` that
+makes the two new errors a `RuntimeError`, and 10a9b4c, the code. The
+subagent ran every literal of its tests through pyNei at ef0ca6e, the six
+variants and the three tetraploid genotypes, and they are the spec's.
+
+The deliverables, run by the orchestrator at 10a9b4c:
+
+1. `cargo test -p popnei --lib -- count_gts count_alleles --list`: `7
+   tests`, which cover the cases the plan lists. `cargo test --workspace`:
+   `266 passed`, 2 ignored.
+2. The message of each new case has a test, and
+   `crates/popnei-python/src/errors.rs` has both in its `RuntimeError`
+   arm. `crates/popnei-js/src/errors.rs` has no arm to add: it turns
+   every error of the core into one `Error`.
+
+`uv run pytest` `117 passed`, `npm test` `tests 79`, `fail 0`, fmt,
+clippy, ruff and `cargo wasm-check` pass. 159072 tokens.
+
+For the owner: both functions also refuse a variant of more alleles than
+a `u32` holds, 4295 million, with the error of genotypes that are not
+whole. The spec does not name that case. It is what lets the loop add
+without a check of overflow, and no source reaches it. The review looks
+at whether the message fits the case.
+
+Changed in the plan: the review of this work package is made together
+with tasks 3.2 and 3.3, the filter of the core, which is built on these
+two functions and is one piece of code with them, and the two bindings
+of work package 3 get a review of their own. One review of five tasks
+through three layers would have been too large to evaluate well.
+
 ## Work package 3, while it is under way
 
 Task 3.1, the reference script, ran beside task 1.1, since it writes
