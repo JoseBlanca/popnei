@@ -368,54 +368,24 @@ impl<R: BufRead> BgzfReader<R> {
     }
 
     /// The size of the member being read, which its extra field holds in
-    /// the subfield `BC`: the subfields are walked, since BGZF lets a member
-    /// carry others beside it.
+    /// the subfield `BC`.
     ///
     /// # Errors
     ///
     /// When the subfields do not end where the extra field does, and when
     /// there is no `BC` of two bytes among them.
     fn size_of_the_member(&self) -> Result<usize> {
-        let mut at: usize = 0;
-        while let Some(left) = self
-            .extra_field
-            .len()
-            .checked_sub(at)
-            .filter(|left| *left > 0)
-        {
-            if left < BYTES_BEFORE_A_SUBFIELD {
-                return Err(self.corrupted(format!(
-                    "the subfields of its extra field of {bytes} bytes leave {left} bytes over \
-                     at its end, and a subfield names itself in two bytes and gives its length \
-                     in two more",
-                    bytes = self.extra_field.len(),
-                )));
-            }
-            let bytes_of_the_subfield = two_bytes_of(&self.extra_field, at.saturating_add(2));
-            let data = at.saturating_add(BYTES_BEFORE_A_SUBFIELD);
-            let end = data.saturating_add(usize::from(bytes_of_the_subfield));
-            if end > self.extra_field.len() {
-                return Err(self.corrupted(format!(
-                    "a subfield of its extra field of {bytes} bytes says that it holds \
-                     {bytes_of_the_subfield} bytes and ends {over} bytes after the field does",
-                    bytes = self.extra_field.len(),
-                    over = end.saturating_sub(self.extra_field.len()),
-                )));
-            }
-            let names_the_size = self.extra_field.get(at..at.saturating_add(2))
-                == Some(THE_SIZE_SUBFIELD.as_slice());
-            if names_the_size && bytes_of_the_subfield == BYTES_OF_THE_SIZE {
-                // `BC` holds the size of the whole member less 1, so it
-                // fits in two bytes.
-                return Ok(usize::from(two_bytes_of(&self.extra_field, data)).saturating_add(1));
-            }
-            at = end;
+        let extra_field = the_extra_field(&self.extra_field);
+        if let Some(problem) = extra_field.problem {
+            return Err(self.corrupted(problem));
         }
-        Err(self.corrupted(format!(
-            "its extra field of {bytes} bytes holds no `BC` of two bytes, which is where a \
-             member of a file that bgzip wrote states its size",
-            bytes = self.extra_field.len(),
-        )))
+        extra_field.size_of_the_member.ok_or_else(|| {
+            self.corrupted(format!(
+                "its extra field of {bytes} bytes holds no `BC` of two bytes, which is where a \
+                 member of a file that bgzip wrote states its size",
+                bytes = self.extra_field.len(),
+            ))
+        })
     }
 
     /// The data of the member decompressed into the text, checked against
@@ -511,6 +481,73 @@ impl<R: BufRead> BgzfReader<R> {
             offset: self.offset,
             problem,
         }
+    }
+}
+
+/// What the extra field of the header of a gzip member holds of what makes
+/// a member of a file that bgzip wrote.
+pub(crate) struct TheExtraField {
+    /// The size of the member, which the subfield `BC` of two bytes states
+    /// when the field carries one. It is what says that bgzip wrote the
+    /// member, since nothing else writes that subfield.
+    pub(crate) size_of_the_member: Option<usize>,
+    /// Why the subfields are not the subfields of an extra field: one of
+    /// them ends after the field does, or the field ends in the middle of
+    /// one. A member of a bgzip file whose extra field has this is
+    /// corrupted; the first member of a source is asked only whether it has
+    /// a `BC`, so that a source whose members are to be checked is read by
+    /// the reader that checks them.
+    pub(crate) problem: Option<String>,
+}
+
+/// The subfields of an extra field walked: BGZF lets a member carry others
+/// beside the `BC`, before it or after it, so the field is read subfield by
+/// subfield and not at a fixed place. Each of them names itself in two
+/// bytes, gives its length in two more and holds that many.
+pub(crate) fn the_extra_field(extra_field: &[u8]) -> TheExtraField {
+    let of_the_field = extra_field.len();
+    let mut at: usize = 0;
+    while let Some(left) = of_the_field.checked_sub(at).filter(|left| *left > 0) {
+        if left < BYTES_BEFORE_A_SUBFIELD {
+            return TheExtraField {
+                size_of_the_member: None,
+                problem: Some(format!(
+                    "the subfields of its extra field of {of_the_field} bytes leave {left} bytes \
+                     over at its end, and a subfield names itself in two bytes and gives its \
+                     length in two more"
+                )),
+            };
+        }
+        let of_the_subfield = two_bytes_of(extra_field, at.saturating_add(2));
+        let data = at.saturating_add(BYTES_BEFORE_A_SUBFIELD);
+        let end = data.saturating_add(usize::from(of_the_subfield));
+        if end > of_the_field {
+            return TheExtraField {
+                size_of_the_member: None,
+                problem: Some(format!(
+                    "a subfield of its extra field of {of_the_field} bytes says that it holds \
+                     {of_the_subfield} bytes and ends {over} bytes after the field does",
+                    over = end.saturating_sub(of_the_field),
+                )),
+            };
+        }
+        let names_the_size =
+            extra_field.get(at..at.saturating_add(2)) == Some(THE_SIZE_SUBFIELD.as_slice());
+        if names_the_size && of_the_subfield == BYTES_OF_THE_SIZE {
+            // `BC` holds the size of the whole member less 1, so it fits in
+            // two bytes.
+            return TheExtraField {
+                size_of_the_member: Some(
+                    usize::from(two_bytes_of(extra_field, data)).saturating_add(1),
+                ),
+                problem: None,
+            };
+        }
+        at = end;
+    }
+    TheExtraField {
+        size_of_the_member: None,
+        problem: None,
     }
 }
 

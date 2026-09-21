@@ -69,13 +69,11 @@ const GZIP_BYTES: [u8; 2] = [0x1f, 0x8b];
 const GZIP_FLAGS: usize = 3;
 const GZIP_HAS_AN_EXTRA_FIELD: u8 = 0x04;
 
-/// Where the extra field of a gzip header starts when there is one: after
-/// the ten bytes of the header and the two of its length.
+/// Where the two bytes that hold the length of the extra field of a gzip
+/// header are, and where that field starts: after the ten bytes of the
+/// header and those two.
+const BYTES_OF_THE_EXTRA_FIELD: usize = 10;
 const GZIP_EXTRA_FIELD: usize = 12;
-
-/// The two bytes that name the extra field bgzip writes in every block of a
-/// file, `BC`, and which say that the file was written by bgzip.
-const BGZIP_EXTRA_FIELD: [u8; 2] = *b"BC";
 
 /// How many bytes are read from the source before it is handed on: the two
 /// of gzip, and enough of what comes after them for the message that says
@@ -275,22 +273,50 @@ impl<R: BufRead> WithFirstBytes<R> {
     /// It reads `wanted` bytes of `source`, or every byte of it when it
     /// holds fewer, and gives them back in front of it.
     fn new(source: R, wanted: usize) -> std::io::Result<WithFirstBytes<R>> {
-        let mut source = source;
-        let mut first = Vec::with_capacity(wanted);
-        while let Some(missing) = wanted.checked_sub(first.len()).filter(|left| *left > 0) {
-            let buffer = source.fill_buf()?;
+        let mut with_the_first_bytes = WithFirstBytes {
+            first: Vec::new(),
+            consumed: 0,
+            source,
+        };
+        with_the_first_bytes.look_at(wanted)?;
+        Ok(with_the_first_bytes)
+    }
+
+    /// It reads what is missing for `wanted` bytes of the source to be in
+    /// front of it, and nothing when it holds that many already.
+    ///
+    /// It is called before any byte was given out, which is when the whole
+    /// of what was read is still in front of the source.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read, and when the machine does not give
+    /// the room: `wanted` is the length of the extra field of the first
+    /// member of the source, which the file states in two bytes, so the
+    /// room is asked for and not taken.
+    fn look_at(&mut self, wanted: usize) -> std::io::Result<()> {
+        self.first
+            .try_reserve(wanted.saturating_sub(self.first.len()))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    format!("the {wanted} first bytes of the source were not given"),
+                )
+            })?;
+        while let Some(missing) = wanted
+            .checked_sub(self.first.len())
+            .filter(|left| *left > 0)
+        {
+            let buffer = self.source.fill_buf()?;
             if buffer.is_empty() {
                 break;
             }
             let take = buffer.len().min(missing);
-            first.extend_from_slice(buffer.get(..take).unwrap_or_default());
-            source.consume(take);
+            self.first
+                .extend_from_slice(buffer.get(..take).unwrap_or_default());
+            self.source.consume(take);
         }
-        Ok(WithFirstBytes {
-            first,
-            consumed: 0,
-            source,
-        })
+        Ok(())
     }
 }
 
@@ -358,11 +384,16 @@ impl<R: BufRead> VcfSource<R> {
     /// decompression says, when a member of a bgzipped source is corrupted,
     /// and when its bytes cannot be read.
     fn of(source: R) -> Result<VcfSource<R>> {
-        let source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
+        let mut source = WithFirstBytes::new(source, BYTES_LOOKED_AT)?;
         let gzipped = source.first.starts_with(&GZIP_BYTES);
-        // Whether bgzip wrote the file is read from its first gzip member,
-        // which carries the extra field `BC` that bgzip writes in every
-        // block of a file.
+        // Whether bgzip wrote the file is read from the extra field of the
+        // header of its first member, which carries the subfield `BC` that
+        // bgzip writes in every member of a file. That field can be longer
+        // than the bytes that have been looked at, and its length is in
+        // them.
+        if let Some(bytes) = bytes_of_the_extra_field(&source.first).filter(|_| gzipped) {
+            source.look_at(GZIP_EXTRA_FIELD.saturating_add(bytes))?;
+        }
         let mut source = if gzipped && written_by_bgzip(&source.first) {
             VcfSource::Bgzipped(Box::new(BgzfReader::new(source)?))
         } else if gzipped {
@@ -1225,21 +1256,45 @@ fn individuals_of(chrom_line: &str, line_number: u64) -> Result<Vec<String>> {
     Ok(individuals.iter().map(|name| (*name).to_string()).collect())
 }
 
-/// Whether bgzip wrote the source, which its first gzip member says: bgzip
-/// writes the extra field `BC` in the header of every block it makes, and
-/// nothing else does.
+/// Whether bgzip wrote the source, which the header of its first gzip
+/// member says: the extra field of every member bgzip writes carries the
+/// subfield `BC` with the size of that member, and nothing else writes it.
 ///
-/// `first` are the first bytes of the source, which is all that is looked
-/// at: bgzip writes that field first and writes no other, so a header whose
-/// extra field starts with another one is not one of bgzip's.
+/// `first` are the first bytes of the source, which hold the whole extra
+/// field of that header. The subfields are walked, since BGZF lets a member
+/// carry others beside the `BC`, before it or after it: bgzip writes the
+/// `BC` first and htslib looks for it there, so a file whose first member
+/// carries another subfield before it is one that bgzip did not write and
+/// that is a bgzip file all the same, and a reader that took it for a plain
+/// gzip would check no member of it and not its end either.
+///
+/// A subfield after the `BC` that ends after the extra field does leaves
+/// this true: the source is one whose members are to be cut by their sizes,
+/// and the reader of the members is what refuses that member.
 fn written_by_bgzip(first: &[u8]) -> bool {
+    let Some(extra_field) = bytes_of_the_extra_field(first)
+        .and_then(|bytes| first.get(GZIP_EXTRA_FIELD..GZIP_EXTRA_FIELD.checked_add(bytes)?))
+    else {
+        return false;
+    };
+    crate::io::bgzf::the_extra_field(extra_field)
+        .size_of_the_member
+        .is_some()
+}
+
+/// How many bytes the extra field of the header of the first member of the
+/// source holds, when its flags say that it carries one.
+fn bytes_of_the_extra_field(first: &[u8]) -> Option<usize> {
     let has_an_extra_field = first
         .get(GZIP_FLAGS)
         .is_some_and(|flags| flags & GZIP_HAS_AN_EXTRA_FIELD != 0);
-    let names_the_field = first
-        .get(GZIP_EXTRA_FIELD..GZIP_EXTRA_FIELD.saturating_add(BGZIP_EXTRA_FIELD.len()))
-        .is_some_and(|name| name == BGZIP_EXTRA_FIELD);
-    has_an_extra_field && names_the_field
+    if !has_an_extra_field {
+        return None;
+    }
+    let bytes = first
+        .get(BYTES_OF_THE_EXTRA_FIELD..GZIP_EXTRA_FIELD)
+        .and_then(|two| <[u8; 2]>::try_from(two).ok())?;
+    Some(usize::from(u16::from_le_bytes(bytes)))
 }
 
 /// The number of the next line. A file of `u64::MAX` lines cannot be
@@ -3431,6 +3486,32 @@ mod tests {
         format!("chr1 {position} . A T 29.5 PASS . GT 0/0 0/1 1/1")
     }
 
+    /// The bytes of `many.vcf.gz` with a subfield `ZZ` of six bytes written
+    /// before the `BC` of its first member, which BGZF allows and bgzip
+    /// does not write: the length of the extra field of that member and the
+    /// size its `BC` states are corrected, and nothing else is touched.
+    ///
+    /// Its members start at the bytes 0, 316, 12342 and 21882, six further
+    /// on than the ones of `many.vcf.gz`.
+    fn with_a_subfield_before_the_bc_of_the_first_member() -> Vec<u8> {
+        let whole = std::fs::read(reference_vcf("many.vcf.gz")).unwrap();
+        // The name of the subfield, the two bytes of its length and the two
+        // bytes it holds.
+        let subfield = [b'Z', b'Z', 0x02, 0x00, 0x00, 0x00];
+        let mut file = whole.get(..12).unwrap().to_vec();
+        file.extend_from_slice(&subfield);
+        file.extend_from_slice(whole.get(12..).unwrap());
+        // The length of the extra field, at the bytes 10 and 11, and the
+        // size that the `BC` states, which the subfield moved from the
+        // bytes 16 and 17 to the bytes 22 and 23. Both grow by the six
+        // bytes of the subfield.
+        file[10..12].copy_from_slice(&12u16.to_le_bytes());
+        let size = u16::from_le_bytes([file[22], file[23]]);
+        file[22..24].copy_from_slice(&size.checked_add(6).unwrap().to_le_bytes());
+        assert_eq!(file.get(18..20), Some(b"BC".as_slice()));
+        file
+    }
+
     /// The bytes of `many.vcf.gz` with the two bytes that hold the length
     /// of the extra field of its second member, the bytes 320 and 321,
     /// changed from `06 00` to `44 54`, which is the file of the review of
@@ -3506,6 +3587,49 @@ mod tests {
         let whole = rows_of_file("many.vcf.gz", in_blocks_of(options(2, false), 100));
         assert_eq!(rows, whole.get(..rows.len()).unwrap_or_default());
         assert_eq!(rows.len(), 0, "the corrupted member is the first with data");
+    }
+
+    #[test]
+    fn a_source_whose_first_member_has_a_subfield_before_its_bc_is_read_by_its_members() {
+        // What says that bgzip wrote a source is the `BC` of its first
+        // member, wherever it is among the subfields of its extra field. A
+        // reader that looked for it at the bytes 12 and 13, where bgzip
+        // writes it and where htslib looks for it, would read this file
+        // with the decoder that goes from one member to the next: whole
+        // when it is whole, and with no error when it is not.
+        let in_blocks_of_a_hundred = in_blocks_of(options(2, false), 100);
+        let whole = with_a_subfield_before_the_bc_of_the_first_member();
+        let (rows, error) = rows_before_the_error(whole.clone(), in_blocks_of_a_hundred);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(rows, rows_of_file("many.vcf.gz", in_blocks_of_a_hundred));
+        assert_eq!(rows.len(), 500);
+
+        // The length of the extra field of its second member, which the
+        // subfield moved to the bytes 326 and 327, damaged as the file of
+        // the review is and set to a length that lands inside the third
+        // member. The reader of the members refuses both.
+        for (length, what) in [
+            (0x5444u16, "the length of the review, 21572"),
+            (12032, "a length that lands inside the third member"),
+        ] {
+            let mut damaged = whole.clone();
+            damaged[326..328].copy_from_slice(&length.to_le_bytes());
+            let (rows, error) = rows_before_the_error(damaged, in_blocks_of_a_hundred);
+            let Some(Error::VcfBgzipCorrupted { member, offset, .. }) = error else {
+                panic!("{what} gives {error:?} after {} rows", rows.len());
+            };
+            assert_eq!((member, offset), (2, 316), "{what}");
+        }
+
+        // And cut where its second member ends, which is a download that
+        // stopped: the mark of the end is what is missing.
+        let cut = whole.get(..12342).unwrap().to_vec();
+        let (rows, error) = rows_before_the_error(cut, in_blocks_of_a_hundred);
+        assert!(
+            matches!(error, Some(Error::VcfBgzipEndMissing)),
+            "the file cut where its second member ends gives {error:?}"
+        );
+        assert_eq!(rows.len(), 280);
     }
 
     #[test]
