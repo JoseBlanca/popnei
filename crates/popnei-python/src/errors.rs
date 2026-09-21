@@ -252,8 +252,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // the file and not of what a user wrote, so they are an `OSError`
         // too, with no number: nothing of the system refused anything, and
         // what is wrong is in the bytes of the file. A vars file that was
-        // damaged after it was written is one of the two: it ends before
-        // what it says it holds, or a batch of it cannot be decoded.
+        // damaged after it was written is one of the two when its bytes no
+        // longer decode: it ends before what it says it holds, or a batch
+        // of it cannot be decoded. Damage that does decode, into content
+        // the format does not allow, is a `ValueError` below, as an allele
+        // of `gts` below the missing one is: the exception follows what is
+        // wrong with the content, and the reader cannot tell a file a disc
+        // changed from one another program wrote badly.
         popnei::Error::VcfBgzipEndMissing
         | popnei::Error::VcfBgzipCorrupted { .. }
         | popnei::Error::VarsFileCutShort { .. }

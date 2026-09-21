@@ -452,7 +452,7 @@ pub enum Error {
     /// signed bytes, so a byte of the `gts` column that was damaged after
     /// the file was written, and a file another program wrote, can say one.
     #[error(
-        "the `gts` column of the vars file holds the allele {found} for its variant {var}, and an allele is -1, which is the missing one, or a number of 0 or more"
+        "the `gts` column of the vars file holds the allele {found} for its variant {var}, and an allele is -1, which is the missing one, or a number of 0 or more; a byte of that column was changed after the file was written, and the file has to be fetched or copied again, or the file was written by a program other than popnei, which has to write the alleles of a genotype as -1 and the numbers of the alleles the variant declares"
     )]
     VarsAlleleBelowMissing {
         /// The first allele of the batch that is below the missing one.
@@ -796,6 +796,11 @@ mod tests {
         assert!(message.contains("the allele -2"), "{message}");
         assert!(message.contains("variant 17"), "{message}");
         assert!(message.contains("`gts`"), "{message}");
+        // A user whose disc changed that byte reads what to do, as they do
+        // for the other damaged vars files, and one whose file came from
+        // another program reads what that program has to write.
+        assert!(message.contains("fetched or copied again"), "{message}");
+        assert!(message.contains("a program other than popnei"), "{message}");
     }
 
     /// A user who gets one of these has the file open in front of them, so

@@ -2786,8 +2786,22 @@ mod tests {
     fn no_genotype_of_a_vcf_gives_an_allele_below_the_missing_one() {
         // The whole genotype, one allele of it, one written after the
         // separator that VCF 4.4 lets a genotype start with, one phased,
-        // and -0, which is 0 to a parser that reads a sign.
-        for genotype in ["-1", "-2/0", "0/-2", "/-2/0", "-2|0", "-0", "0/-128"] {
+        // and -0, which is 0 to a parser that reads a sign. Beside each,
+        // the text the message has to name: a genotype of the ploidy the
+        // file has not, and an allele with no digit in it, are wrong data
+        // lines too, so the message naming the negative allele itself is
+        // what says that the parser read it and refused it and not
+        // something else of the same line. `/-2/0` is the one that says it
+        // of a parser that takes the separator off first.
+        for (genotype, refused) in [
+            ("-1", "-1"),
+            ("-2/0", "-2"),
+            ("0/-2", "-2"),
+            ("/-2/0", "-2"),
+            ("-2|0", "-2"),
+            ("-0", "-0"),
+            ("0/-128", "-128"),
+        ] {
             let line = format!("chr1 100 . A T . PASS . GT 0/0 {genotype} 1/1");
             let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
             let Error::VcfDataLine {
@@ -2803,9 +2817,10 @@ mod tests {
                 (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string())),
                 "{genotype}"
             );
-            assert!(
-                problem.contains("is not an allele number"),
-                "{genotype}: {problem}"
+            assert_eq!(
+                problem,
+                format!("`{refused}` is not an allele number, which is a run of digits"),
+                "{genotype}"
             );
         }
     }

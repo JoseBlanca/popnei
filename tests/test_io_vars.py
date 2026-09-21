@@ -954,8 +954,11 @@ def test_open_vars_refuses_an_allele_below_the_missing_one(
     the genotype ``[-2, 0]`` out of ``iter_blocks`` with no error.
 
     It is the content of a file that is not what the format holds, so it is
-    a ``ValueError`` with the path at the start of its message, and the
-    message says which allele and which variant of the file.
+    a ``ValueError`` with the path at the start of its message, and not the
+    ``OSError`` of a vars file whose bytes no longer decode: the exception
+    follows what is wrong with the content, and the reader cannot tell a
+    file a disc changed from one another program wrote badly. The message
+    says which allele and which variant of the file, and what to do.
     """
     whole = tmp_path / "whole.vars"
     write_vars(open_vcf(reference_vcf_dir / "cases.vcf", only_passed=False), whole)
@@ -974,6 +977,9 @@ def test_open_vars_refuses_an_allele_below_the_missing_one(
         list(variants.iter_blocks())
     assert str(refusal.value).startswith(str(path))
     assert f"variant {VAR_OF_THE_CHANGED_ALLELE}" in str(refusal.value)
+    # A user whose disc changed that byte reads what to do, as they do for
+    # the vars files that were damaged so far that they no longer decode.
+    assert "fetched or copied again" in str(refusal.value)
 
 
 def test_open_vars_refuses_a_file_compressed_with_zstd_at_its_first_block() -> None:

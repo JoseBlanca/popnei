@@ -2360,20 +2360,7 @@ fn genotypes(
     // counts nothing would put it in the array of a user. The alleles of
     // the file are signed bytes, so a damaged one and a file of another
     // program can say -2.
-    //
-    // Every allele of the batch is read here, so the check is the smallest
-    // of them in one pass, which the compiler reduces over the lanes of a
-    // vector register; a comparison for each allele on its own does not
-    // vectorise. Which allele it is and which variant it belongs to cost a
-    // second pass that only a file that is refused pays for.
-    let smallest = alleles.iter().copied().fold(i8::MAX, i8::min);
-    if smallest < MISSING_ALLELE {
-        let (at, allele) = alleles
-            .iter()
-            .copied()
-            .enumerate()
-            .find(|(_, allele)| *allele < MISSING_ALLELE)
-            .unwrap_or((0, smallest));
+    if let Some((at, allele)) = first_allele_below_the_missing_one(alleles) {
         return Err(Error::VarsAlleleBelowMissing {
             found: allele,
             var: place
@@ -2387,6 +2374,27 @@ fn genotypes(
         .map_err(|_| block_too_large(num_vars, metadata))?;
     genotypes.extend_from_slice(alleles);
     Ok(genotypes)
+}
+
+/// The first allele of `alleles` below [`MISSING_ALLELE`], with its place
+/// in the slice, and `None` when every one of them is an allele.
+///
+/// Whether there is one is the smallest of them in one pass, which the
+/// compiler reduces over the lanes of a vector register; a comparison
+/// written for each allele on its own does not vectorise, and this reads
+/// every allele of every batch. Which one it is and where it is come from
+/// one walk of the same slice, which only a batch that is refused pays
+/// for, so the allele the error names is the allele at the place it names,
+/// whatever either pass is changed into.
+fn first_allele_below_the_missing_one(alleles: &[i8]) -> Option<(usize, i8)> {
+    if alleles.iter().copied().fold(i8::MAX, i8::min) >= MISSING_ALLELE {
+        return None;
+    }
+    alleles
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, allele)| *allele < MISSING_ALLELE)
 }
 
 /// One column of the batch as the array it holds.
@@ -2814,6 +2822,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
 
     use arrow_array::builder::{Int8Builder, ListBuilder, StringBuilder};
     use arrow_array::cast::AsArray;
@@ -6258,8 +6267,21 @@ mod tests {
     /// not, and `docs/specs/io_vars.md` says so. What must not happen is a
     /// panic that comes out of the reader, which fails the test where it
     /// happens, or an abort, which kills the test binary.
+    ///
+    /// The hook a panic runs is the one of the whole process, and cargo
+    /// runs the other tests of this binary in threads of that process
+    /// while the sweep runs, so a test that fails elsewhere at that moment
+    /// panics into this hook: it was counted as a panic the reader caught,
+    /// the sweep failed as well, and its message named the file of the
+    /// other test. Two reviewers got `popnei panicked at
+    /// crates/popnei/src/filters.rs:1588:9, 1 times` that way on 21
+    /// September 2026, by breaking a test of the filters. So each panic is
+    /// counted under the thread it happened in, and the sweep keeps the
+    /// ones of its own: the reader of a vars file uses no threads, so every
+    /// panic of the files this makes is on this thread.
     fn swept(whole: &[u8], values: &[u8], expected: &[ReadRow]) -> Sweep {
-        let seen: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let seen: Arc<Mutex<HashMap<(ThreadId, String), u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let hook = std::panic::take_hook();
         let writing = Arc::clone(&seen);
         std::panic::set_hook(Box::new(move |panic| {
@@ -6267,10 +6289,13 @@ mod tests {
                 .location()
                 .map_or_else(|| "nowhere".to_owned(), |at| format!("{at}"));
             if let Ok(mut seen) = writing.lock() {
-                let counted = seen.entry(place).or_insert(0);
+                let counted = seen
+                    .entry((std::thread::current().id(), place))
+                    .or_insert(0);
                 *counted = counted.saturating_add(1);
             }
         }));
+        let sweeping = std::thread::current().id();
         let mut errors: u64 = 0;
         let mut the_same: u64 = 0;
         let mut others: u64 = 0;
@@ -6294,7 +6319,8 @@ mod tests {
             .map(|seen| {
                 let mut places: Vec<(String, u64)> = seen
                     .iter()
-                    .map(|(at, count)| (at.clone(), *count))
+                    .filter(|((thread, _), _)| *thread == sweeping)
+                    .map(|((_, at), count)| (at.clone(), *count))
                     .collect();
                 places.sort();
                 places
