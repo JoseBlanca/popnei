@@ -60,3 +60,28 @@ def test_a_bgzipped_vcf_whose_member_is_damaged_is_an_error_and_not_an_empty_fil
     assert "member 2" in message
     assert "byte 310" in message
     assert "again" in message
+
+
+def test_the_damaged_file_gives_no_block_at_all_with_the_size_popnei_chooses(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """What a user receives depends on the size of the blocks, because the
+    `reblock` at the end of every pass loses what it was keeping for its
+    next block when the error comes, which is the rule of
+    `docs/specs/block.md` that the owner kept on 21 September 2026.
+
+    With the size popnei chooses, 10000 variants for the 50 individuals of
+    this file, no block is ever full, so a user receives nothing before the
+    error. Here the damaged member is the second of four and the first
+    holds no whole data line, so the count is the same for every size; the
+    sizes are told apart on the file that was cut, in
+    `test_truncated_and_infinite.py`.
+    """
+    path = _with_the_damaged_member(reference_vcf_dir, tmp_path)
+    variants = open_vcf(path, only_passed=False)
+    read = 0
+    with pytest.raises(OSError) as refusal:
+        for block in variants.iter_blocks():
+            read += block.num_vars
+    assert read == 0
+    assert refusal.value.filename == str(path)

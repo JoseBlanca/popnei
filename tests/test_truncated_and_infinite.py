@@ -85,6 +85,42 @@ def test_a_bgzipped_vcf_without_the_mark_of_its_end_is_refused_after_its_variant
     assert "again" in message
 
 
+# How many of the 500 variants of the file without the mark of its end a
+# user receives for each size of block, which "How it runs" of
+# `docs/specs/io_vcf.md` gives and which were measured from Python on 21
+# September 2026. `None` is the size popnei chooses, 10000 variants for the
+# 50 individuals of the file.
+_VARIANTS_GIVEN_FOR_EACH_SIZE = [(1, 500), (7, 497), (100, 500), (None, 0)]
+
+
+@pytest.mark.parametrize(("num_vars_per_block", "given"), _VARIANTS_GIVEN_FOR_EACH_SIZE)
+def test_the_size_of_the_blocks_decides_how_many_variants_a_cut_file_gives(
+    reference_vcf_dir: Path,
+    tmp_path: Path,
+    num_vars_per_block: int | None,
+    given: int,
+) -> None:
+    """The owner decided on 21 September 2026 that `reblock` keeps the rule
+    of `docs/specs/block.md` for a file that was cut: an error loses the
+    block it happened in and the variants that `reblock` was keeping for
+    its next block.
+
+    So how many of the 500 variants a user receives before the error
+    depends on where the cuts of the blocks fall. With blocks of 7 the last
+    3 variants were waiting for a block that was never full; with the size
+    popnei chooses, 10000 variants, the whole file was waiting and the user
+    receives nothing at all. The file is whole but for its last 28 bytes,
+    so every variant of it was read.
+    """
+    path = _cut(reference_vcf_dir, tmp_path, _WHOLE - _MARK_OF_THE_END)
+    variants = open_vcf(path, only_passed=False)
+    read = 0
+    with pytest.raises(OSError):
+        for block in variants.iter_blocks(num_vars_per_block=num_vars_per_block):
+            read += block.num_vars
+    assert read == given
+
+
 def test_a_bgzipped_vcf_cut_where_a_member_ends_gives_its_variants_and_then_fails(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:
