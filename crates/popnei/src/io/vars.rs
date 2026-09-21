@@ -5087,6 +5087,75 @@ mod tests {
         assert_eq!((column, var), ("gts", 4));
     }
 
+    /// popnei writes `chrom`, `pos`, `alleles` and `gts` as columns with no
+    /// nulls, and arrow-rs refuses a batch of such a column that holds one
+    /// before popnei sees it: a null there is a batch that could not be
+    /// read, with what arrow-rs said, and not the error with the column and
+    /// the variant, which is for a file whose schema declares the column
+    /// nullable.
+    #[test]
+    fn a_null_in_a_column_whose_schema_says_it_has_none_is_a_batch_that_was_not_read() {
+        let parts = FileParts::of_cases();
+        let popnei = parts.popnei.clone().expect("the `popnei` key");
+        // The schema of the file is the one popnei writes, where `pos` has
+        // no nulls.
+        let file = Arc::new(
+            Schema::new(
+                parts
+                    .columns
+                    .iter()
+                    .map(|(field, _)| field.clone())
+                    .collect::<Vec<Field>>(),
+            )
+            .with_metadata(HashMap::from([(POPNEI_KEY.to_owned(), popnei)])),
+        );
+        assert!(
+            !file.field(1).is_nullable(),
+            "the `pos` column of popnei is written with no nulls"
+        );
+        // The batch is built with `pos` declared nullable, because arrow-rs
+        // builds no batch of a column that its schema says has no nulls and
+        // that holds one. The file is written with the schema above, so it
+        // is the file another program makes when it writes a null into such
+        // a column.
+        let arrays: Vec<ArrayRef> = parts
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(place, (_, array))| match place {
+                1 => Arc::new(UInt64Array::from(vec![
+                    Some(100),
+                    None,
+                    Some(300),
+                    Some(400),
+                ])),
+                _ => Arc::clone(array),
+            })
+            .collect();
+        let mut nullable: Vec<Field> = file.fields().iter().map(|f| f.as_ref().clone()).collect();
+        nullable[1] = Field::new(POS_COLUMN, DataType::UInt64, true);
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(nullable)), arrays)
+            .expect("the batch whose `pos` is declared nullable");
+        let mut writer = FileWriter::try_new(Vec::new(), &file).expect("the file was started");
+        writer.write(&batch).expect("the batch was written");
+        writer.write_metadata(
+            POPNEI_BATCHES_KEY,
+            batches_as_json(&[BatchInfo {
+                num_vars: 4,
+                regions: regions_of(&CASES),
+            }]),
+        );
+        let bytes = writer.into_inner().expect("the file was finished");
+
+        let error = refused_at_the_block(bytes);
+
+        let Error::VarsBatchNotRead { batch, problem } = &error else {
+            panic!("the null in a column with no nulls gave {error}");
+        };
+        assert_eq!(*batch, 1);
+        assert!(problem.contains("pos"), "{problem}");
+    }
+
     /// A quality that is a value and is not a finite number is refused with
     /// the value and the variant: a NaN in the column of a block is what
     /// says that the variant has no quality, so a NaN that is a value in
