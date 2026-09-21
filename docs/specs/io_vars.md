@@ -433,15 +433,26 @@ the `popnei` key; if not, the error gives the width found and the one
 expected, because the width is what turns the flat buffer into variants.
 
 A null in `chrom`, `pos`, `alleles` or `gts` is an error naming the column and
-the variant. A null `id` is the empty id and a null `qual` is no quality.
+the variant, counted from 1 over the whole file. A null among the alleles of a
+variant, or among its genotypes, is a null of that column too: arrow gives the
+values inside a list a field of their own that can hold nulls, as "What it
+holds" says, and no value popnei writes is one. A null `id` is the empty id
+and a null `qual` is no quality.
 
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
-`1`, which the message gives along with the version found; it has no
+`1`, which the message gives along with the version found; it has no `gts`
+column, which "What it holds" puts in every vars file; it has no
 `popnei_batches`, or its entries are not as many as the batches. A path that
 is a directory is an error of `from_path`, which looks at the path itself:
 opening a directory succeeds on macOS and only the first read fails.
+
+The file without a `gts` column is refused by the session that ran
+`docs/plans/vars-file.md`, on 21 September 2026; the option not taken was to
+read it as a source whose blocks hold no genotypes, which is what a file of a
+later version of the format that dropped the column would be, and no reader of
+this version can tell that file from one whose column was lost.
 
 A batch that does not hold the `num_vars` its entry of the footer gives is an
 error when that batch is read, so that the number of variants that the file
@@ -500,8 +511,9 @@ The cargo tests are the round trips of "The writer", made at `next_block`
 over a `Cursor<Vec<u8>>`, and these errors, each on a file built in the test
 with arrow-rs: a file with no `popnei` key; a `format_version` of `2.0`, whose
 message holds `2.0`; a `gts` width of 7 with 3 individuals and a `ploidy` of
-2; a `pos` column of `Int32`; a null position; a file with two batches and one
-entry in `popnei_batches`; bytes that are not an arrow file; and
+2; a file with no `gts` column; a `pos` column of `Int32`; a null position; a
+file with two batches and one entry in `popnei_batches`; bytes that are not an
+arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
 `cases.vcf` compressed with zstd, which `tests/reference/vars/make_reference.py`
 writes with pyarrow since popnei cannot, which opens and gives the error
@@ -619,7 +631,8 @@ that is corrupted.
 Eleven are a `ValueError`, since a file whose content is not what a vars file
 holds is a wrong input like a wrong argument: the source is not a vars file,
 with what it lacks, which is the header of an arrow file, the `popnei` key of
-the schema, the json of its value, one of that key's four values or the
+the schema, the json of its value, one of that key's four values, the `gts`
+column or the
 `popnei_batches` key of the footer; a format version whose first part is not
 1, with the version found; a column of another type, with the column and the
 two types; a `gts` width that does not match the `popnei` key, with both
@@ -656,11 +669,15 @@ and a chromosome number that the table given with the block has no name for.
 A user reaches none of the three by what they write, since `write_vars` asks
 its reader for every field and gives the writer the table of that reader.
 
-Three more cases that a call of this module gives are not its own. A path
+Four more cases that a call of this module gives are not its own. A path
 that already exists is refused by the binding crate before the core is
 called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
 `docs/specs/block.md` that every reader taking a size gives, which the
-writer gives too, a `ValueError`. A file that could not be opened, which `from_path` gives for a path that
+writer gives too, a `ValueError`. A block the machine does not give the
+memory for is the other case of `docs/specs/block.md` that every reader
+gives: the reader asks with `try_reserve` for each column of the block it
+builds from a batch, and the size in the message is the one of that batch,
+which the file was written with. A file that could not be opened, which `from_path` gives for a path that
 is not there and for a directory, is the case of `docs/specs/io_vcf.md` with
 the path and the `std::io::Error`, an `OSError` built with the number the
 system gave.
