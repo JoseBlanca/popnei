@@ -24,7 +24,7 @@ use std::sync::{Mutex, MutexGuard};
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::filters::{FilteredReader, VarFilter, VarFilteringCriterion};
+use popnei::filters::{VarFilter, VarFilteringCriterion};
 
 use crate::errors::PyPopneiError;
 use crate::source::threshold_of;
@@ -238,11 +238,12 @@ fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) ->
 /// over it for each step, in the order of the steps, so that each filter
 /// sees only what the one before it kept.
 ///
-/// The filters of the chain are built here and belong to this pass alone,
-/// so no count is shared with another pass. The chain is asked for the
-/// fields the consumer wants once it is built, as `FilteredReader::new`
-/// says: every filter passes them on with the genotypes added, which it
-/// reads for every variant.
+/// The chain itself is the core's, `popnei::filters::chain_of`, which both
+/// binding crates call: what this one does is read the criterion of each
+/// step, which is what the steps of this crate hold and the core does not
+/// know. The filters belong to the pass this chain is built for, so no
+/// count is shared with another pass, and the chain is asked for the fields
+/// the consumer wants once it is built.
 ///
 /// # Errors
 ///
@@ -253,13 +254,11 @@ pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
 ) -> Result<Box<dyn BlockReader>, popnei::Error> {
-    let mut chain = reader;
-    for step in steps {
-        chain = match *step {
-            Step::Filter(criterion) => {
-                Box::new(FilteredReader::new(chain, VarFilter::new(criterion)?)?)
-            }
-        };
-    }
-    Ok(chain)
+    let criteria: Vec<VarFilteringCriterion> = steps
+        .iter()
+        .map(|step| match *step {
+            Step::Filter(criterion) => criterion,
+        })
+        .collect();
+    popnei::filters::chain_of(reader, &criteria)
 }

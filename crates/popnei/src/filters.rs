@@ -12,7 +12,9 @@
 //!
 //! A filter of a pass over the variants is a reader over another reader,
 //! [`FilteredReader`], and several filters are several of them, one over
-//! the other, in the order in which the user put them on.
+//! the other, in the order in which the user put them on. [`chain_of`]
+//! builds that chain from the criteria of one pass, and it is what each
+//! binding crate calls when a pass starts.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
@@ -352,6 +354,36 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
     }
 }
 
+/// One [`FilteredReader`] over `reader` for each criterion, in their order,
+/// so that each filter sees what the one before it kept: the chain of the
+/// filters of one pass. No criterion gives `reader` as it is.
+///
+/// Both binding crates build the chain of a pass with this, and neither
+/// writes the loop: in which order the filters go, and what comes out while
+/// they are built, are of the filters and not of Python or of TypeScript.
+///
+/// What it gives is the outermost reader of the chain, which whoever started
+/// the pass holds: they read [`BlockReader::filtering_stats`] from it when
+/// the consumer returns, and they lend it, `&mut`, to a consumer that takes
+/// a reader. The fields the consumer wants are set on it once the chain is
+/// built, which [`FilteredReader::new`] says why.
+///
+/// # Errors
+///
+/// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
+/// above 1, and what [`FilteredReader::new`] refuses, a criterion of the
+/// kind of one before it in `criteria`. No block was read then.
+pub fn chain_of(
+    reader: Box<dyn BlockReader>,
+    criteria: &[VarFilteringCriterion],
+) -> Result<Box<dyn BlockReader>> {
+    let mut chain = reader;
+    for criterion in criteria {
+        chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+    }
+    Ok(chain)
+}
+
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
     /// What it filters and where it has got to. The source is left out, so
     /// that a `FilteredReader` over a reader that has no `Debug` has one.
@@ -520,8 +552,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{
-        FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, keep_of_the_rows,
-        keep_of_the_rows_one_by_one,
+        FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, chain_of,
+        keep_of_the_rows, keep_of_the_rows_one_by_one,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -1529,6 +1561,96 @@ mod tests {
         assert_eq!(filtered.ploidy(), 4);
         assert_eq!(filtered.chroms().name(0), Some("chr1"));
         assert_eq!(filtered.filtering_stats(), vec![("obs_het", pair(0, 0))]);
+    }
+
+    /// The chain that `chain_of` builds from the three criteria of "How it
+    /// is verified" of the counts, the missing data one at 0.04, the maf
+    /// one at 0.8 and the observed heterozygosity one at 0.5, over
+    /// `many.vcf`: the same 106 variants and the same three pairs of counts
+    /// that the filters put one over another by hand give, since it is what
+    /// the function does.
+    #[test]
+    fn chain_of_the_three_criteria_over_many_vcf_keeps_the_106_variants_with_their_counts() {
+        let source = Box::new(many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS));
+        let mut chain = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(0.8), MaxObsHet(0.5)])
+            .expect("the chain of the three criteria");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+        let positions = positions_of_blocks(&blocks);
+        assert_eq!(positions.len(), 106);
+        assert_eq!(positions[..3], [1111, 1407, 1518]);
+        assert_eq!(
+            positions,
+            positions_of_the_reference("missing_data_0.04+maf_0.8+obs_het_0.5")
+        );
+        // The counts of the chain, the outermost filter first, which is the
+        // last criterion.
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![
+                ("obs_het", pair(163, 106)),
+                ("maf", pair(215, 163)),
+                ("missing_data", pair(500, 215)),
+            ]
+        );
+    }
+
+    /// No criterion gives the source as it is: every variant it has, the
+    /// ones no filter would keep among them, and no counts.
+    #[test]
+    fn chain_of_no_criterion_gives_the_source_as_it_is() {
+        let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1, 2, 3, 4, 5])]);
+        let mut chain = chain_of(Box::new(source), &[]).expect("the chain of no criterion");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+
+        // The variants 4 and 6 have nothing called and no filter of the
+        // three keeps them.
+        assert_eq!(positions_of_blocks(&blocks), [1, 2, 3, 4, 5, 6]);
+        assert!(chain.filtering_stats().is_empty());
+    }
+
+    /// A criterion of the kind of one before it is the error of
+    /// `FilteredReader::new`, which the chain runs into while it is built,
+    /// and a criterion of another kind between the two changes nothing.
+    #[test]
+    fn chain_of_a_criterion_of_a_kind_that_is_set_is_the_error_of_the_reader() {
+        let refused = |criteria: &[VarFilteringCriterion]| {
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+            let error = chain_of(source, criteria)
+                .err()
+                .expect("the chain was refused");
+            let message = error.to_string();
+            assert!(
+                matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "maf", .. }),
+                "{message}"
+            );
+            message
+        };
+
+        assert!(refused(&[MaxMaf(0.8), MaxMaf(0.95)]).contains("0.95"));
+        assert!(
+            refused(&[MaxMaf(0.8), MaxMissingRate(0.04), MaxMaf(0.5)]).contains("0.5"),
+            "a criterion of another kind between the two"
+        );
+    }
+
+    /// A threshold that is not a number from 0 to 1 is the error of
+    /// `VarFilter::new`, whatever its place among the criteria.
+    #[test]
+    fn chain_of_a_threshold_out_of_range_is_the_error_of_the_filter() {
+        let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+        let error = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(1.5)])
+            .err()
+            .expect("the chain was refused");
+
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterThresholdOutOfRange { kind: "maf", .. }
+            ),
+            "{error}"
+        );
     }
 
     /// A chain of two filters over a source reports the counts of both, the
