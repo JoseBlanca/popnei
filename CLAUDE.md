@@ -10,9 +10,13 @@ The skills are under `.claude/skills/` and the subagents under
 will read is written, and a document or a GitHub issue goes to the
 `first-reader` subagent before it is handed over.
 
-An implementation plan is carried out in its own git worktree and branch,
-under `.claude/worktrees/`, as the `following-plans` skill says. Nothing is
-merged into `main`, and nothing is pushed to it, without the owner's order.
+A session that writes anything in the repository, a spec, a plan, a skill
+or code, works in a git worktree and a branch of its own, under
+`.claude/worktrees/`, which it makes before its first edit: two sessions
+that edit the main checkout at once leave their changes mixed in the same
+files, as happened on 21 September 2026. An implementation plan is carried
+out the same way, as the `following-plans` skill says. Nothing is merged
+into `main`, and nothing is pushed to it, without the owner's order.
 
 ## Replies in chat
 
