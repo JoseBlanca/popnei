@@ -11,14 +11,18 @@
 //! through
 //! [`BlockReader::filtering_stats`](crate::block::BlockReader::filtering_stats).
 //!
-//! The reader that puts a filter over another reader is being written.
+//! A filter of a pass over the variants is a reader over another reader,
+//! [`FilteredReader`], and several filters are several of them, one over
+//! the other, in the order in which the user put them on.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
-use crate::block::{Block, BlockSize};
+use std::fmt;
+
+use crate::block::{Block, BlockReader, BlockSize};
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, Needs, count_alleles, count_gts};
+use crate::variant::{AlleleCounts, ChromTable, Needs, count_alleles, count_gts};
 
 /// How many variants a filter was given and how many of them it kept, over
 /// every block it has taken since it was built.
@@ -202,6 +206,149 @@ impl VarFilter {
     }
 }
 
+/// A reader that gives the variants of its source that pass one filter.
+///
+/// It takes a block of its source at whatever size it comes, keeps in it
+/// the variants that pass and gives it on, so it needs no
+/// [`Reblock`](crate::block::Reblock) before it and the blocks it gives are
+/// of uneven size. Nothing is kept
+/// from one block to the next but the two counts of its filter, which
+/// [`BlockReader::filtering_stats`] gives with the counts of the filters of
+/// its source, its own first.
+///
+/// Several filters on one source are several of these, one over the other,
+/// so each sees only what the one before it kept.
+///
+/// It keeps the contract of a reader of `docs/specs/block.md`: a block left
+/// with no variant is not given and the next one is taken; after an error,
+/// of its source or of its filter, it gives `None` at every call and does
+/// not call its source again; and a source that gives a block of no
+/// variants has a defect and is the error of that.
+pub struct FilteredReader<R: BlockReader> {
+    reader: R,
+    filter: VarFilter,
+    /// Whether the source has no more blocks or one of the two, the source
+    /// or the filter, gave an error. After any of them there is no block.
+    finished: bool,
+}
+
+impl<R: BlockReader> FilteredReader<R> {
+    /// The reader that gives the variants of `reader` that pass `filter`.
+    ///
+    /// # Errors
+    ///
+    /// When `reader` holds a filter of the kind of `filter` already, which
+    /// its [`BlockReader::filtering_stats`] says: two threshold filters of
+    /// one kind keep the variants that the stricter of the two keeps alone.
+    pub fn new(reader: R, filter: VarFilter) -> Result<FilteredReader<R>> {
+        let criterion = filter.criterion();
+        let kind = criterion.kind();
+        if reader
+            .filtering_stats()
+            .iter()
+            .any(|(of_the_chain, _)| *of_the_chain == kind)
+        {
+            return Err(Error::VarFilterOfAKindThatIsSet {
+                kind,
+                threshold: criterion.threshold(),
+            });
+        }
+        Ok(FilteredReader {
+            reader,
+            filter,
+            finished: false,
+        })
+    }
+}
+
+impl<R: BlockReader> BlockReader for FilteredReader<R> {
+    /// The next block of the source with the variants that pass the filter
+    /// kept in it, and the blocks that its filter emptied passed over.
+    ///
+    /// # Errors
+    ///
+    /// When the source fails; when a block of the source holds no variant,
+    /// which no reader of popnei gives; and what the filter refuses, a
+    /// block whose arrays are not of its size and a block that has variants
+    /// and no genotypes. After any of them there is no block and the source
+    /// is not called again.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        loop {
+            let mut block = match self.reader.next_block() {
+                Ok(Some(block)) => block,
+                Ok(None) => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Err(error);
+                }
+            };
+            // A source that gives a block of no variants has a defect, and
+            // it is not asked again: over a source that always gives one, a
+            // reader that asked again would never come back.
+            if block.num_vars == 0 {
+                self.finished = true;
+                return Err(Error::ReaderGaveABlockOfNoVariants);
+            }
+            if let Err(error) = self.filter.filter_block(&mut block) {
+                self.finished = true;
+                return Err(error);
+            }
+            // A block the filter emptied is not given: the next one is
+            // taken, and the source says when there are no more.
+            if block.num_vars > 0 {
+                return Ok(Some(block));
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        self.reader.individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        self.reader.ploidy()
+    }
+
+    /// The table of the source: a reader over another reader has none of
+    /// its own.
+    fn chroms(&self) -> &ChromTable {
+        self.reader.chroms()
+    }
+
+    /// The fields of the consumer and the genotypes, which the filter reads
+    /// for every variant of every block: so the blocks this reader gives
+    /// hold the genotypes also when the consumer did not ask for them.
+    fn set_needs(&mut self, needs: Needs) {
+        self.reader.set_needs(needs.union(Needs::GTS));
+    }
+
+    /// The counts of this filter, and after them those of the filters
+    /// between the source and its own source.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        let mut stats = vec![(self.filter.criterion().kind(), self.filter.stats())];
+        stats.extend(self.reader.filtering_stats());
+        stats
+    }
+}
+
+impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
+    /// What it filters and where it has got to. The source is left out, so
+    /// that a `FilteredReader` over a reader that has no `Debug` has one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FilteredReader")
+            .field("filter", &self.filter)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Which rows of the genotypes of a block pass the criterion, one value for
 /// each variant, in the order of the block.
 ///
@@ -321,13 +468,20 @@ fn keeps(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::{
-        FilteringStats, VarFilter, VarFilteringCriterion, keep_of_the_rows,
+        FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, keep_of_the_rows,
         keep_of_the_rows_one_by_one,
     };
-    use crate::block::Block;
-    use crate::error::Error;
-    use crate::variant::{MISSING_ALLELE, Needs};
+    use crate::block::{Block, BlockReader};
+    use crate::error::{Error, Result};
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
     use VarFilteringCriterion::{MaxMaf, MaxMissingRate, MaxObsHet};
 
@@ -729,5 +883,473 @@ mod tests {
         assert_eq!(MaxMaf(0.8).kind(), "maf");
         assert_eq!(MaxObsHet(0.5).kind(), "obs_het");
         assert_eq!(MaxMaf(0.0).kind(), MaxMaf(1.0).kind());
+    }
+
+    /// The table of "How it is verified" of `docs/specs/filters.md`: each
+    /// filter with its threshold, how many of the 500 variants of
+    /// `many.vcf` it keeps, and the first five it keeps by position where
+    /// the table gives them.
+    ///
+    /// The numbers are those of bcftools 1.24 and of pyNei at ef0ca6e,
+    /// which keep the same variants at every one of these thresholds, and
+    /// `tests/reference/filters/` holds every position each one keeps.
+    const THE_TABLE: [(VarFilteringCriterion, usize, &[u64]); 9] = [
+        (MaxMissingRate(0.0), 26, &[1259, 2110, 2480, 3072, 3257]),
+        (MaxMissingRate(0.04), 215, &[]),
+        (MaxMissingRate(0.1), 455, &[]),
+        (MaxMaf(0.5), 35, &[1074, 1296, 1481, 1962, 2110]),
+        (MaxMaf(0.8), 384, &[]),
+        (MaxMaf(0.95), 480, &[]),
+        (MaxObsHet(0.1), 22, &[1185, 3516, 3923, 4515, 5921]),
+        (MaxObsHet(0.25), 79, &[]),
+        (MaxObsHet(0.5), 369, &[]),
+    ];
+
+    /// The reference VCFs live at the root of the repository, beside the
+    /// Python tests that read the same files, and not inside this crate.
+    fn many_vcf() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/vcf/many.vcf")
+    }
+
+    /// A reader over `many.vcf`, the 500 variants of 50 diploid individuals
+    /// of `docs/specs/io_vcf.md`, with every variant given, the ones that
+    /// failed their FILTER too, in blocks of `num_vars_per_block` variants
+    /// and asked for `needs`.
+    fn many_vcf_reader(
+        num_vars_per_block: Option<usize>,
+        needs: Needs,
+    ) -> VcfReader<BufReader<File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        let mut reader =
+            VcfReader::from_path(&many_vcf(), options).expect("the reader of many.vcf");
+        reader.set_needs(needs);
+        reader
+    }
+
+    /// Every block a reader gives, until it has no more or it fails.
+    fn blocks_of(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
+        let mut blocks = Vec::new();
+        while let Some(block) = reader.next_block()? {
+            blocks.push(block);
+        }
+        Ok(blocks)
+    }
+
+    /// The positions of the variants of the blocks, in their order.
+    fn positions_of_blocks(blocks: &[Block]) -> Vec<u64> {
+        blocks
+            .iter()
+            .flat_map(|block| block.pos.clone().unwrap_or_default())
+            .collect()
+    }
+
+    /// The two counts of one filter.
+    fn pair(vars_processed: u64, vars_kept: u64) -> FilteringStats {
+        FilteringStats {
+            vars_processed,
+            vars_kept,
+        }
+    }
+
+    /// The positions of the variants of `many.vcf` that the filter keeps,
+    /// read in blocks of `num_vars_per_block`, with the counts of the
+    /// filter after the last block.
+    fn kept_of_many_vcf(
+        criterion: VarFilteringCriterion,
+        num_vars_per_block: Option<usize>,
+    ) -> (Vec<u64>, Vec<(&'static str, FilteringStats)>) {
+        let reader = many_vcf_reader(num_vars_per_block, Needs::GTS | Needs::CHROM_POS);
+        let filter = VarFilter::new(criterion).expect("the filter");
+        let mut filtered = FilteredReader::new(reader, filter).expect("the reader over the VCF");
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+        for block in &blocks {
+            assert!(block.num_vars > 0, "a block with no variant was given");
+            assert!(
+                block.check().is_ok(),
+                "a block whose arrays are not of its size"
+            );
+        }
+        (positions_of_blocks(&blocks), filtered.filtering_stats())
+    }
+
+    /// The nine rows of the table of the spec, in blocks of 7 variants and
+    /// in blocks of the size popnei chooses: the same variants are kept,
+    /// and the counts of the filter are the 500 variants of the file and
+    /// the ones it kept.
+    #[test]
+    fn each_filter_keeps_the_variants_of_many_vcf_that_the_table_of_the_spec_gives() {
+        for (criterion, kept, first_five) in THE_TABLE {
+            for num_vars_per_block in [Some(7), None] {
+                let (positions, stats) = kept_of_many_vcf(criterion, num_vars_per_block);
+                let what = format!("{criterion:?} in blocks of {num_vars_per_block:?}");
+                assert_eq!(positions.len(), kept, "{what}");
+                assert_eq!(
+                    stats,
+                    vec![(
+                        criterion.kind(),
+                        pair(500, u64::try_from(kept).expect("the variants kept"))
+                    )],
+                    "{what}"
+                );
+                if !first_five.is_empty() {
+                    assert_eq!(&positions[..5], first_five, "{what}");
+                }
+            }
+        }
+    }
+
+    /// The three filters of "How it is verified" of the counts over
+    /// `many.vcf`, the missing data one at 0.04, the maf one at 0.8 after
+    /// it and the observed heterozygosity one at 0.5 after that: bcftools
+    /// 1.24 keeps 215, 163 and 106 variants, the first at 1111, 1407 and
+    /// 1518, and pyNei gives the same three pairs of counts.
+    #[test]
+    fn the_three_filters_chained_over_many_vcf_keep_the_106_variants_and_give_their_counts() {
+        for num_vars_per_block in [Some(7), None] {
+            let reader = many_vcf_reader(num_vars_per_block, Needs::GTS | Needs::CHROM_POS);
+            let missing_data =
+                FilteredReader::new(reader, VarFilter::new(MaxMissingRate(0.04)).unwrap()).unwrap();
+            let maf =
+                FilteredReader::new(missing_data, VarFilter::new(MaxMaf(0.8)).unwrap()).unwrap();
+            let mut obs_het =
+                FilteredReader::new(maf, VarFilter::new(MaxObsHet(0.5)).unwrap()).unwrap();
+
+            let blocks = blocks_of(&mut obs_het).expect("the blocks");
+            let positions = positions_of_blocks(&blocks);
+            let what = format!("in blocks of {num_vars_per_block:?}");
+            assert_eq!(positions.len(), 106, "{what}");
+            assert_eq!(positions[..3], [1111, 1407, 1518], "{what}");
+            // The counts of the chain, the outermost filter first.
+            assert_eq!(
+                obs_het.filtering_stats(),
+                vec![
+                    ("obs_het", pair(163, 106)),
+                    ("maf", pair(215, 163)),
+                    ("missing_data", pair(500, 215)),
+                ],
+                "{what}"
+            );
+        }
+    }
+
+    /// Two threshold filters of one kind keep the variants that the
+    /// stricter of them keeps alone, so a second one is refused when the
+    /// reader is built, with the kind and the threshold that was written.
+    /// A filter of another kind over it is taken.
+    #[test]
+    fn a_second_filter_of_a_kind_the_chain_has_is_refused_when_the_reader_is_built() {
+        let refused = |error: Error, threshold: &str| {
+            let message = error.to_string();
+            assert!(
+                matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "maf", .. }),
+                "{message}"
+            );
+            assert!(message.contains("maf"), "{message}");
+            assert!(message.contains(threshold), "{message}");
+        };
+
+        let reader = many_vcf_reader(Some(7), Needs::GTS);
+        let maf = FilteredReader::new(reader, VarFilter::new(MaxMaf(0.8)).unwrap()).unwrap();
+        let error = FilteredReader::new(maf, VarFilter::new(MaxMaf(0.95)).unwrap()).unwrap_err();
+        refused(error, "0.95");
+
+        // The same with a filter of another kind between the two.
+        let reader = many_vcf_reader(Some(7), Needs::GTS);
+        let maf = FilteredReader::new(reader, VarFilter::new(MaxMaf(0.8)).unwrap()).unwrap();
+        let missing_data =
+            FilteredReader::new(maf, VarFilter::new(MaxMissingRate(0.04)).unwrap()).unwrap();
+        let obs_het =
+            FilteredReader::new(missing_data, VarFilter::new(MaxObsHet(0.5)).unwrap()).unwrap();
+        let error = FilteredReader::new(obs_het, VarFilter::new(MaxMaf(0.5)).unwrap()).unwrap_err();
+        refused(error, "0.5");
+    }
+
+    /// A filter always needs the genotypes, so the blocks it gives hold
+    /// them also when the consumer asked for the positions alone, and they
+    /// hold no column that nobody asked for.
+    #[test]
+    fn the_blocks_hold_the_genotypes_when_the_consumer_asked_for_the_positions_alone() {
+        let reader = many_vcf_reader(Some(7), Needs::ALL);
+        let mut filtered =
+            FilteredReader::new(reader, VarFilter::new(MaxMaf(0.5)).unwrap()).unwrap();
+        filtered.set_needs(Needs::CHROM_POS);
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks).len(), 35);
+        for block in &blocks {
+            assert!(block.fields().contains(Needs::GTS | Needs::CHROM_POS));
+            assert!(!block.gts.is_empty());
+            assert!(block.id.is_none());
+            assert!(block.alleles.is_none());
+            assert!(block.qual.is_none());
+        }
+    }
+
+    /// The rows of a block are read on the threads of the pool the caller
+    /// is in, so the variants that are kept and the counts are the same on
+    /// one thread and on several.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_variants_kept_are_the_same_on_one_thread_and_on_several() {
+        let kept = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| kept_of_many_vcf(MaxObsHet(0.25), Some(7)))
+        };
+        let (on_one, counts_of_one) = kept(1);
+        let (on_four, counts_of_four) = kept(4);
+        assert_eq!(on_one.len(), 79);
+        assert_eq!(on_one, on_four);
+        assert_eq!(counts_of_one, counts_of_four);
+    }
+
+    /// A reader of the tests that gives the blocks it was built with, so
+    /// that the three rules of a reader of `docs/specs/block.md` are tested
+    /// on a source that breaks them, which no reader of popnei does.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks it has not given yet, the next one last.
+        left: Vec<Block>,
+        /// How many times it was asked for a block, which the test holds
+        /// too, so that it sees whether the reader over it asked again
+        /// after an error.
+        calls: Arc<AtomicUsize>,
+        /// The call at which it gives an error instead of a block.
+        fails_at: Option<usize>,
+        /// What it was last asked to fill.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// A reader of five individuals of the ploidy 2, which is what the
+        /// worked example has, that gives `blocks` in their order.
+        fn of(blocks: Vec<Block>) -> GivenBlocks {
+            let mut chroms = ChromTable::new();
+            chroms.intern("chr1");
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (1..=5).map(|number| format!("ind{number}")).collect(),
+                ploidy: 2,
+                chroms,
+                left,
+                calls: Arc::new(AtomicUsize::new(0)),
+                fails_at: None,
+                needs: Needs::ALL,
+            }
+        }
+
+        /// The same reader, whose call number `call` is an error.
+        fn failing_at(blocks: Vec<Block>, call: usize) -> GivenBlocks {
+            GivenBlocks {
+                fails_at: Some(call),
+                ..GivenBlocks::of(blocks)
+            }
+        }
+
+        /// How many times it has been asked for a block, which the test
+        /// reads after the reader over it took it.
+        fn calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            let calls = self.calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            if self.fails_at == Some(calls) {
+                return Err(Error::Io(std::io::Error::other(
+                    "the reader of the tests failed",
+                )));
+            }
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The block of the variants of the worked example whose numbers are
+    /// given, in that order.
+    fn block_of_the_worked_example(variants: &[usize]) -> Block {
+        let rows: Vec<(u64, &[i8])> = variants
+            .iter()
+            .filter_map(|variant| THE_WORKED_EXAMPLE.get(*variant))
+            .map(|(pos, gts)| (*pos, gts.as_slice()))
+            .collect();
+        block_of(&rows, 5, 2)
+    }
+
+    /// A block that the filter emptied is not given: the reader takes the
+    /// next block of its source, and the variants of the block it dropped
+    /// are in its counts.
+    #[test]
+    fn a_block_left_with_no_variant_is_not_given_and_the_next_one_is_taken() {
+        // The first and the last block hold the variants 4 and 6, whose
+        // missing rate is 1, and the middle one the variants 1 and 5,
+        // whose missing rates are 0.2 and 0.
+        let source = GivenBlocks::of(vec![
+            block_of_the_worked_example(&[3, 5]),
+            block_of_the_worked_example(&[0, 4]),
+            block_of_the_worked_example(&[5, 3]),
+        ]);
+        let mut filtered =
+            FilteredReader::new(source, VarFilter::new(MaxMissingRate(0.2)).unwrap()).unwrap();
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(positions_of_blocks(&blocks), [1, 5]);
+        assert_eq!(
+            filtered.filtering_stats(),
+            vec![("missing_data", pair(6, 2))]
+        );
+        // And there is no block after the last one.
+        assert!(filtered.next_block().expect("no more blocks").is_none());
+    }
+
+    /// After an error of its source the reader gives no block and does not
+    /// call its source again: a reader that went on would give the variants
+    /// that follow a wrong one as if nothing had happened.
+    #[test]
+    fn after_an_error_of_the_source_there_is_no_block_and_the_source_is_not_called_again() {
+        let source = GivenBlocks::failing_at(
+            vec![
+                block_of_the_worked_example(&[0, 4]),
+                block_of_the_worked_example(&[1, 2]),
+            ],
+            2,
+        );
+        let calls = source.calls();
+        let mut filtered =
+            FilteredReader::new(source, VarFilter::new(MaxMissingRate(1.0)).unwrap()).unwrap();
+
+        assert_eq!(
+            positions_of_blocks(&[filtered.next_block().unwrap().unwrap()]),
+            [1, 5]
+        );
+        let error = filtered.next_block().unwrap_err();
+        assert!(matches!(error, Error::Io(_)), "{error}");
+        assert!(filtered.next_block().unwrap().is_none());
+        assert!(filtered.next_block().unwrap().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // The counts are those of the blocks it did filter.
+        assert_eq!(
+            filtered.filtering_stats(),
+            vec![("missing_data", pair(2, 2))]
+        );
+    }
+
+    /// The same after an error of its own: a block that has variants and no
+    /// genotypes is the error of a field that is not there, and the source
+    /// is not called again.
+    #[test]
+    fn after_an_error_of_the_filter_there_is_no_block_and_the_source_is_not_called_again() {
+        let mut without_the_genotypes = block_of_the_worked_example(&[0, 4]);
+        without_the_genotypes.gts = Vec::new();
+        let source = GivenBlocks::of(vec![
+            without_the_genotypes,
+            block_of_the_worked_example(&[1, 2]),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            FilteredReader::new(source, VarFilter::new(MaxMaf(1.0)).unwrap()).unwrap();
+
+        let error = filtered.next_block().unwrap_err();
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::GTS),
+            "{error}"
+        );
+        assert!(filtered.next_block().unwrap().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(filtered.filtering_stats(), vec![("maf", pair(0, 0))]);
+    }
+
+    /// A source that gives a block of no variants has a defect, and it is
+    /// the error `reblock` gives for it: a reader that asked again would
+    /// never come back from a source that always gives one.
+    #[test]
+    fn a_source_that_gives_a_block_of_no_variants_is_an_error_and_is_not_called_again() {
+        let source = GivenBlocks::of(vec![
+            block_of_the_worked_example(&[]),
+            block_of_the_worked_example(&[0, 4]),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            FilteredReader::new(source, VarFilter::new(MaxMissingRate(1.0)).unwrap()).unwrap();
+
+        let error = filtered.next_block().unwrap_err();
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "{error}"
+        );
+        assert!(filtered.next_block().unwrap().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A reader over a reader has no individuals, no ploidy and no table of
+    /// chromosome names of its own, and it asks its source for the fields
+    /// of the consumer and the genotypes.
+    #[test]
+    fn the_individuals_the_ploidy_and_the_chromosomes_are_those_of_the_source() {
+        let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 4])]);
+        let filtered =
+            FilteredReader::new(source, VarFilter::new(MaxObsHet(1.0)).unwrap()).unwrap();
+
+        assert_eq!(filtered.individuals().len(), 5);
+        assert_eq!(
+            filtered.individuals().first().map(String::as_str),
+            Some("ind1")
+        );
+        assert_eq!(filtered.ploidy(), 2);
+        assert_eq!(filtered.chroms().name(0), Some("chr1"));
+        assert_eq!(filtered.filtering_stats(), vec![("obs_het", pair(0, 0))]);
+    }
+
+    /// A chain of two filters over a source reports the counts of both, the
+    /// outermost first, and the source reports none of its own.
+    #[test]
+    fn a_chain_of_two_filters_reports_the_counts_of_both_the_outermost_first() {
+        let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1, 2, 3, 4, 5])]);
+        assert!(source.filtering_stats().is_empty());
+        let missing_data =
+            FilteredReader::new(source, VarFilter::new(MaxMissingRate(0.4)).unwrap()).unwrap();
+        let mut maf =
+            FilteredReader::new(missing_data, VarFilter::new(MaxMaf(0.88)).unwrap()).unwrap();
+
+        let blocks = blocks_of(&mut maf).expect("the blocks");
+        assert_eq!(positions_of_blocks(&blocks), [2, 3, 5]);
+        assert_eq!(
+            maf.filtering_stats(),
+            vec![("maf", pair(4, 3)), ("missing_data", pair(6, 4))]
+        );
     }
 }
