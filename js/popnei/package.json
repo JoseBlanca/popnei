@@ -28,9 +28,9 @@
   "scripts": {
     "prepack": "cp ../../LICENSE LICENSE",
     "build": "npm install --no-fund --no-audit && npm run build:wasm && npm run build:ts",
-    "build:wasm": "cargo build --package popnei-js --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir wasm --out-name popnei ../../target/wasm32-unknown-unknown/release/popnei_js.wasm",
+    "build:wasm": "cargo build --package popnei-js --release --target wasm32-unknown-unknown && wasm-bindgen --target web --remove-name-section --out-dir wasm --out-name popnei ../../target/wasm32-unknown-unknown/release/popnei_js.wasm",
     "build:ts": "tsc --project tsconfig.json && tsc --project tsconfig.test.json",
-    "test": "tsc --project tsconfig.test.json && node --test test/"
+    "test": "npm run build:ts && node --test test/"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

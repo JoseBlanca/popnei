@@ -26,9 +26,9 @@ export interface VarsWritten {
 export interface WriteVarsOptions {
   /**
    * How many variants one batch of the file holds, the last one aside, a
-   * whole number of 1 or more. When it is not given, the size popnei
-   * chooses for the number of individuals of the source, which is the size
-   * of its blocks.
+   * whole number of 1 or more and at most 4294967295. When it is not given,
+   * the size popnei chooses for the number of individuals of the source,
+   * which is the size of its blocks.
    */
   numVarsPerBlock?: number;
 }
@@ -47,10 +47,14 @@ export interface WriteVarsOptions {
  * `iterBlocks`. Only the columns that a pass asks for are decompressed, and
  * the variants themselves are read again at every pass, from the same bytes.
  *
- * It reads the schema of the file and its footer, so bytes that are not a
- * vars file, one of a format version popnei does not read, one whose columns
- * are not those of a vars file and one whose individuals name nobody are an
- * `Error` here and not at the first calculation. What is in the batches is
+ * It reads the schema of the file and its footer, so these are an `Error`
+ * here and not at the first calculation: bytes that are not a vars file, a
+ * format version popnei does not read, a column it knows that is of another
+ * type, a file with no `gts` column or whose `gts` holds another number of
+ * alleles for each variant than the individuals and the ploidy of the file
+ * give, and one whose individuals name nobody. A column popnei does not
+ * know is read past and is no error, which is what lets a later version of
+ * the format add one. What is in the batches is
  * read block by block and refused there: a batch that popnei cannot read, of
  * a file damaged after it was written, and a file whose buffers are
  * compressed with zstd, which no build of popnei carries the code to read;
@@ -85,17 +89,22 @@ export function openVars(source: Uint8Array): Variants {
  * stand in for the VCF in any later analysis; a source that has no alleles
  * to give gives a file without that column.
  *
- * The whole file is built in the memory of wasm and the `Uint8Array` is a
- * copy of it, so what the tab holds while the call runs is the source and
- * the file together. That memory grows and never shrinks.
+ * The whole file is built in the memory of wasm, which grows and never
+ * shrinks, so what the tab holds while the call runs is the source and the
+ * file together, and `numVarsPerBlock` is what an application that runs out
+ * of memory lowers: it is the size of the block that is read and written at
+ * a time. What comes back is the caller's own array, in the heap of
+ * JavaScript, which nothing has to free and which the memory of wasm does
+ * not hold a second copy of.
  *
  * What it gives back are those bytes and the counts of the pass it made:
  * how many variants were written and what each filter was given and kept.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `numVarsPerBlock` is not a whole number of 1 or more, when the source
- * cannot be read, a wrong line of a VCF among the causes, and when `init`
- * has not been awaited.
+ * `numVarsPerBlock` is not a whole number of 1 or more and at most
+ * 4294967295, when the source cannot be read, a wrong line of a VCF among
+ * the causes, when the memory of the tab does not take the file, and when
+ * `init` has not been awaited.
  */
 export function writeVars(
   variants: Variants,
@@ -110,14 +119,31 @@ export function writeVars(
   // The steps of the pass are a copy of the list, made after the argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const written = source.write_vars(numVarsPerBlock, steps.of_a_pass());
+  //
+  // The file comes out of the memory of wasm in pieces, each of them freed
+  // there as it is copied here, and the array they are put into is the
+  // user's. A file that crossed in one piece would be held twice while it
+  // crossed, and the memory of wasm would keep its half of that for as long
+  // as the page lives.
+  const file = source.write_vars(numVarsPerBlock, steps.of_a_pass());
   try {
-    const bytes = written.bytes();
-    if (bytes === undefined) {
-      throw new Error("popnei: the bytes of this vars file were read already");
+    const bytes = new Uint8Array(file.num_bytes());
+    let written = 0;
+    for (
+      let piece = file.next_piece();
+      piece !== undefined;
+      piece = file.next_piece()
+    ) {
+      bytes.set(piece, written);
+      written += piece.length;
     }
-    return { bytes, passStats: passStatsOf(written.pass_stats()) };
+    if (written !== bytes.length) {
+      throw new Error(
+        `popnei: the vars file says it holds ${bytes.length} bytes and gave ${written}`,
+      );
+    }
+    return { bytes, passStats: passStatsOf(file.pass_stats()) };
   } finally {
-    written.free();
+    file.free();
   }
 }

@@ -39,6 +39,15 @@ function exported from Rust; and the TypeScript compiler, which writes
 `js/popnei/dist/` from `src/` and checks the tests against it. Neither
 `wasm/` nor `dist/` nor `node_modules/` is in git.
 
+The `wasm-bindgen` command line is given `--remove-name-section`, which
+takes out of the wasm file the section that holds the name of every
+function of it: `js/popnei/wasm/popnei_bg.wasm` is 1242562 bytes with the
+flag and 1687938 bytes without, 443209 bytes of names that every user of
+the package downloads. What they are for is the stack of a trap, a panic
+of Rust among the causes, which with the flag names the functions by their
+number and without it by their name. To read one, build again without the
+flag and make the trap happen there.
+
 The version of the `wasm-bindgen` crate, in the `Cargo.toml` of the
 workspace, has to be the version of the `wasm-bindgen` command line that
 is installed, so it is pinned there, `=0.2.128`. The crate writes into the
@@ -104,20 +113,33 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   so a second copy of the same file stays for as long as the page lives,
   which is why `open_vcf` and `open_vars` keep the `Vec` they were given
   and share it with every pass: an 80 MB VCF costs 80 MB of the tab and
-  not 160 MB. Measured on a vars file of 26.9 MB, 20000 variants of 1000
-  diploid individuals written in batches of 1000: `openVars` grows the
-  memory of wasm by 27.1 MB, the file and nothing else, and a pass over
-  its genotypes by 12.2 MB, the batches it decodes. A reader built over a
-  copy of those bytes instead grew it by 39.1 MB at that pass, 26.9 MB
-  more, which is the file.
-- A `Vec<u8>` coming back is a copy going out, so the bytes of a file that
-  is written are in the memory of wasm and in the `Uint8Array` at once.
-  While `write_vars` runs, that memory holds the source, the block being
-  written and the file that is growing: writing the 26.9 MB file above
-  from a VCF of 76.9 MB grew the memory of wasm by 106.8 MB with batches
-  of 1000 variants and by 158.5 MB with batches of 10000, beyond the
-  76.9 MB of the source. The size of the batches is what an application
-  that runs out of memory has to lower.
+  not 160 MB. The measurements that follow are of one file, written by
+  `crates/popnei/benches/make_big_vcf.py` with its `NUM_VARS` at 20000:
+  a VCF of 80692954 bytes, 20000 variants of 1000 diploid individuals,
+  whose vars file in batches of 1000 is 19185674 bytes. Each of them was
+  made in a process of its own, because the memory of wasm never shrinks
+  and what one measurement frees is room the next one does not have to
+  grow for, and each is the memory of wasm before the call against after
+  it.
+- `openVars` of that file grows the memory of wasm by 18.4 MB, the file
+  and nothing else. A pass over it grows it by what the blocks it builds
+  hold: 11.7 MB with `numVarsPerBlock` 1000, 39.2 MB with none, which for
+  1000 individuals is blocks of 5000 variants, and 62.6 MB with 10000. A
+  second pass grows it by nothing, whichever of the three, because the
+  first one left the room behind.
+- A `Vec<u8>` coming back is a copy going out, so a file that is written
+  is in the memory of wasm and in the `Uint8Array` at once. While
+  `writeVars` runs, that memory holds the source, the block being read and
+  written, and the file that is growing, and the package reads that file
+  out of it in pieces of 1 MiB, each freed there as it is copied into the
+  array the user gets. Writing the file above from its VCF grows the
+  memory of wasm by 30.8 MB with batches of 1000 variants, beyond the
+  77.0 MB of the source, and by 20.8 MB with batches of 100, which is a
+  file of 19507162 bytes. Writing it again from the vars file it came
+  from, in batches of 1000, grows it by 34.2 MB. The size of the batches
+  is what an application that runs out of memory lowers, and it is the
+  size of the block that is read as well as the size of the batch that is
+  written.
 - A panic of Rust in wasm is a trap: the call ends where it is, the memory
   of wasm keeps what it held, and an object that was borrowed at that
   moment stays borrowed, so a later `free()` of it throws "attempted to
@@ -143,9 +165,12 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
 
     npm test
 
-It runs the TypeScript compiler over `test/` and then the test runner of
-node itself, `node --test`, once the build has left `dist/` and `wasm/` in
-place. The tests import the name of the package, `popnei`, which node
+It runs the TypeScript compiler over `src/` and over `test/`, which writes
+`dist/` again and type checks the tests against it, and then the test
+runner of node itself, `node --test`. What it does not build is the
+WebAssembly: the tests run the `wasm/` that is there, so a change of Rust
+is tested only after `npm run build`. The tests import the name of the
+package, `popnei`, which node
 resolves to the built entry point of node, and read the reference VCFs of
 `tests/reference/vcf/` at the root of the repository, the files the Python
 tests read. They assert that the version the package gives and the version
@@ -165,13 +190,17 @@ vars file written from them, and asserts the counts of the pass that
 `iterBlocks` and `writeVars` give: 500 after a whole pass, 21 after three
 blocks of 7, none for a source with no variant, and, for a pass that ended
 at a wrong line, the variants of the blocks the user got and not the ones
-the file holds. Three of the tests
+the file holds. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
-`wasm/popnei.js` generates: that a block kept while enough more are read
-for that memory to grow still holds what it held, that an iteration gives
-its pass back however it ends, and that twelve passes over one vars file
-open at once grow that memory by less than the file, which a reader that
-copied the bytes for each pass would not.
+`wasm/popnei.js` generates: that a block, and the bytes of a vars file,
+kept while enough more is read for that memory to grow still hold what
+they held, and that an iteration gives its pass back however it ends.
+`test/vars_memory.test.ts` is alone in its process for two more, because
+what a test frees stays in that memory as room the next one fits into: it
+writes a vars file of 12 MB and asks that the write stay under twice the
+file, and then opens twelve passes over it at once and asks that they
+grow the memory by less than one copy of it, which a reader that copied
+the bytes for each pass would not.
 
 ## node and a page, from one build
 
@@ -305,6 +334,14 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+A file written here is larger than the same one written by popnei outside
+the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
+batches of 100, is 53650 bytes written in wasm and 49426 bytes written
+natively. The compression is lz4 in both, from `lz4_flex`, which hashes
+four bytes of the input on a 32 bit target and five on a 64 bit one and so
+finds other repetitions. Both files hold the same table and each library
+reads both, and no test compares the two sizes.
+
 The arguments are checked before they reach the core, and each of these is
 an `Error` that says what was given: a `source` that is not a
 `Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
@@ -335,6 +372,10 @@ hand:
   never runs its last either. Its `passStats` is read after the pass is
   over all the same: the counts are taken out of the pass just before it
   is freed, and they are numbers of JavaScript.
+- The `Uint8Array` of `writeVars` is the user's own, in the heap of
+  JavaScript: the file is read out of the memory of wasm in pieces, each
+  of them freed there as it is copied, so nothing of it is left to free by
+  hand.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and

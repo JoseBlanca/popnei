@@ -35,3 +35,12 @@ workspace = true
 [[bench]]
 name = "read_vcf"
 harness = false
+
+# The timing of the reader and the writer of a vars file of work package 4
+# of docs/plans/vars-file.md, against the 21 ms of "Speed" of
+# docs/specs/io_vars.md. It takes the path of a vars file and the runs on
+# its command line and prints one wall time per run, so it runs without a
+# harness, as read_vcf does.
+[[bench]]
+name = "vars_file"
+harness = false

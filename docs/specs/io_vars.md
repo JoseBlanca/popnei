@@ -518,12 +518,31 @@ browser tab ends the session, or an allocation of 144115188075855871 bytes,
 which ends the process and which nothing catches. What the reader checks: the
 message is one of a batch; the rows it says are the variants of its entry of
 the footer; every buffer of it lies inside the body of the batch; every buffer
-compressed with lz4 says a length that lz4 can give from the bytes it holds,
-which is 255 for each byte at most; and no column of it says more values than
-the body holds bits. Natively, what those checks do not see is held by
-`catch_unwind` around the call into arrow-rs, which gives the same error; in
-wasm, where a panic ends the program and unwinds nothing, the checks are the
-whole of it.
+compressed with lz4 says a length that its column can hold; and no column of
+it says more values than the body holds bits. Natively, what those checks do
+not see is held by `catch_unwind` around the call into arrow-rs, which gives
+the same error; in wasm, where a panic ends the program and unwinds nothing,
+the checks are the whole of it.
+
+What a column can hold is worked out from the schema of the file and the rows
+of the batch, walking the buffers in the order the IPC format lays them out:
+the genotypes of a batch are its rows times the individuals times the ploidy
+bytes and no more, the positions 8 bytes for each row, the qualities 4, the
+offsets of a column of texts and of a list 4 for each row and one after the
+last, and a mask of nulls a bit for each row. The texts of the three columns
+of texts, and the values of a list, have no such number, and neither has a
+column whose type popnei does not know, which stops the walk: what bounds
+those is what lz4 gives from the bytes the buffer holds, 255 for each byte,
+and the 2147483647 bytes that the 32 bit offsets of a column of texts
+address. The exact bound is what matters for the genotypes, which are the
+large buffer: a reviewer wrote a file of 20000 variants of 1000 diploid
+individuals in one batch, 25147258 bytes, and changed the eight bytes that
+say how long its `gts` buffer is once it is decompressed. Under wasm, on 21
+September 2026, 1000000000 and 2000000000 gave the error of a batch that
+could not be read and left the memory of the tab grown to 2066087936 bytes
+for its life, because arrow-rs had asked for what the buffer said before it
+read it; 3000000000 and 4294967295 ended the tab with a trap, which is what
+wasm does with an allocation it cannot address.
 
 Two individuals with the same name are an error, as they are for the VCF
 reader.

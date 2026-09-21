@@ -1,6 +1,13 @@
 /**
  * What the package checks of an argument before it reaches the core.
  *
+ * The bytes of a file are also asked about: the code wasm-bindgen
+ * generates allocates the whole length of a `Uint8Array` inside the memory
+ * of wasm before any code of popnei runs, and an allocation that fails
+ * there is a trap, which ends the module. `room_for_bytes` of the binding
+ * crate asks for that memory first and gives an `Error` when it is not
+ * there.
+ *
  * A number of JavaScript is a float64, and the code wasm-bindgen generates
  * turns it into the integer the Rust takes by throwing its fraction away
  * and keeping it modulo 2^32, with no error: a ploidy of 2.5 and one of
@@ -9,6 +16,8 @@
  * whatever their memory holds. Python refuses all of them, so the package
  * refuses them here, before the call, and says what was given.
  */
+
+import { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
 
 /**
  * The largest number the package hands to the core, 2^32 - 1.
@@ -58,9 +67,12 @@ export function aBoolean(argument: string, value: unknown): boolean {
 }
 
 /**
- * The bytes of `value` when it is a `Uint8Array`, and an `Error` otherwise.
+ * The bytes of `value` when it is a `Uint8Array` that can be read and that
+ * the memory of wasm takes, and an `Error` otherwise.
  *
- * @throws {Error} When `value` is not a `Uint8Array`.
+ * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
+ * transferred, which leaves the array with nothing to read, and when the
+ * memory of wasm does not take a copy of it.
  */
 export function bytes(argument: string, value: unknown): Uint8Array {
   if (!(value instanceof Uint8Array)) {
@@ -71,6 +83,25 @@ export function bytes(argument: string, value: unknown): Uint8Array {
         'new Uint8Array(await readFile(path))',
     );
   }
+  // A page that sends bytes to a web worker transfers their buffer, which
+  // leaves the array it came from with a length of 0 and no memory behind
+  // it. The code wasm-bindgen generates throws a `TypeError` of its own on
+  // one, which names neither the argument nor what happened to it.
+  // `detached` is of node 26 and of the browsers of 2024; where it is not
+  // there, this passes and the array is read as the empty one it looks
+  // like.
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the bytes of the file are there and not in " +
+        "this array; the worker that was given them is where they are read",
+    );
+  }
+  // The copy into the memory of wasm is made by the generated code, before
+  // any code of popnei runs, and an allocation that fails there is a trap
+  // that leaves the module unusable. This asks for the memory first, and
+  // what it grew is what that copy then finds.
+  roomForBytes(value.length);
   return value;
 }
 
@@ -95,7 +126,14 @@ export function namesOfFields(argument: string, value: unknown): string[] {
   return value as string[];
 }
 
-/** What was given, for the message of an argument that was refused. */
+/**
+ * What was given, for the message of an argument that was refused.
+ *
+ * The name of the class of an object goes inside the words `of the type`,
+ * which is where the Python package puts it too: the article that would
+ * come before it is `a` for a `Uint8Array` and `an` for an `Array`, and no
+ * rule of the letters tells the two apart.
+ */
 export function whatWasGiven(value: unknown): string {
   if (typeof value === "string") {
     return `the string \`${value}\``;
@@ -103,10 +141,15 @@ export function whatWasGiven(value: unknown): string {
   if (value === null) {
     return "null";
   }
+  if (value === undefined) {
+    return "undefined";
+  }
   if (typeof value === "object") {
     const name: unknown = (value as { constructor?: { name?: string } })
       .constructor?.name;
-    return typeof name === "string" ? `a ${name}` : "an object";
+    return typeof name === "string"
+      ? `an object of the type \`${name}\``
+      : "an object of no type";
   }
   return `the ${typeof value} ${String(value)}`;
 }

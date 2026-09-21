@@ -51,8 +51,10 @@ VARIANTS = [
 
 # The value of the key `popnei` of the schema, which holds what is known
 # before the first variant. The field inside each of the two lists is the one
-# pyarrow writes for any list, named item and allowed to be null, which is
-# what popnei writes too.
+# pyarrow writes for any list, named item and allowed to be null. popnei
+# writes that same name and says that the field holds no null, which is what
+# is true of an allele and of a genotype; its reader compares what a list
+# holds and not that field, so it reads this file as it reads its own.
 SCHEMA = pa.schema(
     [
         pa.field("chrom", pa.string(), nullable=False),

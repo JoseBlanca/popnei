@@ -33,7 +33,7 @@
 //! Each column is moved out of the block as it is read, so that the copy
 //! that crosses is the only one.
 
-use std::io::Cursor;
+use std::io::{Cursor, ErrorKind, Write};
 use std::sync::Arc;
 
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -94,6 +94,58 @@ pub(crate) fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
     Cursor::new(SharedBytes(Arc::clone(bytes)))
 }
 
+/// That the memory of wasm takes `num_bytes` more, asked for before a
+/// `Uint8Array` of that length is copied into it.
+///
+/// The code wasm-bindgen generates for an argument of bytes asks for the
+/// whole length before any code of popnei runs, and an allocation that
+/// fails in wasm aborts, which is a trap: the call ends where it is and the
+/// module cannot be called again, where section 11 of
+/// `docs/architecture.md` asks for an `Error`. So the package calls this
+/// first, with the length of the array. The memory this grew is not given
+/// back to the system, which wasm cannot do, so the copy that follows finds
+/// it.
+///
+/// # Errors
+///
+/// When the memory of wasm cannot take that many bytes more: a wasm module
+/// addresses 4 GB, and what is already open in the tab is in those 4 GB.
+#[wasm_bindgen]
+pub fn room_for_bytes(num_bytes: f64) -> Result<(), JsPopneiError> {
+    let no_room = || {
+        JsPopneiError::NoMemory(format!(
+            "the {num_bytes} bytes of this file do not fit in the memory popnei has \
+             left: a page holds at most 4 GB of them at a time, and every file that \
+             is open counts. A file this large is read by a program outside the \
+             browser, popnei in Python among them."
+        ))
+    };
+    // The length of a `Uint8Array` is a whole number that is not negative,
+    // and everything else, a NaN among it, is refused with the same message
+    // instead of being cast.
+    if !num_bytes.is_finite() || num_bytes < 0.0 || num_bytes > LARGEST_ALLOCATION {
+        return Err(no_room());
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a number between 0 and usize::MAX"
+    )]
+    let wanted = num_bytes as usize;
+    let mut room: Vec<u8> = Vec::new();
+    room.try_reserve_exact(wanted).map_err(|_| no_room())?;
+    drop(room);
+    Ok(())
+}
+
+/// The most bytes one allocation of this build can hold, `usize::MAX`,
+/// which in wasm is 2^32 - 1.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "2^32 - 1 is below 2^53 and is exact as a float64"
+)]
+const LARGEST_ALLOCATION: f64 = usize::MAX as f64;
+
 /// One pass over `source`, through the steps of `steps`, whose blocks hold
 /// `fields` besides the genotypes, `num_vars_per_block` variants each.
 ///
@@ -135,60 +187,58 @@ pub(crate) fn blocks_of(
     })
 }
 
-/// Every variant of `source`, through the steps of `steps`, as the bytes of
-/// a vars file, one batch of `num_vars_per_block` variants after another,
-/// and `None` for the size popnei chooses for the individuals of the source.
+/// How many bytes one piece of a vars file that is being written holds,
+/// 1 MiB.
 ///
-/// The file is built in the memory of wasm and crosses as a copy of it: a
-/// `Uint8Array` that were a view into that memory would stop being valid the
-/// next time it grows. A tab holds the source and the file at once, so the
-/// memory it needs is the two together.
-///
-/// # Errors
-///
-/// When `num_vars_per_block` is 0, when the source cannot be read, and when
-/// a block of it is not one a vars file holds.
-pub(crate) fn bytes_of_a_vars_file(
-    source: &dyn OpenSource,
-    num_vars_per_block: Option<usize>,
-    steps: Steps,
-) -> Result<VarsWritten, JsPopneiError> {
-    // The source is read at the size of its own blocks: the core puts a
-    // `reblock` of `num_vars_per_block` over whatever it is given, so the
-    // batches of the file hold that many variants whichever source they
-    // came from.
-    let reader = source.reader(None)?;
-    // The chain of the pass stays here, lent to the core, so that the counts
-    // of its filters can be read when the call is over: the loop over the
-    // blocks is the core's, and so is the count of the variants it wrote,
-    // which no loop of this crate sees.
-    let mut chain = chain_of(reader, steps.steps())?;
-    let (bytes, num_vars) =
-        popnei::io::vars::write_vars(&mut chain, Vec::new(), num_vars_per_block)?;
-    Ok(VarsWritten {
-        bytes: Some(bytes),
-        counts: PassCounts::of(num_vars, &chain.filtering_stats()),
-    })
-}
+/// It is what the memory of wasm grows by at a time while a file is written
+/// and what one call of `next_piece` copies out, and nothing of the format
+/// depends on it: the pieces are put together in JavaScript into the one
+/// array the user gets. Writing a file of 18.3 MB from a vars source grew
+/// that memory by 33.3 MB with pieces of this size, by 34.2 MB with pieces
+/// of 128 KiB and by 36.8 MB with pieces of 4 MiB, so what is left above
+/// the file is not the pieces but what the reader and arrow-rs hold while a
+/// batch is written.
+const BYTES_PER_PIECE: usize = 1024 * 1024;
 
-/// The bytes of a vars file that was written, with the counts of the pass
-/// that wrote it.
+/// A vars file that was written, held in pieces of [`BYTES_PER_PIECE`].
 ///
-/// The package reads the two and frees this object: the bytes leave it the
-/// first time they are asked for, so that the copy that crosses into the
-/// `Uint8Array` is the only one.
+/// The whole file is in the memory of wasm when the write is over, and that
+/// memory never shrinks, so what a `Vec` that grew by doubling cost a tab
+/// was the bytes it had and the buffer twice that size it copied them into,
+/// at every doubling, all of it kept for as long as the page lives.
+/// Measured on a vars file of 18.3 MB written from a vars source, that one
+/// grew the memory of wasm by 62.4 MB and these pieces grow it by 33.3 MB.
+///
+/// Every piece leaves the memory of wasm as it is read, which is where the
+/// copy that crosses is made, and the package puts them together into the
+/// `Uint8Array` the user gets, in the heap of JavaScript.
 #[wasm_bindgen]
-pub struct VarsWritten {
-    bytes: Option<Vec<u8>>,
+pub struct VarsFile {
+    /// The pieces in the order they were written, each of them empty once
+    /// it has been given to JavaScript.
+    pieces: Vec<Vec<u8>>,
+    num_bytes: usize,
+    /// Which piece is the next one to give.
+    next: usize,
+    /// The counts of the pass that wrote the file, which the package gives
+    /// its user beside the bytes.
     counts: PassCounts,
 }
 
 #[wasm_bindgen]
-impl VarsWritten {
-    /// The bytes of the whole file, and `undefined` when they were read
-    /// already.
-    pub fn bytes(&mut self) -> Option<Vec<u8>> {
-        self.bytes.take()
+impl VarsFile {
+    /// How many bytes the whole file holds.
+    #[must_use]
+    pub fn num_bytes(&self) -> usize {
+        self.num_bytes
+    }
+
+    /// The next piece of the file, or `undefined` when it has all been
+    /// given. Each of them leaves the memory of wasm as it is read.
+    pub fn next_piece(&mut self) -> Option<Vec<u8>> {
+        let piece = self.pieces.get_mut(self.next)?;
+        self.next = self.next.saturating_add(1);
+        Some(std::mem::take(piece))
     }
 
     /// How many variants were written, and what each filter of the pass was
@@ -197,6 +247,121 @@ impl VarsWritten {
     pub fn pass_stats(&self) -> PassCounts {
         self.counts.clone()
     }
+}
+
+/// The sink the core writes a vars file into: it takes the bytes in pieces
+/// of [`BYTES_PER_PIECE`] and never copies what it has into a larger buffer.
+struct PiecesOfTheFile {
+    pieces: Vec<Vec<u8>>,
+    num_bytes: usize,
+}
+
+impl PiecesOfTheFile {
+    fn new() -> PiecesOfTheFile {
+        PiecesOfTheFile {
+            pieces: Vec::new(),
+            num_bytes: 0,
+        }
+    }
+
+    /// The piece the next bytes go into, a new one when the last is full.
+    ///
+    /// # Errors
+    ///
+    /// When the memory of wasm cannot take another piece, which is the
+    /// error of a vars file that could not be written: the core wraps what
+    /// a sink says, and a tab that has no memory left for the file is told
+    /// so instead of trapping on a failed allocation.
+    fn piece_with_room(&mut self) -> std::io::Result<&mut Vec<u8>> {
+        let full = match self.pieces.last() {
+            Some(piece) => piece.len() >= piece.capacity(),
+            None => true,
+        };
+        if full {
+            let mut piece: Vec<u8> = Vec::new();
+            piece.try_reserve_exact(BYTES_PER_PIECE).map_err(|_| {
+                std::io::Error::new(
+                    ErrorKind::OutOfMemory,
+                    format!(
+                        "the memory of this tab does not take {BYTES_PER_PIECE} bytes \
+                         more of the file, which holds {num_bytes} bytes so far",
+                        num_bytes = self.num_bytes
+                    ),
+                )
+            })?;
+            self.pieces.push(piece);
+        }
+        self.pieces
+            .last_mut()
+            .ok_or_else(|| std::io::Error::other("the file has no piece to be written into"))
+    }
+}
+
+impl Write for PiecesOfTheFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let piece = self.piece_with_room()?;
+        let room = piece.capacity().saturating_sub(piece.len());
+        let taken = room.min(bytes.len());
+        let Some(head) = bytes.get(..taken) else {
+            return Err(std::io::Error::other(
+                "the bytes of the file are fewer than what is being taken from them",
+            ));
+        };
+        piece.extend_from_slice(head);
+        self.num_bytes = self.num_bytes.checked_add(taken).ok_or_else(|| {
+            std::io::Error::other("the file holds more bytes than this machine counts")
+        })?;
+        Ok(taken)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Every variant of `source`, through the steps of `steps`, as a vars
+/// file, one batch of `num_vars_per_block` variants after another, and
+/// `None` for the size popnei chooses for the individuals of the source.
+///
+/// The file is built in the memory of wasm, in pieces that cross one by one:
+/// a `Uint8Array` that were a view into that memory would stop being valid
+/// the next time it grows. A tab holds the source and the file at once, so
+/// the memory it needs is the two together.
+///
+/// # Errors
+///
+/// When `num_vars_per_block` is 0, when the source cannot be read, when a
+/// block of it is not one a vars file holds, and when the memory of the tab
+/// does not take the file.
+pub(crate) fn bytes_of_a_vars_file(
+    source: &dyn OpenSource,
+    num_vars_per_block: Option<usize>,
+    steps: Steps,
+) -> Result<VarsFile, JsPopneiError> {
+    // The source is asked for the size the batches will have, as a pass is,
+    // so that the `reblock` the core puts over it has nothing to cut or to
+    // join. What that saves is the memory of a block: a VCF read with the
+    // size popnei chooses for 1000 individuals, 5000 variants, holds 10.4 MB
+    // of genotypes while it is written, and 0.3 MB when the caller asked for
+    // batches of 100. A source that cannot give that size, the vars file
+    // whose batches were written at another one, leaves it to the `reblock`.
+    let reader = source.reader(num_vars_per_block)?;
+    // The chain of the pass stays here, lent to the core, so that the counts
+    // of its filters can be read when the call is over: the loop over the
+    // blocks is the core's, and so is the count of the variants it wrote,
+    // which no loop of this crate sees.
+    let mut chain = chain_of(reader, steps.steps())?;
+    let (written, num_vars) =
+        popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
+    Ok(VarsFile {
+        pieces: written.pieces,
+        num_bytes: written.num_bytes,
+        next: 0,
+        counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+    })
 }
 
 /// The counts of one pass on their way to JavaScript: how many variants it

@@ -23,7 +23,7 @@ use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
 use crate::errors::JsPopneiError;
-use crate::source::{Blocks, OpenSource, VarsWritten, blocks_of, bytes_of_a_vars_file, cursor_of};
+use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
 use crate::steps::Steps;
 
 /// A vars file that was opened: its bytes, and the individuals and the
@@ -69,20 +69,22 @@ impl VarsSource {
         blocks_of(self, fields, num_vars_per_block, steps)
     }
 
-    /// The variants of the file, through the steps of `steps`, as the bytes
-    /// of another vars file, of batches of `num_vars_per_block` variants,
-    /// and of the size popnei chooses for these individuals when it is not
-    /// given, with the counts of the pass that wrote them.
+    /// The variants of the file, through the steps of `steps`, as another
+    /// vars file, of batches of `num_vars_per_block` variants, and of the
+    /// size popnei chooses for these individuals when it is not given,
+    /// which the package reads out of the memory of wasm piece by piece,
+    /// with the counts of the pass that wrote them.
     ///
     /// # Errors
     ///
-    /// When `num_vars_per_block` is 0, when the file cannot be read, and
-    /// when a block of it is not one a vars file holds.
+    /// When `num_vars_per_block` is 0, when the file cannot be read, when a
+    /// block of it is not one a vars file holds, and when the memory of the
+    /// tab does not take the file.
     pub fn write_vars(
         &self,
         num_vars_per_block: Option<usize>,
         steps: Steps,
-    ) -> Result<VarsWritten, JsPopneiError> {
+    ) -> Result<VarsFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
     }
 }
