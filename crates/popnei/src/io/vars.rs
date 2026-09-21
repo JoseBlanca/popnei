@@ -496,6 +496,12 @@ impl<W: Write> VarsWriter<W> {
     ///
     /// # Errors
     ///
+    /// When there is no individual or the ploidy is 0, which is a file of
+    /// genotypes of no allele, and when `num_vars_per_block` is 0: the
+    /// `popnei` key of a vars file says one individual at least, a ploidy
+    /// of 1 at least and batches of 1 variant at least, and a reader of
+    /// popnei refuses a file whose key says less.
+    ///
     /// When the genotypes of one variant, the individuals times the ploidy,
     /// are more than the `gts` column of an arrow file holds, 2147483647
     /// alleles, which is a block of more memory than a machine gives. And
@@ -508,6 +514,18 @@ impl<W: Write> VarsWriter<W> {
         num_vars_per_block: usize,
     ) -> Result<VarsWriter<W>> {
         let num_individuals = individuals.len();
+        // What the `popnei` key of the file would say, which a reader of
+        // popnei refuses when it says no individual, a genotype of no
+        // allele or a batch of no variant.
+        if num_individuals == 0 || ploidy == 0 {
+            return Err(Error::VarsFileOfNoGenotypes {
+                num_individuals,
+                ploidy,
+            });
+        }
+        if num_vars_per_block == 0 {
+            return Err(Error::BlockOfNoVariants);
+        }
         let alleles_per_var = num_individuals
             .checked_mul(ploidy)
             .and_then(|alleles| i32::try_from(alleles).ok())
@@ -1659,6 +1677,56 @@ mod tests {
         // No size was asked for, so the blocks hold the number of variants
         // popnei chooses for 3 individuals, the largest it chooses.
         assert_eq!(file.metadata.num_vars_per_block, 10_000);
+    }
+
+    /// The `popnei` key of a vars file names one individual at least, a
+    /// ploidy of 1 at least and batches of 1 variant at least, and
+    /// `metadata_from_json` of this module refuses a key that says less. A
+    /// writer built with any of the three would write a file that no
+    /// reader of popnei opens, and a file of no individual would have no
+    /// `gts` column, which every vars file has.
+    #[test]
+    fn a_writer_of_no_genotype_or_of_batches_of_no_variant_is_refused() {
+        let individuals = cases_individuals();
+        let writer: Result<VarsWriter<Vec<u8>>> = VarsWriter::new(Vec::new(), &individuals, 2, 3);
+        assert!(writer.is_ok());
+
+        let error = match VarsWriter::new(Vec::new(), &[], 2, 3) {
+            Ok(_) => panic!("a writer of no individual was built"),
+            Err(error) => error,
+        };
+        let Error::VarsFileOfNoGenotypes {
+            num_individuals,
+            ploidy,
+        } = &error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((*num_individuals, *ploidy), (0, 2));
+        let message = error.to_string();
+        assert!(message.contains("0 individuals"), "{message}");
+        assert!(message.contains("one individual at least"), "{message}");
+
+        let error = match VarsWriter::new(Vec::new(), &individuals, 0, 3) {
+            Ok(_) => panic!("a writer of the ploidy 0 was built"),
+            Err(error) => error,
+        };
+        let Error::VarsFileOfNoGenotypes {
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((num_individuals, ploidy), (3, 0));
+
+        let error = match VarsWriter::new(Vec::new(), &individuals, 2, 0) {
+            Ok(_) => panic!("a writer of batches of no variant was built"),
+            Err(error) => error,
+        };
+        // The case every reader that takes a size gives, which
+        // `write_vars` gives for the same number.
+        assert!(matches!(error, Error::BlockOfNoVariants), "{error}");
     }
 
     /// Arrow keeps where each text of a column of a batch ends in a 32 bit

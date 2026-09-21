@@ -428,6 +428,22 @@ pub enum Error {
         number: u32,
     },
 
+    /// The vars file writer was asked for a file whose genotypes hold no
+    /// allele: no individual, or the ploidy 0. Every source of popnei has
+    /// one individual at least, as `docs/specs/block.md` says; the `gts`
+    /// column is in every vars file; and the `popnei` key of a file names a
+    /// ploidy of 1 at least, which a reader of popnei checks when it opens
+    /// one.
+    #[error(
+        "a vars file of {num_individuals} individuals of the ploidy {ploidy} cannot be written: it holds the genotypes of one individual at least, of one allele at least each"
+    )]
+    VarsFileOfNoGenotypes {
+        /// How many individuals the writer was asked for.
+        num_individuals: usize,
+        /// The ploidy it was asked for.
+        ploidy: usize,
+    },
+
     /// A column of texts of a block given to the vars file writer holds
     /// more bytes than one column of a batch takes. Arrow keeps where each
     /// text of a column ends in a 32 bit number, and arrow-rs panics at the
