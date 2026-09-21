@@ -100,19 +100,36 @@ fn not_written(failure: std::io::Error) -> popnei::Error {
     }
 }
 
+/// The number the system gives for a directory where a file was asked for,
+/// `EISDIR`, which is 21 on macOS, on Linux and in emscripten, the systems
+/// popnei runs on. `File::create_new` on a directory says instead that
+/// something is already at the path, which is true and which would tell a
+/// user to take away the directory they meant to write into.
+const A_DIRECTORY_IS_THERE: i32 = 21;
+
 /// The file to write the variants into, made at `path`.
 ///
 /// # Errors
 ///
 /// When a file is already at the path, which is a wrong argument and not an
 /// error of the file system: `write_vars` writes no file over another one.
-/// And when the file system refuses to make the file, a directory that is
-/// not there or one that cannot be written in.
+/// And when the file system refuses to make the file, a directory at the
+/// path, a directory that is not there or one that cannot be written in.
 fn file_at(path: &Path) -> Result<File, PyPopneiError> {
     // `create_new` asks and makes in one call: a path that is looked at
     // first and written afterwards is a file of somebody else in between.
     File::create_new(path).map_err(|error| {
         if error.kind() == ErrorKind::AlreadyExists {
+            if path.is_dir() {
+                // The path is asked about after the call and not before it,
+                // so nothing is done on what the answer says: a directory
+                // that became a file meanwhile is told as a file that is
+                // already there, which it is.
+                return PyPopneiError::Core(popnei::Error::FileNotOpened {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::from_raw_os_error(A_DIRECTORY_IS_THERE),
+                });
+            }
             PyPopneiError::PathTaken {
                 path: path.to_path_buf(),
             }

@@ -485,6 +485,35 @@ def test_write_vars_names_the_vars_file_when_the_write_is_what_failed(
     assert not vars_path.exists()
 
 
+def test_write_vars_gives_the_error_of_the_file_system_for_a_path_of_no_file(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A directory where the vars file goes, and one that is not there.
+
+    `create_new` says of a directory that something is already at the path,
+    which would tell a user to take away the directory they meant to write
+    into; what they get is the number the system gives for a directory where
+    a file was asked for, the `IsADirectoryError` that `open_vcf` gives them
+    for such a path. A path in a directory that is not there is the
+    `FileNotFoundError` of that path.
+    """
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+
+    with pytest.raises(OSError) as refusal:
+        write_vars(variants, tmp_path)
+    assert isinstance(refusal.value, IsADirectoryError)
+    assert refusal.value.errno == errno.EISDIR
+    assert refusal.value.filename == str(tmp_path)
+
+    of_no_directory = tmp_path / "no_such_directory" / "cases.vars"
+    with pytest.raises(OSError) as refusal:
+        write_vars(variants, of_no_directory)
+    assert isinstance(refusal.value, FileNotFoundError)
+    assert refusal.value.errno == errno.ENOENT
+    assert refusal.value.filename == str(of_no_directory)
+    assert not of_no_directory.exists()
+
+
 def test_write_vars_refuses_a_path_that_a_file_is_already_at(
     reference_vcf_dir: Path, tmp_path: Path
 ) -> None:
