@@ -1,7 +1,10 @@
 # Plan: the vars file, its writer and its reader
 
-September 2026. A draft that waits for the owner's approval, written on 20
-September 2026; the owner answered its breakdown in chat that day. It
+September 2026. Under way since 21 September 2026 on the branch
+`plan/vars-file`, with its work report in `docs/reports/vars-file.md`.
+Written on 20 September 2026; the owner answered its breakdown in chat
+that day, and ordered it run as soon as `docs/plans/block-readers.md` was
+merged into `main`, which it was on 21 September 2026, at 2d99d64. It
 builds the module `io::vars` of the core crate and what a user reaches it
 through: the vars file is the arrow file in which popnei keeps variants
 once a VCF has been read, and there is no code of it. It is built from
@@ -25,10 +28,9 @@ with an arrow library opens that file as a table, with its six columns,
 the genotypes of such a file takes is measured against the 21 ms of
 "Speed" of the spec.
 
-It cannot start before another plan, `docs/plans/block-readers.md`, is
-done and merged into `main`, and "What has to be in place" says how that
-is checked. On 20 September 2026 that plan was under way in its own
-worktree, its first work package of three with a subagent.
+It could not start before another plan, `docs/plans/block-readers.md`,
+was done and merged into `main`, and "What has to be in place" says how
+that was checked.
 
 ## In and out
 
@@ -64,6 +66,36 @@ September 2026 that pyarrow becomes a development dependency of popnei
 with 23 as its lowest version, and that the spec says that the tests run
 on the pyarrow of `uv.lock`, 25.0.1 that day, and that the trial was run
 on 23.0.0. The option not taken was to pin 23.0.0.
+
+Two more sentences of the spec are written by task 1.1, each from a rule
+the owner gave, and the work report lists both for him to reverse.
+
+The exceptions of Python. "The Rust interface" says that every case this
+module adds is a `ValueError` but the error of the input or the output.
+On 21 September 2026 the owner gave the convention that "Errors, and no
+panics" of the `coding` skill now has, and asked that the spec of a
+module list its cases with the exception each one is. For this module: a
+`ValueError` is a source that is not a vars file, whatever it lacks, a
+format version that is not 1, a column of another type, a `gts` width
+that does not match, a null where there can be none, a footer whose
+entries do not match the batches, a batch with another number of
+variants than its entry, a file compressed with zstd, two individuals
+of one name, a path that exists and a `num_vars_per_block` of 0; an
+`OSError`, with the path in `filename`, is an error of the input or the
+output, a file that starts as an arrow file and was cut short, and a
+batch that arrow-rs cannot decode or decompress; a `RuntimeError`, a
+defect of popnei, is a block that does not fit the writer, a block whose
+columns differ from those of the first one written, and a chromosome
+number with no name. Every error of a file names the file, which the
+Python binding crate adds with `PyPopneiError::of_the_file`.
+
+A batch of no variants. `docs/specs/block.md` says that a reader never
+gives a block of no variants, and the spec of the vars file does not say
+what its reader does with a batch of none, which popnei's writer never
+makes and another arrow program can. The reader takes the next batch, as
+a filter does with a block it emptied, when the entry of the footer says
+0 too. The owner was asked on 21 September 2026 and had not answered
+when the work started; the option not taken is an error.
 
 ## What has to be in place
 
@@ -102,7 +134,9 @@ are checked in the worktree, once it is made, before the first task.
   it gets there, of `cargo test --workspace`, of pytest and of `npm
   test`, and the size in bytes of `js/popnei/wasm/popnei_bg.wasm`: every
   "and more" of this plan is counted from them. Before that merge they
-  were `92 passed`, `38 passed`, `tests 39` and 189872 bytes.
+  were `92 passed`, `38 passed`, `tests 39` and 189872 bytes, and on 21
+  September 2026, in the worktree at 2d99d64, `173 passed` and 1 ignored,
+  `72 passed`, `tests 46` and 225344 bytes.
 - The toolchain that `docs/plans/vcf-to-blocks.md` lists under "What has
   to be in place", each program by running the command that plan gives
   for it.
@@ -223,8 +257,10 @@ arrow-rs into the wheel of pyodide.
   `VarsMetadata`, `BatchInfo`, `Region`, the json of the two keys,
   written and parsed, and the cases that "The Rust interface" adds to
   the error of the crate, all of them, so that the next tasks add none.
-  The sentence of the spec about pyarrow. From "What it holds" and "The
-  Rust interface". Serves deliverable 1.
+  In the spec, in a commit of its own before the code: the sentence
+  about pyarrow, the cases of the error with the exception each one is,
+  and the batch of no variants, the three as "In and out" gives them.
+  From "What it holds" and "The Rust interface". Serves deliverable 1.
 - [ ] 1.2 `VarsWriter` and `write_vars` in the core, in
   `crates/popnei/src/io/vars.rs`, and their tests.
   From "What it gives" and "How it runs" of the writer, "How it is
@@ -295,7 +331,9 @@ in blocks with only the columns that were asked for decompressed.
    batches of 100, which gives blocks of 100; with `Needs` of the
    genotypes alone the blocks have no other column, and a change of
    `Needs` between two blocks holds from the next; after an error the
-   reader gives `None` at every call; and a test reads a `VarsReader` as
+   reader gives `None` at every call; a file built in the test with a
+   batch of no variants between two others gives the blocks of the two;
+   and a test reads a `VarsReader` as
    a boxed `dyn BlockReader`. The same command names 38 tests or more.
 4. `popnei.open_vars`. Check: `uv run pytest tests/test_io_vars.py -k
    open_vars` runs 5 tests or more and all pass: the two pytest tests of
