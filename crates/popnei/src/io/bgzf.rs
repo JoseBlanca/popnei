@@ -16,10 +16,17 @@
 //! rules would not guess" of `docs/specs/io_vcf.md`.
 //!
 //! Cutting a member and decompressing it are two steps,
-//! [`BgzfReader::cut_the_next_member`] and
-//! [`BgzfReader::decompress_a_whole_member`], which is what a later plan
-//! that decompresses the members of one file side by side builds on. Here
+//! [`BgzfReader::cut_the_next_member`] and [`decompress_a_whole_member`],
+//! and the second is a function that is given the data of one member, a
+//! buffer for its text and a decoder, and nothing of the reader: several
+//! members can be decompressed at the same time on several threads. Here
 //! the two run one after the other, on the thread that reads.
+//!
+//! What a plan that decompresses side by side has to add: a buffer for the
+//! data of every member that is in flight, where this reader reuses one,
+//! and a decoder for every thread, where this reader keeps one; and it has
+//! to give the text of the members to its caller in the order of the file,
+//! which is not the order in which they come out.
 
 use std::io::BufRead;
 
@@ -71,12 +78,10 @@ enum Member {
     /// The source has no more members: it ended where one member ends and
     /// the next would begin.
     NoMore,
-    /// A whole member, with the CRC32 of its text and the length of that
-    /// text, which are the last eight bytes of it, and how many bytes it
-    /// holds in the file.
+    /// A whole member, with what its last eight bytes state of its text and
+    /// how many bytes it holds in the file.
     Whole {
-        crc: u32,
-        text_len: u32,
+        states: WhatTheMemberStates,
         size: usize,
     },
     /// The source ended inside the member, so what was read of its data is
@@ -258,12 +263,15 @@ impl<R: BufRead> BgzfReader<R> {
                 self.cut_short = true;
                 self.decompress_what_there_is_of_a_member();
             }
-            Member::Whole {
-                crc,
-                text_len,
-                size,
-            } => {
-                self.decompress_a_whole_member(crc, text_len)?;
+            Member::Whole { states, size } => {
+                let which = self.which_member();
+                let BgzfReader {
+                    data,
+                    text,
+                    inflater,
+                    ..
+                } = self;
+                decompress_a_whole_member(data, text, inflater, states, which)?;
                 self.the_last_member_was_empty = self.text.is_empty();
                 self.members = self.members.saturating_add(1);
                 self.offset = self
@@ -335,8 +343,10 @@ impl<R: BufRead> BgzfReader<R> {
             return Ok(Member::CutShort);
         }
         Ok(Member::Whole {
-            crc: four_bytes_of(&end, 0),
-            text_len: four_bytes_of(&end, 4),
+            states: WhatTheMemberStates {
+                crc: four_bytes_of(&end, 0),
+                text_len: four_bytes_of(&end, 4),
+            },
             size,
         })
     }
@@ -398,66 +408,6 @@ impl<R: BufRead> BgzfReader<R> {
         })
     }
 
-    /// The data of the member decompressed into the text, checked against
-    /// the CRC32 and the length of the text that the member ends with.
-    ///
-    /// # Errors
-    ///
-    /// When the data does not end where the member does, when the decoder
-    /// refuses it, and when the text that came out is not the text that the
-    /// CRC32 and the length describe.
-    fn decompress_a_whole_member(&mut self, crc: u32, text_len: u32) -> Result<()> {
-        let stated = usize::try_from(text_len).unwrap_or(usize::MAX);
-        if stated > MOST_TEXT_OF_A_MEMBER {
-            return Err(self.corrupted(format!(
-                "it states that its text is {stated} bytes and a member holds \
-                 {MOST_TEXT_OF_A_MEMBER} at most"
-            )));
-        }
-        let BgzfReader {
-            data,
-            text,
-            inflater,
-            ..
-        } = self;
-        inflater.reset(false);
-        let status = inflater.decompress_vec(data, text, FlushDecompress::Finish);
-        let read = inflater.total_in();
-        match status {
-            Err(error) => {
-                return Err(self.corrupted(format!("its data could not be decompressed: {error}")));
-            }
-            Ok(Status::StreamEnd) if read == u64::try_from(self.data.len()).unwrap_or(u64::MAX) => {
-            }
-            Ok(_) => {
-                return Err(self.corrupted(format!(
-                    "its data of {bytes} bytes is not one deflate stream that ends where the \
-                     member does: the decoder read {read} of those bytes and gave {out} bytes \
-                     of text",
-                    bytes = self.data.len(),
-                    out = self.text.len(),
-                )));
-            }
-        }
-        if self.text.len() != stated {
-            return Err(self.corrupted(format!(
-                "it states that its text is {stated} bytes and the text that came out of it is \
-                 {found}",
-                found = self.text.len(),
-            )));
-        }
-        let mut of_the_text = Crc::new();
-        of_the_text.update(&self.text);
-        if of_the_text.sum() != crc {
-            return Err(self.corrupted(format!(
-                "it states the CRC32 {crc:08x} of its text and the text that came out of it has \
-                 the CRC32 {found:08x}",
-                found = of_the_text.sum(),
-            )));
-        }
-        Ok(())
-    }
-
     /// The data of a member the source ended inside decompressed as far as
     /// it goes, which is the text of the lines that arrived whole before the
     /// cut.
@@ -483,15 +433,129 @@ impl<R: BufRead> BgzfReader<R> {
         let _ = inflater.decompress_vec(data, text, FlushDecompress::None);
     }
 
+    /// Which member is being read, which the error of a member that is
+    /// corrupted names.
+    fn which_member(&self) -> WhichMember {
+        WhichMember {
+            number: self.members.saturating_add(1),
+            offset: self.offset,
+        }
+    }
+
     /// The error of the member being read, which names it and the byte of
     /// the source where it starts.
     fn corrupted(&self, problem: String) -> Error {
-        Error::VcfBgzipCorrupted {
-            member: self.members.saturating_add(1),
-            offset: self.offset,
-            problem,
+        corrupted(self.which_member(), problem)
+    }
+}
+
+/// Which member of a source is being read: its number, counted from 1, and
+/// the byte of the source where it starts. It is what the error of a member
+/// that is corrupted names it by, and what a decompression that runs away
+/// from the reader carries to say which member it was given.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WhichMember {
+    pub(crate) number: u64,
+    pub(crate) offset: u64,
+}
+
+/// What the last eight bytes of a whole member state of its text: its CRC32
+/// and how many bytes it holds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WhatTheMemberStates {
+    pub(crate) crc: u32,
+    pub(crate) text_len: u32,
+}
+
+/// The error of a member that is corrupted, which names it and the byte of
+/// the source where it starts.
+fn corrupted(which: WhichMember, problem: String) -> Error {
+    Error::VcfBgzipCorrupted {
+        member: which.number,
+        offset: which.offset,
+        problem,
+    }
+}
+
+/// The `data` of a whole member decompressed into `text`, which it empties
+/// first, and checked against what the member states of its text.
+///
+/// It is given the deflate data of one member, a buffer for its text and a
+/// decoder, and touches nothing else: the reader that cut the member is not
+/// among its arguments, so a caller that cut several members can decompress
+/// them at the same time on several threads. `which` is only for the error.
+///
+/// # Errors
+///
+/// When the data does not end where the member does, when the decoder
+/// refuses it, and when the text that came out is not the text that the
+/// CRC32 and the length describe.
+fn decompress_a_whole_member(
+    data: &[u8],
+    text: &mut Vec<u8>,
+    inflater: &mut Decompress,
+    states: WhatTheMemberStates,
+    which: WhichMember,
+) -> Result<()> {
+    let stated = usize::try_from(states.text_len).unwrap_or(usize::MAX);
+    if stated > MOST_TEXT_OF_A_MEMBER {
+        return Err(corrupted(
+            which,
+            format!(
+                "it states that its text is {stated} bytes and a member holds \
+                 {MOST_TEXT_OF_A_MEMBER} at most"
+            ),
+        ));
+    }
+    text.clear();
+    inflater.reset(false);
+    let status = inflater.decompress_vec(data, text, FlushDecompress::Finish);
+    let read = inflater.total_in();
+    match status {
+        Err(error) => {
+            return Err(corrupted(
+                which,
+                format!("its data could not be decompressed: {error}"),
+            ));
+        }
+        Ok(Status::StreamEnd) if read == u64::try_from(data.len()).unwrap_or(u64::MAX) => {}
+        Ok(_) => {
+            return Err(corrupted(
+                which,
+                format!(
+                    "its data of {bytes} bytes is not one deflate stream that ends where the \
+                     member does: the decoder read {read} of those bytes and gave {out} bytes \
+                     of text",
+                    bytes = data.len(),
+                    out = text.len(),
+                ),
+            ));
         }
     }
+    if text.len() != stated {
+        return Err(corrupted(
+            which,
+            format!(
+                "it states that its text is {stated} bytes and the text that came out of it is \
+                 {found}",
+                found = text.len(),
+            ),
+        ));
+    }
+    let mut of_the_text = Crc::new();
+    of_the_text.update(text);
+    if of_the_text.sum() != states.crc {
+        return Err(corrupted(
+            which,
+            format!(
+                "it states the CRC32 {crc:08x} of its text and the text that came out of it has \
+                 the CRC32 {found:08x}",
+                crc = states.crc,
+                found = of_the_text.sum(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// What the extra field of the header of a gzip member holds of what makes
@@ -662,7 +726,10 @@ fn four_bytes_of(bytes: &[u8], at: usize) -> u32 {
 pub(crate) mod tests {
     use std::io::Cursor;
 
-    use super::BgzfReader;
+    use super::{
+        BgzfReader, Decompress, ROOM_FOR_THE_TEXT, WhatTheMemberStates, WhichMember,
+        decompress_a_whole_member, four_bytes_of, room_for,
+    };
     use crate::error::Error;
 
     /// The empty gzip member of 28 bytes that bgzip writes at the end of a
@@ -780,5 +847,50 @@ pub(crate) mod tests {
         // The source was not cut short: its bytes are all there and one of
         // its members is not what it says it is.
         assert!(!reader.was_cut_short());
+    }
+
+    /// The decompression of a member does not touch the reader that cut it:
+    /// the data of two members, cut as the reader cuts them, are
+    /// decompressed on two threads at once, each with its own buffer and
+    /// its own decoder. It is what the plan that decompresses the members
+    /// of one file side by side will do, and the module doc says what that
+    /// plan still has to add.
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn the_data_of_two_members_is_decompressed_on_two_threads_at_once() {
+        let members = [bgzf_member(b"one\n"), bgzf_member(b"two\n")];
+        let texts = std::thread::scope(|threads| {
+            let working: Vec<_> = members
+                .iter()
+                .enumerate()
+                .map(|(number, member)| {
+                    threads.spawn(move || {
+                        // The header of a member bgzip writes is 18 bytes
+                        // and its last eight are its CRC32 and the length
+                        // of its text.
+                        let data = member.get(18..member.len() - 8).unwrap();
+                        let states = WhatTheMemberStates {
+                            crc: four_bytes_of(member, member.len() - 8),
+                            text_len: four_bytes_of(member, member.len() - 4),
+                        };
+                        let which = WhichMember {
+                            number: number as u64 + 1,
+                            offset: 0,
+                        };
+                        let mut text = Vec::new();
+                        room_for(&mut text, ROOM_FOR_THE_TEXT).unwrap();
+                        let mut inflater = Decompress::new(false);
+                        decompress_a_whole_member(data, &mut text, &mut inflater, states, which)
+                            .expect("the text of the member");
+                        text
+                    })
+                })
+                .collect();
+            working
+                .into_iter()
+                .map(|working| working.join().expect("the thread"))
+                .collect::<Vec<Vec<u8>>>()
+        });
+        assert_eq!(texts, [b"one\n".to_vec(), b"two\n".to_vec()]);
     }
 }
