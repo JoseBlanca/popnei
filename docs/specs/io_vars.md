@@ -711,8 +711,12 @@ called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
 writer gives too, a `ValueError`. A block the machine does not give the
 memory for is the other case of `docs/specs/block.md` that every reader
 gives: the reader asks with `try_reserve` for each column of the block it
-builds from a batch, and the size in the message is the one of that batch,
-which the file was written with. A file that could not be opened, which `from_path` gives for a path that
+builds from a batch, and the size in the message is the one a file fixed,
+the third of the three of that spec, whose way out is to write the file
+again with a smaller `num_vars_per_block`. It is the error of a file whose
+batch this machine cannot count in a `usize` too, which under wasm, where a
+`usize` is 32 bits, is a batch of more than 4295 million bytes, and of a
+footer that says the file holds more variants than that. A file that could not be opened, which `from_path` gives for a path that
 is not there and for a directory, is the case of `docs/specs/io_vcf.md` with
 the path and the `std::io::Error`, an `OSError` built with the number the
 system gave.
