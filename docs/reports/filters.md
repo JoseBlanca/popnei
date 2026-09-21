@@ -672,3 +672,28 @@ would be a guess at those specs. For the owner, when he writes them.
 
 The reviewers cost 104460 to 135978 tokens each, the fixes 37500 and
 about 40000.
+
+## The merge
+
+The final check, from a clean clone of the branch at 00309f2: `cargo
+test --workspace` `306 passed`, 2 ignored; `uv run pytest` `174 passed`;
+`npm test` `tests 126`, `fail 0`; fmt, clippy, ruff, `cargo wasm-check`,
+`cargo bench --no-run` and `cargo doc -p popnei --no-deps`, with no
+warning, pass; the wheel of pyodide builds and its smoke test exits with
+0.
+
+The orchestrator merged `plan/filters` into `main` on 21 September 2026,
+on the owner's order, at b58bf94, with no conflict; `main` had not moved
+from d1d6997. The main checkout held uncommitted copies of six files of
+the specs, left by the session that wrote `docs/specs/filters.md`, which
+stopped the merge: `docs/glossary.md`, `docs/specs/variant.md` and an
+untracked `docs/specs/filters.md`, saved at 14:36 and 14:37 of that day,
+before that session committed them at 14:43 with the owner's later
+decisions, and `docs/architecture.md`, `docs/specs/block.md` and
+`docs/specs/io_vars.md`, none of which had a line that the branch lacks.
+They were copied, with the diff of the five that git tracks, to
+`tmp/main-wip-before-the-filters-merge/`, which git ignores, and then
+taken out of the checkout. The untracked `docs/specs/dists.md`,
+`docs/specs/pca.md`, `docs/reports/kosman-method/` and
+`tests/reference/pca/`, of another session, were not touched. The same
+checks pass on `main` after the merge, with the same counts.

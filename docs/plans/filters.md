@@ -3,7 +3,8 @@
 21 September 2026. Approved by the owner on 21 September 2026. Its four
 work packages were done the same day; the owner read the report, answered
 two of its questions and asked for their work before the merge, which is
-work package 5. They were done on the branch `plan/filters`, with its work report in
+work package 5. They were done, and the branch was merged into `main`
+at b58bf94, on the branch `plan/filters`, with its work report in
 `docs/reports/filters.md` and its measurement in
 `docs/reports/filters-measurement.md`. This plan builds
 the filters that keep the variants of a dataset by their missing rate, by
