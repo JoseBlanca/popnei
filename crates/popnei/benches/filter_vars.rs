@@ -44,11 +44,17 @@
 //! thing to give.
 //!
 //! `--threads` is 1 and `--runs` is 5 when they are not given. It prints
-//! the wall time of each run, with the variants the pass gave and what the
-//! filter was given and kept, and then the best, the median and the worst
-//! of the times; with an even number of runs the median is the middle of
-//! the two middle times. The median is what the numbers of "Speed" of
-//! `docs/specs/filters.md` are taken from.
+//! the wall time of each run, with the variants the pass gave, the alleles
+//! of their genotypes and what the filter was given and kept, and then the
+//! best, the median and the worst of the times; with an even number of runs
+//! the median is the middle of the two middle times. The median is what the
+//! numbers of "Speed" of `docs/specs/filters.md` are taken from, and the
+//! best and the worst say how much the machine was doing something else.
+//!
+//! The alleles are added up inside the clock in both passes, so that a
+//! pass with no filter, which reads no genotype of its own, cannot be
+//! shorter than one because the genotypes were never there: over these two
+//! files a pass that keeps every variant gives 200000000 of them.
 //!
 //! How the two files are made. The VCF of "Speed" of
 //! `docs/specs/filters.md`, 100000 variants of 1000 individuals whose
@@ -131,10 +137,12 @@ A path that ends in `.vars` is read as a vars file and anything else as a
 VCF. One pass that is not timed comes first, so that the timed runs pay
 neither the page faults of the first touch of the memory a pass works in
 nor a read of the disc. It prints the wall time of each run, with the
-variants the pass gave and what the filter was given and kept, and then
-the best, the median and the worst of the times. The median is what
-`docs/specs/filters.md` states, and the best and the worst say how much
-the machine was doing something else.";
+variants the pass gave, the alleles of their genotypes, which are added
+up inside the clock so that a pass with no filter cannot be short because
+the genotypes were never filled, and what the filter was given and kept;
+and then the best, the median and the worst of the times. The median is
+what `docs/specs/filters.md` states, and the best and the worst say how
+much the machine was doing something else.";
 
 /// What to run, or the message that says what the command line should have
 /// been.
@@ -229,6 +237,15 @@ fn reader_of(path: &Path) -> Result<Box<dyn BlockReader>, popnei::Error> {
 /// for, and the filter over it when `max_missing_rate` is given, timed from
 /// the building of the reader to the last block.
 ///
+/// The alleles of every block are added up inside the clock, and the run
+/// prints how many there were. What the filter costs is this pass less the
+/// pass with no filter, and the pass with no filter never looks at a
+/// genotype: a reader that stopped filling the column, or filled it only
+/// when somebody read it, would make that pass shorter and the filter look
+/// dearer, with nothing else to show it. The alleles of these two files are
+/// 200000000 in a pass that keeps every variant, and that number is what
+/// says the genotypes were there.
+///
 /// The counts of the filter are read after the clock stops: they are two
 /// numbers of a chain that the pass has already built, and the line they go
 /// into is printed and not timed.
@@ -244,12 +261,15 @@ fn one_pass(path: &Path, max_missing_rate: Option<f64>) -> Result<Run, popnei::E
     };
     reader.set_needs(Needs::GTS);
     let mut variants: u64 = 0;
+    let mut alleles: u64 = 0;
     while let Some(block) = reader.next_block()? {
         // A file of more variants than a u64 counts cannot be written.
         variants = variants.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        // Nor one of more alleles: this machine does not address them.
+        alleles = alleles.saturating_add(u64::try_from(block.gts.len()).unwrap_or(u64::MAX));
     }
     let took = started.elapsed();
-    let mut did = format!("{variants} variants");
+    let mut did = format!("{variants} variants, {alleles} alleles");
     for (kind, counts) in reader.filtering_stats() {
         did.push_str(&format!(
             ", the {kind} filter was given {given} and kept {kept}",
