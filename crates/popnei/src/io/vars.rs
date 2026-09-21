@@ -1348,7 +1348,7 @@ impl<R: Read + Seek> VarsReader<R> {
         }
         let blocks = batches_of_the_footer(&footer, file_len)?;
         let batches = batch_info_of_the_footer(&footer, blocks.len())?;
-        let num_vars = num_vars_of_the_file(&batches)?;
+        let num_vars = num_vars_of_the_file(&batches, &metadata)?;
         Ok(VarsReader {
             source,
             schema,
@@ -1431,6 +1431,9 @@ struct BatchPlace {
     /// How many variants the batches before it hold, which the variant of
     /// the error of a null is counted from.
     vars_before: u64,
+    /// How many variants its entry of the footer says it holds, which the
+    /// error of a batch the machine has no memory for names.
+    num_vars: usize,
 }
 
 impl<R: Read + Seek> VarsReader<R> {
@@ -1462,6 +1465,7 @@ impl<R: Read + Seek> VarsReader<R> {
             let place = BatchPlace {
                 batch: counted_from_one(self.next),
                 vars_before: self.vars_before,
+                num_vars: expected,
             };
             // The batches of a file are as many as the machine counts, so
             // this never saturates.
@@ -1510,7 +1514,13 @@ impl<R: Read + Seek> VarsReader<R> {
         // Both lengths were checked to lie inside the file when it was
         // opened, so their sum is one of its bytes.
         let len = at.metadata_len.saturating_add(at.body_len);
-        let bytes = bytes_at(&mut self.source, at.offset, usize_of(len)?)?;
+        // A batch of more bytes than this machine counts, which under wasm,
+        // where a `usize` is 32 bits, is 4 GB: the file is more than this
+        // build of popnei reads, and the way out is smaller batches.
+        let Ok(len) = usize::try_from(len) else {
+            return Err(block_too_large(place.num_vars, &self.metadata));
+        };
+        let bytes = bytes_at(&mut self.source, at.offset, len)?;
         let (Ok(metadata_len), Ok(body_len)) =
             (i32::try_from(at.metadata_len), i64::try_from(at.body_len))
         else {
@@ -2011,15 +2021,16 @@ fn reserved_column<T>(num_vars: usize, metadata: &VarsMetadata) -> Result<Vec<T>
 /// The error of a block of a batch that the machine does not give the memory
 /// for.
 ///
-/// The blocks of a vars file are its batches, so the size in the message is
-/// the one the file was written with, which is the size the caller of
-/// `write_vars` asked for.
+/// The blocks of a vars file are its batches, built whole whatever size the
+/// caller asked its blocks to be, so the size in the message is the one the
+/// file fixed and the way out is to write the file again with a smaller
+/// `num_vars_per_block`.
 fn block_too_large(num_vars: usize, metadata: &VarsMetadata) -> Error {
     Error::BlockTooLarge {
         num_vars_per_block: num_vars,
         num_individuals: metadata.individuals.len(),
         ploidy: metadata.ploidy,
-        size: BlockSize::AskedFor,
+        size: BlockSize::FixedByAFile,
     }
 }
 
@@ -2298,17 +2309,15 @@ fn batch_info_of_the_footer(footer: &Footer<'_>, num_batches: usize) -> Result<V
 ///
 /// # Errors
 ///
-/// The source is not a vars file when its footer says more variants than
-/// this machine counts, which under wasm, where a `usize` is 32 bits, is
-/// 4295 million.
-fn num_vars_of_the_file(batches: &[BatchInfo]) -> Result<usize> {
+/// The file holds more variants than this machine counts, which under wasm,
+/// where a `usize` is 32 bits, is 4295 million: the error is that of a block
+/// the machine cannot hold, of the batch that carried the count past it.
+fn num_vars_of_the_file(batches: &[BatchInfo], metadata: &VarsMetadata) -> Result<usize> {
     let mut num_vars: usize = 0;
     for batch in batches {
-        num_vars = num_vars.checked_add(batch.num_vars).ok_or_else(|| {
-            not_a_vars_file(format!(
-                "the `{POPNEI_BATCHES_KEY}` key of its footer says more variants than this machine counts"
-            ))
-        })?;
+        num_vars = num_vars
+            .checked_add(batch.num_vars)
+            .ok_or_else(|| block_too_large(batch.num_vars, metadata))?;
     }
     Ok(num_vars)
 }
@@ -2341,16 +2350,23 @@ fn magic_bytes() -> u64 {
     u64::try_from(ARROW_MAGIC.len()).unwrap_or(u64::MAX)
 }
 
-/// A length the file gives, as a length this machine can hold at once.
+/// A length of the trailer or of the footer of the file, as a length this
+/// machine can hold at once.
 ///
 /// # Errors
 ///
-/// The source is not a vars file when the length is more than a `usize`,
-/// which under wasm, where a `usize` is 32 bits, is a file of 4 GB.
+/// When the length is more than a `usize`, which under wasm, where a `usize`
+/// is 32 bits, is 4 GB: the file is more than this build of popnei holds. An
+/// arrow file keeps the length of its footer in 32 bits, so no footer
+/// reaches it; the length of a batch, which the footer keeps in 64, is
+/// checked where the batch is read.
 fn usize_of(len: u64) -> Result<usize> {
     usize::try_from(len).map_err(|_| {
-        not_a_vars_file(format!(
-            "it says one of its parts is {len} bytes, which this machine does not hold at once"
+        Error::Io(std::io::Error::new(
+            ErrorKind::OutOfMemory,
+            format!(
+                "a part of the vars file is {len} bytes, which this machine does not hold at once"
+            ),
         ))
     })
 }
@@ -2387,11 +2403,11 @@ mod tests {
         ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
         GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN,
         QUAL_COLUMN, Region, VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter,
-        alleles_column, batches_as_json, batches_from_json, block_of_the_batch, chrom_column,
-        counted_from_one, id_column, metadata_as_json, metadata_from_json, projection_of,
-        schema_of, write_vars,
+        alleles_column, batches_as_json, batches_from_json, block_of_the_batch, block_too_large,
+        chrom_column, counted_from_one, id_column, metadata_as_json, metadata_from_json,
+        num_vars_of_the_file, projection_of, schema_of, write_vars,
     };
-    use crate::block::{AllelesColumn, Block, BlockReader};
+    use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
@@ -5146,6 +5162,46 @@ mod tests {
         assert_eq!((column, var), ("gts", 4));
     }
 
+    /// The blocks of a vars file are its batches, whose size the file was
+    /// written with, so a block the machine has no memory for tells the
+    /// caller to write the file again with a smaller `num_vars_per_block`
+    /// and not to ask for fewer variants in a block, which changes nothing
+    /// of what the reader builds. A footer that says the file holds more
+    /// variants than this machine counts is the same error.
+    #[test]
+    fn a_batch_the_machine_has_no_memory_for_says_to_write_the_file_again() {
+        let metadata = metadata_of_cases();
+        let message = block_too_large(1000, &metadata).to_string();
+        assert!(message.contains("1000 variants"), "{message}");
+        assert!(message.contains("3 individuals"), "{message}");
+        assert!(message.contains("num_vars_per_block"), "{message}");
+        assert!(message.contains("write the file again"), "{message}");
+
+        let batches = [
+            BatchInfo {
+                num_vars: usize::MAX,
+                regions: Vec::new(),
+            },
+            BatchInfo {
+                num_vars: 2,
+                regions: Vec::new(),
+            },
+        ];
+        let error = match num_vars_of_the_file(&batches, &metadata) {
+            Ok(num_vars) => panic!("the file says it holds {num_vars} variants"),
+            Err(error) => error,
+        };
+        let Error::BlockTooLarge {
+            num_vars_per_block,
+            size,
+            ..
+        } = error
+        else {
+            panic!("the footer of more variants than a `usize` counts gave {error}");
+        };
+        assert_eq!((num_vars_per_block, size), (2, BlockSize::FixedByAFile));
+    }
+
     /// popnei writes `chrom`, `pos`, `alleles` and `gts` as columns with no
     /// nulls, and arrow-rs refuses a batch of such a column that holds one
     /// before popnei sees it: a null there is a batch that could not be
@@ -5447,6 +5503,7 @@ mod tests {
             BatchPlace {
                 batch: 1,
                 vars_before: 0,
+                num_vars: 2,
             },
         )
         .expect("the window of two variants is a block");
