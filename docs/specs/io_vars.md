@@ -442,11 +442,17 @@ and a null `qual` is no quality.
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
-`1`, which the message gives along with the version found; it has no `gts`
+`1`, which the message gives along with the version found; its `individuals`
+name nobody, which is a file whose genotypes hold no allele; it has no `gts`
 column, which "What it holds" puts in every vars file; it has no
 `popnei_batches`, or its entries are not as many as the batches. A path that
 is a directory is an error of `from_path`, which looks at the path itself:
 opening a directory succeeds on macOS and only the first read fails.
+
+The key that names no individual is the error the writer asked for such a
+file gives, with both numbers: every source of popnei has one individual at
+least, as `docs/specs/block.md` says, and the blocks of no genotype that such
+a file gives are not variants of anybody.
 
 The file without a `gts` column is refused by the session that ran
 `docs/plans/vars-file.md`, on 21 September 2026; the option not taken was to
@@ -511,7 +517,8 @@ The cargo tests are the round trips of "The writer", made at `next_block`
 over a `Cursor<Vec<u8>>`, and these errors, each on a file built in the test
 with arrow-rs: a file with no `popnei` key; a `format_version` of `2.0`, whose
 message holds `2.0`; a `gts` width of 7 with 3 individuals and a `ploidy` of
-2; a file with no `gts` column; a `pos` column of `Int32`; a null position; a
+2; a file with no `gts` column; a file whose `individuals` name nobody and
+whose `gts` holds no allele; a `pos` column of `Int32`; a null position; a
 file with two batches and one entry in `popnei_batches`; bytes that are not an
 arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
@@ -640,9 +647,10 @@ widths; a null where there can be none, with the column and the variant; a
 footer whose entries are not as many as the batches, with both counts; a
 batch that holds another number of variants than its entry of the footer,
 with the batch and both counts; a file whose buffers are compressed with
-zstd; two individuals of one name, with the name; a writer asked for a file
-of no individual or of the ploidy 0, with both numbers, whose `popnei` key
-no reader of popnei would take; and a block with more text in one of its
+zstd; two individuals of one name, with the name; a file of no individual or
+of the ploidy 0, with both numbers, which is a writer asked for such a file
+and a reader of one whose `popnei` key names nobody; and a block with more
+text in one of its
 columns than the 2147483647 bytes an arrow column of texts holds, with the
 column, the bytes it holds and that number. The last one is the size of a
 batch and not of the file: the way out is a smaller `num_vars_per_block`,
