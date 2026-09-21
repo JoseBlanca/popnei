@@ -464,7 +464,7 @@ refused "even by the VCF parser"; and the core builds the chain.
   lacks the refusal or its test, the case of the error with its arm in
   both binding crates, the tests of the three layers, and the two runs
   of the bench. Serves deliverables 1 and 2.
-- [ ] 5.2 The function of the core that builds the chain of a pass from
+- [x] 5.2 The function of the core that builds the chain of a pass from
   the criteria, in `crates/popnei/src/filters.rs`, the spec first in a
   commit of its own, and both binding crates brought to it. Each keeps
   its list of steps, the names of its arguments, and the refusals it

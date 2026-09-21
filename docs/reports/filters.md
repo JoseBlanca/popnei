@@ -601,3 +601,14 @@ runs with the tests, 24 that were read as other variants with no error
 are refused now, and 13 in 100 of those of the long sweep. The rest is
 what the question of a checksum in `docs/reports/vars-file.md` is about,
 which this check does not answer.
+
+Task 5.2, commits c272c79, the spec, and 5ee9288, the code: `chain_of`
+of the core takes a boxed reader and the criteria and gives the boxed
+chain, one filter for each criterion in their order, and the `chain_of`
+of each binding crate now only reads the criterion out of each of its
+steps and calls it. Run by the orchestrator at 5ee9288: `grep -rn
+"FilteredReader::new" crates/popnei-python crates/popnei-js` finds
+nothing; `cargo test --workspace` `303 passed`, 5 of them with `chain_of`
+in their names; `uv run pytest` `174 passed` and `npm test` `tests 126`,
+`fail 0`, with no test of either package changed; fmt, clippy, ruff and
+`cargo wasm-check` pass. 46000 tokens of the subagent of task 3.4.
