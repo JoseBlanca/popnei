@@ -259,3 +259,27 @@ were never an arrow file are not a vars file, a `ValueError`. It left a
 file with no `gts` column as one that is read; the orchestrator decided
 that such a file is refused as not a vars file, since the spec says that
 `gts` is always there, and task 2.3 does it.
+
+Task 2.3, commits 1763dad, the spec, and 6fb7007, the code; one subagent
+run of 297 thousand tokens and 18 minutes. `VarsReader` gives each batch
+as a block. The orchestrator ran the checks again: fmt exit 0, clippy no
+warning, `cargo test --workspace` `238 passed`, 1 ignored, `io::vars`
+`65 tests`, where the plan asks for 38, `cargo wasm-check` finished. What
+the subagent found and decided:
+
+- arrow-rs gives the error of a zstd file as an invalid argument whose
+  text holds `zstd`, and the reader takes that kind with that word for
+  the case of a file compressed with zstd; every other error of arrow-rs
+  while a batch is read is a batch that could not be read. The test on
+  `zstd.vars` fails if arrow-rs changes either.
+- That only the columns asked for reach arrow-rs is seen on `zstd.vars`:
+  asked for no field it gives its 4 variants and no error, and asked for
+  the genotypes it gives the error of zstd.
+- arrow-rs panics on a batch whose message is shorter than 8 bytes,
+  which it indexes, so the reader refuses such a batch before arrow-rs
+  sees it. No test reaches it: the footer that says so would have to be
+  written by hand.
+- The spec got three sentences: a file with no `gts` column is not a
+  vars file, a null inside a list of alleles or of genotypes is a null,
+  and the block that the machine has no memory for, the case of
+  `docs/specs/block.md`.

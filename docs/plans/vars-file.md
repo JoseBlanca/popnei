@@ -363,7 +363,7 @@ error cases, and the writer, which makes the files of deliverables 3 and
   `num_vars`, in `crates/popnei/src/io/vars.rs`, the checks of the schema
   and of the two keys, and their tests. From "What it refuses", "How it
   runs" of the reader and "The Rust interface". Serves deliverable 2.
-- [ ] 2.3 `VarsReader` as a `BlockReader`, in the same file: the
+- [x] 2.3 `VarsReader` as a `BlockReader`, in the same file: the
   projection that a `Needs` becomes, a batch into a block column by
   column, the nulls, the chromosome numbers in the order of first
   appearance, the error of zstd wrapped, the contract of a reader after an
