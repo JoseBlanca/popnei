@@ -78,8 +78,12 @@ pyNei's `config.py`. Nobody has measured them for popnei.
 Variants.iter_blocks(
     fields: Iterable[str] = ("chrom", "pos"),
     num_vars_per_block: int | None = None,
-) -> Iterator[Block]
+) -> Blocks
 ```
+
+`Blocks` is an iterator of `Block` with one property, `pass_stats`, the
+`PassStats` of `docs/specs/variant.md`: how many variants it has given in
+its blocks so far, and the counts of the filters of its pass so far.
 
 `Variants` is the handle of `docs/specs/variant.md`, and this is its only
 method that gives genotypes. It is for the user who wants the genotypes
@@ -132,7 +136,8 @@ asked for.
 
 In TypeScript, `variants.iterBlocks({fields = ["chrom", "pos"],
 numVarsPerBlock})`
-is used in `for (const block of variants.iterBlocks())`, and a block is a
+is used in `for (const block of variants.iterBlocks())`, what it returns
+has a `passStats`, and a block is a
 plain object with `gts` an `Int8Array` of variants x individuals x ploidy
 in that order, `numVars`, `numIndividuals`, `ploidy`, `chrom`, `id` and
 `alleles` arrays, `pos` a
@@ -362,8 +367,15 @@ pub trait BlockReader: Send {
     fn chroms(&self) -> &ChromTable;
     /// ALL until it is called. It holds from the next block that is built.
     fn set_needs(&mut self, needs: Needs);
+    /// The kind and the counts of every filter between this reader and
+    /// its source, this one first when it is a filter:
+    /// `docs/specs/filters.md`. A source gives none.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
 }
 ```
+
+`filtering_stats` has no default, so that a reader over another reader
+that forgets to pass on the counts of its source does not compile.
 
 `reblock`.
 

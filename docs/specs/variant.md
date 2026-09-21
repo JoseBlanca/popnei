@@ -9,9 +9,10 @@ table in section 9 of `docs/architecture.md`. It depends on
 `docs/specs/block.md`, which has the `Block`, the run of consecutive
 variants held as arrays that the variants flow in, and the view here is a
 view into one. It also covers the `Variants` handle that a Python or a
-TypeScript user holds. The row helpers of the same module, the dosages, the
-missing and het masks and the allele counts of one variant, are items that
-are not written yet; they come with the first filter that needs them.
+TypeScript user holds, and the counts of one variant, of its genotypes and
+of its alleles, which the filters of `docs/specs/filters.md` are the first
+to use. The other row helpers of the module, the dosages and the missing
+and het masks of one variant, are items that are not written yet.
 
 There is code, built from the first version of this spec, which had a
 `Variant` that the caller owned and a reader filled, and the
@@ -58,16 +59,48 @@ In popnei the loop of every filter and every calculation runs inside the
 core, and what a user holds is a handle.
 
 `Variants`, in Python, is that handle: a source of variants, a VCF path
-with its options or a vars file, and the filters that were put on it. It
-holds no genotypes. A user gets one from `open_vcf`, of
-`docs/specs/io_vcf.md`, or from `open_vars`, of `docs/specs/io_vars.md`,
-and passes it to the filters, which return another `Variants`, and to the
-calculations. It can be passed to any number of them: every pass opens a
-new reader on the source. It has `individuals`, a tuple of names,
+with its options or a vars file, and the steps that were put on it, in
+order. It holds no genotypes, and it is a recipe that is run later. A user
+gets one from `open_vcf`, of `docs/specs/io_vcf.md`, or from `open_vars`,
+of `docs/specs/io_vars.md`. What is done with it is of two kinds, and what
+a call returns shows which. A step, a filter of `docs/specs/filters.md`,
+is a method of the `Variants` that adds itself to the list, reads nothing
+and returns nothing, and `steps` gives the list. A consumer, the function of a calculation,
+`write_vars`, or the method `iter_blocks`, returns something, and it runs
+the recipe: it makes as many passes as its
+algorithm needs, each one a reading of the source from its start through
+readers of its own, built from the steps the `Variants` has when the pass
+starts. So a `Variants` can be given to any number of consumers, a step
+can be added between two of them, and a consumer never changes it. The
+owner decided this on 21 September 2026, and the options not taken are in
+`docs/specs/filters.md`; one more was that a calculation took an iterator
+that the user asked the `Variants` for, which a calculation that makes two
+passes could not work from.
+
+Every consumer returns a result, and every result has a `pass_stats`:
+
+```python
+@dataclass(frozen=True)
+class PassStats:
+    num_vars: int
+    filtering: dict[str, FilteringStats]
+```
+
+`num_vars` is how many variants the consumer took, after the steps, and
+`filtering` has, for each filter, how many variants it was given and how
+many it kept, as `docs/specs/filters.md` says. A calculation that makes
+several passes over the same steps gives those of one, since they are the
+same in all, and one whose passes differ, a pass for each population, says
+in its spec what it gives. In TypeScript it is `passStats`, with `numVars`
+and `filtering`.
+
+A `Variants` has `individuals`, a tuple of names,
 `num_individuals` and `ploidy`; the first two are pyNei's `samples` and
 `num_samples` under the word that `docs/glossary.md` gives, individual. The
-other differences from pyNei: it has no `desired_num_vars_per_chunk`, and
-it is not iterated over variants. The only way genotypes come out of it is
+other differences from pyNei: the steps are methods that change it, where
+pyNei has functions that return another `Variants`; the counts of the
+filters are in the results and not in it; it has no
+`desired_num_vars_per_chunk`; and it is not iterated over variants. The only way genotypes come out of it is
 `iter_blocks`, of `docs/specs/block.md`, which gives them as arrays of a
 few thousand variants, for the user who wants them for an analysis of
 their own and for the tests. The owner decided this on 20 September 2026;
@@ -75,7 +108,7 @@ the option not taken was an iterator of single variants, each copied into
 a Python object.
 
 In TypeScript, `Variants` is a class with `individuals`, `numIndividuals`
-and `ploidy`, and `iterBlocks`. It lives in the memory of wasm, which the
+and `ploidy`, the steps as methods, `steps`, and `iterBlocks`. It lives in the memory of wasm, which the
 garbage collector of JavaScript does not see, so it has a `free()` method
 that the application calls when it is done with it, and
 `[Symbol.dispose]`, which does the same for an application that declares
@@ -119,6 +152,66 @@ of first appearance, and the name back for a number. The views are
 tested at `Block::variants`, in `docs/specs/block.md`. That a reader honours
 `Needs` is tested where there is a reader, in `docs/specs/io_vcf.md` and
 `docs/specs/io_vars.md`.
+
+## The counts of one variant
+
+### What they give
+
+Two counts over the genotypes of one variant, which the filters and the
+statistics work their numbers out from, so that what a missing genotype is
+and what a heterozygous one is are written once.
+
+The counts of the genotypes: how many are called, how many are missing and
+how many are heterozygous. A genotype is missing when at least one of its
+alleles is `MISSING_ALLELE`, so a half called genotype, `0/.` in a VCF, is
+missing, and called otherwise. It is heterozygous when it is called and
+its alleles are not all the same, at any ploidy. It is what
+`_calc_gt_is_missing` and `_calc_gt_is_het` of pyNei's `pynei/gt_counts.py`
+compute as masks.
+
+The counts of the alleles: how often each allele was called, and the sum
+of them, the called alleles. An allele is counted wherever it was called,
+also in a half called genotype. It is what `_count_each_allele` of the
+same file computes for a chunk.
+
+Neither has a function in Python or in TypeScript. A user sees them
+through the filters and the statistics.
+
+### An allele that no reader gives
+
+An allele below `MISSING_ALLELE`, -2, is in no block that a reader of
+popnei gives. Both counts refuse it, with an error that names the value:
+counted as it is, it would be a called allele of the genotype counts, and
+it has no place among the allele counts. pyNei refuses it too, with a
+`ValueError`, in `_count_alleles_per_var`.
+
+### How it runs
+
+One pass over the alleles of the row each, with no allocation: the allele
+counts are written into an array of the caller, one entry for each of the
+128 alleles a genotype can hold, which the caller clears and hands over
+again for the next variant.
+
+### How it is verified
+
+The cargo tests, made at the two functions, on the six variants of five
+diploid individuals of the worked example of `docs/specs/filters.md`. The
+counts are those of `_calc_gt_is_het` and `_count_alleles_per_var` of pyNei
+at commit ef0ca6e on these genotypes, and on the tetraploid ones below:
+
+| variant | genotypes | called | missing | het | allele counts | called alleles |
+|---|---|---|---|---|---|---|
+| 1 | 0/0 0/1 0/0 0/0 0/. | 4 | 1 | 1 | 8, 1 | 9 |
+| 2 | 0/0 0/1 0/0 ./. 0/. | 3 | 2 | 1 | 6, 1 | 7 |
+| 3 | 0/1 2/3 0/1 2/3 ./. | 4 | 1 | 4 | 2, 2, 2, 2 | 8 |
+| 4 | ./. ./. ./. ./. ./. | 0 | 5 | 0 | none | 0 |
+| 5 | 0/0 0/0 0/0 0/0 1/1 | 5 | 0 | 0 | 8, 2 | 10 |
+| 6 | 0/. ./. ./. ./. ./. | 0 | 5 | 0 | 1 | 1 |
+
+Three more: the tetraploid genotypes 0/0/0/1, 1/1/1/1 and 0/./0/0 give 2
+called, 1 missing and 1 heterozygous; a ploidy of 0, and genotypes whose
+length is not a multiple of the ploidy, are errors; and an allele of -2 is
+an error in both.
 
 ## The Rust interface
 
@@ -204,10 +297,41 @@ impl<'a> VariantRef<'a> {
 }
 ```
 
+The counts of one variant. `gts` is the genotypes of a `VariantRef`, or a
+row of the genotypes of a block.
+
+```rust
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GtCounts {
+    /// Genotypes with no missing allele.
+    pub called: u32,
+    /// Genotypes with one missing allele at least, the half called among
+    /// them.
+    pub missing: u32,
+    /// Called genotypes whose alleles are not all the same.
+    pub het: u32,
+}
+
+/// An error for a ploidy of 0, for genotypes whose length is not a
+/// multiple of the ploidy, and for an allele below MISSING_ALLELE.
+pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts>;
+
+/// One entry for each allele from 0 to MAX_ALLELE.
+pub type AlleleCounts = [u32; 128];
+
+/// It adds, to `counts[a]`, how often the allele a is in `gts`, and gives
+/// how many alleles it added, the called alleles. The caller clears
+/// `counts` between two variants. An error for an allele below
+/// MISSING_ALLELE.
+pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32>;
+```
+
 The error of the crate. Each module adds its cases to one enum, marked
 `non_exhaustive`, and `Result<T>` is `std::result::Result<T, Error>`.
-This module adds one case, a consumer that did not get a field it
-depends on. It carries the fields as a `Needs`, the ones that were asked
+This module adds three cases. A ploidy of 0 or genotypes that are not a
+whole number of genotypes of that ploidy, and an allele below the missing
+one, both of the counts of one variant. And a consumer that did not get a
+field it depends on. It carries the fields as a `Needs`, the ones that were asked
 for and that the block does not hold, which a consumer gets with
 `asked_for.difference(block.fields())`, and its message names them: a
 consumer that depends on two fields reports both in one error.
@@ -222,8 +346,10 @@ that a reader fills.
 
 ## Not in this spec
 
-- The row helpers, dosages, masks and allele counts of one variant: later
-  items of this spec. They take a `VariantRef` or its genotypes.
+- The dosages and the masks of one variant: later items of this spec.
+  They take a `VariantRef` or its genotypes.
+- The counts over the individuals of one population and not over all of
+  them: with the first statistic per population, in the `stats` spec.
 - `Block`, the `BlockReader` trait that everything that gives variants
   implements, and `reblock`: `docs/specs/block.md`.
 - A `Variants` built from an array of genotypes, pyNei's

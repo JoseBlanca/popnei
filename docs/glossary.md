@@ -65,6 +65,11 @@ allele frequencies and the expected heterozygosity, still count the
 alleles of it that were called, and their spec says so. Not used: partial
 genotype, no call.
 
+**observed heterozygosity.** Of a variant over some individuals, the
+heterozygous genotypes divided by the called genotypes, where a genotype
+is heterozygous when it is called and its alleles are not all the same.
+`obs_het` in identifiers.
+
 **called alleles.** How many alleles of a population at a variant are not
 missing, the denominator of its allele frequencies.
 
@@ -133,6 +138,27 @@ JavaScript in it, where every calculation is.
 
 **binding crate.** A crate that translates between another language and
 the core crate and holds no calculation. There are two, and a text that
+**step.** One entry of the list that a `Variants` holds besides its
+source, a filter with its threshold. A step is added with a method of the
+`Variants`, which returns nothing, it is run in every pass that starts
+after it was added, and `variants.steps` lists them.
+
+**consumer.** What runs a `Variants`: the function of a calculation,
+`write_vars`, the method `iter_blocks`. It does not change the `Variants`,
+and what it returns has the pass stats.
+
+**pass stats** and **filtering stats.** What a pass counted, `PassStats`,
+which every result of a consumer has as `pass_stats`: how many variants
+the consumer took, and the filtering stats, `FilteringStats`, how many
+variants each filter was given and how many it kept. pyNei keeps the
+filtering stats in its `Variants` and gives them with
+`gather_filtering_stats`.
+
+**pass.** One reading of a source of variants from its start to its end,
+through the steps that its `Variants` had when it started. A consumer
+makes as many as its algorithm needs, each with readers and filters of its
+own.
+
 could mean either says which. "The binding crate" alone is used for what
 holds for both.
 

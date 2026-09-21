@@ -183,8 +183,18 @@ not an error.
 ```python
 def write_vars(
     variants: Variants, path: str | Path, num_vars_per_block: int | None = None
-) -> None
+) -> VarsWritten
 ```
+
+`VarsWritten` is a frozen dataclass with one field, `pass_stats`, the
+`PassStats` of `docs/specs/variant.md`: how many variants were written,
+and how many each filter of the `Variants` was given and kept. The owner
+decided on 21 September 2026 that every consumer of a `Variants` returns
+it. A pytest test made at `write_vars`, once the filters of
+`docs/specs/filters.md` are built: on `many.vcf` with every variant given
+and the missing data filter at 0.04, the `pass_stats` has a `num_vars` of
+215 and a `filtering` of `{"missing_data": FilteringStats(500, 215)}`, and
+the file read back has 215 variants.
 
 `Variants` is the handle of `docs/specs/variant.md`, which holds a source and
 the filters on it and no genotypes. The call reads the whole source once. A
@@ -197,8 +207,9 @@ then the path is taken and the same call cannot be tried again.
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
 with the default size of block gives its batches as they are.
 
-In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back a
-`Uint8Array` with the bytes of the file, which the page offers as a download:
+In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back an
+object with `bytes`, a `Uint8Array` with the bytes of the file, and
+`passStats`. The page offers the bytes as a download:
 a tab has no filesystem, as section 11 of the architecture says.
 
 It has the name and the first two arguments of `write_vars` of
@@ -596,8 +607,8 @@ option that was not taken.
 - The function that asks a `Variants` for the variants of a region, in Python
   and in TypeScript, and the skipping of the batches outside it. The file has
   what that needs, `popnei_batches`, and the reader gives it as `batches()`. The
-  function belongs with the filters, whose spec, `docs/specs/filters.md`, is
-  not written.
+  function belongs with the filters, as a later item of
+  `docs/specs/filters.md`.
 - The read ahead thread that decompresses the next batch while the consumer
   works: with the first calculation that consumes blocks.
 - Genotypes packed in 2 bits, the option to measure of section 4 of the
