@@ -675,6 +675,17 @@ MANY_SUM_OF_THE_CALLED_ALLELES = 25954
 # where a reader looks when the file is opened.
 BYTES_CUT_OFF_THE_END = 100
 
+# What a message of an arrow IPC file starts with: four bytes that mark a
+# continuation and four that say how long its metadata is. A file is
+# `ARROW1` and its padding, then the message of the schema, then one
+# message for each batch, so the first batch lies its metadata and those
+# eight bytes after the start of the schema, which is the first message of
+# the file. The test below sets the first 16 bytes of that batch to zero,
+# which leaves no message of a batch where the footer says one is.
+A_MESSAGE_CONTINUES = b"\xff\xff\xff\xff"
+BYTES_BEFORE_THE_METADATA_OF_A_MESSAGE = 8
+BYTES_ZEROED_IN_THE_BATCH = 16
+
 # The batches of the file that is written again from what `open_vars` reads,
 # 500 variants in batches of 37, and the blocks of 7 variants and the one
 # block that the size popnei chooses for 50 individuals, 10000, gives for a
@@ -850,6 +861,52 @@ def test_open_vars_refuses_a_vars_file_that_was_cut_short(
         open_vars(path)
 
     assert refusal.value.filename == str(path)
+
+
+def _where_the_first_batch_is(written: bytes) -> int:
+    """Where the message of the first batch of a vars file starts."""
+    schema = written.index(A_MESSAGE_CONTINUES)
+    metadata = written[schema + 4 : schema + BYTES_BEFORE_THE_METADATA_OF_A_MESSAGE]
+    first_batch = (
+        schema
+        + BYTES_BEFORE_THE_METADATA_OF_A_MESSAGE
+        + int.from_bytes(metadata, "little")
+    )
+    where_it_continues = written[first_batch : first_batch + len(A_MESSAGE_CONTINUES)]
+    assert where_it_continues == A_MESSAGE_CONTINUES, (
+        f"the message after the schema, at {first_batch}, is not one of a batch"
+    )
+    return first_batch
+
+
+def test_open_vars_refuses_a_batch_of_a_vars_file_that_was_damaged(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A whole file whose first batch was written over with zeros.
+
+    The footer is untouched, so the file opens and says what it holds, and
+    the batch is refused when it is read. It is a file that was damaged
+    after it was written and not something a user wrote, so it is an
+    ``OSError`` with the path in ``filename`` and no ``errno``: nothing of
+    the file system refused anything.
+    """
+    whole = tmp_path / "whole.vars"
+    write_vars(open_vcf(reference_vcf_dir / "cases.vcf", only_passed=False), whole)
+    written = bytearray(whole.read_bytes())
+    batch = _where_the_first_batch_is(written)
+    written[batch : batch + BYTES_ZEROED_IN_THE_BATCH] = bytes(
+        BYTES_ZEROED_IN_THE_BATCH
+    )
+    path = tmp_path / "damaged.vars"
+    path.write_bytes(written)
+
+    variants = open_vars(path)
+
+    assert variants.num_individuals == 3
+    with pytest.raises(OSError, match="batch") as refusal:
+        list(variants.iter_blocks())
+    assert refusal.value.filename == str(path)
+    assert refusal.value.errno is None
 
 
 def test_open_vars_refuses_a_file_compressed_with_zstd_at_its_first_block() -> None:
