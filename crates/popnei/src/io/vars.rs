@@ -426,6 +426,12 @@ const GTS_COLUMN: &str = "gts";
 /// so pandas and polars, write and read.
 const ITEM_FIELD: &str = "item";
 
+/// How many bytes of text one column of a batch holds, which is
+/// `i32::MAX`: arrow keeps where each text of a column ends in a 32 bit
+/// number. A dataset with more text than that in one block is written in
+/// more batches, which is what a smaller `num_vars_per_block` gives.
+const MAX_COLUMN_BYTES: u64 = 2_147_483_647;
+
 /// What the writer has to write on: the sink itself while no block has
 /// arrived, since the columns of the file are those of the first block and
 /// an arrow file starts with its schema, and the arrow writer once a block
@@ -646,16 +652,16 @@ impl<W: Write> VarsWriter<W> {
         // `Block::fields` reports the chromosome and the position only when
         // the block holds both columns.
         if let (Some(chrom), Some(pos)) = (chrom, pos) {
-            let (names, where_they_are) = chrom_column(&chrom, &pos, chroms)?;
+            let (names, where_they_are) = chrom_column(&chrom, &pos, chroms, MAX_COLUMN_BYTES)?;
             regions = where_they_are;
             arrays.push(Arc::new(names));
             arrays.push(Arc::new(UInt64Array::new(ScalarBuffer::from(pos), None)));
         }
         if let Some(id) = id {
-            arrays.push(Arc::new(id_column(&id)));
+            arrays.push(Arc::new(id_column(&id, MAX_COLUMN_BYTES)?));
         }
         if let Some(alleles) = alleles {
-            arrays.push(Arc::new(alleles_column(&alleles)));
+            arrays.push(Arc::new(alleles_column(&alleles, MAX_COLUMN_BYTES)?));
         }
         if let Some(qual) = qual {
             arrays.push(Arc::new(qual_column(qual)));
@@ -795,55 +801,57 @@ fn gts_type(alleles_per_var: i32) -> DataType {
 ///
 /// # Errors
 ///
-/// When `chroms` has no name for a number of the block.
+/// When the names hold more than `largest` bytes, and when `chroms` has no
+/// name for a number of the block.
 fn chrom_column(
     chrom: &[u32],
     pos: &[u64],
     chroms: &ChromTable,
+    largest: u64,
 ) -> Result<(StringArray, Vec<Region>)> {
+    // A number the table has no name for counts as no text here; the loop
+    // below is what refuses the block for it, with the number in the error.
+    text_fits(
+        CHROM_COLUMN,
+        chrom
+            .iter()
+            .map(|number| chroms.name(*number).unwrap_or("").len()),
+        largest,
+    )?;
     let mut names = StringBuilder::new();
     let mut regions: Vec<Region> = Vec::new();
-    // Which region the variant before went into. The variants of a block
-    // run along one chromosome, so the entry of a name is searched for
-    // only where the number changes.
-    let mut last: Option<(u32, usize)> = None;
     for (number, position) in chrom.iter().copied().zip(pos.iter().copied()) {
         let Some(name) = chroms.name(number) else {
             return Err(Error::VarsChromNameMissing { number });
         };
         names.append_value(name);
-        let at = match last {
-            Some((seen, at)) if seen == number => at,
-            _ => region_of(&mut regions, name, position),
-        };
-        if let Some(region) = regions.get_mut(at) {
-            region.min_pos = region.min_pos.min(position);
-            region.max_pos = region.max_pos.max(position);
+        // The chromosomes of a batch are a handful, so the entry of this
+        // one is looked for among them and never by an index that could
+        // be one past them.
+        match regions.iter_mut().find(|region| region.chrom == name) {
+            Some(region) => {
+                region.min_pos = region.min_pos.min(position);
+                region.max_pos = region.max_pos.max(position);
+            }
+            None => regions.push(Region {
+                chrom: name.to_owned(),
+                min_pos: position,
+                max_pos: position,
+            }),
         }
-        last = Some((number, at));
     }
     Ok((names.finish(), regions))
-}
-
-/// Where the region of `chrom` is among the ones found so far, which is one
-/// more entry when that chromosome has no variant in the batch yet.
-fn region_of(regions: &mut Vec<Region>, chrom: &str, position: u64) -> usize {
-    if let Some(at) = regions.iter().position(|region| region.chrom == chrom) {
-        return at;
-    }
-    let at = regions.len();
-    regions.push(Region {
-        chrom: chrom.to_owned(),
-        min_pos: position,
-        max_pos: position,
-    });
-    at
 }
 
 /// The `id` column of one batch. A block holds an empty id for a variant
 /// that has none and the file holds a null, which is what any other program
 /// that opens it takes for a value that is not there.
-fn id_column(ids: &[String]) -> StringArray {
+///
+/// # Errors
+///
+/// When the ids hold more than `largest` bytes.
+fn id_column(ids: &[String], largest: u64) -> Result<StringArray> {
+    text_fits(ID_COLUMN, ids.iter().map(String::len), largest)?;
     let mut column = StringBuilder::new();
     for id in ids {
         match id.is_empty() {
@@ -851,12 +859,20 @@ fn id_column(ids: &[String]) -> StringArray {
             false => column.append_value(id),
         }
     }
-    column.finish()
+    Ok(column.finish())
 }
 
 /// The `alleles` column of one batch, the reference allele of each variant
 /// first and then its alternative ones.
-fn alleles_column(alleles: &AllelesColumn) -> ListArray {
+///
+/// # Errors
+///
+/// When the alleles hold more than `largest` bytes.
+fn alleles_column(alleles: &AllelesColumn, largest: u64) -> Result<ListArray> {
+    let texts = (0..alleles.num_vars()).flat_map(|var| {
+        (0..alleles.num_alleles(var)).map(move |allele| alleles.allele(var, allele).len())
+    });
+    text_fits(ALLELES_COLUMN, texts, largest)?;
     let mut column = ListBuilder::new(StringBuilder::new());
     for var in 0..alleles.num_vars() {
         for allele in 0..alleles.num_alleles(var) {
@@ -864,7 +880,37 @@ fn alleles_column(alleles: &AllelesColumn) -> ListArray {
         }
         column.append(true);
     }
-    column.finish()
+    Ok(column.finish())
+}
+
+/// That the texts of one column of a block fit in one column of a batch.
+///
+/// `lengths` gives the bytes of each text of the column. The bytes are
+/// counted before a builder of arrow-rs is given any of them, because the
+/// builder panics at the text that goes past the limit and a panic there
+/// would leave a half written file behind.
+///
+/// # Errors
+///
+/// When the texts hold more than `largest` bytes: the error names the
+/// column, both counts and the way out, a smaller `num_vars_per_block`.
+fn text_fits(
+    column: &'static str,
+    lengths: impl Iterator<Item = usize>,
+    largest: u64,
+) -> Result<()> {
+    let mut found: u64 = 0;
+    for length in lengths {
+        found = found.saturating_add(u64::try_from(length).unwrap_or(u64::MAX));
+    }
+    if found > largest {
+        return Err(Error::VarsTextTooLarge {
+            column,
+            found,
+            largest,
+        });
+    }
+    Ok(())
 }
 
 /// The `qual` column of one batch. A block holds a NaN for a variant with
@@ -947,8 +993,9 @@ mod tests {
     use arrow_schema::{DataType, Field};
 
     use super::{
-        BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, POPNEI_BATCHES_KEY, POPNEI_KEY, Region,
-        VarsMetadata, VarsWriter, batches_as_json, batches_from_json, gts_column, metadata_as_json,
+        BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY,
+        POPNEI_KEY, Region, VarsMetadata, VarsWriter, alleles_column, batches_as_json,
+        batches_from_json, chrom_column, gts_column, id_column, metadata_as_json,
         metadata_from_json, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader};
@@ -1612,6 +1659,80 @@ mod tests {
         // No size was asked for, so the blocks hold the number of variants
         // popnei chooses for 3 individuals, the largest it chooses.
         assert_eq!(file.metadata.num_vars_per_block, 10_000);
+    }
+
+    /// Arrow keeps where each text of a column of a batch ends in a 32 bit
+    /// number, and arrow-rs panics at the text that goes past it, which
+    /// would leave a half written file behind. A block of more text than
+    /// one column holds is refused instead, with the way out in the
+    /// message, and nothing of it is written.
+    ///
+    /// The limit is an argument of the three columns of texts, so that this
+    /// test does not have to hold 2 GiB of text.
+    #[test]
+    fn a_column_of_more_text_than_an_arrow_column_holds_is_refused() {
+        assert_eq!(MAX_COLUMN_BYTES, u64::from(i32::MAX.unsigned_abs()));
+
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let chrom = block.chrom.as_deref().expect("the chromosomes");
+        let pos = block.pos.as_deref().expect("the positions");
+        let ids = block.id.as_deref().expect("the ids");
+        let alleles = block.alleles.as_ref().expect("the alleles");
+
+        // The four variants of `cases.vcf` are 16 bytes of chromosome
+        // names, `chr1` four times; 3 bytes of ids, `rs1` and the three
+        // that are empty; and 8 bytes of alleles, `A`, `T`, `A`, `T`, `A`,
+        // `G`, `T` and `T`.
+        assert!(chrom_column(chrom, pos, &chroms, 16).is_ok());
+        assert!(id_column(ids, 3).is_ok());
+        assert!(alleles_column(alleles, 8).is_ok());
+
+        let error = match chrom_column(chrom, pos, &chroms, 15) {
+            Ok(_) => panic!("the chromosome names were taken"),
+            Err(error) => error,
+        };
+        let Error::VarsTextTooLarge {
+            column,
+            found,
+            largest,
+        } = &error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((*column, *found, *largest), ("chrom", 16, 15));
+        // What a user does about it is write the file in smaller batches.
+        let message = error.to_string();
+        assert!(message.contains("`chrom`"), "{message}");
+        assert!(message.contains("num_vars_per_block"), "{message}");
+
+        let error = match id_column(ids, 2) {
+            Ok(_) => panic!("the ids were taken"),
+            Err(error) => error,
+        };
+        let Error::VarsTextTooLarge {
+            column,
+            found,
+            largest,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((column, found, largest), ("id", 3, 2));
+
+        let error = match alleles_column(alleles, 7) {
+            Ok(_) => panic!("the alleles were taken"),
+            Err(error) => error,
+        };
+        let Error::VarsTextTooLarge {
+            column,
+            found,
+            largest,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((column, found, largest), ("alleles", 8, 7));
     }
 
     /// The number the system gives when a disc fills up, `ENOSPC`, which

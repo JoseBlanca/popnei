@@ -428,6 +428,24 @@ pub enum Error {
         number: u32,
     },
 
+    /// A column of texts of a block given to the vars file writer holds
+    /// more bytes than one column of a batch takes. Arrow keeps where each
+    /// text of a column ends in a 32 bit number, and arrow-rs panics at the
+    /// text that goes past it, so the writer counts the bytes of the
+    /// `chrom`, the `id` and the `alleles` columns of a block before it
+    /// fills one and writes nothing of that block.
+    #[error(
+        "the `{column}` column of a block given to the writer of the vars file holds {found} bytes of text, and one column of a batch of an arrow file holds {largest}; write the file with a smaller `num_vars_per_block`"
+    )]
+    VarsTextTooLarge {
+        /// Which column of the block it is: `chrom`, `id` or `alleles`.
+        column: &'static str,
+        /// How many bytes of text it holds.
+        found: u64,
+        /// How many bytes one column of a batch holds.
+        largest: u64,
+    },
+
     /// The vars file could not be written: the sink refused the bytes, a
     /// disc that filled up among them, or arrow-rs could not write what it
     /// was given.
