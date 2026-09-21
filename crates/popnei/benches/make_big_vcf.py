@@ -23,9 +23,11 @@ mask is drawn from the generator right after the genotypes instead of after
 the traits, and the missing genotypes are not the ones a full run would have
 drawn. Everything else, the seed included, is the script's.
 
-Every draw of the generator is of the number of variants it is given, so a
-VCF of one number of variants is not a prefix of a VCF of another: the two
-files hold different genotypes.
+The first draw of the generator, which population each family belongs to, is
+of the families alone, 250 of them, whatever the number of variants. Every
+draw after it is of the number of variants, so a VCF of one number of
+variants is not a prefix of a VCF of another: the two files hold different
+genotypes.
 
     uv run --no-project --with numpy python make_big_vcf.py <out.vcf> [num_vars]
 """
@@ -109,17 +111,32 @@ def write_vcf(path, alleles, samples, chroms, poss, ids):
                 fhand.write(rows[offset].tobytes())
 
 
-def main():
-    out = sys.argv[1]
-    num_vars = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_NUM_VARS
+def num_vars_asked_for(text):
+    """How many variants the command line asked for, or the message that
+    says what it should have said.
+
+    A text that is not a number and a number that cannot be written get the
+    same message: both are a command line to write again, and a traceback
+    is not what says so.
+    """
+    try:
+        num_vars = int(text)
+    except ValueError:
+        num_vars = None
     # The variants are split evenly between the chromosomes, so a number
     # that does not divide by them would leave the last ones with no
     # chromosome and no position.
-    if num_vars <= 0 or num_vars % NUM_CHROMS:
+    if num_vars is None or num_vars <= 0 or num_vars % NUM_CHROMS:
         raise SystemExit(
-            f"{num_vars} variants: the number has to be 1 or more and a "
-            f"multiple of the {NUM_CHROMS} chromosomes"
+            f"`{text}`: the number of variants has to be a whole number of 1 "
+            f"or more and a multiple of the {NUM_CHROMS} chromosomes"
         )
+    return num_vars
+
+
+def main():
+    out = sys.argv[1]
+    num_vars = num_vars_asked_for(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_NUM_VARS
     rng = numpy.random.default_rng(SEED)
     alleles, _pops = simulate_genotypes(rng, num_vars)
     samples = [f"s{idx:03d}" for idx in range(NUM_SAMPLES)]

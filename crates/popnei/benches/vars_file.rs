@@ -20,6 +20,30 @@
 //! differ in the decompression and in the vectors the other five columns
 //! are built into.
 //!
+//! The file is not the one the spec took its 19.1 to 19.3 ms on. That one
+//! held the `gts` column alone and pyarrow 23.0.0 wrote it, 15.68 MB; this
+//! one holds the six columns of a vars file, popnei wrote it, so `lz4_flex`
+//! compressed its buffers, and it is 16280410 bytes for the panel of 20000
+//! variants. The genotypes are of the same simulation, and the 3 in 100
+//! that are missing are drawn at another point of the generator than
+//! pyNei's script draws them at, so the compressed bytes are not the same
+//! either. What stands against the 21 ms is still the pass with the
+//! genotypes alone: it decompresses that one column, and reads past the
+//! buffers of the other five without decompressing them.
+//!
+//! Before any of the three is timed there is one pass with every field
+//! asked for whose time is not taken. The first touch of the memory a pass
+//! works in costs page faults that a process pays once, and they all fell
+//! on whichever section ran first, which is the one held against the 21 ms:
+//! over 13 invocations the first run of the genotypes alone took 22.06 to
+//! 30.63 ms where the runs after it took 20.16 to 21.9 ms, and the two
+//! sections that come later in the same process show no such run. That
+//! first pass is also what says which columns the file holds, and every
+//! block of the two timed passes is then checked to hold the fields that
+//! were asked for and no other: the two passes differ by less than a
+//! millisecond, so a projection that decompressed every column would look
+//! like noise and nothing else would catch it.
+//!
 //! What is inside the clock. Of a pass: building the `VarsReader` over a
 //! `Cursor` of the bytes, which reads the schema and the footer, every
 //! `next_block` to the end of the file, and the sum of the genotypes of
@@ -42,16 +66,18 @@
 //! ```text
 //! uv run --no-project --with numpy python \
 //!     crates/popnei/benches/make_big_vcf.py /tmp/panel.vcf 20000
-//! uv run python -c "import popnei; \
+//! uv run maturin develop && uv run python -c "import popnei; \
 //!     popnei.write_vars(popnei.open_vcf('/tmp/panel.vcf'), '/tmp/panel.vars')"
 //! ```
 //!
 //! `make_big_vcf.py`, beside this file, says what it writes; the 20000 is
 //! its second argument, and without it the VCF is the one of 100000
-//! variants that `read_vcf.rs` is run on. Writing the vars file does not
-//! need a release build of the Python module: what is timed here is the
-//! core crate, which `cargo bench` builds with the bench profile, and not
-//! Python.
+//! variants that `read_vcf.rs` is run on. `maturin develop` is there
+//! because an `uv sync` takes the module out of the environment, as
+//! `pyproject.toml` says, and `import popnei` then fails with a
+//! `ModuleNotFoundError`; the debug build it makes is enough, because what
+//! is timed here is the core crate, which `cargo bench` builds with the
+//! bench profile, and not Python.
 //!
 //! It is run with cargo, which passes what comes after the two dashes to
 //! it:
@@ -71,6 +97,16 @@
 //! The best is what is compared with the 21 ms, because that is how the
 //! spec took its number, and the median beside it says how much the machine
 //! was doing something else.
+//!
+//! What the number depends on. On a quiet machine, a load average of 1.77,
+//! the best of 5 runs of the genotypes alone was 20.16 to 20.36 ms over six
+//! invocations; with two compilers running beside it, 21.4 to 25.0 ms; and
+//! under `taskpolicy -b`, which puts the process on the efficiency cores,
+//! 66.48 ms for the same 4.03e9 instructions. So a timing that is reported
+//! is taken with nothing else running, and `/usr/bin/time -l` on the binary
+//! gives the instructions retired and the cycles elapsed beside the wall
+//! time: a run whose cycles divided by its wall time are well under 3 GHz
+//! was not on a performance core, and it says nothing about the 21 ms.
 
 #![cfg_attr(
     target_family = "wasm",
@@ -111,7 +147,10 @@ memory: a pass over it with the genotypes alone asked for, a pass with
 every field asked for, and the writing of its blocks, read before the
 clock starts, into a vector of bytes. Every pass goes through
 `next_block` to the end of the file and adds up the genotypes of each
-block, which it prints, so that the work is not dropped as unused.
+block, which it prints, so that the work is not dropped as unused. One
+pass that is not timed comes before the three, because the first touch
+of the memory a pass works in costs page faults that a process pays
+once, and it fails when a block holds a column that nobody asked for.
 
   --runs n   how many times each of the three is timed, 5 by default
   --help     this
@@ -184,15 +223,88 @@ fn genotypes_added_up(gts: &[i8], from: i64) -> i64 {
         .fold(from, |sum, allele| sum.wrapping_add(i64::from(*allele)))
 }
 
+/// That a block holds the fields that were asked for and no others, which
+/// is what says that the batch was decompressed with the projection of
+/// those fields and not of every column.
+///
+/// Nothing else catches a projection that decompressed what nobody asked
+/// for: the pass with the genotypes alone and the pass with every field
+/// differ by less than a millisecond, which is inside what the machine
+/// moves a timing by.
+fn the_fields_are(fields: Needs, asked_for: Needs) -> Result<(), String> {
+    if fields == asked_for {
+        return Ok(());
+    }
+    let decompressed = fields.difference(asked_for);
+    let missing = asked_for.difference(fields);
+    if missing.is_empty() {
+        return Err(format!(
+            "a block holds {fields} where {asked_for} was asked for: nothing asked for \
+             {decompressed} and it was decompressed"
+        ));
+    }
+    if decompressed.is_empty() {
+        return Err(format!(
+            "a block holds {fields} where {asked_for} was asked for: {missing} is not there"
+        ));
+    }
+    Err(format!(
+        "a block holds {fields} where {asked_for} was asked for"
+    ))
+}
+
+/// One pass with every field asked for, before anything is timed and with
+/// no clock on it: which fields the blocks of the file hold, and the line
+/// that says what it read.
+///
+/// It is there for the page faults of the first touch of the memory a pass
+/// works in, which a process pays once and which fell on whichever section
+/// ran first; the header of this file has the numbers. What it gives is
+/// what the pass with every field is then checked against, since a file
+/// whose source had no alleles to give has no such column.
+fn the_first_pass(bytes: &[u8]) -> Result<(Needs, String), String> {
+    let mut reader = VarsReader::new(Cursor::new(bytes)).map_err(|problem| problem.to_string())?;
+    reader.set_needs(Needs::ALL);
+    let mut of_the_file: Option<Needs> = None;
+    let mut num_vars: u64 = 0;
+    let mut sum: i64 = 0;
+    while let Some(block) = reader.next_block().map_err(|problem| problem.to_string())? {
+        match of_the_file {
+            Some(fields) => the_fields_are(block.fields(), fields)?,
+            None => of_the_file = Some(block.fields()),
+        }
+        // A file of more variants than a u64 counts cannot be written.
+        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        sum = genotypes_added_up(&block.gts, sum);
+    }
+    // A file of no variants gives no block, and then the fields of the file
+    // are the ones every vars file has.
+    let of_the_file = of_the_file.unwrap_or(Needs::GTS);
+    Ok((
+        of_the_file,
+        format!(
+            "{num_vars} variants, the genotypes add up to {sum}, the blocks hold {of_the_file}"
+        ),
+    ))
+}
+
 /// One pass over the file in `bytes`, with `needs` asked for, timed from
 /// the building of the reader to the last block.
-fn read_the_file(bytes: &[u8], needs: Needs) -> Result<Run, popnei::Error> {
+///
+/// Every block has to hold `asked_for`, the fields of `needs` that the file
+/// has, and nothing else.
+fn read_the_file(bytes: &[u8], needs: Needs, asked_for: Needs) -> Result<Run, String> {
     let started = Instant::now();
-    let mut reader = VarsReader::new(Cursor::new(bytes))?;
+    let mut reader = VarsReader::new(Cursor::new(bytes)).map_err(|problem| problem.to_string())?;
     reader.set_needs(needs);
     let mut num_vars: u64 = 0;
     let mut sum: i64 = 0;
-    while let Some(block) = reader.next_block()? {
+    while let Some(block) = reader.next_block().map_err(|problem| problem.to_string())? {
+        // The check is inside the clock, where it costs one test of each of
+        // the five columns of a block, four blocks in a file of this panel,
+        // against the millions of genotypes of the sum beside it. A
+        // consumer of blocks asks the same of every block it is given.
+        the_fields_are(block.fields(), asked_for)?;
         // A file of more variants than a u64 counts cannot be written.
         num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
         sum = genotypes_added_up(&block.gts, sum);
@@ -210,11 +322,11 @@ fn read_the_file(bytes: &[u8], needs: Needs) -> Result<Run, popnei::Error> {
 /// The blocks are read with every field asked for, before the clock starts,
 /// because a block goes into the writer by value and a file of every column
 /// is what `write_vars` makes.
-fn write_the_blocks(bytes: &[u8]) -> Result<Run, popnei::Error> {
-    let mut reader = VarsReader::new(Cursor::new(bytes))?;
+fn write_the_blocks(bytes: &[u8]) -> Result<Run, String> {
+    let mut reader = VarsReader::new(Cursor::new(bytes)).map_err(|problem| problem.to_string())?;
     reader.set_needs(Needs::ALL);
     let mut blocks = Vec::new();
-    while let Some(block) = reader.next_block()? {
+    while let Some(block) = reader.next_block().map_err(|problem| problem.to_string())? {
         blocks.push(block);
     }
     let num_blocks = blocks.len();
@@ -224,15 +336,18 @@ fn write_the_blocks(bytes: &[u8]) -> Result<Run, popnei::Error> {
         &individuals,
         reader.ploidy(),
         reader.metadata().num_vars_per_block,
-    )?;
+    )
+    .map_err(|problem| problem.to_string())?;
     // The table of the names of the chromosomes of the reader the blocks
     // came from, which the writer looks the number of each variant up in.
     let chroms = reader.chroms();
     let started = Instant::now();
     for block in blocks {
-        writer.write_block(block, chroms)?;
+        writer
+            .write_block(block, chroms)
+            .map_err(|problem| problem.to_string())?;
     }
-    let written = writer.finish()?;
+    let written = writer.finish().map_err(|problem| problem.to_string())?;
     let took = started.elapsed();
     Ok(Run {
         took,
@@ -276,8 +391,8 @@ fn milliseconds(time: Duration) -> String {
 fn time_it(
     what: &str,
     runs: usize,
-    mut run: impl FnMut() -> Result<Run, popnei::Error>,
-) -> Result<(), popnei::Error> {
+    mut run: impl FnMut() -> Result<Run, String>,
+) -> Result<(), String> {
     let mut times = Vec::with_capacity(runs);
     for number in 1..=runs {
         let done = run()?;
@@ -300,8 +415,8 @@ fn time_it(
 
 /// What the file says about itself before any of the three is timed: what a
 /// reader of it finds without reading a batch.
-fn what_the_file_is(bytes: &[u8]) -> Result<String, popnei::Error> {
-    let reader = VarsReader::new(Cursor::new(bytes))?;
+fn what_the_file_is(bytes: &[u8]) -> Result<String, String> {
+    let reader = VarsReader::new(Cursor::new(bytes)).map_err(|problem| problem.to_string())?;
     let metadata = reader.metadata();
     Ok(format!(
         "{bytes} bytes, {batches} batches, {vars} variants, {individuals} individuals, \
@@ -350,12 +465,22 @@ fn main() -> ExitCode {
         path = arguments.path.display(),
         runs = arguments.runs,
     );
+    let of_the_file = match the_first_pass(&bytes) {
+        Ok((of_the_file, said)) => {
+            println!("the first pass, which is not timed: {said}");
+            of_the_file
+        }
+        Err(problem) => {
+            eprintln!("{path}: {problem}", path = arguments.path.display());
+            return ExitCode::FAILURE;
+        }
+    };
     let timed = time_it("the genotypes alone", arguments.runs, || {
-        read_the_file(&bytes, Needs::GTS)
+        read_the_file(&bytes, Needs::GTS, Needs::GTS)
     })
     .and_then(|()| {
         time_it("every field", arguments.runs, || {
-            read_the_file(&bytes, Needs::ALL)
+            read_the_file(&bytes, Needs::ALL, of_the_file)
         })
     })
     .and_then(|()| time_it("the write", arguments.runs, || write_the_blocks(&bytes)));
