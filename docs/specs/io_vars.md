@@ -59,6 +59,13 @@ above for the alternative ones and -1 for one that was not called, as
 `docs/specs/variant.md` has it; no mask is written, and the -1 is what says
 that an allele is missing.
 
+Arrow gives the values inside a list a field of their own, with a name and
+with whether they can be null. For its two lists, `alleles` and `gts`,
+popnei writes the field pyarrow writes for any list, named `item` and
+allowed to be null, so that a file of popnei and a file that pyarrow wrote
+have the same columns. No allele and no genotype popnei writes is a null:
+an allele that was not called is the -1 above.
+
 The chromosome is text in every row and not a number into a table kept beside
 the columns, so that the file says what it holds to any program that opens it.
 The repeated names cost next to nothing once compressed.
