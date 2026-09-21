@@ -51,7 +51,7 @@ const POPNEI_BATCHES_KEY: &str = "popnei_batches";
 /// The version of the format that popnei writes, `major.minor`.
 ///
 /// A reader refuses a file whose major version, the part before the dot, is
-/// not [`FORMAT_VERSION_READ`], and reads a file with any minor version, a
+/// not `FORMAT_VERSION_READ`, and reads a file with any minor version, a
 /// later one than its own too, ignoring the keys and the columns it does
 /// not know: that is what lets a later version of the format add a column
 /// without making the files or the readers that are there useless.
@@ -59,7 +59,17 @@ pub const FORMAT_VERSION: &str = "1.0";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
-pub const FORMAT_VERSION_READ: &str = "1";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the reader of the vars file is what refuses a file of another major version \
+                  and is being written; the tests of this module hold it against the version \
+                  that is written already, so this holds for the build without them, and the \
+                  lint itself asks for it to go when the reader lands"
+    )
+)]
+pub(crate) const FORMAT_VERSION_READ: &str = "1";
 
 /// What a vars file says about itself before its first variant, the value
 /// of the `popnei` key of its schema.
@@ -2032,6 +2042,15 @@ mod tests {
             ploidy: 2,
             num_vars_per_block: 3,
         }
+    }
+
+    /// A reader of popnei refuses a file whose version does not start with
+    /// the part it reads, so the version popnei writes starts with it.
+    /// Nothing but this ties the two constants together.
+    #[test]
+    fn the_version_that_is_written_starts_with_the_part_that_is_read() {
+        assert_eq!(FORMAT_VERSION.split('.').next(), Some(FORMAT_VERSION_READ));
+        assert_eq!(FORMAT_VERSION, "1.0");
     }
 
     /// The text of the key is what another program that opens the file
