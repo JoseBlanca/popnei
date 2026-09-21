@@ -26,3 +26,16 @@ its three commands keep on `many.vcf` the numbers of the spec, as the
 plan records. pyNei's `filter_by_maf` and `gather_filtering_stats`
 import. `/Users/jose/devel/popnei-bench/big.vcf` is there, 403572954
 bytes.
+
+## Work package 3, while it is under way
+
+Task 3.1, the reference script, ran beside task 1.1, since it writes
+only under `tests/reference/filters/`. Commit d22c5c9. It stores one file
+of positions for each set of filters, named by kind and threshold, the
+chain as `missing_data_0.04+maf_0.8.txt` and
+`missing_data_0.04+maf_0.8+obs_het_0.5.txt`. Checked by the orchestrator:
+`wc -l` of the eleven files gives 26, 215 and 455, 35, 384 and 480, 22,
+79 and 369, and 163 and 106 for the chain, the numbers of the spec, and
+the first three positions of the 106 are 1111, 1407 and 1518. The ruff
+configuration of the project leaves `tests/reference` out, so the script
+is checked by its path. 99003 tokens.

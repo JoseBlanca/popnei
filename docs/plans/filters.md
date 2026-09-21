@@ -310,7 +310,7 @@ three methods of TypeScript, and every consumer after that,
 
 **Tasks.**
 
-- [ ] 3.1 The reference script and what it stores, in
+- [x] 3.1 The reference script and what it stores, in
   `tests/reference/filters/`, written as
   `tests/reference/vcf/make_reference.py` is. From "How it is verified"
   of the filters and of the counts. Serves deliverable 1. It touches no
