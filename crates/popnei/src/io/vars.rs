@@ -2163,6 +2163,14 @@ fn metadata_of_the_schema(schema: &Schema) -> Result<VarsMetadata> {
             read: FORMAT_VERSION_READ,
         });
     }
+    // A file of no individual holds the genotypes of nobody, and every
+    // source of popnei has one individual at least.
+    if metadata.individuals.is_empty() {
+        return Err(Error::VarsFileOfNoGenotypes {
+            num_individuals: 0,
+            ploidy: metadata.ploidy,
+        });
+    }
     let mut seen: HashSet<&str> = HashSet::with_capacity(metadata.individuals.len());
     for name in &metadata.individuals {
         if !seen.insert(name.as_str()) {
@@ -4488,6 +4496,45 @@ mod tests {
         };
         assert_eq!(*named, missing);
         assert_eq!(source.kind(), ErrorKind::NotFound);
+    }
+
+    /// A `popnei` key that names no individual is refused when the file is
+    /// opened, with the error the writer asked for such a file gives: the
+    /// genotypes of no individual hold no allele, and the blocks such a file
+    /// gives are variants of nobody.
+    #[test]
+    fn a_popnei_key_that_names_no_individual_is_refused_with_both_numbers() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(metadata_as_json(&VarsMetadata {
+            individuals: Vec::new(),
+            ..metadata_of_cases()
+        }));
+        // The `gts` column of such a file, four variants of no allele,
+        // which is what its width of 0 says.
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true));
+        let column = FixedSizeListArray::try_new_with_length(
+            Arc::clone(&inside),
+            0,
+            Arc::new(Int8Array::from(Vec::<i8>::new())),
+            None,
+            4,
+        )
+        .expect("the genotypes of no allele");
+        *parts.column(GTS_COLUMN) = (
+            Field::new(GTS_COLUMN, DataType::FixedSizeList(inside, 0), false),
+            Arc::new(column),
+        );
+
+        let error = refused(parts.written());
+
+        let Error::VarsFileOfNoGenotypes {
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the file of no individual gave {error}");
+        };
+        assert_eq!((num_individuals, ploidy), (0, 2));
     }
 
     /// Every vars file has a `gts` column, so a file without one is not a
