@@ -92,9 +92,11 @@ pub(crate) fn source_of<'a>(
     if let Ok(vars) = object.cast::<VarsSource>() {
         return Ok(vars.get());
     }
+    // The type is named and no article is put before it: `a int` and `a
+    // NoneType` are what one written here would give.
     Err(PyTypeError::new_err(format!(
-        "the variants come from a source that popnei opened, and this is a {what}: \
-         give what `open_vcf` or `open_vars` gives",
+        "`source` is of the type `{what}`, and the variants to write come from a source \
+         that popnei opened: give what `open_vcf` or `open_vars` gives",
         what = object.get_type().name()?
     ))
     .into())

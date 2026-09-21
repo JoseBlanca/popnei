@@ -615,6 +615,25 @@ def test_write_vars_says_what_it_takes_when_it_is_given_a_path(
     assert not path.exists()
 
 
+def test_write_vars_of_the_private_module_names_the_type_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """What a user who calls `popnei._core` themselves reads.
+
+    The package refuses what is not a `Variants` before the binding crate
+    sees it, so nothing a user writes reaches this message; when it is
+    read, it names the type that was given and where a source comes from,
+    and no file is made at the path.
+    """
+    path = tmp_path / "nothing.vars"
+
+    with pytest.raises(TypeError, match="open_vars") as refusal:
+        _core.write_vars(123, path, None)
+
+    assert "`int`" in str(refusal.value)
+    assert not path.exists()
+
+
 def test_what_a_user_reads_of_write_vars_is_written_in_the_package() -> None:
     """The private module explains nothing; the package is the API.
 
