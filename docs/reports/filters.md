@@ -2,7 +2,7 @@
 
 The plan `docs/plans/filters.md` is done, on the branch `plan/filters`,
 in the worktree `.claude/worktrees/filters`, where it ran on 21 September
-2026. Nothing of it is in `main`. The orchestrator, in this report, is the
+2026. The orchestrator, in this report, is the
 session of the assistant that ran the plan: it sent each task to a
 subagent on Opus, checked what came back and had each work package
 reviewed.
@@ -33,34 +33,35 @@ pyodide built and its smoke test exited with 0.
 
 What is asked of the owner.
 
-1. The merge. The branch holds three things that are not in `main`: the
-   branch `spec/filters`, fee97bf, with the specs the plan was built
-   from; `main` itself as of d1d6997, merged into the branch at d4e8458;
-   and this plan. The main checkout still has uncommitted copies of
-   `docs/glossary.md`, `docs/specs/variant.md` and
-   `docs/specs/filters.md` that are older than `spec/filters`, and an
-   untracked `docs/specs/filters.md` stops a merge until it is moved.
-2. Whether the vars file reader refuses an allele below the missing one.
-   A vars file with one damaged byte gives an allele of -2 with no
-   error; the options and the recommendation are under "The review of
-   the counts and of the filter of the core", below.
-3. Whether the core builds the chain of the filters of a pass, so that
-   the two binding crates do not each hold that code: under the review
-   of work package 1. The orchestrator recommends it, as a small task.
-4. What the plan decided that is his to reverse, each where it happened
+1. Nothing stands before the merge, which he ordered on 21 September
+   2026 for when work package 5 was done; the end of this report says
+   how it went.
+2. What the plan decided that is his to reverse, each where it happened
    below: the core's `write_vars` returns the count of variants beside
    the sink; `count_alleles` clears the array it is given; the two
    errors of the counts are a `RuntimeError`; the `repr` of a `Variants`
    shows the options of a VCF; a threshold out of range is refused before
    a kind that is set; in Python a threshold that is no number, a truth
    value among it, is a `TypeError`.
-5. What waits for a spec of its own: a read ahead thread that owns the
+3. What waits for a spec of its own: a read ahead thread that owns the
    reader cannot answer `pass_stats` mid pass; a Ctrl-C waits for a
    filter that keeps nothing to reach the end of the file;
-   `copy.copy(variants)` shares the steps.
-6. The performance review that the measurement hands over to: a profile
+   `copy.copy(variants)` shares the steps; and `chain_of` of the core
+   takes criteria, which the filter of individuals and the one by
+   linkage disequilibrium will not fit, under the review of work package
+   5.
+4. A vars file is still read with no error when a damaged byte gives an
+   allele of 0 or more that its variant does not have, a 5 where there
+   are 2 alleles. It belongs with the question of a checksum of
+   `docs/reports/vars-file.md`.
+5. The performance review that the measurement hands over to: a profile
    of the filtered pass, why a vars file is read on one thread, and
    whether one reader with several thresholds is faster than several.
+
+He answered two questions of the first version of this report on 21
+September 2026, and work package 5 is their work: an allele below the
+missing one is refused by every reader, and the core builds the chain of
+the filters of a pass.
 
 ## Before the first task
 
@@ -590,8 +591,11 @@ a test in each layer. What it costs, on the panel of the bench of the
 vars file, 1000 individuals and 20000 variants, the two binaries run one
 after the other three times, the best of 5 each, load average 1.25 to
 1.28: the pass with the genotypes alone takes 20.10, 20.07 and 20.13 ms
-before and 20.54, 20.61 and 20.53 ms after, 0.40 to 0.48 ms, 2 in 100,
-and still under the 21 ms of "Speed" of `docs/specs/io_vars.md`. Run by
+before and 20.54, 20.61 and 20.53 ms after. The review had it measured
+again, six pairs at a load of 1.3 to 1.4: 20.07 to 20.26 ms without the
+check and 20.50 to 20.61 ms with it, 0.35 to 0.54 ms for each pair, 2 in
+100, which leaves 0.4 ms under the 21 ms of "Speed" of
+`docs/specs/io_vars.md`. Run by
 the orchestrator: `cargo test --workspace` `299 passed`; `uv run pytest`
 `174 passed`; clippy passes. The subagent ran `npm test`, `tests 126`,
 `fail 0`, and the smoke test of pyodide, exit 0.
@@ -612,3 +616,59 @@ nothing; `cargo test --workspace` `303 passed`, 5 of them with `chain_of`
 in their names; `uv run pytest` `174 passed` and `npm test` `tests 126`,
 `fail 0`, with no test of either package changed; fmt, clippy, ruff and
 `cargo wasm-check` pass. 46000 tokens of the subagent of task 3.4.
+
+The review of work package 5, at ae3704d, with four reviewers: `spec`,
+`tests`, `errors`, and `architecture` with the api of the new function.
+The `spec` reviewer could not get an allele below the missing one out of
+popnei: 576 vars files with one allele byte changed to -2, -126 or -128,
+at four sizes of batch, with and without filters and through
+`write_vars`, 360 more at the ploidies 1, 3 and 4, the same through
+TypeScript, and 51 odd genotypes of a VCF at three ploidies, plain and
+bgzipped; every one refused, with the right allele and the right
+variant. The `tests` reviewer's mutations of the check and of the chain
+each failed a test, and its two runs of the sweep of one changed byte
+gave the figures the doc comments have. What held and is fixed, in
+ae4b3c7 and 4e9e193, the vars file, and af3c336 and b8fb8dd, the chain:
+
+- `docs/specs/io_vars.md` gave what the check costs as 0.40 to 0.48 ms,
+  where the runs gave 0.40 to 0.54, beside the time of the pass without
+  it; and it still said that a pass with no filter puts the -2 in the
+  array of a user.
+- The message of the new error stated the rule and not what to do. It
+  ends now with what such a byte is, a byte changed after the file was
+  written or a file that another program wrote, and that the file has to
+  be fetched or copied again. Two sentences, of the spec and of the
+  Python crate, said that a damaged vars file is an `OSError` alone:
+  damage that decodes into what the format does not allow is a
+  `ValueError`.
+- The allele and its variant came from two passes joined by a default
+  that could not be reached; they come from one.
+- The refusal of a second filter of one kind was written in both binding
+  crates, the same but for the type of the error and the lock. It is
+  `refuse_a_second_filter_of_a_kind` of the core, in the spec, and both
+  call it.
+- The `# Errors` of `chain_of` did not say that a reader that holds a
+  filter of the kind is refused too, and it has a test; the test of the
+  seven forms of the VCF asserts the text each one refuses; a comment of
+  a test said that variant 6 of the worked example has nothing called.
+- The test that sweeps one changed byte of a vars file counted the
+  panics of every thread of the test binary, so any other test that
+  failed made it fail and named that test's file. It counts its own
+  thread's. Two reviews had found it; the first time it was left outside
+  the plan.
+
+Not taken: `chain_of` taking a list of steps of a `non_exhaustive` enum,
+
+    #[non_exhaustive]
+    pub enum PassStep { VarFilter(VarFilteringCriterion) }  // later: Individuals(..), Ld(..)
+    pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>>;
+
+which the `architecture` reviewer proposes because the filter of
+individuals and the one by linkage disequilibrium are readers of the
+same chain and are no criterion, and where the first sits among the
+threshold filters changes their numbers. Their specs are not written,
+the function has two callers, and an enum for steps that do not exist
+would be a guess at those specs. For the owner, when he writes them.
+
+The reviewers cost 104460 to 135978 tokens each, the fixes 37500 and
+about 40000.
