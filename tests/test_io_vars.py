@@ -70,18 +70,23 @@ LARGEST_NUM_VARS_PER_BLOCK = 10_000
 def _columns_of(alleles_per_var: int) -> list[tuple[str, pyarrow.DataType, bool]]:
     """The columns of a vars file written from a VCF: the name, the arrow
     type and whether it takes nulls, as the table of "What it holds" of
-    `docs/specs/io_vars.md` gives them."""
+    `docs/specs/io_vars.md` gives them.
+
+    The values inside the two lists, `alleles` and `gts`, have a field of
+    their own, named `item` as pyarrow names it and holding no null, which
+    is what "What it holds" says of them: no allele and no genotype popnei
+    writes is a null, and an allele that was not called is -1. A field that
+    took nulls would cost a mask of ones beside every value.
+    """
+    allele = pyarrow.field("item", pyarrow.string(), nullable=False)
+    genotype = pyarrow.field("item", pyarrow.int8(), nullable=False)
     return [
         ("chrom", pyarrow.string(), False),
         ("pos", pyarrow.uint64(), False),
         ("id", pyarrow.string(), True),
-        ("alleles", pyarrow.list_(pyarrow.field("item", pyarrow.string())), False),
+        ("alleles", pyarrow.list_(allele), False),
         ("qual", pyarrow.float32(), True),
-        (
-            "gts",
-            pyarrow.list_(pyarrow.field("item", pyarrow.int8()), alleles_per_var),
-            False,
-        ),
+        ("gts", pyarrow.list_(genotype, alleles_per_var), False),
     ]
 
 
