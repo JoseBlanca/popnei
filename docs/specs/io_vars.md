@@ -200,8 +200,10 @@ pyNei. When the source fails halfway, on a wrong line of a VCF, the error is
 given and the file that was being written is removed. It is decided here:
 pyNei leaves the file, 3458 bytes of it in a trial with a wrong line, and
 then the path is taken and the same call cannot be tried again.
-A Ctrl-C is raised when the pass over the source is over and not while it
-runs, and it takes the file away as an error does. The whole file is written
+A Ctrl-C that is pending when the call is made is raised before any file is
+made, so the path is untouched. One that arrives while the call runs is
+raised when the pass over the source is over and not while it runs, and it
+takes the file away as an error does. The whole file is written
 inside one call of the core, with the interpreter released for all of it, so
 Python raises a signal that arrived meanwhile when that call returns. A
 Ctrl-C raised between two blocks, which a user gets from `iter_blocks`,
@@ -211,14 +213,14 @@ that ran `docs/plans/vars-file.md`: a user who stopped the call finds the
 path free for the call they make again. The option not taken was to keep the
 file that the call had finished writing.
 
-The file that an error names is the VCF, a wrong line of it and a failure of
-the file system while the vars file is being written alike, because the core
-says that a write failed and not which of the two files it was reading or
-writing when it did. The path that was written to is named by the two errors
-that come before anything is read, a file that is already there and a path
-that no file can be made at. The same session decided this on 21 September
-2026; the option not taken was to tell the two files apart in the binding
-crate, with a sink that keeps the error the file system gave it.
+The file that an error names is the one the error is about. An error of the
+source, a wrong line of the VCF or a read that failed, names the VCF; an
+error of the file being written, a disc that filled up among them, names
+that path and says that the file could not be written, and so do the two
+errors that come before anything is read, a file that is already there and a
+path that no file can be made at. The core says which of the two it is: a
+write that failed is a case of its own and not the error of a source that
+could not be read.
 
 `num_vars_per_block` is how many variants a batch holds, and `None` is
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
@@ -321,9 +323,11 @@ block, and reads it back with the reader of this spec: there are two blocks,
 of 3 variants and of 1, every field of every variant is what went in,
 the empty id of the last three among them, and the batches of the footer are
 3 variants with chr1 100 to 300 and 1 variant with chr1 400 to 400. A second
-cargo test writes a block of four variants that are not sorted, chr1 300,
-chr2 50, chr1 100, chr2 60, in one batch: its regions are chr1 100 to 300 and chr2 50 to 60,
-in that order. A third writes `many.vcf` through the VCF reader and reads it
+cargo test writes a block of four variants that are not sorted, chr2 300,
+chr1 50, chr2 100, chr1 60, in one batch: its regions are chr2 100 to 300 and
+chr1 50 to 60, in that order. The chromosome that comes first in the block is
+the one that comes second in the alphabet, so a writer that gave the regions
+in any order but the one in which the chromosomes first appear is caught. A third writes `many.vcf` through the VCF reader and reads it
 back, and the genotypes, the chromosome names and the positions of the blocks
 are those of the blocks of the VCF. A fourth writes a source whose blocks carry
 the genotypes alone and finds one column in the file it reads back, and
@@ -594,7 +598,7 @@ one is in Python. The owner gave the convention on 21 September 2026: a
 popnei, and an `OSError` a file that cannot be read, that was cut short or
 that is corrupted.
 
-Nine are a `ValueError`, since a file whose content is not what a vars file
+Eleven are a `ValueError`, since a file whose content is not what a vars file
 holds is a wrong input like a wrong argument: the source is not a vars file,
 with what it lacks, which is the header of an arrow file, the `popnei` key of
 the schema, the json of its value, one of that key's four values or the
@@ -605,14 +609,27 @@ widths; a null where there can be none, with the column and the variant; a
 footer whose entries are not as many as the batches, with both counts; a
 batch that holds another number of variants than its entry of the footer,
 with the batch and both counts; a file whose buffers are compressed with
-zstd; and two individuals of one name, with the name.
+zstd; two individuals of one name, with the name; a writer asked for a file
+of no individual or of the ploidy 0, with both numbers, whose `popnei` key
+no reader of popnei would take; and a block with more text in one of its
+columns than the 2147483647 bytes an arrow column of texts holds, with the
+column, the bytes it holds and that number. The last one is the size of a
+batch and not of the file: the way out is a smaller `num_vars_per_block`,
+which the message says. arrow-rs panics when a column of texts goes past
+it, so the writer counts the bytes of each of the three columns of texts of
+a block before it fills one, and writes nothing of that block.
 
-Three are an `OSError`: an error of the input or the output, which wraps
-`std::io::Error`; a file that starts as an arrow file and was cut short, with
-what was being read when the bytes ran out; and a batch that arrow-rs could
-not decode or decompress, with the batch and what arrow-rs said. The last two
-are a file that was damaged after it was written, which the reader refuses
-instead of giving the variants it can still read.
+Four are an `OSError`: an error of a source that is read, which wraps
+`std::io::Error`; a vars file that could not be written, with what went
+wrong, which is the `std::io::Error` the system gave when the cause is of
+the file system, and what arrow-rs said when it is not; a file that starts
+as an arrow file and was cut short, with what was being read when the bytes
+ran out; and a batch that arrow-rs could not decode or decompress, with the
+batch and what arrow-rs said. The last two are a file that was damaged after
+it was written, which the reader refuses instead of giving the variants it
+can still read. The write has a case of its own because a Python user reads
+which file went wrong from the exception, and a disc that fills up while the
+vars file is being written is not the VCF failing to be read.
 
 Three are a `RuntimeError`: a block that does not fit the writer, with the
 individuals and the ploidy of the writer and of the block; a block whose
@@ -624,8 +641,8 @@ its reader for every field and gives the writer the table of that reader.
 Three more cases that a call of this module gives are not its own. A path
 that already exists is refused by the binding crate before the core is
 called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
-`docs/specs/block.md` that every reader taking a size gives, a `ValueError`
-too. A file that could not be opened, which `from_path` gives for a path that
+`docs/specs/block.md` that every reader taking a size gives, which the
+writer gives too, a `ValueError`. A file that could not be opened, which `from_path` gives for a path that
 is not there and for a directory, is the case of `docs/specs/io_vcf.md` with
 the path and the `std::io::Error`, an `OSError` built with the number the
 system gave.
