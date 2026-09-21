@@ -601,11 +601,12 @@ pub(crate) struct TheExtraField {
 /// bytes, gives its length in two more and holds that many.
 pub(crate) fn the_extra_field(extra_field: &[u8]) -> TheExtraField {
     let of_the_field = extra_field.len();
+    let mut size_of_the_member = None;
     let mut at: usize = 0;
     while let Some(left) = of_the_field.checked_sub(at).filter(|left| *left > 0) {
         if left < BYTES_BEFORE_A_SUBFIELD {
             return TheExtraField {
-                size_of_the_member: None,
+                size_of_the_member,
                 problem: Some(format!(
                     "the subfields of its extra field of {of_the_field} bytes leave {left} bytes \
                      over at its end, and a subfield names itself in two bytes and gives its \
@@ -618,7 +619,7 @@ pub(crate) fn the_extra_field(extra_field: &[u8]) -> TheExtraField {
         let end = data.saturating_add(usize::from(of_the_subfield));
         if end > of_the_field {
             return TheExtraField {
-                size_of_the_member: None,
+                size_of_the_member,
                 problem: Some(format!(
                     "a subfield of its extra field of {of_the_field} bytes says that it holds \
                      {of_the_subfield} bytes and ends {over} bytes after the field does",
@@ -630,18 +631,17 @@ pub(crate) fn the_extra_field(extra_field: &[u8]) -> TheExtraField {
             extra_field.get(at..at.saturating_add(2)) == Some(THE_SIZE_SUBFIELD.as_slice());
         if names_the_size && of_the_subfield == BYTES_OF_THE_SIZE {
             // `BC` holds the size of the whole member less 1, so it fits in
-            // two bytes.
-            return TheExtraField {
-                size_of_the_member: Some(
-                    usize::from(two_bytes_of(extra_field, data)).saturating_add(1),
-                ),
-                problem: None,
-            };
+            // two bytes. The walk goes on to the end of the field all the
+            // same: a subfield after it that does not end where it says is
+            // a header that was damaged, and a walk that stopped here would
+            // not see it.
+            size_of_the_member =
+                Some(usize::from(two_bytes_of(extra_field, data)).saturating_add(1));
         }
         at = end;
     }
     TheExtraField {
-        size_of_the_member: None,
+        size_of_the_member,
         problem: None,
     }
 }

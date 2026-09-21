@@ -3681,7 +3681,8 @@ mod tests {
         // Two headers that no member of a file that bgzip wrote has: one
         // that does not start with the two bytes of gzip, and one whose
         // extra field holds no `BC` and so says nothing of the size of its
-        // member.
+        // member. The others are in the tests that follow, each with the
+        // words of its own error.
         let without_bc = {
             let mut member = bgzf_member_with(
                 b"chr1\t100\t.\tA\tT\t29.5\tPASS\t.\tGT\t0/0\t0/1\t1/1\n",
@@ -3717,26 +3718,213 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_member_with_another_subfield_before_its_bc_is_read() {
-        // BGZF lets the extra field of a member hold other subfields, and
-        // the reader walks them to find the `BC`. The first member has its
-        // `BC` where bgzip writes it, since that is what says that bgzip
-        // wrote the file.
-        let mut file = bgzf_member(HEADER.as_bytes());
-        // A subfield `QQ` of four bytes before the `BC`.
-        let subfield = [b'Q', b'Q', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00];
-        file.extend_from_slice(&bgzf_member_with(
-            b"chr1\t100\t.\tA\tT\t29.5\tPASS\t.\tGT\t0/0\t0/1\t1/1\n",
-            &subfield,
-        ));
-        file.extend_from_slice(&BGZF_EOF);
+    /// A line of a VCF of three individuals, which a member of a test of
+    /// the checks of a member holds.
+    const A_DATA_LINE: &[u8] = b"chr1\t100\t.\tA\tT\t29.5\tPASS\t.\tGT\t0/0\t0/1\t1/1\n";
 
+    /// The error that a file whose second member is `member` gives, which
+    /// has to be that of a member that is corrupted and to name that member:
+    /// what comes back is what it says is wrong with it.
+    ///
+    /// Every check of a member has a test that asserts those words. The
+    /// sweep over every byte of `cases.vcf.gz` says that no file is read as
+    /// a whole one that is not, and says nothing about which check refuses
+    /// which file: with one check taken out another refuses the same file,
+    /// and only the words say which one did.
+    fn the_problem_of_the_second_member(member: &[u8]) -> String {
+        let mut file = bgzf_member(HEADER.as_bytes());
+        let start_of_the_second = file.len();
+        file.extend_from_slice(member);
+        file.extend_from_slice(&BGZF_EOF);
         let (rows, error) = rows_before_the_error(file, options(2, false));
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].pos, 100);
-        assert_eq!(rows[0].gts, [0, 0, 0, 1, 1, 1]);
+        let Some(Error::VcfBgzipCorrupted {
+            member,
+            offset,
+            problem,
+        }) = error
+        else {
+            panic!("the file gives {error:?} after {} rows", rows.len());
+        };
+        assert_eq!(
+            (member, offset),
+            (2, u64::try_from(start_of_the_second).unwrap())
+        );
+        problem
+    }
+
+    /// A member with `bytes` written into its extra field after its `BC`,
+    /// which BGZF allows: the length of the field, at the bytes 10 and 11,
+    /// and the size the `BC` states, at the bytes 16 and 17, are corrected.
+    fn with_bytes_after_the_bc(member: &[u8], bytes: &[u8]) -> Vec<u8> {
+        let mut with = member.get(..18).unwrap().to_vec();
+        with.extend_from_slice(bytes);
+        with.extend_from_slice(member.get(18..).unwrap());
+        let of_the_field = u16::try_from(bytes.len().checked_add(6).unwrap()).unwrap();
+        with[10..12].copy_from_slice(&of_the_field.to_le_bytes());
+        let size = u16::from_le_bytes([with[16], with[17]]);
+        let grown = size
+            .checked_add(u16::try_from(bytes.len()).unwrap())
+            .unwrap();
+        with[16..18].copy_from_slice(&grown.to_le_bytes());
+        with
+    }
+
+    #[test]
+    fn a_member_whose_flags_are_not_those_of_a_bgzip_member_is_refused() {
+        // BGZF fixes the flags of a member to the one flag of an extra
+        // field: a name or a comment in the header would move the data of a
+        // member that is cut by a size and not followed byte by byte, and
+        // bcftools 1.24 reads such a member.
+        let mut member = bgzf_member(A_DATA_LINE);
+        member[3] = 0x14;
+        let problem = the_problem_of_the_second_member(&member);
+        assert!(problem.contains("its flags are 20"), "{problem}");
+    }
+
+    #[test]
+    fn a_member_whose_method_is_not_deflate_is_refused() {
+        let mut member = bgzf_member(A_DATA_LINE);
+        member[2] = 0x09;
+        let problem = the_problem_of_the_second_member(&member);
+        assert!(problem.contains("the method 9"), "{problem}");
+    }
+
+    #[test]
+    fn a_member_whose_subfields_do_not_end_where_its_extra_field_does_is_refused() {
+        // The subfields of an extra field are walked to its end, before the
+        // `BC` and after it, and a field that ends in the middle of one, or
+        // one that ends after the field does, is a header that was damaged.
+        let whole = bgzf_member(A_DATA_LINE);
+        let mut before = bgzf_member_with(A_DATA_LINE, &[b'Q', b'Q', 0x02, 0x00, 0x00, 0x00]);
+        // The length of the subfield `QQ`, which is 2 and says 10: it ends
+        // two bytes after the extra field of 12 bytes does.
+        before[14..16].copy_from_slice(&10u16.to_le_bytes());
+        for (what, member, words) in [
+            (
+                "a subfield before the `BC` that ends after the field does",
+                before,
+                "ends 2 bytes after the field does",
+            ),
+            (
+                "a subfield after the `BC` that ends after the field does",
+                with_bytes_after_the_bc(&whole, &[b'Q', b'Q', 0x0a, 0x00, 0x00, 0x00]),
+                "ends 8 bytes after the field does",
+            ),
+            (
+                "an extra field that ends in the middle of a subfield",
+                with_bytes_after_the_bc(&whole, b"Q"),
+                "leave 1 bytes over at its end",
+            ),
+        ] {
+            let problem = the_problem_of_the_second_member(&member);
+            assert!(problem.contains(words), "{what}: {problem}");
+        }
+    }
+
+    #[test]
+    fn a_member_whose_size_leaves_no_room_for_its_data_is_refused() {
+        // The size is what the member is cut by, so one that leaves no room
+        // for a deflate stream after the 18 bytes of the header and the 8
+        // of the CRC32 and the length of the text is a size that nothing
+        // can be read by. It is the check that refuses the file of the
+        // review, whose extra field of 21572 bytes is longer than the size
+        // its `BC` states.
+        let mut member = bgzf_member(A_DATA_LINE);
+        member[16..18].copy_from_slice(&25u16.to_le_bytes());
+        let problem = the_problem_of_the_second_member(&member);
+        assert!(problem.contains("leaves no room"), "{problem}");
+    }
+
+    #[test]
+    fn a_member_whose_data_is_not_one_deflate_stream_that_ends_with_it_is_refused() {
+        // The data of a member is one deflate stream that ends where the
+        // member does. A stream that ends before the last byte of the
+        // member leaves bytes that nothing read, and one that the member
+        // ends in the middle of gives text that no one can say is whole.
+        // The CRC32 and the length of the text are no help: both of these
+        // hold the ones of the text that went in.
+        let whole = bgzf_member(A_DATA_LINE);
+        let with_junk = {
+            // Three bytes between the end of the stream and the CRC32.
+            let end = whole.len().checked_sub(8).unwrap();
+            let mut member = whole.get(..end).unwrap().to_vec();
+            member.extend_from_slice(&[0x00, 0x00, 0x00]);
+            member.extend_from_slice(whole.get(end..).unwrap());
+            let size = u16::from_le_bytes([member[16], member[17]]);
+            member[16..18].copy_from_slice(&size.checked_add(3).unwrap().to_le_bytes());
+            member
+        };
+        let cut_by_three = {
+            let end = whole.len().checked_sub(8).unwrap();
+            let mut member = whole.get(..end.checked_sub(3).unwrap()).unwrap().to_vec();
+            member.extend_from_slice(whole.get(end..).unwrap());
+            let size = u16::from_le_bytes([member[16], member[17]]);
+            member[16..18].copy_from_slice(&size.checked_sub(3).unwrap().to_le_bytes());
+            member
+        };
+        for (what, member) in [
+            ("three bytes after the stream", with_junk),
+            ("a stream cut by three bytes", cut_by_three),
+        ] {
+            let problem = the_problem_of_the_second_member(&member);
+            assert!(
+                problem.contains("is not one deflate stream that ends where the member does"),
+                "{what}: {problem}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_that_states_more_text_than_a_member_holds_is_refused() {
+        // The length of the text is four bytes and a member holds 65536,
+        // so a length above that is a number no member has, and it is
+        // refused before the text is decompressed into a buffer of that
+        // size.
+        let mut member = bgzf_member(A_DATA_LINE);
+        let end = member.len().checked_sub(4).unwrap();
+        member[end..].copy_from_slice(&70000u32.to_le_bytes());
+        let problem = the_problem_of_the_second_member(&member);
+        assert!(
+            problem.contains("a member holds 65536 at most"),
+            "{problem}"
+        );
+    }
+
+    #[test]
+    fn a_member_whose_data_gives_more_text_than_a_member_holds_is_refused() {
+        // The length it states is one a member can have and its data gives
+        // more text than that, which the buffer of the text is one byte
+        // longer than a member holds to see.
+        let mut text = Vec::new();
+        while text.len() < 70000 {
+            text.extend_from_slice(A_DATA_LINE);
+        }
+        let mut member = bgzf_member(&text);
+        let end = member.len().checked_sub(4).unwrap();
+        member[end..].copy_from_slice(&65536u32.to_le_bytes());
+        let problem = the_problem_of_the_second_member(&member);
+        assert!(problem.contains("gave 65537 bytes of text"), "{problem}");
+    }
+
+    #[test]
+    fn a_member_with_another_subfield_beside_its_bc_is_read() {
+        // BGZF lets the extra field of a member hold other subfields, and
+        // the reader walks them to find the `BC`, before it and after it.
+        // A subfield `QQ` of four bytes, which is eight bytes of the field.
+        let subfield = [b'Q', b'Q', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let before = bgzf_member_with(A_DATA_LINE, &subfield);
+        let after = with_bytes_after_the_bc(&bgzf_member(A_DATA_LINE), &subfield);
+        for (where_it_is, member) in [("before the `BC`", before), ("after it", after)] {
+            let mut file = bgzf_member(HEADER.as_bytes());
+            file.extend_from_slice(&member);
+            file.extend_from_slice(&BGZF_EOF);
+
+            let (rows, error) = rows_before_the_error(file, options(2, false));
+            assert!(error.is_none(), "{where_it_is}: {error:?}");
+            assert_eq!(rows.len(), 1, "{where_it_is}");
+            assert_eq!(rows[0].pos, 100, "{where_it_is}");
+            assert_eq!(rows[0].gts, [0, 0, 0, 1, 1, 1], "{where_it_is}");
+        }
     }
 
     #[test]
