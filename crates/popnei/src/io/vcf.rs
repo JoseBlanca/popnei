@@ -39,6 +39,7 @@ use crate::block::{
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
+use crate::filters::FilteringStats;
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -1186,6 +1187,11 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
     fn set_needs(&mut self, needs: Needs) {
         self.needs = needs;
     }
+
+    /// None: a source has no filter over it.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
 }
 
 impl VcfReader<BufReader<File>> {
@@ -2196,6 +2202,17 @@ mod tests {
             assert_eq!(reader.ploidy(), 2, "{name}");
             assert!(reader.chroms().is_empty(), "{name}");
         }
+    }
+
+    /// The reader is a source: no filter stands between it and the file,
+    /// before a block is read and after the last one.
+    #[test]
+    fn a_vcf_reader_gives_no_filtering_stats() {
+        let mut reader = reader_of_file("cases.vcf", VcfOptions::default());
+        assert!(reader.filtering_stats().is_empty());
+        let blocks = blocks_of(&mut reader).expect("the blocks");
+        assert_eq!(blocks.len(), 1);
+        assert!(reader.filtering_stats().is_empty());
     }
 
     #[test]

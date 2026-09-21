@@ -43,6 +43,7 @@ use serde_json::{Map, Value};
 
 use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
 use crate::error::{Error, Result};
+use crate::filters::FilteringStats;
 use crate::variant::{ChromTable, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
@@ -1677,6 +1678,11 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
     fn set_needs(&mut self, needs: Needs) {
         self.needs = needs;
     }
+
+    /// None: a source has no filter over it.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
 }
 
 impl VarsReader<BufReader<File>> {
@@ -2638,6 +2644,7 @@ mod tests {
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -2852,6 +2859,10 @@ mod tests {
             if let Ok(mut asked_for) = self.asked_for.lock() {
                 *asked_for = needs;
             }
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
         }
     }
 
@@ -5070,6 +5081,17 @@ mod tests {
             Ok(blocks) => panic!("the file gave {count} blocks", count = blocks.len()),
             Err(error) => error,
         }
+    }
+
+    /// The reader is a source: no filter stands between it and the file,
+    /// before a block is read and after the last one.
+    #[test]
+    fn a_vars_file_reader_gives_no_filtering_stats() {
+        let mut reader = opened(cases_written_in_batches_of(3)).expect("the bytes are a vars file");
+        assert!(reader.filtering_stats().is_empty());
+        let blocks = blocks_of(&mut reader).expect("the blocks of the file");
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+        assert!(reader.filtering_stats().is_empty());
     }
 
     /// The four variants of the table of `cases.vcf`, written in batches of
