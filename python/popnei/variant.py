@@ -21,11 +21,14 @@ class Variants:
     genotyped. The genotypes come out of it through :meth:`iter_blocks` and
     through nothing else.
 
-    It cannot be pickled or copied: what it holds is an object of Rust with
-    the path and the options of the source. What travels between processes
-    is the path and the arguments of :func:`popnei.open_vcf` or of
-    :func:`popnei.open_vars`, and a ``Variants`` is opened again at the
-    other end.
+    It cannot be pickled, and ``copy.deepcopy`` of one is a ``TypeError``
+    for the same reason: what it holds is an object of Rust with the path
+    and the options of the source, which no pickle carries. What travels
+    between processes is the path and the arguments of
+    :func:`popnei.open_vcf` or of :func:`popnei.open_vars`, and a
+    ``Variants`` is opened again at the other end. ``copy.copy`` gives a
+    second handle over the same source, which reads the same variants: a
+    handle holds nothing of a pass, so the two are used as one is.
     """
 
     def __init__(self, source: _core.VcfSource | _core.VarsSource):
