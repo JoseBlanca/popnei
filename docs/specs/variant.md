@@ -185,6 +185,17 @@ counted as it is, it would be a called allele of the genotype counts, and
 it has no place among the allele counts. pyNei refuses it too, with a
 `ValueError`, in `_count_alleles_per_var`.
 
+What makes the first sentence true is that each reader refuses such an
+allele before it builds a block. A genotype of a VCF cannot say one: an
+allele number is a run of digits, so `-2/0` and `-1` are wrong data lines,
+as `docs/specs/io_vcf.md` has it. A vars file can, since it holds an allele
+as a signed byte, and its reader takes the smallest allele of each batch
+and refuses the batch that holds one below the missing allele, which
+`docs/specs/io_vars.md` has under "What it refuses". The owner decided on
+21 September 2026 that such an allele "is never allowed" and is refused
+"even by the vcf parser", after a reviewer changed one byte of the
+genotypes of a vars file to 254 and got a block holding -2 with no error.
+
 ### How it runs
 
 One pass over the alleles of the row each, with no allocation: the allele
@@ -354,7 +365,8 @@ function. The two counts have no function in Python or in TypeScript, so
 no user writes the ploidy or the genotypes they refuse: the ploidy is the
 one of the reader that built the block, the block of a reader of popnei
 holds a whole number of genotypes of it, no reader gives an allele below
-the missing one, which is what the item above says, and a variant of more
+the missing one, which "An allele that no reader gives" above says and each
+reader is held to by a test of its own, and a variant of more
 than 4295 million alleles is a block that no source holds. A user who gets
 one of the three reports it instead of looking at what they wrote. In
 TypeScript they are an `Error`, as every error of the core is.

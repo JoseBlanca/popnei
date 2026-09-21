@@ -483,6 +483,23 @@ the option not taken was to let those values into the block, which gives a
 calculation over the qualities an infinity to work with and turns a NaN into a
 variant with no quality.
 
+An allele of `gts` below `MISSING_ALLELE`, -1, is an error naming the allele
+found and the variant. The alleles are signed bytes, so a byte of that column
+that was damaged after the file was written, or a file another program wrote,
+can say -2, which is neither an allele of the variant nor a missing genotype.
+The owner decided on 21 September 2026 that such an allele "is never allowed"
+and that every reader of popnei refuses it, "even the VCF parser", after a
+reviewer wrote a vars file with popnei, changed one byte of its genotypes to
+254, and `open_vars(...).iter_blocks()` handed out a block holding -2 with no
+error: the reader checked the nulls, the type and the width of the column and
+copied the bytes. What the -2 does further on is what `docs/specs/variant.md`
+says under "An allele that no reader gives": the counts of one variant refuse
+it, and a pass that counts nothing puts it in the array of a user, where it
+is an allele of its own. The option not taken was to leave the reader as it
+was and to make those two errors of the counts a `ValueError` instead of the
+`RuntimeError` they are, which names no file and no variant and which a pass
+with no filter and no count never reaches.
+
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
@@ -561,7 +578,17 @@ A batch becomes a block column by column. The genotypes are copied from the
 buffer that arrow-rs decompressed into the vector of the block, which a
 `Block` owns; measured on the panel of "The compression", that copy into a
 vector allocated for each batch added 0.4 ms to the 18.8 ms of the
-decompression of its four batches. The positions and the qualities are
+decompression of its four batches. Before the copy, one pass over that
+buffer takes the smallest of its alleles and refuses the batch when it is
+below the missing one, which "What it refuses" asks for: the smallest of a
+run of bytes is what a compiler reduces over the lanes of a vector
+register, where a comparison written for each allele on its own would not
+be. It costs 0.40 to 0.48 ms of a pass over that panel, 1000 individuals
+and 20000 variants, whose 4e7 alleles the reader gives in 20.07 to 20.13 ms
+with the genotypes alone asked for: 2 in 100, measured on the owner's Apple
+M5 Pro with a load average of 1.3, as the best of 5 runs of the benchmark
+of `crates/popnei/benches/vars_file.rs`, three times for each build one
+after the other. The positions and the qualities are
 copied too, a null quality as NaN, the ids and the alleles go into the
 columns of texts of the block, and each chromosome name gets its number from
 the table, which is looked up only when the name differs from that of the
@@ -744,7 +771,7 @@ one is in Python. The owner gave the convention on 21 September 2026: a
 popnei, and an `OSError` a file that cannot be read, that was cut short or
 that is corrupted.
 
-Twelve are a `ValueError`, since a file whose content is not what a vars file
+Thirteen are a `ValueError`, since a file whose content is not what a vars file
 holds is a wrong input like a wrong argument: the source is not a vars file,
 with what it lacks, which is the header of an arrow file, the `popnei` key of
 the schema, the json of its value, one of that key's four values, the `gts`
@@ -753,7 +780,8 @@ column or the
 1, with the version found; a column of another type, with the column and the
 two types; a `gts` width that does not match the `popnei` key, with both
 widths; a null where there can be none, with the column and the variant; a
-`qual` that is a value and is not finite, with the value and the variant; a
+`qual` that is a value and is not finite, with the value and the variant; an
+allele of `gts` below the missing one, with the allele and the variant; a
 footer whose entries are not as many as the batches, with both counts; a
 batch that holds another number of variants than its entry of the footer,
 with the batch and both counts; a file whose buffers are compressed with
