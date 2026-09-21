@@ -387,7 +387,32 @@ test("a source of openVars that is not a Uint8Array is refused", async () => {
   });
   assert.throws(() => openVars(null as unknown as Uint8Array), {
     name: "Error",
-    message: /null/,
+    message: /and null was given/,
+  });
+  // `undefined` said "the undefined undefined", and an array "a Array".
+  assert.throws(() => openVars(undefined as unknown as Uint8Array), {
+    name: "Error",
+    message: /and undefined was given/,
+  });
+  assert.throws(() => openVars([65] as unknown as Uint8Array), {
+    name: "Error",
+    message: /an object of the type `Array` was given/,
+  });
+});
+
+test("a source whose buffer was transferred away is refused", async () => {
+  const bytes = await varsFileOfCases(3);
+  // What a page does when it sends the bytes of a file to a web worker:
+  // the buffer moves and the array that is left has nothing behind it. The
+  // generated code read it as bytes of its own and threw a `TypeError`
+  // that named neither the argument nor what had happened.
+  structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+  // `detached` is of ES2024, which is later than the library this package
+  // is compiled against.
+  assert.equal((bytes.buffer as { detached?: boolean }).detached, true);
+  assert.throws(() => openVars(bytes), {
+    name: "Error",
+    message: /the buffer of `source` was transferred/,
   });
 });
 
@@ -397,7 +422,8 @@ test("variants that writeVars was not given by popnei are refused", async () => 
   // that is easiest to make.
   assert.throws(() => writeVars(bytes as unknown as Variants), {
     name: "Error",
-    message: /`variants` is what openVcf or openVars gives, and a Uint8Array/,
+    message:
+      /`variants` is what openVcf or openVars gives, and an object of the type `Uint8Array`/,
   });
   assert.throws(() => writeVars(null as unknown as Variants), {
     name: "Error",

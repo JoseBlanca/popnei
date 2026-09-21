@@ -58,9 +58,11 @@ export function aBoolean(argument: string, value: unknown): boolean {
 }
 
 /**
- * The bytes of `value` when it is a `Uint8Array`, and an `Error` otherwise.
+ * The bytes of `value` when it is a `Uint8Array` that can be read, and an
+ * `Error` otherwise.
  *
- * @throws {Error} When `value` is not a `Uint8Array`.
+ * @throws {Error} When `value` is not a `Uint8Array`, and when its buffer
+ * was transferred, which leaves the array with nothing to read.
  */
 export function bytes(argument: string, value: unknown): Uint8Array {
   if (!(value instanceof Uint8Array)) {
@@ -69,6 +71,20 @@ export function bytes(argument: string, value: unknown): Uint8Array {
         `${whatWasGiven(value)} was given; text is turned into bytes with ` +
         "new TextEncoder().encode(text), and a file of node is read with " +
         'new Uint8Array(await readFile(path))',
+    );
+  }
+  // A page that sends bytes to a web worker transfers their buffer, which
+  // leaves the array it came from with a length of 0 and no memory behind
+  // it. The code wasm-bindgen generates throws a `TypeError` of its own on
+  // one, which names neither the argument nor what happened to it.
+  // `detached` is of node 26 and of the browsers of 2024; where it is not
+  // there, this passes and the array is read as the empty one it looks
+  // like.
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the bytes of the file are there and not in " +
+        "this array; the worker that was given them is where they are read",
     );
   }
   return value;
@@ -95,7 +111,14 @@ export function namesOfFields(argument: string, value: unknown): string[] {
   return value as string[];
 }
 
-/** What was given, for the message of an argument that was refused. */
+/**
+ * What was given, for the message of an argument that was refused.
+ *
+ * The name of the class of an object goes inside the words `of the type`,
+ * which is where the Python package puts it too: the article that would
+ * come before it is `a` for a `Uint8Array` and `an` for an `Array`, and no
+ * rule of the letters tells the two apart.
+ */
 export function whatWasGiven(value: unknown): string {
   if (typeof value === "string") {
     return `the string \`${value}\``;
@@ -103,10 +126,15 @@ export function whatWasGiven(value: unknown): string {
   if (value === null) {
     return "null";
   }
+  if (value === undefined) {
+    return "undefined";
+  }
   if (typeof value === "object") {
     const name: unknown = (value as { constructor?: { name?: string } })
       .constructor?.name;
-    return typeof name === "string" ? `a ${name}` : "an object";
+    return typeof name === "string"
+      ? `an object of the type \`${name}\``
+      : "an object of no type";
   }
   return `the ${typeof value} ${String(value)}`;
 }
