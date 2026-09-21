@@ -36,13 +36,14 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 /// `MAX_NUM_VARS_PER_CHUNK`, measured for popnei by nobody.
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 
-/// Which of the two sizes of a block a reader is working with.
+/// Which of the three sizes of a block a reader is working with.
 ///
 /// What a caller does about a block the machine cannot give the memory for
 /// depends on it, so the error carries it: a caller who asked for a size
-/// asks for fewer variants, and one who asked for none learns that the size
+/// asks for fewer variants, one who asked for none learns that the size
 /// popnei chose for these individuals does not fit and passes one that
-/// does.
+/// does, and one reading a file whose batches fix the size writes that file
+/// again with smaller ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockSize {
     /// The `num_vars_per_block` that the caller wrote.
@@ -50,6 +51,9 @@ pub enum BlockSize {
     /// [`default_num_vars_per_block`] for the individuals of the source,
     /// which is what a caller who asked for no size gets.
     ChosenByPopnei,
+    /// The size a file fixed: the batch of a vars file, which its reader
+    /// builds whole whatever size the caller asked its blocks to be.
+    FixedByAFile,
 }
 
 impl BlockSize {
@@ -61,6 +65,10 @@ impl BlockSize {
             BlockSize::ChosenByPopnei => {
                 "popnei chose that size for these individuals and this ploidy; \
                  ask for the blocks with a `num_vars_per_block` that fits"
+            }
+            BlockSize::FixedByAFile => {
+                "the batches of the file fix that size, whatever size its blocks are asked \
+                 for; write the file again with a smaller `num_vars_per_block`"
             }
         }
     }

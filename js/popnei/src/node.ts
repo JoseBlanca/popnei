@@ -14,6 +14,8 @@ import { wasmIsLoaded } from "./core.js";
 
 export type { Block, Field } from "./block.js";
 export { version } from "./core.js";
+export { openVars, writeVars } from "./io_vars.js";
+export type { WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";
 export { Variants } from "./variant.js";

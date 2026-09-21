@@ -45,6 +45,27 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// A path that a file is already at, given to a call that writes one.
+    /// This crate refuses it before the core is called and writes nothing,
+    /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
+    /// pyNei.
+    PathTaken {
+        /// The path the caller gave.
+        path: PathBuf,
+    },
+    /// What went wrong in a call that was writing a file, with the file it
+    /// could not take away afterwards, a directory whose permissions
+    /// changed under it among the causes. What went wrong is what the user
+    /// reads, and the file that was left is a note on it: their next call
+    /// finds that path taken and would say only that.
+    LeftBehind {
+        /// What went wrong, which is the exception the user gets.
+        error: Box<PyPopneiError>,
+        /// The file that is still at the path.
+        path: PathBuf,
+        /// Why it could not be taken away, as the system said it.
+        problem: String,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -113,12 +134,50 @@ impl From<PyPopneiError> for PyErr {
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of 1 or more that this machine can count"
             )),
+            // A file that is already at the path is a wrong argument of the
+            // call and not an error of the file system, so it is a
+            // `ValueError`, whose message starts with the path as that of
+            // every error of a file does.
+            PyPopneiError::PathTaken { path } => PyValueError::new_err(of_the_file(
+                "a file is already there, and popnei writes no file over another one: \
+                 write to another path, or take that file away"
+                    .to_owned(),
+                Some(path),
+            )),
+            PyPopneiError::LeftBehind {
+                error,
+                path,
+                problem,
+            } => left_behind(PyErr::from(*error), &path, &problem),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }
             PyPopneiError::Python(error) => error,
         }
     }
+}
+
+/// `raised` with a note that says that the file the call was writing is
+/// still at `path`, because it could not be taken away.
+///
+/// A note is text that Python keeps in `__notes__` and prints under the
+/// message of the exception, which is where what a user has to do about a
+/// second thing goes: what went wrong stays the exception they see, with
+/// its kind and its message.
+fn left_behind(raised: PyErr, path: &Path, problem: &str) -> PyErr {
+    let note = format!(
+        "the file that was being written is still at {path}, because it could not be \
+         taken away: {problem}. The call made again at that path is refused while it \
+         is there",
+        path = path.to_string_lossy()
+    );
+    Python::attach(|py| {
+        // A note that could not be added does not take the place of what
+        // went wrong, which is what the user asked about and what this
+        // returns either way.
+        let _ = raised.value(py).call_method1("add_note", (note,));
+    });
+    raised
 }
 
 /// The exception of one error of the core crate, by the convention the
@@ -155,13 +214,28 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             format!("the file could not be read: {}", what_went_wrong(&source)),
             path,
         ),
+        // The vars file that a call was writing and that the file system
+        // or arrow-rs refused, which is an error of that file and not of
+        // the source the call was reading: `path` is the file being
+        // written wherever this case travels, and the message of the core
+        // says already that it could not be written. The number is the
+        // system's when the file system is what refused, so that Python
+        // raises the exception of that number, and there is none when
+        // arrow-rs refused what it was handed.
+        popnei::Error::VarsFileNotWritten { ref source, .. } => {
+            let number = source.as_ref().and_then(std::io::Error::raw_os_error);
+            os_error(number, without_the_number(message, number), path)
+        }
         // A file that was cut short and one that is corrupted are errors of
         // the file and not of what a user wrote, so they are an `OSError`
         // too, with no number: nothing of the system refused anything, and
-        // what is wrong is in the bytes of the file.
-        popnei::Error::VcfBgzipEndMissing | popnei::Error::VcfBgzipCorrupted { .. } => {
-            os_error(None, message, path)
-        }
+        // what is wrong is in the bytes of the file. A vars file that was
+        // damaged after it was written is one of the two: it ends before
+        // what it says it holds, or a batch of it cannot be decoded.
+        popnei::Error::VcfBgzipEndMissing
+        | popnei::Error::VcfBgzipCorrupted { .. }
+        | popnei::Error::VarsFileCutShort { .. }
+        | popnei::Error::VarsBatchNotRead { .. } => os_error(None, message, path),
         // The cases that say popnei has a defect: the three with which
         // `docs/specs/block.md` says that a reader has one, blocks of a
         // source that do not hold the same dataset, a block whose arrays
@@ -171,11 +245,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // batch of lines that did not come back, which a panic inside it
         // leaves behind. Nothing a user asks for gives them, so a user who
         // gets one reports it instead of looking for what they typed wrong.
+        // The three of the vars file writer are of the same kind: a block
+        // that does not hold the individuals of the file, one whose columns
+        // are not those of the first block written, and a chromosome number
+        // that the table given with the block has no name for. `write_vars`
+        // gives the writer the individuals, the fields and the table of one
+        // reader, so a user reaches them only through a reader with a
+        // defect.
         popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::KeepOfAnotherSize { .. }
-        | popnei::Error::VcfParseNotFinished { .. } => {
+        | popnei::Error::VcfParseNotFinished { .. }
+        | popnei::Error::VarsBlockDoesNotFit { .. }
+        | popnei::Error::VarsBlockColumns { .. }
+        | popnei::Error::VarsChromNameMissing { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The arguments a user writes: how many variants a block holds,
@@ -187,6 +271,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. } => PyValueError::new_err(message),
+        // Everything else is a wrong input of a function, which a file
+        // whose content is not what the format holds is, and it names the
+        // file it was found in: the wrong data lines and headers of the VCF
+        // reader, and the twelve cases of the vars file that "The Rust
+        // interface" of `docs/specs/io_vars.md` lists as a `ValueError`,
+        // among them a `qual` that is a value and is not finite, and a file
+        // whose genotypes hold no allele, which `open_vars` gives for a
+        // `popnei` key that names no individual. The block with more text
+        // or more alleles in one column than a column of a batch takes is
+        // one no call from Python reaches: 2147483647 bytes of text or
+        // alleles in one block is more memory than a machine gives.
         _ => PyValueError::new_err(of_the_file(message, path)),
     }
 }
@@ -196,12 +291,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
 /// Python prints an `OSError` with that number before the message,
 /// `[Errno 2]`, and a user reads it once.
 fn what_went_wrong(source: &std::io::Error) -> String {
-    let said = source.to_string();
-    let Some(number) = source.raw_os_error() else {
+    without_the_number(source.to_string(), source.raw_os_error())
+}
+
+/// `said` without the ` (os error 2)` that Rust writes at the end of what
+/// an error of the file system says, when `number` is that number.
+fn without_the_number(said: String, number: Option<i32>) -> String {
+    let Some(number) = number else {
         return said;
     };
     match said.strip_suffix(&format!(" (os error {number})")) {
-        Some(without_the_number) => without_the_number.to_owned(),
+        Some(without_it) => without_it.to_owned(),
         None => said,
     }
 }

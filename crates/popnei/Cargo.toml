@@ -8,8 +8,13 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
 flate2.workspace = true
 memchr.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 # The VCF reader parses the lines of a batch on the threads of rayon, and
@@ -29,4 +34,13 @@ workspace = true
 # whole read of a 400 MB file.
 [[bench]]
 name = "read_vcf"
+harness = false
+
+# The timing of the reader and the writer of a vars file of work package 4
+# of docs/plans/vars-file.md, against the 21 ms of "Speed" of
+# docs/specs/io_vars.md. It takes the path of a vars file and the runs on
+# its command line and prints one wall time per run, so it runs without a
+# harness, as read_vcf does.
+[[bench]]
+name = "vars_file"
 harness = false

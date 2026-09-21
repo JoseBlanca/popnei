@@ -203,8 +203,8 @@ per block; the schema metadata holds, under the key `popnei`, a json with
 footer holds, under `popnei_batches`, the number of variants of each batch
 and, for each chromosome in it, the smallest and the largest position, so
 that a reader asked for a region skips the batches outside it; the columns
-are `chrom`, `pos`, `id`, `qual`, `alleles` as a list of strings per
-variant, and `gts` as a fixed size list of `num_individuals * ploidy` int8
+are `chrom`, `pos`, `id`, `alleles` as a list of strings per variant,
+`qual`, and `gts` as a fixed size list of `num_individuals * ploidy` int8
 per variant, whose flat buffer is the genotype array itself. Any program
 with an arrow library opens it as a table. Written and read with arrow-rs.
 

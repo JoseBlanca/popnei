@@ -117,14 +117,18 @@ builds the frozen dataclasses.
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
-`From<PyPopneiError> for PyErr`. Its five cases are the error of the core;
+`From<PyPopneiError> for PyErr`. Its seven cases are the error of the core;
 that same error with the file it happened in, which the core was not given;
 an argument that says how many of something there are and counts nothing,
-which this crate refuses before the core sees it; a defect of this crate, a
-lock that a panic left broken or a chromosome that is not in the table it
-came from; and an exception the interpreter itself raised, the
-`KeyboardInterrupt` that `py.check_signals` finds between two blocks, which
-travels back as it is.
+which this crate refuses before the core sees it; a path that a file is
+already at, given to a call that writes one, which this crate also refuses
+before the core sees it; another of those errors with the file that the
+call was writing and could not take away afterwards, which becomes a note
+on the exception, the text that Python keeps in `__notes__` and prints under
+the message; a defect of this crate, a lock that a panic left broken or a
+chromosome that is not in the table it came from; and an exception the
+interpreter itself raised, the `KeyboardInterrupt` that `py.check_signals`
+finds between two blocks, which travels back as it is.
 
 Every function of the crate returns `Result<T, PyPopneiError>`, the
 `#[pyfunction]` and the `#[pymethods]` that pyo3 exports among them, so

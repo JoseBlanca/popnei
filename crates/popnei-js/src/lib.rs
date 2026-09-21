@@ -20,6 +20,8 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 pub mod errors;
+pub mod source;
+pub mod vars;
 pub mod vcf;
 
 /// The version of the core crate, `major.minor.patch`.
