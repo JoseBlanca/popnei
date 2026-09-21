@@ -37,7 +37,7 @@ test("the entry point of a page writes a vars file and reads it back", async () 
   const vcf = openVcf(await referenceVcf("cases.vcf"), { onlyPassed: false });
   const written = writeVars(vcf, { numVarsPerBlock: 3 });
   vcf.free();
-  const variants = openVars(written);
+  const variants = openVars(written.bytes);
   assert.deepEqual(variants.individuals, ["ind1", "ind2", "ind3"]);
   const blocks = [...variants.iterBlocks({ numVarsPerBlock: 3 })];
   assert.deepEqual(

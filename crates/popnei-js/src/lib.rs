@@ -21,6 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 pub mod errors;
 pub mod source;
+pub mod steps;
 pub mod vars;
 pub mod vcf;
 

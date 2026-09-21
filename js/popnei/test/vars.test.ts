@@ -135,7 +135,7 @@ async function varsFileOfCases(numVarsPerBlock: number): Promise<Uint8Array> {
     onlyPassed: false,
   });
   try {
-    return writeVars(variants, { numVarsPerBlock });
+    return writeVars(variants, { numVarsPerBlock }).bytes;
   } finally {
     variants.free();
   }
@@ -270,7 +270,7 @@ test("every pass over a vars file reads the same bytes again", async () => {
 
 test("a vars file is written again from the variants of one", async () => {
   const read = openVars(await varsFileOfCases(3));
-  const written = openVars(writeVars(read, { numVarsPerBlock: 2 }));
+  const written = openVars(writeVars(read, { numVarsPerBlock: 2 }).bytes);
   const blocks = [
     ...written.iterBlocks({ fields: ALL_FIELDS, numVarsPerBlock: 2 }),
   ];
@@ -292,7 +292,7 @@ test("writing a vars file holds no pass when it returns", async () => {
   const variants = openVcf(await referenceVcf("cases.vcf"));
   // The pass over the source is the core's, inside the one call, so nothing
   // of it is left in the memory of wasm afterwards.
-  assert.ok(writeVars(variants).length > 0);
+  assert.ok(writeVars(variants).bytes.length > 0);
   assert.equal(numberOfOpenPasses(), before);
   variants.free();
 });
@@ -317,7 +317,7 @@ test("a pass over a vars file gives itself back however it ends", async () => {
 
 test("the passes of a vars file share the bytes it was opened with", () => {
   const vcf = openVcf(vcfOfDrawnGenotypes(4000, 300), { onlyPassed: false });
-  const bytes = writeVars(vcf, { numVarsPerBlock: 100 });
+  const bytes = writeVars(vcf, { numVarsPerBlock: 100 }).bytes;
   vcf.free();
   const variants = openVars(bytes);
   const before = memoryOfWasm();
