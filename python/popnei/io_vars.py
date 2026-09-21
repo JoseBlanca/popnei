@@ -21,16 +21,25 @@ def open_vars(path: str | Path) -> Variants:
     again at every pass.
 
     It reads the schema of the file and its footer, so a file that is not a
-    vars file, one of a format version popnei does not read, and one whose
-    columns are not those of a vars file are a ``ValueError`` here and not
-    at the first calculation, with the path at the start of the message. A
-    file that cannot be opened, and one that was cut short after it was
-    written, are an ``OSError`` that carries the path in ``filename``.
+    vars file, one of a format version popnei does not read, one whose
+    columns are not those of a vars file and one whose individuals name
+    nobody, whose genotypes would hold no allele, are a ``ValueError`` here
+    and not at the first calculation, with the path at the start of the
+    message. A file that cannot be opened, and one that was cut short after
+    it was written, are an ``OSError`` that carries the path in
+    ``filename``.
 
-    A file whose buffers are compressed with zstd opens and raises a
-    ``ValueError`` at its first block: arrow decompresses a batch when it
-    reads it, and no build of popnei carries the code that reads zstd.
-    popnei writes lz4 and reads lz4 and no compression.
+    What is in the batches is read block by block, and refused there. A
+    batch that popnei cannot read, of a file damaged after it was written,
+    is an ``OSError`` with the path in ``filename`` and no ``errno``,
+    because nothing of the file system refused anything. A quality that is
+    a value and is not a finite number is a ``ValueError`` that names the
+    variant: NaN in that column is how popnei says that a variant has no
+    quality, and an infinite quality is a probability of no variant of 0.
+    And a file whose buffers are compressed with zstd is a ``ValueError``
+    at its first block, because arrow decompresses a batch when it reads it
+    and no build of popnei carries the code that reads zstd; popnei writes
+    lz4 and reads lz4 and no compression.
 
     It is pyNei's ``load_vars`` under another name, because the call opens
     the file and reads no variant, and these differences: the file is
@@ -73,12 +82,14 @@ def write_vars(
     in a directory that is not there, is the ``OSError`` the file system
     gives for it, with the path in ``filename``.
 
-    Every error names the file it is about. What popnei cannot read in the
-    source, a line of a VCF among them, is a ``ValueError`` whose message
-    starts with the path of that source; a vars file that could not be
-    written, a disc that filled up
-    among the causes, is an ``OSError`` that carries the path of the vars
-    file in ``filename``. The file that was being written is taken away
+    Every error names the file it is about, which matters when the source
+    is a vars file too and there are two of them. What popnei cannot read
+    in the source, a line of a VCF among them, is a ``ValueError`` whose
+    message starts with the path of that source, and a batch of a vars file
+    that it cannot read is an ``OSError`` that carries that same path; the
+    file being written, when it could not be written, a disc that filled up
+    among the causes, is an ``OSError`` that carries its own path in
+    ``filename``. The file that was being written is taken away
     then, so that the same call can be made again at the same path once
     what was wrong is fixed, where pyNei leaves what it had written; when
     it cannot be taken away, the exception carries a note that says that a
