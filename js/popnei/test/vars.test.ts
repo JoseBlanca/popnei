@@ -23,7 +23,12 @@ import { init, openVars, openVcf, writeVars } from "popnei";
 
 import loadTheWasm from "../wasm/popnei.js";
 import { numberOfOpenPasses } from "../dist/variant.js";
-import { referenceVars, referenceVcf } from "./reference.ts";
+import {
+  manyVariantsVcf,
+  referenceVars,
+  referenceVcf,
+  vcfOf,
+} from "./reference.ts";
 
 await init();
 
@@ -147,6 +152,24 @@ function textAt(bytes: Uint8Array, first: number, length: number): string {
 }
 
 /**
+ * How many variants a batch of the vars file in `bytes` holds, read from
+ * the `popnei` key of its schema.
+ *
+ * The keys of the schema of an arrow file are text that nothing compresses,
+ * so the json is in the file as it was written and this is what says at
+ * which size the batches were written, which the blocks that come out of a
+ * pass do not: they are cut to the size the pass asks for. Each byte is one
+ * character here, which is what `latin1` gives, so the bytes of the
+ * genotypes do not move what is found.
+ */
+function numVarsPerBlockOf(bytes: Uint8Array): number {
+  const text = new TextDecoder("latin1").decode(bytes);
+  const written = /"num_vars_per_block":(\d+)/.exec(text)?.[1];
+  assert.ok(written !== undefined, "the file has no `popnei` key");
+  return Number(written);
+}
+
+/**
  * The bytes of a VCF of `numIndividuals` diploid individuals and `numVars`
  * variants, for the test that watches the memory of wasm, which needs a
  * file of some megabytes.
@@ -228,6 +251,46 @@ test("the bytes of a vars file are those of an arrow file", async () => {
   assert.equal(textAt(bytes, bytes.length - ARROW1.length, ARROW1.length), ARROW1);
 });
 
+test("the batches of the file hold the variants that were asked for", async () => {
+  // What a pass gives says nothing about this: it cuts the blocks to the
+  // size it was asked for whatever the file holds. The `popnei` key of the
+  // schema is what the file itself says.
+  assert.equal(numVarsPerBlockOf(await varsFileOfCases(3)), 3);
+  assert.equal(numVarsPerBlockOf(await varsFileOfCases(1)), 1);
+  const variants = openVcf(await referenceVcf("cases.vcf"), {
+    onlyPassed: false,
+  });
+  // With no size it is the one popnei chooses for three diploid
+  // individuals, which holds the four variants in one batch.
+  const chosen = numVarsPerBlockOf(writeVars(variants));
+  assert.ok(chosen > 4, `popnei chose batches of ${chosen} variants`);
+  variants.free();
+});
+
+test("the bytes of a vars file are a copy, and the memory of wasm may grow", async () => {
+  const variants = openVcf(await referenceVcf("cases.vcf"), {
+    onlyPassed: false,
+  });
+  const bytes = writeVars(variants, { numVarsPerBlock: 3 });
+  const kept = [...bytes];
+  variants.free();
+  assert.ok(bytes.length > 0);
+  // A VCF of some megabytes, which the memory of wasm has to grow to hold.
+  // Bytes that were a view into that memory would be detached by the
+  // growth: their length would be 0 and reading them would throw.
+  const memory = memoryOfWasm();
+  const big = openVcf(manyVariantsVcf(100000));
+  for (const block of big.iterBlocks()) {
+    assert.ok(block.numVars > 0);
+  }
+  big.free();
+  assert.ok(
+    memoryOfWasm() > memory,
+    `the memory of wasm did not grow: ${memoryOfWasm()} bytes`,
+  );
+  assert.deepEqual([...bytes], kept);
+});
+
 test("the individuals and the ploidy are known when the vars file is opened", async () => {
   const variants = openVars(await varsFileOfCases(3));
   assert.deepEqual(variants.individuals, ["ind1", "ind2", "ind3"]);
@@ -287,13 +350,55 @@ test("a vars file is written again from the variants of one", async () => {
   written.free();
 });
 
-test("writing a vars file holds no pass when it returns", async () => {
+test("a tetraploid VCF gives a vars file of tetraploid genotypes", () => {
+  const tetraploid = vcfOf([
+    "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t0/1/1/1\t0/0/0/0",
+    "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t1/1/1/1\t0/0/0/1\t./././.",
+  ]);
+  const vcf = openVcf(tetraploid, { ploidy: 4 });
+  const bytes = writeVars(vcf, { numVarsPerBlock: 2 });
+  vcf.free();
+  const variants = openVars(bytes);
+  // The ploidy comes from the `popnei` key of the file, and the width of
+  // its `gts` column is the individuals times that ploidy.
+  assert.equal(variants.ploidy, 4);
+  assert.equal(variants.numIndividuals, 3);
+  const [block] = [...variants.iterBlocks()];
+  assert.ok(block !== undefined);
+  assert.equal(block.ploidy, 4);
+  assert.deepEqual(
+    [...block.gts],
+    [0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, -1, -1, -1, -1],
+  );
+  variants.free();
+});
+
+test("a source that fails half way is thrown and leaves the handle usable", () => {
   const before = numberOfOpenPasses();
-  const variants = openVcf(await referenceVcf("cases.vcf"));
-  // The pass over the source is the core's, inside the one call, so nothing
-  // of it is left in the memory of wasm afterwards.
-  assert.ok(writeVars(variants).length > 0);
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\tten\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+    ]),
+  );
+  // The error a user reads is the one of the VCF that was being read, and
+  // no file of the variants that were written before it comes back.
+  assert.throws(() => writeVars(variants, { numVarsPerBlock: 1 }), {
+    name: "Error",
+    message: /line 4 of the VCF, the column POS/,
+  });
   assert.equal(numberOfOpenPasses(), before);
+  // The handle is the one it was: the bytes of the VCF are still there and
+  // the variants before the wrong line are still read.
+  assert.deepEqual(variants.individuals, ["ind1", "ind2", "ind3"]);
+  let numBlocks = 0;
+  for (const block of variants.iterBlocks({ numVarsPerBlock: 1 })) {
+    assert.deepEqual([...(block.pos ?? [])], [10]);
+    numBlocks += 1;
+    // The wrong line is the next block, and this pass is left before it.
+    break;
+  }
+  assert.equal(numBlocks, 1);
   variants.free();
 });
 
