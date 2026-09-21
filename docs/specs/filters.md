@@ -392,8 +392,8 @@ source, with its own before them when it is a filter. The method has no
 default, so that a reader over a reader that forgets to pass on the counts
 of its source does not compile.
 
-A binding crate builds the chain of a pass and keeps it while the consumer
-runs. When the consumer returns, the binding crate reads the counts from
+A binding crate builds the chain of a pass with `chain_of` of "The Rust
+interface" and keeps it while the consumer runs. When the consumer returns, the binding crate reads the counts from
 the chain and hands them to the Python or the TypeScript package, which
 puts them in the result in the order of the steps, the reverse of the one
 the chain gives. The `num_vars` of the same `PassStats` is not a count of
@@ -514,6 +514,40 @@ impl<R: BlockReader> FilteredReader<R> {
 }
 impl<R: BlockReader> BlockReader for FilteredReader<R> { /* ... */ }
 ```
+
+The chain of the filters of one pass, which both binding crates build with
+this function and neither writes itself. It takes the source of the pass
+and gives the outermost reader of the chain, so that whoever started the
+pass holds it: they read the counts from it when the consumer returns, and
+lend it, `&mut`, to a consumer that takes a reader, as `write_vars` of
+`docs/specs/io_vars.md` does. The fields the consumer wants are set on what
+it gives, once the chain is built, and every filter of the chain passes
+them on with the genotypes added.
+
+```rust
+/// One `FilteredReader` over `reader` for each criterion, in their order,
+/// so that each filter sees what the one before it kept. No criterion
+/// gives `reader` as it is.
+///
+/// # Errors
+///
+/// What `VarFilter::new` refuses, a threshold that is not a number from 0
+/// to 1, and what `FilteredReader::new` refuses, a criterion of a kind
+/// that the chain holds already.
+pub fn chain_of(
+    reader: Box<dyn BlockReader>,
+    criteria: &[VarFilteringCriterion],
+) -> Result<Box<dyn BlockReader>>;
+```
+
+The owner decided on 21 September 2026 that the core builds the chain. Each
+binding crate had the loop that puts one filter over another, and in which
+order the filters go, and which errors a user gets while they are built,
+are the same in both languages and are of the filters and not of either
+language. What stays in a binding crate is its list of steps, the names of
+its arguments and the two refusals it gives a user at the call of a method.
+The option not taken was that each binding crate builds its own chain, as
+the code had it.
 
 The method this spec adds to `BlockReader`, of `docs/specs/block.md`, which
 the VCF reader, the vars file reader and `reblock` implement too.
