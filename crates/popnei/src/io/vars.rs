@@ -11,12 +11,32 @@
 //! [`VarsMetadata`] is the value of the first and [`BatchInfo`] one entry
 //! of the second.
 //!
+//! [`write_vars`] writes the variants of any reader of blocks into such a
+//! file, one batch for each block, with its buffers compressed with lz4,
+//! and [`VarsWriter`] is what it does it with, for a caller that has the
+//! blocks and not a reader.
+//!
 //! `docs/specs/io_vars.md` has the format, the writer and the reader. What
-//! is here is the two keys; the writer and the reader are being written.
+//! is here is the two keys and the writer; the reader is being written.
 
+use std::collections::HashMap;
+use std::io::Write;
+use std::sync::Arc;
+
+use arrow_array::builder::{ListBuilder, StringBuilder};
+use arrow_array::{
+    ArrayRef, FixedSizeListArray, Float32Array, Int8Array, ListArray, RecordBatch, StringArray,
+    UInt64Array,
+};
+use arrow_buffer::{NullBuffer, ScalarBuffer};
+use arrow_ipc::CompressionType;
+use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
+use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
 use crate::error::{Error, Result};
+use crate::variant::{ChromTable, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
 /// before its first variant.
@@ -95,15 +115,6 @@ pub struct Region {
 
 /// The value of the `popnei` key of the schema, as the json that goes into
 /// the file.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the writer of the vars file is its caller and is being written; the tests of \
-                  this module call it already, so this holds for the build without them, and \
-                  the lint itself asks for it to go when the writer lands"
-    )
-)]
 pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
     let individuals: Vec<String> = metadata
         .individuals
@@ -123,15 +134,6 @@ pub(crate) fn metadata_as_json(metadata: &VarsMetadata) -> String {
 
 /// The value of the `popnei_batches` key of the footer, one entry for each
 /// batch in the order of the batches.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the writer of the vars file is its caller and is being written; the tests of \
-                  this module call it already, so this holds for the build without them, and \
-                  the lint itself asks for it to go when the writer lands"
-    )
-)]
 pub(crate) fn batches_as_json(batches: &[BatchInfo]) -> String {
     let entries: Vec<String> = batches.iter().map(batch_as_json).collect();
     json_array(&entries)
@@ -411,14 +413,1340 @@ fn not_a_vars_file(problem: String) -> Error {
     Error::NotAVarsFile { problem }
 }
 
+// The name of each column of a vars file, in the order in which a `Block`
+// holds them, which is the order of the columns of the file.
+const CHROM_COLUMN: &str = "chrom";
+const POS_COLUMN: &str = "pos";
+const ID_COLUMN: &str = "id";
+const ALLELES_COLUMN: &str = "alleles";
+const QUAL_COLUMN: &str = "qual";
+const GTS_COLUMN: &str = "gts";
+
+/// The name arrow gives the values of a list, which is what pyarrow, and
+/// so pandas and polars, write and read.
+const ITEM_FIELD: &str = "item";
+
+/// What the writer has to write on: the sink itself while no block has
+/// arrived, since the columns of the file are those of the first block and
+/// an arrow file starts with its schema, and the arrow writer once a block
+/// has fixed them.
+enum Sink<W: Write> {
+    /// No block has been written, and nothing of the file either.
+    BeforeTheFirstBlock(W),
+    /// The arrow writer over the sink. It is boxed because it is far
+    /// larger than a sink, and every writer would otherwise be of its
+    /// size.
+    Started(Box<FileWriter<W>>),
+    /// The header of the file could not be written and the sink went with
+    /// it, so there is nothing left to write on.
+    Gone,
+}
+
+/// The writer of a vars file: it takes the blocks of a reader and writes
+/// each of them as one record batch of an arrow IPC file.
+///
+/// [`VarsWriter::new`] takes what the `popnei` key of the schema says, and
+/// the columns of the file are those of the first block written, which its
+/// [`Block::fields`] gives: a source that gives the genotypes alone makes
+/// a file with a `gts` column only. Every batch of an arrow file shares one
+/// schema, so a later block of other columns is an error.
+///
+/// The memory it uses is one block, and the vector of genotypes of each
+/// block becomes the buffer of its `gts` column with no copy.
+///
+/// [`write_vars`] is what a caller with a reader uses; this one is for a
+/// caller that has the blocks.
+pub struct VarsWriter<W: Write> {
+    sink: Sink<W>,
+    /// What the `popnei` key of the schema says, which is written before
+    /// the first batch.
+    metadata: VarsMetadata,
+    /// How many alleles one variant holds, the individuals times the
+    /// ploidy, which is the width of the `gts` column.
+    alleles_per_var: i32,
+    /// How the buffers of every batch are compressed, lz4.
+    options: IpcWriteOptions,
+    /// What the first block written fixed, or `None` while no block has
+    /// been written.
+    columns: Option<WrittenColumns>,
+    /// One entry for each batch written, in their order, which
+    /// [`VarsWriter::finish`] writes into the footer.
+    batches: Vec<BatchInfo>,
+}
+
+/// What the first block written fixed: the columns of the file and the
+/// arrow schema that every one of its batches has.
+struct WrittenColumns {
+    fields: Needs,
+    schema: SchemaRef,
+}
+
+impl<W: Write> VarsWriter<W> {
+    /// The writer of a vars file of those individuals on `sink`.
+    ///
+    /// `num_vars_per_block` is what the `popnei` key will say, the size the
+    /// caller gives the blocks it writes; it is not checked against them,
+    /// and the last block of a file is shorter than the others.
+    ///
+    /// # Errors
+    ///
+    /// When the genotypes of one variant, the individuals times the ploidy,
+    /// are more than the `gts` column of an arrow file holds, 2147483647
+    /// alleles, which is a block of more memory than a machine gives. And
+    /// when arrow-rs does not take lz4, which no build of popnei reaches,
+    /// since the crate takes `arrow-ipc` with its `lz4` feature on.
+    pub fn new(
+        sink: W,
+        individuals: &[String],
+        ploidy: usize,
+        num_vars_per_block: usize,
+    ) -> Result<VarsWriter<W>> {
+        let num_individuals = individuals.len();
+        let alleles_per_var = num_individuals
+            .checked_mul(ploidy)
+            .and_then(|alleles| i32::try_from(alleles).ok())
+            // A block of one variant of so many individuals is already more
+            // memory than a machine gives, 2 GB of genotypes, so the error
+            // is that of a block that does not fit, of the size this writer
+            // was given, which is a size its caller asked for.
+            .ok_or(Error::BlockTooLarge {
+                num_vars_per_block,
+                num_individuals,
+                ploidy,
+                size: BlockSize::AskedFor,
+            })?;
+        let options = IpcWriteOptions::default()
+            .try_with_compression(Some(CompressionType::LZ4_FRAME))
+            .map_err(not_written)?;
+        Ok(VarsWriter {
+            sink: Sink::BeforeTheFirstBlock(sink),
+            metadata: VarsMetadata {
+                format_version: FORMAT_VERSION.to_owned(),
+                individuals: individuals.to_vec(),
+                ploidy,
+                num_vars_per_block,
+            },
+            alleles_per_var,
+            options,
+            columns: None,
+            batches: Vec::new(),
+        })
+    }
+
+    /// It writes `block` as one batch, of whatever size the block has.
+    ///
+    /// `chroms` is the table of the reader the block came from, which holds
+    /// the names behind its chromosome numbers: the file holds the name of
+    /// the chromosome of every variant as text.
+    ///
+    /// # Errors
+    ///
+    /// When the block holds other individuals or another ploidy than the
+    /// writer was built for, when it does not pass [`Block::check`], when
+    /// its columns are not those of the first block written, and when
+    /// `chroms` has no name for one of its chromosome numbers; in each of
+    /// them nothing of the block is written. And when the sink fails.
+    pub fn write_block(&mut self, block: Block, chroms: &ChromTable) -> Result<()> {
+        self.fits(&block)?;
+        // The rows of the batch are read out of the arrays by their place
+        // in them, so the arrays have to be of the size the block says.
+        block.check()?;
+        let fields = block.fields();
+        let schema = match &self.columns {
+            Some(written) if written.fields != fields => {
+                return Err(Error::VarsBlockColumns {
+                    first: written.fields,
+                    found: fields,
+                });
+            }
+            Some(written) => Arc::clone(&written.schema),
+            None => Arc::new(self.schema_of(fields)),
+        };
+        let num_vars = block.num_vars;
+        let (arrays, regions) = self.arrays_of(block, chroms, fields)?;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).map_err(not_written)?;
+        self.writer(&schema)?.write(&batch).map_err(not_written)?;
+        self.columns = Some(WrittenColumns { fields, schema });
+        self.batches.push(BatchInfo { num_vars, regions });
+        Ok(())
+    }
+
+    /// It writes the footer, with the `popnei_batches` key, and gives the
+    /// sink back.
+    ///
+    /// A writer that was given no block writes a file with the two keys, a
+    /// `gts` column and no batch, which reads back as no variants.
+    ///
+    /// # Errors
+    ///
+    /// When the sink fails.
+    pub fn finish(self) -> Result<W> {
+        let batches = batches_as_json(&self.batches);
+        let mut writer = match self.sink {
+            Sink::Started(writer) => *writer,
+            // A source with no variants: the columns of the file are the
+            // one column every file has.
+            Sink::BeforeTheFirstBlock(sink) => {
+                let schema = schema_of(Needs::GTS, self.alleles_per_var, &self.metadata);
+                FileWriter::try_new_with_options(sink, &schema, self.options)
+                    .map_err(not_written)?
+            }
+            Sink::Gone => return Err(the_sink_is_gone()),
+        };
+        writer.write_metadata(POPNEI_BATCHES_KEY, batches);
+        writer.into_inner().map_err(not_written)
+    }
+
+    /// That the block holds the individuals and the ploidy the `popnei` key
+    /// of the file names, which every batch of it holds.
+    fn fits(&self, block: &Block) -> Result<()> {
+        let num_individuals = self.metadata.individuals.len();
+        let ploidy = self.metadata.ploidy;
+        if block.num_individuals == num_individuals && block.ploidy == ploidy {
+            return Ok(());
+        }
+        Err(Error::VarsBlockDoesNotFit {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        })
+    }
+
+    /// The schema of a file whose blocks hold `fields`, with the `popnei`
+    /// key of this writer.
+    fn schema_of(&self, fields: Needs) -> Schema {
+        schema_of(fields, self.alleles_per_var, &self.metadata)
+    }
+
+    /// The columns of one batch, in the order of the columns of the file,
+    /// and where the variants of that batch are.
+    ///
+    /// The block goes in by value: the vector of its genotypes becomes the
+    /// buffer of the `gts` column with no copy.
+    fn arrays_of(
+        &self,
+        block: Block,
+        chroms: &ChromTable,
+        fields: Needs,
+    ) -> Result<(Vec<ArrayRef>, Vec<Region>)> {
+        let Block {
+            num_vars: _,
+            num_individuals: _,
+            ploidy: _,
+            gts,
+            chrom,
+            pos,
+            id,
+            alleles,
+            qual,
+        } = block;
+        let mut arrays: Vec<ArrayRef> = Vec::new();
+        let mut regions = Vec::new();
+        // `Block::fields` reports the chromosome and the position only when
+        // the block holds both columns.
+        if let (Some(chrom), Some(pos)) = (chrom, pos) {
+            let (names, where_they_are) = chrom_column(&chrom, &pos, chroms)?;
+            regions = where_they_are;
+            arrays.push(Arc::new(names));
+            arrays.push(Arc::new(UInt64Array::new(ScalarBuffer::from(pos), None)));
+        }
+        if let Some(id) = id {
+            arrays.push(Arc::new(id_column(&id)));
+        }
+        if let Some(alleles) = alleles {
+            arrays.push(Arc::new(alleles_column(&alleles)));
+        }
+        if let Some(qual) = qual {
+            arrays.push(Arc::new(qual_column(qual)));
+        }
+        // A block of no variants holds the genotypes although its `gts` is
+        // empty, and one built without them does not, so which it is is
+        // read from the fields and not from the vector.
+        if fields.contains(Needs::GTS) {
+            arrays.push(gts_column(gts, self.alleles_per_var)?);
+        }
+        Ok((arrays, regions))
+    }
+
+    /// The arrow writer, made over the sink with the schema of the first
+    /// block when the first block is written.
+    ///
+    /// # Errors
+    ///
+    /// When the header of the file cannot be written, which leaves the
+    /// writer with no sink.
+    fn writer(&mut self, schema: &SchemaRef) -> Result<&mut FileWriter<W>> {
+        match std::mem::replace(&mut self.sink, Sink::Gone) {
+            Sink::BeforeTheFirstBlock(sink) => {
+                let writer = FileWriter::try_new_with_options(sink, schema, self.options.clone())
+                    .map_err(not_written)?;
+                self.sink = Sink::Started(Box::new(writer));
+            }
+            Sink::Started(writer) => self.sink = Sink::Started(writer),
+            Sink::Gone => {}
+        }
+        match &mut self.sink {
+            Sink::Started(writer) => Ok(writer),
+            Sink::BeforeTheFirstBlock(_) | Sink::Gone => Err(the_sink_is_gone()),
+        }
+    }
+}
+
+/// Every variant of `reader` into a vars file on `sink`, one batch for each
+/// block, and the sink back.
+///
+/// It asks `reader` for every field, so a file written from a VCF holds its
+/// six columns and can stand in for it in any later analysis, and it puts a
+/// [`Reblock`] of `num_vars_per_block` variants over it, `None` for
+/// [`default_num_vars_per_block`](crate::block::default_num_vars_per_block)
+/// for the individuals of `reader`, which is then the number that the
+/// `popnei` key says. A source with no variants gives a file with the two
+/// keys, a `gts` column and no batch.
+///
+/// This is what both binding crates call. The Python binding crate opens
+/// the file, refuses a path that exists, and removes the file when this
+/// returns an error.
+///
+/// # Errors
+///
+/// When `num_vars_per_block` is 0 or the blocks of that size do not fit in
+/// the memory of the machine, when the reader fails, when a block of it is
+/// not one a vars file can hold, and when the sink fails. The bytes that
+/// were written before the error are on the sink: a file that a failed call
+/// was writing is not one that can be read, and it is the caller that
+/// removes it.
+pub fn write_vars<R: BlockReader, W: Write>(
+    mut reader: R,
+    sink: W,
+    num_vars_per_block: Option<usize>,
+) -> Result<W> {
+    // Every field, so that a file written from a VCF holds its six columns
+    // whether or not the user will read them.
+    reader.set_needs(Needs::ALL);
+    let individuals = reader.individuals().to_vec();
+    let ploidy = reader.ploidy();
+    // The size the `popnei` key says is the one the blocks are cut to,
+    // which for a caller that asked for none is the one popnei chose for
+    // these individuals.
+    let (num_vars_per_block, _) =
+        size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
+    let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
+    let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
+    while let Some(block) = blocks.next_block()? {
+        writer.write_block(block, blocks.chroms())?;
+    }
+    writer.finish()
+}
+
+/// The schema of a vars file whose blocks hold `fields`, with the `popnei`
+/// key of its metadata: the columns of the table of "What it holds" of
+/// `docs/specs/io_vars.md` that those fields fill, in the order it gives
+/// them.
+fn schema_of(fields: Needs, alleles_per_var: i32, metadata: &VarsMetadata) -> Schema {
+    let mut columns = Vec::new();
+    if fields.contains(Needs::CHROM_POS) {
+        columns.push(Field::new(CHROM_COLUMN, DataType::Utf8, false));
+        columns.push(Field::new(POS_COLUMN, DataType::UInt64, false));
+    }
+    if fields.contains(Needs::ID) {
+        columns.push(Field::new(ID_COLUMN, DataType::Utf8, true));
+    }
+    if fields.contains(Needs::ALLELES) {
+        columns.push(Field::new(ALLELES_COLUMN, alleles_type(), false));
+    }
+    if fields.contains(Needs::QUAL) {
+        columns.push(Field::new(QUAL_COLUMN, DataType::Float32, true));
+    }
+    if fields.contains(Needs::GTS) {
+        columns.push(Field::new(GTS_COLUMN, gts_type(alleles_per_var), false));
+    }
+    let popnei = HashMap::from([(POPNEI_KEY.to_owned(), metadata_as_json(metadata))]);
+    Schema::new(columns).with_metadata(popnei)
+}
+
+/// The arrow type of the `alleles` column, one list of texts for each
+/// variant. The values of the list are named and take nulls as pyarrow
+/// writes them, so that a file of popnei and a file of pyarrow have the
+/// same column; no allele of a variant is a null.
+fn alleles_type() -> DataType {
+    DataType::List(Arc::new(Field::new(ITEM_FIELD, DataType::Utf8, true)))
+}
+
+/// The arrow type of the `gts` column, the `alleles_per_var` alleles of
+/// each variant. A fixed size list keeps no offsets, so the column is one
+/// flat buffer of variants x individuals x ploidy signed bytes.
+fn gts_type(alleles_per_var: i32) -> DataType {
+    DataType::FixedSizeList(
+        Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true)),
+        alleles_per_var,
+    )
+}
+
+/// The `chrom` column of one batch, the name of the chromosome of every
+/// variant, and where the variants of each of its chromosomes are: the
+/// smallest and the largest of their positions, in the order in which the
+/// chromosomes first appear.
+///
+/// The two positions are the smallest and the largest and not those of the
+/// first and the last variant, so a caller that skips the batches outside a
+/// region skips none that has a variant in it, whether the file is sorted
+/// or not.
+///
+/// # Errors
+///
+/// When `chroms` has no name for a number of the block.
+fn chrom_column(
+    chrom: &[u32],
+    pos: &[u64],
+    chroms: &ChromTable,
+) -> Result<(StringArray, Vec<Region>)> {
+    let mut names = StringBuilder::new();
+    let mut regions: Vec<Region> = Vec::new();
+    // Which region the variant before went into. The variants of a block
+    // run along one chromosome, so the entry of a name is searched for
+    // only where the number changes.
+    let mut last: Option<(u32, usize)> = None;
+    for (number, position) in chrom.iter().copied().zip(pos.iter().copied()) {
+        let Some(name) = chroms.name(number) else {
+            return Err(Error::VarsChromNameMissing { number });
+        };
+        names.append_value(name);
+        let at = match last {
+            Some((seen, at)) if seen == number => at,
+            _ => region_of(&mut regions, name, position),
+        };
+        if let Some(region) = regions.get_mut(at) {
+            region.min_pos = region.min_pos.min(position);
+            region.max_pos = region.max_pos.max(position);
+        }
+        last = Some((number, at));
+    }
+    Ok((names.finish(), regions))
+}
+
+/// Where the region of `chrom` is among the ones found so far, which is one
+/// more entry when that chromosome has no variant in the batch yet.
+fn region_of(regions: &mut Vec<Region>, chrom: &str, position: u64) -> usize {
+    if let Some(at) = regions.iter().position(|region| region.chrom == chrom) {
+        return at;
+    }
+    let at = regions.len();
+    regions.push(Region {
+        chrom: chrom.to_owned(),
+        min_pos: position,
+        max_pos: position,
+    });
+    at
+}
+
+/// The `id` column of one batch. A block holds an empty id for a variant
+/// that has none and the file holds a null, which is what any other program
+/// that opens it takes for a value that is not there.
+fn id_column(ids: &[String]) -> StringArray {
+    let mut column = StringBuilder::new();
+    for id in ids {
+        match id.is_empty() {
+            true => column.append_null(),
+            false => column.append_value(id),
+        }
+    }
+    column.finish()
+}
+
+/// The `alleles` column of one batch, the reference allele of each variant
+/// first and then its alternative ones.
+fn alleles_column(alleles: &AllelesColumn) -> ListArray {
+    let mut column = ListBuilder::new(StringBuilder::new());
+    for var in 0..alleles.num_vars() {
+        for allele in 0..alleles.num_alleles(var) {
+            column.values().append_value(alleles.allele(var, allele));
+        }
+        column.append(true);
+    }
+    column.finish()
+}
+
+/// The `qual` column of one batch. A block holds a NaN for a variant with
+/// no quality and the file holds a null, as it does for an id that is not
+/// there.
+fn qual_column(qual: Vec<f32>) -> Float32Array {
+    let there: NullBuffer = qual.iter().map(|quality| !quality.is_nan()).collect();
+    Float32Array::new(ScalarBuffer::from(qual), Some(there))
+}
+
+/// The genotypes of one block as the `gts` column of one batch: one flat
+/// buffer of the alleles of every variant, `alleles_per_var` of them in
+/// each.
+///
+/// The vector of the block becomes that buffer with no copy, which is what
+/// keeps the memory of the writer to one block.
+///
+/// # Errors
+///
+/// When the alleles are not `alleles_per_var` for each variant, which
+/// [`Block::check`] is what says before the block reaches here.
+fn gts_column(gts: Vec<i8>, alleles_per_var: i32) -> Result<ArrayRef> {
+    let alleles = Int8Array::new(ScalarBuffer::from(gts), None);
+    let column = FixedSizeListArray::try_new(
+        Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true)),
+        alleles_per_var,
+        Arc::new(alleles),
+        None,
+    )
+    .map_err(not_written)?;
+    Ok(Arc::new(column))
+}
+
+/// What arrow-rs said while the vars file was being written, as the error
+/// of the crate.
+///
+/// What fails while a file is written is the output, so the
+/// `std::io::Error` of the system is kept as it is, with the number it
+/// carries: that number is what a binding crate builds the exception of its
+/// language with.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "arrow-rs has twenty cases of its error and popnei tells one of them, the error of \
+              the output, from every other"
+)]
+fn not_written(problem: ArrowError) -> Error {
+    match problem {
+        ArrowError::IoError(_, failure) => Error::Io(failure),
+        other => Error::Io(std::io::Error::other(other)),
+    }
+}
+
+/// The error of a writer whose sink is gone, which is what is left after
+/// the header of the file could not be written.
+fn the_sink_is_gone() -> Error {
+    Error::Io(std::io::Error::other(
+        "the header of the vars file could not be written, and the writer has nothing left to \
+         write on",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
+    use arrow_array::{Array, FixedSizeListArray, RecordBatch};
+    use arrow_ipc::reader::FileReader;
+    use arrow_schema::{DataType, Field};
+
     use super::{
-        BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, Region, VarsMetadata, batches_as_json,
-        batches_from_json, metadata_as_json, metadata_from_json,
+        BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, POPNEI_BATCHES_KEY, POPNEI_KEY, Region,
+        VarsMetadata, VarsWriter, batches_as_json, batches_from_json, gts_column, metadata_as_json,
+        metadata_from_json, write_vars,
     };
-    use crate::error::Error;
-    use crate::variant::Needs;
+    use crate::block::{AllelesColumn, Block, BlockReader};
+    use crate::error::{Error, Result};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
+
+    /// One row of the table of `cases.vcf` of "How it is verified" of
+    /// `docs/specs/io_vcf.md`, which the blocks of these tests are built
+    /// from: three individuals of the ploidy 2.
+    struct Row {
+        chrom: &'static str,
+        pos: u64,
+        /// Empty for a variant with no id, which the file holds as a null.
+        id: &'static str,
+        alleles: &'static [&'static str],
+        /// `None` for a variant whose QUAL is `.`, which is a NaN in the
+        /// column of a block and a null in the file.
+        qual: Option<f32>,
+        gts: &'static [i8],
+    }
+
+    /// How many individuals the blocks of these tests have and how many
+    /// alleles the genotype of each holds, which are those of `cases.vcf`.
+    const CASES_INDIVIDUALS: usize = 3;
+    const CASES_PLOIDY: usize = 2;
+
+    /// The four bytes that every lz4 frame starts with, which arrow writes
+    /// before each buffer of a batch it compressed with lz4.
+    const LZ4_FRAME_MARK: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
+
+    const MISSING: i8 = MISSING_ALLELE;
+
+    /// The four variants of `cases.vcf`, in the order of the file.
+    const CASES: [Row; 4] = [
+        Row {
+            chrom: "chr1",
+            pos: 100,
+            id: "rs1",
+            alleles: &["A", "T"],
+            qual: Some(29.5),
+            gts: &[0, 0, 0, 1, 1, 1],
+        },
+        Row {
+            chrom: "chr1",
+            pos: 200,
+            id: "",
+            alleles: &["A", "T"],
+            qual: None,
+            gts: &[MISSING, MISSING, 0, 1, MISSING, 0],
+        },
+        Row {
+            chrom: "chr1",
+            pos: 300,
+            id: "",
+            alleles: &["A", "G", "T"],
+            qual: Some(67.0),
+            gts: &[1, 2, 2, 1, 2, 2],
+        },
+        Row {
+            chrom: "chr1",
+            pos: 400,
+            id: "",
+            alleles: &["T"],
+            qual: Some(47.0),
+            gts: &[0, 0, 0, 0, 0, 0],
+        },
+    ];
+
+    /// Four variants of two chromosomes in no order, the second cargo test
+    /// of "How it is verified" of the writer: what the footer says of a
+    /// batch of them is the smallest and the largest position of each
+    /// chromosome and not the positions of its first and its last variant.
+    const NOT_SORTED: [Row; 4] = [
+        Row {
+            chrom: "chr1",
+            pos: 300,
+            id: "",
+            alleles: &["A", "T"],
+            qual: None,
+            gts: &[0, 0, 0, 1, 1, 1],
+        },
+        Row {
+            chrom: "chr2",
+            pos: 50,
+            id: "",
+            alleles: &["A", "T"],
+            qual: None,
+            gts: &[0, 0, 0, 1, 1, 1],
+        },
+        Row {
+            chrom: "chr1",
+            pos: 100,
+            id: "",
+            alleles: &["A", "T"],
+            qual: None,
+            gts: &[0, 0, 0, 1, 1, 1],
+        },
+        Row {
+            chrom: "chr2",
+            pos: 60,
+            id: "",
+            alleles: &["A", "T"],
+            qual: None,
+            gts: &[0, 0, 0, 1, 1, 1],
+        },
+    ];
+
+    /// A block built by hand from the rows of one of those tables, with
+    /// every column, which is what a reader of such a VCF gives. The names
+    /// of the chromosomes are interned into `chroms` in the order in which
+    /// they first appear, as a reader does.
+    fn block_of(rows: &[&Row], chroms: &mut ChromTable) -> Block {
+        let mut gts = Vec::new();
+        let mut chrom = Vec::new();
+        let mut pos = Vec::new();
+        let mut id = Vec::new();
+        let mut qual = Vec::new();
+        let mut alleles = AllelesColumn::with_num_vars(rows.len()).expect("the alleles");
+        for row in rows {
+            gts.extend_from_slice(row.gts);
+            chrom.push(chroms.intern(row.chrom));
+            pos.push(row.pos);
+            id.push(row.id.to_owned());
+            qual.push(row.qual.unwrap_or(f32::NAN));
+            let texts: Vec<String> = row.alleles.iter().map(|text| (*text).to_owned()).collect();
+            alleles.push(&texts);
+        }
+        Block {
+            num_vars: rows.len(),
+            num_individuals: CASES_INDIVIDUALS,
+            ploidy: CASES_PLOIDY,
+            gts,
+            chrom: Some(chrom),
+            pos: Some(pos),
+            id: Some(id),
+            alleles: Some(alleles),
+            qual: Some(qual),
+        }
+    }
+
+    /// A block of the four variants of `cases.vcf`, with every column.
+    fn cases_block(chroms: &mut ChromTable) -> Block {
+        let rows: Vec<&Row> = CASES.iter().collect();
+        block_of(&rows, chroms)
+    }
+
+    /// The three individuals of `cases.vcf`.
+    fn cases_individuals() -> Vec<String> {
+        vec!["ind1".to_owned(), "ind2".to_owned(), "ind3".to_owned()]
+    }
+
+    /// A reader of blocks written for these tests: it gives the blocks it
+    /// was built with, with the table of chromosome names they were built
+    /// from, so that a test writes a vars file from variants it holds as
+    /// literals and not from a file.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks still to give, the last one first.
+        left: Vec<Block>,
+        /// What it was last asked to fill.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// A reader of the three individuals of `cases.vcf` that gives
+        /// `blocks`, in their order, with the names of `chroms`.
+        fn of(blocks: Vec<Block>, chroms: ChromTable) -> GivenBlocks {
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: cases_individuals(),
+                ploidy: CASES_PLOIDY,
+                chroms,
+                left,
+                needs: Needs::ALL,
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+    }
+
+    /// A vars file opened as any other program with an arrow library opens
+    /// it: its schema, its batches and the key of its footer.
+    struct FileRead {
+        /// The name of each column, its arrow type and whether it takes
+        /// nulls, in the order of the columns of the file.
+        columns: Vec<(String, DataType, bool)>,
+        /// What the `popnei` key of the schema says.
+        metadata: VarsMetadata,
+        /// What the `popnei_batches` key of the footer says.
+        batches: Vec<BatchInfo>,
+        rows: Vec<RecordBatch>,
+    }
+
+    /// The bytes of a vars file, read back with the `FileReader` of
+    /// arrow-rs, which is what stands for another program here until the
+    /// reader of popnei is written.
+    fn file_read(bytes: Vec<u8>) -> FileRead {
+        let read =
+            FileReader::try_new(Cursor::new(bytes), None).expect("the bytes are an arrow file");
+        let schema = read.schema();
+        let columns = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                (
+                    field.name().clone(),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
+            })
+            .collect();
+        let metadata = metadata_from_json(
+            schema
+                .metadata()
+                .get(POPNEI_KEY)
+                .expect("the file has the `popnei` key"),
+        )
+        .expect("the `popnei` key says what the file holds");
+        let batches = batches_from_json(
+            read.custom_metadata()
+                .get(POPNEI_BATCHES_KEY)
+                .expect("the file has the `popnei_batches` key"),
+        )
+        .expect("the `popnei_batches` key says what each batch holds");
+        let rows = read
+            .map(|batch| batch.expect("a batch of the file"))
+            .collect();
+        FileRead {
+            columns,
+            metadata,
+            batches,
+            rows,
+        }
+    }
+
+    /// The arrow type of the `alleles` column, a list of texts.
+    fn alleles_type() -> DataType {
+        DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true)))
+    }
+
+    /// The arrow type of the `gts` column of a file of that many alleles
+    /// for each variant.
+    fn gts_type(alleles_per_var: i32) -> DataType {
+        DataType::FixedSizeList(
+            Arc::new(Field::new_list_field(DataType::Int8, true)),
+            alleles_per_var,
+        )
+    }
+
+    /// The names of the chromosomes of a batch, one for each variant.
+    fn chroms_of(batch: &RecordBatch) -> Vec<String> {
+        batch
+            .column_by_name("chrom")
+            .expect("the `chrom` column")
+            .as_string::<i32>()
+            .iter()
+            .map(|name| name.expect("a chromosome").to_owned())
+            .collect()
+    }
+
+    /// The positions of a batch.
+    fn positions_of(batch: &RecordBatch) -> Vec<Option<u64>> {
+        batch
+            .column_by_name("pos")
+            .expect("the `pos` column")
+            .as_primitive::<UInt64Type>()
+            .iter()
+            .collect()
+    }
+
+    /// The ids of a batch, `None` where the file holds a null.
+    fn ids_of(batch: &RecordBatch) -> Vec<Option<String>> {
+        batch
+            .column_by_name("id")
+            .expect("the `id` column")
+            .as_string::<i32>()
+            .iter()
+            .map(|id| id.map(str::to_owned))
+            .collect()
+    }
+
+    /// The alleles of each variant of a batch.
+    fn alleles_of(batch: &RecordBatch) -> Vec<Vec<String>> {
+        batch
+            .column_by_name("alleles")
+            .expect("the `alleles` column")
+            .as_list::<i32>()
+            .iter()
+            .map(|alleles| {
+                alleles
+                    .expect("the alleles of a variant")
+                    .as_string::<i32>()
+                    .iter()
+                    .map(|allele| allele.expect("an allele").to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The qualities of a batch, `None` where the file holds a null.
+    fn quals_of(batch: &RecordBatch) -> Vec<Option<f32>> {
+        batch
+            .column_by_name("qual")
+            .expect("the `qual` column")
+            .as_primitive::<Float32Type>()
+            .iter()
+            .collect()
+    }
+
+    /// The genotypes of a batch, variant after variant.
+    fn gts_of(batch: &RecordBatch) -> Vec<i8> {
+        batch
+            .column_by_name("gts")
+            .expect("the `gts` column")
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .expect("the `gts` column is a fixed size list")
+            .values()
+            .as_primitive::<Int8Type>()
+            .values()
+            .to_vec()
+    }
+
+    /// How many variants each batch of a file holds.
+    fn num_rows_of(batches: &[RecordBatch]) -> Vec<usize> {
+        batches.iter().map(RecordBatch::num_rows).collect()
+    }
+
+    /// The vars file of the four variants of `cases.vcf`, written from a
+    /// reader that gives them in one block, with batches of
+    /// `num_vars_per_block` variants.
+    fn cases_written_in_batches_of(num_vars_per_block: usize) -> Vec<u8> {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        write_vars(reader, Vec::new(), Some(num_vars_per_block)).expect("the file was written")
+    }
+
+    /// The four variants of the table of `cases.vcf`, in batches of three:
+    /// every column of the file is the one of the table of "What it holds"
+    /// of `docs/specs/io_vars.md`, with the type and the nulls it gives.
+    #[test]
+    fn the_four_variants_of_cases_vcf_are_written_as_two_batches_with_every_column() {
+        let file = file_read(cases_written_in_batches_of(3));
+
+        assert_eq!(
+            file.columns,
+            vec![
+                ("chrom".to_owned(), DataType::Utf8, false),
+                ("pos".to_owned(), DataType::UInt64, false),
+                ("id".to_owned(), DataType::Utf8, true),
+                ("alleles".to_owned(), alleles_type(), false),
+                ("qual".to_owned(), DataType::Float32, true),
+                // 3 individuals of the ploidy 2.
+                ("gts".to_owned(), gts_type(6), false),
+            ]
+        );
+        assert_eq!(num_rows_of(&file.rows), [3, 1]);
+
+        let first = &file.rows[0];
+        assert_eq!(chroms_of(first), ["chr1", "chr1", "chr1"]);
+        assert_eq!(positions_of(first), [Some(100), Some(200), Some(300)]);
+        // The variants of the table with no id, which the file holds as a
+        // null: the last three of the four.
+        assert_eq!(ids_of(first), [Some("rs1".to_owned()), None, None]);
+        assert_eq!(
+            alleles_of(first),
+            [vec!["A", "T"], vec!["A", "T"], vec!["A", "G", "T"]]
+        );
+        // The variant whose QUAL is a dot is a null too.
+        assert_eq!(quals_of(first), [Some(29.5), None, Some(67.0)]);
+        assert_eq!(
+            gts_of(first),
+            [
+                0, 0, 0, 1, 1, 1, MISSING, MISSING, 0, 1, MISSING, 0, 1, 2, 2, 1, 2, 2
+            ]
+        );
+
+        let last = &file.rows[1];
+        assert_eq!(chroms_of(last), ["chr1"]);
+        assert_eq!(positions_of(last), [Some(400)]);
+        assert_eq!(ids_of(last), [None]);
+        assert_eq!(alleles_of(last), [vec!["T"]]);
+        assert_eq!(quals_of(last), [Some(47.0)]);
+        assert_eq!(gts_of(last), [0, 0, 0, 0, 0, 0]);
+
+        // The nulls of the whole file, which is what a program that opens
+        // it counts: three ids and one quality of the four variants.
+        let nulls = |name: &str| -> usize {
+            file.rows
+                .iter()
+                .map(|batch| batch.column_by_name(name).expect("the column").null_count())
+                .sum()
+        };
+        assert_eq!(nulls("id"), 3);
+        assert_eq!(nulls("qual"), 1);
+        assert_eq!(nulls("chrom"), 0);
+        assert_eq!(nulls("pos"), 0);
+        assert_eq!(nulls("alleles"), 0);
+        assert_eq!(nulls("gts"), 0);
+    }
+
+    /// The two keys of the file say what it holds before its first variant
+    /// and where the variants of each batch are, which is what a reader
+    /// knows as soon as the file is opened.
+    #[test]
+    fn the_two_keys_of_the_file_say_what_it_holds_and_where_the_variants_of_each_batch_are() {
+        let file = file_read(cases_written_in_batches_of(3));
+
+        assert_eq!(
+            file.metadata,
+            VarsMetadata {
+                format_version: FORMAT_VERSION.to_owned(),
+                individuals: cases_individuals(),
+                ploidy: 2,
+                num_vars_per_block: 3,
+            }
+        );
+        assert_eq!(
+            file.batches,
+            vec![
+                BatchInfo {
+                    num_vars: 3,
+                    regions: vec![Region {
+                        chrom: "chr1".to_owned(),
+                        min_pos: 100,
+                        max_pos: 300,
+                    }],
+                },
+                BatchInfo {
+                    num_vars: 1,
+                    regions: vec![Region {
+                        chrom: "chr1".to_owned(),
+                        min_pos: 400,
+                        max_pos: 400,
+                    }],
+                },
+            ]
+        );
+    }
+
+    /// The variants of a file are in no order in general, and the entry of
+    /// a batch holds the smallest and the largest position of each of its
+    /// chromosomes, in the order in which they first appear, so that a
+    /// caller that skips the batches outside a region skips none that has a
+    /// variant in it.
+    #[test]
+    fn the_regions_of_a_batch_of_variants_that_are_not_sorted_are_their_smallest_and_largest() {
+        let mut chroms = ChromTable::new();
+        let rows: Vec<&Row> = NOT_SORTED.iter().collect();
+        let block = block_of(&rows, &mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let file = file_read(bytes);
+
+        assert_eq!(num_rows_of(&file.rows), [4]);
+        assert_eq!(
+            chroms_of(&file.rows[0]),
+            ["chr1", "chr2", "chr1", "chr2"],
+            "the chromosome of every variant is written as its name"
+        );
+        assert_eq!(
+            file.batches,
+            vec![BatchInfo {
+                num_vars: 4,
+                regions: vec![
+                    Region {
+                        chrom: "chr1".to_owned(),
+                        min_pos: 100,
+                        max_pos: 300,
+                    },
+                    Region {
+                        chrom: "chr2".to_owned(),
+                        min_pos: 50,
+                        max_pos: 60,
+                    },
+                ],
+            }]
+        );
+    }
+
+    /// A file holds the columns its source could fill: a source whose
+    /// blocks carry the genotypes alone gives a file of one column, and its
+    /// batches have nothing to say about where their variants are.
+    #[test]
+    fn a_source_of_the_genotypes_alone_gives_a_file_of_one_column_and_batches_with_no_regions() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.chrom = None;
+        block.pos = None;
+        block.id = None;
+        block.alleles = None;
+        block.qual = None;
+        assert_eq!(block.fields(), Needs::GTS);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let file = file_read(bytes);
+
+        assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
+        assert_eq!(num_rows_of(&file.rows), [3, 1]);
+        assert_eq!(
+            file.batches,
+            vec![
+                BatchInfo {
+                    num_vars: 3,
+                    regions: Vec::new(),
+                },
+                BatchInfo {
+                    num_vars: 1,
+                    regions: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    /// A source with no variants is written and is not an error, as a VCF
+    /// with no variants is read and is not one.
+    #[test]
+    fn a_source_with_no_variants_gives_a_file_with_both_keys_and_no_batch() {
+        let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let file = file_read(bytes);
+
+        assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
+        assert!(file.rows.is_empty());
+        assert_eq!(file.batches, Vec::new());
+        assert_eq!(file.metadata.individuals, cases_individuals());
+        assert_eq!(file.metadata.ploidy, 2);
+        assert_eq!(file.metadata.num_vars_per_block, 3);
+    }
+
+    /// The ploidy of the file is the one of its blocks, and the `gts`
+    /// column holds the individuals times the ploidy alleles for each
+    /// variant: a writer that wrote the individuals alone would give the
+    /// same file for a diploid and for a tetraploid source.
+    #[test]
+    fn a_tetraploid_source_gives_a_file_of_twelve_alleles_for_each_variant() {
+        let mut chroms = ChromTable::new();
+        let number = chroms.intern("chr1");
+        let block = Block {
+            num_vars: 2,
+            num_individuals: 3,
+            ploidy: 4,
+            gts: vec![
+                0, 0, 1, 1, 0, 1, 1, 1, MISSING, MISSING, MISSING, MISSING, 0, 0, 0, 0, 1, 1, 1, 1,
+                0, 0, 0, 1,
+            ],
+            chrom: Some(vec![number, number]),
+            pos: Some(vec![100, 200]),
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let reader = GivenBlocks {
+            ploidy: 4,
+            ..GivenBlocks::of(vec![block], chroms)
+        };
+        let bytes = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
+        let file = file_read(bytes);
+
+        assert_eq!(
+            file.columns,
+            vec![
+                ("chrom".to_owned(), DataType::Utf8, false),
+                ("pos".to_owned(), DataType::UInt64, false),
+                // 3 individuals of the ploidy 4.
+                ("gts".to_owned(), gts_type(12), false),
+            ]
+        );
+        assert_eq!(file.metadata.ploidy, 4);
+        assert_eq!(num_rows_of(&file.rows), [2]);
+        assert_eq!(
+            gts_of(&file.rows[0]).get(8..12),
+            Some([MISSING; 4].as_slice())
+        );
+        assert_eq!(file.batches[0].num_vars, 2);
+    }
+
+    /// The memory the writer uses is one block: the vector of genotypes of
+    /// the block it was given becomes the buffer of the `gts` column of the
+    /// batch, at the address the vector had.
+    #[test]
+    fn the_genotypes_of_a_block_become_the_buffer_of_the_gts_column_with_no_copy() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let address = block.gts.as_ptr().addr();
+
+        let column = gts_column(block.gts, 6).expect("the column of the genotypes");
+
+        let alleles = column
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .expect("the column is a fixed size list");
+        assert_eq!(alleles.len(), 4);
+        let values = alleles.values().as_primitive::<Int8Type>();
+        assert_eq!(values.values().inner().as_ptr().addr(), address);
+    }
+
+    /// The buffers of every batch are compressed with lz4, which is the
+    /// compression popnei writes and the one every build of it reads, and
+    /// a caller that asks for no size of block gets the one popnei chooses
+    /// for the individuals of the source.
+    ///
+    /// Arrow compresses each buffer of a batch on its own and writes the
+    /// four bytes that mark the start of an lz4 frame before each, so those
+    /// four bytes in the file are what says that the batch is compressed
+    /// and with which of the two compressions of the format.
+    #[test]
+    fn the_buffers_of_the_file_are_compressed_with_lz4_and_popnei_chooses_the_size_of_the_blocks() {
+        let mut chroms = ChromTable::new();
+        let rows: Vec<&Row> = vec![&CASES[0]; 1000];
+        let block = block_of(&rows, &mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), None).expect("the file was written");
+
+        let frames = bytes
+            .windows(LZ4_FRAME_MARK.len())
+            .filter(|window| *window == LZ4_FRAME_MARK)
+            .count();
+        // The batch has fourteen buffers and each is compressed on its
+        // own, the six that hold the values of the six columns among them.
+        assert!(frames >= 6, "the file holds {frames} lz4 frames");
+        // The genotypes of the thousand variants, which are the same
+        // variant, are 1000 x 3 x 2 = 6000 bytes with no compression, and
+        // the file holds no run of zeros of that length.
+        let longest_run_of_zeros = bytes
+            .split(|byte| *byte != 0)
+            .map(<[u8]>::len)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            longest_run_of_zeros < 1000,
+            "the file holds a run of {longest_run_of_zeros} zeros"
+        );
+
+        let file = file_read(bytes);
+        assert_eq!(num_rows_of(&file.rows), [1000]);
+        // No size was asked for, so the blocks hold the number of variants
+        // popnei chooses for 3 individuals, the largest it chooses.
+        assert_eq!(file.metadata.num_vars_per_block, 10_000);
+    }
+
+    /// A vars file of the blocks given, written with `write_block` and the
+    /// table of the names of their chromosomes, with what the writer said
+    /// of the block at which it stopped.
+    fn written_block_by_block(
+        blocks: Vec<Block>,
+        chroms: &ChromTable,
+        individuals: &[String],
+        ploidy: usize,
+    ) -> (Vec<u8>, Option<Error>) {
+        let mut writer =
+            VarsWriter::new(Vec::new(), individuals, ploidy, 3).expect("the writer was built");
+        let mut refused = None;
+        for block in blocks {
+            if let Err(error) = writer.write_block(block, chroms) {
+                refused = Some(error);
+                break;
+            }
+        }
+        let bytes = writer.finish().expect("the file was finished");
+        (bytes, refused)
+    }
+
+    /// The writer is built for the individuals and the ploidy that the
+    /// `popnei` key of the file names, and every batch holds them: a block
+    /// of others is refused and nothing of it is written.
+    #[test]
+    fn a_block_of_other_individuals_or_another_ploidy_is_refused_and_nothing_of_it_is_written() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.num_individuals = 4;
+        block.ploidy = 2;
+        // 4 variants x 4 individuals x 2 alleles, so the block is of its
+        // own size and what is wrong with it is the individuals alone.
+        block.gts = vec![0; 32];
+        let (bytes, refused) =
+            written_block_by_block(vec![block], &chroms, &cases_individuals(), 2);
+        let Some(Error::VarsBlockDoesNotFit {
+            num_individuals,
+            ploidy,
+            found_num_individuals,
+            found_ploidy,
+        }) = refused
+        else {
+            panic!("the block of four individuals was taken: {refused:?}");
+        };
+        assert_eq!(
+            (num_individuals, ploidy, found_num_individuals, found_ploidy),
+            (3, 2, 4, 2)
+        );
+        assert!(file_read(bytes).rows.is_empty());
+
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.ploidy = 1;
+        // 4 variants x 3 individuals x 1 allele.
+        block.gts = vec![0; 12];
+        let (bytes, refused) =
+            written_block_by_block(vec![block], &chroms, &cases_individuals(), 2);
+        let Some(Error::VarsBlockDoesNotFit { found_ploidy, .. }) = refused else {
+            panic!("the block of the ploidy 1 was taken: {refused:?}");
+        };
+        assert_eq!(found_ploidy, 1);
+        assert!(file_read(bytes).rows.is_empty());
+    }
+
+    /// The genotypes of a batch are one flat buffer, so a block whose
+    /// arrays are not of its size would be written with every genotype
+    /// after the fault at the place of another: the writer calls
+    /// `Block::check` and writes nothing of such a block.
+    #[test]
+    fn a_block_whose_arrays_are_not_of_its_size_is_refused_and_nothing_of_it_is_written() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.gts.pop();
+        let (bytes, refused) =
+            written_block_by_block(vec![block], &chroms, &cases_individuals(), 2);
+
+        let Some(Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected,
+        }) = refused
+        else {
+            panic!("the block short of an allele was taken: {refused:?}");
+        };
+        // 4 variants x 3 individuals x 2 alleles.
+        assert_eq!((array, found, expected), ("gts", 23, 24));
+        assert!(file_read(bytes).rows.is_empty());
+    }
+
+    /// The file holds the name of the chromosome of every variant as text,
+    /// so a block whose chromosome number the table given with it has no
+    /// name for cannot be written.
+    #[test]
+    fn a_chromosome_number_with_no_name_is_refused_and_nothing_of_the_block_is_written() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        // A table of one name, `chr1`, and a block that holds a second
+        // number: the reader that gave it has a defect.
+        block.chrom = Some(vec![0, 0, 7, 0]);
+        let (bytes, refused) =
+            written_block_by_block(vec![block], &chroms, &cases_individuals(), 2);
+
+        let Some(Error::VarsChromNameMissing { number }) = refused else {
+            panic!("the block of a number with no name was taken: {refused:?}");
+        };
+        assert_eq!(number, 7);
+        assert!(file_read(bytes).rows.is_empty());
+    }
+
+    /// Every batch of an arrow file has the columns of one schema, which
+    /// the first block written fixes: a later block of other columns is
+    /// refused, the message names the field the two differ in, and the file
+    /// holds the batches written before it.
+    #[test]
+    fn a_block_of_other_columns_than_the_first_is_refused_and_names_the_field() {
+        let mut chroms = ChromTable::new();
+        let first = block_of(&[&CASES[0], &CASES[1]], &mut chroms);
+        let mut second = block_of(&[&CASES[2], &CASES[3]], &mut chroms);
+        second.qual = None;
+        let (bytes, refused) =
+            written_block_by_block(vec![first, second], &chroms, &cases_individuals(), 2);
+
+        let Some(error) = refused else {
+            panic!("the block without the qualities was taken");
+        };
+        let Error::VarsBlockColumns { first, found } = &error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(*first, Needs::ALL);
+        assert_eq!(*found, Needs::ALL.difference(Needs::QUAL));
+        let message = error.to_string();
+        assert!(message.contains("differ in `qual`"), "{message}");
+
+        // The block that was taken is in the file, and the one that was
+        // refused is in neither the batches nor the footer.
+        let file = file_read(bytes);
+        assert_eq!(num_rows_of(&file.rows), [2]);
+        assert_eq!(positions_of(&file.rows[0]), [Some(100), Some(200)]);
+        assert_eq!(file.batches.len(), 1);
+        assert_eq!(file.batches[0].num_vars, 2);
+    }
 
     /// The four values of "What it holds" of `docs/specs/io_vars.md`, of a
     /// file of the three individuals of the `cases.vcf` table of

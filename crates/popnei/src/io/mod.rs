@@ -9,8 +9,9 @@
 //! [`vars`] is the vars file, popnei's own file of variants: one arrow IPC
 //! file with a record batch for each block, which any program with an arrow
 //! library opens as a table. What is there of it is what the file says about
-//! itself, the two keys whose values are json; its writer and its reader are
-//! being written. `docs/specs/io_vars.md` has the format and section 6 of
+//! itself, the two keys whose values are json, and its writer, which takes
+//! the blocks of any reader; its reader is being written.
+//! `docs/specs/io_vars.md` has the format and section 6 of
 //! `docs/architecture.md` where it sits.
 
 pub(crate) mod bgzf;
