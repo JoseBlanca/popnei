@@ -11,7 +11,7 @@ use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
-use crate::variant::Needs;
+use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
 /// Anything that went wrong in popnei.
 #[derive(Debug, ThisError)]
@@ -28,6 +28,43 @@ pub enum Error {
         /// The fields that were asked for and that the block does not
         /// hold.
         fields: Needs,
+    },
+
+    /// The alleles given to the counts of one variant are not genotypes
+    /// those counts can read: the ploidy is 0, the alleles are not a whole
+    /// number of genotypes of the ploidy, or there are more of them than a
+    /// count of them holds. The counts of the alleles read one allele at a
+    /// time and give the ploidy 1.
+    ///
+    /// A block of a reader of popnei holds, for each variant, one genotype
+    /// of the ploidy of the source for each individual, so a user reaches
+    /// this only through a reader with a defect.
+    #[error(
+        "the counts of one variant were given {num_alleles} alleles of the ploidy {ploidy}, and they read one genotype of the ploidy for each individual: the ploidy is 1 at least, the alleles are a whole number of genotypes of it, and there are at most {largest} of them, which is what a count of them holds",
+        largest = u32::MAX
+    )]
+    GtsNotWholeGenotypes {
+        /// How many alleles the counts were given.
+        num_alleles: usize,
+        /// The ploidy they were to read them as.
+        ploidy: usize,
+    },
+
+    /// A genotype given to the counts of one variant holds an allele below
+    /// the missing one, -2 or less. Counted as it is, it would be a called
+    /// allele of the counts of the genotypes, and it has no place among the
+    /// counts of the alleles, which have one entry for each allele from 0
+    /// to [`MAX_ALLELE`].
+    ///
+    /// No reader of popnei gives such an allele, so a user reaches this
+    /// only through a reader with a defect. pyNei refuses it too, in
+    /// `_count_alleles_per_var`.
+    #[error(
+        "the genotypes of a variant hold the allele {allele}, and an allele is {MISSING_ALLELE} when it was not called and 0 to {MAX_ALLELE} when it was"
+    )]
+    AlleleBelowTheMissingOne {
+        /// The allele that was found in the genotypes.
+        allele: i8,
     },
 
     /// A reader that takes a size was asked for blocks of 0 variants. A
@@ -574,6 +611,43 @@ mod tests {
         assert!(message.contains("alleles"), "{message}");
         assert!(message.contains("qual"), "{message}");
         assert!(!message.contains("gts"), "{message}");
+    }
+
+    /// Whoever reports one of these has the genotypes that were counted,
+    /// and nothing else: no file and no line, since the counts are given a
+    /// row of a block. So the message names the numbers that say which
+    /// reader built it wrong.
+    #[test]
+    fn the_message_of_genotypes_that_are_not_whole_names_the_alleles_and_the_ploidy() {
+        let error = Error::GtsNotWholeGenotypes {
+            num_alleles: 7,
+            ploidy: 2,
+        };
+        let message = error.to_string();
+        assert!(message.contains("7 alleles"), "{message}");
+        assert!(message.contains("ploidy 2"), "{message}");
+
+        let error = Error::GtsNotWholeGenotypes {
+            num_alleles: 10,
+            ploidy: 0,
+        };
+        let message = error.to_string();
+        assert!(message.contains("10 alleles"), "{message}");
+        assert!(message.contains("ploidy 0"), "{message}");
+        // A ploidy of 0 is read here as one genotype of no allele for
+        // every individual, so the message says what a ploidy is.
+        assert!(message.contains("the ploidy is 1 at least"), "{message}");
+    }
+
+    /// The allele is what says where the reader that gave it went wrong,
+    /// and the range is what says why it was refused.
+    #[test]
+    fn the_message_of_an_allele_below_the_missing_one_names_the_allele() {
+        let error = Error::AlleleBelowTheMissingOne { allele: -2 };
+        let message = error.to_string();
+        assert!(message.contains("the allele -2"), "{message}");
+        assert!(message.contains("-1"), "{message}");
+        assert!(message.contains("127"), "{message}");
     }
 
     /// A user who gets one of these has the file open in front of them, so

@@ -19,6 +19,7 @@ use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
 use crate::block::AllelesColumn;
+use crate::error::{Error, Result};
 
 /// An allele that was not called, `.` in a VCF.
 pub const MISSING_ALLELE: i8 = -1;
@@ -325,9 +326,334 @@ impl<'a> VariantRef<'a> {
     }
 }
 
+/// The counts of the genotypes of one variant: how many were called, how
+/// many are missing and how many are heterozygous.
+///
+/// [`count_gts`] works them out over the genotypes of one variant. A
+/// genotype is missing when one of its alleles at least is
+/// [`MISSING_ALLELE`], so a half called genotype, `0/.` in a VCF, is
+/// missing and not called, and it is heterozygous when it is called and
+/// its alleles are not all the same. `called` and `missing` add up to the
+/// individuals of the variant, and `het` is at most `called`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GtCounts {
+    /// Genotypes with no missing allele.
+    pub called: u32,
+    /// Genotypes with one missing allele at least, the half called among
+    /// them.
+    pub missing: u32,
+    /// Called genotypes whose alleles are not all the same.
+    pub het: u32,
+}
+
+/// How many of the genotypes of one variant are called, missing and
+/// heterozygous.
+///
+/// `gts` is the genotypes of one variant, the alleles of one individual
+/// after those of the individual before it, `ploidy` alleles each: a row
+/// of the genotypes of a block, which [`VariantRef::gts`] gives. What a
+/// missing and a heterozygous genotype are is in [`GtCounts`], and it is
+/// what `_calc_gt_is_missing` and `_calc_gt_is_het` of pyNei compute as
+/// masks.
+///
+/// # Errors
+///
+/// For a ploidy of 0 and for genotypes that are not a whole number of
+/// genotypes of that ploidy, and for an allele below [`MISSING_ALLELE`],
+/// which no reader of popnei gives.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each count is raised by one at most once for each genotype of `gts`, and \
+              the genotypes are at most as many as its alleles, which were checked above \
+              to be a number a u32 holds"
+)]
+pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts> {
+    // `checked_rem` gives `None` for a ploidy of 0, which is the other
+    // thing refused here and what `chunks_exact` below would panic at.
+    if gts.len().checked_rem(ploidy) != Some(0) || u32::try_from(gts.len()).is_err() {
+        return Err(Error::GtsNotWholeGenotypes {
+            num_alleles: gts.len(),
+            ploidy,
+        });
+    }
+    let mut counts = GtCounts::default();
+    for genotype in gts.chunks_exact(ploidy) {
+        let mut alleles = genotype.iter().copied();
+        // A chunk of `chunks_exact` holds the ploidy, which is 1 at
+        // least, so every genotype has a first allele.
+        let Some(first) = alleles.next() else {
+            continue;
+        };
+        if first < MISSING_ALLELE {
+            return Err(Error::AlleleBelowTheMissingOne { allele: first });
+        }
+        let mut missing = first == MISSING_ALLELE;
+        let mut all_the_same = true;
+        for allele in alleles {
+            if allele < MISSING_ALLELE {
+                return Err(Error::AlleleBelowTheMissingOne { allele });
+            }
+            missing |= allele == MISSING_ALLELE;
+            all_the_same &= allele == first;
+        }
+        if missing {
+            counts.missing += 1;
+        } else {
+            counts.called += 1;
+            if !all_the_same {
+                counts.het += 1;
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// One count for each allele a genotype can hold, from 0 to
+/// [`MAX_ALLELE`], which [`count_alleles`] fills.
+pub type AlleleCounts = [u32; 128];
+
+/// It adds to `counts[a]` how often the allele a was called in the
+/// genotypes of one variant, and gives how many alleles it added, the
+/// called alleles.
+///
+/// An allele is counted wherever it was called, in a half called genotype
+/// too, which is what `_count_each_allele` of pyNei counts over a chunk.
+/// The caller clears `counts` between two variants and hands the same
+/// array over again, so that a pass over a block allocates nothing.
+///
+/// # Errors
+///
+/// For an allele below [`MISSING_ALLELE`], which no reader of popnei
+/// gives.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the called alleles and each entry of `counts` are raised by one at most \
+              once for each allele of `gts`, which were checked above to be a number a \
+              u32 holds, and the caller clears `counts` between two variants"
+)]
+pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
+    // The counts of one variant are u32, so a variant of more alleles
+    // than a u32 holds is refused instead of counted into a number that
+    // wrapped. The counts of the alleles read one allele at a time, which
+    // is the ploidy the error names.
+    if u32::try_from(gts.len()).is_err() {
+        return Err(Error::GtsNotWholeGenotypes {
+            num_alleles: gts.len(),
+            ploidy: 1,
+        });
+    }
+    let mut called_alleles = 0_u32;
+    for &allele in gts {
+        if allele == MISSING_ALLELE {
+            continue;
+        }
+        // An allele of 0 or more is at most `MAX_ALLELE`, which is the
+        // largest an i8 holds, and `counts` has an entry for each one up
+        // to it, so what the `else` catches is an allele below the
+        // missing one.
+        let Some(count) = usize::try_from(allele)
+            .ok()
+            .and_then(|entry| counts.get_mut(entry))
+        else {
+            return Err(Error::AlleleBelowTheMissingOne { allele });
+        };
+        *count += 1;
+        called_alleles += 1;
+    }
+    Ok(called_alleles)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ChromTable, Needs};
+    use super::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles, count_gts};
+    use crate::error::Error;
+
+    /// The six variants of five diploid individuals of the worked example
+    /// of `docs/specs/filters.md`, which the table of "How it is verified"
+    /// of the counts of one variant gives the counts of. `-1` is an allele
+    /// that was not called, the `.` of a VCF.
+    const THE_SIX_VARIANTS: [[i8; 10]; 6] = [
+        // 0/0 0/1 0/0 0/0 0/.
+        [0, 0, 0, 1, 0, 0, 0, 0, 0, -1],
+        // 0/0 0/1 0/0 ./. 0/.
+        [0, 0, 0, 1, 0, 0, -1, -1, 0, -1],
+        // 0/1 2/3 0/1 2/3 ./.
+        [0, 1, 2, 3, 0, 1, 2, 3, -1, -1],
+        // ./. ./. ./. ./. ./.
+        [-1; 10],
+        // 0/0 0/0 0/0 0/0 1/1
+        [0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+        // 0/. ./. ./. ./. ./.
+        [0, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+    ];
+
+    /// The alleles that were counted in `gts`, each with its count, and
+    /// the called alleles. The alleles that were not called are left out,
+    /// so that a test writes the counts as the table of the spec does.
+    fn alleles_counted(gts: &[i8]) -> (Vec<(usize, u32)>, u32) {
+        let mut counts: AlleleCounts = [0; 128];
+        let called_alleles = count_alleles(gts, &mut counts).unwrap();
+        let counted = counts
+            .iter()
+            .enumerate()
+            .filter(|(_, count)| **count > 0)
+            .map(|(allele, count)| (allele, *count))
+            .collect();
+        (counted, called_alleles)
+    }
+
+    /// The counts of `_calc_gt_is_missing` and `_calc_gt_is_het` of pyNei
+    /// at ef0ca6e on these genotypes, as the table of the spec has them. A
+    /// half called genotype, the last one of the first variant, is missing
+    /// and is not het.
+    #[test]
+    fn count_gts_of_the_six_variants_of_the_worked_example() {
+        let counts = |variant: usize| count_gts(&THE_SIX_VARIANTS[variant], 2).unwrap();
+        let expected = |called, missing, het| GtCounts {
+            called,
+            missing,
+            het,
+        };
+        assert_eq!(counts(0), expected(4, 1, 1));
+        assert_eq!(counts(1), expected(3, 2, 1));
+        assert_eq!(counts(2), expected(4, 1, 4));
+        assert_eq!(counts(3), expected(0, 5, 0));
+        assert_eq!(counts(4), expected(5, 0, 0));
+        assert_eq!(counts(5), expected(0, 5, 0));
+    }
+
+    /// The counts of `_count_alleles_per_var` of pyNei at ef0ca6e on these
+    /// genotypes, as the table of the spec has them. The called allele of
+    /// a half called genotype is counted, which is why the first variant
+    /// has 9 called alleles of 10 and the last one has 1.
+    #[test]
+    fn count_alleles_of_the_six_variants_of_the_worked_example() {
+        let counted = |variant: usize| alleles_counted(&THE_SIX_VARIANTS[variant]);
+        assert_eq!(counted(0), (vec![(0, 8), (1, 1)], 9));
+        assert_eq!(counted(1), (vec![(0, 6), (1, 1)], 7));
+        assert_eq!(counted(2), (vec![(0, 2), (1, 2), (2, 2), (3, 2)], 8));
+        assert_eq!(counted(3), (vec![], 0));
+        assert_eq!(counted(4), (vec![(0, 8), (1, 2)], 10));
+        assert_eq!(counted(5), (vec![(0, 1)], 1));
+    }
+
+    /// A genotype is heterozygous when its alleles are not all the same at
+    /// any ploidy, and it is missing when one allele of it at least was
+    /// not called, so 0/./0/0 is missing and not het. The counts are the
+    /// ones the spec gives for these three genotypes.
+    #[test]
+    fn count_gts_of_the_three_tetraploid_genotypes() {
+        let gts = [0, 0, 0, 1, 1, 1, 1, 1, 0, -1, 0, 0];
+        assert_eq!(
+            count_gts(&gts, 4).unwrap(),
+            GtCounts {
+                called: 2,
+                missing: 1,
+                het: 1,
+            }
+        );
+        // The counts of the alleles are of the alleles and take no
+        // ploidy: these three genotypes hold six 0 and five 1, the called
+        // allele of the half called genotype among them. The spec's table
+        // has the allele counts of the six diploid variants, and these
+        // two numbers are counted off the genotypes above.
+        assert_eq!(alleles_counted(&gts), (vec![(0, 6), (1, 5)], 11));
+    }
+
+    /// The genotypes of a variant are one genotype of the ploidy for each
+    /// individual, so the counts refuse the alleles that are not that.
+    /// They come from a reader with a defect, and the numbers of the
+    /// message are what says which reader.
+    #[test]
+    fn count_gts_refuses_a_ploidy_of_0_and_genotypes_that_are_not_whole() {
+        let error = count_gts(&[0, 0, 0, 1], 0).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::GtsNotWholeGenotypes {
+                    num_alleles: 4,
+                    ploidy: 0
+                }
+            ),
+            "{error}"
+        );
+
+        let error = count_gts(&[0, 0, 0, 1, 0], 2).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::GtsNotWholeGenotypes {
+                    num_alleles: 5,
+                    ploidy: 2
+                }
+            ),
+            "{error}"
+        );
+
+        // A variant of no individual is a whole number of genotypes, none,
+        // and is counted and not refused.
+        assert_eq!(count_gts(&[], 2).unwrap(), GtCounts::default());
+        // The ploidy of the counts is the one they were given, and a
+        // haploid genotype is called and never het.
+        assert_eq!(
+            count_gts(&[0, 1, -1], 1).unwrap(),
+            GtCounts {
+                called: 2,
+                missing: 1,
+                het: 0,
+            }
+        );
+    }
+
+    /// An allele below the missing one would be counted as a called
+    /// allele, so the counts of the genotypes refuse it instead of giving
+    /// a number that says nothing about it.
+    #[test]
+    fn count_gts_refuses_an_allele_below_the_missing_one() {
+        let error = count_gts(&[0, 0, -2, 0], 2).unwrap_err();
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+            "{error}"
+        );
+
+        let error = count_gts(&[i8::MIN, 0], 2).unwrap_err();
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: i8::MIN }),
+            "{error}"
+        );
+    }
+
+    /// The counts of the alleles have one entry for each allele from 0 on,
+    /// and an allele below the missing one has no entry to go into.
+    #[test]
+    fn count_alleles_refuses_an_allele_below_the_missing_one() {
+        let mut counts: AlleleCounts = [0; 128];
+        let error = count_alleles(&[0, 1, -2, -1], &mut counts).unwrap_err();
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+            "{error}"
+        );
+    }
+
+    /// The counts are the caller's array, and what the function adds to it
+    /// is one variant: a caller that reads a second variant into the same
+    /// array without clearing it gets the two of them together.
+    #[test]
+    fn count_alleles_adds_to_the_counts_it_is_given() {
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(count_alleles(&THE_SIX_VARIANTS[0], &mut counts).unwrap(), 9);
+        assert_eq!(
+            count_alleles(&THE_SIX_VARIANTS[4], &mut counts).unwrap(),
+            10
+        );
+        assert_eq!(counts[0], 16);
+        assert_eq!(counts[1], 3);
+        assert_eq!(counts[2], 0);
+
+        counts = [0; 128];
+        assert_eq!(count_alleles(&[], &mut counts).unwrap(), 0);
+        assert_eq!(counts[0], 0);
+    }
 
     #[test]
     fn a_set_of_needs_contains_the_fields_it_was_built_from_and_no_other() {

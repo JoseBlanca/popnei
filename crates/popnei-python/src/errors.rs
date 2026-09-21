@@ -251,8 +251,14 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // that the table given with the block has no name for. `write_vars`
         // gives the writer the individuals, the fields and the table of one
         // reader, so a user reaches them only through a reader with a
-        // defect.
-        popnei::Error::BlocksDoNotFitTogether { .. }
+        // defect. The two of the counts of one variant are of that kind
+        // too, which `docs/specs/variant.md` says in "The Rust interface":
+        // the counts have no function in Python, so the genotypes they
+        // refuse and the ploidy they were given are a reader's and not a
+        // user's.
+        popnei::Error::GtsNotWholeGenotypes { .. }
+        | popnei::Error::AlleleBelowTheMissingOne { .. }
+        | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::KeepOfAnotherSize { .. }
