@@ -167,31 +167,82 @@ The differences from pyNei:
   `many.vcf.gz` without its last 28 bytes as it reads the whole file, 500
   variants and no complaint; bcftools 1.24 stops with "no BGZF EOF marker;
   file may be truncated".
+- A bgzipped file that is corrupted is an error that names the member.
+  pyNei was run on 21 September 2026 on `many.vcf.gz` with its bytes 320
+  and 321 changed, of the paragraph on bgzip below, and on `cases.vcf.gz`
+  with its byte 243 set to 144: it raises `ValueError: Empty VCF file, it
+  has no variants` for both, which is what it says of a file that has a
+  header and nothing else, and not that the file is corrupted.
 
 ### The cases a reader of the rules would not guess
 
 The file is gzipped when its first two bytes are `1f 8b`, whatever its
 name, as in pyNei. A file made by bgzip, which is what nearly every
 gzipped VCF is, is many gzip members one after another, each with 64 KB
-of text at most, and an empty one at the end. A gzip decoder that stops
+of text at most, and an empty one at the end. Every member of such a file
+carries in its header the extra field `BC`, two bytes that hold the size
+of that member in the file, and the `BC` of the first member is what says
+that bgzip wrote the source. A gzip decoder that stops
 after the first member gives the start of the file and no error. For
 `many.vcf.gz` and `cases.vcf.gz`, below, the first member is exactly the
 header, so such a decoder gives a VCF with a header and no variants,
 which is not an error either: a reader with no variants and nothing to
 tell that anything went wrong. What catches it is the tests that count
-the variants of the gzipped files. So the reader uses a decoder that goes on to the next member, flate2's
-`MultiGzDecoder`, with flate2's default backend, `miniz_oxide`, which is
-Rust; its zlib backends are C and do not build for the wasm package.
+the variants of the gzipped files.
 After the decompression, or with no compression, the first byte has to be
 `#`; if not, the error says that the source is not a VCF.
 
-A file made by bgzip ends with an empty block of 28 bytes that marks its
-end. The reader knows that a source was made by bgzip from its first gzip
-member, which carries the extra field `BC` that bgzip writes in every
-block, and such a source that does not end with the empty block is an
-error. The source is read once and forward, so the reader watches the
-compressed bytes as they go by to the decoder and keeps the last 28, and
-that the mark is missing is known only when the source ends: every
+A source that bgzip wrote is read one member at a time, by the size that
+the `BC` of that member states, which is how htslib and bcftools read one:
+the reader cuts the member from the source by that size, decompresses its
+deflate data on its own, and checks what came out against the CRC32 and
+the length of the text that the last eight bytes of the member hold. These
+are errors, each of them with the member, counted from 1, the byte of the
+compressed source where that member starts, and what is wrong: a member
+that does not start as a gzip member with an extra field does; an extra
+field whose subfields do not end where it ends, or that holds no `BC` of
+two bytes; a size that leaves no room for the header, the deflate data and
+the last eight bytes; deflate data that the decoder refuses or that does
+not end where the member does; and a CRC32 or a length of the text that is
+not the one of the text that came out. The extra field of a member can
+hold other subfields beside `BC`, before it or after it, and the reader
+walks them; the `BC` of the first member, the one that decides how the
+whole source is read, is looked for at the bytes 12 and 13 of the file,
+where bgzip writes it, so a file whose first member carries another
+subfield before its `BC` is read as the gzip file it also is.
+
+A gzip file that bgzip did not
+write, whose first member has no `BC`, is read with a decoder that goes on
+to the next member by itself, flate2's `MultiGzDecoder`. Both ways
+decompress with flate2's default backend, `miniz_oxide`, which is Rust;
+its zlib backends are C and do not build for the wasm package. The reader
+of the members takes flate2's raw deflate and its CRC32, of that same
+backend, so it adds nothing to what popnei depends on.
+
+Why the members are cut and checked, and not handed to a decoder that goes
+from one to the next on its own: with such a decoder, `many.vcf.gz` with
+the two bytes that hold the length of the extra field of its second
+member, the bytes 320 and 321 counted from 0, changed from `06 00` to `44
+54`, gives no variant and no error, because the decoder takes 21572 bytes
+of compressed data for an extra field and lands on the empty member that
+ends the file. A review of 21 September 2026 changed every byte of
+`cases.vcf.gz` in turn to each of the 255 other values, 101745 files, and
+one of them was read as a whole file with its variants missing and nothing
+to say so: the byte 243, the length of that same field of its second
+member, set to 144. The owner decided that day, with that review in front
+of him, that an error never passes silently and that a corrupted file is
+refused however improbable the corruption. bcftools 1.24 gives both of
+those files a header, no variant and the exit status 0: htslib takes a
+member whose header it cannot read for the end of the data, and the 28
+bytes that mark the end of the file are still where they were.
+
+A file made by bgzip ends with a member that holds no text, the empty
+block of 28 bytes, and a source that bgzip wrote and that does not end
+with one is an error. A member with no text in the middle of a file is not
+its end: bgzip writes one where a caller asked for the bytes so far, and
+what makes the last member the mark of the end is that the source has no
+more bytes after it. The source is read once and forward,
+so that the mark is missing is known only when the source ends: every
 variant is given first, and the error comes where the reader would have
 said that there are no more, which is when bcftools says it too.
 Without it, a file that was cut where one gzip member ends and the next
@@ -203,15 +254,29 @@ its end.
 A bgzipped source that ends early is that error wherever it was cut, and
 the variants that were read before the cut are given first in every case.
 Where the cut falls decides how the reader learns of it. A cut where a
-member ends leaves a file the decoder finds nothing wrong with, and what
-says that it is cut short is the mark that is not at its end. A cut inside
-a member leaves the decoder without the bytes it needs: it gives the lines
-it could decompress and then fails, and that failure of a source that bgzip
-wrote is the same error, so a user whose download stopped is told that the
-file is cut short and not that a deflate stream is incomplete. An error of
+member ends leaves whole members that nothing is wrong with, and what says
+that the file is cut short is the mark that is not at its end. A cut
+inside the header of a member, or inside its data, leaves the reader with
+fewer bytes than that member says it has: it decompresses what there is of
+the deflate data, gives the lines that came whole out of it, and then the
+same error, so a user whose download stopped is told that the
+file is cut short and not that a deflate stream is incomplete. Such a
+member has no CRC32 and no length of its text to be checked against, since
+those are among the bytes that are missing. An error of
 the file system, a disc that fails while the file is read, is not one of
 those: it stays the error of the input it is, with the blocks that were
 read before it given first.
+
+A user reads through `iter_blocks`, which puts a `reblock` at the end of
+the pass, so the variants that `reblock` was keeping for its next block
+when the error came are lost with it, as `docs/specs/block.md` says of
+every error of a reader. `many.vcf.gz` without its last 28 bytes gives
+500, 497, 500 and 0 of its 500 variants before the error with blocks of 1,
+7, 100 and the size popnei chooses: 500 variants in blocks of 7 are 71
+whole blocks and 3 variants that were waiting, and the size popnei chooses
+for the 50 individuals of that file, 10000 variants, leaves the whole file
+waiting in one block that was never full. The four were measured from
+Python on 21 September 2026.
 
 The header is every line that starts with `##`, which is skipped, and
 then the line that starts with `#CHROM`, whose first nine columns have to
@@ -386,6 +451,15 @@ bytes after the sixteenth are read from the buffer of the source itself. A funct
 for the callers that have one; a file that cannot be opened is an error
 that carries the path.
 
+A source that bgzip wrote is read through the reader of its members, which
+holds one member at a time, the bytes of that member as the file has them
+and the text that came out of them, 64 KiB each at most: the memory of a
+reader does not grow with the file, and the lines of a batch are read from
+the text of the member without a copy. Cutting a member from the source
+and decompressing it are two steps, which is what a later plan that
+decompresses the members of one file side by side will build on; here the
+two run one after the other, on the thread that reads.
+
 ### How it is verified
 
 Against bcftools 1.24, which is on the owner's machine, run by
@@ -519,6 +593,33 @@ then that error; `many.vcf` compressed with gzip and not with bgzip is read.
 A quality of `nan`, of `inf` and of `1e400` is an error of the QUAL
 column.
 
+The members of a bgzipped source. `many.vcf.gz` is 21904 bytes and its
+members start at the bytes 0, 310, 12336 and 21876, so a cut at 315 or at
+325 falls inside the header of its second member and one at 21903 a byte
+before the end of the file: each gives the variants of the members that
+were whole and then the error of the mark that is missing, and a cut
+inside a header gives no variant of the member it cuts. These are read and
+are not errors: a member whose extra field holds another subfield before
+its `BC`; a member of 65536 bytes of text, which is the most one holds;
+and a member with no text in the middle of a file, which bgzip can write
+and which is the end of a file only when nothing follows it. These are
+errors that name the member: `many.vcf.gz` with its bytes 320 and 321
+changed from `06 00` to `44 54`, which is the file of the review, read at
+`VcfReader::new` or at `next_block`; and a file written in the test whose
+second member has, each in a case of its own, a size two bytes too small,
+a size two bytes too large, a length of its text that is not the one of
+its text, a CRC32 that is not the one of its text, bytes where a gzip
+header has its own, and an extra field with no `BC` in it.
+
+That an error never passes silently is tested on `cases.vcf.gz`, 399
+bytes: every byte of it in turn, set to each of the 255 other values,
+101745 files, each read whole with `only_passed` false. Each one gives
+either an error or exactly the four variants of "What it gives", with
+their genotypes; none gives other variants, or fewer, with no error. The
+time stamp in the header of a member is among the bytes that are changed,
+and a file that differs from `cases.vcf.gz` in it alone is read: what the
+test refuses is a file that is read as a whole one and is not.
+
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
 individuals that are not there, the repeated name, the name that is not
@@ -621,20 +722,38 @@ impl<R: BufRead + Send> VcfReader<R> {
 impl<R: BufRead + Send> BlockReader for VcfReader<R> { /* ... */ }
 ```
 
-The cases this module adds to the error of the crate: the source is not a
+The cases this module adds to the error of the crate, with the exception
+each one is in Python. The owner gave the convention on 21 September 2026:
+a `ValueError` is a wrong input of a function, a `RuntimeError` a defect
+of popnei, and an `OSError` a file that cannot be read, that was cut short
+or that is corrupted.
+
+Five are a `ValueError`, since a file whose content is not what a VCF
+holds is a wrong input like a wrong argument: the source is not a
 VCF, with what was found; a wrong header, with what is wrong; a ploidy
 out of range, which is the one thing `new` refuses that is not in the
 source, with the ploidy that was asked for; a wrong data line, with the
-number of the line, the column or the individual, and what is wrong; a
+number of the line, the column or the individual, and what is wrong; and a
 genotype of another ploidy, with the line, the individual, the ploidy of
-the genotype and the one expected; a file that could not be opened, with
+the genotype and the one expected.
+
+Four are an `OSError`: a file that could not be opened, with
 its path and the `std::io::Error` as the source of the error, so that a
 binding can put the path where the language of the binding keeps it,
 `OSError.filename` in Python; an error of the input, which wraps
-`std::io::Error`; a bgzipped source with no mark of its end; and a parse
-of a batch that did not come back, with the number of the last line that
-was read. In Python the first five and the last two are a `ValueError`
-and the other two an `OSError`.
+`std::io::Error`; a bgzipped source with no mark of its end; and a
+bgzipped source that is corrupted, with the member, counted from 1, the
+byte of the compressed source where that member starts, and what is wrong
+with it.
+
+One is a `RuntimeError`: a parse of a batch that did not come back, with
+the number of the last line that was read, which says that popnei has a
+defect and not that the file or the call was wrong.
+
+In Python the message of every error of a file starts with the path of
+that file. The core does not have it, since a reader is built over bytes
+and `from_path` carries it in one case alone, so it is the binding crate
+that puts it there.
 
 ## Speed
 
