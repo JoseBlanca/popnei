@@ -214,30 +214,31 @@ pub enum Error {
     },
 
     /// The source of the VCF was written by bgzip and does not end with the
-    /// empty block of 28 bytes that marks the end of such a file, so its
+    /// empty member of 28 bytes that marks the end of such a file, so its
     /// last bytes are missing: a download that stopped, a copy that was cut
-    /// short. The variants that were read before it are given first, and
-    /// this comes where the reader would have said that there are no more.
+    /// short. It comes where the reader would have said that there are no
+    /// more variants.
     ///
     /// A gzip file that bgzip did not write has no such mark and is read to
     /// its end.
     #[error(
-        "the VCF was written by bgzip and its last 28 bytes are not the empty block that marks the end of a bgzipped file, so the file is cut short and the variants after the cut are not in it; the variants before it were given, and the file has to be fetched or copied again. bcftools says of the same file `no BGZF EOF marker; file may be truncated`"
+        "the VCF was written by bgzip and does not end with the empty member of 28 bytes that marks the end of a bgzipped file, so the file is cut short and the variants after the cut are not in it; the file has to be fetched or copied again. bcftools says of the same file `no BGZF EOF marker; file may be truncated`"
     )]
     VcfBgzipEndMissing,
 
     /// A member of the source of the VCF, which bgzip wrote, is not one
     /// bgzip could have written: its header is not that of a member of such
-    /// a file, the size it states is not the size it has, or the text that
-    /// came out of it is not the text its CRC32 and its length describe. The
-    /// file was damaged after it was written, by a copy or a transfer that
-    /// did not check what it carried.
+    /// a file, the size it states is not the size it has, the text that
+    /// came out of it is not the text its CRC32 and its length describe, or
+    /// the file goes on after the member that marks its end. The file was
+    /// damaged after it was written, by a copy or a transfer that did not
+    /// check what it carried.
     ///
     /// The member is counted from 1 and `offset` is the byte of the
     /// compressed file where it starts, so that a user can look at it with
-    /// `xxd -s`. The variants of the members before it are given first.
+    /// `xxd -s`.
     #[error(
-        "the VCF was written by bgzip and its member {member}, which starts at the byte {offset} of the compressed file, is corrupted: {problem}. The variants before it were given, and the file has to be fetched or copied again"
+        "the VCF was written by bgzip and its member {member}, which starts at the byte {offset} of the compressed file, is corrupted, so the file has to be fetched or copied again: {problem}"
     )]
     VcfBgzipCorrupted {
         /// Which member of the file it is, counted from 1.

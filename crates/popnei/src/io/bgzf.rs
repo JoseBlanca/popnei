@@ -86,8 +86,8 @@ enum Member {
     },
     /// The source ended inside the member, so what was read of its data is
     /// what there was of it and it has no CRC32 and no length to be checked
-    /// against.
-    CutShort,
+    /// against. `of_it` is how many bytes of the member the source held.
+    CutShort { of_it: usize },
 }
 
 /// A reader over the members of a source that bgzip wrote, which gives the
@@ -258,8 +258,18 @@ impl<R: BufRead> BgzfReader<R> {
                 // it.
                 self.cut_short = !self.the_last_member_was_empty;
             }
-            Member::CutShort => {
+            Member::CutShort { of_it } => {
                 self.done = true;
+                if self.the_last_member_was_empty {
+                    // The member before this one holds no text and marks
+                    // the end of the file, so the file did not end where it
+                    // says it ends: nothing was cut off it, something was
+                    // put after it.
+                    return Err(self.corrupted(format!(
+                        "the member before it holds no text and marks the end of the file, and \
+                         {of_it} bytes follow it, so the file did not end where it says it does"
+                    )));
+                }
                 self.cut_short = true;
                 self.decompress_what_there_is_of_a_member();
             }
@@ -302,7 +312,7 @@ impl<R: BufRead> BgzfReader<R> {
             return Ok(Member::NoMore);
         }
         if read < header.len() {
-            return Ok(Member::CutShort);
+            return Ok(Member::CutShort { of_it: read });
         }
         self.check_the_header(&header)?;
 
@@ -313,7 +323,9 @@ impl<R: BufRead> BgzfReader<R> {
             bytes_of_the_extra_field,
         )?;
         if read < bytes_of_the_extra_field {
-            return Ok(Member::CutShort);
+            return Ok(Member::CutShort {
+                of_it: BYTES_BEFORE_THE_EXTRA_FIELD.saturating_add(read),
+            });
         }
         let size = self.size_of_the_member()?;
 
@@ -335,12 +347,21 @@ impl<R: BufRead> BgzfReader<R> {
         let bytes_of_the_data = after_the_header.saturating_sub(BYTES_AFTER_THE_DATA);
         let read = take_from_into(&mut self.source, &mut self.data, bytes_of_the_data)?;
         if read < bytes_of_the_data {
-            return Ok(Member::CutShort);
+            return Ok(Member::CutShort {
+                of_it: BYTES_BEFORE_THE_EXTRA_FIELD
+                    .saturating_add(bytes_of_the_extra_field)
+                    .saturating_add(read),
+            });
         }
         let mut end = [0u8; BYTES_AFTER_THE_DATA];
         let read = take_from(&mut self.source, &mut end)?;
         if read < end.len() {
-            return Ok(Member::CutShort);
+            return Ok(Member::CutShort {
+                of_it: BYTES_BEFORE_THE_EXTRA_FIELD
+                    .saturating_add(bytes_of_the_extra_field)
+                    .saturating_add(bytes_of_the_data)
+                    .saturating_add(read),
+            });
         }
         Ok(Member::Whole {
             states: WhatTheMemberStates {

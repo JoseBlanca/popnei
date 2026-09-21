@@ -722,6 +722,13 @@ impl<R: BufRead + Send> VcfReader<R> {
             let number = next_line_number(self.line_number);
             let read = self.source.read_line(&mut line)?;
             if read == 0 {
+                // A bgzipped source that was cut inside its first member
+                // has the start of the header and no `#CHROM` line, and
+                // what is wrong with it is not the header a user wrote: the
+                // bytes of the file ran out, which the source knows.
+                if self.source.was_cut_short() {
+                    return Err(Error::VcfBgzipEndMissing);
+                }
                 return Err(Error::VcfHeader {
                     problem: "it has no #CHROM line".to_string(),
                 });
@@ -3214,7 +3221,7 @@ mod tests {
 
     #[test]
     fn a_bgzipped_source_without_the_mark_of_its_end_is_refused_after_its_variants() {
-        // `many.vcf.gz` without the empty block of 28 bytes that bgzip
+        // `many.vcf.gz` without the empty member of 28 bytes that bgzip
         // writes at the end of a file. Its 500 variants are given first,
         // in five blocks of 100, and the error comes where the reader
         // would have said that there are no more.
@@ -3561,6 +3568,50 @@ mod tests {
             "the file cut where its second member ends gives {error:?}"
         );
         assert_eq!(rows.len(), 280);
+    }
+
+    #[test]
+    fn a_bgzipped_source_cut_inside_its_first_member_is_the_error_of_a_file_cut_short() {
+        // The first member of `many.vcf.gz` is its header, 310 bytes. Cut
+        // at 100 bytes, what comes out of it is the start of that header,
+        // with no `#CHROM` line, and the reader knows why: the bytes of the
+        // file ran out. Cut at 305 the whole header comes out, so the file
+        // opens and the error comes at the first block.
+        for cut in [100usize, 305] {
+            let error =
+                match VcfReader::new(Cursor::new(cut_to("many.vcf.gz", cut)), options(2, false)) {
+                    Err(error) => error,
+                    Ok(mut reader) => match reader.next_block() {
+                        Err(error) => error,
+                        Ok(block) => panic!("the file cut at {cut} gave {block:?}"),
+                    },
+                };
+            assert!(
+                matches!(error, Error::VcfBgzipEndMissing),
+                "cut at {cut}: the error is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bgzipped_source_with_bytes_after_the_member_that_marks_its_end_is_corrupted() {
+        // The file did not end where it says it ends, so it is not a file
+        // that was cut short: something was written after it, or two files
+        // were joined.
+        let mut bytes = std::fs::read(reference_vcf("many.vcf.gz")).unwrap();
+        bytes.extend_from_slice(b"hello world");
+        let (rows, error) = rows_before_the_error(bytes, in_blocks_of(options(2, false), 100));
+        let Some(Error::VcfBgzipCorrupted {
+            member,
+            offset,
+            problem,
+        }) = error
+        else {
+            panic!("the file gives {error:?} after {} rows", rows.len());
+        };
+        assert_eq!((member, offset), (5, 21904));
+        assert!(problem.contains("11 bytes"), "{problem}");
+        assert_eq!(rows.len(), 500);
     }
 
     #[test]
