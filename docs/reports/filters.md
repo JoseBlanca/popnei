@@ -248,3 +248,77 @@ npm 79 and 8. Run by the orchestrator at d4e8458: `cargo test
 `npm test` `tests 87`, `fail 0`; fmt, clippy, ruff and `cargo
 wasm-check` pass. The subagent built the wheel of pyodide, its smoke
 test exited with 0, and `cargo bench --no-run` built. 65057 tokens.
+
+The review of the counts and of the filter of the core, at f22044f, with
+six categories, all but `binding`. No reviewer found a wrong number. The
+`spec` reviewer got the nine rows and the chain again from pyNei and
+from bcftools, the missing data filter from plink2, and the same keep or
+drop as pyNei's three functions for a tetraploid variant, a tie for the
+major allele, a half called genotype at a ploidy of 3, the allele 127
+and four thresholds that the table lacks. The `tests` reviewer made 24
+mutations of the code and each failed a test. What held and is fixed, in
+61656c6, the two specs, and 4f8bf3c, the code:
+
+- `count_alleles` added into an array that its caller had to clear, and
+  nothing checked it: with an entry at `u32::MAX` a release build
+  wrapped to 2 with no sign. Its only caller built a new array for every
+  variant, where the spec has one handed over again. The function clears
+  the array itself now, and the filter gives each thread one that is
+  reused. `docs/specs/variant.md` says so. The owner's to reverse.
+- The error of a second filter of one kind held the refused threshold
+  alone. It has `threshold_that_is_set` too, empty from the core, which a
+  binding crate fills, and its message no longer names the steps of the
+  variants, a name the core lacks.
+- Under rayon the error of a block with two bad rows was the one a
+  thread stored first: the allele of row 3 in 190 of 200 runs of a
+  reviewer, and the one of row 390 in 10. It is the error of the lowest
+  row now, found by reading the rows again one by one when the threads
+  give an error.
+- A variant of more alleles than a `u32` holds was the error of
+  genotypes that are not whole, with a ploidy of 1 that nobody gave. It
+  is a case of its own, `MoreAllelesThanACountHolds`, in the spec too.
+- Six of the nine rows of the table asserted how many variants stay and
+  not which, and nothing read `tests/reference/filters/`. Every row and
+  the chain compare every position with the stored files now. The test
+  that the ploidy goes through a filter could not fail, its source was
+  diploid; it has a ploidy of 4.
+- A source narrowed before a filter is put over it, with no `set_needs`
+  on the chain, fails at its first block for lack of genotypes. The doc
+  comment of `FilteredReader::new` says that the needs are set on the
+  outermost reader once the chain is built, and a test states it. The
+  other fix was a method of the trait.
+- The product of the individuals and the ploidy written twice; a comment
+  about a 0/0 that cannot be reached; two `# Errors` that named half
+  their errors; `threshold()` of a criterion made public for the `args`
+  of a step, and in the spec; a warning of `cargo doc`.
+
+After the fixes, run by the orchestrator at 4f8bf3c: `cargo test
+--workspace` `296 passed`, 2 ignored; `filters:: -- --list` `27 tests`;
+the counts `7 tests`; `uv run pytest` `117 passed`; fmt, clippy, `cargo
+wasm-check` pass and `cargo doc -p popnei --no-deps` has no warning.
+The six reviewers cost 113445 to 161289 tokens each, the fixes 71497.
+
+For the owner, from this review:
+
+- A vars file with a damaged byte gives an allele of -2 with no error.
+  The `errors` reviewer changed one allele byte of a file that popnei
+  wrote to 0xFE, and `open_vars` gave `[[-2, 0], ...]`: the reader checks
+  the type and the width of the genotypes and not their values. So the
+  sentence of `docs/specs/variant.md` that no reader gives such an
+  allele is false. With a filter on, the counts refuse it, as a
+  `RuntimeError`, which tells a user to report a defect when their file
+  is what is wrong; with none, the -2 reaches their array. The options:
+  the vars file reader refuses it, as a `ValueError` with the file, which
+  costs a scan of every genotype byte read, not measured, and a case in
+  `docs/specs/io_vars.md`; or the error of the counts becomes a
+  `ValueError` and the silent case stays. The orchestrator recommends
+  the first, as a task of its own, since the vars file is outside this
+  plan. Asked in chat on 21 September 2026; meanwhile a `RuntimeError`.
+- A filter that keeps nothing over a long stretch of a file reads on
+  inside one `next_block`, so one `__next__` of Python can read a whole
+  file and a Ctrl-C waits for it.
+- Outside the plan: the test of `crates/popnei/src/io/vars.rs` that
+  sweeps one changed byte installs a global panic hook, so any other
+  test that fails makes it fail too, and names the vars file to whoever
+  broke a filter. Counting the panics of its own thread alone would
+  settle it.
