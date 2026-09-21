@@ -27,6 +27,23 @@ plan records. pyNei's `filter_by_maf` and `gather_filtering_stats`
 import. `/Users/jose/devel/popnei-bench/big.vcf` is there, 403572954
 bytes.
 
+## Work package 1, while it is under way
+
+Task 1.1, commit 080b1da: `FilteringStats` alone in the new module
+`filters`, and `filtering_stats` in the trait with no default, in `Box`,
+`Reblock`, `VcfReader`, `VarsReader` and the two readers of the tests.
+Neither binding crate needed a change. Run by the orchestrator: `cargo
+test --workspace` `254 passed`, 2 ignored; `cargo test -p popnei --lib --
+filtering_stats --list` `5 tests`; fmt, clippy and `cargo wasm-check`
+pass. 126414 tokens.
+
+How the work went. The orchestrator committed the tick of task 3.1 with
+`git add <paths>` and `git commit` with no paths while the subagent of
+1.1 had its files staged, and the commit took them. The commit was local,
+so the orchestrator split it in two, with the subagent's message, and the
+tree did not change. Two sessions in one tree commit with `git commit
+-F <message> -- <paths>`, and the prompts of the tasks now say so.
+
 ## Work package 3, while it is under way
 
 Task 3.1, the reference script, ran beside task 1.1, since it writes

@@ -166,7 +166,7 @@ comes first because it changes the trait that the filter of work package
 
 **Tasks.**
 
-- [ ] 1.1 In the core, `crates/popnei/src/filters.rs` with
+- [x] 1.1 In the core, `crates/popnei/src/filters.rs` with
   `FilteringStats` alone, and `filtering_stats` in the trait of
   `block.rs`, in `Box`, in `Reblock`, in `VcfReader`, in `VarsReader` and
   in the readers of the tests. From "The Rust interface" of
