@@ -1779,8 +1779,22 @@ fn qualities(
 ) -> Result<Vec<f32>> {
     let column = column_of::<Float32Array>(array, VarsColumn::Qual, place)?;
     let mut qualities = reserved_column(num_vars, metadata)?;
-    for quality in column.iter() {
-        qualities.push(quality.unwrap_or(f32::NAN));
+    for (row, quality) in column.iter().enumerate() {
+        let Some(quality) = quality else {
+            // The variant has no quality, which a block holds as a NaN.
+            qualities.push(f32::NAN);
+            continue;
+        };
+        // A value that is not finite: the NaN of the column of a block is
+        // what says that a variant has no quality, and an infinite quality
+        // is a probability of no variant of 0.
+        if !quality.is_finite() {
+            return Err(Error::VarsQualityNotFinite {
+                found: quality,
+                var: place.vars_before.saturating_add(counted_from_one(row)),
+            });
+        }
+        qualities.push(quality);
     }
     Ok(qualities)
 }
@@ -2341,8 +2355,8 @@ mod tests {
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
     use arrow_array::{
-        Array, ArrayRef, FixedSizeListArray, Float64Array, Int8Array, Int32Array, ListArray,
-        RecordBatch, StringArray, UInt64Array,
+        Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int32Array,
+        ListArray, RecordBatch, StringArray, UInt64Array,
     };
     use arrow_buffer::ScalarBuffer;
     use arrow_ipc::reader::FileReader;
@@ -2354,7 +2368,8 @@ mod tests {
         GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN,
         QUAL_COLUMN, Region, VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter,
         alleles_column, batches_as_json, batches_from_json, block_of_the_batch, chrom_column,
-        id_column, metadata_as_json, metadata_from_json, projection_of, schema_of, write_vars,
+        counted_from_one, id_column, metadata_as_json, metadata_from_json, projection_of,
+        schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader};
     use crate::error::{Error, Result};
@@ -5070,6 +5085,33 @@ mod tests {
             panic!("the file whose last variant has a null genotype gave {error}");
         };
         assert_eq!((column, var), ("gts", 4));
+    }
+
+    /// A quality that is a value and is not a finite number is refused with
+    /// the value and the variant: a NaN in the column of a block is what
+    /// says that the variant has no quality, so a NaN that is a value in
+    /// the file would be read as a variant that has none, and an infinite
+    /// quality is a probability of no variant of 0, which is not what phred
+    /// scaling says. The VCF reader refuses both.
+    #[test]
+    fn a_quality_that_is_a_value_and_is_not_finite_is_refused_with_the_variant() {
+        for (row, quality) in [(0, f32::NAN), (2, f32::INFINITY), (3, f32::NEG_INFINITY)] {
+            let mut parts = FileParts::of_cases();
+            let mut qualities = vec![Some(29.5), None, Some(67.0), Some(47.0)];
+            qualities[row] = Some(quality);
+            *parts.column(QUAL_COLUMN) = (
+                Field::new(QUAL_COLUMN, DataType::Float32, true),
+                Arc::new(Float32Array::from(qualities)),
+            );
+
+            let error = refused_at_the_block(parts.written());
+
+            let Error::VarsQualityNotFinite { found, var } = error else {
+                panic!("the file whose quality is {quality} gave {error}");
+            };
+            assert!(!found.is_finite(), "the error says the quality is {found}");
+            assert_eq!(var, counted_from_one(row));
+        }
     }
 
     /// A null `id` is the empty id and a null `qual` is a variant with no

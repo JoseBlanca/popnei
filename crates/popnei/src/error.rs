@@ -327,6 +327,23 @@ pub enum Error {
         var: u64,
     },
 
+    /// A variant of the vars file has a quality that is not a finite
+    /// number. NaN is what the column of a block holds for a variant with
+    /// no quality, which the file writes as a null, so a NaN that is a
+    /// value would be read as a variant that has none; and an infinite
+    /// quality is a probability of no variant of 0, which is not what phred
+    /// scaling says. The VCF reader refuses both for the same reason.
+    #[error(
+        "the `qual` column of the vars file holds {found} for its variant {var}, and the quality of a variant is a finite number or no value at all, which the file holds as a null"
+    )]
+    VarsQualityNotFinite {
+        /// The value the column holds there.
+        found: f32,
+        /// Which variant of the file it is, counted from 1, over the whole
+        /// file and not inside its batch.
+        var: u64,
+    },
+
     /// The `popnei_batches` key of the footer of the vars file has one
     /// entry for each batch, and this file has another number of one than
     /// of the other, so no entry can be trusted to be that of its batch.
