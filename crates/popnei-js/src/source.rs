@@ -130,11 +130,14 @@ pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
 ) -> Result<Vec<u8>, JsPopneiError> {
-    // The source is read at the size of its own blocks: the core puts a
-    // `reblock` of `num_vars_per_block` over whatever it is given, so the
-    // batches of the file hold that many variants whichever source they
-    // came from.
-    let reader = source.reader(None)?;
+    // The source is asked for the size the batches will have, as a pass is,
+    // so that the `reblock` the core puts over it has nothing to cut or to
+    // join. What that saves is the memory of a block: a VCF read with the
+    // size popnei chooses for 1000 individuals, 5000 variants, holds 10.4 MB
+    // of genotypes while it is written, and 0.3 MB when the caller asked for
+    // batches of 100. A source that cannot give that size, the vars file
+    // whose batches were written at another one, leaves it to the `reblock`.
+    let reader = source.reader(num_vars_per_block)?;
     Ok(popnei::io::vars::write_vars(
         reader,
         Vec::new(),
