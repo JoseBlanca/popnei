@@ -220,7 +220,25 @@ that path and says that the file could not be written, and so do the two
 errors that come before anything is read, a file that is already there and a
 path that no file can be made at. The core says which of the two it is: a
 write that failed is a case of its own and not the error of a source that
-could not be read.
+could not be read. A directory at the path is a path no file can be made at
+and not a file that is already there, with the number the system gives for a
+directory where a file was asked for, so that it is the `IsADirectoryError`
+of Python, as it is when `open_vcf` is given one.
+
+The bytes reach the disc before the call returns, and a file system that
+refuses them there, a network one that says only when the file is closed
+that it is full, is the error of a file that could not be written like any
+other. A call that returned would otherwise leave a file that is not whole
+and say nothing.
+
+The file of a call that failed and that could not be taken away, a directory
+whose permissions changed while the file was being written, is told to the
+user as a note on the error they get: what went wrong is what they read
+first, and the note says that a file is still at the path, which their next
+call would refuse. The session that ran `docs/plans/vars-file.md` decided
+these three on 21 September 2026, with the binding crate written; the option
+not taken for the last was to say nothing, which leaves a user who fixes
+their VCF with a call that refuses the path and no reason.
 
 `num_vars_per_block` is how many variants a batch holds, and `None` is
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
