@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openVcf, version } from "popnei";
+import type { Variants } from "popnei";
+import { openVars, openVcf, version, writeVars } from "popnei";
 
 import { vcfOf } from "./reference.ts";
 
@@ -23,6 +24,23 @@ test("version throws before init was awaited", () => {
 
 test("openVcf throws before init was awaited", () => {
   assert.throws(() => openVcf(vcfOf([])), {
+    name: "Error",
+    message: /await init\(\)/,
+  });
+});
+
+test("openVars throws before init was awaited", () => {
+  assert.throws(() => openVars(new Uint8Array([65, 82, 82, 79, 87, 49])), {
+    name: "Error",
+    message: /await init\(\)/,
+  });
+});
+
+test("writeVars throws before init was awaited", () => {
+  // The handle cannot be made before `init` either, so what is given here
+  // is the argument the check of the arguments would refuse: the error of
+  // the WebAssembly comes first, which is what this asserts.
+  assert.throws(() => writeVars(null as unknown as Variants), {
     name: "Error",
     message: /await init\(\)/,
   });
