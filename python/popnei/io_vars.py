@@ -1,9 +1,46 @@
-"""Writing a vars file, the file popnei keeps its variants in."""
+"""Reading and writing a vars file, the file popnei keeps its variants in."""
 
 from pathlib import Path
 
 from popnei import _core
 from popnei.variant import Variants
+
+
+def open_vars(path: str | Path) -> Variants:
+    """The variants of the vars file at `path`.
+
+    A vars file is one arrow IPC file, also called feather v2, which
+    :func:`popnei.write_vars` writes from any source of variants. It is
+    where a user keeps their variants once the VCF has been read, so that
+    the text is parsed once and every later pass reads a file of arrays.
+
+    What it gives is the handle :func:`popnei.open_vcf` gives: the names of
+    the individuals and the ploidy, which it reads from the file, and the
+    variants through :meth:`Variants.iter_blocks`. Only the columns that a
+    pass asks for are decompressed, and the variants themselves are read
+    again at every pass.
+
+    It reads the schema of the file and its footer, so a file that is not a
+    vars file, one of a format version popnei does not read, and one whose
+    columns are not those of a vars file are a ``ValueError`` here and not
+    at the first calculation, with the path at the start of the message. A
+    file that cannot be opened, and one that was cut short after it was
+    written, are an ``OSError`` that carries the path in ``filename``.
+
+    A file whose buffers are compressed with zstd opens and raises a
+    ``ValueError`` at its first block: arrow decompresses a batch when it
+    reads it, and no build of popnei carries the code that reads zstd.
+    popnei writes lz4 and reads lz4 and no compression.
+
+    It is pyNei's ``load_vars`` under another name, because the call opens
+    the file and reads no variant, and these differences: the file is
+    another one, so a vars file of pyNei is refused as a file without the
+    key that says what popnei wrote; and pyNei's
+    `desired_num_vars_per_chunk` is gone, because how many variants come out
+    at a time is `num_vars_per_block` of :meth:`Variants.iter_blocks`, which
+    does not have to be the number of variants a batch of the file holds.
+    """
+    return Variants(_core.open_vars(path))
 
 
 def write_vars(
@@ -15,6 +52,10 @@ def write_vars(
     R and polars open as a table with no popnei installed. It is where a
     user keeps their variants once the VCF has been read, so that the text
     is parsed once and every later pass reads a file of arrays.
+
+    The source is a VCF or a vars file, whichever :class:`Variants` holds,
+    so a file read with :func:`popnei.open_vars` is written again with
+    another size of batch.
 
     The call reads the whole source once. The file holds the six columns of
     a VCF, the chromosome, the position, the id, the alleles, the quality
@@ -32,9 +73,10 @@ def write_vars(
     in a directory that is not there, is the ``OSError`` the file system
     gives for it, with the path in ``filename``.
 
-    Every error names the file it is about. A line of the VCF that popnei
-    cannot read is a ``ValueError`` whose message starts with the path of
-    the VCF; a vars file that could not be written, a disc that filled up
+    Every error names the file it is about. What popnei cannot read in the
+    source, a line of a VCF among them, is a ``ValueError`` whose message
+    starts with the path of that source; a vars file that could not be
+    written, a disc that filled up
     among the causes, is an ``OSError`` that carries the path of the vars
     file in ``filename``. The file that was being written is taken away
     then, so that the same call can be made again at the same path once
@@ -63,6 +105,7 @@ def write_vars(
         raise TypeError(
             f"`variants` is {variants!r}, a {type(variants).__name__}, and "
             f"`write_vars` writes the variants of a source: give it what "
-            f"`open_vcf` gives, write_vars(open_vcf(vcf_path), path)"
+            f"`open_vcf` or `open_vars` gives, "
+            f"write_vars(open_vcf(vcf_path), path)"
         )
     _core.write_vars(variants._source, path, num_vars_per_block)

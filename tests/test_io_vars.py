@@ -1,14 +1,22 @@
-"""`write_vars`: the vars file a Python user writes from their variants.
+"""`write_vars` and `open_vars`: the vars file a Python user writes and reads.
 
 A vars file is one arrow IPC file, and the reference outside the project is
 pyarrow, the arrow implementation that Apache Arrow publishes, which opens
-what popnei wrote as any other program would. The cases are the ones
-`docs/specs/io_vars.md` gives to pytest under "How it is verified" of the
-writer: `many.vcf` written and read back, a source with no variants, a VCF
-that fails half way, and a path that a file is already at. The numbers are
-the literals of that spec, and what the columns hold is compared with
-`many.bcftools.tsv`, what bcftools 1.24 read in the same VCF. pyNei is not
-run here: it reads another file.
+what popnei wrote as any other program would. The cases of the writer are
+the ones `docs/specs/io_vars.md` gives to pytest under "How it is verified"
+of the writer: `many.vcf` written and read back, a source with no variants,
+a VCF that fails half way, and a path that a file is already at. The numbers
+are the literals of that spec, and what the columns hold is compared with
+`many.bcftools.tsv`, what bcftools 1.24 read in the same VCF.
+
+The reader is checked on the file that the writer makes from `many.vcf`:
+what `open_vars` gives, field by field, is what `open_vcf` gives for the VCF
+itself, and it holds the counts that `docs/specs/io_vcf.md` has from
+bcftools. Its other cases are the files it refuses, one that is not a vars
+file, one that is not there, one that was cut short and one whose buffers
+are compressed with zstd, which no build of popnei reads.
+
+pyNei is not run here: it reads another file.
 """
 
 import errno
@@ -28,7 +36,7 @@ import numpy
 import pyarrow
 import pyarrow.ipc
 import pytest
-from popnei import _core, open_vcf, write_vars
+from popnei import _core, open_vars, open_vcf, write_vars
 
 # The VCFs that `tests/reference/vcf/make_reference.py` writes, which the
 # module scoped fixture below reads and which `conftest.py` gives the tests
@@ -630,3 +638,236 @@ def test_write_vars_refuses_a_num_vars_per_block_that_counts_no_variants(
     with pytest.raises(ValueError, match="0 variants"):
         write_vars(variants, path, 0)
     assert not path.exists()
+
+
+# The directory where `tests/reference/vars/make_reference.py` writes the
+# vars file that popnei cannot write itself, the one compressed with zstd.
+REFERENCE_VARS_DIR = Path(__file__).parent / "reference" / "vars"
+
+# Every field a block can carry besides the genotypes.
+ALL_FIELDS = ("chrom", "pos", "id", "alleles", "qual")
+
+# How many variants a batch of the file the reader is read on holds. The
+# blocks a user asks for are cut where they ask, 7 variants or the size
+# popnei chooses, so they are never the batches of that file.
+VARS_NUM_VARS_PER_BLOCK = 100
+
+# What `many.vcf` holds when every variant of it is read, from the table of
+# "How it is verified" of `docs/specs/io_vcf.md`, which bcftools 1.24 gave:
+# the variants, those of them in `chr2`, the genotypes with an allele that
+# was not called, the alleles that were not called, the alleles that were,
+# and the sum of the numbers of those. The vars file written from that VCF
+# gives them back.
+MANY_NUM_VARS = 500
+MANY_IN_CHR2 = 250
+MANY_MISSING_GENOTYPES = 1511
+MANY_MISSING_ALLELES = 2765
+MANY_CALLED_ALLELES = 47235
+MANY_SUM_OF_THE_CALLED_ALLELES = 25954
+
+# How many bytes are cut off the end of a whole vars file to make one that
+# was damaged after it was written: enough to take its footer away, which is
+# where a reader looks when the file is opened.
+BYTES_CUT_OFF_THE_END = 100
+
+# The batches of the file that is written again from what `open_vars` reads,
+# 500 variants in batches of 37, and the blocks of 7 variants and the one
+# block that the size popnei chooses for 50 individuals, 10000, gives for a
+# file of 500.
+AGAIN_NUM_VARS_PER_BLOCK = 37
+BATCHES_OF_THE_FILE_WRITTEN_AGAIN = [37] * 13 + [19]
+BLOCKS_OF_SEVEN = [7] * 71 + [3]
+
+
+def _joined(variants, fields=ALL_FIELDS, num_vars_per_block=None) -> dict[str, Any]:
+    """The columns of every block of `variants`, one after another, and how
+    many variants each of those blocks held."""
+    blocks = list(
+        variants.iter_blocks(fields=fields, num_vars_per_block=num_vars_per_block)
+    )
+    return {
+        "num_vars_of_each_block": [block.num_vars for block in blocks],
+        "gts": numpy.concatenate([block.gts for block in blocks]),
+        "chrom": tuple(name for block in blocks for name in block.chrom),
+        "pos": tuple(int(pos) for block in blocks for pos in block.pos),
+        "id": tuple(id_ for block in blocks for id_ in block.id),
+        "alleles": tuple(alleles for block in blocks for alleles in block.alleles),
+        "qual": numpy.concatenate([block.qual for block in blocks]),
+    }
+
+
+def _assert_the_same_variants(ours: dict[str, Any], theirs: dict[str, Any]) -> None:
+    """Every column of two passes, field by field."""
+    numpy.testing.assert_array_equal(ours["gts"], theirs["gts"])
+    assert ours["chrom"] == theirs["chrom"]
+    assert ours["pos"] == theirs["pos"]
+    assert ours["id"] == theirs["id"]
+    assert ours["alleles"] == theirs["alleles"]
+    # assert_array_equal takes two NaNs at the same place as equal, which is
+    # what a variant with no quality gives on both sides.
+    numpy.testing.assert_array_equal(ours["qual"], theirs["qual"])
+
+
+@pytest.fixture(scope="module")
+def many_vars(tmp_path_factory) -> Path:
+    """`many.vcf`, every variant of it, as a vars file of batches of 100.
+
+    It is written once for the module: the reader is read on it several
+    times and the file does not change.
+    """
+    path = tmp_path_factory.mktemp("vars") / "many.vars"
+    variants = open_vcf(REFERENCE_VCF_DIR / "many.vcf", only_passed=False)
+    write_vars(variants, path, VARS_NUM_VARS_PER_BLOCK)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("num_vars_per_block", "num_vars_of_each_block"),
+    [(7, BLOCKS_OF_SEVEN), (None, [MANY_NUM_VARS])],
+    ids=["blocks of 7", "the size popnei chooses"],
+)
+def test_open_vars_gives_the_variants_of_the_vcf_the_file_was_written_from(
+    many_vars: Path,
+    num_vars_per_block: int | None,
+    num_vars_of_each_block: list[int],
+) -> None:
+    """The 500 variants of `many.vcf`, written and read back.
+
+    Every field of every variant is the one the VCF reader gives, which
+    `docs/specs/io_vcf.md` checked against bcftools 1.24 and
+    `docs/specs/block.md` against pyNei, so this carries those checks over
+    to the file. The blocks that come out are cut where the user asked and
+    not where the batches of the file are: 7 variants, which is fewer than
+    the 100 of a batch, and the size popnei chooses for 50 individuals,
+    10000, which is more than the file holds and gives one block of 500.
+    """
+    variants = open_vars(many_vars)
+    from_the_vcf = open_vcf(REFERENCE_VCF_DIR / "many.vcf", only_passed=False)
+
+    assert variants.individuals == from_the_vcf.individuals
+    assert variants.num_individuals == from_the_vcf.num_individuals
+    assert variants.ploidy == from_the_vcf.ploidy
+
+    ours = _joined(variants, num_vars_per_block=num_vars_per_block)
+    _assert_the_same_variants(ours, _joined(from_the_vcf))
+    assert ours["num_vars_of_each_block"] == num_vars_of_each_block
+
+    gts = ours["gts"]
+    missing = gts == MISSING_ALLELE
+    assert gts.shape[0] == MANY_NUM_VARS
+    assert ours["chrom"].count("chr2") == MANY_IN_CHR2
+    assert int(missing.any(axis=2).sum()) == MANY_MISSING_GENOTYPES
+    assert int(missing.sum()) == MANY_MISSING_ALLELES
+    assert int((~missing).sum()) == MANY_CALLED_ALLELES
+    assert int(gts[~missing].sum()) == MANY_SUM_OF_THE_CALLED_ALLELES
+
+
+def test_open_vars_gives_the_genotypes_alone_when_no_other_field_is_asked_for(
+    many_vars: Path,
+) -> None:
+    """A column that nobody asked for is not decompressed and is `None`."""
+    blocks = list(open_vars(many_vars).iter_blocks(fields=()))
+
+    gts = numpy.concatenate([block.gts for block in blocks])
+    from_the_vcf = open_vcf(REFERENCE_VCF_DIR / "many.vcf", only_passed=False)
+    numpy.testing.assert_array_equal(gts, _joined(from_the_vcf)["gts"])
+    for block in blocks:
+        assert block.chrom is None
+        assert block.pos is None
+        assert block.id is None
+        assert block.alleles is None
+        assert block.qual is None
+
+
+def test_open_vars_refuses_a_file_that_is_not_a_vars_file(
+    reference_vcf_dir: Path,
+) -> None:
+    """A VCF, which is not an arrow file at all.
+
+    It is refused at the call and not at the first block, because
+    `open_vars` reads the schema and the footer of the file.
+    """
+    path = reference_vcf_dir / "many.vcf"
+
+    with pytest.raises(ValueError, match="vars file") as refusal:
+        open_vars(path)
+
+    assert str(refusal.value).startswith(str(path))
+
+
+def test_open_vars_gives_the_error_of_the_file_system_for_a_path_of_no_file(
+    tmp_path: Path,
+) -> None:
+    """`FileNotFoundError` derives from `OSError`, and the path is in
+    `filename`, where the standard library puts it."""
+    path = tmp_path / "there_is_no_such_vars_file.vars"
+
+    with pytest.raises(OSError) as refusal:
+        open_vars(path)
+
+    assert isinstance(refusal.value, FileNotFoundError)
+    assert refusal.value.errno == errno.ENOENT
+    assert refusal.value.filename == str(path)
+
+
+def test_open_vars_refuses_a_vars_file_that_was_cut_short(
+    many_vars: Path, tmp_path: Path
+) -> None:
+    """A whole file without its last 100 bytes, which took its footer away.
+
+    A file that was damaged after it was written is an error and not a file
+    of fewer variants. It is an error of the input and not of what the user
+    wrote, so it is an `OSError` with the path in `filename`, and the file
+    is read when it is opened, so it comes at the call.
+    """
+    path = tmp_path / "cut_short.vars"
+    path.write_bytes(many_vars.read_bytes()[:-BYTES_CUT_OFF_THE_END])
+
+    with pytest.raises(OSError) as refusal:
+        open_vars(path)
+
+    assert refusal.value.filename == str(path)
+
+
+def test_open_vars_refuses_a_file_compressed_with_zstd_at_its_first_block() -> None:
+    """The file that `tests/reference/vars/make_reference.py` writes.
+
+    No build of popnei carries the zstd crate, natively or in wasm, so a
+    file whose buffers are zstd is refused everywhere. Arrow decompresses a
+    batch when it reads it, so the file opens, its individuals come out of
+    the key of its schema, and the error comes with the first block.
+    """
+    path = REFERENCE_VARS_DIR / "zstd.vars"
+
+    variants = open_vars(path)
+
+    assert variants.individuals == ("ind1", "ind2", "ind3")
+    with pytest.raises(ValueError, match="zstd") as refusal:
+        list(variants.iter_blocks())
+    assert str(refusal.value).startswith(str(path))
+
+
+def test_write_vars_writes_again_what_open_vars_reads_with_another_size_of_block(
+    many_vars: Path, tmp_path: Path
+) -> None:
+    """A vars file of batches of 100 written again in batches of 37.
+
+    A `Variants` of a vars file is a source like the one of a VCF, so it is
+    written as any other, and the variants of the second file are those of
+    the first, field by field.
+    """
+    path = tmp_path / "again.vars"
+
+    write_vars(open_vars(many_vars), path, AGAIN_NUM_VARS_PER_BLOCK)
+
+    read = _pyarrow_reads(path)
+    assert [batch["num_vars"] for batch in read.batches] == (
+        BATCHES_OF_THE_FILE_WRITTEN_AGAIN
+    )
+    _assert_the_same_variants(_joined(open_vars(path)), _joined(open_vars(many_vars)))
+
+
+def test_what_a_user_reads_of_open_vars_is_written_in_the_package() -> None:
+    """The private module explains nothing; the package is the API."""
+    assert _core.open_vars.__doc__ is None
+    assert open_vars.__doc__ is not None
