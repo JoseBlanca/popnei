@@ -780,17 +780,31 @@ fn schema_of(fields: Needs, alleles_per_var: i32, metadata: &VarsMetadata) -> Sc
 /// writes them, so that a file of popnei and a file of pyarrow have the
 /// same column; no allele of a variant is a null.
 fn alleles_type() -> DataType {
-    DataType::List(Arc::new(Field::new(ITEM_FIELD, DataType::Utf8, true)))
+    DataType::List(Arc::new(alleles_field()))
+}
+
+/// The field arrow gives the values inside the `alleles` column: the name
+/// pyarrow gives the values of any list, and no null, which is what the
+/// alleles of a block are. A field that can hold nulls costs a bit for each
+/// value in the file.
+fn alleles_field() -> Field {
+    Field::new(ITEM_FIELD, DataType::Utf8, false)
 }
 
 /// The arrow type of the `gts` column, the `alleles_per_var` alleles of
 /// each variant. A fixed size list keeps no offsets, so the column is one
 /// flat buffer of variants x individuals x ploidy signed bytes.
 fn gts_type(alleles_per_var: i32) -> DataType {
-    DataType::FixedSizeList(
-        Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true)),
-        alleles_per_var,
-    )
+    DataType::FixedSizeList(Arc::new(gts_field()), alleles_per_var)
+}
+
+/// The field arrow gives the alleles inside the `gts` column: the name
+/// pyarrow gives the values of any list, and no null, since an allele that
+/// was not called is the -1 of the genotypes and not a value that is not
+/// there. A field that can hold nulls costs a bit for each allele in the
+/// file, which arrow-rs writes as a mask of ones.
+fn gts_field() -> Field {
+    Field::new(ITEM_FIELD, DataType::Int8, false)
 }
 
 /// The `chrom` column of one batch, the name of the chromosome of every
@@ -886,7 +900,9 @@ fn alleles_column(alleles: &AllelesColumn, largest: u64) -> Result<ListArray> {
             num_alleles.saturating_add(u64::try_from(alleles.num_alleles(var)).unwrap_or(u64::MAX));
     }
     count_fits(ALLELES_COLUMN, "alleles", num_alleles, largest)?;
-    let mut column = ListBuilder::new(StringBuilder::new());
+    // The builder writes the field of the values of the column, which is
+    // the one the schema of the file gives.
+    let mut column = ListBuilder::new(StringBuilder::new()).with_field(Arc::new(alleles_field()));
     for var in 0..alleles.num_vars() {
         for allele in 0..alleles.num_alleles(var) {
             column.values().append_value(alleles.allele(var, allele));
@@ -959,7 +975,7 @@ fn qual_column(qual: Vec<f32>) -> Float32Array {
 fn gts_column(gts: Vec<i8>, alleles_per_var: i32) -> Result<ArrayRef> {
     let alleles = Int8Array::new(ScalarBuffer::from(gts), None);
     let column = FixedSizeListArray::try_new(
-        Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true)),
+        Arc::new(gts_field()),
         alleles_per_var,
         Arc::new(alleles),
         None,
@@ -2681,16 +2697,17 @@ mod tests {
         }
     }
 
-    /// The arrow type of the `alleles` column, a list of texts.
+    /// The arrow type of the `alleles` column, a list of texts that holds
+    /// no null.
     fn alleles_type() -> DataType {
-        DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, true)))
+        DataType::List(Arc::new(Field::new_list_field(DataType::Utf8, false)))
     }
 
     /// The arrow type of the `gts` column of a file of that many alleles
-    /// for each variant.
+    /// for each variant, whose alleles hold no null.
     fn gts_type(alleles_per_var: i32) -> DataType {
         DataType::FixedSizeList(
-            Arc::new(Field::new_list_field(DataType::Int8, true)),
+            Arc::new(Field::new_list_field(DataType::Int8, false)),
             alleles_per_var,
         )
     }
@@ -4365,7 +4382,9 @@ mod tests {
             .expect("the alleles are a list")
             .clone();
         let (_, offsets, texts, nulls) = alleles.into_parts();
-        let inside = Arc::new(Field::new("element", DataType::Utf8, false));
+        // The name of another program, and the nulls pyarrow allows the
+        // values of a list, where popnei writes `item` and no null.
+        let inside = Arc::new(Field::new("element", DataType::Utf8, true));
         *parts.column(ALLELES_COLUMN) = (
             Field::new(ALLELES_COLUMN, DataType::List(Arc::clone(&inside)), false),
             Arc::new(ListArray::new(inside, offsets, texts, nulls)),
@@ -4378,7 +4397,7 @@ mod tests {
             .expect("the genotypes are a fixed size list")
             .clone();
         let (_, width, alleles, nulls) = gts.into_parts();
-        let inside = Arc::new(Field::new("element", DataType::Int8, false));
+        let inside = Arc::new(Field::new("element", DataType::Int8, true));
         let column = FixedSizeListArray::try_new(Arc::clone(&inside), width, alleles, nulls)
             .expect("the genotypes under another name");
         *parts.column(GTS_COLUMN) = (
@@ -4386,11 +4405,18 @@ mod tests {
             Arc::new(column),
         );
 
-        let reader = opened(parts.written()).expect("the file is read");
+        let bytes = parts.written();
+        let reader = opened(bytes.clone()).expect("the file is read");
 
         assert_eq!(reader.num_vars(), 4);
         assert_eq!(reader.columns.alleles, Some(3));
         assert_eq!(reader.columns.gts, Some(5));
+
+        // And its variants are read: the blocks of such a file are those of
+        // a file of popnei.
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
     }
 
     /// A column popnei does not know is ignored, which is what lets a later
@@ -5126,8 +5152,12 @@ mod tests {
             }
             alleles.append(true);
         }
+        // The field of the values is declared as holding nulls, which is
+        // what another program writes and what a null allele needs: popnei
+        // writes that field as holding none.
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Utf8, true));
         *parts.column(ALLELES_COLUMN) = (
-            Field::new(ALLELES_COLUMN, alleles_type(), false),
+            Field::new(ALLELES_COLUMN, DataType::List(inside), false),
             Arc::new(alleles.finish()),
         );
         let error = refused_at_the_block(parts.written());
