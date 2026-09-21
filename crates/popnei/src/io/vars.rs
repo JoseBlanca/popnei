@@ -2410,7 +2410,7 @@ mod tests {
         Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int32Array,
         ListArray, RecordBatch, StringArray, UInt64Array,
     };
-    use arrow_buffer::ScalarBuffer;
+    use arrow_buffer::{NullBuffer, ScalarBuffer};
     use arrow_ipc::reader::FileReader;
     use arrow_ipc::writer::FileWriter;
     use arrow_schema::{DataType, Field, Schema};
@@ -4047,6 +4047,93 @@ mod tests {
         regions
     }
 
+    /// The bytes of a file of two batches of the four variants of
+    /// `cases.vcf`, whose `pos` column is declared as one that holds nulls,
+    /// which is what another program writes, with `positions` as the
+    /// positions of its second batch and the entries of its footer saying
+    /// `says` variants.
+    fn cases_in_two_batches(positions: UInt64Array, says: [usize; 2]) -> Vec<u8> {
+        let mut parts = FileParts::of_cases();
+        *parts.column(POS_COLUMN) = (
+            Field::new(POS_COLUMN, DataType::UInt64, true),
+            Arc::clone(&parts.column(POS_COLUMN).1),
+        );
+        let fields: Vec<Field> = parts
+            .columns
+            .iter()
+            .map(|(field, _)| field.clone())
+            .collect();
+        let arrays: Vec<ArrayRef> = parts
+            .columns
+            .iter()
+            .map(|(_, array)| Arc::clone(array))
+            .collect();
+        let later: Vec<ArrayRef> = parts
+            .columns
+            .iter()
+            .map(|(field, array)| match field.name() == POS_COLUMN {
+                true => Arc::new(positions.clone()) as ArrayRef,
+                false => Arc::clone(array),
+            })
+            .collect();
+        let popnei = parts.popnei.clone().expect("the `popnei` key");
+        let schema = Arc::new(
+            Schema::new(fields).with_metadata(HashMap::from([(POPNEI_KEY.to_owned(), popnei)])),
+        );
+        let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("the file was started");
+        for arrays in [arrays, later] {
+            let batch =
+                RecordBatch::try_new(Arc::clone(&schema), arrays).expect("the columns are a batch");
+            writer.write(&batch).expect("the batch was written");
+        }
+        let batches: Vec<BatchInfo> = says
+            .iter()
+            .map(|num_vars| BatchInfo {
+                num_vars: *num_vars,
+                regions: regions_of(&CASES),
+            })
+            .collect();
+        writer.write_metadata(POPNEI_BATCHES_KEY, batches_as_json(&batches));
+        writer.into_inner().expect("the file was finished")
+    }
+
+    /// The bytes of the file with the entry of its first batch in the
+    /// footer changed to say that the batch is `metadata_len` and
+    /// `body_len` bytes.
+    ///
+    /// The footer of an arrow file holds one entry of 24 bytes for each
+    /// batch: where it starts, 8 bytes; how long its message is, 4; four
+    /// bytes of padding; and how long its body is, 8. The entry of the file
+    /// is found by the three numbers it holds, which the reader gives.
+    fn batch_entry_changed(bytes: Vec<u8>, metadata_len: i32, body_len: i64) -> Vec<u8> {
+        let at = opened(bytes.clone())
+            .expect("the file is a vars file")
+            .blocks[0];
+        let mut entry = Vec::new();
+        entry.extend_from_slice(&i64::try_from(at.offset).expect("the offset").to_le_bytes());
+        entry.extend_from_slice(
+            &i32::try_from(at.metadata_len)
+                .expect("the message")
+                .to_le_bytes(),
+        );
+        entry.extend_from_slice(&[0; 4]);
+        entry.extend_from_slice(&i64::try_from(at.body_len).expect("the body").to_le_bytes());
+        let found: Vec<usize> = bytes
+            .windows(entry.len())
+            .enumerate()
+            .filter(|(_, window)| *window == entry.as_slice())
+            .map(|(place, _)| place)
+            .collect();
+        assert_eq!(found.len(), 1, "the entry of the batch in the file");
+        let mut changed = bytes;
+        let message_at = found[0].saturating_add(8);
+        let body_at = found[0].saturating_add(16);
+        changed[message_at..message_at.saturating_add(4)]
+            .copy_from_slice(&metadata_len.to_le_bytes());
+        changed[body_at..body_at.saturating_add(8)].copy_from_slice(&body_len.to_le_bytes());
+        changed
+    }
+
     /// The bytes of a file whose batches hold that many of the four
     /// variants of `cases.vcf`, in their order, with the entry of the
     /// footer of each batch to match. A size of 0 gives a batch of no
@@ -5487,6 +5574,153 @@ mod tests {
                 .expect("and at every call after")
                 .is_none()
         );
+    }
+
+    /// arrow-rs reads the four bytes of the mark of a continuation and the
+    /// four of the length of the message by their place, so a batch of
+    /// fewer bytes than those eight panics inside it. The reader refuses
+    /// such a batch before arrow-rs is given it, with the batch and what is
+    /// wrong.
+    #[test]
+    fn a_batch_of_fewer_bytes_than_the_start_of_a_message_is_refused_before_arrow_reads_it() {
+        // The entry of the footer says the batch is 4 bytes of message and
+        // no body, where a message starts with 8.
+        let bytes = batch_entry_changed(cases_written_in_batches_of(4), 4, 0);
+
+        let error = refused_at_the_block(bytes);
+
+        let Error::VarsBatchNotRead { batch, problem } = &error else {
+            panic!("the batch of four bytes gave {error}");
+        };
+        assert_eq!(*batch, 1);
+        assert!(problem.contains('8'), "{problem}");
+    }
+
+    /// A variant with no alleles at all, and one with no genotypes, are the
+    /// list itself being a null and not a value inside it: a reader that
+    /// looked only inside would give a variant with no allele and
+    /// genotypes read out of the padding of the column.
+    #[test]
+    fn a_null_row_of_the_alleles_and_of_the_genotypes_is_an_error_of_that_column() {
+        let mut parts = FileParts::of_cases();
+        // The values of the list hold no null, as popnei writes them; the
+        // null is the row of the column, which is a variant with no
+        // alleles at all.
+        let mut alleles = ListBuilder::new(StringBuilder::new()).with_field(Arc::new(Field::new(
+            ITEM_FIELD,
+            DataType::Utf8,
+            false,
+        )));
+        for row in 0..4 {
+            match row {
+                1 => alleles.append_null(),
+                _ => {
+                    alleles.values().append_value("A");
+                    alleles.values().append_value("T");
+                    alleles.append(true);
+                }
+            }
+        }
+        *parts.column(ALLELES_COLUMN) = (
+            Field::new(ALLELES_COLUMN, alleles_type(), true),
+            Arc::new(alleles.finish()),
+        );
+        let error = refused_at_the_block(parts.written());
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose second variant has no alleles gave {error}");
+        };
+        assert_eq!((column, var), ("alleles", 2));
+
+        let mut parts = FileParts::of_cases();
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Int8, false));
+        let there: NullBuffer = [true, true, true, false].into_iter().collect();
+        let column = FixedSizeListArray::try_new(
+            Arc::clone(&inside),
+            6,
+            Arc::new(Int8Array::from(vec![0_i8; 24])),
+            Some(there),
+        )
+        .expect("the genotypes whose last variant has none");
+        *parts.column(GTS_COLUMN) = (
+            Field::new(GTS_COLUMN, DataType::FixedSizeList(inside, 6), true),
+            Arc::new(column),
+        );
+        let error = refused_at_the_block(parts.written());
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose last variant has no genotypes gave {error}");
+        };
+        assert_eq!((column, var), ("gts", 4));
+    }
+
+    /// The variant of the error of a null is counted from 1 over the whole
+    /// file and not inside its batch, and the batch of an error is counted
+    /// from 1 over the file: both are read in the second batch of a file of
+    /// two, where a count that started again at each batch is seen.
+    #[test]
+    fn the_variant_and_the_batch_of_an_error_are_counted_over_the_whole_file() {
+        // The third variant of the second batch of two batches of four,
+        // which is the variant 7 of the file.
+        let with_a_null = UInt64Array::from(vec![Some(100), Some(200), None, Some(400)]);
+        let error = refused_at_the_block(cases_in_two_batches(with_a_null, [4, 4]));
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the null position of the second batch gave {error}");
+        };
+        assert_eq!((column, var), ("pos", 7));
+
+        // The entry of the second batch says three variants and the batch
+        // holds four.
+        let positions = UInt64Array::from(vec![100, 200, 300, 400]);
+        let error = refused_at_the_block(cases_in_two_batches(positions, [4, 3]));
+        let Error::VarsBatchNumVars {
+            batch,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the second batch of another number of variants gave {error}");
+        };
+        assert_eq!((batch, found, expected), (2, 4, 3));
+    }
+
+    /// A file with two columns of one name is read with the first of them,
+    /// as any program that asks a table for a column by its name reads it.
+    #[test]
+    fn a_file_with_two_columns_of_one_name_is_read_with_the_first() {
+        let mut parts = FileParts::of_cases();
+        let (field, array) = parts.column(POS_COLUMN).clone();
+        // A second `pos` column, of other positions, after the first.
+        let other: ArrayRef = Arc::new(UInt64Array::from(vec![900, 901, 902, 903]));
+        parts.columns.push((field, other));
+        assert_eq!(parts.columns.len(), 7);
+
+        let (blocks, _) = blocks_read(parts.written(), Needs::ALL);
+
+        let positions = blocks[0].pos.as_deref().expect("the positions");
+        let first = array
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("the first `pos` column")
+            .values()
+            .to_vec();
+        assert_eq!(positions, first);
+        assert_eq!(positions, [100, 200, 300, 400]);
+    }
+
+    /// The columns of a file are read at the place they have in it and not
+    /// at the place the table of the spec gives them, values and all: a
+    /// reader that took them in the order of the spec would give the
+    /// positions of one column and the ids of another.
+    #[test]
+    fn a_file_whose_columns_are_in_another_order_is_read_with_the_values_of_each() {
+        let mut parts = FileParts::of_cases();
+        parts.columns.reverse();
+        assert_eq!(parts.columns[0].0.name(), GTS_COLUMN);
+
+        let (blocks, chroms) = blocks_read(parts.written(), Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [4]);
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
     }
 
     /// A batch whose arrays are a window into longer ones is read through
