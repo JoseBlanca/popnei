@@ -402,6 +402,14 @@ consumer took from the chain. While an `iter_blocks` runs it is the
 variants of the blocks the user got, which can be fewer than the last
 filter has kept, for the `reblock` above.
 
+`write_vars` is the consumer that counts none of them itself. Its loop
+over the blocks is the core's, so no block of that pass reaches the
+binding crate, and the count of the variants that were written comes back
+from the core with the sink, as "Its Python and TypeScript functions" of
+the writer in `docs/specs/io_vars.md` says. The binding crate hands that
+number on and reads the counts of the filters from the chain it lent, as
+every other consumer does.
+
 ### How it is verified
 
 There is no reference program for a count of variants given and kept, and
