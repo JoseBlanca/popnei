@@ -31,7 +31,7 @@ use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyString, PyTuple};
+use pyo3::types::{PyBool, PyString, PyTuple};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::variant::{ChromTable, Needs};
@@ -444,6 +444,70 @@ pub(crate) fn count_of(
             })
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The `value` that was given for the argument `name`, as the threshold of
+/// a filter: the one place where the number a user compares their variants
+/// with crosses from Python.
+///
+/// The object is taken as it is and converted here, and not by the
+/// signature, because the conversion of pyo3 answers before any rule of
+/// popnei: it takes `True` as the number 1 with no word, and what it says of
+/// a string names neither the argument nor what was given.
+///
+/// # Errors
+///
+/// When the object is no number, a string, `None` and a truth value among
+/// them, which is a `TypeError` that names the argument and what was given:
+/// `True` and `False` say nothing about the rate a user wants, and a
+/// threshold of 1 is not what whoever wrote one meant. And when it is a
+/// whole number that no float holds, which is the error of a threshold out
+/// of range, since a threshold is a number from 0 to 1.
+pub(crate) fn threshold_of(
+    name: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<f64, PyPopneiError> {
+    // A truth value is a whole number in Python, so it converts to 1 or 0
+    // and has to be refused before the conversion is asked for.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_number(name, value));
+    }
+    match value.extract::<f64>() {
+        Ok(threshold) => Ok(threshold),
+        // A whole number of Python is of any size, and one that no float
+        // holds is larger than 1 or smaller than -1: what is wrong with it
+        // is what is wrong with 1.5, and a user reads that.
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Threshold {
+                name,
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_number(name, value)),
+    }
+}
+
+/// The `TypeError` of a `value` that is no number, which names the argument
+/// as a Python user writes it and what they gave.
+fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` is a number from 0 to 1, both included, and {given} was given: a \
+         threshold is the number that the number of each variant is compared with",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
+/// or `True`, and the name of its type where its own `repr` raised.
+fn written_as(value: &Bound<'_, PyAny>) -> String {
+    if let Ok(printed) = value.repr() {
+        return printed.to_string();
+    }
+    match value.get_type().name() {
+        Ok(name) => format!("an object of the type `{name}`"),
+        Err(_) => "what was given".to_owned(),
     }
 }
 

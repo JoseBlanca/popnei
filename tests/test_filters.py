@@ -207,6 +207,71 @@ def test_a_threshold_that_is_not_a_number_from_0_to_1_is_refused_at_the_call(
 
 
 @pytest.mark.parametrize("kind", list(FILTERS))
+@pytest.mark.parametrize("given", ["0.5", None, True, False])
+def test_a_threshold_that_is_no_number_names_the_argument_and_what_was_given(
+    kind: str, given: object, reference_vcf_dir: Path
+) -> None:
+    """A string, nothing and the two truth values, in each of the three
+    methods.
+
+    A threshold is one number, and what is not one is refused with the name
+    of the argument as the user writes it and the value they gave, and not
+    with the words of the conversion of pyo3, which name neither. `True` is
+    a whole number in Python and would be taken as a threshold of 1, which
+    keeps every variant that has a number: a truth value says nothing about
+    the rate a user wants, so it is refused as the string is.
+    """
+    method, _, argument = FILTERS[kind]
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(TypeError) as refusal:
+        getattr(variants, method)(given)
+
+    assert argument in str(refusal.value)
+    assert repr(given) in str(refusal.value)
+    assert variants.steps == ()
+
+
+@pytest.mark.parametrize("kind", list(FILTERS))
+def test_a_whole_number_that_no_float_holds_is_a_threshold_out_of_range(
+    kind: str, reference_vcf_dir: Path
+) -> None:
+    """A whole number of Python is of any size, and a threshold is a number
+    from 0 to 1: one of 401 digits is out of that range whatever else is
+    true of it, and the message names the argument and the value, as it
+    does for 1.5."""
+    method, _, argument = FILTERS[kind]
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(ValueError) as refusal:
+        getattr(variants, method)(10**400)
+
+    assert argument in str(refusal.value)
+    assert str(10**400) in str(refusal.value)
+    assert variants.steps == ()
+
+
+@pytest.mark.parametrize("kind", list(FILTERS))
+@pytest.mark.parametrize("given", [numpy.float64(0.5), 1, 0])
+def test_a_numpy_float_and_a_whole_number_are_taken_as_thresholds(
+    kind: str, given: object, reference_vcf_dir: Path
+) -> None:
+    """0.5 as numpy gives it, and the whole numbers 1 and 0.
+
+    A user works their thresholds out from arrays, so the floats of numpy
+    are what they hold, and the two ends of the range are whole numbers: 0
+    keeps the variants whose number is 0, and 1 those that have a number at
+    all.
+    """
+    method, _, argument = FILTERS[kind]
+    variants = _many(reference_vcf_dir)
+
+    assert getattr(variants, method)(given) is None
+
+    assert variants.steps == (Step(kind=kind, args={argument: float(given)}),)
+
+
+@pytest.mark.parametrize("kind", list(FILTERS))
 def test_a_filter_with_no_threshold_is_a_type_error(
     kind: str, reference_vcf_dir: Path
 ) -> None:
@@ -330,6 +395,25 @@ def test_the_counts_read_while_a_pass_runs_are_of_the_blocks_it_gave(
         next(blocks)
 
     assert blocks.pass_stats.num_vars == VARS_OF_THE_BLOCKS_READ
+
+
+def test_a_pass_takes_its_steps_at_the_call_of_iter_blocks(
+    reference_vcf_dir: Path,
+) -> None:
+    """A filter put on the `Variants` after `iter_blocks` was called and
+    before its first block was asked for.
+
+    The chain of readers of a pass is built when the pass starts, which is
+    the call, so the filter changes nothing of it: a chain built at the
+    first block instead would have the filter and give 215 variants.
+    """
+    variants = _many(reference_vcf_dir)
+    blocks = variants.iter_blocks(num_vars_per_block=NUM_VARS_PER_BLOCK)
+
+    variants.filter_by_missing_data(0.04)
+
+    assert sum(block.num_vars for block in blocks) == MANY_NUM_VARS
+    assert blocks.pass_stats.filtering == {}
 
 
 def test_a_filter_added_while_a_pass_runs_holds_from_the_next_pass(

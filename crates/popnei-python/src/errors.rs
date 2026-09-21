@@ -53,8 +53,10 @@ pub(crate) enum PyPopneiError {
         /// The name of the argument, as a Python user writes it,
         /// `max_allowed_maf`.
         name: &'static str,
-        /// What was given for it, which is NaN, below 0 or above 1.
-        threshold: f64,
+        /// What was given for it, which is NaN, below 0 or above 1, as
+        /// Python prints it: a whole number of Python is of any size, so a
+        /// threshold that was refused does not always fit in one of Rust.
+        value: String,
     },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
@@ -149,8 +151,8 @@ impl From<PyPopneiError> for PyErr {
             // in the call that adds it: the message names the argument, and
             // the rule it broke is the core's, which refuses the same
             // thresholds when a pass builds its filters.
-            PyPopneiError::Threshold { name, threshold } => PyValueError::new_err(format!(
-                "`{name}` is {threshold:?}, and a threshold is a number from 0 to 1, both \
+            PyPopneiError::Threshold { name, value } => PyValueError::new_err(format!(
+                "`{name}` is {value}, and a threshold is a number from 0 to 1, both \
                  included: the number of the variant it is compared with is one count of \
                  the variant divided by another"
             )),

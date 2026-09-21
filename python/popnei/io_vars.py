@@ -76,6 +76,13 @@ def write_vars(
     so a file read with :func:`popnei.open_vars` is written again with
     another size of batch.
 
+    The variants that are written are the ones the steps of `variants`
+    keep: a ``Variants`` with a filter on it writes the variants that
+    passed it and not the file as it was read, and the counts below say how
+    many each filter was given and kept. A user who wants every variant of
+    the source in the file writes from a ``Variants`` with no step, which
+    :attr:`Variants.steps` and its ``repr`` show.
+
     The call reads the whole source once. The file holds the six columns of
     a VCF, the chromosome, the position, the id, the alleles, the quality
     and the genotypes, whether or not the user will read them, so that it

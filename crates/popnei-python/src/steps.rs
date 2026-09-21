@@ -27,6 +27,7 @@ use popnei::block::BlockReader;
 use popnei::filters::{FilteredReader, VarFilter, VarFilteringCriterion};
 
 use crate::errors::PyPopneiError;
+use crate::source::threshold_of;
 
 /// One step of a `Variants`.
 ///
@@ -67,17 +68,22 @@ impl Step {
     }
 }
 
-/// The name a Python user writes the threshold of `criterion` under, which
-/// is the argument of the method that adds the filter.
+/// The names a Python user writes the threshold of each filter under, which
+/// are the arguments of the three methods that add one.
 ///
 /// The core names a filter by its kind, `maf`, and knows nothing of the
 /// arguments of Python, so the two names meet here: a user who is told that
 /// `max_allowed_maf` is 1.5 reads the name they wrote.
+const MAX_ALLOWED_MISSING_RATE: &str = "max_allowed_missing_rate";
+const MAX_ALLOWED_MAF: &str = "max_allowed_maf";
+const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
+
+/// The name a Python user writes the threshold of `criterion` under.
 fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
     match criterion {
-        VarFilteringCriterion::MaxMissingRate(_) => "max_allowed_missing_rate",
-        VarFilteringCriterion::MaxMaf(_) => "max_allowed_maf",
-        VarFilteringCriterion::MaxObsHet(_) => "max_allowed_obs_het",
+        VarFilteringCriterion::MaxMissingRate(_) => MAX_ALLOWED_MISSING_RATE,
+        VarFilteringCriterion::MaxMaf(_) => MAX_ALLOWED_MAF,
+        VarFilteringCriterion::MaxObsHet(_) => MAX_ALLOWED_OBS_HET,
     }
 }
 
@@ -122,18 +128,33 @@ impl Steps {
     // takes: the missing genotypes of a variant divided by all the
     // individuals, the count of its commonest allele divided by its called
     // alleles, and its heterozygous genotypes divided by its called ones.
-    fn filter_by_missing_data(&self, max_allowed_missing_rate: f64) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxMissingRate(
+    // The threshold is taken as the object it is and converted here, where
+    // what is refused names the argument the user wrote.
+    fn filter_by_missing_data(
+        &self,
+        max_allowed_missing_rate: &Bound<'_, PyAny>,
+    ) -> Result<(), PyPopneiError> {
+        self.add(VarFilteringCriterion::MaxMissingRate(threshold_of(
+            MAX_ALLOWED_MISSING_RATE,
             max_allowed_missing_rate,
-        ))
+        )?))
     }
 
-    fn filter_by_maf(&self, max_allowed_maf: f64) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxMaf(max_allowed_maf))
+    fn filter_by_maf(&self, max_allowed_maf: &Bound<'_, PyAny>) -> Result<(), PyPopneiError> {
+        self.add(VarFilteringCriterion::MaxMaf(threshold_of(
+            MAX_ALLOWED_MAF,
+            max_allowed_maf,
+        )?))
     }
 
-    fn filter_by_obs_het(&self, max_allowed_obs_het: f64) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxObsHet(max_allowed_obs_het))
+    fn filter_by_obs_het(
+        &self,
+        max_allowed_obs_het: &Bound<'_, PyAny>,
+    ) -> Result<(), PyPopneiError> {
+        self.add(VarFilteringCriterion::MaxObsHet(threshold_of(
+            MAX_ALLOWED_OBS_HET,
+            max_allowed_obs_het,
+        )?))
     }
 }
 
@@ -207,7 +228,7 @@ fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) ->
     if let popnei::Error::VarFilterThresholdOutOfRange { threshold, .. } = error {
         return PyPopneiError::Threshold {
             name: argument_of(criterion),
-            threshold,
+            value: format!("{threshold:?}"),
         };
     }
     PyPopneiError::Core(error)

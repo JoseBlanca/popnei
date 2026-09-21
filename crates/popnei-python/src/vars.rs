@@ -214,10 +214,12 @@ pub(crate) fn write_vars(
 /// the batches of a vars file among them, and so does a case that a later
 /// module adds, since the writer's are all here.
 ///
-/// Two more name no file at all, a `num_vars_per_block` of 0 and one whose
-/// block is more than this machine counts: what is wrong with an argument
-/// is wrong whatever file is read, and `errors.rs` drops the path they are
-/// given.
+/// Four name no file at all: a `num_vars_per_block` of 0, one whose block
+/// is more than this machine counts, and the two of the filters that
+/// building the chain of the pass can give, a threshold that is not a
+/// number from 0 to 1 and a second filter of a kind the steps hold. What is
+/// wrong with an argument is wrong whatever file is read, and `errors.rs`
+/// drops the path they are given.
 fn of_the_file_it_is_about(error: popnei::Error, read: &Path, written: &Path) -> PyPopneiError {
     let of_the_write = matches!(
         error,

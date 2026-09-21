@@ -290,3 +290,31 @@ def test_the_repr_of_a_variants_names_its_source_and_says_it_has_no_step(
     printed = repr(open_vars(many_vars))
     assert str(many_vars) in printed
     assert "no steps" in printed
+
+
+def test_the_repr_of_a_variants_names_the_options_a_vcf_is_read_with(
+    reference_vcf_dir: Path, many_vars: Path
+) -> None:
+    """Two handles over one VCF, one reading every variant and one reading
+    those that passed their FILTER.
+
+    A source is a file and the options it is read with, so two handles over
+    one path give different variants, and the `repr` that showed the path
+    alone printed the same words for both. A vars file is read with no
+    option: what its genotypes hold is written in the file.
+    """
+    vcf_path = reference_vcf_dir / "many.vcf"
+
+    every_variant = repr(open_vcf(vcf_path, only_passed=False))
+    those_that_passed = repr(open_vcf(vcf_path))
+    tetraploid = repr(open_vcf(vcf_path, ploidy=4))
+
+    assert "only_passed=False" in every_variant
+    assert "only_passed=True" in those_that_passed
+    assert every_variant != those_that_passed
+    assert "ploidy=2" in every_variant
+    assert "ploidy=4" in tetraploid
+
+    printed = repr(open_vars(many_vars))
+    assert "ploidy" not in printed
+    assert "only_passed" not in printed

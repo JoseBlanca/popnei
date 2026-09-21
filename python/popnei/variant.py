@@ -133,14 +133,23 @@ class Variants:
         self._steps = _core.Steps()
 
     def __repr__(self) -> str:
-        """The source the variants are read from and the steps on it.
+        """The source the variants are read from, the options it is read
+        with and the steps on it.
 
         A second filter of one kind is refused, so a user has to be able to
         see which are set, and a notebook whose cells were run out of order
-        is where they most need it.
+        is where they most need it. The options are part of the source: two
+        handles over one VCF that differ in them give different variants. A
+        vars file is read with none, since what its genotypes hold is
+        written in the file.
         """
+        what = [f"of {self._source.path()}"]
+        if isinstance(self._source, _core.VcfSource):
+            what.append(f"ploidy={self._source.ploidy()}")
+            what.append(f"only_passed={self._source.only_passed()}")
         steps = ", ".join(f"{step.kind}({_arguments_of(step)})" for step in self.steps)
-        return f"<Variants of {self._source.path()}, {steps or 'no steps'}>"
+        what.append(steps or "no steps")
+        return f"<Variants {', '.join(what)}>"
 
     @property
     def individuals(self) -> tuple[str, ...]:
@@ -164,6 +173,11 @@ class Variants:
         Each one is a :class:`popnei.Step` with the kind of the step and the
         arguments it was given. A pass takes the steps that are there when
         it starts, so this is what the next consumer will run.
+
+        The tuple and the ``args`` dict of every step in it are built at
+        each read, out of what the ``Variants`` holds, so writing into one
+        of those dicts changes nothing of the steps: a step is added by one
+        of the three filter methods and by nothing else.
         """
         return tuple(
             Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
@@ -185,15 +199,18 @@ class Variants:
         a pass runs holds from the pass after it.
 
         `max_allowed_missing_rate` has no default, where pyNei's is 0.0,
-        which keeps only the variants with every genotype called. A
-        threshold that is not a number from 0 to 1, both included, or that
-        is NaN, is a ``ValueError`` here, which names the argument and the
-        value, and a call with no threshold a ``TypeError``. A second filter
-        of this kind on the same ``Variants`` is a ``ValueError`` too, with
-        the threshold that is set: two thresholds of one kind keep what the
-        stricter of them keeps alone, so the second says that the steps are
-        not what their user thinks, which running the cell of a notebook
-        twice gives. :attr:`steps` is what they hold.
+        which keeps only the variants with every genotype called. What is
+        no number, a string, ``None`` and a truth value among them, is a
+        ``TypeError`` that names the argument and what was given, and so is
+        a call with no threshold; a number that is not from 0 to 1, both
+        included, NaN and a whole number too large for a float among them,
+        is a ``ValueError`` that names the argument and the value. A second
+        filter of this kind on the same ``Variants`` is a ``ValueError``
+        too, with the threshold that is set: two thresholds of one kind
+        keep what the stricter of them keeps alone, so the second says that
+        the steps are not what their user thinks, which running the cell of
+        a notebook twice gives. :attr:`steps` is what they hold. After any
+        of them the steps are as they were.
         """
         self._steps.filter_by_missing_data(max_allowed_missing_rate)
 
@@ -217,9 +234,9 @@ class Variants:
         called data puts :meth:`filter_by_missing_data` before this one.
 
         The call adds a step and gives nothing back, and it refuses what
-        :meth:`filter_by_missing_data` refuses: a threshold that is not a
-        number from 0 to 1, a call with no threshold, and a second filter of
-        this kind.
+        :meth:`filter_by_missing_data` refuses: what is no number and a call
+        with no threshold are a ``TypeError``, and a number that is not from
+        0 to 1 and a second filter of this kind are a ``ValueError``.
         """
         self._steps.filter_by_maf(max_allowed_maf)
 
@@ -240,9 +257,9 @@ class Variants:
         heterozygosity of 1.
 
         The call adds a step and gives nothing back, and it refuses what
-        :meth:`filter_by_missing_data` refuses: a threshold that is not a
-        number from 0 to 1, a call with no threshold, and a second filter of
-        this kind.
+        :meth:`filter_by_missing_data` refuses: what is no number and a call
+        with no threshold are a ``TypeError``, and a number that is not from
+        0 to 1 and a second filter of this kind are a ``ValueError``.
         """
         self._steps.filter_by_obs_het(max_allowed_obs_het)
 

@@ -42,6 +42,14 @@ impl VcfSource {
         self.options.ploidy
     }
 
+    // Whether the variants that failed their FILTER are left out, which is
+    // one of the two options a VCF is read with: the `repr` of a `Variants`
+    // shows them, since two handles over one path that differ in them give
+    // different variants.
+    fn only_passed(&self) -> bool {
+        self.options.only_passed
+    }
+
     // The file the variants are read from, which the `repr` of a `Variants`
     // shows its user.
     fn path(&self) -> PathBuf {
