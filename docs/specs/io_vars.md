@@ -61,10 +61,20 @@ that an allele is missing.
 
 Arrow gives the values inside a list a field of their own, with a name and
 with whether they can be null. For its two lists, `alleles` and `gts`,
-popnei writes the field pyarrow writes for any list, named `item` and
-allowed to be null, so that a file of popnei and a file that pyarrow wrote
-have the same columns. No allele and no genotype popnei writes is a null:
-an allele that was not called is the -1 above.
+popnei writes the field pyarrow names for any list, `item`, and says that it
+holds no null, which is what is true of them: no allele and no genotype
+popnei writes is a null, and an allele that was not called is the -1 above.
+A field that can hold nulls costs a bit for each value: arrow-rs writes a
+mask of ones beside the genotypes, 1250000 bytes for a batch of 10000
+variants of 1000 diploid individuals before it is compressed, which a reader
+decompresses and throws away. On the panel of "The compression", 20000
+variants of 1000 diploid individuals with the `gts` column alone, the file
+of popnei is 15691298 bytes and a pass over it that sums the genotypes takes
+20.52 ms, against 15680146 bytes and 19.49 ms for the same genotypes with
+the field written as holding no null, the best of 10 interleaved release
+runs on one thread of the owner's Apple M5 Pro. The reader compares what a
+list holds and not the name of that field nor whether it takes nulls, so a
+file of pyarrow, whose `item` takes them, is read as one of popnei is.
 
 The chromosome is text in every row and not a number into a table kept beside
 the columns, so that the file says what it holds to any program that opens it.
