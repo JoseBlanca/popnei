@@ -28,13 +28,25 @@ def write_vars(
     number of individuals of the source, which is the size of its blocks.
 
     A path that a file is already at is a ``ValueError`` and nothing is
-    written. When the source fails half way, on a line of a VCF that popnei
-    cannot read, that error is raised, and the file that was being written
-    is taken away, so that the same call can be made again at the same path
-    once the VCF is fixed; pyNei leaves what it had written. A Ctrl-C is
-    raised when the pass over the source is over and not while it runs,
-    because the file is written inside one call of the Rust core, and it
-    leaves no file at the path either.
+    written, and a path that no file can be made at, a directory or a path
+    in a directory that is not there, is the ``OSError`` the file system
+    gives for it, with the path in ``filename``.
+
+    Every error names the file it is about. A line of the VCF that popnei
+    cannot read is a ``ValueError`` whose message starts with the path of
+    the VCF; a vars file that could not be written, a disc that filled up
+    among the causes, is an ``OSError`` that carries the path of the vars
+    file in ``filename``. The file that was being written is taken away
+    then, so that the same call can be made again at the same path once
+    what was wrong is fixed, where pyNei leaves what it had written; when
+    it cannot be taken away, the exception carries a note that says that a
+    file is still there. The bytes of a file that was written reach the
+    disc before the call returns, so a file system that says only at the
+    close that it is full is an error too.
+
+    A Ctrl-C is raised when the pass over the source is over and not while
+    it runs, because the file is written inside one call of the Rust core,
+    and it leaves no file at the path either.
 
     It is pyNei's ``write_vars`` with the same first two arguments, and
     these differences: the file is another one, which pyNei does not read;
