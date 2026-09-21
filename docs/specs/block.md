@@ -353,7 +353,12 @@ neither a pyo3 class nor a wasm-bindgen class can be generic, so both
 binding crates hold their reader that way, the trait has no generic method
 and no method that takes or returns `Self`, and it is implemented for
 `Box<dyn BlockReader>` too, so that what is generic over a reader, a
-filter or `reblock`, takes a boxed one. It asks for `Send`, because the
+filter or `reblock`, takes a boxed one. It is implemented for `&mut R`
+as well, so that a consumer can be given a reader it does not own:
+`write_vars` of `docs/specs/io_vars.md` is given one that way, and the
+chain of readers stays with the caller, which reads the counts of the
+filters of the pass from it when the call returns, as "How it runs" of the
+counts of `docs/specs/filters.md` asks. It asks for `Send`, because the
 read ahead thread of section 3 of the architecture moves a reader into
 another thread.
 

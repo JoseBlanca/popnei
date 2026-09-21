@@ -370,7 +370,10 @@ in any order but the one in which the chromosomes first appear is caught. A thir
 back, and the genotypes, the chromosome names and the positions of the blocks
 are those of the blocks of the VCF. A fourth writes a source whose blocks carry
 the genotypes alone and finds one column in the file it reads back, and
-`num_vars` with no `regions` in its footer.
+`num_vars` with no `regions` in its footer. A fifth asserts what the call
+says it wrote, 4 variants for the block of `cases.vcf`, 500 for `many.vcf`
+at any size of batch and 0 for a source with no variants, and that a
+`&mut reader` writes the file that the same reader given whole writes.
 
 The TypeScript test, under node, reads `cases.vcf` from a `Uint8Array` with
 `openVcf` and `onlyPassed` false, so that it gives the four variants, writes
@@ -689,7 +692,8 @@ impl<W: Write> VarsWriter<W> {
     pub fn finish(self) -> Result<W>;
 }
 
-/// Every variant of `reader` into a vars file on `sink`. It asks `reader` for
+/// Every variant of `reader` into a vars file on `sink`, and the sink back
+/// with how many variants were written. It asks `reader` for
 /// every field and puts a `reblock` of `num_vars_per_block` over it, None for
 /// `default_num_vars_per_block` for the individuals of `reader`, which is
 /// then the number that the `popnei` key says. This is what both binding crates call. The Python
@@ -697,8 +701,19 @@ impl<W: Write> VarsWriter<W> {
 /// file when this returns an error.
 pub fn write_vars<R: BlockReader, W: Write>(
     reader: R, sink: W, num_vars_per_block: Option<usize>,
-) -> Result<W>;
+) -> Result<(W, u64)>;
 ```
+
+The count is the `num_vars` of the `PassStats` that every consumer of a
+`Variants` gives back, the owner's decision of 21 September 2026 that "Its
+Python and TypeScript functions" of the writer has for this one. It comes
+from here because the loop over the blocks is here: a binding crate that
+calls this one sees no block of the pass and can count nothing. A caller
+that has to give its user the counts of the filters of that pass as well
+gives `&mut reader`, which is a `BlockReader` too, as
+`docs/specs/block.md` has it: the chain of readers stays with the caller,
+which reads `filtering_stats` from it when this returns, as "How it runs"
+of the counts of `docs/specs/filters.md` asks of every consumer.
 
 The values of the two keys are json, and which crate reads and writes it is
 the implementer's choice among those in pure Rust, since the core builds for
