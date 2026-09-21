@@ -309,11 +309,12 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
-        // reader, and the twelve cases of the vars file that "The Rust
+        // reader, and the thirteen cases of the vars file that "The Rust
         // interface" of `docs/specs/io_vars.md` lists as a `ValueError`,
-        // among them a `qual` that is a value and is not finite, and a file
-        // whose genotypes hold no allele, which `open_vars` gives for a
-        // `popnei` key that names no individual. The block with more text
+        // among them a `qual` that is a value and is not finite, an allele
+        // of `gts` below the missing one, and a file whose genotypes hold
+        // no allele, which `open_vars` gives for a `popnei` key that names
+        // no individual. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives.

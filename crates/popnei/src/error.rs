@@ -446,6 +446,22 @@ pub enum Error {
         var: u64,
     },
 
+    /// A genotype of the vars file holds an allele below
+    /// [`crate::variant::MISSING_ALLELE`], -1, which is neither an allele
+    /// of the variant nor a missing genotype. The alleles of the file are
+    /// signed bytes, so a byte of the `gts` column that was damaged after
+    /// the file was written, and a file another program wrote, can say one.
+    #[error(
+        "the `gts` column of the vars file holds the allele {found} for its variant {var}, and an allele is -1, which is the missing one, or a number of 0 or more"
+    )]
+    VarsAlleleBelowMissing {
+        /// The first allele of the batch that is below the missing one.
+        found: i8,
+        /// Which variant of the file that allele is of, counted from 1,
+        /// over the whole file and not inside its batch.
+        var: u64,
+    },
+
     /// The `popnei_batches` key of the footer of the vars file has one
     /// entry for each batch, and this file has another number of one than
     /// of the other, so no entry can be trusted to be that of its batch.
@@ -768,6 +784,18 @@ mod tests {
         assert!(message.contains("the allele -2"), "{message}");
         assert!(message.contains("-1"), "{message}");
         assert!(message.contains("127"), "{message}");
+    }
+
+    /// A user who gets this one has a file that was damaged after it was
+    /// written, or one another program wrote, so the message says which
+    /// variant of it to look at and what it holds there.
+    #[test]
+    fn the_message_of_an_allele_of_a_vars_file_below_the_missing_one_names_it_and_its_variant() {
+        let error = Error::VarsAlleleBelowMissing { found: -2, var: 17 };
+        let message = error.to_string();
+        assert!(message.contains("the allele -2"), "{message}");
+        assert!(message.contains("variant 17"), "{message}");
+        assert!(message.contains("`gts`"), "{message}");
     }
 
     /// A user who gets one of these has the file open in front of them, so

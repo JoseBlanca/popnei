@@ -44,7 +44,7 @@ use serde_json::{Map, Value};
 use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
 use crate::error::{Error, Result};
 use crate::filters::FilteringStats;
-use crate::variant::{ChromTable, Needs};
+use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
 /// before its first variant.
@@ -2296,8 +2296,9 @@ fn alleles_of_the_batch(
 ///
 /// When a variant has no genotypes or one of its alleles is a null, when the
 /// column is not a fixed size list of signed bytes or holds another number
-/// of alleles for each variant than the `popnei` key of the file gives, and
-/// when the machine does not give the memory of the genotypes of the block.
+/// of alleles for each variant than the `popnei` key of the file gives, when
+/// an allele of it is below [`MISSING_ALLELE`], and when the machine does
+/// not give the memory of the genotypes of the block.
 fn genotypes(
     array: &ArrayRef,
     num_vars: usize,
@@ -2352,6 +2353,34 @@ fn genotypes(
             "holds fewer alleles than the variants of the batch",
         ));
     };
+    // No reader of popnei gives an allele below the missing one, which the
+    // owner decided on 21 September 2026 and `docs/specs/variant.md` says
+    // under "An allele that no reader gives": the two counts of one variant
+    // refuse such an allele as a defect of the reader, and a pass that
+    // counts nothing would put it in the array of a user. The alleles of
+    // the file are signed bytes, so a damaged one and a file of another
+    // program can say -2.
+    //
+    // Every allele of the batch is read here, so the check is the smallest
+    // of them in one pass, which the compiler reduces over the lanes of a
+    // vector register; a comparison for each allele on its own does not
+    // vectorise. Which allele it is and which variant it belongs to cost a
+    // second pass that only a file that is refused pays for.
+    let smallest = alleles.iter().copied().fold(i8::MAX, i8::min);
+    if smallest < MISSING_ALLELE {
+        let (at, allele) = alleles
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, allele)| *allele < MISSING_ALLELE)
+            .unwrap_or((0, smallest));
+        return Err(Error::VarsAlleleBelowMissing {
+            found: allele,
+            var: place
+                .vars_before
+                .saturating_add(counted_from_one(at.checked_div(found).unwrap_or(0))),
+        });
+    }
     let mut genotypes = Vec::new();
     genotypes
         .try_reserve_exact(wanted)
@@ -2801,12 +2830,12 @@ mod tests {
 
     use super::{
         ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
-        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, POPNEI_BATCHES_KEY,
-        POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES, VarsColumn,
-        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
-        batches_from_json, block_of_the_batch, block_too_large, chrom_column, counted_from_one,
-        id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file, projection_of,
-        schema_of, write_vars,
+        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, NOT_COMPRESSED,
+        POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES,
+        VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column,
+        batches_as_json, batches_from_json, block_of_the_batch, block_too_large, chrom_column,
+        counted_from_one, id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file,
+        projection_of, schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
@@ -6290,8 +6319,10 @@ mod tests {
     /// what that does not see in `catch_unwind`.
     ///
     /// On 21 September 2026 the four values of each byte gave 16296 files
-    /// in 0.13 s: 6922 errors, 8988 read as the whole file, 386 read as
-    /// another file with no error, 14 panics caught and no abort.
+    /// in 0.13 s: 6946 errors, 8988 read as the whole file, 362 read as
+    /// another file with no error, 14 panics caught and no abort. The check
+    /// of an allele below the missing one moved 24 files from the third
+    /// count to the first.
     ///
     /// Every byte is set to four values here, the low bit and the high bit
     /// flipped, 0 and 255; the sweep over all 255 is the ignored test that
@@ -6340,12 +6371,14 @@ mod tests {
     }
 
     /// The same sweep with every byte set to each of the 255 other values.
-    /// It is run by hand: 1299990 files and 8.2 s in the profile of the
+    /// It is run by hand: 1299990 files and 8.4 s in the profile of the
     /// tests on the owner's Apple M5 Pro on 21 September 2026, where it
-    /// gave 550055 errors, 726033 files read as the whole one, 23902 read
+    /// gave 553104 errors, 726033 files read as the whole one, 20853 read
     /// as another file with no error, which is what a checksum of the
     /// format would catch and nothing else does, 2783 panics of arrow-rs
-    /// that the net caught and no abort.
+    /// that the net caught and no abort. The check of an allele below the
+    /// missing one moved 3049 files, 13 in 100 of the 23902 that were read
+    /// as another file before it, from the third count to the first.
     ///
     ///     cargo test -p popnei --lib \
     ///         no_change_of_any_byte_of_a_vars_file -- --ignored
@@ -6371,15 +6404,15 @@ mod tests {
         println!("{sweep:?}");
     }
 
-    /// Where the length of the last buffer of the first batch of the file
-    /// is declared: the eight bytes arrow writes before the bytes it
-    /// compressed, which say how long that buffer is once it is
-    /// decompressed. The last buffer of a batch of the six columns holds
-    /// the genotypes, which is the large one.
-    fn the_length_of_the_genotypes(bytes: &[u8]) -> usize {
+    /// Where the length of the last buffer of the batch `batch` of the
+    /// file, counted from 0, is declared: the eight bytes arrow writes
+    /// before the bytes it compressed, which say how long that buffer is
+    /// once it is decompressed. The last buffer of a batch of the six
+    /// columns holds the genotypes, which is the large one.
+    fn the_length_of_the_genotypes(bytes: &[u8], batch: usize) -> usize {
         let at = opened(bytes.to_vec())
             .expect("the file is a vars file")
-            .blocks[0];
+            .blocks[batch];
         let offset = usize::try_from(at.offset).expect("the offset of the batch");
         let metadata_len = usize::try_from(at.metadata_len).expect("the message of the batch");
         let starts_at = offset.saturating_add(MESSAGE_START_BYTES);
@@ -6399,10 +6432,86 @@ mod tests {
             .saturating_add(in_the_body)
     }
 
+    /// The byte of the first allele of the batch `batch` of the file,
+    /// counted from 0.
+    ///
+    /// lz4 makes the genotypes of a file of four variants no smaller, so
+    /// arrow writes that buffer as it is and says -1 where its length would
+    /// be: each allele of the batch is one byte of the file, in the order
+    /// the variants are in, and the test that fails here is one whose file
+    /// grew until lz4 had something to take out of it.
+    fn the_first_allele_of(bytes: &[u8], batch: usize) -> usize {
+        let at = the_length_of_the_genotypes(bytes, batch);
+        let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
+            &bytes[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
+        )
+        .map(i64::from_le_bytes)
+        .expect("what the buffer of the genotypes says");
+        assert_eq!(
+            says, NOT_COMPRESSED,
+            "the genotypes of the batch {batch} are compressed"
+        );
+        at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)
+    }
+
+    /// An allele below the missing one is neither an allele of a variant
+    /// nor a missing genotype, and the reader refuses the batch that holds
+    /// one instead of handing it over. The owner decided on 21 September
+    /// 2026 that such an allele "is never allowed", after a reviewer wrote
+    /// a vars file with popnei, changed one byte of its genotypes to 254
+    /// and got the genotype `[-2, 0]` out of `iter_blocks` with no error.
+    ///
+    /// The genotypes of the four variants of `cases.vcf` are `0/0 0/1 1/1`,
+    /// `./. 0/1 ./0`, `1/2 2/1 2/2` and `0/0 0/0 0/0`, two batches of two
+    /// variants here, so the last allele of the first batch is of the
+    /// variant 2 and the first of the second batch is of the variant 3.
+    #[test]
+    fn an_allele_below_the_missing_one_is_refused_with_the_allele_and_its_variant() {
+        let whole = cases_written_in_batches_of(2);
+
+        for (batch, allele_of_the_batch, allele, var) in [
+            (0_usize, 11_usize, -2_i8, 2_u64),
+            (1, 0, -3, 3),
+            (1, 6, i8::MIN, 4),
+        ] {
+            let at = the_first_allele_of(&whole, batch).saturating_add(allele_of_the_batch);
+            let mut bytes = whole.clone();
+            bytes[at] = allele.to_le_bytes()[0];
+
+            let error = refused_at_the_block(bytes);
+
+            let Error::VarsAlleleBelowMissing { found, var: of } = error else {
+                panic!("the allele {allele} of the variant {var} gave {error}");
+            };
+            assert_eq!((found, of), (allele, var));
+        }
+
+        // The file as it was written is read, and the missing allele, which
+        // the second variant holds three of, is not refused.
+        let (blocks, _) = blocks_read(whole, Needs::GTS);
+        assert_eq!(
+            blocks[0].gts,
+            vec![
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                MISSING_ALLELE,
+                MISSING_ALLELE,
+                0,
+                1,
+                MISSING_ALLELE,
+                0
+            ]
+        );
+    }
+
     /// Those bytes with the length that the buffer of the genotypes
     /// declares changed to `says`.
     fn genotypes_that_say(bytes: &[u8], says: i64) -> Vec<u8> {
-        let at = the_length_of_the_genotypes(bytes);
+        let at = the_length_of_the_genotypes(bytes, 0);
         let mut changed = bytes.to_vec();
         changed[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)]
             .copy_from_slice(&says.to_le_bytes());
@@ -6427,7 +6536,7 @@ mod tests {
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
         let (whole, _) = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
-        let at = the_length_of_the_genotypes(&whole);
+        let at = the_length_of_the_genotypes(&whole, 0);
         let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
             &whole[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
         )

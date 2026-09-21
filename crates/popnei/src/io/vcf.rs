@@ -2774,6 +2774,42 @@ mod tests {
         }
     }
 
+    /// The dot is the only way a genotype says the missing allele, -1, and
+    /// no line of a VCF gives an allele below it. The owner decided on 21
+    /// September 2026 that such an allele is never allowed and is refused
+    /// "even by the vcf parser", so the reader is held to it here: an
+    /// allele number is a run of digits, so the minus sign is not part of
+    /// one, and each way a line could write a negative allele is a wrong
+    /// data line that names the line and the individual whose column it is
+    /// in.
+    #[test]
+    fn no_genotype_of_a_vcf_gives_an_allele_below_the_missing_one() {
+        // The whole genotype, one allele of it, one written after the
+        // separator that VCF 4.4 lets a genotype start with, one phased,
+        // and -0, which is 0 to a parser that reads a sign.
+        for genotype in ["-1", "-2/0", "0/-2", "/-2/0", "-2|0", "-0", "0/-128"] {
+            let line = format!("chr1 100 . A T . PASS . GT 0/0 {genotype} 1/1");
+            let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
+            let Error::VcfDataLine {
+                line,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("the error of `{genotype}` is {error}");
+            };
+            assert_eq!(
+                (line, place),
+                (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string())),
+                "{genotype}"
+            );
+            assert!(
+                problem.contains("is not an allele number"),
+                "{genotype}: {problem}"
+            );
+        }
+    }
+
     #[test]
     fn an_allele_number_that_no_i8_holds_is_refused_for_being_above_the_largest() {
         // 4294967296 does not fit in the u32 the number was parsed into,
