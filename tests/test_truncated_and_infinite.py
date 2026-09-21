@@ -10,9 +10,12 @@ gzip block of 28 bytes; without it the file was cut short, and pyNei gives
 the variants before the cut and says nothing, where bcftools 1.24 says "no
 BGZF EOF marker; file may be truncated".
 
-Both reach Python as a `ValueError`, the exception of a file whose content
-popnei cannot read. The variants that were read before the cut are given
-first, so each test here says how many blocks came out before the error.
+The two are different exceptions, by the convention the owner gave on 21
+September 2026: a quality that popnei cannot read is a `ValueError`, a wrong
+input of a function, and a file that was cut short is an `OSError`, which
+carries the file in `filename` as every error of the file system does. The
+variants that were read before the cut are given first, so each test here
+says how many blocks came out before the error.
 """
 
 from pathlib import Path
@@ -50,12 +53,20 @@ def _cut(reference_vcf_dir: Path, tmp_path: Path, bytes_of_it: int) -> Path:
 
 
 def _variants_before_the_error(path: Path) -> tuple[int, str]:
-    """How many variants a file gives before it fails, and the message."""
+    """How many variants a file gives before it fails, and the message.
+
+    A file that was cut short is an `OSError` that carries the file in
+    `filename`, where a caller looks for it, and no number from the system,
+    because nothing of the system refused anything: what is wrong is in the
+    bytes of the file.
+    """
     variants = open_vcf(path, only_passed=False)
     read = 0
-    with pytest.raises(ValueError) as refusal:
+    with pytest.raises(OSError) as refusal:
         for block in variants.iter_blocks(num_vars_per_block=100):
             read += block.num_vars
+    assert refusal.value.filename == str(path)
+    assert refusal.value.errno is None
     return read, str(refusal.value)
 
 
