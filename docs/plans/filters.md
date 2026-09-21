@@ -1,7 +1,9 @@
 # Plan: the three threshold filters and the counts of a pass
 
-21 September 2026. Approved by the owner on 21 September 2026 and done
-the same day, on the branch `plan/filters`, with its work report in
+21 September 2026. Approved by the owner on 21 September 2026. Its four
+work packages were done the same day; the owner read the report, answered
+two of its questions and asked for their work before the merge, which is
+work package 5. They were done on the branch `plan/filters`, with its work report in
 `docs/reports/filters.md` and its measurement in
 `docs/reports/filters-measurement.md`. This plan builds
 the filters that keep the variants of a dataset by their missing rate, by
@@ -412,6 +414,66 @@ filter is a difference of two times that are close, 1.65 s and 1.54 s in
 bcftools, so a load on the machine that changes between the two sets of
 runs is larger than what is measured: each pair is run back to back, and
 a pair whose load average differs is run again.
+
+## Work package 5: the owner's two answers to the report
+
+**What it gives.** A user whose file holds an allele below the missing
+one, -1, gets an error that names the file, from whichever reader reads
+it, and never an array with a -2 in it. And the chain of the filters of a
+pass is built by one function of the core, which both binding crates
+call. The owner decided both in chat on 21 September 2026, after reading
+`docs/reports/filters.md`: "Such an allele is never allowed", to be
+refused "even by the VCF parser"; and the core builds the chain.
+
+**Deliverables.**
+
+1. No reader gives an allele below `MISSING_ALLELE`. Check: a cargo test
+   of the vars file reader on a file whose genotypes hold a -2, made in
+   the test from a file popnei wrote, gets the error of a new case, which
+   names the allele and where it is, and no block; a cargo test of the
+   VCF reader for each way a line could say such an allele, a genotype
+   of `-2/0` among them, gets an error that names the line; a pytest
+   test gets a `ValueError` with the path from `open_vars(...)
+   .iter_blocks()` on that vars file, and a TypeScript test an `Error`.
+   `docs/specs/io_vars.md` has the case in "What it refuses" and in its
+   list of exceptions, `docs/specs/io_vcf.md` says what the VCF reader
+   does with such a genotype, and the sentence of `docs/specs/variant.md`
+   that no reader gives such an allele is true.
+2. What the check costs a pass over a vars file. Check: the bench of the
+   vars file of `crates/popnei/benches/`, run as
+   `docs/reports/vars-file.md` ran it, before and after, 5 runs each,
+   back to back, in the work report, beside the 21 ms of "Speed" of
+   `docs/specs/io_vars.md`.
+3. The chain in the core. Check: `docs/specs/filters.md` has the function
+   in "The Rust interface", and "How it runs" of the counts says that a
+   binding crate calls it; cargo tests with its name in theirs: the chain
+   of 0.04, 0.8 and 0.5 over `many.vcf` gives the 106 variants and the
+   three pairs of counts, no criterion gives the source as it is, and a
+   second criterion of one kind is the error of `FilteredReader::new`;
+   neither binding crate builds a `FilteredReader` itself, `grep -rn
+   "FilteredReader::new" crates/popnei-python crates/popnei-js` finds
+   nothing; and `uv run pytest` and `npm test` pass untouched, 173 and
+   125 tests.
+
+**What it stands on.** Work packages 1 to 4.
+
+**Tasks.**
+
+- [ ] 5.1 The allele below the missing one: the two specs first, in a
+  commit of their own, then the vars file reader, the VCF reader where it
+  lacks the refusal or its test, the case of the error with its arm in
+  both binding crates, the tests of the three layers, and the two runs
+  of the bench. Serves deliverables 1 and 2.
+- [ ] 5.2 The function of the core that builds the chain of a pass from
+  the criteria, in `crates/popnei/src/filters.rs`, the spec first in a
+  commit of its own, and both binding crates brought to it. Each keeps
+  its list of steps, the names of its arguments, and the refusals it
+  gives a user at the call of a method. Serves deliverable 3.
+
+**What could go wrong.** The check reads every genotype of a vars file,
+which is read at 0.1 s for 2e8 alleles: if it costs more than a tenth of
+the pass the orchestrator tells the owner with the numbers, and the check
+stays, since he decided that the allele is never allowed.
 
 ## How the whole plan is checked
 

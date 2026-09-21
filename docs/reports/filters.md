@@ -567,3 +567,12 @@ each finding, worked every time. What a plan could take from this one:
 a task of a binding says what its language turns a wrong argument into
 before the core sees it, and a measurement keeps its scripts and its
 spreads from the start.
+
+## Work package 5: the owner's two answers to the report
+
+The owner read the report on 21 September 2026 and answered two of its
+questions in chat: an allele below the missing one is never allowed and
+is an error in every reader, "even by the VCF parser"; and the core
+builds the chain of the filters of a pass. He ordered the merge into
+`main` once both are done. The orchestrator added work package 5 to the
+plan, with a task for each.
