@@ -8,6 +8,7 @@ comparison with pyNei is in `test_block.py`, because Python sees what the
 reader read through the blocks.
 """
 
+import copy
 import pickle
 from pathlib import Path
 
@@ -235,6 +236,30 @@ def test_what_a_variants_cannot_do_names_the_module_it_comes_from(
     variants = open_vcf(reference_vcf_dir / "cases.vcf")
     with pytest.raises(TypeError, match=r"popnei\._core\.VcfSource"):
         pickle.dumps(variants)
+
+
+def test_a_variants_takes_no_deep_copy_and_a_shallow_one_reads_the_same_file(
+    reference_vcf_dir: Path,
+) -> None:
+    """The two copies of a handle, which its documentation tells apart.
+
+    A deep copy would have to carry the reader of Rust, which no pickle
+    carries, so it is the `TypeError` of the pickle. A shallow copy is a
+    second handle over the same source, and a handle holds nothing of a
+    pass, so both read the file from its start and give the same variants.
+    """
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+
+    with pytest.raises(TypeError, match=r"popnei\._core\.VcfSource"):
+        copy.deepcopy(variants)
+
+    twin = copy.copy(variants)
+    assert twin.individuals == variants.individuals
+    assert twin.ploidy == variants.ploidy
+    theirs = _joined(twin)
+    ours = _joined(variants)
+    numpy.testing.assert_array_equal(theirs["gts"], ours["gts"])
+    assert theirs["pos"] == ours["pos"]
 
 
 def test_a_directory_where_a_vcf_goes_gives_the_error_of_the_file_system(

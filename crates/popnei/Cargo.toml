@@ -8,8 +8,13 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-ipc.workspace = true
+arrow-schema.workspace = true
 flate2.workspace = true
 memchr.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 # The VCF reader parses the lines of a batch on the threads of rayon, and

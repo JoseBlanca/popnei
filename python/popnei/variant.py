@@ -7,26 +7,33 @@ from popnei.block import Block, Field, _block_of
 
 
 class Variants:
-    """A source of variants: a VCF with the options it is read with.
+    """A source of variants: a VCF with the options it is read with, or a
+    vars file.
 
-    It holds no genotypes. A user gets one from :func:`popnei.open_vcf` and
-    gives it to as many calculations as they want: each one opens the source
-    again and runs its loop over the variants inside the Rust core, so the
-    dataset is never in memory as a whole.
+    It holds no genotypes. A user gets one from :func:`popnei.open_vcf` or
+    from :func:`popnei.open_vars` and gives it to as many calculations as
+    they want: each one opens the source again and runs its loop over the
+    variants inside the Rust core, so the dataset is never in memory as a
+    whole.
 
     It is pyNei's ``Variants`` under the word of ``docs/glossary.md``: what
     pyNei calls a sample is here an individual, one organism that was
     genotyped. The genotypes come out of it through :meth:`iter_blocks` and
     through nothing else.
 
-    It cannot be pickled or copied: what it holds is an object of Rust with
-    the path and the options of the source. What travels between processes
-    is the path and the arguments of :func:`popnei.open_vcf`, and a
-    ``Variants`` is opened again at the other end.
+    It cannot be pickled, and ``copy.deepcopy`` of one is a ``TypeError``
+    for the same reason: what it holds is an object of Rust with the path
+    and the options of the source, which no pickle carries. What travels
+    between processes is the path and the arguments of
+    :func:`popnei.open_vcf` or of :func:`popnei.open_vars`, and a
+    ``Variants`` is opened again at the other end. ``copy.copy`` gives a
+    second handle over the same source, which reads the same variants: a
+    handle holds nothing of a pass, so the two are used as one is.
     """
 
-    def __init__(self, source: _core.VcfSource):
-        """The handle over `source`, which :func:`popnei.open_vcf` builds."""
+    def __init__(self, source: _core.VcfSource | _core.VarsSource):
+        """The handle over `source`, which :func:`popnei.open_vcf` and
+        :func:`popnei.open_vars` build."""
         self._source = source
         # The names come from the header, which was read once, so they are
         # taken out of the core here and not at every use.
@@ -72,10 +79,13 @@ class Variants:
         read, the error comes in the place of the block that would have held
         it, and the variants of that block that were read are lost with it.
         A variant popnei cannot read is a ``ValueError`` whose message names
-        the file, the line and what is wrong; a file that was cut short, or
-        a file that bgzip wrote and whose bytes were damaged, is an
-        ``OSError`` with the path in ``filename`` and no ``errno``, because
-        nothing of the file system refused anything.
+        the file, the line of a VCF and what is wrong, and so is a batch of
+        a vars file whose buffers are compressed with zstd, which popnei
+        writes in no build; a file that was cut short, a file that bgzip
+        wrote and whose bytes were damaged, and a batch of a vars file that
+        cannot be decoded are an ``OSError`` with the path in ``filename``
+        and no ``errno``, because nothing of the file system refused
+        anything.
 
         What a user has received when that error comes depends on
         `num_vars_per_block`: the variants that were read and had not filled

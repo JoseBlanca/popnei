@@ -59,6 +59,23 @@ above for the alternative ones and -1 for one that was not called, as
 `docs/specs/variant.md` has it; no mask is written, and the -1 is what says
 that an allele is missing.
 
+Arrow gives the values inside a list a field of their own, with a name and
+with whether they can be null. For its two lists, `alleles` and `gts`,
+popnei writes the field pyarrow names for any list, `item`, and says that it
+holds no null, which is what is true of them: no allele and no genotype
+popnei writes is a null, and an allele that was not called is the -1 above.
+A field that can hold nulls costs a bit for each value: arrow-rs writes a
+mask of ones beside the genotypes, 1250000 bytes for a batch of 10000
+variants of 1000 diploid individuals before it is compressed, which a reader
+decompresses and throws away. On the panel of "The compression", 20000
+variants of 1000 diploid individuals with the `gts` column alone, the file
+of popnei is 15691298 bytes and a pass over it that sums the genotypes takes
+20.52 ms, against 15680146 bytes and 19.49 ms for the same genotypes with
+the field written as holding no null, the best of 10 interleaved release
+runs on one thread of the owner's Apple M5 Pro. The reader compares what a
+list holds and not the name of that field nor whether it takes nulls, so a
+file of pyarrow, whose `item` takes them, is read as one of popnei is.
+
 The chromosome is text in every row and not a number into a table kept beside
 the columns, so that the file says what it holds to any program that opens it.
 The repeated names cost next to nothing once compressed.
@@ -203,6 +220,46 @@ pyNei. When the source fails halfway, on a wrong line of a VCF, the error is
 given and the file that was being written is removed. It is decided here:
 pyNei leaves the file, 3458 bytes of it in a trial with a wrong line, and
 then the path is taken and the same call cannot be tried again.
+A Ctrl-C that is pending when the call is made is raised before any file is
+made, so the path is untouched. One that arrives while the call runs is
+raised when the pass over the source is over and not while it runs, and it
+takes the file away as an error does. The whole file is written
+inside one call of the core, with the interpreter released for all of it, so
+Python raises a signal that arrived meanwhile when that call returns. A
+Ctrl-C raised between two blocks, which a user gets from `iter_blocks`,
+would ask the binding crate to write again the loop over the blocks that the
+core has. That the file goes was decided on 21 September 2026 by the session
+that ran `docs/plans/vars-file.md`: a user who stopped the call finds the
+path free for the call they make again. The option not taken was to keep the
+file that the call had finished writing.
+
+The file that an error names is the one the error is about. An error of the
+source, a wrong line of the VCF or a read that failed, names the VCF; an
+error of the file being written, a disc that filled up among them, names
+that path and says that the file could not be written, and so do the two
+errors that come before anything is read, a file that is already there and a
+path that no file can be made at. The core says which of the two it is: a
+write that failed is a case of its own and not the error of a source that
+could not be read. A directory at the path is a path no file can be made at
+and not a file that is already there, with the number the system gives for a
+directory where a file was asked for, so that it is the `IsADirectoryError`
+of Python, as it is when `open_vcf` is given one.
+
+The bytes reach the disc before the call returns, and a file system that
+refuses them there, a network one that says only when the file is closed
+that it is full, is the error of a file that could not be written like any
+other. A call that returned would otherwise leave a file that is not whole
+and say nothing.
+
+The file of a call that failed and that could not be taken away, a directory
+whose permissions changed while the file was being written, is told to the
+user as a note on the error they get: what went wrong is what they read
+first, and the note says that a file is still at the path, which their next
+call would refuse. The session that ran `docs/plans/vars-file.md` decided
+these three on 21 September 2026, with the binding crate written; the option
+not taken for the last was to say nothing, which leaves a user who fixes
+their VCF with a call that refuses the path and no reason.
+
 `num_vars_per_block` is how many variants a batch holds, and `None` is
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
 with the default size of block gives its batches as they are.
@@ -245,10 +302,14 @@ the table has the names already, since the block came out of that reader.
 
 ### How it is verified
 
-The reference outside the project is pyarrow 23.0.0, the implementation of the
-arrow format that Apache Arrow publishes, which opens what popnei wrote as any
-other program would, together with bcftools 1.24, whose account of what
-`many.vcf` holds is `many.bcftools.tsv` of `docs/specs/io_vcf.md`. A trial
+The reference outside the project is pyarrow, the implementation of the arrow
+format that Apache Arrow publishes, which opens what popnei wrote as any other
+program would, together with bcftools 1.24, whose account of what `many.vcf`
+holds is `many.bcftools.tsv` of `docs/specs/io_vcf.md`. pyarrow is a
+development dependency of popnei whose lowest version is 23, which the owner
+decided on 20 September 2026; the option not taken was a pin at 23.0.0. The
+tests run on the pyarrow of `uv.lock`, 25.0.1 on 20 September 2026. The trial
+that follows was run on 23.0.0, the pyarrow of pyNei's environment: a trial
 file in this format, written with arrow-rs 60, was opened with
 `pyarrow.ipc.open_file`, with `pyarrow.feather.read_table` and with pandas.
 The three gave its columns and its nulls. `open_file` gave both keys, the one
@@ -301,9 +362,11 @@ block, and reads it back with the reader of this spec: there are two blocks,
 of 3 variants and of 1, every field of every variant is what went in,
 the empty id of the last three among them, and the batches of the footer are
 3 variants with chr1 100 to 300 and 1 variant with chr1 400 to 400. A second
-cargo test writes a block of four variants that are not sorted, chr1 300,
-chr2 50, chr1 100, chr2 60, in one batch: its regions are chr1 100 to 300 and chr2 50 to 60,
-in that order. A third writes `many.vcf` through the VCF reader and reads it
+cargo test writes a block of four variants that are not sorted, chr2 300,
+chr1 50, chr2 100, chr1 60, in one batch: its regions are chr2 100 to 300 and
+chr1 50 to 60, in that order. The chromosome that comes first in the block is
+the one that comes second in the alphabet, so a writer that gave the regions
+in any order but the one in which the chromosomes first appear is caught. A third writes `many.vcf` through the VCF reader and reads it
 back, and the genotypes, the chromosome names and the positions of the blocks
 are those of the blocks of the VCF. A fourth writes a source whose blocks carry
 the genotypes alone and finds one column in the file it reads back, and
@@ -326,6 +389,14 @@ of every batch come from the two keys, so they are known as soon as the file
 is opened, before any batch is read. The chromosome names of the batches are
 interned into a `ChromTable` as they are read, so a number means the order of
 first appearance among the variants that were given, as in the VCF reader.
+
+A batch of no variants, whose entry of the footer says 0 too, is not given as
+a block: the reader takes the next batch, as a filter does with a block it
+emptied, because `docs/specs/block.md` says that a reader never gives a block
+of no variants. No writer of popnei makes such a batch and another arrow
+program can. The session that runs `docs/plans/vars-file.md` decided it on 21
+September 2026, with the owner asked and not yet answered; the option not
+taken is an error.
 
 Only the columns a consumer asks for are decompressed. A `Needs` becomes a
 list of column indices that arrow-rs skips the rest of: for a column left out
@@ -383,19 +454,73 @@ the `popnei` key; if not, the error gives the width found and the one
 expected, because the width is what turns the flat buffer into variants.
 
 A null in `chrom`, `pos`, `alleles` or `gts` is an error naming the column and
-the variant. A null `id` is the empty id and a null `qual` is no quality.
+the variant, counted from 1 over the whole file. A null among the alleles of a
+variant, or among its genotypes, is a null of that column too: arrow gives the
+values inside a list a field of their own that can hold nulls, as "What it
+holds" says, and no value popnei writes is one. A null `id` is the empty id
+and a null `qual` is no quality.
+
+That error is for a file whose schema says the column can hold nulls, which
+is what another program writes. popnei writes `chrom`, `pos`, `alleles` and
+`gts` as columns with no nulls, and arrow-rs refuses a batch of such a column
+that holds one before popnei sees it, so a null there is a batch that could
+not be read, with what arrow-rs said of it and no variant named: the variant
+of a batch that arrow-rs would not decode is not known.
+
+A `qual` that is a value and is not a finite number, a NaN or an infinity, is
+an error naming the column and the variant. NaN is what the column of a block
+holds for a variant with no quality, so a NaN in the file would be read as a
+variant that has none, and an infinite quality is a probability of no variant
+of 0, which is not what phred scaling says; the VCF reader refuses both for
+the same reason, as `docs/specs/io_vcf.md` has it, and what rests on it is the
+rule of "Floats" of the `coding` skill that a NaN in that column means no
+quality. No writer of popnei makes such a file and another program can. The
+session that ran `docs/plans/vars-file.md` decided it on 21 September 2026;
+the option not taken was to let those values into the block, which gives a
+calculation over the qualities an infinity to work with and turns a NaN into a
+variant with no quality.
 
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
-`1`, which the message gives along with the version found; it has no
+`1`, which the message gives along with the version found; its `individuals`
+name nobody, which is a file whose genotypes hold no allele; it has no `gts`
+column, which "What it holds" puts in every vars file; it has no
 `popnei_batches`, or its entries are not as many as the batches. A path that
 is a directory is an error of `from_path`, which looks at the path itself:
 opening a directory succeeds on macOS and only the first read fails.
 
+The key that names no individual is the error the writer asked for such a
+file gives, with both numbers: every source of popnei has one individual at
+least, as `docs/specs/block.md` says, and the blocks of no genotype that such
+a file gives are not variants of anybody.
+
+The file without a `gts` column is refused by the session that ran
+`docs/plans/vars-file.md`, on 21 September 2026; the option not taken was to
+read it as a source whose blocks hold no genotypes, which is what a file of a
+later version of the format that dropped the column would be, and no reader of
+this version can tell that file from one whose column was lost.
+
 A batch that does not hold the `num_vars` its entry of the footer gives is an
 error when that batch is read, so that the number of variants that the file
 announces is never a wrong one that goes unnoticed.
+
+A batch whose message does not fit the bytes that came with it is refused
+before arrow-rs reads any of them, as a batch that could not be read. arrow-rs
+takes the offsets and the lengths of that message as they are: it reads a
+buffer at the byte the message gives, and asks the machine for the memory that
+the first eight bytes of a compressed buffer say before it decompresses it. So
+a file damaged there reaches a panic inside arrow-rs, which in a notebook or a
+browser tab ends the session, or an allocation of 144115188075855871 bytes,
+which ends the process and which nothing catches. What the reader checks: the
+message is one of a batch; the rows it says are the variants of its entry of
+the footer; every buffer of it lies inside the body of the batch; every buffer
+compressed with lz4 says a length that lz4 can give from the bytes it holds,
+which is 255 for each byte at most; and no column of it says more values than
+the body holds bits. Natively, what those checks do not see is held by
+`catch_unwind` around the call into arrow-rs, which gives the same error; in
+wasm, where a panic ends the program and unwinds nothing, the checks are the
+whole of it.
 
 Two individuals with the same name are an error, as they are for the VCF
 reader.
@@ -450,8 +575,11 @@ The cargo tests are the round trips of "The writer", made at `next_block`
 over a `Cursor<Vec<u8>>`, and these errors, each on a file built in the test
 with arrow-rs: a file with no `popnei` key; a `format_version` of `2.0`, whose
 message holds `2.0`; a `gts` width of 7 with 3 individuals and a `ploidy` of
-2; a `pos` column of `Int32`; a null position; a file with two batches and one
-entry in `popnei_batches`; bytes that are not an arrow file; and
+2; a file with no `gts` column; a file whose `individuals` name nobody and
+whose `gts` holds no allele; a `pos` column of `Int32`; a null position; a
+quality that is a NaN and one that is an infinity, both with the variant; a
+file with two batches and one entry in `popnei_batches`; bytes that are not an
+arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
 `cases.vcf` compressed with zstd, which `tests/reference/vars/make_reference.py`
 writes with pyarrow since popnei cannot, which opens and gives the error
@@ -460,6 +588,22 @@ the kind of the error and what it names. These are read and are not errors: a
 `format_version` of `1.7`; a file with a seventh column, `depth`; a file
 written with no compression. And a file written with batches of 100 gives
 blocks of 100, which the test checks with no `reblock` in between.
+
+A cargo test sweeps a vars file of the four variants of `cases.vcf` written in
+the test: every byte of it set in turn to four values, the low bit and the
+high bit flipped, 0 and 255, and each of the files that makes read with every
+field. Each gives its variants or an error, and none reaches a panic that
+comes out of the reader or an allocation that ends the process, which an
+abort would take the test binary with it. The same sweep with every byte set
+to each of the 255 other values is a test that is run by hand, as
+`docs/specs/io_vcf.md` has one for `cases.vcf.gz`. A file that is read with no
+error and holds other variants is counted and is not a failure: a byte of a
+compressed buffer that decompresses into other genotypes is what a checksum of
+the format would catch, and the format has none. On 21 September 2026, with
+arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 550055
+gave an error, 726033 were read as the whole file, 23902 were read as another
+file with no error, 2783 reached a panic inside arrow-rs that `catch_unwind`
+held, and none ended the process.
 
 The TypeScript test is the round trip under node of "The writer".
 
@@ -560,17 +704,84 @@ The values of the two keys are json, and which crate reads and writes it is
 the implementer's choice among those in pure Rust, since the core builds for
 wasm.
 
-The cases this module adds to the error of the crate: the source is not a vars
-file, with what was found; a format version whose first part is not 1, with
-the version; a column of another type, with the column and the two types; a
-`gts` width that does not match the `popnei` key, with both widths; a null
-where there can be none, with the column and the variant; a footer whose
-entries do not match the batches; a file compressed with zstd; a block whose
-columns differ from those of the first one written, with the field; a block
-that does not fit the writer, with what differs; a chromosome number with no
-name; and an error of
-the input or the output, which wraps `std::io::Error`. In Python all but the
-last are a `ValueError`, and the last an `OSError`.
+The cases this module adds to the error of the crate, with the exception each
+one is in Python. The owner gave the convention on 21 September 2026: a
+`ValueError` is a wrong input of a function, a `RuntimeError` a defect of
+popnei, and an `OSError` a file that cannot be read, that was cut short or
+that is corrupted.
+
+Twelve are a `ValueError`, since a file whose content is not what a vars file
+holds is a wrong input like a wrong argument: the source is not a vars file,
+with what it lacks, which is the header of an arrow file, the `popnei` key of
+the schema, the json of its value, one of that key's four values, the `gts`
+column or the
+`popnei_batches` key of the footer; a format version whose first part is not
+1, with the version found; a column of another type, with the column and the
+two types; a `gts` width that does not match the `popnei` key, with both
+widths; a null where there can be none, with the column and the variant; a
+`qual` that is a value and is not finite, with the value and the variant; a
+footer whose entries are not as many as the batches, with both counts; a
+batch that holds another number of variants than its entry of the footer,
+with the batch and both counts; a file whose buffers are compressed with
+zstd; two individuals of one name, with the name; a file of no individual or
+of the ploidy 0, with both numbers, which is a writer asked for such a file
+and a reader of one whose `popnei` key names nobody; and a block with more
+text in one of its
+columns than the 2147483647 bytes an arrow column of texts holds, or more
+alleles in its `alleles` column than the 2147483647 a list column of a
+batch holds, with the column, what it holds and that number. The last one
+is the size of a
+batch and not of the file: the way out is a smaller `num_vars_per_block`,
+which the message says. arrow-rs panics when a column of texts goes past
+it, and when the entries of a list column do, so the writer counts the
+bytes of each of the three columns of texts of a block before it fills
+one, and the alleles of its `alleles` column, whose entries are more than
+its bytes when an allele is an empty text; it writes nothing of that
+block.
+
+Four are an `OSError`: an error of a source that is read, which wraps
+`std::io::Error`; a vars file that could not be written, with what went
+wrong, which is the `std::io::Error` the system gave when the cause is of
+the file system, and what arrow-rs said when it is not; a file that starts
+as an arrow file and was cut short, with what was being read when the bytes
+ran out; and a batch that arrow-rs could not decode or decompress, with the
+batch and what arrow-rs said. The last two are a file that was damaged after
+it was written, which the reader refuses instead of giving the variants it
+can still read. The write has a case of its own because a Python user reads
+which file went wrong from the exception, and a disc that fills up while the
+vars file is being written is not the VCF failing to be read.
+
+Three are a `RuntimeError`: a block that does not fit the writer, with the
+individuals and the ploidy of the writer and of the block; a block whose
+columns differ from those of the first one written, with the fields of both;
+and a chromosome number that the table given with the block has no name for.
+A user reaches none of the three by what they write, since `write_vars` asks
+its reader for every field and gives the writer the table of that reader.
+
+Four more cases that a call of this module gives are not its own. A path
+that already exists is refused by the binding crate before the core is
+called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
+`docs/specs/block.md` that every reader taking a size gives, which the
+writer gives too, a `ValueError`. A block the machine does not give the
+memory for is the other case of `docs/specs/block.md` that every reader
+gives: the reader asks with `try_reserve` for each column of the block it
+builds from a batch, and the size in the message is the one a file fixed,
+the third of the three of that spec, whose way out is to write the file
+again with a smaller `num_vars_per_block`. It is the error of a file whose
+batch this machine cannot count in a `usize` too, which under wasm, where a
+`usize` is 32 bits, is a batch of more than 4295 million bytes, and of a
+footer that says the file holds more variants than that. A file that could not be opened, which `from_path` gives for a path that
+is not there and for a directory, is the case of `docs/specs/io_vcf.md` with
+the path and the `std::io::Error`, an `OSError` built with the number the
+system gave.
+
+In Python every error of a file names the file. The core does not have the
+path, since a writer is built over a sink and a reader over bytes, so it is
+the binding crate that puts it there, and where it puts it follows the
+exception. The message of a `ValueError` and of a `RuntimeError` starts with
+the path. An `OSError` carries it in `filename`, which is where a Python user
+of any library looks for it and which Python prints after the message of the
+exception, so putting it in the message too would say it twice.
 
 ## Speed
 

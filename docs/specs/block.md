@@ -432,10 +432,14 @@ reader asks for the memory of every column of a block with `try_reserve`
 before it fills it, the positions of a variant among them, which are 8
 bytes whatever the individuals are, and gives the same error when the
 machine does not give it. A size that a caller wrote reaches neither an
-abort nor a panic. The error says which of the two sizes of a block it is
-about, the one the caller asked for or the one popnei chose for the
-individuals of the source, because what a caller does about it differs:
-ask for fewer variants in a block, or pass a `num_vars_per_block` at all. Blocks that do not fit together, which `reblock` finds
+abort nor a panic. The error says which of the three sizes of a block it is
+about, because what a caller does about it differs: the one the caller
+asked for, and they ask for fewer variants in a block; the one popnei chose
+for the individuals of the source, and they pass a `num_vars_per_block` at
+all; or the one a file fixed, which is the size of a batch of the vars file
+of `docs/specs/io_vars.md`, whose reader builds each batch whole whatever
+size the caller asked its blocks to be, and they write that file again with
+a smaller `num_vars_per_block`. Blocks that do not fit together, which `reblock` finds
 when a block of its source has another number of individuals or another
 ploidy than the source says it has. A block of no variants, which
 `reblock` refuses. A block whose arrays are not of its size, which `check`
