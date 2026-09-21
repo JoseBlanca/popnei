@@ -109,7 +109,9 @@ For the owner, from task 1.2:
 
 - The core's `write_vars` returns the sink and how many variants it
   wrote, where "The Rust interface" of `docs/specs/io_vars.md` had the
-  sink alone, and `BlockReader` is implemented for `&mut R`. The binding
+  sink alone, and the trait of the readers, `BlockReader`, is
+  implemented for a borrowed reader, `&mut R`, so that `write_vars` can be
+  lent the chain of readers and the binding crate keeps it. The binding
   crate does not loop over the blocks of a write, so only the core can
   count them, and it has to keep the chain to read the counts of the
   filters, as "How it runs" of the counts asks. The orchestrator had the
@@ -331,15 +333,16 @@ mutations of the code and each failed a test. What held and is fixed, in
   row now, found by reading the rows again one by one when the threads
   give an error.
 - A variant of more alleles than a `u32` holds was the error of
-  genotypes that are not whole, with a ploidy of 1 that nobody gave. It
+  genotypes that are not whole, and `count_alleles`, which takes no
+  ploidy, put a ploidy of 1 into its message. It
   is a case of its own, `MoreAllelesThanACountHolds`, in the spec too.
 - Six of the nine rows of the table asserted how many variants stay and
   not which, and nothing read `tests/reference/filters/`. Every row and
   the chain compare every position with the stored files now. The test
   that the ploidy goes through a filter could not fail, its source was
   diploid; it has a ploidy of 4.
-- A source narrowed before a filter is put over it, with no `set_needs`
-  on the chain, fails at its first block for lack of genotypes. The doc
+- A source that was asked for some fields and not the genotypes before a
+  filter is put over it, with no `set_needs` on the chain afterwards, fails at its first block for lack of genotypes. The doc
   comment of `FilteredReader::new` says that the needs are set on the
   outermost reader once the chain is built, and a test states it. The
   other fix was a method of the trait.
@@ -369,7 +372,9 @@ For the owner, from this review:
   `docs/specs/io_vars.md`; or the error of the counts becomes a
   `ValueError` and the silent case stays. The orchestrator recommends
   the first, as a task of its own, since the vars file is outside this
-  plan. Asked in chat on 21 September 2026; meanwhile a `RuntimeError`.
+  plan. The owner was asked in chat on 21 September 2026 and had
+  not answered when the plan ended, so it is open, and meanwhile the
+  error is a `RuntimeError`.
 - A filter that keeps nothing over a long stretch of a file reads on
   inside one `next_block`, so one `__next__` of Python can read a whole
   file and a Ctrl-C waits for it.
