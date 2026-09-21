@@ -131,9 +131,12 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
 
     npm test
 
-It runs the TypeScript compiler over `test/` and then the test runner of
-node itself, `node --test`, once the build has left `dist/` and `wasm/` in
-place. The tests import the name of the package, `popnei`, which node
+It runs the TypeScript compiler over `src/` and over `test/`, which writes
+`dist/` again and type checks the tests against it, and then the test
+runner of node itself, `node --test`. What it does not build is the
+WebAssembly: the tests run the `wasm/` that is there, so a change of Rust
+is tested only after `npm run build`. The tests import the name of the
+package, `popnei`, which node
 resolves to the built entry point of node, and read the reference VCFs of
 `tests/reference/vcf/` at the root of the repository, the files the Python
 tests read. They assert that the version the package gives and the version
