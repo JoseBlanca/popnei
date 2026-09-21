@@ -208,3 +208,43 @@ chain as `missing_data_0.04+maf_0.8.txt` and
 the first three positions of the 106 are 1111, 1407 and 1518. The ruff
 configuration of the project leaves `tests/reference` out, so the script
 is checked by its path. 99003 tokens.
+
+Tasks 3.2 and 3.3, one subagent, commits c1f7397, the filter of one
+block, alone in its commit, and ffec301, the reader. Run by the
+orchestrator at ffec301: `cargo test --workspace` `291 passed`, 2
+ignored; `cargo test -p popnei --lib filters:: -- --list` `25 tests`,
+the worked example, the nine rows of the table of `many.vcf` with blocks
+of 7 and of the default size, the chain with its 106 variants and its
+three pairs of counts, 29 of 100 at 0.29, and the three rules of a
+reader among them. No number of the spec failed to come out. 226451
+tokens.
+
+For the owner, from these two tasks:
+
+- The error of a second filter of one kind, when `FilteredReader::new`
+  gives it, names the kind and the threshold of the filter that was
+  refused, where the spec says the threshold that is set: a chain says
+  only the kinds of its filters, through `filtering_stats`. The binding
+  crate has the steps and gives a user the error at the call of the
+  method, as the spec says, so it can name the one that is set, and task
+  3.4 is told to.
+- The error of a threshold out of range names the criterion by its
+  kind, `maf`, and the value. The spec has the `ValueError` of Python name
+  the argument, `max_allowed_maf`, which only the binding knows, so task
+  3.4 adds it there.
+
+The merge of `main`. The owner had `plan/vars-file` merged into `main`
+at d1d6997, with 20 commits that this branch lacked, and said to merge
+it here. It was made at d4e8458, between tasks 3.3 and 3.4, by the
+subagent of the TypeScript side, because its 13 conflicts were in seven
+files of that side: `main` had changed how a vars file crosses out of
+wasm, in pieces of 1 MiB, in the functions to which this plan had given
+the steps and the counts. Both hold: `writeVars` puts the pieces
+together and gives `{bytes, passStats}`. Four calls of `writeVars` in
+the tests of `main` and one core test were brought to the new
+signatures, and no test of either side was dropped: cargo 291 and 1,
+npm 79 and 8. Run by the orchestrator at d4e8458: `cargo test
+--workspace` `292 passed`, 2 ignored; `uv run pytest` `117 passed`;
+`npm test` `tests 87`, `fail 0`; fmt, clippy, ruff and `cargo
+wasm-check` pass. The subagent built the wheel of pyodide, its smoke
+test exited with 0, and `cargo bench --no-run` built. 65057 tokens.

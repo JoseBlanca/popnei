@@ -28,8 +28,10 @@ The branch `plan/filters` stands on two branches that are not in `main`:
 `plan/vars-file` at 2f2577e, merged into it at 2c2a630 with no conflict,
 which has the vars file reader, `write_vars` and `open_vars` in both
 packages. Of `docs/plans/vars-file.md` only task 4.1, its bench, was not
-done at that commit. Nothing of this plan reaches `main` before the owner
-merges those two.
+done at that commit. The owner had `plan/vars-file` merged into `main` on 21 September 2026,
+at d1d6997, and said to merge that `main` into this branch, which is
+d4e8458, made between tasks 3.3 and 3.4. `spec/filters` is still not in
+`main`, and nothing of this plan reaches it before the owner's order.
 
 ## In and out
 
@@ -322,7 +324,7 @@ three methods of TypeScript, and every consumer after that,
   of the filters and of the counts. Serves deliverable 1. It touches no
   other file and can run side by side with work package 1 or 2 in a
   worktree of its own.
-- [ ] 3.2 `VarFilteringCriterion`, `VarFilter` and the two cases of the
+- [x] 3.2 `VarFilteringCriterion`, `VarFilter` and the two cases of the
   error, in `crates/popnei/src/filters.rs` and `error.rs`. From "What
   they give", "Half called genotypes, variants with nothing called, and
   what pyNei asserts", "What pyNei does that is odd" and "The Rust
@@ -331,7 +333,7 @@ three methods of TypeScript, and every consumer after that,
   `pynei/var_filters.py`. Needs 2.1. Serves deliverable 2. Which variants
   a filter keeps is silent when wrong: its own commit, guarded by
   deliverables 2, 3 and 4.
-- [ ] 3.3 `FilteredReader`, in the same file, and its cargo tests, with
+- [x] 3.3 `FilteredReader`, in the same file, and its cargo tests, with
   the positions of 3.1 as their literals. From "How it runs" of the
   filters and of the counts, and "The Rust interface". Needs 1.1, 3.1
   and 3.2. Serves deliverable 3.
