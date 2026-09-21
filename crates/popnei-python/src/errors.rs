@@ -53,6 +53,19 @@ pub(crate) enum PyPopneiError {
         /// The path the caller gave.
         path: PathBuf,
     },
+    /// What went wrong in a call that was writing a file, with the file it
+    /// could not take away afterwards, a directory whose permissions
+    /// changed under it among the causes. What went wrong is what the user
+    /// reads, and the file that was left is a note on it: their next call
+    /// finds that path taken and would say only that.
+    LeftBehind {
+        /// What went wrong, which is the exception the user gets.
+        error: Box<PyPopneiError>,
+        /// The file that is still at the path.
+        path: PathBuf,
+        /// Why it could not be taken away, as the system said it.
+        problem: String,
+    },
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
@@ -131,12 +144,40 @@ impl From<PyPopneiError> for PyErr {
                     .to_owned(),
                 Some(path),
             )),
+            PyPopneiError::LeftBehind {
+                error,
+                path,
+                problem,
+            } => left_behind(PyErr::from(*error), &path, &problem),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }
             PyPopneiError::Python(error) => error,
         }
     }
+}
+
+/// `raised` with a note that says that the file the call was writing is
+/// still at `path`, because it could not be taken away.
+///
+/// A note is text that Python keeps in `__notes__` and prints under the
+/// message of the exception, which is where what a user has to do about a
+/// second thing goes: what went wrong stays the exception they see, with
+/// its kind and its message.
+fn left_behind(raised: PyErr, path: &Path, problem: &str) -> PyErr {
+    let note = format!(
+        "the file that was being written is still at {path}, because it could not be \
+         taken away: {problem}. The call made again at that path is refused while it \
+         is there",
+        path = path.to_string_lossy()
+    );
+    Python::attach(|py| {
+        // A note that could not be added does not take the place of what
+        // went wrong, which is what the user asked about and what this
+        // returns either way.
+        let _ = raised.value(py).call_method1("add_note", (note,));
+    });
+    raised
 }
 
 /// The exception of one error of the core crate, by the convention the

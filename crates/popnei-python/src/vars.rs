@@ -62,12 +62,13 @@ pub(crate) fn write_vars(
         Ok(())
     });
     if let Err(error) = written {
-        take_away(&path);
+        let taken = take_away(&path);
         // The file the error names is the one it is about: a wrong line of
         // the VCF names the VCF, and a disc that filled up names the file
         // that was being written, which the core keeps apart from an error
         // of a source that could not be read.
-        return Err(of_the_file_it_is_about(error, &vcf, &path));
+        let refusal = of_the_file_it_is_about(error, &vcf, &path);
+        return Err(with_what_was_left(refusal, &path, taken));
     }
     // A Ctrl-C that arrived while the file was being written is still
     // pending: the interpreter was released and no bytecode ran to raise
@@ -75,8 +76,8 @@ pub(crate) fn write_vars(
     // as every call that fails leaves none, so that the call they make
     // again finds the path free.
     if let Err(interrupted) = py.check_signals() {
-        take_away(&path);
-        return Err(interrupted.into());
+        let taken = take_away(&path);
+        return Err(with_what_was_left(interrupted.into(), &path, taken));
     }
     Ok(())
 }
@@ -130,11 +131,37 @@ fn file_at(path: &Path) -> Result<File, PyPopneiError> {
 }
 
 /// The file that the call was writing, taken away from the path.
-fn take_away(path: &Path) {
-    // What is reported is the error the caller asked about, the line of
-    // their VCF that popnei could not read, and a file that could not be
-    // removed does not take its place. A path that keeps a file of a call
-    // that failed is refused by the next call, which says that a file is
-    // already there.
-    let _ = std::fs::remove_file(path);
+///
+/// # Errors
+///
+/// When the file is still there: a directory whose permissions changed
+/// while the file was being written is one way, and it is the caller that
+/// tells the user, since it is their error that is being reported.
+fn take_away(path: &Path) -> Result<(), std::io::Error> {
+    if let Err(problem) = std::fs::remove_file(path) {
+        // A file that is not there any more is a file that was taken away:
+        // something else removed it, and the path is free for the call the
+        // user makes again, which is what they are told about.
+        if problem.kind() != ErrorKind::NotFound {
+            return Err(problem);
+        }
+    }
+    Ok(())
+}
+
+/// `error`, and with it the file that is still at `path` when it could not
+/// be taken away, which the user's next call at that path would refuse.
+fn with_what_was_left(
+    error: PyPopneiError,
+    path: &Path,
+    taken: Result<(), std::io::Error>,
+) -> PyPopneiError {
+    match taken {
+        Ok(()) => error,
+        Err(problem) => PyPopneiError::LeftBehind {
+            error: Box::new(error),
+            path: path.to_path_buf(),
+            problem: problem.to_string(),
+        },
+    }
 }

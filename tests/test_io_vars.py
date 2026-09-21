@@ -13,8 +13,12 @@ run here: it reads another file.
 
 import errno
 import json
+import os
+import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +27,11 @@ import pyarrow
 import pyarrow.ipc
 import pytest
 from popnei import _core, open_vcf, write_vars
+
+# The VCFs that `tests/reference/vcf/make_reference.py` writes, which the
+# module scoped fixture below reads and which `conftest.py` gives the tests
+# as `reference_vcf_dir`.
+REFERENCE_VCF_DIR = Path(__file__).parent / "reference" / "vcf"
 
 # What the two keys of a vars file are called, and the value of the key of
 # the schema a reader of another version looks at first.
@@ -305,6 +314,98 @@ def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
 
     assert str(refusal.value).startswith(str(vcf_path))
     assert not path.exists()
+
+
+# How many variants the VCF of the two tests that act while a call runs
+# holds. Writing it as a vars file takes about a third of a second in the
+# build `maturin develop` makes, which the tests run against, so a thread of
+# the test has the time to act between the moment the file is made and the
+# moment the call is over.
+VARIANTS_OF_THE_LONG_VCF = 100_000
+
+# A data line of 50 individuals whose first genotype holds four alleles,
+# which a reader of diploid genotypes refuses: the last line of the VCF of
+# the test below, so that the call fails once it has written most of its
+# file.
+_A_TETRAPLOID_LINE = (
+    "chr1\t20000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0/1/1\t"
+    + "\t".join(["0/0"] * (MANY_NUM_INDIVIDUALS - 1))
+    + "\n"
+)
+
+# How long a thread of a test waits for the call it watches to make its
+# file, and how often it looks: the file is made when the call begins, so it
+# is there within a few of these.
+LOOKS_FOR_THE_FILE = 5000
+SECONDS_BETWEEN_LOOKS = 0.001
+
+
+@pytest.fixture(scope="module")
+def long_vcf(tmp_path_factory) -> Path:
+    """A VCF of 100000 variants of the 50 individuals of `many.vcf`.
+
+    Its data lines are those of `many.vcf`, one after another until there
+    are that many, so its variants are not sorted, which the writer takes.
+    It is made once for the module: writing it is 23 MB of text.
+    """
+    path = tmp_path_factory.mktemp("long") / "long.vcf"
+    lines = (REFERENCE_VCF_DIR / "many.vcf").read_text().splitlines(keepends=True)
+    header = [line for line in lines if line.startswith("#")]
+    data = [line for line in lines if not line.startswith("#")]
+    times = -(-VARIANTS_OF_THE_LONG_VCF // len(data))
+    path.write_text("".join(header + (data * times)[:VARIANTS_OF_THE_LONG_VCF]))
+    return path
+
+
+def _stop_writing_in_the_directory_once_the_file_is_there(
+    path: Path, directory: Path
+) -> None:
+    """Waits for `path` to be made and takes away the right to write in
+    `directory`, so that what is at `path` cannot be removed any more.
+
+    The file is made when the call begins and is removed when it fails, so
+    this lands between the two.
+    """
+    for _ in range(LOOKS_FOR_THE_FILE):
+        if path.exists():
+            directory.chmod(0o500)
+            return
+        time.sleep(SECONDS_BETWEEN_LOOKS)
+
+
+def test_write_vars_says_when_it_could_not_take_away_the_file_it_was_writing(
+    long_vcf: Path, tmp_path: Path
+) -> None:
+    """A directory that stops taking files while the vars file is written.
+
+    What went wrong, the tetraploid genotype of the last line of the VCF, is
+    the exception, and a note on it says that a file is still at the path,
+    which the call the user makes again would refuse.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("a directory that says no still takes the files of root")
+    vcf_path = tmp_path / "tetraploid_at_its_end.vcf"
+    shutil.copyfile(long_vcf, vcf_path)
+    with vcf_path.open("a") as vcf:
+        vcf.write(_A_TETRAPLOID_LINE)
+    path = tmp_path / "left_behind.vars"
+    watcher = threading.Thread(
+        target=_stop_writing_in_the_directory_once_the_file_is_there,
+        args=(path, tmp_path),
+        daemon=True,
+    )
+
+    try:
+        watcher.start()
+        with pytest.raises(ValueError, match="ind0") as refusal:
+            write_vars(open_vcf(vcf_path), path)
+    finally:
+        watcher.join(timeout=10)
+        tmp_path.chmod(0o700)
+
+    assert path.exists()
+    notes = getattr(refusal.value, "__notes__", [])
+    assert any(str(path) in note for note in notes), notes
 
 
 # What a child process does with a limit on the size of the files it may
