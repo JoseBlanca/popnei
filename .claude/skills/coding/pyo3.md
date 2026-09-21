@@ -118,11 +118,11 @@ builds the frozen dataclasses.
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
 `From<PyPopneiError> for PyErr`. Its five cases are the error of the core;
-a read that failed, with the path that the core was not given; an argument
-that says how many of something there are and counts nothing, which this
-crate refuses before the core sees it; a defect of this crate, a lock
-that a panic left broken or a chromosome that is not in the table it came
-from; and an exception the interpreter itself raised, the
+that same error with the file it happened in, which the core was not given;
+an argument that says how many of something there are and counts nothing,
+which this crate refuses before the core sees it; a defect of this crate, a
+lock that a panic left broken or a chromosome that is not in the table it
+came from; and an exception the interpreter itself raised, the
 `KeyboardInterrupt` that `py.check_signals` finds between two blocks, which
 travels back as it is.
 
@@ -130,24 +130,29 @@ Every function of the crate returns `Result<T, PyPopneiError>`, the
 `#[pyfunction]` and the `#[pymethods]` that pyo3 exports among them, so
 that `?` carries an error of the core across. A call site maps one by hand
 only to add what the core does not have: `PyPopneiError::of_the_file` puts
-the path into a read that failed.
+the file into an error that came from reading one.
 
-The one conversion chooses the exception a pyNei user expects from pyNei.
-`OSError` for the file system, built with the number the system gave, so
-that it is the `FileNotFoundError`, the `IsADirectoryError` or the
-`PermissionError` of that number and carries the file in `filename`.
-`RuntimeError` for a defect of this crate, and for the three cases with
-which `docs/specs/block.md` says that a reader has one: blocks of a source
-that do not hold the same dataset, a block whose arrays are not of its size
-and a block of no variants. A user who gets one reports it and has nothing
-of their own to correct. Not every defect of popnei is one of these: a spec
-says which exception each case of its module is, and the parse of a VCF
-that did not come back is a `ValueError` by `docs/specs/io_vcf.md`.
-`ValueError` for
-everything else, a bad argument or a malformed file, which is also what a
-case added to the enum of the core later gets. The message is the
-`Display` of the core error, which already has the path, the line and the
-field.
+The one conversion chooses the exception by the owner's convention of 21
+September 2026, which "Errors, and no panics" of `SKILL.md` gives: a
+`ValueError` for a wrong input of a function, which a file whose content is
+not what a VCF holds is, and which a case nobody has written yet gets; a
+`RuntimeError` for a defect of popnei, which is a defect of this crate, one
+of the three cases with which `docs/specs/block.md` says that a reader has
+one, or the parse of a batch of lines that did not come back; and an
+`OSError` for a file
+that cannot be read, that was cut short or that is corrupted. The `OSError`
+is built with the number the system gave, so that it is the
+`FileNotFoundError`, the `IsADirectoryError` or the `PermissionError` of
+that number, and with `None` in its place when nothing of the system
+refused anything, which leaves an `OSError` whose `errno` is `None`. Either
+way it carries the file in `filename`.
+
+The message is the `Display` of the core error, which has the line, the
+column and the value, with the path of the file before it: `<path>: <what
+the core says>`. An `OSError` is the exception: Python prints `filename`
+after the message, so naming the file there too would say it twice. An
+argument that this crate or the core refuses, `fields`, `ploidy`,
+`num_vars_per_block`, names no file.
 
 A panic in Rust reaches Python as `PanicException`, which derives from
 `BaseException`, is not caught by `except Exception`, and usually ends the

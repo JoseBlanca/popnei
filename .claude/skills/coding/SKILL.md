@@ -95,6 +95,13 @@ variants of 10000 samples, has 1e10 genotypes, which does not fit in a
 - A missing value is `Option<f64>` or an explicit enum inside the core,
   and becomes NaN only at the boundary with Python, where pandas expects
   it. NaN that travels through Rust arithmetic hides where it was born.
+  The quality of a variant is the exception, which the owner decided on 21
+  September 2026: the column of a block is `Vec<f32>` with NaN for a
+  variant that has no quality, inside the core as in Python and in
+  TypeScript, as `docs/specs/block.md` has it. What makes it safe is that
+  the VCF reader refuses a quality that is not finite, so a NaN there can
+  only mean that the variant has none; a calculation that reads the
+  qualities tests `is_nan` before any arithmetic on them.
 - A total of floats must not depend on the number of threads. rayon's
   `sum` and `reduce` join the parts in an order it chooses at run time, so
   the last bits change with the pool. Reduce over chunks of a fixed size,
@@ -131,6 +138,17 @@ compiler drop the bounds checks.
 - `Result` everywhere, fail fast, as section 7 of the architecture says. A
   malformed line of a VCF is an error with the line number and the field,
   not a warning and a skipped record.
+- An error never passes silently, which the owner gave as a rule on 21
+  September 2026. A file that was cut short or damaged is an error and not
+  a file with fewer variants, however improbable the damage: a review that
+  changed every byte of `cases.vcf.gz` in turn to each of the 255 other
+  values, 101745 files, found one that the reader gave a header, no
+  variant and no message for, and the owner decided with it in front of
+  him that such a file is refused. So a reader that can check what it read
+  does: the bgzipped VCF is read by the size each of its members states,
+  and the text of each is checked against the CRC32 and the length the
+  member carries. bcftools 1.24 reads that file as no variant, says
+  nothing and exits with 0, and popnei is stricter than it here.
 - The core crate has one error type, the enum `Error` of
   `crates/popnei/src/error.rs`, written with `thiserror`, and its
   `Result<T>` is `std::result::Result<T, Error>`. Every module adds its
@@ -160,25 +178,45 @@ compiler drop the bounds checks.
   `popnei::Error` belongs to it, so each has an enum that does,
   `PyPopneiError` and `JsPopneiError`. One of its cases holds the error of
   the core, and the others hold what only the binding knows: an argument
-  it refuses before the core sees it, a value its language cannot hold, a
-  read that failed and the path the core was not given, and a defect of
-  the binding itself, a lock that a panic left broken. Every function of
-  the crate returns that `Result`, the entry points that pyo3 and
-  wasm-bindgen export among them, so `?` carries an error of the core
-  across. A call site maps one by hand only to add what the core does not
-  have, which in the Python crate is the path of the file, with
-  `PyPopneiError::of_the_file`.
-- Python gets the exception a pyNei user expects: `OSError` for a file
-  that could not be opened or read, built with the number the system gave
-  and the file in `filename`; `RuntimeError` for a defect of the binding
-  and for the cases with which `docs/specs/block.md` says that a reader
-  has one, which are not a wrong value of the user; `ValueError`
-  for everything else, an argument or a file whose content popnei cannot
-  read, and for a case of the enum of the core that nobody has written
-  yet. Which exception a case of a module is, is the spec of that module's
-  to say. JavaScript has one exception for everything a library refuses, so
-  its three cases all become an `Error` with the message the error has in
-  Rust. `pyo3.md`, beside this file, has the Python side.
+  it refuses before the core sees it, a value its language cannot hold,
+  the file that an error of the core happened in, which the core was not
+  given, and a defect of the binding itself, a lock that a panic left
+  broken. Every function of the crate returns that `Result`, the entry
+  points that pyo3 and wasm-bindgen export among them, so `?` carries an
+  error of the core across. A call site maps one by hand only to add what
+  the core does not have, which in the Python crate is the path of the
+  file, with `PyPopneiError::of_the_file`.
+- Which exception a case becomes in Python follows the convention the
+  owner gave on 21 September 2026: a `ValueError` is a wrong input of a
+  function, a `RuntimeError` a defect of popnei, and an `OSError` a file
+  that cannot be read, that was cut short or that is corrupted. For a
+  reader a wrong input is also a file whose content is not what the format
+  holds, so a wrong data line, a header popnei cannot read, a source that
+  is not a VCF, a ploidy out of range and a quality that is not finite are
+  all a `ValueError`, as is a case that nobody has written yet. The
+  defects are the three with which `docs/specs/block.md` says that a
+  reader has one, blocks of a source that do not hold the same dataset, a
+  block whose arrays are not of its size and a block of no variants, and
+  the parse of a batch of lines that did not come back. The `OSError` is
+  built with the number the system gave, which makes it the
+  `FileNotFoundError` or the `PermissionError` of that number, and with no
+  number when nothing of the system refused anything: a gzip stream that
+  ends in the middle, a bgzipped file with no mark of its end, a member
+  that is corrupted. The spec of a module lists its cases with the
+  exception each one is, `docs/specs/io_vcf.md` the nine of the VCF
+  reader.
+- In Python every error of a file names the file: the message of a
+  `ValueError` and of a `RuntimeError` starts with its path, and an
+  `OSError` carries it in `filename`, where a caller looks for it and
+  where Python prints it after the message, so that message does not name
+  it a second time. The core does not have the path, since a reader is
+  built over bytes, so the binding crate puts it there, with
+  `PyPopneiError::of_the_file`. An argument that is refused names no file:
+  what a user wrote is wrong whatever file is read.
+- JavaScript has one exception for everything a library refuses, so its
+  three cases all become an `Error` with the message the error has in
+  Rust; it reads bytes and has no path to add. `pyo3.md`, beside this
+  file, has the Python side.
 
 ## Types, names and defaults
 
