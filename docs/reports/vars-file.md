@@ -1,10 +1,111 @@
 # Work report: the vars file, its writer and its reader
 
-The plan `docs/plans/vars-file.md` is under way, on the branch
-`plan/vars-file`, in the worktree `.claude/worktrees/vars-file`, since 21
-September 2026. The orchestrator, in this report, is the session of the
-assistant that runs the plan: it sends each task to a subagent on Opus,
-checks what comes back and has each work package reviewed.
+The plan `docs/plans/vars-file.md` is done, on the branch
+`plan/vars-file`, in the worktree `.claude/worktrees/vars-file`, 21
+September 2026, in 78 commits from 2d99d64. Its four work packages
+finished as planned, each was reviewed and its findings fixed, and the
+final check passes from a clean clone. The number that the spec sets for
+the speed is met. The orchestrator, in this report, is the session of
+the assistant that ran the plan: it sent each task to a subagent on
+Opus, checked what came back and had each work package reviewed.
+
+What exists now that did not. In the core, the module `io::vars`: a writer
+that takes the blocks of any reader and writes popnei's vars file, one
+arrow IPC file compressed with lz4 with one batch for each block and the
+two keys of `docs/specs/io_vars.md`, and a reader that gives each batch as
+a block and decompresses only the columns that were asked for.
+`popnei.write_vars` and `popnei.open_vars` in Python, natively and under
+pyodide, and `writeVars` and `openVars` in TypeScript. pyarrow 25.0.1,
+pandas and `feather.read_table` open what popnei writes, with the six
+columns, the nulls and the regions that the spec gives for `many.vcf`; the
+file that TypeScript writes from `cases.vcf` is byte for byte the one that
+Python writes; and a file read back gives the blocks of its VCF in every
+field. 250 cargo tests, 78 of them of the module, 99 pytest tests and 70
+node tests, where there were 173, 72 and 46. A pass over the file of 1000
+individuals and 20000 variants with the genotypes alone takes 20.2 to 20.3
+ms, the best of 20 runs on one thread of the owner's Apple M5 Pro, against
+the 21 ms of the spec, and writing it 39.0 to 39.3 ms. The margin, 0.7 to
+0.8 ms, is smaller than what a busy machine moves the number by: with two
+compilers running beside it the best of 5 was 21.4 to 25.0 ms. 88 in 100
+of the pass is the lz4 decompression of arrow-rs, and the file is not the
+one the spec measured on; work package 4 has both. The wasm file is
+1242562 bytes, and was 225344 before arrow-rs.
+
+What is asked of the owner:
+
+1. The merge of `plan/vars-file` into `main`, which is his to order.
+2. Whether the vars file gets checksums, asked in chat on 21 September
+   2026 and not answered when the plan ended. An arrow file has none and
+   arrow-rs writes lz4 without the ones lz4 can carry, so a damaged file
+   can give other variants with no error, against his rule of 21 September
+   2026 that an error never passes silently. Measured: of 1299990 copies
+   of a vars file of 4 variants, each with one byte changed, 23902 were
+   read with no error and gave other variants than the file that was
+   written; of 176030 such copies of a file of 500 variants, whose buffers
+   are compressed, 48849 did, 28 in 100. One byte changed in the genotypes
+   of that file turned 25 genotypes from 1 into -127, and one byte in the
+   name of a column left a file with no chromosomes and no positions. In
+   wasm, where a panic of arrow-rs is a trap, a `RuntimeError:
+   unreachable` that no code can catch, 31 of 16296 damaged files end in
+   one. The options. First, which the orchestrator recommends: the writer
+   puts a CRC32 of the bytes of each batch into the entry of that batch in
+   `popnei_batches`, the key of the footer that already holds its variants
+   and its regions, and a CRC32 over the values of the two keys and the
+   names and types of the columns into a new, third key of the footer; the
+   reader checks each before arrow-rs sees the bytes, which also keeps the
+   panics and the traps away. It costs one pass over the compressed bytes
+   of a batch, about 4 MB for the panel, and the `crc32fast` crate, which
+   is in the tree already because the gzip of the VCF reader uses it; and
+   a program other than popnei would have to write the checksums for
+   popnei to read its file. Second, the same but optional, so that a file
+   of another program is read without them and only popnei's own files are
+   protected. Third, none, with the spec saying that a vars file is not
+   protected. It changes the format and the spec, so nothing of it was
+   built, and it would be a small plan of its own.
+3. Decisions that the work went on without, which he can reverse. Each is
+   written in `docs/specs/io_vars.md` with the option not taken, in "Its
+   Python and TypeScript functions" of the writer, "What it refuses" of
+   the reader, "What it holds" and the list of the cases of the error in
+   "The Rust interface", and each is under "For the owner" of its work
+   package below. The ones a user sees: how the cases of the error are
+   sorted into `ValueError`, `OSError` and `RuntimeError` by his
+   convention; a Ctrl-C during `write_vars` is raised when the pass over
+   the source is over, and it removes the file, even when the call had
+   written all of it; `write_vars` returns when the bytes are on the disc,
+   which costs 5 to 7 ms for the panel; a quality that is not finite in a
+   vars file of another program is refused, as the VCF reader refuses it;
+   a batch of no variants is passed over; a file with no `gts` column, or
+   that names no individual, is not a vars file; the values inside the
+   `gts` and `alleles` lists are written as ones that cannot be null,
+   which saved 1 ms of a pass of 20.5 ms; and the wasm package is built
+   without the names of its functions, 445 KB less, so the stack of a trap
+   shows none.
+4. Smaller: the trial crate behind the spec's 19.1 to 19.3 ms of arrow-rs
+   alone was not kept, so the 21 ms have no program on the other side of
+   the comparison; work package 4 says what would give one. Version 60 of
+   arrow-rs panics, and asks for memory, by numbers it reads from a file
+   without checking them, which is worth an issue in its repository
+   whatever popnei does.
+
+What the next plan and the skills should take from this one. The reviews
+again found what no check had seen, most of it by running the case: a
+write that failed told as a read of another file, a panic at 2 GiB of
+alleles, a process killed by one changed byte, tests that passed with the
+code they guard broken. They cost 2.7 million tokens for 22 reviewers,
+against 1.9 million for the subagents that wrote the 10 tasks and 0.6
+million for those that fixed the findings. Three things went wrong in the
+same way and the prompts of the later tasks were changed for them: a
+subagent that found the core lacking what a rule of the owner asks for
+wrote the way around it into the spec, where it should have said so; a
+subagent wrote its tests after the code, and four of them could not fail;
+and a subagent reported numbers of memory without the procedure, which two
+reviewers could not reproduce. The plan said that task 1.1 would add every
+case of the error so that later tasks added none, and four more were
+needed, 18 where it left 14: a plan should not promise that. Tasks that
+the plan marked as side by side, 2.1 and 2.2, ran so with no trouble,
+because they shared no file and each committed its own paths. The owner
+stopped two reviewers of work package 3 while they ran and ordered them
+sent again.
 
 ## Before the first task
 
@@ -674,3 +775,27 @@ What held and was not changed, for the owner:
 - The reader copies each batch out of the source into a vector it
   zeroes first, 1.2 in 100 of the pass each, although here the source
   is already in memory.
+
+## The final check
+
+From a clean clone of the branch at the last commit of work package 4,
+outside the repository: `cargo fmt --all --check` exit 0; `cargo clippy
+--workspace --all-targets -- -D warnings` no warning; `cargo test
+--workspace` `250 passed`, 2 ignored, the sweep of every byte of a vars
+file among them, which is run on request; `cargo wasm-check`, both wasm
+targets, every target of the crate, finished; `cargo tree -p popnei |
+grep -i zstd` finds nothing; `uv run ruff format --check` `15 files
+already formatted` and `uv run ruff check` `All checks passed!`; `uv run
+maturin develop && uv run pytest` `99 passed`; `npm run build` with no
+error and `npm test` in `js/popnei` `tests 70`, `pass 70`, `fail 0`, and
+a wasm file of 1242562 bytes; `scripts/build_pyodide_wheel.sh` built the
+wheel, and `node tests/pyodide/smoke.mjs`, after `npm install` beside
+it, wrote `cases.vcf` as a vars file under pyodide, read its 4 variants
+back and exited with 0.
+
+| | when the branch was cut | at the end |
+|---|---|---|
+| `cargo test --workspace` | 173 passed, 1 ignored | 250 passed, 2 ignored |
+| `uv run pytest` | 72 passed | 99 passed |
+| `npm test` | tests 46 | tests 70 |
+| `js/popnei/wasm/popnei_bg.wasm` | 225344 bytes | 1242562 bytes |

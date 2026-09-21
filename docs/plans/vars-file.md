@@ -1,7 +1,9 @@
 # Plan: the vars file, its writer and its reader
 
-September 2026. Under way since 21 September 2026 on the branch
-`plan/vars-file`, with its work report in `docs/reports/vars-file.md`.
+September 2026. Done on 21 September 2026 on the branch
+`plan/vars-file`, with its work report in `docs/reports/vars-file.md`;
+the number of "Speed" of the spec is met, and the report asks the owner
+whether the file gets checksums.
 Written on 20 September 2026; the owner answered its breakdown in chat
 that day, and ordered it run as soon as `docs/plans/block-readers.md` was
 merged into `main`, which it was on 21 September 2026, at 2d99d64. It
