@@ -462,3 +462,117 @@ the batch being decoded; a second pass nothing. A test opens twelve
 passes at once and fails when a pass copies the bytes. `writeVars` of
 that file from its VCF of 76.9 MB took 106.8 MB beyond the source with
 batches of 1000 and 158.5 MB with batches of 10000.
+
+### The review
+
+Four reviewers at 1ed9a5a: `spec` and `tests`, each in a worktree of its
+own, `errors`, in one too, and `binding` with the memory; 174, 116, 162
+and 151 thousand tokens. The owner stopped the last two while they ran,
+on 21 September 2026, and ordered them sent again. The `spec` reviewer
+wrote `many.vcf` with `writeVars` under node and opened the file with
+pyarrow 25: the six columns, five batches of 100, 167 and 100 nulls and
+the five entries of the spec's table of regions; the file of `cases.vcf`
+is byte for byte the one that Python's `write_vars` makes; and a file
+that Python wrote, read with `openVars`, gives the 500 variants of
+`openVcf` in every field.
+
+What a damaged file does in wasm, where a panic is a trap, a
+`RuntimeError: unreachable` with no message of popnei, and nothing
+catches it. The `errors` reviewer wrote `cases.vcf` in batches of 3,
+5098 bytes, set every byte in turn to four values and read each of the
+16296 damaged files with every field, 2 s under node, starting the
+process again after each trap:
+
+| what it gave | files |
+|---|---|
+| an `Error` at `openVars` | 2775 |
+| an `Error` at a block | 4136 |
+| the same four variants | 8988 |
+| other variants, or a column gone, and no error | 366 |
+| a trap | 31 |
+
+The 31 are the files that natively reach the two asserts of arrow-rs,
+where the core catches them and gives the error of a batch that could
+not be read. After a trap the module still works, and the memory the
+pass held never comes back: about two copies of the file for each trap.
+The binding crate cannot catch a trap, so only keeping damaged bytes
+from arrow-rs helps, which is what the checksum would do.
+
+What held and was fixed, the ones that matter first:
+
+- A size that a damaged batch declared could take the memory of a tab.
+  The bound the core had put on the decompressed size of an lz4 buffer,
+  255 bytes for each compressed byte, is above what wasm32 addresses
+  for any batch over 16 MB: on a file of one batch of 25 MB, the eight
+  bytes that say 40000000 for the genotypes, changed to 2000000000,
+  left the memory of wasm at 2.07 GB for the life of the tab, and
+  changed to 3000000000 trapped. The reader now walks the buffers of a
+  batch in the order of the schema and holds each to what its column
+  can hold, the genotypes to rows x individuals x ploidy bytes exactly.
+- A `Uint8Array` that did not fit in the memory left trapped, in
+  `openVars` and in `openVcf`, because the glue of wasm-bindgen asks for
+  the memory before any code of popnei runs. The package now asks the
+  binding whether there is room, and gives an `Error`.
+- `writeVars` took 3.4 times the file it wrote in the memory of wasm,
+  which never shrinks, because its buffer doubled: 62.4 MB for a file of
+  18.3 MB. It collects the file in pieces of 1 MiB that cross one at a
+  time and are put together in JavaScript: 34.2 MB. And
+  `numVarsPerBlock` did not reach the VCF reader, which built blocks of
+  the default size whatever was asked, so the advice of the README to
+  lower it did nothing: written from the VCF of 77 MB in batches of 100,
+  51.3 MB before and 20.8 MB after, 1.12 times the file.
+- Four tests that could not fail: the one that guards against a pass
+  copying the bytes of the file, which measured 0 bytes of growth with
+  and without the copy because the memory of wasm had room left by the
+  tests before it, and now runs in a process of its own, 0 bytes against
+  36765696; that `writeVars` gives a copy and not a view into the memory
+  of wasm; the ploidy, only ever read from a diploid file; the size of
+  the batches written. `npm test` ran a `dist/` that could be older than
+  `src/`, and builds the TypeScript first now.
+- A detached `Uint8Array`, whose buffer a page had given to a worker,
+  was a `TypeError` of the generated code.
+- The wasm file carried 443 KB of names of functions for a debugger. It
+  is built without them, 1242562 bytes where it was 1687938; a trap then
+  shows no names in its stack.
+- The numbers of memory that the subagent had put in the README did not
+  reproduce for two reviewers, and are measured again, each with its
+  size of block and how it was measured: on a VCF of 80692954 bytes from
+  `make_big_vcf.py` with 20000 variants, whose vars file in batches of
+  1000 is 19185674 bytes, `openVars` takes 18.4 MB, the first pass 11.7
+  MB with blocks of 1000, 39.2 MB with no size given, which is 5000, and
+  62.6 MB with 10000, and a second pass nothing.
+
+What held and was not changed:
+
+- The 31 damaged files that trap. The binding cannot catch a trap.
+- A file written in wasm is larger than the same one written natively,
+  53650 bytes against 49426 for `many.vcf` in batches of 100, because
+  `lz4_flex` hashes four bytes on a 32 bit target and five on a 64 bit
+  one. Both are valid and hold the same table. The README says it.
+- The message of 1ed9a5a has the numbers that did not reproduce. The
+  commit is not rewritten.
+
+After the fixes, 2 commits of the core, 40 thousand tokens more, and 11
+of the TypeScript side, 128 thousand: `cargo test --workspace` `250
+passed`, 2 ignored, `io::vars` `78 tests`, `npm test` `tests 70`, `fail
+0`, `uv run pytest` `99 passed`, fmt, clippy and `cargo wasm-check`
+clean.
+
+### For the owner
+
+- The 31 traps and the 366 files read wrong with no error, of 16296, are
+  one more reason for the checksum: in wasm nothing else keeps a damaged
+  batch from arrow-rs.
+- The wasm file is built without the names of its functions, 445 KB
+  less. With them the stack of a trap names the function it was in. It
+  is one flag of `build:wasm` in `js/popnei/package.json` to reverse.
+
+### How the work went
+
+The reviews cost 603 thousand tokens, the task 231 thousand and the
+fixes 168 thousand. The owner stopped two reviewers while they ran, and
+they were sent again when he said to go on. The subagent of the task
+wrote its tests after the code, and four of them could not fail; its
+numbers of memory were measured in a way it did not write down and did
+not reproduce. The prompt of a task that measures should ask for the
+procedure beside each number.
