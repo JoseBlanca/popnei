@@ -1012,7 +1012,7 @@ mod tests {
     use std::cell::RefCell;
     use std::io::{Cursor, Write};
     use std::rc::Rc;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
@@ -1023,8 +1023,8 @@ mod tests {
     use super::{
         BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY,
         POPNEI_KEY, Region, VarsMetadata, VarsWriter, alleles_column, batches_as_json,
-        batches_from_json, chrom_column, gts_column, id_column, metadata_as_json,
-        metadata_from_json, write_vars,
+        batches_from_json, chrom_column, id_column, metadata_as_json, metadata_from_json,
+        write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader};
     use crate::error::{Error, Result};
@@ -1096,9 +1096,14 @@ mod tests {
     /// of "How it is verified" of the writer: what the footer says of a
     /// batch of them is the smallest and the largest position of each
     /// chromosome and not the positions of its first and its last variant.
+    ///
+    /// They start on the chromosome that comes second in the alphabet, so
+    /// that the regions of the batch, which are in the order in which the
+    /// chromosomes first appear, are told apart from the same regions in
+    /// any other order.
     const NOT_SORTED: [Row; 4] = [
         Row {
-            chrom: "chr1",
+            chrom: "chr2",
             pos: 300,
             id: "",
             alleles: &["A", "T"],
@@ -1106,7 +1111,7 @@ mod tests {
             gts: &[0, 0, 0, 1, 1, 1],
         },
         Row {
-            chrom: "chr2",
+            chrom: "chr1",
             pos: 50,
             id: "",
             alleles: &["A", "T"],
@@ -1114,7 +1119,7 @@ mod tests {
             gts: &[0, 0, 0, 1, 1, 1],
         },
         Row {
-            chrom: "chr1",
+            chrom: "chr2",
             pos: 100,
             id: "",
             alleles: &["A", "T"],
@@ -1122,7 +1127,7 @@ mod tests {
             gts: &[0, 0, 0, 1, 1, 1],
         },
         Row {
-            chrom: "chr2",
+            chrom: "chr1",
             pos: 60,
             id: "",
             alleles: &["A", "T"],
@@ -1185,8 +1190,12 @@ mod tests {
         chroms: ChromTable,
         /// The blocks still to give, the last one first.
         left: Vec<Block>,
-        /// What it was last asked to fill.
-        needs: Needs,
+        /// What it was last asked to fill, which starts as nothing: a
+        /// reader is asked for its fields before it is read, and the test
+        /// that holds this sees whether it was asked at all. It is shared
+        /// so that the test reads it after the reader was moved into
+        /// `write_vars`.
+        asked_for: Arc<Mutex<Needs>>,
     }
 
     impl GivenBlocks {
@@ -1200,8 +1209,14 @@ mod tests {
                 ploidy: CASES_PLOIDY,
                 chroms,
                 left,
-                needs: Needs::ALL,
+                asked_for: Arc::new(Mutex::new(Needs::empty())),
             }
+        }
+
+        /// What the reader was asked to fill, which the test keeps while
+        /// the reader itself is given away.
+        fn asked_for(&self) -> Arc<Mutex<Needs>> {
+            Arc::clone(&self.asked_for)
         }
     }
 
@@ -1223,7 +1238,9 @@ mod tests {
         }
 
         fn set_needs(&mut self, needs: Needs) {
-            self.needs = needs;
+            if let Ok(mut asked_for) = self.asked_for.lock() {
+                *asked_for = needs;
+            }
         }
     }
 
@@ -1385,6 +1402,30 @@ mod tests {
         write_vars(reader, Vec::new(), Some(num_vars_per_block)).expect("the file was written")
     }
 
+    /// `write_vars` asks its reader for every field, so that a file written
+    /// from a VCF holds its six columns, the ids, the alleles and the
+    /// qualities among them, whether or not the user will read them, and
+    /// can stand in for the VCF in any later analysis.
+    #[test]
+    fn write_vars_asks_its_reader_for_every_field() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let asked_for = reader.asked_for();
+        assert_eq!(
+            *asked_for.lock().expect("what the reader was asked for"),
+            Needs::empty(),
+            "the reader was asked for fields before the call"
+        );
+
+        write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+
+        assert_eq!(
+            *asked_for.lock().expect("what the reader was asked for"),
+            Needs::ALL
+        );
+    }
+
     /// The four variants of the table of `cases.vcf`, in batches of three:
     /// every column of the file is the one of the table of "What it holds"
     /// of `docs/specs/io_vars.md`, with the type and the nulls it gives.
@@ -1505,21 +1546,23 @@ mod tests {
         assert_eq!(num_rows_of(&file.rows), [4]);
         assert_eq!(
             chroms_of(&file.rows[0]),
-            ["chr1", "chr2", "chr1", "chr2"],
+            ["chr2", "chr1", "chr2", "chr1"],
             "the chromosome of every variant is written as its name"
         );
+        // `chr2` is the first region because it is where the first variant
+        // of the block is, which is not the order of the alphabet.
         assert_eq!(
             file.batches,
             vec![BatchInfo {
                 num_vars: 4,
                 regions: vec![
                     Region {
-                        chrom: "chr1".to_owned(),
+                        chrom: "chr2".to_owned(),
                         min_pos: 100,
                         max_pos: 300,
                     },
                     Region {
-                        chrom: "chr2".to_owned(),
+                        chrom: "chr1".to_owned(),
                         min_pos: 50,
                         max_pos: 60,
                     },
@@ -1628,14 +1671,26 @@ mod tests {
     /// The memory the writer uses is one block: the vector of genotypes of
     /// the block it was given becomes the buffer of the `gts` column of the
     /// batch, at the address the vector had.
+    ///
+    /// It is made at the columns of a batch and not at the column of the
+    /// genotypes alone, because what the writer is given is a block: a copy
+    /// of the vector on the way from the block to that column is what this
+    /// finds.
     #[test]
     fn the_genotypes_of_a_block_become_the_buffer_of_the_gts_column_with_no_copy() {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let address = block.gts.as_ptr().addr();
+        let fields = block.fields();
+        let writer: VarsWriter<Vec<u8>> =
+            VarsWriter::new(Vec::new(), &cases_individuals(), 2, 3).expect("the writer");
 
-        let column = gts_column(block.gts, 6).expect("the column of the genotypes");
+        let (arrays, _) = writer
+            .arrays_of(block, &chroms, fields)
+            .expect("the columns of the batch");
 
+        // The genotypes are the last of the six columns of the file.
+        let column = arrays.last().expect("the columns of the batch");
         let alleles = column
             .as_any()
             .downcast_ref::<FixedSizeListArray>()
