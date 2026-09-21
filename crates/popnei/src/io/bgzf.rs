@@ -163,7 +163,17 @@ impl<R: BufRead> BgzfReader<R> {
     /// of an extra field.
     pub(crate) fn fill(&mut self) -> Result<&[u8]> {
         while !self.done && self.consumed >= self.text.len() {
-            self.read_the_next_member()?;
+            if let Err(error) = self.read_the_next_member() {
+                // The member whose CRC32 or length is not the one of its
+                // text was decompressed before that was known, so the text
+                // of it is here: a reader that went on would hand out the
+                // very text that the error says is not the text of the
+                // file. After an error there is no more.
+                self.done = true;
+                self.text.clear();
+                self.consumed = 0;
+                return Err(error);
+            }
         }
         Ok(self.text.get(self.consumed..).unwrap_or_default())
     }
@@ -646,4 +656,129 @@ fn four_bytes_of(bytes: &[u8], at: usize) -> u32 {
         .and_then(|four| <[u8; 4]>::try_from(four).ok())
         .unwrap_or([0, 0, 0, 0]);
     u32::from_le_bytes(of_the_number)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::io::Cursor;
+
+    use super::BgzfReader;
+    use crate::error::Error;
+
+    /// The empty gzip member of 28 bytes that bgzip writes at the end of a
+    /// file, which says that the file is whole: a source that bgzip wrote
+    /// and that does not end with a member that holds no text was cut
+    /// short. htslib writes these same bytes in every file it closes, and
+    /// the tests that write a file that bgzip could have written end it
+    /// with them.
+    ///
+    /// The reader compares nothing with these bytes: what it asks of a file
+    /// is that its last member hold no text, which the CRC32 and the length
+    /// of that member say.
+    pub(crate) const BGZF_EOF: [u8; 28] = [
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
+        0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    /// The bytes of a member of a file that bgzip wrote: `text` compressed
+    /// with raw deflate, a header with the extra field `BC` that holds the
+    /// size of the whole member less 1, and the CRC32 of the text and its
+    /// length after the data.
+    ///
+    /// `before_bc` are the bytes of another subfield of the extra field,
+    /// written before `BC`, which BGZF allows and bgzip does not write.
+    pub(crate) fn bgzf_member_with(text: &[u8], before_bc: &[u8]) -> Vec<u8> {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, text).unwrap();
+        let data = encoder.finish().unwrap();
+
+        let extra_field = before_bc.len().checked_add(6).unwrap();
+        let total = extra_field
+            .checked_add(12)
+            .and_then(|bytes| bytes.checked_add(data.len()))
+            .and_then(|bytes| bytes.checked_add(8))
+            .unwrap();
+        assert!(total <= 65536, "a member holds 65536 bytes at most");
+        let mut member = vec![0x1f, 0x8b, 0x08, 0x04, 0, 0, 0, 0, 0, 0xff];
+        member.extend_from_slice(&u16::try_from(extra_field).unwrap().to_le_bytes());
+        member.extend_from_slice(before_bc);
+        member.extend_from_slice(b"BC");
+        member.extend_from_slice(&2u16.to_le_bytes());
+        member.extend_from_slice(
+            &u16::try_from(total.checked_sub(1).unwrap())
+                .unwrap()
+                .to_le_bytes(),
+        );
+        member.extend_from_slice(&data);
+        let mut crc = flate2::Crc::new();
+        crc.update(text);
+        member.extend_from_slice(&crc.sum().to_le_bytes());
+        member.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+        assert_eq!(member.len(), total);
+        member
+    }
+
+    /// A member as bgzip writes one, whose extra field is the `BC` alone.
+    pub(crate) fn bgzf_member(text: &[u8]) -> Vec<u8> {
+        bgzf_member_with(text, &[])
+    }
+
+    /// A file that bgzip could have written: one member for the text of
+    /// each of `texts` and the empty member of 28 bytes that marks the end.
+    pub(crate) fn bgzf_file(texts: &[&[u8]]) -> Vec<u8> {
+        let mut file = Vec::new();
+        for text in texts {
+            file.extend_from_slice(&bgzf_member(text));
+        }
+        file.extend_from_slice(&BGZF_EOF);
+        file
+    }
+
+    /// A reader that gave an error gives no more text: the member whose
+    /// CRC32 failed is decompressed when the error is found, and a reader
+    /// that went on would hand out the text that the error says is not the
+    /// text of the file. The VCF reader stops at the first error it gets,
+    /// so nothing of popnei asks for a block after one; this is the
+    /// contract of the module, which the plan that decompresses several
+    /// members at a time builds on.
+    #[test]
+    fn after_an_error_the_reader_of_the_members_gives_no_text_of_the_members_after_it() {
+        let mut file = bgzf_member(b"one\n");
+        let mut second = bgzf_member(b"two\n");
+        // The CRC32 of the second member, which are the four bytes before
+        // the length of its text.
+        let at = second.len().checked_sub(8).unwrap();
+        second[at] ^= 0x01;
+        file.extend_from_slice(&second);
+        file.extend_from_slice(&bgzf_member(b"three\n"));
+        file.extend_from_slice(&BGZF_EOF);
+
+        let mut reader = BgzfReader::new(Cursor::new(file)).expect("the reader");
+        let mut line = Vec::new();
+        assert_eq!(reader.read_line(&mut line).expect("the first line"), 4);
+        assert_eq!(line, b"one\n");
+
+        let error = reader
+            .read_line(&mut line)
+            .expect_err("the error of the CRC32");
+        let Error::VcfBgzipCorrupted { member, .. } = error else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(member, 2);
+
+        for call in 0..3 {
+            line.clear();
+            assert_eq!(
+                reader.read_line(&mut line).expect("no more"),
+                0,
+                "call {call}"
+            );
+            assert!(line.is_empty(), "call {call}: {line:?}");
+            assert!(reader.fill().expect("no more").is_empty(), "call {call}");
+        }
+        // The source was not cut short: its bytes are all there and one of
+        // its members is not what it says it is.
+        assert!(!reader.was_cut_short());
+    }
 }

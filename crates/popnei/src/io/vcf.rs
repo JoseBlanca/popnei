@@ -1924,6 +1924,7 @@ mod tests {
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
+    use crate::io::bgzf::tests::{BGZF_EOF, bgzf_file, bgzf_member, bgzf_member_with};
     use crate::variant::{MISSING_ALLELE, Needs};
 
     /// The panic that the test of a reader whose parse did not come back
@@ -1936,21 +1937,6 @@ mod tests {
             "the parse of the line {number} panicked, which this test asked for"
         );
     }
-
-    /// The empty gzip member of 28 bytes that bgzip writes at the end of a
-    /// file, which says that the file is whole: a source that bgzip wrote
-    /// and that does not end with a member that holds no text was cut
-    /// short. htslib writes these same bytes in every file it closes, and
-    /// the tests that write a file that bgzip could have written end it
-    /// with them.
-    ///
-    /// The reader compares nothing with these bytes: what it asks of a file
-    /// is that its last member hold no text, which the CRC32 and the length
-    /// of that member say.
-    const BGZF_EOF: [u8; 28] = [
-        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02,
-        0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
 
     /// The reference VCFs and what bcftools 1.24 read in them live at the
     /// root of the repository, beside the Python tests that read the same
@@ -3423,61 +3409,6 @@ mod tests {
     // error, however improbable the corruption, and "The cases a reader of
     // the rules would not guess" of `docs/specs/io_vcf.md` has what is
     // checked and why.
-
-    /// The bytes of a member of a file that bgzip wrote: `text` compressed
-    /// with raw deflate, a header with the extra field `BC` that holds the
-    /// size of the whole member less 1, and the CRC32 of the text and its
-    /// length after the data.
-    ///
-    /// `before_bc` are the bytes of another subfield of the extra field,
-    /// written before `BC`, which BGZF allows and bgzip does not write.
-    fn bgzf_member_with(text: &[u8], before_bc: &[u8]) -> Vec<u8> {
-        let mut encoder =
-            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-        std::io::Write::write_all(&mut encoder, text).unwrap();
-        let data = encoder.finish().unwrap();
-
-        let extra_field = before_bc.len().checked_add(6).unwrap();
-        let total = extra_field
-            .checked_add(12)
-            .and_then(|bytes| bytes.checked_add(data.len()))
-            .and_then(|bytes| bytes.checked_add(8))
-            .unwrap();
-        assert!(total <= 65536, "a member holds 65536 bytes at most");
-        let mut member = vec![0x1f, 0x8b, 0x08, 0x04, 0, 0, 0, 0, 0, 0xff];
-        member.extend_from_slice(&u16::try_from(extra_field).unwrap().to_le_bytes());
-        member.extend_from_slice(before_bc);
-        member.extend_from_slice(b"BC");
-        member.extend_from_slice(&2u16.to_le_bytes());
-        member.extend_from_slice(
-            &u16::try_from(total.checked_sub(1).unwrap())
-                .unwrap()
-                .to_le_bytes(),
-        );
-        member.extend_from_slice(&data);
-        let mut crc = flate2::Crc::new();
-        crc.update(text);
-        member.extend_from_slice(&crc.sum().to_le_bytes());
-        member.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
-        assert_eq!(member.len(), total);
-        member
-    }
-
-    /// A member as bgzip writes one, whose extra field is the `BC` alone.
-    fn bgzf_member(text: &[u8]) -> Vec<u8> {
-        bgzf_member_with(text, &[])
-    }
-
-    /// A file that bgzip could have written: one member for the text of
-    /// each of `texts` and the empty member of 28 bytes that marks the end.
-    fn bgzf_file(texts: &[&[u8]]) -> Vec<u8> {
-        let mut file = Vec::new();
-        for text in texts {
-            file.extend_from_slice(&bgzf_member(text));
-        }
-        file.extend_from_slice(&BGZF_EOF);
-        file
-    }
 
     /// One data line of a VCF of three individuals with the position
     /// `position`, which is what a test that needs many lines fills a
