@@ -226,6 +226,29 @@ pub enum Error {
     )]
     VcfBgzipEndMissing,
 
+    /// A member of the source of the VCF, which bgzip wrote, is not one
+    /// bgzip could have written: its header is not that of a member of such
+    /// a file, the size it states is not the size it has, or the text that
+    /// came out of it is not the text its CRC32 and its length describe. The
+    /// file was damaged after it was written, by a copy or a transfer that
+    /// did not check what it carried.
+    ///
+    /// The member is counted from 1 and `offset` is the byte of the
+    /// compressed file where it starts, so that a user can look at it with
+    /// `xxd -s`. The variants of the members before it are given first.
+    #[error(
+        "the VCF was written by bgzip and its member {member}, which starts at the byte {offset} of the compressed file, is corrupted: {problem}. The variants before it were given, and the file has to be fetched or copied again"
+    )]
+    VcfBgzipCorrupted {
+        /// Which member of the file it is, counted from 1.
+        member: u64,
+        /// The byte of the compressed file where that member starts,
+        /// counted from 0.
+        offset: u64,
+        /// What is wrong with it.
+        problem: String,
+    },
+
     /// The file of a VCF, or of another source of variants, could not be
     /// opened. It carries the path, which `std::io::Error` does not, so
     /// that a message names the file and a binding can put it where its
