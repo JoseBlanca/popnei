@@ -186,13 +186,18 @@ impl Blocks {
         // stay under the block's as a writable view of the same genotypes.
         let gts =
             Array3::from_shape_vec((num_vars, num_individuals, ploidy), gts).map_err(|error| {
-                PyPopneiError::Broken(format!(
-                    "a block of {num_vars} variants of {num_individuals} individuals of \
-                     the ploidy {ploidy} does not hold that many genotypes: {error}"
-                ))
+                PyPopneiError::broken_of_the_file(
+                    format!(
+                        "a block of {num_vars} variants of {num_individuals} individuals \
+                         of the ploidy {ploidy} does not hold that many genotypes: {error}"
+                    ),
+                    &self.path,
+                )
             })?;
         let gts = read_only(gts.into_pyarray(py))?;
-        let chrom = chroms.map(|chroms| chrom_column(py, &chroms)).transpose()?;
+        let chrom = chroms
+            .map(|chroms| chrom_column(py, &chroms, &self.path))
+            .transpose()?;
         let id = id.map(|ids| id_column(py, &ids)).transpose()?;
         let alleles = alleles
             .map(|column| alleles_column(py, &column))
@@ -231,10 +236,11 @@ impl Blocks {
     /// with nothing to show it.
     fn next_block(&self) -> Result<Option<(Block, Option<ChromColumn>)>, PyPopneiError> {
         let mut pass = self.pass.lock().map_err(|_| {
-            PyPopneiError::Broken(
+            PyPopneiError::broken_of_the_file(
                 "the blocks of this pass cannot be read any more: a panic left the \
                  reader half way through a block"
                     .to_string(),
+                &self.path,
             )
         })?;
         if pass.finished {
@@ -263,9 +269,11 @@ impl Pass {
         else {
             return Ok(None);
         };
-        block.check()?;
+        block
+            .check()
+            .map_err(|error| PyPopneiError::of_the_file(error, path))?;
         let chroms = match block.chrom.as_deref() {
-            Some(numbers) => Some(ChromColumn::of(numbers, self.reader.chroms())?),
+            Some(numbers) => Some(ChromColumn::of(numbers, self.reader.chroms(), path)?),
             None => None,
         };
         Ok(Some((block, chroms)))
@@ -361,7 +369,7 @@ impl ChromColumn {
     /// The table of a de novo assembly holds 10^4 scaffolds or more and a
     /// block holds a few of them, so what is copied is the name of every
     /// chromosome of the block and not the table.
-    fn of(numbers: &[u32], chroms: &ChromTable) -> Result<ChromColumn, PyPopneiError> {
+    fn of(numbers: &[u32], chroms: &ChromTable, path: &Path) -> Result<ChromColumn, PyPopneiError> {
         let mut names = Vec::new();
         let mut of_each_variant = Vec::with_capacity(numbers.len());
         let mut where_each_number_went: HashMap<u32, usize> = HashMap::new();
@@ -370,10 +378,13 @@ impl ChromColumn {
                 Some(index) => *index,
                 None => {
                     let Some(name) = chroms.name(*number) else {
-                        return Err(PyPopneiError::Broken(format!(
-                            "the chromosome number {number} of a block is not in the \
-                             table of the reader that gave it"
-                        )));
+                        return Err(PyPopneiError::broken_of_the_file(
+                            format!(
+                                "the chromosome number {number} of a block is not in \
+                                 the table of the reader that gave it"
+                            ),
+                            path,
+                        ));
                     };
                     names.push(name.to_owned());
                     let index = names.len().saturating_sub(1);
@@ -394,6 +405,7 @@ impl ChromColumn {
 fn chrom_column<'py>(
     py: Python<'py>,
     chroms: &ChromColumn,
+    path: &Path,
 ) -> Result<Bound<'py, PyTuple>, PyPopneiError> {
     // One Python string for each chromosome, which the variants of that
     // chromosome share: a block of 10000 variants of one chromosome holds
@@ -408,9 +420,10 @@ fn chrom_column<'py>(
         .iter()
         .map(|index| {
             names.get(*index).cloned().ok_or_else(|| {
-                PyPopneiError::Broken(format!(
-                    "the chromosome {index} of a block has no name beside it"
-                ))
+                PyPopneiError::broken_of_the_file(
+                    format!("the chromosome {index} of a block has no name beside it"),
+                    path,
+                )
             })
         })
         .collect::<Result<Vec<_>, PyPopneiError>>()?;

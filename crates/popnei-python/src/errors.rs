@@ -48,7 +48,12 @@ pub(crate) enum PyPopneiError {
     /// Something that cannot happen unless this crate has a defect: a lock
     /// a panic left broken, or a chromosome whose number is not in the
     /// table of the reader that gave it.
-    Broken(String),
+    Broken {
+        /// What went wrong, for whoever reports it.
+        message: String,
+        /// The file that was being read, where there is one.
+        path: Option<PathBuf>,
+    },
     /// An exception the interpreter itself raised, on its way back to it as
     /// it is: the `KeyboardInterrupt` of a Ctrl-C that `check_signals`
     /// found between two blocks, and what building a tuple of the names of
@@ -66,6 +71,15 @@ impl PyPopneiError {
         PyPopneiError::OfTheFile {
             error,
             path: path.to_path_buf(),
+        }
+    }
+
+    /// A defect of this crate that was found while `path` was being read,
+    /// which the message names as every error of a file does.
+    pub(crate) fn broken_of_the_file(message: String, path: &Path) -> PyPopneiError {
+        PyPopneiError::Broken {
+            message,
+            path: Some(path.to_path_buf()),
         }
     }
 }
@@ -99,7 +113,9 @@ impl From<PyPopneiError> for PyErr {
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of 1 or more that this machine can count"
             )),
-            PyPopneiError::Broken(message) => PyRuntimeError::new_err(message),
+            PyPopneiError::Broken { message, path } => {
+                PyRuntimeError::new_err(of_the_file(message, path))
+            }
             PyPopneiError::Python(error) => error,
         }
     }
@@ -149,13 +165,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The cases that say popnei has a defect: the three with which
         // `docs/specs/block.md` says that a reader has one, blocks of a
         // source that do not hold the same dataset, a block whose arrays
-        // are not of its size and a block of no variants; and the parse of
-        // a batch of lines that did not come back, which a panic inside it
+        // are not of its size and a block of no variants; the number of
+        // values a filter of popnei gave `Block::retain_vars`, which is one
+        // for each variant of the block it was given; and the parse of a
+        // batch of lines that did not come back, which a panic inside it
         // leaves behind. Nothing a user asks for gives them, so a user who
         // gets one reports it instead of looking for what they typed wrong.
         popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
+        | popnei::Error::KeepOfAnotherSize { .. }
         | popnei::Error::VcfParseNotFinished { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
