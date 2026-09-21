@@ -234,11 +234,12 @@ test("the bytes of a vars file are a copy, and the memory of wasm may grow", asy
   const kept = [...bytes];
   variants.free();
   assert.ok(bytes.length > 0);
-  // A VCF of some megabytes, which the memory of wasm has to grow to hold.
-  // Bytes that were a view into that memory would be detached by the
-  // growth: their length would be 0 and reading them would throw.
+  // A VCF of 13 MB, more than what the tests before this one left free in
+  // the memory of wasm, so that memory has to grow to hold it. Bytes that
+  // were a view into it would be detached by the growth: their length would
+  // be 0 and reading them would throw.
   const memory = memoryOfWasm();
-  const big = openVcf(manyVariantsVcf(100000));
+  const big = openVcf(manyVariantsVcf(300000));
   for (const block of big.iterBlocks()) {
     assert.ok(block.numVars > 0);
   }

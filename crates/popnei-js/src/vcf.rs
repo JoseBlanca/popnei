@@ -16,7 +16,7 @@ use popnei::block::BlockReader;
 use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Blocks, OpenSource, blocks_of, bytes_of_a_vars_file, cursor_of};
+use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
 
 /// A VCF that was opened: its bytes, the options it is read with, and the
 /// individuals its header named.
@@ -60,15 +60,17 @@ impl VcfSource {
         blocks_of(self, fields, num_vars_per_block)
     }
 
-    /// The variants of the VCF as the bytes of a vars file of batches of
+    /// The variants of the VCF as a vars file of batches of
     /// `num_vars_per_block` variants, and of the size popnei chooses for
-    /// these individuals when it is not given.
+    /// these individuals when it is not given, which the package reads out
+    /// of the memory of wasm piece by piece.
     ///
     /// # Errors
     ///
-    /// When `num_vars_per_block` is 0, when the VCF cannot be read, and
-    /// when a block of it is not one a vars file holds.
-    pub fn write_vars(&self, num_vars_per_block: Option<usize>) -> Result<Vec<u8>, JsPopneiError> {
+    /// When `num_vars_per_block` is 0, when the VCF cannot be read, when a
+    /// block of it is not one a vars file holds, and when the memory of the
+    /// tab does not take the file.
+    pub fn write_vars(&self, num_vars_per_block: Option<usize>) -> Result<VarsFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block)
     }
 }

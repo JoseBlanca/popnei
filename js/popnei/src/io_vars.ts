@@ -68,14 +68,19 @@ export function openVars(source: Uint8Array): Variants {
  * stand in for the VCF in any later analysis; a source that has no alleles
  * to give gives a file without that column.
  *
- * The whole file is built in the memory of wasm and the `Uint8Array` is a
- * copy of it, so what the tab holds while the call runs is the source and
- * the file together. That memory grows and never shrinks.
+ * The whole file is built in the memory of wasm, which grows and never
+ * shrinks, so what the tab holds while the call runs is the source and the
+ * file together, and `numVarsPerBlock` is what an application that runs out
+ * of memory lowers: it is the size of the block that is read and written at
+ * a time. What comes back is the caller's own array, in the heap of
+ * JavaScript, which nothing has to free and which the memory of wasm does
+ * not hold a second copy of.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `numVarsPerBlock` is not a whole number of 1 or more, when the source
- * cannot be read, a wrong line of a VCF among the causes, and when `init`
- * has not been awaited.
+ * `numVarsPerBlock` is not a whole number of 1 or more and at most
+ * 4294967295, when the source cannot be read, a wrong line of a VCF among
+ * the causes, when the memory of the tab does not take the file, and when
+ * `init` has not been awaited.
  */
 export function writeVars(
   variants: Variants,
@@ -87,5 +92,26 @@ export function writeVars(
     options.numVarsPerBlock === undefined
       ? undefined
       : wholeNumberOfOneOrMore("numVarsPerBlock", options.numVarsPerBlock);
-  return source.write_vars(numVarsPerBlock);
+  // The file comes out of the memory of wasm in pieces, each of them freed
+  // there as it is copied here, and the array they are put into is the
+  // user's. A file that crossed in one piece would be held twice while it
+  // crossed, and the memory of wasm would keep its half of that for as long
+  // as the page lives.
+  const file = source.write_vars(numVarsPerBlock);
+  try {
+    const bytes = new Uint8Array(file.num_bytes());
+    let written = 0;
+    for (let piece = file.next_piece(); piece !== undefined; piece = file.next_piece()) {
+      bytes.set(piece, written);
+      written += piece.length;
+    }
+    if (written !== bytes.length) {
+      throw new Error(
+        `popnei: the vars file says it holds ${bytes.length} bytes and gave ${written}`,
+      );
+    }
+    return bytes;
+  } finally {
+    file.free();
+  }
 }

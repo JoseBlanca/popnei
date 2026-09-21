@@ -1,16 +1,21 @@
 /**
- * That every pass over a vars file reads the bytes `openVars` was given,
- * and none copies them.
+ * What a vars file of some megabytes costs in the memory of wasm: what it
+ * takes to write one, and that every pass over one reads the bytes
+ * `openVars` was given without copying them.
  *
- * It is alone in its file because the memory of wasm never shrinks: what
- * the tests of another file freed would stay there as room a copy of the
- * file fits into, and the measurement would then say nothing. node's test
- * runner gives each test file its own process, as `before_init.test.ts`
- * uses too.
+ * The two tests are alone in their file, and in this order, because the
+ * memory of wasm never shrinks: what a test frees stays there as room the
+ * next one fits into, and a measurement made after a test that freed a
+ * file says nothing. node's test runner gives each test file its own
+ * process, as `before_init.test.ts` uses too. The first test writes the
+ * file with the VCF it came from still in that memory, so nothing of what
+ * it measures fits in a hole; the second reads it, where what the first
+ * one left free, the VCF, is smaller than the copies it would take to
+ * pass if the passes copied the file.
  *
- * The measurement is twelve passes open at once. One pass alone does not
- * tell the two apart: its copy fits in what writing the file left free,
- * and the memory of wasm does not grow at all.
+ * The passes are measured twelve at a time. One pass alone does not tell
+ * the two apart: its copy fits in what writing the file left free, and the
+ * memory of wasm does not grow at all.
  */
 
 import assert from "node:assert/strict";
@@ -73,10 +78,30 @@ function vcfOfDrawnGenotypes(
   return new TextEncoder().encode([...lines, ""].join("\n"));
 }
 
-test("the passes of a vars file share the bytes it was opened with", () => {
+/** The bytes of the vars file, which the first test writes for both. */
+let bytes: Uint8Array = new Uint8Array();
+
+test("a vars file is written in about the memory of wasm it holds", () => {
   const vcf = openVcf(vcfOfDrawnGenotypes(14000, 600), { onlyPassed: false });
-  const bytes = writeVars(vcf, { numVarsPerBlock: 100 });
+  const before = memoryOfWasm();
+  bytes = writeVars(vcf, { numVarsPerBlock: 100 });
+  const grew = memoryOfWasm() - before;
   vcf.free();
+  assert.ok(bytes.length > 8 * 1024 * 1024, `the file is ${bytes.length} bytes`);
+  // What the write holds in the memory of wasm is the file and one batch,
+  // 100 variants of 600 individuals. A sink that grew by doubling held the
+  // bytes it had and the buffer twice as large it was copying them into,
+  // and the memory of wasm keeps both: it was measured at 2.75 times the
+  // file, writing this one from its VCF, and at 3.41 times writing one
+  // from a vars source, which has no VCF reader in it.
+  assert.ok(
+    grew < 2 * bytes.length,
+    `writing a vars file of ${bytes.length} bytes grew the memory of wasm ` +
+      `by ${grew} bytes`,
+  );
+});
+
+test("the passes of a vars file share the bytes it was opened with", () => {
   const variants = openVars(bytes);
   const before = memoryOfWasm();
   const passes = Array.from({ length: NUM_PASSES }, () => {
