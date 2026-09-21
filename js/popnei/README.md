@@ -101,20 +101,33 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   so a second copy of the same file stays for as long as the page lives,
   which is why `open_vcf` and `open_vars` keep the `Vec` they were given
   and share it with every pass: an 80 MB VCF costs 80 MB of the tab and
-  not 160 MB. Measured on a vars file of 26.9 MB, 20000 variants of 1000
-  diploid individuals written in batches of 1000: `openVars` grows the
-  memory of wasm by 27.1 MB, the file and nothing else, and a pass over
-  its genotypes by 12.2 MB, the batches it decodes. A reader built over a
-  copy of those bytes instead grew it by 39.1 MB at that pass, 26.9 MB
-  more, which is the file.
-- A `Vec<u8>` coming back is a copy going out, so the bytes of a file that
-  is written are in the memory of wasm and in the `Uint8Array` at once.
-  While `write_vars` runs, that memory holds the source, the block being
-  written and the file that is growing: writing the 26.9 MB file above
-  from a VCF of 76.9 MB grew the memory of wasm by 106.8 MB with batches
-  of 1000 variants and by 158.5 MB with batches of 10000, beyond the
-  76.9 MB of the source. The size of the batches is what an application
-  that runs out of memory has to lower.
+  not 160 MB. The measurements that follow are of one file, written by
+  `crates/popnei/benches/make_big_vcf.py` with its `NUM_VARS` at 20000:
+  a VCF of 80692954 bytes, 20000 variants of 1000 diploid individuals,
+  whose vars file in batches of 1000 is 19185674 bytes. Each of them was
+  made in a process of its own, because the memory of wasm never shrinks
+  and what one measurement frees is room the next one does not have to
+  grow for, and each is the memory of wasm before the call against after
+  it.
+- `openVars` of that file grows the memory of wasm by 18.4 MB, the file
+  and nothing else. A pass over it grows it by what the blocks it builds
+  hold: 11.7 MB with `numVarsPerBlock` 1000, 39.2 MB with none, which for
+  1000 individuals is blocks of 5000 variants, and 62.6 MB with 10000. A
+  second pass grows it by nothing, whichever of the three, because the
+  first one left the room behind.
+- A `Vec<u8>` coming back is a copy going out, so a file that is written
+  is in the memory of wasm and in the `Uint8Array` at once. While
+  `writeVars` runs, that memory holds the source, the block being read and
+  written, and the file that is growing, and the package reads that file
+  out of it in pieces of 1 MiB, each freed there as it is copied into the
+  array the user gets. Writing the file above from its VCF grows the
+  memory of wasm by 30.8 MB with batches of 1000 variants, beyond the
+  77.0 MB of the source, and by 20.8 MB with batches of 100, which is a
+  file of 19507162 bytes. Writing it again from the vars file it came
+  from, in batches of 1000, grows it by 34.2 MB. The size of the batches
+  is what an application that runs out of memory lowers, and it is the
+  size of the block that is read as well as the size of the batch that is
+  written.
 - A panic of Rust in wasm is a trap: the call ends where it is, the memory
   of wasm keeps what it held, and an object that was borrowed at that
   moment stays borrowed, so a later `free()` of it throws "attempted to
@@ -159,13 +172,17 @@ fetches and reads a VCF through it, and that the blocks of `cases.vcf` and
 `test/vars.test.ts` writes those four variants into a vars file with
 `writeVars` and reads them back with `openVars`, and reads
 `tests/reference/vars/zstd.vars`, the file compressed with zstd that
-popnei cannot write and refuses at its first block. Three of the tests
+popnei cannot write and refuses at its first block. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
-`wasm/popnei.js` generates: that a block kept while enough more are read
-for that memory to grow still holds what it held, that an iteration gives
-its pass back however it ends, and that twelve passes over one vars file
-open at once grow that memory by less than the file, which a reader that
-copied the bytes for each pass would not.
+`wasm/popnei.js` generates: that a block, and the bytes of a vars file,
+kept while enough more is read for that memory to grow still hold what
+they held, and that an iteration gives its pass back however it ends.
+`test/vars_memory.test.ts` is alone in its process for two more, because
+what a test frees stays in that memory as room the next one fits into: it
+writes a vars file of 12 MB and asks that the write stay under twice the
+file, and then opens twelve passes over it at once and asks that they
+grow the memory by less than one copy of it, which a reader that copied
+the bytes for each pass would not.
 
 ## node and a page, from one build
 
@@ -324,6 +341,10 @@ hand:
   which frees it at a moment nobody chooses. The `finally` that frees it
   cannot do that one, because a generator that never ran its first line
   never runs its last either.
+- The `Uint8Array` of `writeVars` is the user's own, in the heap of
+  JavaScript: the file is read out of the memory of wasm in pieces, each
+  of them freed there as it is copied, so nothing of it is left to free by
+  hand.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and
