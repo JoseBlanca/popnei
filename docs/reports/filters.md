@@ -381,3 +381,69 @@ The deliverables of work package 3, run by the orchestrator at 5974b92:
    tests/pyodide/smoke.mjs` exits with 0.
 
 fmt, clippy, ruff and `cargo wasm-check` pass.
+
+The review of the two bindings and of the reference script, at f609a6a,
+with five categories: `numbers` was left out, the change has no
+arithmetic of its own, and `architecture`, whose one point, the chain
+built in both binding crates, is with the owner. No reviewer found a
+wrong number. The `spec` reviewer ran the worked example as a VCF at its
+eleven thresholds, the eleven files of bcftools position by position,
+pyNei at 15 thresholds that the tests lack and at the boundary of 2/3 on
+`cases.vcf`, a ploidy of 4 and of 1, and a filtered `write_vars` read
+back and filtered on to the 106 of the chain. The `tests` reviewer made
+12 mutations of the bindings and each failed a test; with the kept rows
+rotated by one in the core the counts stayed right and the comparison
+with pyNei failed by its positions in the nine rows. What held and is
+fixed, in b76ad78, Python, and 131513d, TypeScript:
+
+- In Python a threshold of the wrong type got the message of pyo3, with
+  no argument in it, `filter_by_maf(True)` was a filter at 1.0 with no
+  word, and `10**400` an `OverflowError`. Four reviewers. What is no
+  number, a truth value among it, is now a `TypeError` that names the
+  argument and what was given, and a whole number that no float holds
+  the `ValueError` of a threshold out of range. A numpy float, 1 and 0
+  are taken.
+- The `repr` of a `Variants` of a VCF did not show the options it is
+  read with, so two handles that give 3 and 4 variants of `cases.vcf`
+  printed the same. It is now `<Variants of
+  tests/reference/vcf/many.vcf, ploidy=2, only_passed=True, no steps>`.
+  The spec defines a source as a path with its options. A user sees it;
+  the owner's to reverse.
+- The docstring of `write_vars` did not say that the steps take variants
+  out of the file that is written. It does, and `steps` says that it is
+  built at every read.
+- In TypeScript a refused threshold was printed as Rust spells it, 95.0
+  for a 95 and inf; it is printed as JavaScript does. The README said
+  that the error of a second filter names the argument; the message of a
+  filter after `free()` spoke of reading; a comment on when a pass copies
+  the steps was false.
+- Tests that were missing: `null`, a string of digits and `true` as
+  TypeScript thresholds, which are what the boundary of wasm turns into
+  a number with no error, and with `null` let through none of the 109
+  tests failed; and, in both languages, that a filter added between the
+  call of `iter_blocks` and its first block does not reach that pass.
+
+Not taken: a `Step` is not hashable, because its `args` is the dict the
+spec asks for; the TypeScript `args` stays `Record<string, unknown>`,
+as the review of work package 1 left it for the reason the spec gives,
+and its doc comment shows how a user narrows a value.
+
+After the fixes, run by the orchestrator at 131513d: `cargo test
+--workspace` `296 passed`, 2 ignored; `uv run pytest` `173 passed`; `npm
+test` `tests 125`, `fail 0`; fmt, clippy, ruff and `cargo wasm-check`
+pass; the wheel of pyodide builds and its smoke test exits with 0. The
+five reviewers cost 120053 to 157930 tokens each, the fixes 39679 and
+33503.
+
+For the owner, from this review, all three older than this plan:
+
+- `iter_blocks(fields=())` still reads the genotypes, so the empty `gts`
+  of "Fields that were not asked for" of `docs/specs/variant.md` cannot
+  be reached from Python.
+- A Ctrl-C that a user catches after a block was read ends the pass, so
+  a loop that goes on gets a short result and no error.
+- Python's `write_vars` opens its source at the source's own size of
+  block, and the TypeScript one at the size that was asked for, so with
+  `num_vars_per_block=100` Python holds a larger block in memory. The
+  file is the same. And an error that comes from the core has no
+  `popnei: ` before it in TypeScript, where the package's own have one.
