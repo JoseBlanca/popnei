@@ -1,10 +1,66 @@
 # Work report: the three threshold filters and the counts of a pass
 
-The plan `docs/plans/filters.md` is under way, on the branch
-`plan/filters`, in the worktree `.claude/worktrees/filters`, since 21
-September 2026. The orchestrator, in this report, is the session of the
-assistant that runs the plan: it sends each task to a subagent on Opus,
-checks what comes back and has each work package reviewed.
+The plan `docs/plans/filters.md` is done, on the branch `plan/filters`,
+in the worktree `.claude/worktrees/filters`, where it ran on 21 September
+2026. Nothing of it is in `main`. The orchestrator, in this report, is the
+session of the assistant that ran the plan: it sent each task to a
+subagent on Opus, checked what came back and had each work package
+reviewed.
+
+What exists now that did not. A user puts the missing data filter, the
+maf filter and the observed heterozygosity filter on a `Variants`, in
+Python with `filter_by_missing_data`, `filter_by_maf` and
+`filter_by_obs_het` and in TypeScript with their three twins; reads the
+steps it holds in `steps` and, in Python, in its `repr`; and reads in the
+`pass_stats` of what `iter_blocks` and `write_vars` return how many
+variants the pass gave and how many each filter was given and kept. On
+`tests/reference/vcf/many.vcf` the three filters keep, at every threshold
+of the spec's table and chained, the variants that bcftools 1.24 and
+pyNei at ef0ca6e keep, position by position. The missing data filter adds
+0.006 to 0.013 s to a pass of 0.095 s over the 400 MB VCF on 18 threads,
+and 0.049 to 0.085 s to one of 0.56 s on one thread;
+`docs/reports/filters-measurement.md` has the rest.
+
+The final check of the plan, from a clean clone of the branch at c151714:
+`cargo fmt --all --check` exit 0; `cargo clippy --workspace --all-targets
+-- -D warnings` no warning; `cargo test --workspace` `296 passed`, 2
+ignored, where the plan started from 249; `cargo wasm-check` finished;
+`cargo bench --no-run` built; ruff `18 files already formatted` and `All
+checks passed!`; `uv run maturin develop && uv run pytest` `173 passed`,
+from 99; `npm run build && npm test` in `js/popnei` `tests 125`, `fail
+0`, from 62, of which 8 came with the merge of `main`; the wheel of
+pyodide built and its smoke test exited with 0.
+
+What is asked of the owner.
+
+1. The merge. The branch holds three things that are not in `main`: the
+   branch `spec/filters`, fee97bf, with the specs the plan was built
+   from; `main` itself as of d1d6997, merged into the branch at d4e8458;
+   and this plan. The main checkout still has uncommitted copies of
+   `docs/glossary.md`, `docs/specs/variant.md` and
+   `docs/specs/filters.md` that are older than `spec/filters`, and an
+   untracked `docs/specs/filters.md` stops a merge until it is moved.
+2. Whether the vars file reader refuses an allele below the missing one.
+   A vars file with one damaged byte gives an allele of -2 with no
+   error; the options and the recommendation are under "The review of
+   the counts and of the filter of the core", below.
+3. Whether the core builds the chain of the filters of a pass, so that
+   the two binding crates do not each hold that code: under the review
+   of work package 1. The orchestrator recommends it, as a small task.
+4. What the plan decided that is his to reverse, each where it happened
+   below: the core's `write_vars` returns the count of variants beside
+   the sink; `count_alleles` clears the array it is given; the two
+   errors of the counts are a `RuntimeError`; the `repr` of a `Variants`
+   shows the options of a VCF; a threshold out of range is refused before
+   a kind that is set; in Python a threshold that is no number, a truth
+   value among it, is a `TypeError`.
+5. What waits for a spec of its own: a read ahead thread that owns the
+   reader cannot answer `pass_stats` mid pass; a Ctrl-C waits for a
+   filter that keeps nothing to reach the end of the file;
+   `copy.copy(variants)` shares the steps.
+6. The performance review that the measurement hands over to: a profile
+   of the filtered pass, why a vars file is read on one thread, and
+   whether one reader with several thresholds is faster than several.
 
 ## Before the first task
 
@@ -447,3 +503,62 @@ For the owner, from this review, all three older than this plan:
   `num_vars_per_block=100` Python holds a larger block in memory. The
   file is the same. And an error that comes from the core has no
   `popnei: ` before it in TypeScript, where the package's own have one.
+
+## Work package 4: the measurement of "Speed"
+
+Task 4.1, commits d7037e7, the bench `filter_vars`, and 38cf624, the
+report `docs/reports/filters-measurement.md` and the numbers in "Speed"
+of `docs/specs/filters.md`, which still sets no number to reach. The
+orchestrator ran the bench on the VCF with 18 threads and 3 runs: 0.101
+s with the filter at 0.1 and 0.093 s with none. 180282 tokens.
+
+The review, one reviewer of the `methodology` category of the
+`performance-review` skill. The timings held: both passes of a pair ask
+for the same fields, the pool and the first pass are outside the clock,
+and a difference of 0.007 s stands against a spread of 0.002 to 0.003 s
+within a set. What did not hold, fixed in 0529bf6 and c151714:
+
+- The difference between the two thresholds was given as what taking
+  45227 variants out of the blocks costs. The reviewer timed that copy
+  alone at 3 to 5 ms for the dataset, against the 0.020 to 0.027 s of
+  the VCF on one thread. The subagent took every pair of popnei again,
+  four sets each, on a quieter machine: over the VCF on one thread the
+  sets spread by more than the two thresholds differ, so that gap was
+  noise, and where the runs are stable compacting costs 0.003 to 0.005
+  s. "Speed" and the report give the range of the four sets now, each
+  threshold against the pass with no filter of its own pairs.
+- The scripts that timed pyNei and bcftools had not been kept. They are
+  `time_pynei.py` and `time_command.py`, beside `make_big_vcf.py`.
+- The whole passes of pyNei and of bcftools were set beside popnei's as
+  if they did the same work: pyNei's builds five more columns for every
+  chunk, and bcftools writes what it keeps as text. Both texts say so.
+- The pass with no filter reads no genotype, so what the filter costs is
+  an upper bound for a calculation that reads them afterwards; both
+  texts say so, and the bench prints how many alleles each pass held.
+
+Not taken, and named in the measurement report where it hands over to
+the performance review: a sampling profile, a threshold that keeps
+almost nothing, the copy loop that runs whole when every variant is
+kept, and the mask allocated for every block. The reviewer cost 109310
+tokens, the fixes 53323.
+
+The deliverables, run by the orchestrator at c151714: `cargo bench
+--no-run` builds `filter_vars`, and the command of deliverable 1 prints
+each run; the report has what deliverable 2 lists; "Speed" has the
+numbers and no number to reach.
+
+## How the work went, over the whole plan
+
+Nine subagents wrote the code, the corrections of the specs and the
+measurement, from 99003 to
+409690 tokens each with their fixes, and nineteen reviewed, from 109310
+to 178423 each. No task was sent twice and none failed its checks. The
+tasks of a binding cost about twice a task of the core. Every review
+found something that held, and none found a wrong number of a filter;
+the defects that would have reached a user were in what the bindings do
+with a wrong input and in the counts of a pass that fails. Sending the
+fixes of a review to the subagent that wrote the code, with a verdict on
+each finding, worked every time. What a plan could take from this one:
+a task of a binding says what its language turns a wrong argument into
+before the core sees it, and a measurement keeps its scripts and its
+spreads from the start.

@@ -1,7 +1,9 @@
 # Plan: the three threshold filters and the counts of a pass
 
-21 September 2026. Approved by the owner on 21 September 2026 and under
-way, with its work report in `docs/reports/filters.md`. This plan builds
+21 September 2026. Approved by the owner on 21 September 2026 and done
+the same day, on the branch `plan/filters`, with its work report in
+`docs/reports/filters.md` and its measurement in
+`docs/reports/filters-measurement.md`. This plan builds
 the filters that keep the variants of a dataset by their missing rate, by
 their major allele frequency and by their observed heterozygosity, as
 steps that a user puts on a `Variants`, and the counts that every result
