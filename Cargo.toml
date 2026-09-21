@@ -57,6 +57,20 @@ memchr = "2"
 # for the two wasm targets, and what they add that popnei did not have is
 # pure Rust too, lz4_flex, flatbuffers, chrono, half, hashbrown, ahash and
 # the num crates among them.
+#
+# Pure Rust and calling nothing of the host are not the same thing, and one
+# of those crates does call something. chrono comes with its `clock`
+# feature on, which arrow-array asks for, and that feature brings
+# iana-time-zone, whose module for emscripten calls
+# emscripten_run_script_string of the emscripten runtime to ask the host
+# for the time zone; on wasm32-unknown-unknown a call for the clock aborts
+# instead. Nothing of the write or the read of a vars file asks for a
+# clock: `Utc::now`, `Local::now`, `SystemTime::now`, `Instant::now` and
+# `RandomState::new` appear in no file of the seven arrow crates of this
+# tree, of lz4_flex or of flatbuffers. So the wheel of pyodide and the wasm
+# package carry that code and no path of popnei reaches it, and a later
+# version of arrow-rs that reads a clock would be found by the tests of
+# wasm and not by a build.
 arrow-array = { version = "60", default-features = false }
 arrow-buffer = { version = "60", default-features = false }
 arrow-ipc = { version = "60", default-features = false, features = ["lz4"] }
