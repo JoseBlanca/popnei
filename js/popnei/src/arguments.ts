@@ -1,6 +1,13 @@
 /**
  * What the package checks of an argument before it reaches the core.
  *
+ * The bytes of a file are also asked about: the code wasm-bindgen
+ * generates allocates the whole length of a `Uint8Array` inside the memory
+ * of wasm before any code of popnei runs, and an allocation that fails
+ * there is a trap, which ends the module. `room_for_bytes` of the binding
+ * crate asks for that memory first and gives an `Error` when it is not
+ * there.
+ *
  * A number of JavaScript is a float64, and the code wasm-bindgen generates
  * turns it into the integer the Rust takes by throwing its fraction away
  * and keeping it modulo 2^32, with no error: a ploidy of 2.5 and one of
@@ -9,6 +16,8 @@
  * whatever their memory holds. Python refuses all of them, so the package
  * refuses them here, before the call, and says what was given.
  */
+
+import { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
 
 /**
  * The largest number the package hands to the core, 2^32 - 1.
@@ -58,11 +67,12 @@ export function aBoolean(argument: string, value: unknown): boolean {
 }
 
 /**
- * The bytes of `value` when it is a `Uint8Array` that can be read, and an
- * `Error` otherwise.
+ * The bytes of `value` when it is a `Uint8Array` that can be read and that
+ * the memory of wasm takes, and an `Error` otherwise.
  *
- * @throws {Error} When `value` is not a `Uint8Array`, and when its buffer
- * was transferred, which leaves the array with nothing to read.
+ * @throws {Error} When `value` is not a `Uint8Array`, when its buffer was
+ * transferred, which leaves the array with nothing to read, and when the
+ * memory of wasm does not take a copy of it.
  */
 export function bytes(argument: string, value: unknown): Uint8Array {
   if (!(value instanceof Uint8Array)) {
@@ -87,6 +97,11 @@ export function bytes(argument: string, value: unknown): Uint8Array {
         "this array; the worker that was given them is where they are read",
     );
   }
+  // The copy into the memory of wasm is made by the generated code, before
+  // any code of popnei runs, and an allocation that fails there is a trap
+  // that leaves the module unusable. This asks for the memory first, and
+  // what it grew is what that copy then finds.
+  roomForBytes(value.length);
   return value;
 }
 

@@ -12,11 +12,13 @@ use wasm_bindgen::{JsError, JsValue};
 
 /// What a function of this crate fails with.
 ///
-/// It has no case for an argument this crate refuses on its own: the
-/// TypeScript package checks every argument before the call, in
+/// The TypeScript package checks every argument before the call, in
 /// `js/popnei/src/arguments.ts`, because a number of JavaScript reaches a
 /// whole number of the core as 32 bits with no error, and it throws the
-/// `Error` itself.
+/// `Error` itself. What it cannot check there is whether the memory of the
+/// tab takes what is about to be copied into it, which is [`NoMemory`].
+///
+/// [`NoMemory`]: JsPopneiError::NoMemory
 pub enum JsPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
     /// found in the bytes it was given.
@@ -24,6 +26,11 @@ pub enum JsPopneiError {
     /// Something the core read that JavaScript does not hold: a position
     /// above 2^53, which a float64 rounds.
     NotInJavaScript(String),
+    /// The memory of wasm does not take what was asked of it: the bytes of
+    /// a file that is being given to popnei. A failed allocation aborts in
+    /// wasm, and an abort is a trap that leaves the module unusable, so
+    /// what can be asked for beforehand is.
+    NoMemory(String),
     /// Something that cannot happen unless this crate has a defect: a
     /// chromosome whose number is not in the table of the reader that gave
     /// it.
@@ -41,12 +48,14 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the three cases are one `Error`, where Python tells a `ValueError`
+    /// the four cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
             JsPopneiError::Core(error) => error.to_string(),
-            JsPopneiError::NotInJavaScript(message) | JsPopneiError::Broken(message) => message,
+            JsPopneiError::NotInJavaScript(message)
+            | JsPopneiError::NoMemory(message)
+            | JsPopneiError::Broken(message) => message,
         };
         JsError::new(&message).into()
     }

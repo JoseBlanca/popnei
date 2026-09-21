@@ -85,6 +85,58 @@ pub(crate) fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
     Cursor::new(SharedBytes(Arc::clone(bytes)))
 }
 
+/// That the memory of wasm takes `num_bytes` more, asked for before a
+/// `Uint8Array` of that length is copied into it.
+///
+/// The code wasm-bindgen generates for an argument of bytes asks for the
+/// whole length before any code of popnei runs, and an allocation that
+/// fails in wasm aborts, which is a trap: the call ends where it is and the
+/// module cannot be called again, where section 11 of
+/// `docs/architecture.md` asks for an `Error`. So the package calls this
+/// first, with the length of the array. The memory this grew is not given
+/// back to the system, which wasm cannot do, so the copy that follows finds
+/// it.
+///
+/// # Errors
+///
+/// When the memory of wasm cannot take that many bytes more: a wasm module
+/// addresses 4 GB, and what is already open in the tab is in those 4 GB.
+#[wasm_bindgen]
+pub fn room_for_bytes(num_bytes: f64) -> Result<(), JsPopneiError> {
+    let no_room = || {
+        JsPopneiError::NoMemory(format!(
+            "the {num_bytes} bytes of this file do not fit in the memory popnei has \
+             left: a page holds at most 4 GB of them at a time, and every file that \
+             is open counts. A file this large is read by a program outside the \
+             browser, popnei in Python among them."
+        ))
+    };
+    // The length of a `Uint8Array` is a whole number that is not negative,
+    // and everything else, a NaN among it, is refused with the same message
+    // instead of being cast.
+    if !num_bytes.is_finite() || num_bytes < 0.0 || num_bytes > LARGEST_ALLOCATION {
+        return Err(no_room());
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a number between 0 and usize::MAX"
+    )]
+    let wanted = num_bytes as usize;
+    let mut room: Vec<u8> = Vec::new();
+    room.try_reserve_exact(wanted).map_err(|_| no_room())?;
+    drop(room);
+    Ok(())
+}
+
+/// The most bytes one allocation of this build can hold, `usize::MAX`,
+/// which in wasm is 2^32 - 1.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "2^32 - 1 is below 2^53 and is exact as a float64"
+)]
+const LARGEST_ALLOCATION: f64 = usize::MAX as f64;
+
 /// One pass over `source`, whose blocks hold `fields` besides the genotypes,
 /// `num_vars_per_block` variants each.
 ///

@@ -21,7 +21,7 @@ import { test } from "node:test";
 import type { Block, Field, Variants } from "popnei";
 import { init, openVars, openVcf, writeVars } from "popnei";
 
-import loadTheWasm from "../wasm/popnei.js";
+import loadTheWasm, { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
 import { numberOfOpenPasses } from "../dist/variant.js";
 import {
   manyVariantsVcf,
@@ -399,6 +399,26 @@ test("a source of openVars that is not a Uint8Array is refused", async () => {
     name: "Error",
     message: /an object of the type `Array` was given/,
   });
+});
+
+test("bytes that do not fit in the memory of wasm are refused", () => {
+  // What the package asks before it lets the generated code copy an array
+  // into the memory of wasm, which allocates the whole length first and
+  // traps when that fails, leaving the module unusable. It is called here
+  // with a length alone: an array of 4 GB in node, to reach it through
+  // `openVars`, is 4 GB of the machine this test runs on.
+  //
+  // A wasm module addresses 4 GB and some megabytes of them are already
+  // open here, so neither of these fits. The first is above what a whole
+  // number of wasm counts, 2^32 - 1, and the second is under it.
+  for (const numBytes of [4294967296, 4294000000]) {
+    assert.throws(() => roomForBytes(numBytes), {
+      name: "Error",
+      message: /do not fit in the memory popnei has left/,
+    });
+  }
+  // What fits is not an error, and what it grew stays for the copy.
+  roomForBytes(1024);
 });
 
 test("a source whose buffer was transferred away is refused", async () => {
