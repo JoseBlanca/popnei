@@ -373,7 +373,7 @@ error cases, and the writer, which makes the files of deliverables 3 and
   3. Needs 2.1 and 2.2. A wrong genotype or a wrong chromosome number here
   is silent, so it is a commit of its own, and the round trip of
   `many.vcf` and the six counts of deliverable 4 are what guard it.
-- [ ] 2.4 The Python side: in `crates/popnei-python`, a source that is a
+- [x] 2.4 The Python side: in `crates/popnei-python`, a source that is a
   vars file beside the one that is a VCF, opened again at every pass,
   held as the binding holds a reader after `docs/plans/block-readers.md`,
   with the `Reblock` and the `Block::check` that every `iter_blocks` has;

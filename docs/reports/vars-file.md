@@ -277,9 +277,161 @@ the subagent found and decided:
   the genotypes it gives the error of zstd.
 - arrow-rs panics on a batch whose message is shorter than 8 bytes,
   which it indexes, so the reader refuses such a batch before arrow-rs
-  sees it. No test reaches it: the footer that says so would have to be
-  written by hand.
+  sees it. The subagent said no test could reach it; the review showed
+  one that does, by changing the length of a batch in the footer of a
+  good file, and it is there now.
 - The spec got three sentences: a file with no `gts` column is not a
   vars file, a null inside a list of alleles or of genotypes is a null,
   and the block that the machine has no memory for, the case of
   `docs/specs/block.md`.
+
+Task 2.4, commit 699a6a7; one subagent run of 214 thousand tokens and 12
+minutes. `popnei.open_vars` gives the same `Variants` as `open_vcf`. The
+two sources share one trait in the binding crate, the file a source
+reads and the reader of one pass over it, and everything after that is
+one copy: the fields, the size, the `Reblock`, `Block::check` and the
+columns that go to numpy. `write_vars` takes a `Variants` of either
+source.
+
+### The deliverables, run by the orchestrator at 699a6a7
+
+1. `uv run python tests/reference/vars/make_reference.py` changed no
+   file; pyarrow opens `zstd.vars` with one batch, four variants, both
+   keys and 12 zstd frames.
+2. and 3. `cargo test -p popnei --lib io::vars -- --list` `65 tests`,
+   where the plan asks for 38; `cargo test --workspace` `238 passed`, 1
+   ignored; `cargo wasm-check` finished.
+4. `uv run maturin develop && uv run pytest` `94 passed`, and `-k
+   open_vars` `9 passed`, where the plan asks for 5; the wheel of pyodide
+   built, and its smoke test printed `cases.vars read back: 4 variants,
+   as the spec says` and exited with 0.
+
+### The review
+
+Six reviewers at 699a6a7: `spec`, `tests` and `errors`, each in a
+worktree of its own, and `numbers`, `architecture` and `binding`; 196,
+199, 183, 151, 219 and 183 thousand tokens. `numbers` also read the
+writer of work package 1, which had not had that category. The `tests`
+reviewer made 40 mutations of the reader and the binding, of which 30
+were caught. The `spec` reviewer recomputed the six counts of the pytest
+test and the fifteen regions of the spec from `many.bcftools.tsv`, and
+wrote with pyarrow some thirty files that popnei did not write, among
+them columns in another order, a column more, a column less, another
+version, an empty batch and nulls in every place, and read each.
+
+What a damaged file does, which the owner's rule of 21 September 2026
+asks about. The `errors` reviewer changed single bytes of two vars files
+that popnei wrote and read each with every field, 208 s and 54 s of
+work, and both counts came out the same on a second run:
+
+| | the 4 variants of `cases.vcf`, 3338 bytes, each byte to all 255 other values | the 500 of `many.vcf`, 49426 bytes, each byte to 4 other values |
+|---|---|---|
+| files | 851190 | 176030 |
+| an error | 295748 | 104420 |
+| the same blocks | 458465 | 18250 |
+| other blocks and no error | 23880 | 48849 |
+| a panic inside arrow-rs | 70243 | 3916 |
+| the process killed | 2854 | 595 |
+
+Cut at every length, both files gave an error every time. The files
+that gave other blocks with no error are 28 in 100 of the changes of
+the larger file, whose buffers are compressed: lz4 as arrow-rs writes it
+has no checksum, and one byte changed in the genotypes of the first
+batch turned 25 genotypes from 1 into -127. One byte of the footer's
+copy of the schema, the `p` of `pos`, made a file give no chromosomes
+and no positions, since a column whose name the reader does not know is
+ignored. The `binding` reviewer found the same from Python, with 510
+files. The panics and the killed processes are arrow-rs allocating and
+slicing by numbers it read from the file.
+
+What held and was fixed, the ones that matter first:
+
+- A damaged file reached panics and allocations inside arrow-rs, which
+  slices and allocates by numbers it reads from the file. The reader now
+  parses the message of a batch before arrow-rs sees it and checks the
+  rows against the entry of the footer, every buffer against the body,
+  and the size that every lz4 buffer says it decompresses to against
+  255 bytes for each of its bytes; it asks for the memory of a batch
+  with `try_reserve`; and natively it catches a panic of arrow-rs and
+  gives the error of a batch that could not be read. After it, the sweep
+  of every byte of the file of `cases.vcf` to every other value, which
+  is a test that is run on request, 1299990 files in 8.2 s: 550055 an
+  error, 726033 the same blocks, 23902 other blocks and no error, 2783
+  panics caught, and no process killed. The 2783 are two asserts of
+  arrow-rs that only its own walk of the schema would see, and in wasm
+  nothing catches them. A sweep of four values of each byte, 16296
+  files in 0.13 s, runs with every `cargo test`.
+- A `popnei` key that names no individual was read, and gave blocks of
+  variants with no genotypes that passed `Block::check`. Refused.
+- An infinite quality, and a NaN that is a value, got into a block from
+  a file of another program. The VCF reader refuses both, and the rule
+  that NaN is a variant with no quality rests on that. Refused, by the
+  orchestrator's decision, written in the spec.
+- The writer marked the values inside the `gts` and `alleles` lists as
+  ones that can be null, and arrow-rs then writes a bitmap of all ones,
+  a bit for each allele, that the reader decompresses and throws away.
+  On the panel of the spec, the genotypes alone, the best of 10 passes
+  on one thread: 20.52 ms and 15691298 bytes with it, 19.49 ms and
+  15680146 bytes without. The writer no longer marks them so; the
+  reader takes either, so the file of pyarrow still reads.
+- A null in a column that the file says has none is refused by arrow-rs
+  before popnei looks, as a batch that could not be read, an `OSError`,
+  and not the `ValueError` with the variant that the spec promised. The
+  spec says it now.
+- The message of a batch too large for the machine said to ask for
+  fewer variants in a block, which does nothing for a file: it says to
+  write the file again with fewer.
+- Tests that were missing, each shown by a mutation that left every
+  test passing: the batch shorter than 8 bytes; a null list of alleles
+  and of genotypes, without whose check the reader gave genotypes read
+  out of padding; the number of the variant and of the batch of an
+  error beyond the first batch; a second pass over one `open_vars`
+  handle; a damaged batch as an `OSError`; columns in another order.
+- In the binding: the errors about the file being written that named
+  the file that was read; the docstring that said a `Variants` cannot be
+  copied, which `copy.copy` can.
+
+What held and was not changed:
+
+- A `num_vars_per_block` of 2^40 is refused for a VCF, whose reader
+  would reserve that memory, and taken for a vars file, which never
+  needs it.
+- A pass for the genotypes alone reads every byte of the file, 16272664
+  of 16280410, and decompresses only the genotypes, which is what the
+  spec promises. In a tab, with a `File` as the source, the whole file
+  would cross for every pass; that is for the plan that does the `File`.
+- Nothing checks that an allele of `gts` is -1 or an allele of its
+  variant, so a damaged file can give an allele 7 in a variant of two.
+  It costs a pass over the genotypes, and the checksum comes first.
+
+After the fixes, 18 commits by the subagent of the reader, the spec
+before the code, 155 thousand tokens more, and 7 by the one of the
+Python side, 77 thousand: `cargo test --workspace` `249 passed`, 2
+ignored, `io::vars` `77 tests`, `uv run pytest` `99 passed`, fmt, clippy,
+ruff and `cargo wasm-check` clean, the wheel of pyodide built and its
+smoke test exited with 0.
+
+A first timing, by the `architecture` reviewer, before the fix of the
+bitmap: a pass with the genotypes alone over the panel of the spec, four
+batches of 5000, release, one thread, the best of 10 runs: 21.0 to 21.2
+ms, against the 21 ms of the spec. Work package 4 measures it.
+
+### For the owner
+
+- The checksum. 23902 of 1299990 files with one byte changed, and 28 in
+  100 of those of a file whose buffers are compressed, give other
+  variants with no error. The owner was asked on 21 September 2026 with
+  three options: a CRC32 of each batch in `popnei_batches` and one over
+  the two keys and the columns, checked before arrow-rs sees the bytes,
+  which the orchestrator recommends; the same but optional, so that a
+  file of another program is read without it; or none, with the spec
+  saying that a vars file is not protected. It changes the format, so
+  nothing was built.
+- Two decisions of this work package written in the spec for him to
+  reverse: a quality that is not finite is refused, and the values
+  inside the two lists are written as ones that cannot be null.
+
+### How the work went
+
+The reviews cost 1131 thousand tokens, the four tasks 857 thousand and
+the fixes 232 thousand. No task was sent twice.
