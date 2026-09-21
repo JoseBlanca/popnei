@@ -344,7 +344,7 @@ three methods of TypeScript, and every consumer after that,
   method; in `python/popnei/variant.py`, the three methods. From "In
   Python and in TypeScript" of both items and the last paragraph of "The
   Rust interface". Needs 1.2 and 3.3. Serves deliverables 4 and 6.
-- [ ] 3.5 The TypeScript side, the same in `crates/popnei-js` and
+- [x] 3.5 The TypeScript side, the same in `crates/popnei-js` and
   `js/popnei`. Needs 1.3 and 3.3. Serves deliverable 5. After 3.4 in the
   plan's worktree.
 

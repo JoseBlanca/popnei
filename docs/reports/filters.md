@@ -196,7 +196,7 @@ two functions and is one piece of code with them, and the two bindings
 of work package 3 get a review of their own. One review of five tasks
 through three layers would have been too large to evaluate well.
 
-## Work package 3, while it is under way
+## Work package 3: the three filters and the counts of a pass
 
 Task 3.1, the reference script, ran beside task 1.1, since it writes
 only under `tests/reference/filters/`. Commit d22c5c9. It stores one file
@@ -356,3 +356,28 @@ For the owner, from task 3.4:
   a way to cancel in the core, which no spec has.
 - The `coding` skill's `pyo3.md` counted seven cases of the error of the
   Python crate; it has eight now and says so.
+
+Task 3.5, commit 5974b92: the three methods of the TypeScript
+`Variants`, the case of `Step` and the chain of every pass in
+`crates/popnei-js/src/steps.rs`, an error that names the TypeScript
+argument, and `js/popnei/test/filters.test.ts`, 22 tests, the first that
+run a filter under wasm. The boundary of wasm turns `undefined` into
+NaN, `null` into 0 and `"0.5"` into 0.5 with no error, so the package
+refuses a threshold that is not a number before the call, as it does
+for its other arguments; a `null` would otherwise have been a filter at
+0 that nobody wrote. 205719 tokens.
+
+The deliverables of work package 3, run by the orchestrator at 5974b92:
+
+1. `uv run --no-project python tests/reference/filters/make_reference.py`
+   exits with 0 and `git status --short tests/reference/filters` shows
+   nothing; the numbers of lines were checked at task 3.1.
+2. and 3. `cargo test -p popnei --lib filters:: -- --list`: `27 tests`.
+   `cargo test --workspace`: `296 passed`, 2 ignored.
+4. `uv run pytest tests/test_filters.py`: `30 passed`; `uv run pytest`:
+   `147 passed`.
+5. `npm run build && npm test` in `js/popnei`: `tests 109`, `fail 0`.
+6. `bash scripts/build_pyodide_wheel.sh` builds the wheel and `node
+   tests/pyodide/smoke.mjs` exits with 0.
+
+fmt, clippy, ruff and `cargo wasm-check` pass.
