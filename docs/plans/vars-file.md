@@ -248,7 +248,7 @@ arrow-rs into the wheel of pyodide.
 
 **Tasks.**
 
-- [ ] 1.1 The dependencies and the two keys. In the workspace manifest
+- [x] 1.1 The dependencies and the two keys. In the workspace manifest
   and in `crates/popnei/Cargo.toml`, each with the comment that says why
   it is there and that it builds for both wasm targets, as the manifest
   does for the others: the crates of arrow-rs that the module needs,

@@ -62,3 +62,22 @@ on `main`:
   it: the key is json, and a field added to its entries does not change
   what is built before. The reviews of work package 2 will say what a
   sweep of changed bytes finds.
+
+## Work package 1: `write_vars` in Python
+
+Task 1.1, commits 5905926, the spec, and 43deb76, the code; one subagent
+run of 203 thousand tokens and 16 minutes. The orchestrator ran the
+checks again: fmt exit 0, clippy no warning, `cargo test --workspace`
+`183 passed`, 1 ignored, `cargo test -p popnei --lib io::vars -- --list`
+`10 tests`, where the plan asks for 6, `cargo wasm-check` finished, and
+`cargo tree -p popnei | grep -i zstd` finds nothing. The core has four
+crates of arrow-rs 60, `arrow-array`, `arrow-buffer`, `arrow-schema` and
+`arrow-ipc`, all with their default features off and `arrow-ipc` with
+`lz4`, and `serde_json` with `std` alone; the subagent reports 59 crates
+more in `Cargo.lock`. The spec lists the cases of the error as nine
+`ValueError`, three `OSError` and three `RuntimeError`, two of them new,
+a file cut short and a batch that arrow-rs cannot decode. All 14 cases
+are in the error enum, so the later tasks add none, and the Python
+binding crate names the five that are not a `ValueError`. The subagent
+also built the wheel of pyodide, which linked; nothing of the binding
+calls arrow-rs yet, so task 1.3 is still the first link that counts.
