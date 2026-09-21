@@ -322,3 +322,37 @@ For the owner, from this review:
   test that fails makes it fail too, and names the vars file to whoever
   broke a filter. Counting the panics of its own thread alone would
   settle it.
+
+Task 3.4, commit 4f0aca3: the three methods of `Variants`, the case of
+`Step` and the chain of every pass in `crates/popnei-python/src/steps.rs`,
+and `tests/test_filters.py`, 30 tests, with the comparison with pyNei at
+the nine rows of the table, the counts against
+`gather_filtering_stats`, the tests of the steps and the one of
+`write_vars` with a filter. Run by the orchestrator: `cargo test
+--workspace` `296 passed`; `uv run pytest` `147 passed`; fmt, clippy and
+ruff pass. Used as a user would, on `many.vcf` with the three filters at
+0.04, 0.8 and 0.5: each method returns `None`, the pass gives 106
+variants and `filtering` has 500 and 215, 215 and 163, 163 and 106 in
+the order of the steps; a second maf filter is a `ValueError` that names
+the 0.8 that is set and the 0.5 that was refused; `filter_by_maf(95)` is
+a `ValueError` that names `max_allowed_maf` and 95.0; no threshold is a
+`TypeError`. The subagent built the wheel of pyodide and its smoke test
+exited with 0, and `npm test` stayed at `tests 87`, `fail 0`. 215130
+tokens.
+
+For the owner, from task 3.4:
+
+- The spec does not say which refusal a user gets when both apply, a
+  threshold out of range for a kind that is set. The threshold is
+  refused first, so `filter_by_maf(1.5)` over a maf filter names the
+  argument.
+- `copy.copy(variants)` shares the steps: a filter on the copy is on the
+  original, and a second of its kind on either is refused. The docstring
+  of `Variants` says so and no test holds it, so that it can still be
+  decided otherwise.
+- The Ctrl-C under a filter that keeps nothing cannot be helped from the
+  binding crate: the loop that skips the blocks left empty is inside one
+  `next_block` of the core, with the interpreter released. It would take
+  a way to cancel in the core, which no spec has.
+- The `coding` skill's `pyo3.md` counted seven cases of the error of the
+  Python crate; it has eight now and says so.

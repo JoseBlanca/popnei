@@ -337,7 +337,7 @@ three methods of TypeScript, and every consumer after that,
   the positions of 3.1 as their literals. From "How it runs" of the
   filters and of the counts, and "The Rust interface". Needs 1.1, 3.1
   and 3.2. Serves deliverable 3.
-- [ ] 3.4 The Python side: in `crates/popnei-python`, every pass, of
+- [x] 3.4 The Python side: in `crates/popnei-python`, every pass, of
   `iter_blocks` and of `write_vars`, builds its chain of
   `FilteredReader` from the steps the `Variants` has when it starts, and
   the two errors reach a user as a `ValueError` at the call of the
