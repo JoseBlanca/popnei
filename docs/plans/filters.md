@@ -397,7 +397,7 @@ runs it with nothing else building on the machine.
 
 **Tasks.**
 
-- [ ] 4.1 The bench, the vars file of `big.vcf`, the three sets of
+- [x] 4.1 The bench, the vars file of `big.vcf`, the three sets of
   timings and the report, and the paragraph of the spec. It changes no
   code of the library. From "Speed" of `docs/specs/filters.md`. Serves
   deliverables 1, 2 and 3.
