@@ -88,8 +88,9 @@ The section "Errors, and no panics" of the coding skill.
 - For each way the input can be wrong, what does the user of Python see?
   Is it the right exception, and does the message say which file, which
   line, which field, which value?
-- Error types: one per operation, variants named for what was being done,
-  no dependency's error in a public variant, `#[non_exhaustive]`.
+- Errors: the one `#[non_exhaustive]` enum of the core crate, to which
+  each module adds its cases, with the cases named for what was being
+  done and no dependency's error in a public one.
 - A `Result` that is dropped, an error turned into a default, a record
   skipped without a word.
 

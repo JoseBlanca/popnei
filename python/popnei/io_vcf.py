@@ -19,6 +19,12 @@ def open_vcf(
     carries the path in ``filename``. The variants themselves are read again
     at every pass over what it returns.
 
+    A file that was cut short, and one that bgzip wrote and whose bytes were
+    damaged, are found where the variants are read and not here: the header
+    of such a file reads, and :meth:`Variants.iter_blocks` raises the
+    ``OSError`` of a file that popnei cannot read to its end, with the path
+    in ``filename`` and no ``errno``, after the variants it could give.
+
     `ploidy` is how many alleles every genotype of the file holds, the same
     for every individual and every variant, and a genotype of any other
     number of alleles is a ``ValueError`` when it is read: popnei does not

@@ -9,12 +9,15 @@
 //! of `docs/architecture.md` lays out.
 //!
 //! A variant is one site of the genome with its alleles and the genotype of
-//! every individual at it. The `variant` module has it, with the trait that
-//! anything giving variants implements, and `io` the VCF reader, which
-//! fills it from a VCF. The `block` module holds a run of consecutive
-//! variants as arrays, which is what the calculations with matrices consume
-//! and the only way genotypes leave the core; the modules that calculate
-//! over them are being written, and `docs/architecture.md` has their order.
+//! every individual at it, and the variants flow in blocks: a run of
+//! consecutive variants held as arrays, with the genotypes of all of them
+//! in one. The `block` module has the block, the trait that everything
+//! giving blocks implements and the reader that puts blocks back to a size;
+//! `io` the VCF reader, which parses the lines of a file into the rows of a
+//! block; and `variant` what the other modules say about one variant: which
+//! fields a consumer wants, the table of the chromosome names and the view
+//! of one variant of a block. The modules that calculate over blocks are
+//! being written, and `docs/architecture.md` has their order.
 
 #![forbid(unsafe_code)]
 

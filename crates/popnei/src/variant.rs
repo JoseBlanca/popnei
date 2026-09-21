@@ -1,23 +1,24 @@
-//! The variant, one site of the genome with the genotype of every
-//! individual at it, and the trait of anything that gives variants.
+//! What every other module of popnei says about a variant, one site of the
+//! genome with the genotype of every individual at it: which of its fields
+//! a consumer wants, the table that turns the name of a chromosome into a
+//! number, the missing allele, and the view of one variant of a block.
 //!
-//! A reader, the VCF reader, the vars file reader or a filter over another
-//! reader, gives variants one at a time. The consumer, a calculation or a
-//! writer, owns one [`Variant`], lends it to the reader again and again,
-//! and the reader fills it with the next variant and says whether there was
-//! one. The buffers inside the variant are allocated once and refilled, so
-//! a million variants cost no allocation after the first few.
+//! The variants flow in blocks, which [`crate::block`] holds, and a
+//! calculation that works variant by variant walks the [`VariantRef`] of
+//! the block it was given: a view into its arrays that allocates nothing.
 //!
 //! A consumer says with a [`Needs`] which fields it wants, and the reader
-//! may skip the rest; after each read the variant says in its `filled`
-//! which fields it really holds. `docs/specs/variant.md` has the design and
-//! section 1 of `docs/architecture.md` the reasons for it.
+//! may skip the rest; a block says with
+//! [`Block::fields`](crate::block::Block::fields) which ones it holds, and
+//! a consumer that depends on a field it did not get fails with the error
+//! that names it. `docs/specs/variant.md` has the design and section 1 of
+//! `docs/architecture.md` the reasons for it.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::error::Result;
+use crate::block::AllelesColumn;
 
 /// An allele that was not called, `.` in a VCF.
 pub const MISSING_ALLELE: i8 = -1;
@@ -28,7 +29,7 @@ pub const MISSING_ALLELE: i8 = -1;
 pub const MAX_ALLELE: i8 = i8::MAX;
 
 /// The name of each field, for the messages. In the order of the bits.
-const FIELD_NAMES: [(Needs, &str); 5] = [
+const NAMES_OF_THE_NEEDS: [(Needs, &str); 5] = [
     (Needs::GTS, "gts"),
     (Needs::CHROM_POS, "chrom and pos"),
     (Needs::ID, "id"),
@@ -36,12 +37,13 @@ const FIELD_NAMES: [(Needs, &str); 5] = [
     (Needs::QUAL, "qual"),
 ];
 
-/// Which fields of a [`Variant`] a consumer wants, or which ones a variant
+/// Which fields of the variants a consumer wants, or which ones a block
 /// holds: a set of the five fields, with union, [`Needs::contains`] and
 /// [`Needs::difference`].
 ///
-/// A reader is asked for a set with `set_needs` and may skip every field
-/// that is not in it. Most calculations want the genotypes alone.
+/// A reader is asked for a set with
+/// [`set_needs`](crate::block::BlockReader::set_needs) and may skip every
+/// field that is not in it. Most calculations want the genotypes alone.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Needs(u8);
 
@@ -65,8 +67,7 @@ impl Needs {
         .union(Needs::ALLELES)
         .union(Needs::QUAL);
 
-    /// No field at all, which is what `filled` of a variant that was just
-    /// cleared holds.
+    /// No field at all.
     #[must_use]
     pub const fn empty() -> Needs {
         Needs(0)
@@ -92,8 +93,8 @@ impl Needs {
     }
 
     /// The fields of this set that are not in `other`. A consumer that
-    /// depends on the fields it asked for gets from it the ones the reader
-    /// did not fill.
+    /// depends on the fields it asked for gets from it, with the fields of
+    /// the block it was given, the ones that are not there.
     #[must_use]
     pub const fn difference(self, other: Needs) -> Needs {
         Needs(self.0 & !other.0)
@@ -121,7 +122,7 @@ impl fmt::Display for Needs {
     /// five is `chrom and pos`.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut written = false;
-        for (field, name) in FIELD_NAMES {
+        for (field, name) in NAMES_OF_THE_NEEDS {
             if self.contains(field) {
                 if written {
                     formatter.write_str(", ")?;
@@ -212,153 +213,121 @@ impl Default for ChromTable {
     }
 }
 
-/// One variant: one site of the genome with the genotype of every
-/// individual at it.
+/// One variant of a block: its genotypes and its other fields as they lie
+/// in the arrays of that block.
 ///
-/// The consumer owns it and lends it to a reader, which clears it and
-/// fills it. Its fields are public because every reader writes them and
-/// every consumer reads them. A field that is not in `filled` holds its
-/// empty value and never what the previous variant left in it, so a
-/// consumer that depends on a field checks `filled` first.
-#[derive(Debug)]
-pub struct Variant {
-    /// A number of the [`ChromTable`] of the reader that filled this
-    /// variant.
-    pub chrom: u32,
-    /// 1 based, as in a VCF.
-    pub pos: u64,
-    /// num_individuals x ploidy alleles, individual after individual: the
-    /// alleles of individual i are `gts[i * ploidy .. (i + 1) * ploidy]`.
-    /// 0 is the reference allele, 1 up to [`MAX_ALLELE`] the alternative
-    /// ones in the order of the VCF, and [`MISSING_ALLELE`] an allele that
-    /// was not called.
-    pub gts: Vec<i8>,
-    /// Empty when the source gives no id for the variant, `.` in a VCF,
-    /// which is not the same as an id that was not asked for: that one has
-    /// no `ID` in `filled`.
-    pub id: String,
-    /// The reference allele first, then the alternative ones.
-    pub alleles: Vec<String>,
-    /// The quality of the variant, the QUAL column of a VCF, phred
-    /// scaled: minus ten times the base ten logarithm of the probability
-    /// that there is no variant at this site, so 30 is one in a thousand.
-    /// `None` when the source gives none.
-    pub qual: Option<f32>,
-    /// What the reader filled in the last read.
-    pub filled: Needs,
+/// A calculation that works variant by variant walks
+/// [`Block::variants`](crate::block::Block::variants), and the row helpers
+/// take this view. It allocates nothing and copies nothing: every field is
+/// a number or a slice of the block it came from.
+///
+/// Every method but [`VariantRef::gts`] gives `None` when the block has no
+/// such column, which is a column that nobody asked for or that the source
+/// could not give.
+#[derive(Debug, Clone, Copy)]
+pub struct VariantRef<'a> {
+    gts: &'a [i8],
+    chrom: Option<u32>,
+    pos: Option<u64>,
+    id: Option<&'a str>,
+    qual: Option<f32>,
+    /// The alleles of the whole block, and which variant of them this is:
+    /// the texts of one variant are not a slice of a column.
+    alleles: Option<(&'a AllelesColumn, usize)>,
 }
 
-impl Variant {
-    /// A variant with every field at its empty value and nothing in
-    /// `filled`.
-    #[must_use]
-    pub fn new() -> Variant {
-        Variant {
-            chrom: 0,
-            pos: 0,
-            gts: Vec::new(),
-            id: String::new(),
-            alleles: Vec::new(),
-            qual: None,
-            filled: Needs::empty(),
+impl<'a> VariantRef<'a> {
+    /// The view of one variant, which only the `block` module builds: the
+    /// fields of a variant are read out of the columns of its block, and a
+    /// view that another crate could build would not be a view of one.
+    pub(crate) fn new(
+        gts: &'a [i8],
+        chrom: Option<u32>,
+        pos: Option<u64>,
+        id: Option<&'a str>,
+        qual: Option<f32>,
+        alleles: Option<(&'a AllelesColumn, usize)>,
+    ) -> VariantRef<'a> {
+        VariantRef {
+            gts,
+            chrom,
+            pos,
+            id,
+            qual,
+            alleles,
         }
     }
 
-    /// Every field to its empty value and `filled` to nothing. It keeps
-    /// the capacity of the buffers, which is what lets a reader refill a
-    /// million variants without allocating.
-    pub fn clear(&mut self) {
-        self.clear_but_the_alleles();
-        self.alleles.clear();
-    }
-
-    /// Every field but `alleles` to its empty value and `filled` to
-    /// nothing. The alleles are left as they are, for the reader that
-    /// writes over their strings instead of dropping them; it takes them
-    /// out of the variant itself. [`Variant::clear`] is this followed by
-    /// emptying `alleles`, so the list of the fields is written once and a
-    /// field that is added later cannot be cleared by one and not the
-    /// other.
-    pub fn clear_but_the_alleles(&mut self) {
-        self.chrom = 0;
-        self.pos = 0;
-        self.gts.clear();
-        self.id.clear();
-        self.qual = None;
-        self.filled = Needs::empty();
-    }
-}
-
-impl Default for Variant {
-    fn default() -> Variant {
-        Variant::new()
-    }
-}
-
-/// Anything that gives variants one at a time: the VCF reader, the vars
-/// file reader, a filter over another reader.
-///
-/// `read_variant` clears the variant it is lent, fills it and returns
-/// true, or returns false when the source has no more variants; after a
-/// false every later call returns false. An error ends the reader, and
-/// what a call after an error returns is not defined.
-///
-/// The trait can be used as a boxed trait object, `Box<dyn
-/// VariantReader>`, which is how the two binding crates hold their reader,
-/// because neither a pyo3 class nor a wasm-bindgen class can be generic.
-/// It asks for `Send` because a read ahead thread moves a reader into
-/// another thread.
-pub trait VariantReader: Send {
-    /// Fills `var` with the next variant and returns true, or returns
-    /// false when there are no more.
+    /// The genotypes of the variant, num_individuals x ploidy alleles,
+    /// individual after individual: the alleles of the individual i are
+    /// `gts[i * ploidy .. (i + 1) * ploidy]`. 0 is the reference allele, 1
+    /// up to [`MAX_ALLELE`] the alternative ones, and [`MISSING_ALLELE`] an
+    /// allele that was not called.
     ///
-    /// # Errors
+    /// Empty when the block was built without the genotypes.
+    #[must_use]
+    pub fn gts(&self) -> &'a [i8] {
+        self.gts
+    }
+
+    /// The number of the chromosome of the variant, in the [`ChromTable`]
+    /// of the reader the block came from.
+    #[must_use]
+    pub fn chrom(&self) -> Option<u32> {
+        self.chrom
+    }
+
+    /// The position of the variant, 1 based as in a VCF.
+    #[must_use]
+    pub fn pos(&self) -> Option<u64> {
+        self.pos
+    }
+
+    /// The id of the variant, empty when the variant has none.
+    #[must_use]
+    pub fn id(&self) -> Option<&'a str> {
+        self.id
+    }
+
+    /// The quality of the variant, phred scaled as the QUAL of a VCF:
+    /// minus ten times the base ten logarithm of the probability that
+    /// there is no variant at that site, so 30 is one in a thousand.
     ///
-    /// When the source cannot be read or what it holds is malformed.
-    fn read_variant(&mut self, var: &mut Variant) -> Result<bool>;
-
-    /// The names of the individuals, in the order of their genotypes in
-    /// `gts`.
-    fn individuals(&self) -> &[String];
-
-    /// How many alleles the genotype of one individual holds.
-    fn ploidy(&self) -> usize;
-
-    /// The names of the chromosomes seen so far, each with its number.
-    fn chroms(&self) -> &ChromTable;
-
-    /// Which fields the reader is asked to fill. The rest may be skipped,
-    /// and the change holds from the next read on. [`Needs::ALL`] until it
-    /// is called.
-    fn set_needs(&mut self, needs: Needs);
-}
-
-impl<R: VariantReader + ?Sized> VariantReader for Box<R> {
-    fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-        (**self).read_variant(var)
+    /// It is NaN for a variant whose source gives no quality, which is
+    /// what the column of a block holds for one, so a caller asks
+    /// `is_nan` before it compares the quality or puts it in a sum: NaN
+    /// travels through arithmetic and comes out at the end with nothing
+    /// to say where it came from.
+    #[must_use]
+    pub fn qual(&self) -> Option<f32> {
+        self.qual
     }
 
-    fn individuals(&self) -> &[String] {
-        (**self).individuals()
+    /// How many alleles the variant has, the reference one among them.
+    #[must_use]
+    pub fn num_alleles(&self) -> Option<usize> {
+        self.alleles.map(|(column, var)| column.num_alleles(var))
     }
 
-    fn ploidy(&self) -> usize {
-        (**self).ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        (**self).chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        (**self).set_needs(needs);
+    /// The text of one allele of the variant, as the source gave it: `A`,
+    /// `<DEL>`, `*`. The allele 0 is the reference one.
+    ///
+    /// `None` for an allele the variant does not have, as for a block that
+    /// holds no alleles.
+    #[must_use]
+    pub fn allele(&self, allele: usize) -> Option<&'a str> {
+        let (column, var) = self.alleles?;
+        let text = column.allele(var, allele);
+        match text.is_empty() {
+            true => None,
+            false => Some(text),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs, Variant, VariantReader};
-    use crate::error::Result;
+    use super::{ChromTable, Needs};
 
     #[test]
     fn a_set_of_needs_contains_the_fields_it_was_built_from_and_no_other() {
@@ -414,165 +383,5 @@ mod tests {
         assert_eq!(chroms.name(2), Some("scaffold_7"));
         assert_eq!(chroms.name(3), None);
         assert_eq!(chroms.name(u32::MAX), None);
-    }
-
-    #[test]
-    fn a_cleared_variant_is_empty_and_keeps_the_capacity_of_its_buffers() {
-        let mut var = Variant::new();
-        var.chrom = 4;
-        var.pos = 1_000_003;
-        var.gts
-            .extend_from_slice(&[0, 1, MISSING_ALLELE, MAX_ALLELE]);
-        var.id.push_str("rs4711");
-        var.alleles.push("A".to_string());
-        var.alleles.push("TTG".to_string());
-        var.qual = Some(37.5);
-        var.filled = Needs::ALL;
-
-        let gts_capacity = var.gts.capacity();
-        let id_capacity = var.id.capacity();
-        let alleles_capacity = var.alleles.capacity();
-        assert!(gts_capacity >= 4);
-        assert!(id_capacity >= 6);
-        assert!(alleles_capacity >= 2);
-
-        var.clear();
-
-        assert_eq!(var.chrom, 0);
-        assert_eq!(var.pos, 0);
-        assert!(var.gts.is_empty());
-        assert!(var.id.is_empty());
-        assert!(var.alleles.is_empty());
-        assert_eq!(var.qual, None);
-        assert_eq!(var.filled, Needs::empty());
-
-        assert_eq!(var.gts.capacity(), gts_capacity);
-        assert_eq!(var.id.capacity(), id_capacity);
-        assert_eq!(var.alleles.capacity(), alleles_capacity);
-    }
-
-    /// The reader of a VCF writes the alleles over the strings the variant
-    /// holds, so it needs the fields emptied and the alleles left alone.
-    #[test]
-    fn a_variant_cleared_but_the_alleles_keeps_them_and_empties_the_rest() {
-        let mut var = Variant::new();
-        var.chrom = 4;
-        var.pos = 1_000_003;
-        var.gts.extend_from_slice(&[0, MISSING_ALLELE]);
-        var.id.push_str("rs4711");
-        var.alleles.push("A".to_string());
-        var.alleles.push("TTG".to_string());
-        var.qual = Some(37.5);
-        var.filled = Needs::ALL;
-
-        var.clear_but_the_alleles();
-
-        assert_eq!(var.chrom, 0);
-        assert_eq!(var.pos, 0);
-        assert!(var.gts.is_empty());
-        assert!(var.id.is_empty());
-        assert_eq!(var.qual, None);
-        assert_eq!(var.filled, Needs::empty());
-        assert_eq!(var.alleles, ["A", "TTG"]);
-    }
-
-    /// A reader of two variants of three individuals, written here to try
-    /// the trait. It fills what it is asked for and nothing else, and it
-    /// gives the numbers of its chromosomes in the order in which the
-    /// names first appear.
-    struct TwoVariants {
-        individuals: Vec<String>,
-        chroms: ChromTable,
-        needs: Needs,
-        /// The variants still to give, the last one first.
-        left: Vec<(&'static str, u64, Vec<i8>, &'static str)>,
-    }
-
-    impl TwoVariants {
-        fn new() -> TwoVariants {
-            TwoVariants {
-                individuals: vec![
-                    "ind_1".to_string(),
-                    "ind_2".to_string(),
-                    "ind_3".to_string(),
-                ],
-                chroms: ChromTable::new(),
-                needs: Needs::ALL,
-                left: vec![
-                    ("chr1", 24, vec![1, 1, 0, MISSING_ALLELE, 0, 0], "rs2"),
-                    ("chr2", 11, vec![0, 0, 0, 1, MISSING_ALLELE, 1], "rs1"),
-                ],
-            }
-        }
-    }
-
-    impl VariantReader for TwoVariants {
-        fn read_variant(&mut self, var: &mut Variant) -> Result<bool> {
-            var.clear();
-            let Some((chrom, pos, gts, id)) = self.left.pop() else {
-                return Ok(false);
-            };
-            var.chrom = self.chroms.intern(chrom);
-            var.pos = pos;
-            var.filled = Needs::CHROM_POS;
-            if self.needs.contains(Needs::GTS) {
-                var.gts.extend_from_slice(&gts);
-                var.filled |= Needs::GTS;
-            }
-            if self.needs.contains(Needs::ID) {
-                var.id.push_str(id);
-                var.filled |= Needs::ID;
-            }
-            Ok(true)
-        }
-
-        fn individuals(&self) -> &[String] {
-            &self.individuals
-        }
-
-        fn ploidy(&self) -> usize {
-            2
-        }
-
-        fn chroms(&self) -> &ChromTable {
-            &self.chroms
-        }
-
-        fn set_needs(&mut self, needs: Needs) {
-            self.needs = needs;
-        }
-    }
-
-    #[test]
-    fn two_variants_are_read_through_a_boxed_reader() {
-        let mut reader: Box<dyn VariantReader> = Box::new(TwoVariants::new());
-        let mut var = Variant::new();
-
-        assert_eq!(reader.individuals(), ["ind_1", "ind_2", "ind_3"]);
-        assert_eq!(reader.ploidy(), 2);
-        assert_eq!(reader.chroms().len(), 0);
-
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.pos, 11);
-        assert_eq!(var.gts, [0, 0, 0, 1, MISSING_ALLELE, 1]);
-        assert_eq!(var.id, "rs1");
-        assert_eq!(var.filled, Needs::GTS | Needs::CHROM_POS | Needs::ID);
-        assert_eq!(reader.chroms().name(var.chrom), Some("chr2"));
-
-        // Asked for the genotypes alone between two reads, the id of the
-        // next variant is neither filled nor left over from this one.
-        reader.set_needs(Needs::GTS);
-        assert!(reader.read_variant(&mut var).unwrap());
-        assert_eq!(var.pos, 24);
-        assert_eq!(var.gts, [1, 1, 0, MISSING_ALLELE, 0, 0]);
-        assert_eq!(var.id, "");
-        assert_eq!(var.filled, Needs::GTS | Needs::CHROM_POS);
-        assert_eq!(reader.chroms().name(var.chrom), Some("chr1"));
-
-        assert_eq!(reader.chroms().len(), 2);
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert!(!reader.read_variant(&mut var).unwrap());
-        assert!(var.gts.is_empty());
-        assert_eq!(var.filled, Needs::empty());
     }
 }

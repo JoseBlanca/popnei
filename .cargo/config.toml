@@ -33,4 +33,12 @@ PYO3_BUILD_EXTENSION_MODULE = "1"
 # next person to run `cargo check --all-targets` for wasm and not here. The
 # tests are not run for wasm, and nothing here runs them; they are compiled
 # so that what they call is compiled too.
-wasm-check = "check -p popnei --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets"
+#
+# It denies warnings, as `cargo clippy` does in the commands of the skill: a
+# warning of a wasm build is one nobody sees, since nothing but this command
+# builds for wasm until the wheel of pyodide or the wasm package is made, and
+# an import left behind by a test that a `cfg` takes out of the wasm targets
+# is exactly that. The flag is given to this command alone, with `--config`,
+# so that a warning of a native build stays a warning while the code is being
+# written.
+wasm-check = "check -p popnei --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets --config build.rustflags=[\"-D\",\"warnings\"]"

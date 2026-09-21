@@ -1,10 +1,12 @@
 // Loads pyodide under node, installs into it the wheel that
-// scripts/build_pyodide_wheel.sh left in dist/, and checks two things: that
-// the version popnei answers with is the one of the core crate, which is in
-// [workspace.package] of the Cargo.toml of the repository, and that
+// scripts/build_pyodide_wheel.sh left in dist/, and checks three things:
+// that the version popnei answers with is the one of the core crate, which
+// is in [workspace.package] of the Cargo.toml of the repository; that
 // `open_vcf` reads tests/reference/vcf/cases.vcf and cases.vcf.gz there as
-// the table of "How it is verified" of docs/specs/io_vcf.md says. It exits
-// with an error when anything differs.
+// the table of "How it is verified" of docs/specs/io_vcf.md says; and that
+// a VCF whose blocks of the size popnei chooses would not fit in what a
+// wasm build counts is opened all the same. It exits with an error when
+// anything differs.
 //
 // README.md, beside this file, says how to run it.
 
@@ -97,6 +99,55 @@ def variants_as_rows(vcf_path, only_passed):
     return json.dumps(rows)
 `;
 
+// How many individuals the header of the third check names, and the ploidy
+// it is read with, the largest a reader of popnei takes. A block of the
+// size popnei chooses for so many individuals is 100 variants, and its
+// genotypes are 100 x 170000 x 255, 4335 million, where a count of things
+// in wasm holds 4295 million.
+const MANY_INDIVIDUALS = 170000;
+const LARGEST_PLOIDY = 255;
+
+// What popnei answers for such a file inside pyodide: opening it reads the
+// header and asks for no block, so the individuals and the ploidy come out;
+// blocks of 10 variants fit and the file has no variant to put in one; and
+// a size that does not fit, 100 and the one popnei chooses, is refused when
+// the blocks are asked for and not before. js/popnei/test/open.test.ts has
+// the case under node, where a count of things is 64 bits and nothing is
+// refused for its size.
+const OPEN_A_HEADER_OF_MANY_INDIVIDUALS = `
+import json
+
+import popnei
+
+
+def header_of_many_individuals(vcf_path, num_individuals):
+    names = "\\t".join(f"ind{individual}" for individual in range(num_individuals))
+    columns = "#CHROM\\tPOS\\tID\\tREF\\tALT\\tQUAL\\tFILTER\\tINFO\\tFORMAT\\t" + names
+    with open(vcf_path, "w") as vcf:
+        vcf.write("##fileformat=VCFv4.4\\n" + columns + "\\n")
+
+
+def what_a_header_of_many_individuals_gives(vcf_path, num_individuals, ploidy):
+    header_of_many_individuals(vcf_path, num_individuals)
+    variants = popnei.open_vcf(vcf_path, ploidy=ploidy)
+    what = {
+        "num_individuals": variants.num_individuals,
+        "ploidy": variants.ploidy,
+        "first_individual": variants.individuals[0],
+    }
+    what["blocks_of_ten"] = [
+        block.num_vars for block in variants.iter_blocks(num_vars_per_block=10)
+    ]
+    for asked_for, size in (("of_a_hundred", 100), ("of_the_default", None)):
+        try:
+            for block in variants.iter_blocks(num_vars_per_block=size):
+                pass
+            what[asked_for] = "no error"
+        except ValueError as error:
+            what[asked_for] = str(error)
+    return json.dumps(what)
+`;
+
 const failures = [];
 
 const expectedVersion = versionOfTheCore(
@@ -160,6 +211,43 @@ for (const name of ["cases.vcf", "cases.vcf.gz"]) {
       console.log(`${what}: ${expected.length} variants, as the spec says`);
     }
   }
+}
+
+pyodide.runPython(OPEN_A_HEADER_OF_MANY_INDIVIDUALS);
+const openCall =
+  `what_a_header_of_many_individuals_gives("/vcf/many_individuals.vcf",` +
+  ` ${MANY_INDIVIDUALS}, ${LARGEST_PLOIDY})`;
+const opened = JSON.parse(pyodide.runPython(openCall));
+const whatWasAsked =
+  `a header of ${MANY_INDIVIDUALS} individuals of the ploidy ${LARGEST_PLOIDY}`;
+if (
+  opened.num_individuals !== MANY_INDIVIDUALS ||
+  opened.ploidy !== LARGEST_PLOIDY ||
+  opened.first_individual !== "ind0"
+) {
+  failures.push(
+    `${whatWasAsked} was opened as ${JSON.stringify(opened)}: opening a file` +
+      " reads its header and asks for no block",
+  );
+} else if (JSON.stringify(opened.blocks_of_ten) !== "[]") {
+  failures.push(
+    `${whatWasAsked} gives the blocks ${JSON.stringify(opened.blocks_of_ten)}` +
+      " for a size of 10, and the file has no variant",
+  );
+} else if (
+  !opened.of_a_hundred.includes("memory") ||
+  !opened.of_the_default.includes("memory")
+) {
+  failures.push(
+    `${whatWasAsked} answers "${opened.of_a_hundred}" for blocks of 100 and` +
+      ` "${opened.of_the_default}" for the size popnei chooses, and the` +
+      " genotypes of both are more than this build counts",
+  );
+} else {
+  console.log(
+    `${whatWasAsked}: opened, no block of 10, and 100 needs more memory than` +
+      " this build gives",
+  );
 }
 
 for (const failure of failures) {

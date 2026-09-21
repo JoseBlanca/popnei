@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use thiserror::Error as ThisError;
 
+use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
 use crate::variant::Needs;
 
@@ -16,29 +17,40 @@ use crate::variant::Needs;
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum Error {
-    /// The consumer depends on fields that the reader did not fill. A
-    /// reader may leave out a field that was asked for when its source has
-    /// none, an array of genotypes that has no alleles, and the consumer
-    /// finds it in `filled` of the variant.
-    #[error("the reader did not fill the fields that were asked for: {fields}")]
-    FieldsNotFilled {
-        /// The fields that were asked for and are not in `filled`.
+    /// A consumer depends on fields that the block it was given does not
+    /// hold. A field is missing when nobody asked the reader for it, and
+    /// when its source has none to give: a source built from an array of
+    /// genotypes has no alleles. The consumer finds which ones with
+    /// `asked_for.difference(block.fields())`, and one error names them
+    /// all, so that a consumer that depends on two fields reports both.
+    #[error("the block does not hold the fields this needs: {fields}")]
+    FieldsNotInTheBlock {
+        /// The fields that were asked for and that the block does not
+        /// hold.
         fields: Needs,
     },
 
-    /// A collector of blocks was asked for blocks of 0 variants. A block
-    /// holds one variant at least, and the caller that wants the size
-    /// popnei chooses asks for none instead of asking for 0.
-    #[error("a collector was asked for blocks of 0 variants, and a block holds 1 variant at least")]
+    /// A reader that takes a size was asked for blocks of 0 variants. A
+    /// block holds one variant at least, and the caller that wants the
+    /// size popnei chooses asks for none instead of asking for 0.
+    #[error("a reader was asked for blocks of 0 variants, and a block holds 1 variant at least")]
     BlockOfNoVariants,
 
     /// A block of that many variants needs more memory than the machine
     /// gives: its genotypes, the variants times the individuals times the
     /// ploidy, are more than a `usize` holds, or one of its columns was
-    /// asked of the machine and not given. Only a size that a caller asked
-    /// for reaches it.
+    /// asked of the machine and not given.
+    ///
+    /// The size is the one a caller asked for, or the one popnei chose for
+    /// the individuals of the source when they asked for none: the VCF
+    /// reader refuses the first when it is built and finds the second when
+    /// it builds its first block, so that a file opened for its individuals
+    /// alone is never refused for a size that nobody asked for. `size` says
+    /// which of the two it is, and the message ends with what the caller
+    /// does about it.
     #[error(
-        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} needs more memory than this machine gives; ask for fewer variants in a block"
+        "a block of {num_vars_per_block} variants of {num_individuals} individuals of the ploidy {ploidy} needs more memory than this machine gives; {way_out}",
+        way_out = size.way_out()
     )]
     BlockTooLarge {
         /// How many variants a block was asked to hold.
@@ -47,6 +59,71 @@ pub enum Error {
         num_individuals: usize,
         /// How many alleles the genotype of one individual holds.
         ploidy: usize,
+        /// Whether that size is the one the caller asked for or the one
+        /// popnei chose for these individuals.
+        size: BlockSize,
+    },
+
+    /// A reader gave a block of other individuals or of another ploidy
+    /// than it says its source has, so the rows of its blocks are not rows
+    /// of one array of variants x individuals x ploidy and cannot be
+    /// joined. `reblock` finds it, and it is a defect of that reader.
+    #[error(
+        "the reader says its source has {num_individuals} individuals of the ploidy {ploidy} and gave a block of {found_num_individuals} individuals of the ploidy {found_ploidy}"
+    )]
+    BlocksDoNotFitTogether {
+        /// How many individuals the reader says its source has.
+        num_individuals: usize,
+        /// The ploidy the reader says its source has.
+        ploidy: usize,
+        /// How many individuals the block it gave has.
+        found_num_individuals: usize,
+        /// How many alleles the genotype of one individual holds in it.
+        found_ploidy: usize,
+    },
+
+    /// A reader gave a block of no variants, which no reader of popnei
+    /// does: every block a reader gives holds one variant at least, and a
+    /// reader with no more variants gives no block. `reblock` finds it and
+    /// gives no block after it, because a source that gives one says
+    /// nothing about whether the variants that follow are there, and a
+    /// reader that asked again would never come back from a source that
+    /// always gives one.
+    #[error(
+        "a reader gave a block of no variants, and every block holds 1 variant at least; the reader that gave it has a defect"
+    )]
+    ReaderGaveABlockOfNoVariants,
+
+    /// An array of a block is not of the size the block says: its
+    /// genotypes are not its variants times its individuals times its
+    /// ploidy, or a column has not one entry for each variant. The fields
+    /// of a block are public, so a reader with a defect can build one, and
+    /// its genotypes would be read one at the place of another with
+    /// nothing to show it. `Block::check` is what finds it.
+    #[error(
+        "the `{array}` of a block holds {found} entries, and a block of its size holds {expected}"
+    )]
+    BlockArrayOfAnotherSize {
+        /// The array that is not of the size of the block: `gts` or the
+        /// name of a column.
+        array: &'static str,
+        /// How many entries it holds.
+        found: usize,
+        /// How many it has to hold.
+        expected: usize,
+    },
+
+    /// A filter gave `Block::retain_vars` a number of values other than
+    /// the variants of the block. There is one value for each variant, and
+    /// the block is left as it was.
+    #[error(
+        "the variants to keep are {found} values and the block has {num_vars} variants; there is one value for each variant of the block"
+    )]
+    KeepOfAnotherSize {
+        /// How many values were given.
+        found: usize,
+        /// How many variants the block holds.
+        num_vars: usize,
     },
 
     /// A name that was given for a column of a block is not one of the
@@ -59,25 +136,6 @@ pub enum Error {
     NotAFieldOfABlock {
         /// The name that was given and is not a field of a block.
         name: String,
-    },
-
-    /// A reader filled a variant with a number of alleles other than its
-    /// individuals times its ploidy, which the trait of a reader asks of
-    /// it. It is a defect of that reader: a block of such variants has
-    /// genotypes that a consumer reads wrong, each one at the place of
-    /// another.
-    #[error(
-        "the reader gave a variant of {found} alleles, and the {num_individuals} individuals of its source of the ploidy {ploidy} are {expected} alleles in every variant"
-    )]
-    VariantOfAnotherSize {
-        /// How many alleles the variant holds.
-        found: usize,
-        /// How many it has to hold, the individuals times the ploidy.
-        expected: usize,
-        /// How many individuals the reader says its source has.
-        num_individuals: usize,
-        /// How many alleles the genotype of one individual holds.
-        ploidy: usize,
     },
 
     /// The source the VCF reader was given holds something else. A VCF
@@ -155,6 +213,43 @@ pub enum Error {
         line: u64,
     },
 
+    /// The source of the VCF was written by bgzip and does not end with the
+    /// empty member of 28 bytes that marks the end of such a file, so its
+    /// last bytes are missing: a download that stopped, a copy that was cut
+    /// short. It comes where the reader would have said that there are no
+    /// more variants.
+    ///
+    /// A gzip file that bgzip did not write has no such mark and is read to
+    /// its end.
+    #[error(
+        "the VCF was written by bgzip and does not end with the empty member of 28 bytes that marks the end of a bgzipped file, so the file is cut short and the variants after the cut are not in it; the file has to be fetched or copied again. bcftools says of the same file `no BGZF EOF marker; file may be truncated`"
+    )]
+    VcfBgzipEndMissing,
+
+    /// A member of the source of the VCF, which bgzip wrote, is not one
+    /// bgzip could have written: its header is not that of a member of such
+    /// a file, the size it states is not the size it has, the text that
+    /// came out of it is not the text its CRC32 and its length describe, or
+    /// the file goes on after the member that marks its end. The file was
+    /// damaged after it was written, by a copy or a transfer that did not
+    /// check what it carried.
+    ///
+    /// The member is counted from 1 and `offset` is the byte of the
+    /// compressed file where it starts, so that a user can look at it with
+    /// `xxd -s`.
+    #[error(
+        "the VCF was written by bgzip and its member {member}, which starts at the byte {offset} of the compressed file, is corrupted, so the file has to be fetched or copied again: {problem}"
+    )]
+    VcfBgzipCorrupted {
+        /// Which member of the file it is, counted from 1.
+        member: u64,
+        /// The byte of the compressed file where that member starts,
+        /// counted from 0.
+        offset: u64,
+        /// What is wrong with it.
+        problem: String,
+    },
+
     /// The file of a VCF, or of another source of variants, could not be
     /// opened. It carries the path, which `std::io::Error` does not, so
     /// that a message names the file and a binding can put it where its
@@ -184,8 +279,8 @@ mod tests {
     /// The message has to name the fields, because that is what tells the
     /// caller which reader to ask or which calculation to drop.
     #[test]
-    fn the_message_of_a_field_that_was_not_filled_names_the_field() {
-        let error = Error::FieldsNotFilled {
+    fn the_message_of_a_field_the_block_does_not_hold_names_the_field() {
+        let error = Error::FieldsNotInTheBlock {
             fields: Needs::ALLELES | Needs::QUAL,
         };
         let message = error.to_string();

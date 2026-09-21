@@ -16,5 +16,11 @@ node_modules/
 # command line generates from the build of crates/popnei-js. What the
 # TypeScript compiler leaves, js/popnei/dist/, is under the `dist/` above.
 js/popnei/wasm/
+# The copy of LICENSE that the `prepack` script of js/popnei puts beside
+# `package.json`, because npm packs the files of the package directory and
+# LICENSE is at the root of the repository. It is written again before
+# every `npm pack`, so it cannot drift from the file it is copied from, and
+# a second copy in git could.
+js/popnei/LICENSE
 tmp/
 .claude/worktrees/

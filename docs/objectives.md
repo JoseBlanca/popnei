@@ -29,8 +29,9 @@ in a browser tab.
    script kept in the repository, their outputs are stored beside it, and
    the numbers of a few cases are written into the tests as literals, so
    that a test says what it expects and never needs the tool. pyNei is a
-   development dependency, a path dependency on its sibling checkout, and
-   the tests run both libraries on the same inputs where they overlap.
+   development dependency, taken from its git repository at one commit, so
+   that every machine tests against the same pyNei, and the tests run both
+   libraries on the same inputs where they overlap.
    The TypeScript API is tested against the same literals, under node,
    the JavaScript runtime outside the browser.
 

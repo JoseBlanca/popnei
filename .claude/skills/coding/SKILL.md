@@ -95,6 +95,13 @@ variants of 10000 samples, has 1e10 genotypes, which does not fit in a
 - A missing value is `Option<f64>` or an explicit enum inside the core,
   and becomes NaN only at the boundary with Python, where pandas expects
   it. NaN that travels through Rust arithmetic hides where it was born.
+  The quality of a variant is the exception, which the owner decided on 21
+  September 2026: the column of a block is `Vec<f32>` with NaN for a
+  variant that has no quality, inside the core as in Python and in
+  TypeScript, as `docs/specs/block.md` has it. What makes it safe is that
+  the VCF reader refuses a quality that is not finite, so a NaN there can
+  only mean that the variant has none; a calculation that reads the
+  qualities tests `is_nan` before any arithmetic on them.
 - A total of floats must not depend on the number of threads. rayon's
   `sum` and `reduce` join the parts in an order it chooses at run time, so
   the last bits change with the pool. Reduce over chunks of a fixed size,
@@ -131,17 +138,87 @@ compiler drop the bounds checks.
 - `Result` everywhere, fail fast, as section 7 of the architecture says. A
   malformed line of a VCF is an error with the line number and the field,
   not a warning and a skipped record.
-- Errors are typed, with `thiserror`. One error type for each operation
-  that fails in its own way, not one for the crate. The variants name what
-  was being done, `ReadHeader`, `ParseGenotype`, and carry what is needed
-  to find the cause: the path, the line, the field, the value.
-- A public error type is `#[non_exhaustive]`, and it does not hold the
-  error type of a dependency in a public variant.
+- An error never passes silently, which the owner gave as a rule on 21
+  September 2026. A file that was cut short or damaged is an error and not
+  a file with fewer variants, however improbable the damage: a review that
+  changed every byte of `cases.vcf.gz` in turn to each of the 255 other
+  values, 101745 files, found one that the reader gave a header, no
+  variant and no message for, and the owner decided with it in front of
+  him that such a file is refused. So a reader that can check what it read
+  does: the bgzipped VCF is read by the size each of its members states,
+  and the text of each is checked against the CRC32 and the length the
+  member carries. bcftools 1.24 reads that file as no variant, says
+  nothing and exits with 0, and popnei is stricter than it here.
+- The core crate has one error type, the enum `Error` of
+  `crates/popnei/src/error.rs`, written with `thiserror`, and its
+  `Result<T>` is `std::result::Result<T, Error>`. Every module adds its
+  own cases to it. A case names what was being done, `VcfHeader`,
+  `VcfGenotypePloidy`, and carries what finds the cause: the path, the
+  line, the column or the individual, the value. The owner decided on 20
+  September 2026 for one enum, and not for one error type for each
+  operation that fails in its own way, on two grounds. One type is what
+  each of the two binding crates maps, so a case added in the core has one
+  place in each language where its exception is chosen, and nothing else
+  to change. And the enum is `#[non_exhaustive]`, so a module written
+  later adds a case without breaking the code that matches on it.
+- `non_exhaustive` makes every `match` on `Error` outside the core crate
+  need a wildcard arm, and `wildcard_enum_match_arm` is a denied lint. So
+  that arm carries an `#[expect]` whose reason says what a case nobody has
+  written yet gets there: in Python, a `ValueError`.
+- The enum holds the error type of no dependency in a public case, so that
+  a user of the core does not depend on which version of a library popnei
+  uses inside. `std::io::Error`, which is in `FileNotOpened` and in `Io`,
+  is of the standard library and not of a dependency.
 - A `Result` is never dropped. `let _ =` on one needs a reason in a
   comment.
-- The conversion to Python exceptions lives in the binding crate, in one
-  newtype, as `pyo3.md` describes, and chooses the exception a pyNei user
-  would expect: `ValueError` for a bad argument, `OSError` for a file.
+- Each binding crate turns `popnei::Error` into what its language throws,
+  in one file: `crates/popnei-python/src/errors.rs` and
+  `crates/popnei-js/src/errors.rs`. Neither can implement `From` for the
+  error type of its language, because neither that type nor
+  `popnei::Error` belongs to it, so each has an enum that does,
+  `PyPopneiError` and `JsPopneiError`. One of its cases holds the error of
+  the core, and the others hold what only the binding knows: an argument
+  it refuses before the core sees it, a value its language cannot hold,
+  the file that an error of the core happened in, which the core was not
+  given, and a defect of the binding itself, a lock that a panic left
+  broken. Every function of the crate returns that `Result`, the entry
+  points that pyo3 and wasm-bindgen export among them, so `?` carries an
+  error of the core across. A call site maps one by hand only to add what
+  the core does not have, which in the Python crate is the path of the
+  file, with `PyPopneiError::of_the_file`.
+- Which exception a case becomes in Python follows the convention the
+  owner gave on 21 September 2026: a `ValueError` is a wrong input of a
+  function, a `RuntimeError` a defect of popnei, and an `OSError` a file
+  that cannot be read, that was cut short or that is corrupted. For a
+  reader a wrong input is also a file whose content is not what the format
+  holds, so a wrong data line, a header popnei cannot read, a source that
+  is not a VCF, a ploidy out of range and a quality that is not finite are
+  all a `ValueError`, as is a case that nobody has written yet. The
+  defects are the three with which `docs/specs/block.md` says that a
+  reader has one, blocks of a source that do not hold the same dataset, a
+  block whose arrays are not of its size and a block of no variants; the
+  number of values a filter gave `retain_vars`, which is one for each
+  variant of its block; and the parse of a batch of lines that did not
+  come back. The `OSError` is
+  built with the number the system gave, which makes it the
+  `FileNotFoundError` or the `PermissionError` of that number, and with no
+  number when nothing of the system refused anything: a gzip stream that
+  ends in the middle, a bgzipped file with no mark of its end, a member
+  that is corrupted. The spec of a module lists its cases with the
+  exception each one is, `docs/specs/io_vcf.md` the ten of the VCF
+  reader.
+- In Python every error of a file names the file: the message of a
+  `ValueError` and of a `RuntimeError` starts with its path, and an
+  `OSError` carries it in `filename`, where a caller looks for it and
+  where Python prints it after the message, so that message does not name
+  it a second time. The core does not have the path, since a reader is
+  built over bytes, so the binding crate puts it there, with
+  `PyPopneiError::of_the_file`. An argument that is refused names no file:
+  what a user wrote is wrong whatever file is read.
+- JavaScript has one exception for everything a library refuses, so its
+  three cases all become an `Error` with the message the error has in
+  Rust; it reads bytes and has no path to add. `pyo3.md`, beside this
+  file, has the Python side.
 
 ## Types, names and defaults
 
@@ -227,8 +304,9 @@ calculation. `ruff format` and `ruff check` clean.
   the spec with how it was got. Until then the test asserts only what the
   spec states, that a value exists or does not.
 - The cargo tests cover the core on their own. The pytest tests run pyNei
-  and popnei on the same input where they overlap, pyNei being a path
-  dependency, and compare as the spec says: exactly for counts and sets of
+  and popnei on the same input where they overlap, pyNei being a
+  development dependency at the commit that `pyproject.toml` names, and
+  compare as the spec says: exactly for counts and sets of
   variants, within the spec's tolerance for floats.
 - Every field and every parameter takes, in some test, a value that
   differs from the others and from its default. A suite in which the

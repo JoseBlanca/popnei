@@ -235,9 +235,10 @@ docs/
 pyproject.toml             maturin, manifest-path to the Python binding crate
 ```
 
-pyNei is a development dependency of the Python side, a path dependency on
-`../pynei`, and the tests run both libraries on the same inputs where they
-overlap.
+pyNei is a development dependency of the Python side, taken from
+`https://github.com/JoseBlanca/pynei` at the commit that `[tool.uv.sources]`
+of `pyproject.toml` names, and the tests run both libraries on the same
+inputs where they overlap.
 
 ## 9. The modules of the core crate, and what of pyNei each one carries
 
@@ -245,6 +246,7 @@ overlap.
 |---|---|---|
 | `variant` | `Needs`, `ChromTable`, `MISSING_ALLELE`, `VariantRef`, the view of one variant of a block, and the row helpers over it: dosages, missing and het masks, allele counts | `Genotypes.to_012`, `gt_counts` |
 | `io::vcf` | the reader, which parses the lines of a block in parallel, gzip; the writer | `vars_from_vcf`, and a writer pyNei does not have |
+| `io::bgzf` | the reader of the members of a file that bgzip wrote, which `io::vcf` reads such a source through: it cuts each member by the size the member states and checks it | none; pyNei reads a bgzipped VCF with Python's `gzip` |
 | `io::vars` | the arrow file reader, projection by `Needs`, a batch of the file as a block; the writer; a format of popnei's own | `load_vars`, `write_vars` |
 | `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
 | `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |

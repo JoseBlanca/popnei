@@ -114,16 +114,58 @@ builds the frozen dataclasses.
 
 ## Errors and panics
 
-`impl From<popnei::SomeError> for PyErr` cannot be written in this crate,
-because neither type is ours. So the crate has one newtype,
-`struct PyPopneiError(...)`, with a `From` for each error type of the core
-and one `From<PyPopneiError> for PyErr`, and its functions return
-`Result<T, PyPopneiError>`, so that `?` works and no call site has a
-`map_err`. That one conversion chooses the exception: `ValueError` for a
-bad argument or a malformed file, `FileNotFoundError` and `OSError` for
-the file system, as a pyNei user would expect from pyNei. The message is
-the `Display` of the core error, which already has the path, the line and
-the field.
+`impl From<popnei::Error> for PyErr` cannot be written in this crate,
+because neither type is ours. So the crate has an error type of its own,
+`enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
+`From<PyPopneiError> for PyErr`. Its five cases are the error of the core;
+that same error with the file it happened in, which the core was not given;
+an argument that says how many of something there are and counts nothing,
+which this crate refuses before the core sees it; a defect of this crate, a
+lock that a panic left broken or a chromosome that is not in the table it
+came from; and an exception the interpreter itself raised, the
+`KeyboardInterrupt` that `py.check_signals` finds between two blocks, which
+travels back as it is.
+
+Every function of the crate returns `Result<T, PyPopneiError>`, the
+`#[pyfunction]` and the `#[pymethods]` that pyo3 exports among them, so
+that `?` carries an error of the core across. A call site maps one by hand
+only to add what the core does not have: `PyPopneiError::of_the_file` puts
+the file into an error that came from reading one.
+
+The one conversion chooses the exception by the owner's convention of 21
+September 2026, which "Errors, and no panics" of `SKILL.md` gives: a
+`ValueError` for a wrong input of a function, which a file whose content is
+not what a VCF holds is, and which a case nobody has written yet gets; a
+`RuntimeError` for a defect of popnei, which is a defect of this crate, one
+of the three cases with which `docs/specs/block.md` says that a reader has
+one, the number of values a filter gave `retain_vars`, or the parse of a
+batch of lines that did not come back; and an `OSError` for a file that
+cannot be read, that was cut short or that is corrupted. The `OSError`
+is built with the number the system gave, so that it is the
+`FileNotFoundError`, the `IsADirectoryError` or the `PermissionError` of
+that number, and with `None` in its place when nothing of the system
+refused anything, which leaves an `OSError` whose `errno` is `None`. Either
+way it carries the file in `filename`.
+
+What the message is depends on the exception, and a new case follows the
+one it is:
+
+- A `ValueError` and a `RuntimeError` of a file: the `Display` of the core
+  error, which has the line, the column and the value, with the path before
+  it, `<path>: <what the core says>`. The path is `to_string_lossy` there,
+  since a message is text and a name of a file is bytes.
+- An `OSError`: the `Display` of the core error with no path, because
+  Python prints `filename` after the message and would say it twice. The
+  file goes in as an `OsString`, which arrives as the text the standard
+  library would give, so `error.filename` is the path the caller wrote.
+- The two `OSError`s that wrap a `std::io::Error`, a file that could not be
+  opened and a read that failed: this crate writes the message itself, "the
+  file could not be opened: " and what the system said, without the number
+  that Rust puts at the end of it, `(os error 2)`, which Python prints of
+  its own in `[Errno 2]`.
+- An argument that this crate or the core refuses, `fields`, `ploidy`,
+  `num_vars_per_block`, names no file: what a user wrote is wrong whatever
+  file is read.
 
 A panic in Rust reaches Python as `PanicException`, which derives from
 `BaseException`, is not caught by `except Exception`, and usually ends the

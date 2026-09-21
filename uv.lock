@@ -190,7 +190,7 @@ requires-dist = [{ name = "numpy", specifier = ">=2.4.6" }]
 [package.metadata.requires-dev]
 dev = [
     { name = "maturin", specifier = ">=1.9,<2.0" },
-    { name = "pynei", directory = "/Users/jose/devel/pynei" },
+    { name = "pynei", git = "https://github.com/JoseBlanca/pynei?rev=ef0ca6e177be5a18c2dba1cc78901940ad847cf9" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.14" },
 ]
@@ -229,29 +229,13 @@ wheels = [
 [[package]]
 name = "pynei"
 version = "0.1.0"
-source = { directory = "/Users/jose/devel/pynei" }
+source = { git = "https://github.com/JoseBlanca/pynei?rev=ef0ca6e177be5a18c2dba1cc78901940ad847cf9#ef0ca6e177be5a18c2dba1cc78901940ad847cf9" }
 dependencies = [
     { name = "more-itertools" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "threaded-map-reduce" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "more-itertools", specifier = ">=11.0.1" },
-    { name = "numpy", specifier = ">=2.4.6" },
-    { name = "pandas", specifier = ">=3.0.2" },
-    { name = "pyarrow", specifier = ">=22.0.0" },
-    { name = "threaded-map-reduce", specifier = ">=0.1.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=9.0.2" },
-    { name = "pytest-pyodide", specifier = ">=0.58.4" },
-    { name = "ruff", specifier = ">=0.6.1" },
 ]
 
 [[package]]

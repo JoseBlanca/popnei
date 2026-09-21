@@ -52,8 +52,19 @@ decided on 20 September 2026 that the FILTER is honoured and that this is
 the default; pyNei ignores the column. That `.` counts as passed was
 decided here: many programs write `.` in every line, pyNei's own script
 for its reference VCF among them, and with `.` as a failure the default
-would give such a file no variants. `bcftools view -f .,PASS` is the same
-choice.
+would give such a file no variants.
+
+A FILTER that names more than one filter is where popnei and bcftools
+differ. popnei reads the whole column: it gives the variant when the column
+is `PASS` or `.` and no other. `bcftools view -f .,PASS` keeps a row when
+any of the filters the column names is one of those, so it keeps
+`PASS;q10`, a variant that failed `q10`, and popnei skips it. On the seven
+columns `PASS`, `.`, `q10`, `PASS;q10`, `pass`, `q10;PASS` and an empty
+one, popnei gives the first two and bcftools those two and the two that
+name `PASS` beside `q10`. Which is right depends on what the file means by
+naming both, which VCF does not say; popnei takes the strict reading, and a
+user who wants the other one has `only_passed` false and a filter of their
+own.
 
 The genotype of an individual is the value of the key `GT` in its column.
 The reader finds where `GT` is among the keys of the FORMAT column of
@@ -156,31 +167,107 @@ The differences from pyNei:
   `many.vcf.gz` without its last 28 bytes as it reads the whole file, 500
   variants and no complaint; bcftools 1.24 stops with "no BGZF EOF marker;
   file may be truncated".
+- A bgzipped file that is corrupted is an error that names the member.
+  pyNei was run on 21 September 2026 on `many.vcf.gz` with its bytes 320
+  and 321 changed, of the paragraph on bgzip below, and on `cases.vcf.gz`
+  with its byte 243 set to 144: it raises `ValueError: Empty VCF file, it
+  has no variants` for both, which is what it says of a file that has a
+  header and nothing else, and not that the file is corrupted.
 
 ### The cases a reader of the rules would not guess
 
 The file is gzipped when its first two bytes are `1f 8b`, whatever its
 name, as in pyNei. A file made by bgzip, which is what nearly every
 gzipped VCF is, is many gzip members one after another, each with 64 KB
-of text at most, and an empty one at the end. A gzip decoder that stops
+of text at most, and an empty one at the end. Every member of such a file
+carries in its header the extra field `BC`, two bytes that hold the size
+of that member in the file, and the `BC` of the first member is what says
+that bgzip wrote the source. A gzip decoder that stops
 after the first member gives the start of the file and no error. For
 `many.vcf.gz` and `cases.vcf.gz`, below, the first member is exactly the
 header, so such a decoder gives a VCF with a header and no variants,
 which is not an error either: a reader with no variants and nothing to
 tell that anything went wrong. What catches it is the tests that count
-the variants of the gzipped files. So the reader uses a decoder that goes on to the next member, flate2's
-`MultiGzDecoder`, with flate2's default backend, `miniz_oxide`, which is
-Rust; its zlib backends are C and do not build for the wasm package.
+the variants of the gzipped files.
 After the decompression, or with no compression, the first byte has to be
 `#`; if not, the error says that the source is not a VCF.
 
-A file made by bgzip ends with an empty block of 28 bytes that marks its
-end. The reader knows that a source was made by bgzip from its first gzip
-member, which carries the extra field `BC` that bgzip writes in every
-block, and such a source that does not end with the empty block is an
-error. The source is read once and forward, so the reader watches the
-compressed bytes as they go by to the decoder and keeps the last 28, and
-that the mark is missing is known only when the source ends: every
+A source that bgzip wrote is read one member at a time, by the size that
+the `BC` of that member states, which is how htslib and bcftools read one:
+the reader cuts the member from the source by that size, decompresses its
+deflate data on its own, and checks what came out against the CRC32 and
+the length of the text that the last eight bytes of the member hold. These
+are errors, each of them with the member, counted from 1, the byte of the
+compressed source where that member starts, and what is wrong: a member
+that does not start with the two bytes of gzip; one whose method is not
+deflate, the method 8; one whose flags are not exactly the flag of an
+extra field, 4; an extra field whose subfields do not end where it ends,
+or that holds no `BC` of two bytes; a size that leaves no room for the
+header, the deflate data and the last eight bytes; deflate data that the
+decoder refuses, that does not end where the member does or that gives
+more text than a member holds; and a CRC32 or a length of the text that is
+not the one of the text that came out.
+
+The flags and the method are the two of those that bcftools reads and
+popnei refuses: bcftools 1.24 reads a member whose flags are `0c`, the
+flag of an extra field with those of a name and a comment. BGZF fixes the
+flags of a member to 4, and the reader cuts a member by a size and does not
+follow its bytes one by one, so a name or a comment in a header would move
+the data of that member to a place the reader does not look at.
+
+The extra field of a member can hold other subfields beside `BC`, before it
+or after it, and the reader walks them to its end. It walks the extra field
+of the first member too, the one whose `BC` says that bgzip wrote the
+source: a file whose first member carries another subfield before its `BC`
+is read by the sizes of its members like any other, where a reader that
+looked for the `BC` at the bytes 12 and 13, which is where bgzip writes it
+and where htslib looks for it, would read it as a plain gzip file and check
+none of its members.
+
+A gzip file that bgzip did not
+write, whose first member has no `BC`, is read with a decoder that goes on
+to the next member by itself, flate2's `MultiGzDecoder`. Both ways
+decompress with flate2's default backend, `miniz_oxide`, which is Rust;
+its zlib backends are C and do not build for the wasm package. The reader
+of the members takes flate2's raw deflate and its CRC32, of that same
+backend, so it adds nothing to what popnei depends on.
+
+Why the members are cut and checked, and not handed to a decoder that goes
+from one to the next on its own: with such a decoder, `many.vcf.gz` with
+the two bytes that hold the length of the extra field of its second
+member, the bytes 320 and 321 counted from 0, changed from `06 00` to `44
+54`, gives no variant and no error, because the decoder takes 21572 bytes
+of compressed data for an extra field and lands on the empty member that
+ends the file. A review of 21 September 2026 changed every byte of
+`cases.vcf.gz` in turn to each of the 255 other values, 101745 files, and
+one of them was read as a whole file with its variants missing and nothing
+to say so: the byte 243, the length of that same field of its second
+member, set to 144. The owner decided that day, with that review in front
+of him, that an error never passes silently and that a corrupted file is
+refused however improbable the corruption. bcftools 1.24 gives both of
+those files a header, no variant and the exit status 0: htslib takes a
+member whose header it cannot read for the end of the data, and the 28
+bytes that mark the end of the file are still where they were.
+
+What no reader of a BGZF file can see is a member that was removed,
+repeated or moved: every member is a whole gzip stream, checked by its own
+CRC32, and none of them records which member of the file it is. A reviewer
+made those files from `many.vcf.gz` on 21 September 2026 and read them with
+popnei and with bcftools 1.24: with its second member dropped it gives the
+220 variants of its third, with that member written twice 780 variants,
+with its second and third members swapped the same 500 variants in another
+order, and with the mark of the end written twice 500 variants, all of them
+with no error in either program. So "an error never passes silently" is the rule for the bytes of a
+member and for the end of the file, and the order and the number of the
+members are outside what the format lets anybody check.
+
+A file made by bgzip ends with a member that holds no text, the empty
+block of 28 bytes, and a source that bgzip wrote and that does not end
+with one is an error. A member with no text in the middle of a file is not
+its end: bgzip writes one where a caller asked for the bytes so far, and
+what makes the last member the mark of the end is that the source has no
+more bytes after it. The source is read once and forward,
+so that the mark is missing is known only when the source ends: every
 variant is given first, and the error comes where the reader would have
 said that there are no more, which is when bcftools says it too.
 Without it, a file that was cut where one gzip member ends and the next
@@ -188,6 +275,39 @@ begins, a download that stopped, gives fewer variants and no error, where
 bcftools says "no BGZF EOF marker". The owner decided this on 20 September
 2026. A gzip file that bgzip did not make has no such mark and is read to
 its end.
+
+A bgzipped source that ends early is that error wherever it was cut, and
+the reader gives the variants it read before the cut first in every case;
+what a user of `iter_blocks` gets of them is below. Where the cut falls
+decides how the reader learns of it. A cut where a
+member ends leaves whole members that nothing is wrong with, and what says
+that the file is cut short is the mark that is not at its end. A cut
+inside the header of a member, or inside its data, leaves the reader with
+fewer bytes than that member says it has: it decompresses what there is of
+the deflate data, gives the lines that came whole out of it, and then the
+same error, so a user whose download stopped is told that the
+file is cut short and not that a deflate stream is incomplete. Such a
+member has no CRC32 and no length of its text to be checked against, since
+those are among the bytes that are missing. A cut inside the first member
+is the same error, and not the error of a VCF with no `#CHROM` line, which
+is what the text that came out of that member has: the reader knows that
+the bytes ran out. Bytes after the member that holds no text are another
+thing: the file did not end where it says it ends, so a source with bytes
+after that member is a corrupted file and not one that was cut short. An error of
+the file system, a disc that fails while the file is read, is not one of
+those: it stays the error of the input it is, with the blocks that were
+read before it given first.
+
+A user reads through `iter_blocks`, which puts a `reblock` at the end of
+the pass, so the variants that `reblock` was keeping for its next block
+when the error came are lost with it, as `docs/specs/block.md` says of
+every error of a reader. `many.vcf.gz` without its last 28 bytes gives
+500, 497, 500 and 0 of its 500 variants before the error with blocks of 1,
+7, 100 and the size popnei chooses: 500 variants in blocks of 7 are 71
+whole blocks and 3 variants that were waiting, and the size popnei chooses
+for the 50 individuals of that file, 10000 variants, leaves the whole file
+waiting in one block that was never full. The four were measured from
+Python on 21 September 2026.
 
 The header is every line that starts with `##`, which is skipped, and
 then the line that starts with `#CHROM`, whose first nine columns have to
@@ -213,8 +333,17 @@ ten columns are errors. So is a quality that is a number and not a finite
 one, `nan`, `inf` or `1e400`, which a float reads as infinite: it is an
 error of the QUAL column, because NaN is what a block holds for a variant
 with no quality. The owner decided this on 20 September 2026; the option
-not taken was to keep what the float gave. A line whose bytes are not text, not valid UTF-8,
-is an error of that line and not an error of the input: a VCF is text.
+not taken was to keep what the float gave. A line whose bytes are not text,
+not valid UTF-8, is an error of that line and not an error of the input: a
+VCF is text.
+
+The bytes of a line are read as text where its text is kept, which is its
+nine first columns, and the error above is theirs. The columns of the
+individuals are read as bytes and never as text, which is what "Speed"
+below asks for, so a byte that is not text in one of them is a byte that is
+not a digit where an allele number is: the error names that individual and
+not the line. With the genotypes not asked for, those columns are not
+looked at at all and such a line is read.
 Every error of a data line gives the number of the line in the file,
 counted from 1 with the header lines, and the column or the individual.
 
@@ -296,16 +425,20 @@ the individuals of the file, since a line carries one genotype per
 individual, and a batch holds one line at least, however long that line
 is, so the reader always goes forward. Both bounds are
 constants of the code, each with what was measured on it, and a caller
-that times the reader can set them. The reader as built has them at 1024
-lines and 8 MiB.
+that times the reader can set them. The reader has them at 4096 lines and
+16 MiB, which "Speed" says what was measured on.
 
-The genotypes, the positions and the qualities of a line go straight into
-its row. The texts do not, because the rows of a column of texts are not
-of one size: the id and the alleles of a line are parsed into buffers of
-that line, and appended to the columns of the block in order, serially,
-after each batch, and only when they were asked for. The chromosomes get
-their numbers then too, in the order of the variants that are given, so
-the numbers do not depend on the threads.
+The genotypes of a line go straight into its row of the block, which is
+where nearly all the bytes of a VCF with genotypes end up. Everything else
+is parsed into buffers of that line and appended to the columns of the
+block in order, serially, after each batch: the position, the quality, the
+id and the alleles, each only when it was asked for, and the number of the
+chromosome, which is given then so that the numbers follow the order of the
+variants and not the order in which the lines were parsed. What that
+serial pass costs was measured on 21 September 2026 on the owner's Apple M5
+Pro, release, on the 403 MB VCF of "Speed" below: asking for every column
+instead of the genotypes alone adds 1 ms of 127 on 18 threads and 38 ms of
+650 on one, the ids being the one column that allocates for each variant.
 
 An error loses its block, as section 1 of the architecture has it: the
 blocks before the one with the wrong line are given, then the error comes
@@ -329,9 +462,7 @@ Only what `Needs` asks for is parsed, and a block has the columns that
 were asked for and no other, the chromosomes and the positions among them.
 A column that is not parsed is not checked: a position that is not a
 number is an error only with the chromosome and the position asked for,
-and a quality of `nan` only with the quality asked for. The reader as
-built parses the position of every line, which was the rule of the first
-version of this spec.
+and a quality of `nan` only with the quality asked for.
 What is checked whatever is asked for is the shape of the line: the nine
 first columns have to be there, the FORMAT has to have a `GT` key, and
 there has to be one column after the FORMAT at least. With the genotypes
@@ -341,14 +472,30 @@ two columns of individuals under a header with three, or one with a
 genotype of another ploidy, is given, and `gts` is empty.
 
 The reader is built over any `BufRead`, as section 1 of the architecture
-asks. It reads the first two bytes of the source to find the gzip and
-hands them back in front of it, because one look at the buffer of a
-source may give fewer than two bytes: a pipe, or the bytes of a file that
-a page hands over a few at a time. Nothing of the source is consumed, and
-the bytes after the first two are read from the buffer of the source
-itself. A function that takes a path opens the file and does the same,
+asks. It reads the first sixteen bytes of the source and hands them back
+in front of it: the two of gzip, the ones the message of a source that is
+not a VCF shows, and the bytes 12 and 13, where a file that bgzip wrote
+names its extra field `BC`. One look at the buffer of a source may give
+fewer bytes than that, one even: a pipe, or the bytes of a file that a page
+hands over a few at a time. Nothing of the source is consumed, and the
+bytes after the sixteenth are read from the buffer of the source itself. A function that takes a path opens the file and does the same,
 for the callers that have one; a file that cannot be opened is an error
 that carries the path.
+
+A source that bgzip wrote is read through the reader of its members, which
+holds one member at a time: the bytes of that member as the file has them
+and the text that came out of them, 64 KiB each, which is what it asks of
+the machine when it is built, and the extra field of the header of that
+member, which is 6 bytes in what bgzip writes and 64 KiB at most. The
+memory of a reader does not grow with the file. The bytes of a member are
+copied once out of the buffer of the source, which the decoder that goes
+from member to member does not do, and every line is then copied out of the
+text of the member into the text of its batch, as the lines of a plain file
+are. A review of 21 September 2026 put the two together at 7 ms of a read
+of 0.99 s of the 38 MB file of "Speed", from a sampling profile. Cutting a member
+from the source and decompressing it are two steps, which is what a later
+plan that decompresses the members of one file side by side will build on;
+here the two run one after the other, on the thread that reads.
 
 ### How it is verified
 
@@ -483,6 +630,54 @@ then that error; `many.vcf` compressed with gzip and not with bgzip is read.
 A quality of `nan`, of `inf` and of `1e400` is an error of the QUAL
 column.
 
+The members of a bgzipped source. `many.vcf.gz` is 21904 bytes and its
+members start at the bytes 0, 310, 12336 and 21876, so a cut at 315 or at
+325 falls inside the header of its second member and one at 21903 a byte
+before the end of the file: each gives the variants of the members that
+were whole and then the error of the mark that is missing, and a cut
+inside a header gives no variant of the member it cuts. A cut inside its
+first member, at 100 bytes, is that error too and not one of the header of
+the VCF. These are read and
+are not errors: a member whose extra field holds another subfield before
+its `BC`, in the first member and in a later one; a member of 65536 bytes
+of text, which is the most one holds;
+and a member with no text in the middle of a file, which bgzip can write
+and which is the end of a file only when nothing follows it.
+
+These are errors that name the member, each with a test that asserts the
+words of that error, so that a check taken out of the reader is seen:
+`many.vcf.gz` with its bytes 320 and 321 changed from `06 00` to `44 54`,
+which is the file of the review, read at `VcfReader::new` or at
+`next_block`; the same file with the `BC` of its first member moved behind
+another subfield, which a reader that looked for the `BC` at the bytes 12
+and 13 would read as a plain gzip and give no variant and no error; and a
+file written in the test whose second member has, each in a case of its
+own, a size two bytes too small, a size two bytes too large, a size that
+leaves no room for its data, a length of its text that is not the one of
+its text, a CRC32 that is not the one of its text, bytes where a gzip
+member has those of gzip, a method that is not deflate, flags that are not
+the one flag of an extra field, an extra field with no `BC` in it, a
+subfield that ends after the extra field does before its `BC` and another
+after it, an extra field that ends in the middle of a subfield, three bytes
+of junk after a deflate stream that ends where it should, a deflate stream
+cut by three bytes whose CRC32 and length are those of the text it gives,
+a length of its text above the 65536 bytes a member holds, and data that
+gives more text than that. And a file with 11 bytes after the member that
+marks its end, which is corrupted and not cut short.
+
+That an error never passes silently is tested on `cases.vcf.gz`, 399
+bytes: every byte of it in turn, set to each of the 255 other values,
+101745 files, each read whole with `only_passed` false. Each one gives
+either an error or exactly the four variants of "What it gives", with
+their genotypes; none gives other variants, or fewer, with no error. The
+time stamp in the header of a member is among the bytes that are changed,
+and a file that differs from `cases.vcf.gz` in it alone is read: what the
+test refuses is a file that is read as a whole one and is not. It changes
+one byte and never the place or the number of the members, which is the
+corruption no reader of a BGZF file can see; and it says nothing about
+which check of a member refuses which file, so every check has a test of
+its own that asserts the words it gives.
+
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
 individuals that are not there, the repeated name, the name that is not
@@ -541,8 +736,23 @@ pub enum VcfPlace {
 
 The reader. `new` reads the header, so the individuals are known when it
 returns, and it fails when the source is not a VCF with genotypes, the
-ploidy is out of range, or the size of the blocks is one that
-`docs/specs/block.md` refuses.
+ploidy is out of range, or the size of the blocks that the caller asked
+for is one that `docs/specs/block.md` refuses: 0 variants, or a block of
+more genotypes than a `usize` holds.
+
+A `num_vars_per_block` of `None`, the size that popnei chooses, is not
+checked there but when the first block is built, and the error is the same
+one, with the words of a size that the caller did not write: it says that
+the size popnei chose for these individuals and this ploidy does not fit
+and that a `num_vars_per_block` that does is the way out, where the error
+of a size that was asked for says to ask for fewer variants in a block. So a caller that opens a file to read its individuals, which is what
+`open_vcf` and `openVcf` do, never fails for a size that nobody asked for:
+a header of 170000 individuals read with the ploidy 255 gives a default
+block of 100 variants whose genotypes are more than the 4295 million that a
+`usize` holds in wasm, and such a file is opened, its individuals read, and
+its blocks then asked for in a size that fits. It was decided here, when a
+review of the binding crates found that file refused at `openVcf` although
+blocks of ten of its variants are read.
 
 ```rust
 pub struct VcfReader<R: BufRead + Send> { /* private */ }
@@ -570,43 +780,74 @@ impl<R: BufRead + Send> VcfReader<R> {
 impl<R: BufRead + Send> BlockReader for VcfReader<R> { /* ... */ }
 ```
 
-The cases this module adds to the error of the crate: the source is not a
+The cases this module adds to the error of the crate, with the exception
+each one is in Python. The owner gave the convention on 21 September 2026:
+a `ValueError` is a wrong input of a function, a `RuntimeError` a defect
+of popnei, and an `OSError` a file that cannot be read, that was cut short
+or that is corrupted.
+
+Five are a `ValueError`, since a file whose content is not what a VCF
+holds is a wrong input like a wrong argument: the source is not a
 VCF, with what was found; a wrong header, with what is wrong; a ploidy
 out of range, which is the one thing `new` refuses that is not in the
 source, with the ploidy that was asked for; a wrong data line, with the
-number of the line, the column or the individual, and what is wrong; a
+number of the line, the column or the individual, and what is wrong; and a
 genotype of another ploidy, with the line, the individual, the ploidy of
-the genotype and the one expected; a file that could not be opened, with
+the genotype and the one expected.
+
+Four are an `OSError`: a file that could not be opened, with
 its path and the `std::io::Error` as the source of the error, so that a
 binding can put the path where the language of the binding keeps it,
 `OSError.filename` in Python; an error of the input, which wraps
-`std::io::Error`; a bgzipped source with no mark of its end; and a parse
-of a batch that did not come back, with the number of the last line that
-was read. In Python the first five and the last two are a `ValueError`
-and the other two an `OSError`.
+`std::io::Error`; a bgzipped source with no mark of its end; and a
+bgzipped source that is corrupted, with the member, counted from 1, the
+byte of the compressed source where that member starts, and what is wrong
+with it.
+
+One is a `RuntimeError`: a parse of a batch that did not come back, with
+the number of the last line that was read, which says that popnei has a
+defect and not that the file or the call was wrong.
+
+In Python every error of a file names the file. The core does not have the
+path, since a reader is built over bytes and `from_path` carries it in one
+case alone, so it is the binding crate that puts it there, and where it
+puts it follows the exception. The message of a `ValueError` starts with
+the path. An `OSError` carries it in `filename`, which is where a Python
+user of any library looks for it and which Python prints after the message
+of the exception, so putting it in the message too would say it twice.
 
 ## Speed
 
 The number to reach is that of the spike, the trial parser in Rust of
 section 3 of `docs/rust_core.md`, which parses a chunk of lines with rayon
 and writes each row straight into the array of the chunk, as this reader
-now does. The reader as built, which filled one `Variant` at a time, does
-not reach it. Measured on 20 September 2026 on the owner's Apple M5 Pro,
-18 cores, release, the file in the page cache, `GTS` asked for and the
-default options, the median of 5 runs of
+now does. The reader as built, which filled one `Variant` at a time, did
+not reach it, and the reader as it is now does. Measured on the owner's
+Apple M5 Pro, 18 cores, release, the file in the page cache, `GTS` asked
+for and the default options, the median of 5 runs of
 `crates/popnei/benches/read_vcf.rs`, on a VCF of 100000 variants and 1000
 individuals, 403 MB plain and 38 MB bgzipped, which
 `crates/popnei/benches/make_big_vcf.py` makes with `simulate_genotypes` and
 `write_vcf` of pyNei's `test/gwas_reference/make_reference.py`, a seed of
 42, 3 in 100 genotypes missing and `.` in every FILTER, so the default
-gives every variant:
+gives every variant. The reader as built and the spike were timed on 20
+September 2026, the reader as it is now on 21 September 2026, three sets
+of runs of each and more:
 
-| | the reader as built | the spike, same file, same day |
-|---|---|---|
-| plain, 1 thread | 1.24 s | 0.54 s |
-| plain, 18 threads | 0.160 s | 0.098 s |
-| bgzipped, 1 thread | 1.58 s | 0.84 s |
-| bgzipped, 18 threads | 0.50 s | 0.40 s |
+| | the reader as built | the spike, 20 September | the target | the reader now | met |
+|---|---|---|---|---|---|
+| plain, 1 thread | 1.24 s | 0.54 s | 0.594 s | 0.563 s | yes |
+| plain, 18 threads | 0.160 s | 0.098 s | 0.108 s | 0.093 s | yes |
+| bgzipped, 1 thread | 1.58 s | 0.84 s | 0.924 s | 0.890 s | yes |
+| bgzipped, 18 threads | 0.50 s | 0.40 s | 0.44 s | 0.394 s | yes |
+
+The spike was timed again on 21 September 2026, on the same files and the
+same machine, and was faster on three of the four: 0.523 s, 0.103 s,
+0.806 s and 0.392 s. Against those the target of the bgzipped read on one
+thread is 0.887 s, which the reader misses by 0.003 s; the fourteen sets
+of runs of that read spread from 0.859 to 0.940 s, so the measurement does
+not tell the two apart. The other three are met against the spike of
+either day, and on 18 threads the reader is faster than the spike.
 
 plink2 v2.0.0-a.7.7 reads the plain file in 0.273 s on one thread, and
 pyNei in 13.5 s. The spike does three things less than the reader: it
@@ -619,25 +860,37 @@ gzipped into 53 MB and does not say how it was compressed; bgzip makes 38
 MB of it, the session that built the reader could not make the file of 53
 MB again, and the bgzipped rows here stand in its place.
 
-Where the time of the reader as built goes, from a sampling profile of the
-run on one thread: 95 in 100 in the parse, almost all of it in the columns
-of the individuals, of which filling the genotypes is 46 in 100 of the
-self time, splitting a text at a character 25, searching a byte 16 and
-comparing strings 10. The nine first columns, the FILTER and the count of
-the alleles are under 1 in 100. So the hand out of the variants was not
-what cost, and rows written into a block will not close the gap alone.
-What the spike does and the reader as built does not is to parse the bytes
-of the columns of the individuals with `memchr`, with no text and no
-UTF-8 check on them; and a row of a fixed length, `num_individuals` x
-`ploidy`, makes the check of the ploidy of a genotype a check of length.
-That is what the implementer tries first, and measures, before any other
-work on speed. With threads the serial reading of the lines is the floor.
-`docs/reports/vcf-to-blocks.md` has the measurement: on a file of 5000
-variants of 1000 individuals the reading of the lines alone took 10.8 ms
-on one thread and 4.1 ms on eight, the whole parse 92.5 ms and 13.8 ms,
-and 4.1 + (92.5 - 10.8) / 8 = 14.3 ms predicts the 13.8. Batches of 256,
-1024 and 4096 lines, with the bound of 8 MiB, took 0.202, 0.158 and
-0.151 s on the file of the table on 18 threads.
+Where the time goes, from a sampling profile of the run on one thread
+taken with `/usr/bin/sample` over 30 s on 21 September 2026, of 23038
+samples of the thread that reads: 92 in 100 of the self time in the
+columns of the individuals; 6 in the read of the lines, which is the
+search for the end of a line in the buffer of the file, 3, the read from
+the file system, 2, and the copy of the line out of that buffer, 1; 1 in
+the nine first columns, which are parsed as text and not as bytes; and
+under 1 in 100 in the pass that finds the FILTER and in the genotypes of a
+new block set to missing. Nothing is appended serially after a batch here,
+since the benchmark asks for the genotypes alone.
+
+The read of the lines is serial, and on 18 threads it is what bounds the
+reader: it is 4308 of the 9363 samples of the thread that reads, and the
+18 workers of rayon are idle, waiting, in 61 in 100 of their samples. The
+read ahead thread of section 3 of `docs/architecture.md` is what removes
+that floor, and the targets above are met without it.
+`docs/reports/vcf-to-blocks.md` has the profile of the reader as built,
+which spent 95 in 100 of the one thread in the parse and split the columns
+of the individuals as text.
+
+The two bounds of a batch and the buffer the reader opens a path with were
+measured on 21 September 2026, on the file of the table, on 18 threads,
+three sets of runs of each, interleaved. Batches of 256, 1024, 2048 and
+4096 lines: 0.139, 0.105, 0.098 and 0.098 s, and bgzipped 0.476, 0.425 and
+0.411 s for 256, 1024 and 4096. The bound in bytes at 8 MiB and at 16 MiB
+with 4096 lines: 0.098 s and 0.094 plain, 0.411 s and 0.392 bgzipped. The
+buffer of the file at 8 KiB, 64 KiB, 256 KiB and 1 MiB, with 4096 lines
+and 16 MiB: 0.105, 0.095, 0.093 and 0.093 s. On one thread none of the
+three changes the read. The constants are 4096 lines, 16 MiB and 256 KiB,
+each with its measurement in its doc comment in
+`crates/popnei/src/io/vcf.rs`.
 
 ## Open points
 

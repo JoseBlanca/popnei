@@ -12,6 +12,11 @@ edition = "2024"
 # and passes the checks.
 rust-version = "1.98"
 repository = "https://github.com/JoseBlanca/popnei"
+# The three crates, the Python package and the TypeScript package are under
+# the MIT license, which the owner chose on 20 September 2026. The text is
+# in LICENSE at the root of the repository, and this line is the SPDX
+# identifier that cargo, crates.io and a tool that reads a manifest look at.
+license = "MIT"
 
 [workspace.dependencies]
 popnei = { path = "crates/popnei", version = "0.1.0" }
@@ -27,6 +32,15 @@ flate2 = "1"
 # code is behind the same cfg, with the serial version beside it. It is
 # pure Rust and pulls in crossbeam and either, all of them pure Rust too.
 rayon = "1"
+# The search of a byte in the bytes of a line of a VCF, which the row
+# parser of the VCF reader does for every column of every individual: the
+# tab that ends a column and the colon that ends the genotype in it. It
+# reads the bytes a machine word at a time, and by hand the same search is
+# a loop over one byte after another. It is pure Rust, it has no
+# dependency, and its use of the wide instructions of a machine is behind
+# a check of the target at compile time, so it builds for the two wasm
+# targets.
+memchr = "2"
 # The error of the core crate. It writes the Display and the
 # std::error::Error of the enum from the message on each variant, so that a
 # case added by a later module cannot be a variant whose message was

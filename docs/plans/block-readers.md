@@ -1,6 +1,11 @@
 # Plan: readers that give blocks
 
-September 2026. Approved by the owner on 20 September 2026. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026 and done on 21
+September 2026, on the branch `plan/block-readers`, with its work report
+in `docs/reports/block-readers.md`. Its three work packages were done
+that day; the owner read the report, answered the decisions it left him
+and asked for their work before the merge, which is work package 4, done
+the same day but for its timings, which he dropped. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
@@ -177,16 +182,18 @@ panics", for one error type for each operation.
 
 **Tasks.**
 
-- [ ] 1.1 The license and the dependency on pyNei: the `LICENSE` file,
+- [x] 1.1 The license and the dependency on pyNei: the `LICENSE` file,
   the field in the workspace manifest, in `pyproject.toml` and in
   `package.json`; pyNei as a git source of uv at ef0ca6e, with the
   comment of `pyproject.toml` that explains the absolute path replaced;
   the sentence of objective 1 of `docs/objectives.md` and the one of
   section 8 of `docs/architecture.md`. Serves deliverables 1 and 2.
-- [ ] 1.2 The paragraph of the `coding` skill, written as the `writing`
+- [x] 1.2 The paragraph of the `coding` skill, written as the `writing`
   skill asks, with the reasons the owner took: one type is what the two
   bindings map, and `non_exhaustive` lets a module add a case without
-  breaking a caller. Serves deliverable 3.
+  breaking a caller. The line of "errors" in
+  `.claude/skills/code-review/categories.md` that asks a reviewer for one
+  error type per operation is corrected with it. Serves deliverable 3.
 
 **What could go wrong.** `uv` fetches pyNei from GitHub, so the first
 `uv sync` needs the network, and pyNei's own dependencies, pandas and
@@ -262,7 +269,7 @@ describes, no more. The three revised specs.
 
 **Tasks.**
 
-- [ ] 2.1 In the core: `BlockReader`, the methods that `Block` gains,
+- [x] 2.1 In the core: `BlockReader`, the methods that `Block` gains,
   the view of one variant, `Reblock`, the cases of the error that they
   add, and their tests; and a reader, marked as one that goes in work
   package 3, that gives the blocks of the `BlockCollector` that exists,
@@ -271,13 +278,13 @@ describes, no more. The three revised specs.
   guess", "How it is verified" and "The Rust interface" of
   `docs/specs/block.md`, and "The Rust interface" of
   `docs/specs/variant.md` for the view. Serves deliverable 1.
-- [ ] 2.2 The two binding crates hold a `Box<dyn BlockReader>`, put a
+- [x] 2.2 The two binding crates hold a `Box<dyn BlockReader>`, put a
   `Reblock` over it for the size that `iter_blocks` was asked for, and
   call `Block::check` before the genotypes cross. No file
   of `python/`, `js/popnei/src/`, `tests/` or `js/popnei/test/` changes.
   From "In Python and in TypeScript" of `docs/specs/block.md`. Serves
   deliverable 5. Needs 2.1.
-- [ ] 2.3 The row parser over bytes and its tests, a function with no
+- [x] 2.3 The row parser over bytes and its tests, a function with no
   reader around it. From "What it gives" and "The cases a reader of the
   rules would not guess" of `docs/specs/io_vcf.md`. Serves deliverable 2.
   It needs nothing of 2.2 and runs after it all the same: "Speed" of the
@@ -287,7 +294,7 @@ describes, no more. The three revised specs.
   binding crates in the same tree. A wrong genotype here is silent anywhere else, so it is a
   commit of its own, and the comparison with bcftools of deliverable 3 is
   what guards it.
-- [ ] 2.4 `VcfReader` as a `BlockReader` on the row parser: the lines of
+- [x] 2.4 `VcfReader` as a `BlockReader` on the row parser: the lines of
   a block, the rows given to the lines that have one, the threads, the
   numbers of the chromosomes, the errors in their order, the reader that
   refuses to go on after a parse that did not come back; the tests of
@@ -297,17 +304,21 @@ describes, no more. The three revised specs.
   `docs/specs/io_vcf.md`, which has the size of the blocks among the
   options of the reader and the error of a parse that did not come back.
   Serves deliverables 2, 3 and 5. Needs 2.2 and 2.3.
-- [ ] 2.5 The two new errors, in the core and seen from Python. From "The
+- [x] 2.5 The two new errors, in the core and seen from Python. From "The
   cases a reader of the rules would not guess", the last paragraph of
   the blocks in "How it is verified" and the cases of the error in "The
   Rust interface" of `docs/specs/io_vcf.md`. Serves deliverable 4.
   Needs 2.4.
-- [ ] 2.6 The measurement, as "What measurement there is" of the
+- [x] 2.6 The measurement, as "What measurement there is" of the
   `performance-review` skill asks. It changes no code but the constants
   that the spec leaves to a measurement, each in a commit of its own with
   its numbers. Serves deliverable 6. Needs 2.4, and runs after 2.5: both
   write `crates/popnei/src/io/vcf.rs`, and a build beside a timing
-  changes the timing.
+  changes the timing. It also runs after task 3.1 and after the fixes of
+  the review of tasks 2.3 to 2.5, an order that the orchestrator chose
+  while the plan ran: the reviewers and task 3.1 work at the same time, in
+  other trees and other files, no build runs beside the timing, and what
+  is timed is the code that the plan leaves.
 
 **What could go wrong.** The profile of the reader as it is puts 95 in
 100 of the one thread time in the columns of the individuals read as
@@ -342,7 +353,7 @@ variant that a reader filled.
 
 **Tasks.**
 
-- [ ] 3.1 The removal: `Variant` and `VariantReader` out of
+- [x] 3.1 The removal: `Variant` and `VariantReader` out of
   `crates/popnei/src/variant.rs`, `BlockCollector` and the reader of
   task 2.1 out of `crates/popnei/src/block.rs`, the cases of the error
   that go, the tests that went with them, each named in the work report
@@ -355,6 +366,96 @@ called is gone can take with it the only check of a rule that still
 holds, the chromosome numbers in the order of the variants that are
 given, the line number of an error: the table of task 2.4 is what the
 reviewer of the tests reads against.
+
+## Work package 4: the owner's decisions of 21 September 2026
+
+**What it gives.** No file that was cut or corrupted is read as a good
+one, and what a Python user is told of a file that went wrong names the
+file and comes as the exception that Python's conventions give it. The
+owner's rule, given with these decisions: an error never passes silently.
+His convention for the exceptions: a `ValueError` is a wrong input to a
+function, a `RuntimeError` a defect of popnei, an `OSError` a file that
+cannot be read, that was cut short or that is corrupted.
+
+The decisions, as the owner gave them in chat on 21 September 2026 to the
+questions of `docs/reports/block-readers.md`:
+
+- A bgzip file that is corrupted is an error, however improbable the
+  corruption: the reader reads a bgzip file by the size that each of its
+  members states, and no longer with a decoder that goes from one gzip
+  member to the next on its own. (The report said "as bcftools does";
+  bcftools 1.24 reads the corrupted file of the review as no variants
+  with no message, so popnei is stricter than bcftools here.) Decompression stays
+  on one thread; decompressing on several is not in this plan.
+- A file that was cut gives its error in the iteration as soon as the cut
+  is found, and `reblock` keeps the rule of the block spec, that an error
+  loses what it was keeping. The VCF reader spec says what a user of
+  `iter_blocks` gets.
+- Every error of a file names the file, in Python.
+- A parse that did not come back is a `RuntimeError` in Python.
+- A bgzipped file that was cut short is an `OSError` in Python, with the
+  name of the file, and not a `ValueError`.
+- A missing quality is NaN inside the core too, as the block spec has it.
+  "Floats" of the `coding` skill says so.
+- The constructors of the alleles column stay visible inside the crate
+  alone. The default size of the blocks checked at the first block, the
+  case of the error renamed `FieldsNotInTheBlock`, the FILTER read whole,
+  the bytes that are not text checked in the nine first columns, and a
+  batch of 16 MiB of text all stay as the plan left them.
+
+**Deliverables.**
+
+1. A bgzip file is read by the sizes of its members. Check: the file of
+   the review, `many.vcf.gz` with its bytes 320 and 321 changed from `06
+   00` to `44 54`, which gives no variant and no error today, gives an
+   error, in a cargo test, a pytest test and a node test; a cargo test
+   changes each byte of `cases.vcf.gz` in turn and finds no change that
+   gives other variants than the whole file with no error; every test of
+   the gzipped and bgzipped files that was there passes untouched, the
+   cuts of `many.vcf.gz` among them; a gzip file that bgzip did not write
+   is still read; `cargo wasm-check` passes.
+2. The exceptions of Python. Check: pytest tests see an `OSError` whose
+   `filename` is the path for `many.vcf.gz` cut at 12336 bytes, cut
+   inside a member and without its last 28 bytes, and for the corrupted
+   file of deliverable 1; a data line that is wrong is still a
+   `ValueError`, and its message starts with the path of the file; the
+   one place of the Python binding crate where the exception is chosen
+   has the parse that did not come back as a `RuntimeError`.
+3. The documents agree with the code. Check: "The cases a reader of the
+   rules would not guess", "How it runs" and "The Rust interface" of
+   `docs/specs/io_vcf.md` say how a bgzip file is read, which exception
+   each case is, and what `iter_blocks` gives of a file that was cut;
+   "Floats" and "Errors, and no panics" of the `coding` skill say what the
+   owner decided.
+4. The speed is what it was. Check: the four timings of task 2.6, taken
+   the same way, in the work report beside the ones of that task.
+
+**What it stands on.** Work packages 2 and 3.
+
+**Tasks.**
+
+- [x] 4.1 The amendments of `docs/specs/io_vcf.md`, in a commit of their
+  own, and then the reader of a bgzip file by the sizes of its members,
+  in the core, with its tests. From the decisions above and from the
+  specification of BGZF in the SAM format specification, section 4.1.
+  Serves deliverables 1 and 3.
+- [x] 4.2 The exceptions and the name of the file in the Python binding
+  crate, the JavaScript side where it has something to say, their tests,
+  and the two paragraphs of the `coding` skill. Serves deliverables 2 and
+  3. Needs 4.1.
+- [ ] 4.3 The four timings. Serves deliverable 4. Needs 4.1 and 4.2, and
+  the fixes of their review. Not done, by the owner's order of 21
+  September 2026: another job of his had ten of the 18 cores of the
+  machine, and he chose to merge without the timings, the speed being for
+  the performance reviews to come. The work report has the one set that
+  was taken on a quiet machine, before the fixes of the review.
+
+**What could go wrong.** flate2 does not say where a gzip member ends,
+which is why the members are cut by the size their headers state and each
+is decompressed on its own, with its checksum and its length checked. A
+bgzip member holds 64 KB of text at most, so the reader decompresses 6000
+members for the 403 MB file: if that is slower than the decoder it
+replaces, task 4.3 says by how much.
 
 ## How the whole plan is checked
 

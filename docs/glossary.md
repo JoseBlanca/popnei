@@ -98,6 +98,15 @@ vars file, and the lines that the VCF reader reads and parses together,
 several to a block; and window. A vars file is written
 with one batch for each block, and read back in blocks of any size.
 
+**member.** One gzip stream of a gzipped file. A file that bgzip wrote is
+many of them one after another, each with 64 KiB of text at most and each
+stating its own size, and the reader of a VCF cuts them by those sizes and
+decompresses one at a time, as `docs/specs/io_vcf.md` describes.
+BGZF: block. "Block" in popnei is a block of variants, so the word for a
+gzip stream of such a file is member, which is what the gzip format calls
+it, and the empty member at the end of a bgzipped file is the mark of its
+end and not the empty block.
+
 **region.** A stretch of one chromosome, from a smallest to a largest
 position, both included. The vars file keeps, for each of its batches, the
 region of every chromosome that has variants in it.

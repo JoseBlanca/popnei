@@ -71,6 +71,18 @@ class Variants:
         Every call reads the source from its start. When a variant cannot be
         read, the error comes in the place of the block that would have held
         it, and the variants of that block that were read are lost with it.
+        A variant popnei cannot read is a ``ValueError`` whose message names
+        the file, the line and what is wrong; a file that was cut short, or
+        a file that bgzip wrote and whose bytes were damaged, is an
+        ``OSError`` with the path in ``filename`` and no ``errno``, because
+        nothing of the file system refused anything.
+
+        What a user has received when that error comes depends on
+        `num_vars_per_block`: the variants that were read and had not filled
+        a block are lost with it, so fewer variants come out than the file
+        holds before the cut, and with the default size, which is thousands
+        of variants, a file that was cut may give none at all. A user who
+        has to know how far a damaged file was read asks for small blocks.
         """
         if isinstance(fields, str):
             # A string is a sequence of its letters, and asking for one
