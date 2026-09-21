@@ -351,7 +351,7 @@ error cases, and the writer, which makes the files of deliverables 3 and
 
 **Tasks.**
 
-- [ ] 2.1 `tests/reference/vars/make_reference.py` and `zstd.vars`: the
+- [x] 2.1 `tests/reference/vars/make_reference.py` and `zstd.vars`: the
   four variants of the `cases.vcf` table of `docs/specs/io_vcf.md`, three
   individuals, the six columns, both keys, one batch, zstd, written with
   pyarrow, the script with a header that says what it writes, with which
@@ -359,7 +359,7 @@ error cases, and the writer, which makes the files of deliverables 3 and
   does. From "How it is verified" of the reader and "The compression".
   Serves deliverable 1. It writes no code and no manifest, and runs
   beside 2.2.
-- [ ] 2.2 `VarsReader::new`, `from_path`, `metadata`, `batches` and
+- [x] 2.2 `VarsReader::new`, `from_path`, `metadata`, `batches` and
   `num_vars`, in `crates/popnei/src/io/vars.rs`, the checks of the schema
   and of the two keys, and their tests. From "What it refuses", "How it
   runs" of the reader and "The Rust interface". Serves deliverable 2.

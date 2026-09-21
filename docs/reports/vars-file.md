@@ -231,3 +231,31 @@ spec, that an error of the write names the VCF, which the review
 reversed: a subagent that finds the core lacking something a rule of the
 owner asks for should say so and not write the way around it into the
 spec. The prompts of the next tasks say it.
+
+## Work package 2: `open_vars` in Python
+
+Tasks 2.1 and 2.2 ran side by side, as the plan allows, with two
+subagents that shared no file.
+
+Task 2.1, commit a0a37b7, 92 thousand tokens and 3 minutes:
+`tests/reference/vars/make_reference.py` and `zstd.vars`, 2418 bytes. The
+orchestrator ran the script again, which changed no file, and opened
+the file with pyarrow: one batch, four variants, both keys, and the mark
+of a zstd frame 12 times, once for each buffer. The subagent compared it
+with the file popnei writes from `cases.vcf`: the same columns, the same
+values and the same `popnei_batches`, and `num_vars_per_block` 4 where
+popnei's default says 10000.
+
+Task 2.2, commit fcc585a, 254 thousand tokens and 25 minutes:
+`VarsReader::new`, `from_path`, `metadata`, `batches` and `num_vars`. The
+orchestrator ran the checks again: fmt exit 0, clippy no warning, `cargo
+test --workspace` `217 passed`, 1 ignored, `io::vars` `44 tests`, where
+the plan asks for 26, `cargo wasm-check` finished. The reader parses the
+footer itself and will decode each batch with the `FileDecoder` of
+arrow-rs, because its `FileReader` fixes the columns it reads when it is
+built and a `Needs` can change between two blocks. A file whose footer
+is not all there is a file cut short, an `OSError` in Python; bytes that
+were never an arrow file are not a vars file, a `ValueError`. It left a
+file with no `gts` column as one that is read; the orchestrator decided
+that such a file is refused as not a vars file, since the spec says that
+`gts` is always there, and task 2.3 does it.
