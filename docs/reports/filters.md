@@ -576,3 +576,28 @@ is an error in every reader, "even by the VCF parser"; and the core
 builds the chain of the filters of a pass. He ordered the merge into
 `main` once both are done. The orchestrator added work package 5 to the
 plan, with a task for each.
+
+Task 5.1, commits aef9bac, the three specs, and 1bf5759, the code. The
+VCF reader refused every form already, `-2/0`, `0/-2`, `-1`, `-0`,
+`-2|0`, `0/-128` and a number above 127: it reads an allele as a run of
+digits, so a minus sign never reaches a number. It got a test of the
+seven forms and a paragraph in `docs/specs/io_vcf.md`, and no change of
+code. The vars file reader takes the smallest allele of each batch in
+one pass, and reads the batch again only to name the allele and its
+variant when it refuses; the case is `VarsAlleleBelowMissing`, a
+`ValueError` with the path in Python and an `Error` in TypeScript, with
+a test in each layer. What it costs, on the panel of the bench of the
+vars file, 1000 individuals and 20000 variants, the two binaries run one
+after the other three times, the best of 5 each, load average 1.25 to
+1.28: the pass with the genotypes alone takes 20.10, 20.07 and 20.13 ms
+before and 20.54, 20.61 and 20.53 ms after, 0.40 to 0.48 ms, 2 in 100,
+and still under the 21 ms of "Speed" of `docs/specs/io_vars.md`. Run by
+the orchestrator: `cargo test --workspace` `299 passed`; `uv run pytest`
+`174 passed`; clippy passes. The subagent ran `npm test`, `tests 126`,
+`fail 0`, and the smoke test of pyodide, exit 0.
+
+For the owner: of the 16296 files of the sweep of one changed byte that
+runs with the tests, 24 that were read as other variants with no error
+are refused now, and 13 in 100 of those of the long sweep. The rest is
+what the question of a checksum in `docs/reports/vars-file.md` is about,
+which this check does not answer.

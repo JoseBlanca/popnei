@@ -459,7 +459,7 @@ refused "even by the VCF parser"; and the core builds the chain.
 
 **Tasks.**
 
-- [ ] 5.1 The allele below the missing one: the two specs first, in a
+- [x] 5.1 The allele below the missing one: the two specs first, in a
   commit of their own, then the vars file reader, the VCF reader where it
   lacks the refusal or its test, the case of the error with its arm in
   both binding crates, the tests of the three layers, and the two runs
