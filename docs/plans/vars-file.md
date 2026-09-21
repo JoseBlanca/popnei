@@ -261,7 +261,7 @@ arrow-rs into the wheel of pyodide.
   about pyarrow, the cases of the error with the exception each one is,
   and the batch of no variants, the three as "In and out" gives them.
   From "What it holds" and "The Rust interface". Serves deliverable 1.
-- [ ] 1.2 `VarsWriter` and `write_vars` in the core, in
+- [x] 1.2 `VarsWriter` and `write_vars` in the core, in
   `crates/popnei/src/io/vars.rs`, and their tests.
   From "What it gives" and "How it runs" of the writer, "How it is
   verified" of the writer for the cases, and "The Rust interface". The

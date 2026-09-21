@@ -81,3 +81,22 @@ are in the error enum, so the later tasks add none, and the Python
 binding crate names the five that are not a `ValueError`. The subagent
 also built the wheel of pyodide, which linked; nothing of the binding
 calls arrow-rs yet, so task 1.3 is still the first link that counts.
+
+Task 1.2, commits a81a379, the spec, and 1965bb8, the code; one subagent
+run of 281 thousand tokens and 18 minutes. The orchestrator ran the
+checks again: fmt exit 0, clippy no warning, `cargo test --workspace`
+`195 passed`, 1 ignored, `cargo test -p popnei --lib io::vars -- --list`
+`22 tests`, where the plan asks for 16, `cargo wasm-check` finished. What
+the subagent decided that the task did not say:
+
+- The spec did not say what the values inside the two list columns,
+  `alleles` and `gts`, are called, which arrow keeps as a field of its
+  own. "What it holds" now says that popnei writes what pyarrow writes
+  for any list, a field named `item` that can be null, so that the file
+  of task 2.1, which pyarrow writes, has the same columns.
+- A `gts` width above 2147483647, the most a fixed size list of arrow
+  holds, 2 GB of genotypes for one variant, is the error of a block that
+  is too large, which the crate had. No case was added for it.
+- The test of the genotypes that are not copied compares addresses at
+  the private function that builds the `gts` column, because once the
+  batch is written the buffer is inside arrow-rs.
