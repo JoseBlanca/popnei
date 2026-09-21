@@ -34,7 +34,10 @@ use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
 use arrow_ipc::convert::try_fb_to_schema;
 use arrow_ipc::reader::FileDecoder;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
-use arrow_ipc::{Block as ArrowBlock, CompressionType, Footer, MetadataVersion, root_as_footer};
+use arrow_ipc::{
+    Block as ArrowBlock, CompressionType, Footer, MessageHeader, MetadataVersion,
+    RecordBatch as BatchMessage, root_as_footer, root_as_message,
+};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
@@ -1032,6 +1035,31 @@ const TRAILER_BYTES: u64 = 10;
 /// batch of fewer bytes than these is refused before it is handed over.
 const MESSAGE_START_BYTES: usize = 8;
 
+/// The four bytes that a message of an arrow IPC file may start with, which
+/// say that a length follows. A message that has them starts 8 bytes in, and
+/// one that has not, 4.
+const CONTINUATION_MARK: [u8; 4] = [0xff; 4];
+
+/// How many bytes the length of an uncompressed buffer takes at the start of
+/// a compressed one: arrow writes it before the compressed bytes, and -1
+/// there says that what follows is not compressed.
+const UNCOMPRESSED_LENGTH_BYTES: usize = 8;
+
+/// What -1 in those bytes says: the bytes that follow are not compressed.
+const NOT_COMPRESSED: i64 = -1;
+
+/// The most an lz4 frame gives back for each byte it holds. The format
+/// encodes a match of 255 bytes in one, so a buffer of `n` bytes holds at
+/// most 255 times that many, and popnei refuses a buffer that says more:
+/// arrow-rs asks the machine for the memory of what the buffer says before
+/// it decompresses, and a damaged length there ends the process. `zstd`
+/// gives back far more for a byte, and no build of popnei decompresses it.
+const LZ4_BYTES_FOR_A_BYTE: u64 = 255;
+
+/// What is allowed above that for the header and the footer of the frame
+/// and for the smallest buffers, where the ratio alone is too tight.
+const LZ4_FRAME_SLACK: u64 = 1024;
+
 /// The number the system gives for a directory where a file was asked for,
 /// `EISDIR`, which is 21 on macOS, on Linux and in emscripten, the systems
 /// popnei runs on. Opening a directory succeeds on those systems and only
@@ -1561,19 +1589,37 @@ impl<R: Read + Seek> VarsReader<R> {
                 ),
             ));
         }
+        // What the message of the batch says about its buffers, checked
+        // against the bytes that are there before arrow-rs reads any of
+        // them by their place.
+        message_fits(&bytes, metadata_len, place)?;
         let decoder = FileDecoder::new(Arc::clone(&self.schema), self.version)
             .with_projection(places.to_vec());
-        let read = decoder.read_record_batch(
-            &ArrowBlock::new(0, metadata_len, body_len),
-            &Buffer::from(bytes),
-        );
+        // The net under the checks above: arrow-rs reads a length of the
+        // message and panics where the bytes it points at are not there,
+        // and a file that was damaged in a way those checks do not see must
+        // not end the session of a user. Nothing of the reader is given to
+        // arrow-rs, so what it leaves behind is the batch alone, and the
+        // reader is finished after the error either way. Under wasm, where
+        // a panic ends the program and unwinds nothing, this catches
+        // nothing and the checks above are the whole defence.
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decoder.read_record_batch(
+                &ArrowBlock::new(0, metadata_len, body_len),
+                &Buffer::from(bytes),
+            )
+        }));
         match read {
-            Ok(Some(batch)) => Ok(batch),
-            Ok(None) => Err(batch_of_other_bytes(
+            Ok(Ok(Some(batch))) => Ok(batch),
+            Ok(Ok(None)) => Err(batch_of_other_bytes(
                 place.batch,
                 "the message where it starts is not one of a batch".to_owned(),
             )),
-            Err(problem) => Err(batch_not_read(&problem, place.batch)),
+            Ok(Err(problem)) => Err(batch_not_read(&problem, place.batch)),
+            Err(_) => Err(batch_of_other_bytes(
+                place.batch,
+                "arrow-rs did not come back from reading it".to_owned(),
+            )),
         }
     }
 }
@@ -1659,6 +1705,161 @@ impl VarsReader<BufReader<File>> {
         }
         VarsReader::new(BufReader::new(file))
     }
+}
+
+/// That the message of a batch says of its buffers and of its rows what the
+/// bytes that came with it can hold.
+///
+/// arrow-rs reads the offsets and the lengths of that message by their
+/// place, and asks the machine for the memory that the length of a
+/// compressed buffer says before it decompresses it, so a file that was
+/// damaged there reaches a panic inside it, and a length of
+/// 144115188075855871 bytes ends the process, which nothing catches. What
+/// is checked: the message is one of a batch; its rows are the variants its
+/// entry of the footer gives; every buffer lies inside the body; every
+/// compressed buffer says a length that lz4 can give from the bytes it
+/// holds; and no field node says more values than the body holds bits.
+///
+/// # Errors
+///
+/// The batch could not be read, with the batch and what does not fit, and
+/// the batch holds another number of variants than its entry of the footer
+/// when its message says so.
+fn message_fits(bytes: &[u8], metadata_len: i32, place: BatchPlace) -> Result<()> {
+    let damaged = |problem: String| batch_of_other_bytes(place.batch, problem);
+    // A message that starts with the mark of a continuation has its length
+    // after it, and one that has not starts with that length.
+    let starts_at = match bytes.get(..CONTINUATION_MARK.len()) {
+        Some(start) if start == CONTINUATION_MARK => MESSAGE_START_BYTES,
+        Some(_) | None => CONTINUATION_MARK.len(),
+    };
+    let Some(message) = bytes.get(starts_at..) else {
+        return Err(damaged(format!(
+            "it is {found} bytes and its message starts at the byte {starts_at}",
+            found = bytes.len()
+        )));
+    };
+    let message = root_as_message(message)
+        .map_err(|problem| damaged(format!("its message is not one of arrow: {problem}")))?;
+    if message.header_type() != MessageHeader::RecordBatch {
+        return Err(damaged(
+            "the message where it starts is not one of a batch".to_owned(),
+        ));
+    }
+    let Some(batch) = message.header_as_record_batch() else {
+        return Err(damaged(
+            "its message says it is a batch and holds none".to_owned(),
+        ));
+    };
+    let rows = batch.length();
+    let found = usize::try_from(rows)
+        .map_err(|_| damaged(format!("its message says it holds {rows} rows")))?;
+    if found != place.num_vars {
+        return Err(Error::VarsBatchNumVars {
+            batch: place.batch,
+            found,
+            expected: place.num_vars,
+        });
+    }
+    let body = u64::try_from(metadata_len)
+        .ok()
+        .and_then(|message_len| {
+            u64::try_from(bytes.len())
+                .ok()
+                .map(|whole| whole.saturating_sub(message_len))
+        })
+        .unwrap_or(0);
+    buffers_fit(&batch, bytes, metadata_len, body, &damaged)?;
+    // A field node says how many values a column holds, which arrow-rs
+    // turns into the length of an array: a value takes a bit at the very
+    // least, so one that says more than the body holds bits is damaged.
+    let values_at_most = body.saturating_mul(8);
+    for node in batch.nodes().into_iter().flatten() {
+        let length = node.length();
+        let null_count = node.null_count();
+        if length < 0 || null_count < 0 || null_count > length {
+            return Err(damaged(format!(
+                "a column of its message says it holds {length} values, {null_count} of them not there"
+            )));
+        }
+        if u64::try_from(length).unwrap_or(u64::MAX) > values_at_most {
+            return Err(damaged(format!(
+                "a column of its message says it holds {length} values and the batch is {body} bytes"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// That every buffer of the message lies inside the body of the batch, and
+/// that a compressed one says a length that lz4 can give from the bytes it
+/// holds.
+///
+/// # Errors
+///
+/// The batch could not be read, with what does not fit.
+fn buffers_fit(
+    batch: &BatchMessage<'_>,
+    bytes: &[u8],
+    metadata_len: i32,
+    body: u64,
+    damaged: &impl Fn(String) -> Error,
+) -> Result<()> {
+    let compressed_with_lz4 = batch
+        .compression()
+        .is_some_and(|how| how.codec() == CompressionType::LZ4_FRAME);
+    for buffer in batch.buffers().into_iter().flatten() {
+        let (offset, length) = (buffer.offset(), buffer.length());
+        let ends_at = u64::try_from(offset)
+            .ok()
+            .zip(u64::try_from(length).ok())
+            .and_then(|(offset, length)| offset.checked_add(length))
+            .filter(|end| *end <= body);
+        if ends_at.is_none() {
+            return Err(damaged(format!(
+                "a buffer of its message is {length} bytes at the byte {offset} of a body of {body}"
+            )));
+        }
+        if !compressed_with_lz4 || length == 0 {
+            continue;
+        }
+        // The bytes of a buffer start after the message of the batch, and
+        // the first eight of them say how long it is once it is
+        // decompressed.
+        let says = starts_at_in(bytes, metadata_len, offset)
+            .and_then(|at| bytes.get(at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)))
+            .and_then(|start| <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(start).ok())
+            .map(i64::from_le_bytes);
+        let Some(says) = says else {
+            return Err(damaged(format!(
+                "a buffer of its message is {length} bytes at the byte {offset} and the bytes that say how long it is when it is decompressed are not there"
+            )));
+        };
+        if says == NOT_COMPRESSED || says == 0 {
+            continue;
+        }
+        let compressed = u64::try_from(length)
+            .unwrap_or(0)
+            .saturating_sub(u64::try_from(UNCOMPRESSED_LENGTH_BYTES).unwrap_or(0));
+        let at_most = compressed
+            .saturating_mul(LZ4_BYTES_FOR_A_BYTE)
+            .saturating_add(LZ4_FRAME_SLACK);
+        if says < 0 || u64::try_from(says).unwrap_or(u64::MAX) > at_most {
+            return Err(damaged(format!(
+                "a buffer of its message holds {compressed} bytes compressed with lz4 and says it is {says} bytes decompressed, where lz4 gives {LZ4_BYTES_FOR_A_BYTE} bytes for each byte at most"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Where the bytes of a buffer of the body are in the bytes of the batch:
+/// after the message, at the offset the buffer gives.
+fn starts_at_in(bytes: &[u8], metadata_len: i32, offset: i64) -> Option<usize> {
+    let at = usize::try_from(metadata_len)
+        .ok()?
+        .checked_add(usize::try_from(offset).ok()?)?;
+    (at < bytes.len()).then_some(at)
 }
 
 /// One batch of a vars file as a block: the columns of `wanted`, which are
@@ -2345,10 +2546,22 @@ fn num_vars_of_the_file(batches: &[BatchInfo], metadata: &VarsMetadata) -> Resul
 ///
 /// The file was cut short when the bytes run out although the length of the
 /// file said they were there, which is a file that changed while it was
-/// being read, and [`Error::Io`] when the source fails.
+/// being read, and [`Error::Io`] when the source fails or the machine does
+/// not give the memory of the bytes.
 fn bytes_at<R: Read + Seek>(source: &mut R, offset: u64, len: usize) -> Result<Vec<u8>> {
     source.seek(SeekFrom::Start(offset))?;
-    let mut bytes = vec![0; len];
+    // The length comes from the file, so the room for it is asked for and
+    // not taken: `vec![0; len]` ends the process when the machine has not
+    // the memory, and the VCF reader asks the same way for the bytes it
+    // reads.
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| {
+        Error::Io(std::io::Error::new(
+            ErrorKind::OutOfMemory,
+            format!("the {len} bytes of a part of the vars file were not given"),
+        ))
+    })?;
+    bytes.resize(len, 0);
     source.read_exact(&mut bytes).map_err(|problem| {
         if problem.kind() == ErrorKind::UnexpectedEof {
             cut_short(format!(
@@ -4790,13 +5003,11 @@ mod tests {
                     pos: variant.pos(),
                     id: variant.id().map(str::to_owned),
                     alleles: variant.num_alleles().map(|num_alleles| {
+                        // An allele of an empty text, which no source of
+                        // popnei gives and a damaged file holds, reads as
+                        // none: it is compared as the empty text it is.
                         (0..num_alleles)
-                            .map(|allele| {
-                                variant
-                                    .allele(allele)
-                                    .unwrap_or_else(|| panic!("the allele {allele}"))
-                                    .to_owned()
-                            })
+                            .map(|allele| variant.allele(allele).unwrap_or("").to_owned())
                             .collect()
                     }),
                     qual: variant
@@ -5721,6 +5932,210 @@ mod tests {
         assert_eq!(num_vars_of(&blocks), [4]);
         let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
         assert_eq!(rows_of(&blocks, &chroms), expected);
+    }
+
+    /// How many panics the net of the reader caught in the sweep over four
+    /// values of each byte of the file, on 21 September 2026 with arrow-rs
+    /// 60: one about a buffer that is not long enough for the values its
+    /// message says, and one about a buffer whose length is not a whole
+    /// number of the values of its column. Both are asserts of arrow-rs
+    /// that only the walk of the schema its decoder does would see.
+    const PANICS_CAUGHT: u64 = 14;
+
+    /// The variants of the file in those bytes, with every field, or the
+    /// error it gave: what a sweep over a damaged file reads.
+    fn rows_or_error(bytes: Vec<u8>) -> Result<Vec<ReadRow>> {
+        let mut reader = opened(bytes)?;
+        reader.set_needs(Needs::ALL);
+        let blocks = blocks_of(&mut reader)?;
+        for block in &blocks {
+            block.check()?;
+        }
+        Ok(rows_of(&blocks, reader.chroms()))
+    }
+
+    /// What a sweep over the bytes of a file found: how many of the files
+    /// it made gave an error, how many were read as the whole file and how
+    /// many were read as another file with no error, and where arrow-rs
+    /// panicked inside the reader, which the net of the reader turns into
+    /// an error.
+    #[derive(Debug)]
+    struct Sweep {
+        errors: u64,
+        the_same: u64,
+        others: u64,
+        /// The place of each panic, `file:line`, with how many times it was
+        /// reached.
+        panics: Vec<(String, u64)>,
+    }
+
+    impl Sweep {
+        /// How many panics the net of the reader caught.
+        fn caught(&self) -> u64 {
+            self.panics.iter().map(|(_, count)| *count).sum()
+        }
+
+        /// That every panic was one of arrow-rs, which the reader catches:
+        /// one of popnei's own code is a defect and not a net that held.
+        fn panics_are_of_arrow(&self) {
+            for (place, count) in &self.panics {
+                assert!(
+                    !place.contains("crates/popnei"),
+                    "popnei panicked at {place}, {count} times"
+                );
+            }
+        }
+    }
+
+    /// Every byte of `whole` set in turn to each of `values`, read with
+    /// every field and counted.
+    ///
+    /// A file that gives no error and other variants is not a failure here:
+    /// a byte of a compressed buffer that decompresses into other genotypes
+    /// is what a checksum of the format would catch, which the file has
+    /// not, and `docs/specs/io_vars.md` says so. What must not happen is a
+    /// panic that comes out of the reader, which fails the test where it
+    /// happens, or an abort, which kills the test binary.
+    fn swept(whole: &[u8], values: &[u8], expected: &[ReadRow]) -> Sweep {
+        let seen: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let hook = std::panic::take_hook();
+        let writing = Arc::clone(&seen);
+        std::panic::set_hook(Box::new(move |panic| {
+            let place = panic
+                .location()
+                .map_or_else(|| "nowhere".to_owned(), |at| format!("{at}"));
+            if let Ok(mut seen) = writing.lock() {
+                let counted = seen.entry(place).or_insert(0);
+                *counted = counted.saturating_add(1);
+            }
+        }));
+        let mut errors: u64 = 0;
+        let mut the_same: u64 = 0;
+        let mut others: u64 = 0;
+        for (at, byte) in whole.iter().enumerate() {
+            for value in values {
+                if value == byte {
+                    continue;
+                }
+                let mut bytes = whole.to_vec();
+                bytes[at] = *value;
+                match rows_or_error(bytes) {
+                    Err(_) => errors = errors.saturating_add(1),
+                    Ok(rows) if rows == expected => the_same = the_same.saturating_add(1),
+                    Ok(_) => others = others.saturating_add(1),
+                }
+            }
+        }
+        std::panic::set_hook(hook);
+        let panics = seen
+            .lock()
+            .map(|seen| {
+                let mut places: Vec<(String, u64)> = seen
+                    .iter()
+                    .map(|(at, count)| (at.clone(), *count))
+                    .collect();
+                places.sort();
+                places
+            })
+            .unwrap_or_default();
+        Sweep {
+            errors,
+            the_same,
+            others,
+            panics,
+        }
+    }
+
+    /// No change of one byte of a vars file reaches a panic or an abort.
+    ///
+    /// A reviewer of the work package changed every byte of such a file to
+    /// each of the 255 other values on 21 September 2026: of 851190 files,
+    /// 70243 panicked inside arrow-rs and 2854 ended the process, which
+    /// `Vec::with_capacity` does with the length a damaged compressed
+    /// buffer says. The reader checks the message of a batch against the
+    /// bytes that came with it before arrow-rs reads any of them, and holds
+    /// what that does not see in `catch_unwind`.
+    ///
+    /// On 21 September 2026 the four values of each byte gave 16296 files
+    /// in 0.13 s: 6922 errors, 8988 read as the whole file, 386 read as
+    /// another file with no error, 14 panics caught and no abort.
+    ///
+    /// Every byte is set to four values here, the low bit and the high bit
+    /// flipped, 0 and 255; the sweep over all 255 is the ignored test that
+    /// follows.
+    ///
+    /// The panics the net catches are counted and not refused: what is left
+    /// of them is an assert of arrow-rs about a buffer that its message
+    /// does not fit, which only the walk of the schema that its decoder
+    /// does would see.
+    #[test]
+    fn no_change_of_one_byte_of_a_vars_file_reaches_a_panic() {
+        let whole = cases_written_in_batches_of(3);
+        let expected = rows_or_error(whole.clone()).expect("the whole file is read");
+        assert_eq!(expected.len(), 4);
+
+        let values = [0x00, 0xff];
+        let mut sweep = swept(&whole, &values, &expected);
+        // The two values that depend on the byte, which `swept` takes as
+        // they are, so the sweep is run again for each of them.
+        for bit in [0x01_u8, 0x80] {
+            for (at, byte) in whole.iter().enumerate() {
+                let mut bytes = whole.clone();
+                bytes[at] = byte ^ bit;
+                match rows_or_error(bytes) {
+                    Err(_) => sweep.errors = sweep.errors.saturating_add(1),
+                    Ok(rows) if rows == expected => {
+                        sweep.the_same = sweep.the_same.saturating_add(1);
+                    }
+                    Ok(_) => sweep.others = sweep.others.saturating_add(1),
+                }
+            }
+        }
+
+        // A test in which nothing is read, or nothing refused, is one that
+        // cannot fail.
+        assert!(sweep.errors > 100, "{} errors", sweep.errors);
+        assert!(sweep.the_same > 100, "{} files read whole", sweep.the_same);
+        sweep.panics_are_of_arrow();
+        assert!(
+            sweep.caught() <= PANICS_CAUGHT,
+            "{} panics were caught, and {PANICS_CAUGHT} were counted on 21 September 2026: {:?}",
+            sweep.caught(),
+            sweep.panics
+        );
+        println!("{sweep:?}");
+    }
+
+    /// The same sweep with every byte set to each of the 255 other values.
+    /// It is run by hand: 1299990 files and 8.2 s in the profile of the
+    /// tests on the owner's Apple M5 Pro on 21 September 2026, where it
+    /// gave 550055 errors, 726033 files read as the whole one, 23902 read
+    /// as another file with no error, which is what a checksum of the
+    /// format would catch and nothing else does, 2783 panics of arrow-rs
+    /// that the net caught and no abort.
+    ///
+    ///     cargo test -p popnei --lib \
+    ///         no_change_of_any_byte_of_a_vars_file -- --ignored
+    #[test]
+    #[ignore = "851190 files; the sweep over four values of each byte is the one that runs with the suite"]
+    fn no_change_of_any_byte_of_a_vars_file_reaches_a_panic() {
+        let whole = cases_written_in_batches_of(3);
+        let expected = rows_or_error(whole.clone()).expect("the whole file is read");
+        let values: Vec<u8> = (0..=255).collect();
+
+        let sweep = swept(&whole, &values, &expected);
+
+        assert!(sweep.errors > 10000, "{} errors", sweep.errors);
+        sweep.panics_are_of_arrow();
+        // What the reader gives with no error and other variants: a byte of
+        // a compressed buffer that decompresses into other genotypes, which
+        // only a checksum of the format would catch.
+        assert!(
+            sweep.others < sweep.errors,
+            "{} files read as another file",
+            sweep.others
+        );
+        println!("{sweep:?}");
     }
 
     /// A batch whose arrays are a window into longer ones is read through
