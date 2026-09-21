@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy
 import pyarrow
 import pyarrow.ipc
 import pytest
@@ -165,6 +166,20 @@ def _alleles_of(genotype: str) -> list[int]:
     ]
 
 
+def _as_float32(quality: str) -> float:
+    """The quality that bcftools printed, as the `qual` column of a vars
+    file holds it.
+
+    That column is `Float32`, which is the type the QUAL of a VCF has, and
+    pyarrow gives its values back as the floats of Python that they widen
+    to. The text is turned into a `float32` here, so that a quality of the
+    file which no `float32` holds exactly, `0.1`, is compared with what such
+    a column can hold and not with the `float` of Python that the text
+    reads as.
+    """
+    return float(numpy.float32(quality))
+
+
 def _rows_of_bcftools(path: Path, only_passed: bool) -> list[dict[str, Any]]:
     """The variants of `many.bcftools.tsv`, each as the columns a vars file
     holds for it: with `only_passed` the rows whose FILTER is `PASS` or a
@@ -184,7 +199,7 @@ def _rows_of_bcftools(path: Path, only_passed: bool) -> list[dict[str, Any]]:
                 "pos": int(pos),
                 "id": None if id_ == MISSING_VALUE else id_,
                 "alleles": [ref, *alt.split(",")],
-                "qual": None if qual == MISSING_VALUE else float(qual),
+                "qual": None if qual == MISSING_VALUE else _as_float32(qual),
                 "gts": [
                     allele
                     for genotype in columns[COLUMNS_BEFORE_THE_GENOTYPES:]
