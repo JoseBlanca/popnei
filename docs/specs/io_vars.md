@@ -492,10 +492,10 @@ and that every reader of popnei refuses it, "even the VCF parser", after a
 reviewer wrote a vars file with popnei, changed one byte of its genotypes to
 254, and `open_vars(...).iter_blocks()` handed out a block holding -2 with no
 error: the reader checked the nulls, the type and the width of the column and
-copied the bytes. What the -2 does further on is what `docs/specs/variant.md`
-says under "An allele that no reader gives": the counts of one variant refuse
-it, and a pass that counts nothing puts it in the array of a user, where it
-is an allele of its own. The option not taken was to leave the reader as it
+copied the bytes. What the -2 reached is what `docs/specs/variant.md` says
+under "An allele that no reader gives": the counts of one variant refused it,
+and a pass that counted nothing put it in the array of a user, where it was
+an allele of its own. The option not taken was to leave the reader as it
 was and to make those two errors of the counts a `ValueError` instead of the
 `RuntimeError` they are, which names no file and no variant and which a pass
 with no filter and no count never reaches.
@@ -583,12 +583,15 @@ buffer takes the smallest of its alleles and refuses the batch when it is
 below the missing one, which "What it refuses" asks for: the smallest of a
 run of bytes is what a compiler reduces over the lanes of a vector
 register, where a comparison written for each allele on its own would not
-be. It costs 0.40 to 0.48 ms of a pass over that panel, 1000 individuals
-and 20000 variants, whose 4e7 alleles the reader gives in 20.07 to 20.13 ms
-with the genotypes alone asked for: 2 in 100, measured on the owner's Apple
-M5 Pro with a load average of 1.3, as the best of 5 runs of the benchmark
-of `crates/popnei/benches/vars_file.rs`, three times for each build one
-after the other. The positions and the qualities are
+be. The reader gives the 4e7 alleles of that panel, 1000 individuals and
+20000 variants, in 20.50 to 20.61 ms with the genotypes alone asked for,
+which is the number to hold against the 21 ms of "Speed" below and leaves
+0.4 ms under it. The check is 0.35 to 0.54 ms of that, 2 in 100: the same
+reader without it gave the pass in 20.07 to 20.26 ms, and the difference is
+of each of six pairs of runs, the two builds one after the other, three
+pairs on each of two occasions. Each number is the best of 5 runs of
+`crates/popnei/benches/vars_file.rs` on the owner's Apple M5 Pro with a
+load average of 1.3 to 1.4. The positions and the qualities are
 copied too, a null quality as NaN, the ids and the alleles go into the
 columns of texts of the block, and each chromosome name gets its number from
 the table, which is looked up only when the name differs from that of the
@@ -808,8 +811,14 @@ the file system, and what arrow-rs said when it is not; a file that starts
 as an arrow file and was cut short, with what was being read when the bytes
 ran out; and a batch that arrow-rs could not decode or decompress, with the
 batch and what arrow-rs said. The last two are a file that was damaged after
-it was written, which the reader refuses instead of giving the variants it
-can still read. The write has a case of its own because a Python user reads
+it was written and whose bytes no longer decode, which the reader refuses
+instead of giving the variants it can still read. Damage that does decode,
+into content the format does not allow, is one of the `ValueError` above
+instead: a byte of the `gts` column changed to 254 is a whole batch that
+arrow-rs reads and an allele of -2, and popnei's convention sorts an error
+by what is wrong with the content and not by what made it wrong, since the
+reader cannot tell a damaged file from one another program wrote badly. The
+write has a case of its own because a Python user reads
 which file went wrong from the exception, and a disc that fills up while the
 vars file is being written is not the VCF failing to be read.
 
