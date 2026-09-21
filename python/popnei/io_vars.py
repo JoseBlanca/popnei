@@ -1,9 +1,19 @@
 """Reading and writing a vars file, the file popnei keeps its variants in."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from popnei import _core
-from popnei.variant import Variants
+from popnei.variant import PassStats, Variants, _pass_stats_of
+
+
+@dataclass(frozen=True)
+class VarsWritten:
+    """What :func:`popnei.write_vars` gives back: the counts of its pass."""
+
+    pass_stats: PassStats
+    """How many variants were written, and how many each filter of the
+    ``Variants`` was given and kept."""
 
 
 def open_vars(path: str | Path) -> Variants:
@@ -54,7 +64,7 @@ def open_vars(path: str | Path) -> Variants:
 
 def write_vars(
     variants: Variants, path: str | Path, num_vars_per_block: int | None = None
-) -> None:
+) -> VarsWritten:
     """Every variant of `variants` into a vars file at `path`.
 
     A vars file is one arrow IPC file, also called feather v2, which pandas,
@@ -76,6 +86,10 @@ def write_vars(
     `num_vars_per_block` is how many variants a batch of the file holds, the
     last one aside, and ``None`` asks for the size popnei chooses for the
     number of individuals of the source, which is the size of its blocks.
+
+    What it gives back is a :class:`VarsWritten` with the counts of the pass
+    it made: how many variants were written, and how many each filter of the
+    `variants` was given and kept.
 
     A path that a file is already at is a ``ValueError`` and nothing is
     written, and a path that no file can be made at, a directory or a path
@@ -119,4 +133,7 @@ def write_vars(
             f"`open_vcf` or `open_vars` gives, "
             f"write_vars(open_vcf(vcf_path), path)"
         )
-    _core.write_vars(variants._source, path, num_vars_per_block)
+    counts = _core.write_vars(
+        variants._source, path, num_vars_per_block, variants._steps
+    )
+    return VarsWritten(pass_stats=_pass_stats_of(counts))

@@ -919,6 +919,39 @@ impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
     }
 }
 
+/// A reader that is borrowed and not taken, which is how a consumer reads
+/// a pass whose chain of readers its caller keeps.
+///
+/// `docs/specs/filters.md` has the counts of the filters of a pass read
+/// from that chain when the consumer returns, so the consumer cannot own
+/// it: `write_vars` of `docs/specs/io_vars.md` takes `&mut reader` and the
+/// binding crate that built the chain reads the counts from it afterwards.
+impl<R: BlockReader + ?Sized> BlockReader for &mut R {
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        (**self).next_block()
+    }
+
+    fn individuals(&self) -> &[String] {
+        (**self).individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        (**self).ploidy()
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        (**self).chroms()
+    }
+
+    fn set_needs(&mut self, needs: Needs) {
+        (**self).set_needs(needs);
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        (**self).filtering_stats()
+    }
+}
+
 /// A reader over a reader that gives the variants of its source in blocks
 /// of one size, the last one aside: it joins the blocks that are too short
 /// and cuts the ones that are too long.
@@ -2582,6 +2615,27 @@ mod tests {
         assert_eq!(reblock.filtering_stats(), two_counts());
         let boxed: Box<dyn BlockReader> = Box::new(GivenBlocks::of_one_variant_each());
         assert!(boxed.filtering_stats().is_empty());
+    }
+
+    /// A reader that is borrowed is the reader it borrows: it gives its
+    /// blocks and its counts, what is asked of it reaches it, and it is
+    /// still there when the borrow ends. That is how a consumer takes the
+    /// chain of a pass whose caller keeps it, `write_vars` of
+    /// `docs/specs/io_vars.md` over the chain a binding crate built.
+    #[test]
+    fn a_borrowed_reader_gives_the_blocks_and_the_counts_of_the_reader_it_borrows() {
+        let mut reader =
+            GivenBlocks::reporting(vec![cases_block(&[0, 1]), cases_block(&[2])], two_counts());
+        {
+            let mut reblock = Reblock::new(&mut reader, Some(2)).expect("the reblock");
+            assert_eq!(reblock.filtering_stats(), two_counts());
+            reblock.set_needs(Needs::GTS);
+            let blocks = blocks_given(&mut reblock).expect("the blocks");
+            assert_eq!(num_vars_of(&blocks), [2, 1]);
+        }
+        assert_eq!(reader.needs, Needs::GTS);
+        assert_eq!(reader.filtering_stats(), two_counts());
+        assert!(reader.left.is_empty());
     }
 
     /// `reblock` joins the blocks that are too short: four blocks of one

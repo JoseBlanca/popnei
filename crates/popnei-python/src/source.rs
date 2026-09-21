@@ -10,9 +10,12 @@
 //! calculation after another. What they have in common is [`OpenSource`]:
 //! the path the errors of a pass name, and the reader of one pass.
 //!
-//! [`Blocks`] is that pass, whichever source it came from: it owns a reader
-//! of blocks of the core with a `Reblock` at its end, which gives the blocks
-//! the size that was asked for.
+//! [`Blocks`] is that pass, whichever source it came from: it owns the chain
+//! of readers of the pass, the source with a filter over it for each step of
+//! the `Variants` and a `Reblock` at its end, which gives the blocks the
+//! size that was asked for. It counts the variants of the blocks it gives
+//! and reads the counts of the filters from that chain, which is the
+//! `PassStats` of `docs/specs/variant.md`.
 //!
 //! The columns of a block leave as they are in the core: the genotypes as a
 //! numpy array that holds the allocation the core filled, the positions and
@@ -34,8 +37,18 @@ use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fie
 use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
+use crate::steps::{Steps, chain_of};
 use crate::vars::VarsSource;
 use crate::vcf::VcfSource;
+
+/// The counts of one pass on their way to Python: how many variants it has
+/// given, and, for each filter of its chain, its kind, how many variants it
+/// was given and how many it kept.
+///
+/// The filters come in the order of the chain, the outermost first, which is
+/// the reverse of the order of the steps: the package turns them around, as
+/// "How it runs" of the counts of `docs/specs/filters.md` says.
+pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>);
 
 /// The columns of one block on their way to Python: the genotypes, and then
 /// the chromosomes, the positions, the ids, the alleles and the qualities,
@@ -102,8 +115,11 @@ pub(crate) fn source_of<'a>(
     .into())
 }
 
-/// One pass over `source`, whose blocks hold `fields` besides the
-/// genotypes, `num_vars_per_block` variants each.
+/// One pass over `source`, through the steps of `steps`, whose blocks hold
+/// `fields` besides the genotypes, `num_vars_per_block` variants each.
+///
+/// The steps are taken as they are here, when the pass starts: one added
+/// while it runs holds from the next pass, as `docs/specs/filters.md` says.
 ///
 /// # Errors
 ///
@@ -115,11 +131,13 @@ pub(crate) fn blocks_of(
     source: &dyn OpenSource,
     fields: Vec<String>,
     num_vars_per_block: Option<&Bound<'_, PyAny>>,
+    steps: &Steps,
 ) -> Result<Blocks, PyPopneiError> {
     let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
     let num_vars_per_block = num_vars_per_block
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
+    let steps = steps.of_a_pass()?;
     let path = source.path();
     let reader = py
         .detach(|| -> Result<Box<dyn BlockReader>, popnei::Error> {
@@ -130,28 +148,38 @@ pub(crate) fn blocks_of(
             // the vars file whose batches were written at one size and a
             // filter among them, and it is what `docs/specs/block.md` puts
             // at the end of every `iter_blocks`.
-            let mut reader = source.reader(num_vars_per_block)?;
-            reader.set_needs(needs.union(Needs::GTS));
-            Ok(Box::new(Reblock::new(reader, num_vars_per_block)?))
+            let reader = source.reader(num_vars_per_block)?;
+            // The fields are asked of the whole chain and not of the source
+            // alone: a filter asks its source for what it was asked for and
+            // for the genotypes, which it needs itself.
+            let mut chain = chain_of(reader, &steps)?;
+            chain.set_needs(needs.union(Needs::GTS));
+            Ok(Box::new(Reblock::new(chain, num_vars_per_block)?))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     Ok(Blocks {
         pass: Mutex::new(Pass {
             reader,
             finished: false,
+            num_vars: 0,
         }),
         path: path.to_path_buf(),
     })
 }
 
-/// The reader of one pass and whether the pass is over: they are read and
-/// written together, under one lock, because a pass that is over gives no
-/// block whatever its reader would say.
+/// The reader of one pass, whether the pass is over and how many variants
+/// it has given: they are read and written together, under one lock,
+/// because a pass that is over gives no block whatever its reader would
+/// say, and the count is of the blocks that reader gave.
 struct Pass {
     reader: Box<dyn BlockReader>,
     /// Whether the reader has no more blocks or a block was lost with an
     /// error. After either there is no block.
     finished: bool,
+    /// The variants of the blocks the pass has given, which is the
+    /// `num_vars` a user reads in its counts. A block that was lost with an
+    /// error is not among them: it never reached the user.
+    num_vars: u64,
 }
 
 // One pass over a source of variants, which gives them block by block.
@@ -180,6 +208,27 @@ impl Blocks {
         py.check_signals()?;
         self.columns_of_the_next_block(py)
             .inspect_err(|_| self.finish())
+    }
+
+    // How many variants the pass has given, and what each filter of it was
+    // given and kept, the outermost filter first. It is read while the pass
+    // runs too, and it then holds what has been read up to there.
+    fn pass_stats(&self) -> Result<PassCounts, PyPopneiError> {
+        let pass = self.pass.lock().map_err(|_| {
+            PyPopneiError::broken_of_the_file(
+                "the counts of this pass cannot be read: a panic left the reader half \
+                 way through a block"
+                    .to_string(),
+                &self.path,
+            )
+        })?;
+        let filtering = pass
+            .reader
+            .filtering_stats()
+            .into_iter()
+            .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+            .collect();
+        Ok((pass.num_vars, filtering))
     }
 }
 
@@ -241,7 +290,30 @@ impl Blocks {
         let qual = qual
             .map(|qual| read_only(qual.into_pyarray(py)))
             .transpose()?;
+        self.counted(num_vars);
         Ok(Some((gts, chrom, pos, id, alleles, qual)))
+    }
+
+    /// The `num_vars` variants of a block that is going out, added to the
+    /// count of the pass.
+    ///
+    /// They are counted here, where the block is the user's, and not where
+    /// it was read: a block that was lost with an error, and one the pass
+    /// had read when a Ctrl-C arrived, never reached them and is in the
+    /// count of no filter of theirs either.
+    ///
+    /// A lock that a panic left broken is the end of the pass, which the
+    /// read of the next block reports: a count that was not added is not
+    /// what the user is told about then.
+    fn counted(&self, num_vars: usize) {
+        if let Ok(mut pass) = self.pass.lock() {
+            // A variant is a row of a file, so a pass of the
+            // 18446744073709551615 variants this count holds is more rows
+            // than any file system takes: the sum cannot reach its end.
+            pass.num_vars = pass
+                .num_vars
+                .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+        }
     }
 
     /// The pass is over, and every call after this one gives no block.

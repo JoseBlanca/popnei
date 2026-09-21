@@ -9,9 +9,10 @@ signatures are those of pyNei, the Python library popnei succeeds.
 
 from popnei import _core
 from popnei.block import Block
-from popnei.io_vars import open_vars, write_vars
+from popnei.filters import FilteringStats, Step
+from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
-from popnei.variant import Variants
+from popnei.variant import Blocks, PassStats, Variants
 
 __version__: str = _core.version()
 """The version of the core crate, ``major.minor.patch``.
@@ -20,4 +21,16 @@ A user who reports a result names the code that gave it with this, so it is
 the version of the Rust that did the work and not one written again here.
 """
 
-__all__ = ["Block", "Variants", "__version__", "open_vars", "open_vcf", "write_vars"]
+__all__ = [
+    "Block",
+    "Blocks",
+    "FilteringStats",
+    "PassStats",
+    "Step",
+    "Variants",
+    "VarsWritten",
+    "__version__",
+    "open_vars",
+    "open_vcf",
+    "write_vars",
+]

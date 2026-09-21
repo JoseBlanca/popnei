@@ -1,20 +1,109 @@
-"""The handle a user holds: a source of variants and its individuals."""
+"""The handle a user holds: a source of variants, its individuals and the
+steps that were put on it, and the counts of a pass over it."""
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from popnei import _core
 from popnei.block import Block, Field, _block_of
+from popnei.filters import FilteringStats, Step
+
+
+@dataclass(frozen=True)
+class PassStats:
+    """The counts of one pass over a source of variants.
+
+    Every consumer of a :class:`Variants` gives them back with its result,
+    and so does the iterator of :meth:`Variants.iter_blocks`. A pass is one
+    reading of the source from its start, through the steps the ``Variants``
+    had when it started, so these counts are of that reading alone and of
+    what the ``Variants`` holds afterwards nothing reaches them.
+    """
+
+    num_vars: int
+    """How many variants the consumer took, after the steps."""
+
+    filtering: dict[str, FilteringStats]
+    """How many variants each filter of the pass was given and kept, under
+    the kind of the filter, ``"missing_data"``, ``"maf"`` or ``"obs_het"``,
+    in the order of the steps. It is empty for a pass with no filter."""
+
+
+def _pass_stats_of(counts) -> PassStats:
+    """The counts that `popnei._core` gives for one pass.
+
+    The core gives the filters of the chain of readers, the outermost first,
+    and a user reads them in the order of the steps, which is the one the
+    filters were put on the ``Variants`` in and the reverse of the chain's.
+    """
+    num_vars, filtering = counts
+    return PassStats(
+        num_vars=num_vars,
+        filtering={
+            kind: FilteringStats(vars_processed=vars_processed, vars_kept=vars_kept)
+            for kind, vars_processed, vars_kept in reversed(filtering)
+        },
+    )
+
+
+class Blocks:
+    """The blocks of one pass, one after another, and the counts of it.
+
+    It is what :meth:`Variants.iter_blocks` gives: an iterator of
+    :class:`popnei.Block`, and a `pass_stats` that says how many variants
+    have come out of it and what each filter of the pass has been given and
+    kept.
+    """
+
+    def __init__(self, blocks: _core.Blocks):
+        """The pass that `popnei._core` started, as the blocks of it."""
+        self._blocks = blocks
+
+    def __iter__(self) -> Blocks:
+        """The iterator itself: a pass is read once, from its start."""
+        return self
+
+    def __next__(self) -> Block:
+        """The next block of the pass.
+
+        When a variant cannot be read, the error comes in the place of the
+        block that would have held it, and every call after that one says
+        that the pass is over.
+        """
+        return _block_of(next(self._blocks))
+
+    @property
+    def pass_stats(self) -> PassStats:
+        """The counts of the pass as it stands.
+
+        Read when the pass is over, they are of everything it gave. Read
+        between two blocks, they are of the blocks that came out so far,
+        which can be fewer variants than the filters of the pass have kept:
+        the reader that cuts the blocks to the size the user asked for keeps
+        the variants of the next block.
+        """
+        return _pass_stats_of(self._blocks.pass_stats())
 
 
 class Variants:
     """A source of variants: a VCF with the options it is read with, or a
-    vars file.
+    vars file, and the steps that were put on it.
 
     It holds no genotypes. A user gets one from :func:`popnei.open_vcf` or
     from :func:`popnei.open_vars` and gives it to as many calculations as
     they want: each one opens the source again and runs its loop over the
     variants inside the Rust core, so the dataset is never in memory as a
     whole.
+
+    What is done with it is of two kinds, and what a call gives back says
+    which. A step, a filter of :mod:`popnei.filters`, is a method that adds
+    itself to the list of steps, reads nothing and returns nothing, and
+    :attr:`steps` is that list. A consumer, :meth:`iter_blocks`,
+    :func:`popnei.write_vars` or the function of a calculation, gives
+    something back, and it runs the steps: it makes as many passes over the
+    source as it needs, each one built from the steps the ``Variants`` has
+    when that pass starts. So a step added between two consumers holds for
+    the second, and one added while a pass runs holds from the next pass.
 
     It is pyNei's ``Variants`` under the word of ``docs/glossary.md``: what
     pyNei calls a sample is here an individual, one organism that was
@@ -38,6 +127,17 @@ class Variants:
         # The names come from the header, which was read once, so they are
         # taken out of the core here and not at every use.
         self._individuals = tuple(source.individuals())
+        self._steps = _core.Steps()
+
+    def __repr__(self) -> str:
+        """The source the variants are read from and the steps on it.
+
+        A second filter of one kind is refused, so a user has to be able to
+        see which are set, and a notebook whose cells were run out of order
+        is where they most need it.
+        """
+        steps = ", ".join(f"{step.kind}({_arguments_of(step)})" for step in self.steps)
+        return f"<Variants of {self._source.path()}, {steps or 'no steps'}>"
 
     @property
     def individuals(self) -> tuple[str, ...]:
@@ -54,11 +154,23 @@ class Variants:
         """How many alleles the genotype of one individual holds."""
         return self._source.ploidy()
 
+    @property
+    def steps(self) -> tuple[Step, ...]:
+        """The steps that were put on this ``Variants``, in their order.
+
+        Each one is a :class:`popnei.Step` with the kind of the step and the
+        arguments it was given. A pass takes the steps that are there when
+        it starts, so this is what the next consumer will run.
+        """
+        return tuple(
+            Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
+        )
+
     def iter_blocks(
         self,
         fields: Iterable[Field] = ("chrom", "pos"),
         num_vars_per_block: int | None = None,
-    ) -> Iterator[Block]:
+    ) -> Blocks:
         """The variants of the source, block by block, from its start.
 
         `fields` names what each block carries besides the genotypes, among
@@ -74,6 +186,11 @@ class Variants:
         changes nothing but where the cuts fall: the blocks of a source,
         joined, are the same for any size, and only the last one can be
         shorter than the rest.
+
+        What it gives is a :class:`Blocks`, the blocks one after another and
+        the counts of the pass in its ``pass_stats``: how many variants have
+        come out of it, and what each filter of the ``Variants`` was given
+        and kept.
 
         Every call reads the source from its start. When a variant cannot be
         read, the error comes in the place of the block that would have held
@@ -101,4 +218,11 @@ class Variants:
                 f"`fields` is a sequence of names and not one name: write "
                 f'fields=("{fields}",) for that one field'
             )
-        return map(_block_of, self._source.blocks(list(fields), num_vars_per_block))
+        return Blocks(
+            self._source.blocks(list(fields), num_vars_per_block, self._steps)
+        )
+
+
+def _arguments_of(step: Step) -> str:
+    """The arguments of one step, as the user wrote them in the call."""
+    return ", ".join(f"{name}={value!r}" for name, value in step.args.items())

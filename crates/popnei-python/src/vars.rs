@@ -25,7 +25,8 @@ use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
 use crate::errors::PyPopneiError;
-use crate::source::{Blocks, OpenSource, blocks_of, count_of, source_of};
+use crate::source::{Blocks, OpenSource, PassCounts, blocks_of, count_of, source_of};
+use crate::steps::{Steps, chain_of};
 
 // A vars file that was opened: its path, and the individuals and the ploidy
 // its schema named. A `///` here would become the `__doc__` of the class,
@@ -50,16 +51,24 @@ impl VarsSource {
         self.ploidy
     }
 
-    // One pass over the file: it is opened again, and its blocks hold
-    // `fields` besides the genotypes, `num_vars_per_block` variants each.
-    #[pyo3(signature = (fields, num_vars_per_block))]
+    // The file the variants are read from, which the `repr` of a `Variants`
+    // shows its user.
+    fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    // One pass over the file, through the steps of `steps`: it is opened
+    // again, and its blocks hold `fields` besides the genotypes,
+    // `num_vars_per_block` variants each.
+    #[pyo3(signature = (fields, num_vars_per_block, steps))]
     fn blocks(
         &self,
         py: Python<'_>,
         fields: Vec<String>,
         num_vars_per_block: Option<&Bound<'_, PyAny>>,
+        steps: &Bound<'_, Steps>,
     ) -> Result<Blocks, PyPopneiError> {
-        blocks_of(py, self, fields, num_vars_per_block)
+        blocks_of(py, self, fields, num_vars_per_block, steps.get())
     }
 }
 
@@ -104,25 +113,29 @@ pub(crate) fn open_vars(py: Python<'_>, path: PathBuf) -> Result<VarsSource, PyP
     })
 }
 
-// Every variant of `source` into a vars file at `path`, one batch of
-// `num_vars_per_block` variants after another, and `None` for the size
-// popnei chooses for the individuals of the source. `source` is a VCF that
-// `open_vcf` opened or a vars file that `open_vars` did, which is what a
-// `Variants` of the package holds. A `///` comment here would become the
-// `__doc__` of `popnei._core.write_vars`, and what a Python user reads
+// Every variant of `source` into a vars file at `path`, through the steps
+// of `steps`, one batch of `num_vars_per_block` variants after another, and
+// `None` for the size popnei chooses for the individuals of the source.
+// `source` is a VCF that `open_vcf` opened or a vars file that `open_vars`
+// did, which is what a `Variants` of the package holds. What it gives back
+// is the counts of the pass it made, how many variants were written and
+// what each filter was given and kept. A `///` comment here would become
+// the `__doc__` of `popnei._core.write_vars`, and what a Python user reads
 // belongs to the package, which is the API.
 #[pyfunction]
-#[pyo3(signature = (source, path, num_vars_per_block))]
+#[pyo3(signature = (source, path, num_vars_per_block, steps))]
 pub(crate) fn write_vars(
     py: Python<'_>,
     source: &Bound<'_, PyAny>,
     path: PathBuf,
     num_vars_per_block: Option<&Bound<'_, PyAny>>,
-) -> Result<(), PyPopneiError> {
+    steps: &Bound<'_, Steps>,
+) -> Result<PassCounts, PyPopneiError> {
     let source = source_of(source)?;
     let num_vars_per_block = num_vars_per_block
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
+    let steps = steps.get().of_a_pass()?;
     // A Ctrl-C that was pending when this was called is raised here, before
     // a file is made: what a user stopped leaves no file at the path.
     py.check_signals()?;
@@ -134,13 +147,19 @@ pub(crate) fn write_vars(
     // over and not between two blocks, as it is in `Blocks::__next__`: the
     // loop over the blocks is the core's, which `docs/specs/io_vars.md` has
     // this crate call instead of writing that loop again.
-    let written = py.detach(|| -> Result<(), popnei::Error> {
+    let written = py.detach(|| -> Result<PassCounts, popnei::Error> {
         // The source is opened at the size of its own blocks: the core puts
         // a `reblock` of `num_vars_per_block` over whatever it is given, so
         // the batches of the file hold that many variants whichever source
         // they came from.
         let reader = source.reader(None)?;
-        let sink = popnei::io::vars::write_vars(reader, BufWriter::new(file), num_vars_per_block)?;
+        // The chain of the pass stays here, lent to the core, so that the
+        // counts of its filters can be read when the call is over: the loop
+        // over the blocks is the core's, and so is the count of the
+        // variants it wrote, which no loop of this crate sees.
+        let mut chain = chain_of(reader, &steps)?;
+        let (sink, num_vars) =
+            popnei::io::vars::write_vars(&mut chain, BufWriter::new(file), num_vars_per_block)?;
         // What the buffer still holds goes to the file here, where its
         // error is read; a buffer that is dropped writes it and loses it.
         let file = sink
@@ -151,17 +170,26 @@ pub(crate) fn write_vars(
         // then says that it is full would leave a file that is not whole
         // after a call that returned and said nothing.
         file.sync_all().map_err(not_written)?;
-        Ok(())
+        let filtering = chain
+            .filtering_stats()
+            .into_iter()
+            .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+            .collect();
+        Ok((num_vars, filtering))
     });
-    if let Err(error) = written {
-        let taken = take_away(&path);
-        // The file the error names is the one it is about: a wrong line of
-        // the VCF that was being read names that VCF, and a disc that
-        // filled up names the file that was being written, which the core
-        // keeps apart from an error of a source that could not be read.
-        let refusal = of_the_file_it_is_about(error, &read, &path);
-        return Err(with_what_was_left(refusal, &path, taken));
-    }
+    let written = match written {
+        Ok(counts) => counts,
+        Err(error) => {
+            let taken = take_away(&path);
+            // The file the error names is the one it is about: a wrong line
+            // of the VCF that was being read names that VCF, and a disc that
+            // filled up names the file that was being written, which the
+            // core keeps apart from an error of a source that could not be
+            // read.
+            let refusal = of_the_file_it_is_about(error, &read, &path);
+            return Err(with_what_was_left(refusal, &path, taken));
+        }
+    };
     // A Ctrl-C that arrived while the file was being written is still
     // pending: the interpreter was released and no bytecode ran to raise
     // it. A user who stopped the call is told so and is left with no file,
@@ -171,7 +199,7 @@ pub(crate) fn write_vars(
         let taken = take_away(&path);
         return Err(with_what_was_left(interrupted.into(), &path, taken));
     }
-    Ok(())
+    Ok(written)
 }
 
 /// `error` with the file it is about, since a user reads which of the two

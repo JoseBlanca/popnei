@@ -708,7 +708,14 @@ impl<W: Write> VarsWriter<W> {
 }
 
 /// Every variant of `reader` into a vars file on `sink`, one batch for each
-/// block, and the sink back.
+/// block, and the sink back with how many variants were written.
+///
+/// That count is what a Python or a TypeScript user reads as the variants
+/// of the pass, `num_vars` of the `PassStats` of `docs/specs/variant.md`.
+/// The binding crate cannot count them itself, as it does in an
+/// `iter_blocks`, because the loop over the blocks is here; the counts of
+/// the filters of the pass it reads from the chain of readers it keeps,
+/// which it lends here as `&mut reader`.
 ///
 /// It asks `reader` for every field, so a file written from a VCF holds its
 /// six columns and can stand in for it in any later analysis, and it puts a
@@ -734,7 +741,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     mut reader: R,
     sink: W,
     num_vars_per_block: Option<usize>,
-) -> Result<W> {
+) -> Result<(W, u64)> {
     // Every field, so that a file written from a VCF holds its six columns
     // whether or not the user will read them.
     reader.set_needs(Needs::ALL);
@@ -747,10 +754,16 @@ pub fn write_vars<R: BlockReader, W: Write>(
         size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
     let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
+    let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
+        let of_the_block = u64::try_from(block.num_vars).unwrap_or(u64::MAX);
         writer.write_block(block, blocks.chroms())?;
+        // A variant is a row of the file that is being written, so a pass
+        // of the 18446744073709551615 variants this count holds is more
+        // rows than any file system takes: the sum cannot reach its end.
+        num_vars = num_vars.saturating_add(of_the_block);
     }
-    writer.finish()
+    Ok((writer.finish()?, num_vars))
 }
 
 /// The schema of a vars file whose blocks hold `fields`, with the `popnei`
@@ -3022,7 +3035,9 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        write_vars(reader, Vec::new(), Some(num_vars_per_block)).expect("the file was written")
+        write_vars(reader, Vec::new(), Some(num_vars_per_block))
+            .expect("the file was written")
+            .0
     }
 
     /// `write_vars` asks its reader for every field, so that a file written
@@ -3047,6 +3062,48 @@ mod tests {
             *asked_for.lock().expect("what the reader was asked for"),
             Needs::ALL
         );
+    }
+
+    /// `write_vars` says how many variants it wrote, which is what a Python
+    /// or a TypeScript user reads as the variants of the pass: the four of
+    /// `cases.vcf`, the 500 of `many.vcf` whatever the size of the batches,
+    /// and none for a source that has no variants.
+    #[test]
+    fn write_vars_says_how_many_variants_it_wrote() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3)).expect("the file");
+        assert_eq!(num_vars, 4);
+
+        let (_, num_vars) =
+            write_vars(many_vcf_reader(None), Vec::new(), Some(100)).expect("the file");
+        assert_eq!(num_vars, 500);
+        let (_, num_vars) = write_vars(many_vcf_reader(None), Vec::new(), None).expect("the file");
+        assert_eq!(num_vars, 500);
+
+        let of_no_variants = GivenBlocks::of(Vec::new(), ChromTable::new());
+        let (_, num_vars) = write_vars(of_no_variants, Vec::new(), Some(3)).expect("the file");
+        assert_eq!(num_vars, 0);
+    }
+
+    /// A reader that is borrowed and not taken is what `write_vars` reads
+    /// when its caller keeps the chain of the pass, which is how a binding
+    /// crate reads the counts of the filters of that pass when the call
+    /// returns, as `docs/specs/filters.md` has it: the file is the one the
+    /// same reader written gives.
+    #[test]
+    fn write_vars_writes_the_same_file_from_a_reader_it_borrows() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let mut reader = GivenBlocks::of(vec![block], chroms);
+
+        let (bytes, num_vars) =
+            write_vars(&mut reader, Vec::new(), Some(3)).expect("the file was written");
+
+        assert_eq!(num_vars, 4);
+        assert_eq!(bytes, cases_written_in_batches_of(3));
+        assert!(reader.filtering_stats().is_empty());
     }
 
     /// The four variants of the table of `cases.vcf`, in batches of three:
@@ -3163,7 +3220,7 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(num_rows_of(&file.rows), [4]);
@@ -3208,7 +3265,7 @@ mod tests {
         block.qual = None;
         assert_eq!(block.fields(), Needs::GTS);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -3233,7 +3290,7 @@ mod tests {
     #[test]
     fn a_source_with_no_variants_gives_a_file_with_both_keys_and_no_batch() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -3270,7 +3327,7 @@ mod tests {
             ploidy: 4,
             ..GivenBlocks::of(vec![block], chroms)
         };
-        let bytes = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(
@@ -3338,7 +3395,7 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), None).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), None).expect("the file was written");
 
         let frames = bytes
             .windows(LZ4_FRAME_MARK.len())
@@ -4249,6 +4306,7 @@ mod tests {
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
         write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block)
             .expect("many.vcf was written as a vars file")
+            .0
     }
 
     /// Where the variants of those rows are, one entry for each of their
@@ -4772,7 +4830,7 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let reader = opened(bytes).expect("the file of one column is a vars file");
 
@@ -4809,7 +4867,7 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_is_opened_and_says_it_holds_none() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let reader = opened(bytes).expect("the file with no batch is a vars file");
 
@@ -5122,7 +5180,7 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -5155,7 +5213,7 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -5374,7 +5432,7 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_gives_no_block() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let mut reader = opened(bytes).expect("the file with no batch is a vars file");
 
         assert!(reader.next_block().expect("the empty file").is_none());

@@ -135,11 +135,12 @@ pub(crate) fn bytes_of_a_vars_file(
     // batches of the file hold that many variants whichever source they
     // came from.
     let reader = source.reader(None)?;
-    Ok(popnei::io::vars::write_vars(
-        reader,
-        Vec::new(),
-        num_vars_per_block,
-    )?)
+    // How many variants were written is the second of the two the core
+    // gives, and `writeVars` does not hand it to its caller yet: the counts
+    // of a pass are task 1.3 of `docs/plans/filters.md`, the TypeScript
+    // side of the `PassStats` of `docs/specs/variant.md`.
+    let (bytes, _num_vars) = popnei::io::vars::write_vars(reader, Vec::new(), num_vars_per_block)?;
+    Ok(bytes)
 }
 
 /// One pass over a source of variants, which gives them block by block.
