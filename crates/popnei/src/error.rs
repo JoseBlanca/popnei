@@ -31,23 +31,38 @@ pub enum Error {
     },
 
     /// The alleles given to the counts of one variant are not genotypes
-    /// those counts can read: the ploidy is 0, the alleles are not a whole
-    /// number of genotypes of the ploidy, or there are more of them than a
-    /// count of them holds. The counts of the alleles read one allele at a
-    /// time and give the ploidy 1.
+    /// those counts can read: the ploidy is 0, or the alleles are not a
+    /// whole number of genotypes of the ploidy.
     ///
     /// A block of a reader of popnei holds, for each variant, one genotype
     /// of the ploidy of the source for each individual, so a user reaches
     /// this only through a reader with a defect.
     #[error(
-        "the counts of one variant were given {num_alleles} alleles of the ploidy {ploidy}, and they read one genotype of the ploidy for each individual: the ploidy is 1 at least, the alleles are a whole number of genotypes of it, and there are at most {largest} of them, which is what a count of them holds",
-        largest = u32::MAX
+        "the counts of one variant were given {num_alleles} alleles of the ploidy {ploidy}, and they read one genotype of the ploidy for each individual: the ploidy is 1 at least, and the alleles are a whole number of genotypes of it"
     )]
     GtsNotWholeGenotypes {
         /// How many alleles the counts were given.
         num_alleles: usize,
         /// The ploidy they were to read them as.
         ploidy: usize,
+    },
+
+    /// A variant given to the counts of one variant holds more alleles
+    /// than a count of them holds. Every count of the two, the genotypes
+    /// that are called and the times one allele was seen, is a `u32`, so a
+    /// variant of more than 4295 million alleles would be counted into a
+    /// number that wrapped.
+    ///
+    /// One variant holds the individuals of the source times the ploidy
+    /// alleles, and no source has that many, so a user reaches this only
+    /// through a reader with a defect.
+    #[error(
+        "the counts of one variant were given {num_alleles} alleles, and a count of the alleles of one variant holds {largest}",
+        largest = u32::MAX
+    )]
+    MoreAllelesThanACountHolds {
+        /// How many alleles the counts were given.
+        num_alleles: usize,
     },
 
     /// A genotype given to the counts of one variant holds an allele below
@@ -175,7 +190,7 @@ pub enum Error {
     /// passes, and with one above 1 every variant that has a number does,
     /// so a 95 written for 0.95 filters nothing and says nothing.
     #[error(
-        "the threshold of the {kind} filter is {threshold}, and a threshold is a number from 0 to 1, both included: the number of the variant it is compared with is one count of the variant divided by another"
+        "the threshold of the {kind} filter is {threshold:?}, and a threshold is a number from 0 to 1, both included: the number of the variant it is compared with is one count of the variant divided by another"
     )]
     VarFilterThresholdOutOfRange {
         /// Which filter it is: `missing_data`, `maf` or `obs_het`, the name
@@ -192,7 +207,9 @@ pub enum Error {
     /// the cell of a notebook twice gives. pyNei takes it and adds the
     /// counts of the two together.
     #[error(
-        "the variants are filtered by {kind} already, and a second filter of that kind, with a threshold of {threshold}, keeps the variants that the stricter of the two keeps alone; the filters that are set are in the steps of the variants"
+        "the variants are filtered by {kind} already{set}, and a second filter of that kind, whose threshold is {threshold:?}, keeps the variants that the stricter of the two keeps alone",
+        set = threshold_that_is_set
+            .map_or_else(String::new, |set| format!(", with a threshold of {set:?}"))
     )]
     VarFilterOfAKindThatIsSet {
         /// The kind that is filtered twice: `missing_data`, `maf` or
@@ -201,6 +218,14 @@ pub enum Error {
         /// The threshold of the filter that was refused, which is the one
         /// the caller wrote.
         threshold: f64,
+        /// The threshold of the filter of that kind that is set already,
+        /// where whoever refuses the second one knows it. A chain of
+        /// readers says which kinds of filter it holds and not with which
+        /// thresholds, so a reader built over one gives `None`, and a
+        /// binding crate, which has the steps of the variants with their
+        /// thresholds, gives the number. The message leaves it out when it
+        /// is `None`.
+        threshold_that_is_set: Option<f64>,
     },
 
     /// A name that was given for a column of a block is not one of the
@@ -677,6 +702,61 @@ mod tests {
         // A ploidy of 0 is read here as one genotype of no allele for
         // every individual, so the message says what a ploidy is.
         assert!(message.contains("the ploidy is 1 at least"), "{message}");
+    }
+
+    /// A variant of more alleles than a count of them holds is its own
+    /// case, because the counts read every one of those alleles and the
+    /// ploidy says nothing about how many there are. The message names
+    /// what was given and what a count holds.
+    #[test]
+    fn the_message_of_more_alleles_than_a_count_holds_names_them_and_the_largest_count() {
+        // The alleles are more than a `u32` holds, so the number of the
+        // test is written as the largest `usize`, which on the machines
+        // popnei builds natively for is 18446744073709551615: a literal
+        // above 4295 million is not a `usize` in wasm, where this compiles
+        // too.
+        let error = Error::MoreAllelesThanACountHolds {
+            num_alleles: usize::MAX,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("{alleles} alleles", alleles = usize::MAX)),
+            "{message}"
+        );
+        assert!(message.contains("4294967295"), "{message}");
+        // It says nothing of a ploidy, which is the case it was taken out
+        // of: these alleles are too many whatever the ploidy is.
+        assert!(!message.contains("ploidy"), "{message}");
+    }
+
+    /// The error of a second filter of one kind is refused in two places,
+    /// by a reader over a chain, which knows the kinds of the filters of
+    /// that chain and not their thresholds, and by a binding crate, which
+    /// has the steps of the variants with both. The message says which
+    /// number is which, and says nothing of the threshold that is set when
+    /// whoever refused the filter did not have it.
+    #[test]
+    fn the_message_of_a_second_filter_of_one_kind_names_the_thresholds_it_was_given() {
+        let error = Error::VarFilterOfAKindThatIsSet {
+            kind: "maf",
+            threshold: 0.95,
+            threshold_that_is_set: None,
+        };
+        let message = error.to_string();
+        assert!(message.contains("filtered by maf already,"), "{message}");
+        assert!(message.contains("whose threshold is 0.95"), "{message}");
+
+        let error = Error::VarFilterOfAKindThatIsSet {
+            kind: "maf",
+            threshold: 0.95,
+            threshold_that_is_set: Some(0.8),
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("filtered by maf already, with a threshold of 0.8"),
+            "{message}"
+        );
+        assert!(message.contains("whose threshold is 0.95"), "{message}");
     }
 
     /// The allele is what says where the reader that gave it went wrong,

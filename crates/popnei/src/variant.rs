@@ -359,8 +359,9 @@ pub struct GtCounts {
 /// # Errors
 ///
 /// For a ploidy of 0 and for genotypes that are not a whole number of
-/// genotypes of that ploidy, and for an allele below [`MISSING_ALLELE`],
-/// which no reader of popnei gives.
+/// genotypes of that ploidy, for a variant of more alleles than a count of
+/// them holds, and for an allele below [`MISSING_ALLELE`], which no reader
+/// of popnei gives.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "each count is raised by one at most once for each genotype of `gts`, and \
@@ -370,10 +371,17 @@ pub struct GtCounts {
 pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts> {
     // `checked_rem` gives `None` for a ploidy of 0, which is the other
     // thing refused here and what `chunks_exact` below would panic at.
-    if gts.len().checked_rem(ploidy) != Some(0) || u32::try_from(gts.len()).is_err() {
+    if gts.len().checked_rem(ploidy) != Some(0) {
         return Err(Error::GtsNotWholeGenotypes {
             num_alleles: gts.len(),
             ploidy,
+        });
+    }
+    // The counts are `u32`, so a variant of more alleles than one holds is
+    // refused instead of counted into a number that wrapped.
+    if u32::try_from(gts.len()).is_err() {
+        return Err(Error::MoreAllelesThanACountHolds {
+            num_alleles: gts.len(),
         });
     }
     let mut counts = GtCounts::default();
@@ -412,36 +420,40 @@ pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts> {
 /// [`MAX_ALLELE`], which [`count_alleles`] fills.
 pub type AlleleCounts = [u32; 128];
 
-/// It adds to `counts[a]` how often the allele a was called in the
-/// genotypes of one variant, and gives how many alleles it added, the
+/// It writes into `counts[a]` how often the allele a was called in the
+/// genotypes of one variant, and gives how many alleles it counted, the
 /// called alleles.
 ///
 /// An allele is counted wherever it was called, in a half called genotype
 /// too, which is what `_count_each_allele` of pyNei counts over a chunk.
-/// The caller clears `counts` between two variants and hands the same
-/// array over again, so that a pass over a block allocates nothing.
+/// `counts` is cleared here before the variant is counted, so what it
+/// holds afterwards is the counts of that variant and of no other: the
+/// caller hands the same array over for every variant, which is what keeps
+/// a pass over a block from allocating, and clears nothing itself. A
+/// caller that had to clear it and forgot would get two variants added
+/// together, and an entry already at the largest number a `u32` holds
+/// would wrap with nothing to show it.
 ///
 /// # Errors
 ///
-/// For an allele below [`MISSING_ALLELE`], which no reader of popnei
-/// gives.
+/// For a variant of more alleles than a count of them holds, and for an
+/// allele below [`MISSING_ALLELE`], which no reader of popnei gives.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "the called alleles and each entry of `counts` are raised by one at most \
-              once for each allele of `gts`, which were checked above to be a number a \
-              u32 holds, and the caller clears `counts` between two variants"
+    reason = "the called alleles and each entry of `counts` start at 0 and are raised by \
+              one at most once for each allele of `gts`, which were checked above to be \
+              a number a u32 holds"
 )]
 pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
     // The counts of one variant are u32, so a variant of more alleles
     // than a u32 holds is refused instead of counted into a number that
-    // wrapped. The counts of the alleles read one allele at a time, which
-    // is the ploidy the error names.
+    // wrapped.
     if u32::try_from(gts.len()).is_err() {
-        return Err(Error::GtsNotWholeGenotypes {
+        return Err(Error::MoreAllelesThanACountHolds {
             num_alleles: gts.len(),
-            ploidy: 1,
         });
     }
+    counts.fill(0);
     let mut called_alleles = 0_u32;
     for &allele in gts {
         if allele == MISSING_ALLELE {
@@ -635,24 +647,41 @@ mod tests {
         );
     }
 
-    /// The counts are the caller's array, and what the function adds to it
-    /// is one variant: a caller that reads a second variant into the same
-    /// array without clearing it gets the two of them together.
+    /// The counts are the caller's array, handed over for one variant
+    /// after another, and the function clears it before it counts: what it
+    /// leaves is the counts of the variant it was given, whatever the
+    /// array held, so a caller never adds two variants together and no
+    /// entry of it can wrap.
     #[test]
-    fn count_alleles_adds_to_the_counts_it_is_given() {
+    fn count_alleles_clears_the_counts_it_is_given() {
         let mut counts: AlleleCounts = [0; 128];
         assert_eq!(count_alleles(&THE_SIX_VARIANTS[0], &mut counts).unwrap(), 9);
+        assert_eq!(counts[0], 8);
+        assert_eq!(counts[1], 1);
+
+        // The same array again, with the counts of the first variant in
+        // it: the second variant has 8 zeros and 2 ones of its own.
         assert_eq!(
             count_alleles(&THE_SIX_VARIANTS[4], &mut counts).unwrap(),
             10
         );
-        assert_eq!(counts[0], 16);
-        assert_eq!(counts[1], 3);
+        assert_eq!(counts[0], 8);
+        assert_eq!(counts[1], 2);
         assert_eq!(counts[2], 0);
 
-        counts = [0; 128];
+        // An entry at the largest number a count holds is cleared like any
+        // other, where adding to it would wrap.
+        counts[0] = u32::MAX;
+        counts[3] = 7;
+        assert_eq!(count_alleles(&THE_SIX_VARIANTS[2], &mut counts).unwrap(), 8);
+        assert_eq!(counts[0], 2);
+        assert_eq!(counts[3], 2);
+
+        // A variant of no allele leaves the array empty and not what was
+        // in it.
         assert_eq!(count_alleles(&[], &mut counts).unwrap(), 0);
         assert_eq!(counts[0], 0);
+        assert_eq!(counts[3], 0);
     }
 
     #[test]

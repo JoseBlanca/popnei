@@ -603,7 +603,15 @@ impl Block {
     /// times the ploidy, or the error of a block that cannot be. They are
     /// alleles and not genotypes: a genotype is the `ploidy` alleles of one
     /// individual, as `docs/glossary.md` has it.
-    fn alleles_per_var(&self) -> Result<usize> {
+    ///
+    /// The `filters` module reads it to cut the genotypes into rows, so it
+    /// is not private to this module.
+    ///
+    /// # Errors
+    ///
+    /// When the individuals times the ploidy are more than this machine
+    /// addresses.
+    pub(crate) fn alleles_per_var(&self) -> Result<usize> {
         self.num_individuals
             .checked_mul(self.ploidy)
             .ok_or(Error::BlockTooLarge {

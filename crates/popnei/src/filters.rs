@@ -8,8 +8,7 @@
 //! pass over the source, which keeps the variants of a block that pass and
 //! counts what it was given and kept. The counts are the [`FilteringStats`]
 //! that every reader gives for the filters between it and its source,
-//! through
-//! [`BlockReader::filtering_stats`](crate::block::BlockReader::filtering_stats).
+//! through [`BlockReader::filtering_stats`].
 //!
 //! A filter of a pass over the variants is a reader over another reader,
 //! [`FilteredReader`], and several filters are several of them, one over
@@ -20,7 +19,7 @@
 
 use std::fmt;
 
-use crate::block::{Block, BlockReader, BlockSize};
+use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
 use crate::variant::{AlleleCounts, ChromTable, Needs, count_alleles, count_gts};
 
@@ -82,8 +81,13 @@ impl VarFilteringCriterion {
         }
     }
 
-    /// The largest value of the number of a variant that keeps it.
-    pub(crate) fn threshold(&self) -> f64 {
+    /// The largest value of the number of a variant that keeps it,
+    /// whichever of the three numbers this criterion compares.
+    ///
+    /// A binding crate reads it for the arguments of the step it shows the
+    /// user, `{"max_allowed_maf": 0.95}`.
+    #[must_use]
+    pub fn threshold(&self) -> f64 {
         match self {
             VarFilteringCriterion::MaxMissingRate(threshold)
             | VarFilteringCriterion::MaxMaf(threshold)
@@ -146,10 +150,16 @@ impl VarFilter {
     /// # Errors
     ///
     /// When the arrays of the block are not of the size the block states,
-    /// which [`Block::check`] finds, and when the block has variants and no
-    /// genotypes, which is the error of a field that is not in the block.
-    /// After either the block is as it was and nothing was added to the
-    /// counts.
+    /// which [`Block::check`] finds; when the block has variants and no
+    /// genotypes, which is the error of a field that is not in the block,
+    /// and which a block of no individual or of the ploidy 0 gives too,
+    /// since it holds no genotype; when a block of the individuals and the
+    /// ploidy it states is more memory than this machine addresses; and
+    /// what the counts of one variant refuse, a row that is not a whole
+    /// number of genotypes of the ploidy, a variant of more alleles than a
+    /// count of them holds, and an allele below
+    /// [`MISSING_ALLELE`](crate::variant::MISSING_ALLELE). After any of
+    /// them the block is as it was and nothing was added to the counts.
     pub fn filter_block(&mut self, block: &mut Block) -> Result<()> {
         // The rows are cut out of the genotypes by the sizes the block
         // states, so those sizes are checked before anything is read.
@@ -161,23 +171,11 @@ impl VarFilter {
         if block.gts.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
         }
-        let alleles_per_var = block
-            .num_individuals
-            .checked_mul(block.ploidy)
-            .ok_or(Error::BlockTooLarge {
-                num_vars_per_block: block.num_vars,
-                num_individuals: block.num_individuals,
-                ploidy: block.ploidy,
-                // The block is here, so its size is one that a reader was
-                // given and took: what a caller does about it is ask for
-                // fewer variants.
-                size: BlockSize::AskedFor,
-            })?
-            // `check` passed and the genotypes are not empty, so they are
-            // the variants of the block times this number and it is one
-            // allele at least; the rows are cut by it, and a cut of 0 is
-            // what the standard library refuses with a panic.
-            .max(1);
+        // `check` passed and the genotypes are not empty, so they are the
+        // variants of the block times this number and it is one allele at
+        // least: the rows are cut by it, and a cut of 0 is what the
+        // standard library refuses with a panic.
+        let alleles_per_var = block.alleles_per_var()?.max(1);
         let keep = keep_of_the_rows(
             self.criterion,
             &block.gts,
@@ -187,6 +185,9 @@ impl VarFilter {
         )?;
         let kept = keep.iter().filter(|keep_it| **keep_it).count();
         block.retain_vars(&keep)?;
+        // A `usize` is 64 bits on the targets popnei builds natively for
+        // and 32 in wasm, so every one of them is a `u64` and neither
+        // conversion takes the value it saturates at.
         self.stats.vars_processed = self
             .stats
             .vars_processed
@@ -235,11 +236,22 @@ pub struct FilteredReader<R: BlockReader> {
 impl<R: BlockReader> FilteredReader<R> {
     /// The reader that gives the variants of `reader` that pass `filter`.
     ///
+    /// Building the chain asks `reader` for nothing: the consumer of the
+    /// pass calls [`BlockReader::set_needs`] on the outermost reader of the
+    /// chain, once it is built, and every filter of it adds the genotypes
+    /// to what it passes on. A source that was narrowed to fields without
+    /// the genotypes before it was wrapped, and that nobody asks again,
+    /// gives blocks with no genotypes, and the filter fails at the first of
+    /// them with the error of a field that is not in the block.
+    ///
     /// # Errors
     ///
     /// When `reader` holds a filter of the kind of `filter` already, which
     /// its [`BlockReader::filtering_stats`] says: two threshold filters of
     /// one kind keep the variants that the stricter of the two keeps alone.
+    /// The error carries the threshold of `filter`, and no threshold of the
+    /// filter that is set: a chain says which kinds it holds and not with
+    /// which thresholds.
     pub fn new(reader: R, filter: VarFilter) -> Result<FilteredReader<R>> {
         let criterion = filter.criterion();
         let kind = criterion.kind();
@@ -251,6 +263,7 @@ impl<R: BlockReader> FilteredReader<R> {
             return Err(Error::VarFilterOfAKindThatIsSet {
                 kind,
                 threshold: criterion.threshold(),
+                threshold_that_is_set: None,
             });
         }
         Ok(FilteredReader {
@@ -268,10 +281,12 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
     /// # Errors
     ///
     /// When the source fails; when a block of the source holds no variant,
-    /// which no reader of popnei gives; and what the filter refuses, a
-    /// block whose arrays are not of its size and a block that has variants
-    /// and no genotypes. After any of them there is no block and the source
-    /// is not called again.
+    /// which no reader of popnei gives; and everything the filter refuses,
+    /// which the `# Errors` of [`VarFilter::filter_block`] lists: a block
+    /// whose arrays are not of its size, a block that has variants and no
+    /// genotypes, a block of more memory than this machine addresses, and
+    /// what the counts of one variant refuse. After any of them there is no
+    /// block and the source is not called again.
     fn next_block(&mut self) -> Result<Option<Block>> {
         if self.finished {
             return Ok(None);
@@ -362,11 +377,20 @@ impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
 /// `gts` holds the rows of the block, `alleles_per_var` alleles each, and
 /// `alleles_per_var` is 1 or more.
 ///
+/// Each thread counts the alleles into one array of its own, which it hands
+/// to the counts for one row after another, so a block of a million
+/// variants clears 128 numbers per variant and allocates nothing.
+///
 /// # Errors
 ///
 /// What the counts of one variant refuse: a ploidy of 0, genotypes that are
-/// not a whole number of genotypes of the ploidy, and an allele below the
-/// missing one.
+/// not a whole number of genotypes of the ploidy, a variant of more alleles
+/// than a count of them holds, and an allele below the missing one. The
+/// error is the one of the first row that has one, wherever the threads
+/// found it: which of two bad rows a thread reaches first depends on how
+/// the rows were shared out, and a user who reports a damaged file has to
+/// get the same message every time, so the rows are read again, one after
+/// another, to find the first.
 #[cfg(not(target_family = "wasm"))]
 fn keep_of_the_rows(
     criterion: VarFilteringCriterion,
@@ -378,9 +402,31 @@ fn keep_of_the_rows(
     use rayon::iter::ParallelIterator;
     use rayon::slice::ParallelSlice;
 
-    gts.par_chunks_exact(alleles_per_var)
-        .map(|row| keeps(criterion, row, num_individuals, ploidy))
-        .collect()
+    let keep: Result<Vec<bool>> = gts
+        .par_chunks_exact(alleles_per_var)
+        .map_init(
+            || [0_u32; 128],
+            |counts, row| keeps(criterion, row, num_individuals, ploidy, counts),
+        )
+        .collect();
+    match keep {
+        Ok(keep) => Ok(keep),
+        // The second pass costs a read of the block, and it is made only
+        // where the block is refused and no variant of it is given.
+        Err(of_a_thread) => match keep_of_the_rows_one_by_one(
+            criterion,
+            gts,
+            alleles_per_var,
+            num_individuals,
+            ploidy,
+        ) {
+            Err(of_the_first_row) => Err(of_the_first_row),
+            // The rows are the same rows, so the second pass finds an
+            // error too; the error of the threads is what is left if it
+            // ever did not.
+            Ok(_) => Err(of_a_thread),
+        },
+    }
 }
 
 /// The same values, with the rows read one after another, which is what
@@ -396,17 +442,10 @@ fn keep_of_the_rows(
     keep_of_the_rows_one_by_one(criterion, gts, alleles_per_var, num_individuals, ploidy)
 }
 
-/// The rows read one after another, which is what wasm does and what the
-/// test that compares the two ways of reading them calls.
-#[cfg_attr(
-    all(not(target_family = "wasm"), not(test)),
-    expect(
-        dead_code,
-        reason = "in wasm it is how the rows of a block are read, and natively it is what \
-                  the test that compares the two ways of reading them calls; outside the \
-                  tests and outside wasm nothing calls it"
-    )
-)]
+/// The rows read one after another, into one array of allele counts that
+/// every row is counted into: what wasm does, what the test that compares
+/// the two ways of reading them calls, and what the threads fall back on to
+/// find the first row that is an error.
 fn keep_of_the_rows_one_by_one(
     criterion: VarFilteringCriterion,
     gts: &[i8],
@@ -414,8 +453,9 @@ fn keep_of_the_rows_one_by_one(
     num_individuals: usize,
     ploidy: usize,
 ) -> Result<Vec<bool>> {
+    let mut counts: AlleleCounts = [0; 128];
     gts.chunks_exact(alleles_per_var)
-        .map(|row| keeps(criterion, row, num_individuals, ploidy))
+        .map(|row| keeps(criterion, row, num_individuals, ploidy, &mut counts))
         .collect()
 }
 
@@ -423,9 +463,14 @@ fn keep_of_the_rows_one_by_one(
 ///
 /// `gts` is one row of the genotypes of a block, the alleles of one
 /// individual after those of the individual before it, `ploidy` alleles
-/// each, and `num_individuals` is the individuals of the dataset. A variant
-/// that has no number, one with no called allele or no called genotype, is
-/// not kept, which the comparison of a NaN gives too.
+/// each, and `num_individuals` is the individuals of the dataset, one at
+/// least. A variant that has no number, one with no called allele or no
+/// called genotype, is not kept, which the comparison of a NaN gives too.
+///
+/// `counts` is the array the counts of the alleles are read into, which
+/// they clear themselves: the caller hands the same one over for every row
+/// it reads, and the major allele frequency is the only criterion that
+/// looks at it.
 ///
 /// The number is one division of the two counts as `f64` and is compared
 /// with `<=`, as in pyNei, and not against a product of the threshold and
@@ -437,18 +482,18 @@ fn keeps(
     gts: &[i8],
     num_individuals: usize,
     ploidy: usize,
+    counts: &mut AlleleCounts,
 ) -> Result<bool> {
     let number = match criterion {
         VarFilteringCriterion::MaxMissingRate(_) => {
-            let counts = count_gts(gts, ploidy)?;
+            let gt_counts = count_gts(gts, ploidy)?;
             // The individuals of the dataset, and not the ones called at
-            // this variant. A variant of no individual gives 0/0, a NaN,
-            // and is not kept.
-            f64::from(counts.missing) / num_individuals as f64
+            // this variant. A block of no individual holds no genotype and
+            // never reaches this, so the divisor is 1 at least.
+            f64::from(gt_counts.missing) / num_individuals as f64
         }
         VarFilteringCriterion::MaxMaf(_) => {
-            let mut counts: AlleleCounts = [0; 128];
-            let called_alleles = count_alleles(gts, &mut counts)?;
+            let called_alleles = count_alleles(gts, counts)?;
             if called_alleles == 0 {
                 return Ok(false);
             }
@@ -456,11 +501,11 @@ fn keeps(
             f64::from(largest) / f64::from(called_alleles)
         }
         VarFilteringCriterion::MaxObsHet(_) => {
-            let counts = count_gts(gts, ploidy)?;
-            if counts.called == 0 {
+            let gt_counts = count_gts(gts, ploidy)?;
+            if gt_counts.called == 0 {
                 return Ok(false);
             }
-            f64::from(counts.het) / f64::from(counts.called)
+            f64::from(gt_counts.het) / f64::from(gt_counts.called)
         }
     };
     Ok(number <= criterion.threshold())
@@ -731,7 +776,10 @@ mod tests {
 
     /// A filter always needs the genotypes, so a block that has variants
     /// and no genotypes is the error of a field that is not in the block,
-    /// which names `gts`.
+    /// which names `gts`. A block of no individual, or of the ploidy 0,
+    /// holds no genotype and gives that error too: it is what such a block
+    /// lacks, and no source of popnei has fewer than one individual of one
+    /// allele.
     #[test]
     fn a_block_with_variants_and_no_genotypes_is_the_error_of_a_field_that_is_not_there() {
         let mut block = the_worked_example();
@@ -746,6 +794,63 @@ mod tests {
         assert_eq!(filter.stats(), FilteringStats::default());
         assert_eq!(block.num_vars, 6);
         assert_eq!(positions_of(&block), [1, 2, 3, 4, 5, 6]);
+
+        // Two variants of no individual, and two of five individuals of
+        // the ploidy 0: `check` takes both, since their genotypes are 0
+        // alleles, and the filter answers that the genotypes are not there.
+        for (num_individuals, ploidy) in [(0, 2), (5, 0)] {
+            let empty: [i8; 0] = [];
+            let mut block = block_of(&[(1, &empty), (2, &empty)], num_individuals, ploidy);
+            assert!(block.check().is_ok(), "{num_individuals} x {ploidy}");
+            let mut filter = VarFilter::new(MaxMissingRate(1.0)).unwrap();
+            let error = filter.filter_block(&mut block).unwrap_err();
+            assert!(
+                matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::GTS),
+                "{num_individuals} x {ploidy}: {error}"
+            );
+            assert_eq!(block.num_vars, 2);
+            assert_eq!(filter.stats(), FilteringStats::default());
+        }
+    }
+
+    /// A block whose rows are two errors gives the error of the first of
+    /// them, however the threads shared the rows out: a user who reports a
+    /// damaged file has to get the same message every time they read it.
+    ///
+    /// The rows 3 and 390 of the block each hold an allele below the
+    /// missing one, -2 and -9, and the error names -2 at every run. The
+    /// rows are shared out anew at every read, so which of the two a thread
+    /// reaches first changes from one read to the next.
+    #[test]
+    fn the_error_of_a_block_is_the_one_of_its_first_row_that_has_one() {
+        let of_the_block = || {
+            let mut rows: Vec<(u64, Vec<i8>)> = (1..=400)
+                .map(|position| (position, vec![0_i8; 10]))
+                .collect();
+            rows[3].1[4] = -2;
+            rows[390].1[7] = -9;
+            let variants: Vec<(u64, &[i8])> = rows
+                .iter()
+                .map(|(position, gts)| (*position, gts.as_slice()))
+                .collect();
+            block_of(&variants, 5, 2)
+        };
+        for run in 1..=20 {
+            // The major allele frequency reads the alleles one at a time
+            // and the missing rate reads them as genotypes: both refuse an
+            // allele below the missing one, and each has its own pass.
+            for criterion in [MaxMaf(1.0), MaxMissingRate(1.0)] {
+                let mut block = of_the_block();
+                let error = VarFilter::new(criterion)
+                    .unwrap()
+                    .filter_block(&mut block)
+                    .unwrap_err();
+                assert!(
+                    matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+                    "run {run}, {criterion:?}: {error}"
+                );
+            }
+        }
     }
 
     /// A block of no variants is left as it is and adds nothing to the
@@ -947,6 +1052,36 @@ mod tests {
             .collect()
     }
 
+    /// The name that `tests/reference/filters/make_reference.py` gives the
+    /// file of one filter, its kind and its threshold: `maf_0.5`,
+    /// `missing_data_0`.
+    fn name_of(criterion: VarFilteringCriterion) -> String {
+        format!(
+            "{kind}_{threshold}",
+            kind = criterion.kind(),
+            threshold = criterion.threshold()
+        )
+    }
+
+    /// The positions that bcftools 1.24 keeps of `many.vcf` with those
+    /// filters, one per line in the file of that name under
+    /// `tests/reference/filters/`, which task 3.1 of the plan stored.
+    fn positions_of_the_reference(name: &str) -> Vec<u64> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/filters")
+            .join(format!("{name}.txt"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                line.parse()
+                    .unwrap_or_else(|error| panic!("{name}: `{line}` is not a position: {error}"))
+            })
+            .collect()
+    }
+
     /// The two counts of one filter.
     fn pair(vars_processed: u64, vars_kept: u64) -> FilteringStats {
         FilteringStats {
@@ -987,6 +1122,13 @@ mod tests {
                 let (positions, stats) = kept_of_many_vcf(criterion, num_vars_per_block);
                 let what = format!("{criterion:?} in blocks of {num_vars_per_block:?}");
                 assert_eq!(positions.len(), kept, "{what}");
+                // Every position, and not the count and the first five
+                // alone: the file holds the ones bcftools 1.24 keeps.
+                assert_eq!(
+                    positions,
+                    positions_of_the_reference(&name_of(criterion)),
+                    "{what}"
+                );
                 assert_eq!(
                     stats,
                     vec![(
@@ -1023,6 +1165,11 @@ mod tests {
             let what = format!("in blocks of {num_vars_per_block:?}");
             assert_eq!(positions.len(), 106, "{what}");
             assert_eq!(positions[..3], [1111, 1407, 1518], "{what}");
+            assert_eq!(
+                positions,
+                positions_of_the_reference("missing_data_0.04+maf_0.8+obs_het_0.5"),
+                "{what}"
+            );
             // The counts of the chain, the outermost filter first.
             assert_eq!(
                 obs_het.filtering_stats(),
@@ -1034,6 +1181,23 @@ mod tests {
                 "{what}"
             );
         }
+
+        // The two filters of the chain without the third keep the 163
+        // variants of the file of those two.
+        let reader = many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS);
+        let missing_data =
+            FilteredReader::new(reader, VarFilter::new(MaxMissingRate(0.04)).unwrap()).unwrap();
+        let mut maf =
+            FilteredReader::new(missing_data, VarFilter::new(MaxMaf(0.8)).unwrap()).unwrap();
+        let blocks = blocks_of(&mut maf).expect("the blocks");
+        assert_eq!(
+            positions_of_blocks(&blocks),
+            positions_of_the_reference("missing_data_0.04+maf_0.8")
+        );
+        assert_eq!(
+            maf.filtering_stats(),
+            vec![("maf", pair(215, 163)), ("missing_data", pair(500, 215))]
+        );
     }
 
     /// Two threshold filters of one kind keep the variants that the
@@ -1087,6 +1251,36 @@ mod tests {
             assert!(block.alleles.is_none());
             assert!(block.qual.is_none());
         }
+    }
+
+    /// Building the chain asks the source for nothing, so the consumer of
+    /// a pass sets the fields it wants on the outermost reader once the
+    /// chain is built: every filter passes them on with the genotypes
+    /// added. A source that was narrowed to fields without the genotypes
+    /// before it was wrapped, and that nobody asks again, gives blocks with
+    /// no genotypes, and the filter fails at the first of them.
+    #[test]
+    fn the_consumer_sets_the_fields_on_the_outermost_reader_once_the_chain_is_built() {
+        // The source was asked for the positions alone before it was
+        // wrapped, and the chain is not asked for anything.
+        let narrowed = many_vcf_reader(Some(7), Needs::CHROM_POS);
+        let mut filtered =
+            FilteredReader::new(narrowed, VarFilter::new(MaxMaf(0.5)).unwrap()).unwrap();
+        let error = filtered.next_block().unwrap_err();
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::GTS),
+            "{error}"
+        );
+
+        // The same source, with the fields set on the outermost reader
+        // after the chain was built: the blocks hold the genotypes and the
+        // variants are the 35 of the maf filter at 0.5.
+        let narrowed = many_vcf_reader(Some(7), Needs::CHROM_POS);
+        let mut filtered =
+            FilteredReader::new(narrowed, VarFilter::new(MaxMaf(0.5)).unwrap()).unwrap();
+        filtered.set_needs(Needs::CHROM_POS);
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+        assert_eq!(positions_of_blocks(&blocks).len(), 35);
     }
 
     /// The rows of a block are read on the threads of the pool the caller
@@ -1316,11 +1510,14 @@ mod tests {
     }
 
     /// A reader over a reader has no individuals, no ploidy and no table of
-    /// chromosome names of its own, and it asks its source for the fields
-    /// of the consumer and the genotypes.
+    /// chromosome names of its own: it gives those of its source, whose
+    /// ploidy here is 4 and not the 2 of the blocks of the other tests.
     #[test]
     fn the_individuals_the_ploidy_and_the_chromosomes_are_those_of_the_source() {
-        let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 4])]);
+        let source = GivenBlocks {
+            ploidy: 4,
+            ..GivenBlocks::of(Vec::new())
+        };
         let filtered =
             FilteredReader::new(source, VarFilter::new(MaxObsHet(1.0)).unwrap()).unwrap();
 
@@ -1329,7 +1526,7 @@ mod tests {
             filtered.individuals().first().map(String::as_str),
             Some("ind1")
         );
-        assert_eq!(filtered.ploidy(), 2);
+        assert_eq!(filtered.ploidy(), 4);
         assert_eq!(filtered.chroms().name(0), Some("chr1"));
         assert_eq!(filtered.filtering_stats(), vec![("obs_het", pair(0, 0))]);
     }
