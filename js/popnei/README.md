@@ -247,9 +247,10 @@ try {
     console.log(block.numVars, block.chrom, block.pos);
   }
   // How many variants the pass gave, and what each filter of the variants
-  // was given and kept: {numVars: 4, filtering: {}} for these four
-  // variants and no filter. Read inside the loop, it is of the blocks that
-  // have come out so far.
+  // was given and kept: {numVars: 3, filtering: {}} for the three variants
+  // of cases.vcf that passed their FILTER, with no filter of popnei on
+  // them. Read inside the loop, it is of the blocks that have come out so
+  // far.
   console.log(blocks.passStats, variants.steps);
 } finally {
   variants.free();

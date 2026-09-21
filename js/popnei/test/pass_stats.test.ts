@@ -20,6 +20,8 @@ import { test } from "node:test";
 import type { Block, Variants } from "popnei";
 import { init, openVars, openVcf, writeVars } from "popnei";
 
+import type { PassCounts } from "../wasm/popnei.js";
+import { passStatsOf } from "../dist/variant.js";
 import { referenceVcf, vcfOf } from "./reference.ts";
 
 await init();
@@ -42,6 +44,13 @@ const VARS_OF_THE_BLOCKS_READ = 21;
  * blocks a user got and not of what the reader took from the file.
  */
 const VARS_NUM_VARS_PER_BLOCK = 100;
+
+/**
+ * The first position a number of JavaScript does not hold, 2^53 + 1, which
+ * the binding crate refuses once per block: it is how a pass fails at an
+ * error of its own and not at one of its reader.
+ */
+const POSITION_ABOVE_THE_LARGEST = "9007199254740993";
 
 /** The bytes of `many.vcf`, read once for the whole file. */
 const MANY_VCF = await referenceVcf("many.vcf");
@@ -228,6 +237,88 @@ test("the block a pass lost with an error is not among its variants", () => {
   assert.deepEqual(given, [1, 1, 1]);
   assert.deepEqual(blocks.passStats, { numVars: 3, filtering: {} });
   variants.free();
+});
+
+test("the block a pass lost with an error of its own is not among its variants", () => {
+  // Three variants read in blocks of one, and a fourth at a position that
+  // a number of JavaScript does not hold, 2^53 + 1, which the pass itself
+  // refuses after the reader gave it the block. That block never reached
+  // the user either, so it is not in the count.
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+      `chr1\t${POSITION_ABOVE_THE_LARGEST}\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1`,
+    ]),
+  );
+  const blocks = variants.iterBlocks({ numVarsPerBlock: 1 });
+
+  const given: number[] = [];
+  assert.throws(
+    () => {
+      for (const block of blocks) {
+        given.push(block.numVars);
+      }
+    },
+    { name: "Error", message: new RegExp(POSITION_ABOVE_THE_LARGEST) },
+  );
+
+  assert.deepEqual(given, [1, 1, 1]);
+  assert.deepEqual(blocks.passStats, { numVars: 3, filtering: {} });
+  variants.free();
+});
+
+test("the counts of a pass are read after a break left the iteration", () => {
+  // A pass left with a `break` frees its memory of wasm in the `finally`
+  // of its generator, and the counts of the blocks the user got are read
+  // after that.
+  const variants = openVcf(MANY_VCF, { onlyPassed: false });
+  const blocks = variants.iterBlocks({ numVarsPerBlock: NUM_VARS_PER_BLOCK });
+
+  let taken = 0;
+  for (const block of blocks) {
+    taken += block.numVars;
+    if (taken === VARS_OF_THE_BLOCKS_READ) {
+      break;
+    }
+  }
+
+  assert.equal(taken, VARS_OF_THE_BLOCKS_READ);
+  assert.deepEqual(blocks.passStats, {
+    numVars: VARS_OF_THE_BLOCKS_READ,
+    filtering: {},
+  });
+  variants.free();
+});
+
+test("the counts of the filters come in the order of the steps", () => {
+  // The chain of readers gives the outermost filter first, and a user reads
+  // the filters in the order in which they were put on the `Variants`. The
+  // numbers are those of `docs/specs/filters.md`, the missing data filter
+  // at 0.04 and the maf filter at 0.8 on `many.vcf`: 500 variants given
+  // and 215 kept, and then 215 given and 163 kept. The chain has the maf
+  // filter first, because it is the outermost.
+  const ofTheChain = {
+    num_vars: () => 163,
+    kinds: () => ["maf", "missing_data"],
+    vars_processed: () => Float64Array.from([215, 500]),
+    vars_kept: () => Float64Array.from([163, 215]),
+    free: () => undefined,
+  } as unknown as PassCounts;
+
+  const stats = passStatsOf(ofTheChain);
+
+  assert.deepEqual(Object.keys(stats.filtering), ["missing_data", "maf"]);
+  assert.deepEqual(stats.filtering["missing_data"], {
+    varsProcessed: 500,
+    varsKept: 215,
+  });
+  assert.deepEqual(stats.filtering["maf"], {
+    varsProcessed: 215,
+    varsKept: 163,
+  });
+  assert.equal(stats.numVars, 163);
 });
 
 test("the counts of a pass and the steps of a Variants are objects of TypeScript", () => {

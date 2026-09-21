@@ -48,6 +48,10 @@ export interface Step {
   /**
    * What the step was given, under the names of the arguments of the method
    * that added it, `{maxAllowedMaf: 0.95}`.
+   *
+   * The values are what the argument of that method takes, so that the
+   * steps of the later filters, which take other arguments than a
+   * threshold, fit in it. The three that are being written take a number.
    */
-  args: Record<string, number>;
+  args: Record<string, unknown>;
 }

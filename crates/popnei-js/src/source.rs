@@ -99,8 +99,10 @@ pub(crate) fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
 ///
 /// The steps are taken as they are here, when the pass starts: one added
 /// while it runs holds from the next pass, as `docs/specs/filters.md` says.
-/// `None` is a pass with no step, which is the source alone, and it is what
-/// a caller that holds no `Steps` gets.
+/// A pass with no step reads the source as it is, and it is asked for with
+/// an empty `Steps` and not by leaving the argument out: a caller that could
+/// omit it would read the variants of a filtered `Variants` unfiltered and
+/// say nothing.
 ///
 /// # Errors
 ///
@@ -111,10 +113,9 @@ pub(crate) fn blocks_of(
     source: &dyn OpenSource,
     fields: Vec<String>,
     num_vars_per_block: Option<usize>,
-    steps: Option<Steps>,
+    steps: Steps,
 ) -> Result<Blocks, JsPopneiError> {
     let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
-    let steps = steps.unwrap_or_default();
     // The source is asked for the size the user wants, so a reader that can
     // give it has nothing for the `Reblock` over it to cut or to join and
     // every block goes through with no copy. That `Reblock` is there for the
@@ -150,9 +151,8 @@ pub(crate) fn blocks_of(
 pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
-    steps: Option<Steps>,
+    steps: Steps,
 ) -> Result<VarsWritten, JsPopneiError> {
-    let steps = steps.unwrap_or_default();
     // The source is read at the size of its own blocks: the core puts a
     // `reblock` of `num_vars_per_block` over whatever it is given, so the
     // batches of the file hold that many variants whichever source they
@@ -205,10 +205,11 @@ impl VarsWritten {
 ///
 /// The filters come in the order of the chain, the outermost first, which is
 /// the reverse of the order of the steps: the package turns them around, as
-/// "How it runs" of the counts of `docs/specs/filters.md` says. Each of the
-/// four numbers crosses as a number of JavaScript, a float64, which holds
-/// every whole number up to 2^53: a pass of wasm counts the variants of a
-/// file that is in the memory of the tab, which addresses 2^32 bytes.
+/// "How it runs" of the counts of `docs/specs/filters.md` says. Every count,
+/// the one of the pass and the two of each filter, crosses as a number of
+/// JavaScript, a float64, which holds every whole number up to 2^53: a pass
+/// of wasm counts the variants of a file that is in the memory of the tab,
+/// which addresses 2^32 bytes.
 #[wasm_bindgen]
 #[derive(Clone)]
 pub struct PassCounts {
@@ -366,16 +367,7 @@ impl Blocks {
             Some((texts, counts)) => (Some(texts), Some(counts)),
             None => (None, None),
         };
-        // The variants of a block that is going out are counted here, where
-        // the block is the user's: a block that was lost with an error never
-        // reached them and is in the count of no filter of theirs either. A
-        // variant is a row of a file, and a file that wasm holds is at most
-        // the 2^32 bytes its memory addresses, so the sum cannot reach the
-        // end of this count.
-        self.num_vars = self
-            .num_vars
-            .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
-        Ok(Some(BlockColumns {
+        let columns = BlockColumns {
             num_vars,
             num_individuals,
             ploidy,
@@ -386,7 +378,20 @@ impl Blocks {
             alleles,
             num_alleles_per_var,
             qual,
-        }))
+        };
+        // The variants of a block that is going out are counted here, after
+        // every column of it crossed, where the block is the user's: a block
+        // that was lost with an error of the pass itself, a position above
+        // the largest a number of JavaScript holds, never reached them. A
+        // variant is a row of a file, so a pass of the 18446744073709551615
+        // variants this count holds is more rows than any file system
+        // takes: the sum cannot reach its end. The conversion cannot fail
+        // either: a `usize` is 32 bits in wasm and 64 natively, and both fit
+        // in a `u64`.
+        self.num_vars = self
+            .num_vars
+            .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+        Ok(Some(columns))
     }
 }
 

@@ -57,7 +57,7 @@ impl VcfSource {
         &self,
         fields: Vec<String>,
         num_vars_per_block: Option<usize>,
-        steps: Option<Steps>,
+        steps: Steps,
     ) -> Result<Blocks, JsPopneiError> {
         blocks_of(self, fields, num_vars_per_block, steps)
     }
@@ -74,7 +74,7 @@ impl VcfSource {
     pub fn write_vars(
         &self,
         num_vars_per_block: Option<usize>,
-        steps: Option<Steps>,
+        steps: Steps,
     ) -> Result<VarsWritten, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
     }
