@@ -439,6 +439,13 @@ values inside a list a field of their own that can hold nulls, as "What it
 holds" says, and no value popnei writes is one. A null `id` is the empty id
 and a null `qual` is no quality.
 
+That error is for a file whose schema says the column can hold nulls, which
+is what another program writes. popnei writes `chrom`, `pos`, `alleles` and
+`gts` as columns with no nulls, and arrow-rs refuses a batch of such a column
+that holds one before popnei sees it, so a null there is a batch that could
+not be read, with what arrow-rs said of it and no variant named: the variant
+of a batch that arrow-rs would not decode is not known.
+
 A `qual` that is a value and is not a finite number, a NaN or an infinity, is
 an error naming the column and the variant. NaN is what the column of a block
 holds for a variant with no quality, so a NaN in the file would be read as a
