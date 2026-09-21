@@ -234,10 +234,14 @@ the table has the names already, since the block came out of that reader.
 
 ### How it is verified
 
-The reference outside the project is pyarrow 23.0.0, the implementation of the
-arrow format that Apache Arrow publishes, which opens what popnei wrote as any
-other program would, together with bcftools 1.24, whose account of what
-`many.vcf` holds is `many.bcftools.tsv` of `docs/specs/io_vcf.md`. A trial
+The reference outside the project is pyarrow, the implementation of the arrow
+format that Apache Arrow publishes, which opens what popnei wrote as any other
+program would, together with bcftools 1.24, whose account of what `many.vcf`
+holds is `many.bcftools.tsv` of `docs/specs/io_vcf.md`. pyarrow is a
+development dependency of popnei whose lowest version is 23, which the owner
+decided on 20 September 2026; the option not taken was a pin at 23.0.0. The
+tests run on the pyarrow of `uv.lock`, 25.0.1 on 20 September 2026. The trial
+that follows was run on 23.0.0, the pyarrow of pyNei's environment: a trial
 file in this format, written with arrow-rs 60, was opened with
 `pyarrow.ipc.open_file`, with `pyarrow.feather.read_table` and with pandas.
 The three gave its columns and its nulls. `open_file` gave both keys, the one
@@ -315,6 +319,14 @@ of every batch come from the two keys, so they are known as soon as the file
 is opened, before any batch is read. The chromosome names of the batches are
 interned into a `ChromTable` as they are read, so a number means the order of
 first appearance among the variants that were given, as in the VCF reader.
+
+A batch of no variants, whose entry of the footer says 0 too, is not given as
+a block: the reader takes the next batch, as a filter does with a block it
+emptied, because `docs/specs/block.md` says that a reader never gives a block
+of no variants. No writer of popnei makes such a batch and another arrow
+program can. The session that runs `docs/plans/vars-file.md` decided it on 21
+September 2026, with the owner asked and not yet answered; the option not
+taken is an error.
 
 Only the columns a consumer asks for are decompressed. A `Needs` becomes a
 list of column indices that arrow-rs skips the rest of: for a column left out
@@ -549,17 +561,55 @@ The values of the two keys are json, and which crate reads and writes it is
 the implementer's choice among those in pure Rust, since the core builds for
 wasm.
 
-The cases this module adds to the error of the crate: the source is not a vars
-file, with what was found; a format version whose first part is not 1, with
-the version; a column of another type, with the column and the two types; a
-`gts` width that does not match the `popnei` key, with both widths; a null
-where there can be none, with the column and the variant; a footer whose
-entries do not match the batches; a file compressed with zstd; a block whose
-columns differ from those of the first one written, with the field; a block
-that does not fit the writer, with what differs; a chromosome number with no
-name; and an error of
-the input or the output, which wraps `std::io::Error`. In Python all but the
-last are a `ValueError`, and the last an `OSError`.
+The cases this module adds to the error of the crate, with the exception each
+one is in Python. The owner gave the convention on 21 September 2026: a
+`ValueError` is a wrong input of a function, a `RuntimeError` a defect of
+popnei, and an `OSError` a file that cannot be read, that was cut short or
+that is corrupted.
+
+Nine are a `ValueError`, since a file whose content is not what a vars file
+holds is a wrong input like a wrong argument: the source is not a vars file,
+with what it lacks, which is the header of an arrow file, the `popnei` key of
+the schema, the json of its value, one of that key's four values or the
+`popnei_batches` key of the footer; a format version whose first part is not
+1, with the version found; a column of another type, with the column and the
+two types; a `gts` width that does not match the `popnei` key, with both
+widths; a null where there can be none, with the column and the variant; a
+footer whose entries are not as many as the batches, with both counts; a
+batch that holds another number of variants than its entry of the footer,
+with the batch and both counts; a file whose buffers are compressed with
+zstd; and two individuals of one name, with the name.
+
+Three are an `OSError`: an error of the input or the output, which wraps
+`std::io::Error`; a file that starts as an arrow file and was cut short, with
+what was being read when the bytes ran out; and a batch that arrow-rs could
+not decode or decompress, with the batch and what arrow-rs said. The last two
+are a file that was damaged after it was written, which the reader refuses
+instead of giving the variants it can still read.
+
+Three are a `RuntimeError`: a block that does not fit the writer, with the
+individuals and the ploidy of the writer and of the block; a block whose
+columns differ from those of the first one written, with the fields of both;
+and a chromosome number that the table given with the block has no name for.
+A user reaches none of the three by what they write, since `write_vars` asks
+its reader for every field and gives the writer the table of that reader.
+
+Three more cases that a call of this module gives are not its own. A path
+that already exists is refused by the binding crate before the core is
+called, and is a `ValueError`. A `num_vars_per_block` of 0 is the case of
+`docs/specs/block.md` that every reader taking a size gives, a `ValueError`
+too. A file that could not be opened, which `from_path` gives for a path that
+is not there and for a directory, is the case of `docs/specs/io_vcf.md` with
+the path and the `std::io::Error`, an `OSError` built with the number the
+system gave.
+
+In Python every error of a file names the file. The core does not have the
+path, since a writer is built over a sink and a reader over bytes, so it is
+the binding crate that puts it there, and where it puts it follows the
+exception. The message of a `ValueError` and of a `RuntimeError` starts with
+the path. An `OSError` carries it in `filename`, which is where a Python user
+of any library looks for it and which Python prints after the message of the
+exception, so putting it in the message too would say it twice.
 
 ## Speed
 
