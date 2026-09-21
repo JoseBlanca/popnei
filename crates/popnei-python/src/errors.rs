@@ -131,12 +131,12 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             source,
         } => os_error(
             source.raw_os_error(),
-            format!("the file could not be opened: {source}"),
+            format!("the file could not be opened: {}", what_went_wrong(&source)),
             path.or(Some(of_the_core)),
         ),
         popnei::Error::Io(source) => os_error(
             source.raw_os_error(),
-            format!("the file could not be read: {source}"),
+            format!("the file could not be read: {}", what_went_wrong(&source)),
             path,
         ),
         // A file that was cut short and one that is corrupted are errors of
@@ -169,6 +169,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. } => PyValueError::new_err(message),
         _ => PyValueError::new_err(of_the_file(message, path)),
+    }
+}
+
+/// What an error of the input says, without the number of the system that
+/// Rust writes at the end of it, `No such file or directory (os error 2)`.
+/// Python prints an `OSError` with that number before the message,
+/// `[Errno 2]`, and a user reads it once.
+fn what_went_wrong(source: &std::io::Error) -> String {
+    let said = source.to_string();
+    let Some(number) = source.raw_os_error() else {
+        return said;
+    };
+    match said.strip_suffix(&format!(" (os error {number})")) {
+        Some(without_the_number) => without_the_number.to_owned(),
+        None => said,
     }
 }
 

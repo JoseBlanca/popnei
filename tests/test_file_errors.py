@@ -73,6 +73,18 @@ def test_the_file_in_the_exception_is_the_one_that_was_given(tmp_path: Path) -> 
     assert refusal.value.filename == path
 
 
+def test_the_number_of_the_system_is_said_once(tmp_path: Path) -> None:
+    """Python prints an `OSError` with the number before the message,
+    `[Errno 2]`, and Rust writes it at the end of what the system said,
+    `No such file or directory (os error 2)`. A user reads it once."""
+    with pytest.raises(FileNotFoundError) as refusal:
+        open_vcf(tmp_path / "not_here.vcf")
+    message = str(refusal.value)
+    assert "os error" not in message, message
+    assert "No such file or directory" in message, message
+    assert refusal.value.errno == 2
+
+
 def test_the_message_of_a_wrong_data_line_starts_with_the_file(write_vcf) -> None:
     """The `x` in the POS column is a `ValueError`, a file whose content is
     not what a VCF holds, and the message names the file and then the line
