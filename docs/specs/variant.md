@@ -336,6 +336,17 @@ for and that the block does not hold, which a consumer gets with
 `asked_for.difference(block.fields())`, and its message names them: a
 consumer that depends on two fields reports both in one error.
 
+The two cases of the counts of one variant are a `RuntimeError` in Python,
+by the convention the owner gave on 21 September 2026, where a
+`RuntimeError` is a defect of popnei and a `ValueError` a wrong input of a
+function. The two counts have no function in Python or in TypeScript, so
+no user writes the ploidy or the genotypes they refuse: the ploidy is the
+one of the reader that built the block, the block of a reader of popnei
+holds a whole number of genotypes of it, and no reader gives an allele
+below the missing one, which is what the item above says. A user who gets
+one of the two reports it instead of looking at what they wrote. In
+TypeScript both are an `Error`, as every error of the core is.
+
 ## Open points
 
 None. What this spec decides follows from sections 1 and 2 of the
