@@ -472,7 +472,7 @@ with nothing else building on the machine.
 
 **Tasks.**
 
-- [ ] 4.1 The bench, with no harness, as `read_vcf` has none, the
+- [x] 4.1 The bench, with no harness, as `read_vcf` has none, the
   argument of `make_big_vcf.py`, and the measurement, as "What
   measurement there is" of the `performance-review` skill asks. It
   changes no code of the library. From "Speed" and "The compression".

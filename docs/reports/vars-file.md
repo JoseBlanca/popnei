@@ -576,3 +576,101 @@ wrote its tests after the code, and four of them could not fail; its
 numbers of memory were measured in a way it did not write down and did
 not reproduce. The prompt of a task that measures should ask for the
 procedure beside each number.
+
+## Work package 4: the speed
+
+Task 4.1, commit 04cc9d0; one subagent run of 140 thousand tokens and 9
+minutes. `crates/popnei/benches/vars_file.rs` times, with no harness, a
+pass over a vars file held in memory with the genotypes alone asked for,
+the same pass with every field, and the writing of the blocks of that
+file into memory. `make_big_vcf.py` takes the number of variants, and
+the VCF of 100000 variants it writes with none given is the one it
+wrote before, 403572954 bytes with the same sha256. No code of the
+library changed.
+
+### The measurement
+
+The file: `make_big_vcf.py panel.vcf 20000`, the panel of "The
+compression" of the spec, 1000 diploid individuals and 20000 variants,
+seed 42, 80692954 bytes, written as a vars file by `popnei.write_vars`
+with the default size of block: 16280410 bytes, four batches of 5000
+variants. The owner's Apple M5 Pro, 18 cores, 64 GB, macOS 27.0, rustc
+1.98.0, the bench profile, which is release with the overflow checks
+off; the file read once into memory; one thread; one pass that is not
+timed first, since the first pass of a process pays for the pages it
+touches, 2 to 10 ms; then `--runs 20` of each. The subagent ran it three
+times with the load at 1.15 to 1.57 and only VS Code and the session
+open, and the orchestrator once, with the load at 1.29. The best and
+the median, in ms:
+
+| | the genotypes alone | every field | the write |
+|---|---|---|---|
+| 1 | 20.17, 20.45 | 21.08, 21.45 | 39.31, 39.48 |
+| 2 | 20.26, 21.21 | 21.00, 21.20 | 39.01, 39.37 |
+| 3 | 20.17, 20.39 | 20.99, 21.14 | 38.92, 39.26 |
+| the orchestrator | 20.32, 20.57 | 21.10, 21.28 | 39.06, 39.54 |
+
+The number of "Speed" of the spec, 21 ms for the pass with the
+genotypes alone, which the spec took as the best of 5 runs, is met by
+the best in the four, by 0.7 to 0.8 ms, and by the median in three of
+the four. No profile of a missed target was needed. The third run,
+under `/usr/bin/time -l`: 26799260757 instructions and 9408618967
+cycles in 2.07 s, 4.5 GHz, so a performance core.
+
+What the number depends on, from the review. The margin is smaller than
+what the machine moves it by: with two compilers running beside the
+bench the best of 5 was 21.4 to 25.0 ms over six runs, and with
+`taskpolicy -b`, which puts the process on the efficiency cores, 66.48
+ms for the same 4.03e9 instructions. 88 in 100 of the samples of the
+pass are inside the decompression of `lz4_flex`, 3 in 100 in the copy
+of the genotypes into the block, 3 in 100 in the sum, and 0.2 in 100 in
+opening the file. So the number is that of the lz4 of arrow-rs on these
+bytes, and popnei's own code is 1.3 ms of it at most.
+
+What differs from the file of the spec, as the plan said the report
+would say: that one held the `gts` column alone and was written by
+pyarrow 23.0.0, 15.68 MB; this one holds six columns, is written by
+popnei through `lz4_flex`, and its missing genotypes are drawn at
+another point of the generator, so the compressed bytes are not the
+same. A pass reads past the buffers of the other columns and does not
+decompress them. Every field costs 0.8 ms more than the genotypes
+alone.
+
+The write, which had never been measured: 39.0 to 39.3 ms for the four
+blocks into memory, nearly all of it the compression of `lz4_flex`, so
+the panel is written at about 1 GB of genotypes a second. From Python,
+`write_vars` of the panel VCF with a release build of the module, to
+the local disc, took 73.7, 66.5 and 66.8 ms, which holds the parse of
+the VCF on the threads of rayon; the `sync_all` that the call makes
+before it returns took 7.3, 4.8 and 5.4 ms for a file of that size in a
+program written for it, 7 to 11 in 100 of the call.
+
+### The review
+
+Two reviewers at 04cc9d0: a performance reviewer on the methodology,
+who ran the bench 13 times and profiled it, and a `spec` reviewer who
+only read, so that no build ran beside a timing; 105 and 99 thousand
+tokens. What held and was fixed, in b85970d, 43 thousand tokens more:
+the first timed pass of a process was always the slowest, 22.06 to
+30.63 ms against 20.16 to 21.9 ms for the rest, and it fell in the one
+section that is held against the 21 ms; nothing checked that the pass
+with the genotypes alone had skipped the five other columns, which a
+difference of 0.8 ms would not show, and the bench now fails when a
+block carries a column that was not asked for; the header did not say
+that the file is not the spec's, nor what the number depends on, and
+its command to write the file failed after a `uv sync`.
+
+What held and was not changed, for the owner:
+
+- The 19.1 to 19.3 ms of arrow-rs alone that the 21 ms come from have
+  no program in the repository: the trial crate of the spec was not
+  kept. The two sides of the comparison were taken on different days,
+  files and perhaps build flags. A second mode of this bench that reads
+  the same bytes with arrow-rs alone would put both in one process.
+- The release profile has no debug information, so a profile shows no
+  inlined frames, and no `lto` nor one codegen unit, which for a pass
+  that is 88 in 100 inside another crate is the one build setting worth
+  trying. Both are for the `performance-review` skill, not this plan.
+- The reader copies each batch out of the source into a vector it
+  zeroes first, 1.2 in 100 of the pass each, although here the source
+  is already in memory.
