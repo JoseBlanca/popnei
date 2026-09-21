@@ -534,11 +534,41 @@ steps of the `Variants` and gives that error itself.
 
 ## Speed
 
-There is no number to reach yet, and the measurement comes first: the
-missing data filter at 0.1 over the 400 MB VCF of `docs/rust_core.md`,
-100000 variants of 1000 individuals, and over its vars file, against the
-same filter of pyNei and against `bcftools view -i "F_MISSING<=0.1"`, each
-as the time of the whole pass less the time of the pass with no filter.
+There is no number to reach: what the filter costs was measured, and what
+it should cost is the owner's to set. The numbers are of 21 September
+2026, on the owner's Apple M5 Pro, 18 cores, macOS 27.0, native
+`aarch64-apple-darwin`, a build of `cargo bench`, over the 400 MB VCF of
+`docs/rust_core.md`, 100000 variants of 1000 individuals whose genotypes
+are missing at a rate of 0.03, and over the vars file popnei writes of it,
+both already in the page cache. Each is the median of 5 runs of a whole
+pass with the genotypes alone asked for, timed by
+`crates/popnei/benches/filter_vars.rs`. What the filter costs is that pass
+less the pass with no filter, the two run back to back; the first column
+is the pass with no filter of the pair of the second.
+
+| | the pass with no filter | the missing data filter at 0.1 | at 0.03 |
+|---|---|---|---|
+| the VCF, 1 thread | 0.565 s | 0.050 s more | 0.077 s more |
+| the VCF, 18 threads | 0.095 s | 0.007 s more | 0.012 s more |
+| the vars file, 1 thread | 0.101 s | 0.056 s more | 0.059 s more |
+| the vars file, 18 threads | 0.101 s | 0.014 s more | 0.017 s more |
+
+At 0.1 the filter keeps every one of the 100000 variants and at 0.03 it
+keeps 54773, so the difference between the two thresholds is what taking
+the 45227 it drops out of the blocks costs. The vars file is read in
+0.101 s on one thread and on 18, since its reader runs on the thread that
+calls it and only the filter reads the rows of a block on the pool.
+
+pyNei's pass over the same VCF takes 14.05 s and its
+`filter_by_missing_data` costs it 0.415 s at 0.1 and 0.400 s at 0.03.
+`bcftools view -H`, with its records sent to `/dev/null` in both passes,
+takes 1.431 s and its `-i "F_MISSING<=0.1"` costs it 0.119 s; at 0.03 its
+pass with the filter takes 0.202 s less than the one without, because it
+writes 54773 records of text instead of 100000, where popnei's pass writes
+none. The three keep the same variants, 100000 at 0.1 and 54773 at 0.03.
+`docs/reports/filters-measurement.md` has every set of runs with the load
+average it was taken at, and how pyNei's difference was told apart from
+the drift of the machine over a pass of 14 s.
 
 ## Open points
 
