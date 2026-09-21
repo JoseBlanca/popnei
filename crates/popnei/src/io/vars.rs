@@ -779,9 +779,10 @@ fn schema_of(fields: Needs, alleles_per_var: i32, metadata: &VarsMetadata) -> Sc
 }
 
 /// The arrow type of the `alleles` column, one list of texts for each
-/// variant. The values of the list are named and take nulls as pyarrow
-/// writes them, so that a file of popnei and a file of pyarrow have the
-/// same column; no allele of a variant is a null.
+/// variant. The values of the list carry the name pyarrow gives the values
+/// of any list and say that they hold no null, which is what is true of
+/// them: no allele of a variant is a null. pyarrow writes that field as one
+/// that can hold nulls, and the reader of popnei takes either.
 fn alleles_type() -> DataType {
     DataType::List(Arc::new(alleles_field()))
 }
