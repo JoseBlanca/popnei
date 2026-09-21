@@ -186,7 +186,7 @@ comes first because it changes the trait that the filter of work package
   `docs/specs/block.md` and "Its Python and TypeScript functions" of the
   writer in `docs/specs/io_vars.md`. Needs 1.1. Serves deliverables 2
   and 3.
-- [ ] 1.3 The TypeScript side, the same in `crates/popnei-js` and
+- [x] 1.3 The TypeScript side, the same in `crates/popnei-js` and
   `js/popnei`, from the same parts. Needs 1.1. Serves deliverable 4. It
   can run side by side with 1.2 only in a worktree of its own; in the
   plan's worktree it runs after it.

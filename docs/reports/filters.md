@@ -66,6 +66,29 @@ For the owner, from task 1.2:
   `docs/specs/filters.md` leaves a copy of a `Variants` out, and nothing
   tests it.
 
+Task 1.3, commit 862ec70: the same in TypeScript. `iterBlocks` gives an
+iterator class around the generator that was there, because the pass is
+freed when the iteration ends and the counts have to answer after that;
+`writeVars` gives `{bytes, passStats}`; `steps` is an empty array. A
+pass takes a copy of the list of steps, because wasm-bindgen cannot lend
+an optional object of the crate to a function and an owned one leaves
+the caller's dead; the copy is also what the spec asks, a pass runs the
+steps it started with. `variants.free()` frees the steps too, so `steps`
+after it is an `Error`, as `iterBlocks` is. Five lines of tests that
+were there changed, four of `vars.test.ts` and one of `web.test.ts`,
+where they take the bytes of `writeVars`; `pass.test.ts` is untouched.
+273909 tokens.
+
+The deliverables of work package 1, run by the orchestrator at 862ec70:
+
+1. `cargo test -p popnei --lib -- filtering_stats --list`: `5 tests`.
+   `cargo test --workspace`: `257 passed`, 2 ignored.
+2. and 3. `uv run pytest tests/test_pass_stats.py`: `16 passed`; `uv run
+   pytest`: `115 passed`.
+4. `npm run build && npm test` in `js/popnei`: `tests 76`, `fail 0`.
+
+fmt, clippy, ruff and `cargo wasm-check` pass.
+
 How the work went. The orchestrator committed the tick of task 3.1 with
 `git add <paths>` and `git commit` with no paths while the subagent of
 1.1 had its files staged, and the commit took them. The commit was local,
