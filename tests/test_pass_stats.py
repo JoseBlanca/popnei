@@ -27,7 +27,7 @@ from popnei import (
     open_vcf,
     write_vars,
 )
-from popnei.variant import Variants
+from popnei.variant import Variants, _pass_stats_of
 
 # The VCFs that `tests/reference/vcf/make_reference.py` writes, which
 # `conftest.py` gives the tests as `reference_vcf_dir` and which the module
@@ -181,22 +181,49 @@ def test_the_block_a_pass_lost_with_an_error_is_not_among_its_variants(
 
 
 def test_the_counts_of_a_pass_are_frozen_dataclasses() -> None:
-    """`PassStats` and `FilteringStats`: a result of popnei is not changed.
+    """`PassStats`, `FilteringStats` and `VarsWritten`: a result of popnei
+    is not changed.
 
     A user who reads the counts of a pass into a report of their own gets
     numbers that nothing can write over, and two results of the same pass
     are equal.
     """
     stats = PassStats(num_vars=3, filtering={"maf": FilteringStats(5, 3)})
+    written = VarsWritten(pass_stats=stats)
 
     assert dataclasses.is_dataclass(PassStats)
     assert dataclasses.is_dataclass(FilteringStats)
+    assert dataclasses.is_dataclass(VarsWritten)
     assert stats == PassStats(num_vars=3, filtering={"maf": FilteringStats(5, 3)})
     assert FilteringStats(vars_processed=5, vars_kept=3) == FilteringStats(5, 3)
+    assert written == VarsWritten(pass_stats=stats)
     with pytest.raises(dataclasses.FrozenInstanceError):
         stats.num_vars = 4
     with pytest.raises(dataclasses.FrozenInstanceError):
         FilteringStats(5, 3).vars_kept = 5
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        written.pass_stats = stats
+
+
+def test_the_counts_of_the_filters_come_in_the_order_of_the_steps() -> None:
+    """The chain of readers gives the outermost filter first, and a user
+    reads the filters in the order in which they were put on the
+    `Variants`.
+
+    The numbers are those of `docs/specs/filters.md`, the missing data
+    filter at 0.04 and the maf filter at 0.8 on `many.vcf`: 500 variants
+    given and 215 kept, and then 215 given and 163 kept. The chain has the
+    maf filter first, because it is the outermost, and `filtering` has the
+    missing data one first.
+    """
+    stats = _pass_stats_of((163, [("maf", 215, 163), ("missing_data", 500, 215)]))
+
+    assert list(stats.filtering) == ["missing_data", "maf"]
+    assert stats.filtering["missing_data"] == FilteringStats(
+        vars_processed=500, vars_kept=215
+    )
+    assert stats.filtering["maf"] == FilteringStats(vars_processed=215, vars_kept=163)
+    assert stats.num_vars == 163
 
 
 def test_iter_blocks_refuses_its_arguments_at_the_call_and_not_at_a_block(

@@ -761,6 +761,8 @@ pub fn write_vars<R: BlockReader, W: Write>(
         // A variant is a row of the file that is being written, so a pass
         // of the 18446744073709551615 variants this count holds is more
         // rows than any file system takes: the sum cannot reach its end.
+        // The conversion above cannot fail either: a `usize` is 64 bits
+        // natively and 32 in wasm, and both fit in a `u64`.
         num_vars = num_vars.saturating_add(of_the_block);
     }
     Ok((writer.finish()?, num_vars))

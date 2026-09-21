@@ -207,28 +207,36 @@ impl Blocks {
         // `docs/specs/block.md` asks of every reader that it not do.
         py.check_signals()?;
         self.columns_of_the_next_block(py)
-            .inspect_err(|_| self.finish())
+            .inspect_err(|_| self.finish(py))
     }
 
     // How many variants the pass has given, and what each filter of it was
     // given and kept, the outermost filter first. It is read while the pass
     // runs too, and it then holds what has been read up to there.
-    fn pass_stats(&self) -> Result<PassCounts, PyPopneiError> {
-        let pass = self.pass.lock().map_err(|_| {
-            PyPopneiError::broken_of_the_file(
-                "the counts of this pass cannot be read: a panic left the reader half \
-                 way through a block"
-                    .to_string(),
-                &self.path,
-            )
-        })?;
-        let filtering = pass
-            .reader
-            .filtering_stats()
-            .into_iter()
-            .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
-            .collect();
-        Ok((pass.num_vars, filtering))
+    fn pass_stats(&self, py: Python<'_>) -> Result<PassCounts, PyPopneiError> {
+        // The interpreter is released while the lock is waited for: the
+        // thread that reads a block holds that lock for the whole read,
+        // inside its own `detach`, and a thread that waited for it with the
+        // interpreter in hand would stop every other thread of the process
+        // for as long as that read takes, seconds for a block of a big
+        // file.
+        py.detach(|| {
+            let pass = self.pass.lock().map_err(|_| {
+                PyPopneiError::broken_of_the_file(
+                    "the counts of this pass cannot be read: a panic left the reader half \
+                     way through a block"
+                        .to_string(),
+                    &self.path,
+                )
+            })?;
+            let filtering = pass
+                .reader
+                .filtering_stats()
+                .into_iter()
+                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+                .collect();
+            Ok((pass.num_vars, filtering))
+        })
     }
 }
 
@@ -290,7 +298,7 @@ impl Blocks {
         let qual = qual
             .map(|qual| read_only(qual.into_pyarray(py)))
             .transpose()?;
-        self.counted(num_vars);
+        self.counted(py, num_vars);
         Ok(Some((gts, chrom, pos, id, alleles, qual)))
     }
 
@@ -299,17 +307,31 @@ impl Blocks {
     ///
     /// They are counted here, where the block is the user's, and not where
     /// it was read: a block that was lost with an error, and one the pass
-    /// had read when a Ctrl-C arrived, never reached them and is in the
-    /// count of no filter of theirs either.
+    /// had read when a Ctrl-C arrived, never reached them. The counts of
+    /// the filters are another matter, since a filter sits under the
+    /// `Reblock` and has counted that block already, which "A pass that was
+    /// not finished" of `docs/specs/filters.md` says a user reads.
     ///
     /// A lock that a panic left broken is the end of the pass, which the
     /// read of the next block reports: a count that was not added is not
     /// what the user is told about then.
-    fn counted(&self, num_vars: usize) {
+    ///
+    /// The interpreter is released while the lock is waited for, as it is
+    /// in [`Blocks::pass_stats`]: another thread may hold it for a whole
+    /// block.
+    fn counted(&self, py: Python<'_>, num_vars: usize) {
+        py.detach(|| self.count(num_vars));
+    }
+
+    /// The `num_vars` variants added to the count, with the interpreter
+    /// already released.
+    fn count(&self, num_vars: usize) {
         if let Ok(mut pass) = self.pass.lock() {
             // A variant is a row of a file, so a pass of the
             // 18446744073709551615 variants this count holds is more rows
-            // than any file system takes: the sum cannot reach its end.
+            // than any file system takes: the sum cannot reach its end. The
+            // conversion cannot fail either: a `usize` is 64 bits natively
+            // and 32 in wasm, and both fit in a `u64`.
             pass.num_vars = pass
                 .num_vars
                 .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
@@ -320,10 +342,15 @@ impl Blocks {
     ///
     /// A lock that a panic left broken is already the end of the pass: every
     /// read of it is the error of a reader that cannot be read any more.
-    fn finish(&self) {
-        if let Ok(mut pass) = self.pass.lock() {
-            pass.finished = true;
-        }
+    ///
+    /// The interpreter is released while the lock is waited for, as it is in
+    /// [`Blocks::pass_stats`]: another thread may hold it for a whole block.
+    fn finish(&self, py: Python<'_>) {
+        py.detach(|| {
+            if let Ok(mut pass) = self.pass.lock() {
+                pass.finished = true;
+            }
+        });
     }
 
     /// The next block of the reader, with the chromosomes of its variants,
