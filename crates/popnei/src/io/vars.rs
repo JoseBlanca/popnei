@@ -14,12 +14,10 @@
 //! [`write_vars`] writes the variants of any reader of blocks into such a
 //! file, one batch for each block, with its buffers compressed with lz4,
 //! and [`VarsWriter`] is what it does it with, for a caller that has the
-//! blocks and not a reader. [`VarsReader`] opens such a file and says what
-//! it holds.
+//! blocks and not a reader. [`VarsReader`] opens such a file, says what it
+//! holds and gives each of its batches as a block.
 //!
-//! `docs/specs/io_vars.md` has the format, the writer and the reader. What
-//! is here is the two keys, the writer, and the opening of a file; the
-//! blocks that a file gives are being written.
+//! `docs/specs/io_vars.md` has the format, the writer and the reader.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -29,11 +27,12 @@ use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{
-    ArrayRef, FixedSizeListArray, Float32Array, Int8Array, ListArray, RecordBatch, StringArray,
-    UInt64Array,
+    Array, ArrayRef, FixedSizeListArray, Float32Array, Int8Array, ListArray, RecordBatch,
+    StringArray, UInt64Array,
 };
-use arrow_buffer::{NullBuffer, ScalarBuffer};
+use arrow_buffer::{Buffer, NullBuffer, ScalarBuffer};
 use arrow_ipc::convert::try_fb_to_schema;
+use arrow_ipc::reader::FileDecoder;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_ipc::{Block as ArrowBlock, CompressionType, Footer, MetadataVersion, root_as_footer};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
@@ -991,6 +990,12 @@ const ARROW_MAGIC: [u8; 6] = *b"ARROW1";
 /// footer as four bytes, and then [`ARROW_MAGIC`] again.
 const TRAILER_BYTES: u64 = 10;
 
+/// How many bytes the message of a batch of an arrow IPC file starts with:
+/// the four of the mark of a continuation and the four that say how long the
+/// message is. arrow-rs reads them before anything else of a batch, so a
+/// batch of fewer bytes than these is refused before it is handed over.
+const MESSAGE_START_BYTES: usize = 8;
+
 /// The number the system gives for a directory where a file was asked for,
 /// `EISDIR`, which is 21 on macOS, on Linux and in emscripten, the systems
 /// popnei runs on. Opening a directory succeeds on those systems and only
@@ -1222,8 +1227,7 @@ struct BatchAt {
 }
 
 /// The reader of a vars file: what the file says about itself, from its
-/// schema and its footer. The blocks of its batches, which
-/// `docs/specs/io_vars.md` asks of it, are being written.
+/// schema and its footer, and each of its batches as a block.
 ///
 /// [`VarsReader::new`] reads the schema and the footer, so the names of the
 /// individuals, the ploidy, the variants of the file and the regions of
@@ -1234,33 +1238,18 @@ struct BatchAt {
 /// and in a tab the bytes the user picked: the footer of an arrow file is
 /// at its end, so the reader seeks there when it is opened and then to each
 /// batch in turn.
+///
+/// It is a [`BlockReader`]: the batches come out as blocks, as they are in
+/// the file, with only the columns that
+/// [`set_needs`](BlockReader::set_needs) asks for decompressed.
 pub struct VarsReader<R: Read + Seek> {
     /// The bytes of the file.
-    #[expect(
-        dead_code,
-        reason = "the batches are read from the source in the work that follows, and the lint \
-                  itself asks for this to go when the blocks land"
-    )]
     source: R,
     /// The columns of the file as arrow gives them, with the column popnei
     /// does not know among them, which is what a batch is decoded with.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the decoder of a batch is built with the schema and is being written; the \
-                      tests of this module read it already, so this holds for the build without \
-                      them, and the lint itself asks for it to go when the blocks land"
-        )
-    )]
     schema: SchemaRef,
     /// Which version of the messages of arrow the file was written with,
     /// which the decoder of a batch is built with.
-    #[expect(
-        dead_code,
-        reason = "the decoder of a batch is built with it and is being written, and the lint \
-                  itself asks for this to go when the blocks land"
-    )]
     version: MetadataVersion,
     /// Where each batch of the file is, in the order of the batches.
     ///
@@ -1270,26 +1259,8 @@ pub struct VarsReader<R: Read + Seek> {
     /// source: a consumer changes which fields it asks for between two
     /// blocks, and `docs/specs/io_vars.md` asks that the columns of a batch
     /// be chosen when that batch is read.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the bytes of a batch are read from here in the work that follows; the tests \
-                      of this module read them already, so this holds for the build without them, \
-                      and the lint itself asks for it to go when the blocks land"
-        )
-    )]
     blocks: Vec<BatchAt>,
     /// Where each column popnei knows is in the schema.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the projection of a batch is built from the places and is being written; \
-                      the tests of this module read them already, so this holds for the build \
-                      without them, and the lint itself asks for it to go when the blocks land"
-        )
-    )]
     columns: VarsColumns,
     /// What the `popnei` key of the schema says.
     metadata: VarsMetadata,
@@ -1297,6 +1268,20 @@ pub struct VarsReader<R: Read + Seek> {
     batches: Vec<BatchInfo>,
     /// The variants of the whole file, the sum of those of its batches.
     num_vars: usize,
+    /// Which fields the consumer asks for, which the projection of the
+    /// next batch that is read is built from.
+    needs: Needs,
+    /// Which batch of the file is the next one to read.
+    next: usize,
+    /// The names of the chromosomes of the variants that were given, each
+    /// with its number.
+    chroms: ChromTable,
+    /// How many variants the batches that were read hold, which is what
+    /// the variant of the error of a null is counted from.
+    vars_before: u64,
+    /// Whether the reader gave its last block or an error. After either,
+    /// every call gives no block.
+    finished: bool,
 }
 
 impl<R: Read + Seek> VarsReader<R> {
@@ -1332,6 +1317,15 @@ impl<R: Read + Seek> VarsReader<R> {
         // columns.
         let metadata = metadata_of_the_schema(&schema)?;
         let columns = VarsColumns::of(&schema, &metadata)?;
+        // Every vars file holds the genotypes, so a file without them is
+        // not one: a reader of this version cannot tell a file whose column
+        // was lost from one that a later version of the format wrote with
+        // no such column.
+        if columns.gts.is_none() {
+            return Err(not_a_vars_file(format!(
+                "it has no `{GTS_COLUMN}` column, which every vars file has"
+            )));
+        }
         let blocks = batches_of_the_footer(&footer, file_len)?;
         let batches = batch_info_of_the_footer(&footer, blocks.len())?;
         let num_vars = num_vars_of_the_file(&batches)?;
@@ -1344,6 +1338,11 @@ impl<R: Read + Seek> VarsReader<R> {
             metadata,
             batches,
             num_vars,
+            needs: Needs::ALL,
+            next: 0,
+            chroms: ChromTable::new(),
+            vars_before: 0,
+            finished: false,
         })
     }
 
@@ -1368,6 +1367,216 @@ impl<R: Read + Seek> VarsReader<R> {
     #[must_use]
     pub fn num_vars(&self) -> usize {
         self.num_vars
+    }
+}
+
+/// Which columns of the file a consumer that asks for `needs` has
+/// decompressed, and what each of them fills, in the order of the columns of
+/// the file.
+///
+/// A field that is asked for and whose column the file lacks is not there,
+/// and the block comes without that column, which is the rule of
+/// `docs/specs/variant.md` for a source that has no such field. The
+/// chromosome and the position are one field and go together, so a file with
+/// one of the two columns and not the other gives neither.
+fn projection_of(needs: Needs, columns: &VarsColumns) -> Vec<(VarsColumn, usize)> {
+    let mut wanted: Vec<(VarsColumn, usize)> = Vec::new();
+    if needs.contains(Needs::CHROM_POS)
+        && let (Some(chrom), Some(pos)) = (columns.chrom, columns.pos)
+    {
+        wanted.push((VarsColumn::Chrom, chrom));
+        wanted.push((VarsColumn::Pos, pos));
+    }
+    for (field, place, column) in [
+        (Needs::ID, columns.id, VarsColumn::Id),
+        (Needs::ALLELES, columns.alleles, VarsColumn::Alleles),
+        (Needs::QUAL, columns.qual, VarsColumn::Qual),
+        (Needs::GTS, columns.gts, VarsColumn::Gts),
+    ] {
+        if needs.contains(field)
+            && let Some(place) = place
+        {
+            wanted.push((column, place));
+        }
+    }
+    wanted.sort_by_key(|(_, place)| *place);
+    wanted
+}
+
+/// Where a batch is, for the messages of the errors it gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BatchPlace {
+    /// Which batch of the file it is, counted from 1.
+    batch: u64,
+    /// How many variants the batches before it hold, which the variant of
+    /// the error of a null is counted from.
+    vars_before: u64,
+}
+
+impl<R: Read + Seek> VarsReader<R> {
+    /// The next batch of the file as a block, the batches of no variant
+    /// passed over, and `None` when there are no more.
+    ///
+    /// # Errors
+    ///
+    /// When a batch cannot be read, when it holds another number of
+    /// variants than its entry of the footer, and when one of its columns
+    /// holds a null where every variant has a value.
+    fn next_batch(&mut self) -> Result<Option<Block>> {
+        // The columns to decompress are chosen when the batch is read, so a
+        // consumer that asks for other fields is served from here on.
+        let wanted = projection_of(self.needs, &self.columns);
+        let places: Vec<usize> = wanted.iter().map(|(_, place)| *place).collect();
+        loop {
+            let Some(at) = self.blocks.get(self.next).copied() else {
+                return Ok(None);
+            };
+            let expected = self.batches.get(self.next).map_or(0, |info| info.num_vars);
+            let place = BatchPlace {
+                batch: counted_from_one(self.next),
+                vars_before: self.vars_before,
+            };
+            // The batches of a file are as many as the machine counts, so
+            // this never saturates.
+            self.next = self.next.saturating_add(1);
+            let batch = self.batch_of(at, &places, place)?;
+            let num_vars = batch.num_rows();
+            if num_vars != expected {
+                return Err(Error::VarsBatchNumVars {
+                    batch: place.batch,
+                    found: num_vars,
+                    expected,
+                });
+            }
+            self.vars_before = self
+                .vars_before
+                .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+            // A batch of no variants is not given as a block, since
+            // `docs/specs/block.md` says that a reader never gives one: the
+            // next batch is taken, as a filter does with a block it emptied.
+            if num_vars == 0 {
+                continue;
+            }
+            return Ok(Some(block_of_the_batch(
+                &batch,
+                &wanted,
+                &self.metadata,
+                &mut self.chroms,
+                place,
+            )?));
+        }
+    }
+
+    /// One batch of the file, with the columns of `places` decompressed and
+    /// the buffers of the rest walked past.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read, when the bytes of the batch are not
+    /// what the file says they are, and when they are compressed with zstd.
+    fn batch_of(
+        &mut self,
+        at: BatchAt,
+        places: &[usize],
+        place: BatchPlace,
+    ) -> Result<RecordBatch> {
+        // Both lengths were checked to lie inside the file when it was
+        // opened, so their sum is one of its bytes.
+        let len = at.metadata_len.saturating_add(at.body_len);
+        let bytes = bytes_at(&mut self.source, at.offset, usize_of(len)?)?;
+        let (Ok(metadata_len), Ok(body_len)) =
+            (i32::try_from(at.metadata_len), i64::try_from(at.body_len))
+        else {
+            return Err(batch_of_other_bytes(
+                place.batch,
+                format!(
+                    "its footer says the batch is {metadata} and {body} bytes, which an arrow file does not hold",
+                    metadata = at.metadata_len,
+                    body = at.body_len
+                ),
+            ));
+        };
+        // arrow-rs reads the four bytes that mark a continuation and the
+        // four that say how long the message is before anything else, so a
+        // batch of fewer bytes than those eight is refused here.
+        if bytes.len() < MESSAGE_START_BYTES {
+            return Err(batch_of_other_bytes(
+                place.batch,
+                format!(
+                    "it is {found} bytes and the message of a batch of an arrow file starts with {MESSAGE_START_BYTES}",
+                    found = bytes.len()
+                ),
+            ));
+        }
+        let decoder = FileDecoder::new(Arc::clone(&self.schema), self.version)
+            .with_projection(places.to_vec());
+        let read = decoder.read_record_batch(
+            &ArrowBlock::new(0, metadata_len, body_len),
+            &Buffer::from(bytes),
+        );
+        match read {
+            Ok(Some(batch)) => Ok(batch),
+            Ok(None) => Err(batch_of_other_bytes(
+                place.batch,
+                "the message where it starts is not one of a batch".to_owned(),
+            )),
+            Err(problem) => Err(batch_not_read(&problem, place.batch)),
+        }
+    }
+}
+
+impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
+    /// The next batch of the file as a block, which holds one variant at
+    /// least, and `None` when there are no more batches and at every call
+    /// after that.
+    ///
+    /// The batches come out as they are in the file, so a file written with
+    /// the default size of block is read back in blocks of that size with no
+    /// `reblock`. A batch of no variants is not given: the next one is
+    /// taken.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read, when a batch is not what the file
+    /// says it is, when it holds another number of variants than its entry
+    /// of the footer, when one of its columns holds a null where every
+    /// variant has a value, and when the file is compressed with zstd. The
+    /// batch the error happened in is lost, the blocks before it were
+    /// given, and every call after it gives `None`.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        match self.next_batch() {
+            Ok(Some(block)) => Ok(Some(block)),
+            Ok(None) => {
+                self.finished = true;
+                Ok(None)
+            }
+            Err(error) => {
+                self.finished = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        &self.metadata.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.metadata.ploidy
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        &self.chroms
+    }
+
+    /// The fields the blocks from the next one on hold. The projection of a
+    /// batch is chosen when that batch is read, so a change holds from the
+    /// next block.
+    fn set_needs(&mut self, needs: Needs) {
+        self.needs = needs;
     }
 }
 
@@ -1397,6 +1606,426 @@ impl VarsReader<BufReader<File>> {
         }
         VarsReader::new(BufReader::new(file))
     }
+}
+
+/// One batch of a vars file as a block: the columns of `wanted`, which are
+/// the ones that were decompressed and are in the batch in that order, and
+/// the individuals and the ploidy of the `popnei` key.
+///
+/// The names of the chromosomes are interned into `chroms` as they are read,
+/// so a number means the order of first appearance among the variants that
+/// were given, as in the VCF reader, and the table is looked up only when the
+/// name differs from that of the variant before.
+///
+/// # Errors
+///
+/// When a column holds a null where every variant has a value, the
+/// chromosome, the position, the alleles and the genotypes; when a column of
+/// the batch is not what the schema of the file says it is, which is a file
+/// that was damaged; and when the machine does not give the memory of a
+/// column of the block.
+fn block_of_the_batch(
+    batch: &RecordBatch,
+    wanted: &[(VarsColumn, usize)],
+    metadata: &VarsMetadata,
+    chroms: &mut ChromTable,
+    place: BatchPlace,
+) -> Result<Block> {
+    let num_vars = batch.num_rows();
+    let mut block = Block {
+        num_vars,
+        num_individuals: metadata.individuals.len(),
+        ploidy: metadata.ploidy,
+        gts: Vec::new(),
+        chrom: None,
+        pos: None,
+        id: None,
+        alleles: None,
+        qual: None,
+    };
+    // The texts of the alleles of one variant, written over for the next
+    // one: nothing is allocated for each variant of the block.
+    let mut texts: Vec<String> = Vec::new();
+    for (index, (column, _)) in wanted.iter().enumerate() {
+        let Some(array) = batch.columns().get(index) else {
+            return Err(column_not_read(
+                *column,
+                place.batch,
+                "is not among the columns that were read",
+            ));
+        };
+        match column {
+            VarsColumn::Chrom => {
+                block.chrom = Some(chrom_numbers(array, num_vars, metadata, chroms, place)?);
+            }
+            VarsColumn::Pos => block.pos = Some(positions(array, num_vars, metadata, place)?),
+            VarsColumn::Id => block.id = Some(ids(array, num_vars, metadata, place)?),
+            VarsColumn::Alleles => {
+                block.alleles = Some(alleles_of_the_batch(
+                    array, num_vars, &mut texts, metadata, place,
+                )?);
+            }
+            VarsColumn::Qual => block.qual = Some(qualities(array, num_vars, metadata, place)?),
+            VarsColumn::Gts => block.gts = genotypes(array, num_vars, metadata, place)?,
+        }
+    }
+    Ok(block)
+}
+
+/// The number of the chromosome of each variant of the batch, in `chroms`.
+///
+/// # Errors
+///
+/// When a variant has no chromosome, and when the column is not one of
+/// texts.
+fn chrom_numbers(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    chroms: &mut ChromTable,
+    place: BatchPlace,
+) -> Result<Vec<u32>> {
+    let column = column_of::<StringArray>(array, VarsColumn::Chrom, place)?;
+    let mut numbers = reserved_column(num_vars, metadata)?;
+    // The name of the variant before and its number: the variants of one
+    // chromosome come one after another in a sorted file, so the table is
+    // looked up once for the run.
+    let mut before: Option<(&str, u32)> = None;
+    for (row, name) in column.iter().enumerate() {
+        let Some(name) = name else {
+            return Err(null_value(VarsColumn::Chrom, place, row));
+        };
+        let number = match before {
+            Some((seen, number)) if seen == name => number,
+            Some(_) | None => {
+                let number = chroms.intern(name);
+                before = Some((name, number));
+                number
+            }
+        };
+        numbers.push(number);
+    }
+    Ok(numbers)
+}
+
+/// The position of each variant of the batch, copied out of the column.
+///
+/// # Errors
+///
+/// When a variant has no position, and when the column is not one of
+/// unsigned 64 bit numbers.
+fn positions(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<u64>> {
+    let column = column_of::<UInt64Array>(array, VarsColumn::Pos, place)?;
+    if let Some(row) = first_null(column) {
+        return Err(null_value(VarsColumn::Pos, place, row));
+    }
+    let Some(values) = column.values().get(..num_vars) else {
+        return Err(column_not_read(
+            VarsColumn::Pos,
+            place.batch,
+            "holds fewer values than the batch has variants",
+        ));
+    };
+    let mut positions = reserved_column(num_vars, metadata)?;
+    positions.extend_from_slice(values);
+    Ok(positions)
+}
+
+/// The id of each variant of the batch, the empty id where the file holds a
+/// null.
+///
+/// # Errors
+///
+/// When the column is not one of texts, and when the machine does not give
+/// its memory.
+fn ids(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<String>> {
+    let column = column_of::<StringArray>(array, VarsColumn::Id, place)?;
+    let mut ids: Vec<String> = reserved_column(num_vars, metadata)?;
+    for id in column.iter() {
+        ids.push(id.unwrap_or("").to_owned());
+    }
+    Ok(ids)
+}
+
+/// The quality of each variant of the batch, a NaN where the file holds a
+/// null, which is what a block holds for a variant with no quality.
+///
+/// # Errors
+///
+/// When the column is not one of 32 bit floats, and when the machine does
+/// not give its memory.
+fn qualities(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<f32>> {
+    let column = column_of::<Float32Array>(array, VarsColumn::Qual, place)?;
+    let mut qualities = reserved_column(num_vars, metadata)?;
+    for quality in column.iter() {
+        qualities.push(quality.unwrap_or(f32::NAN));
+    }
+    Ok(qualities)
+}
+
+/// The alleles of each variant of the batch, the reference one first.
+///
+/// `texts` is the buffer the texts of one variant are read into and written
+/// over for the next one.
+///
+/// # Errors
+///
+/// When a variant has no alleles or one of its alleles is a null, when the
+/// column is not a list of texts, and when the machine does not give the
+/// memory of the column of the block.
+fn alleles_of_the_batch(
+    array: &ArrayRef,
+    num_vars: usize,
+    texts: &mut Vec<String>,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<AllelesColumn> {
+    let column = column_of::<ListArray>(array, VarsColumn::Alleles, place)?;
+    let values = column
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| {
+            column_not_read(
+                VarsColumn::Alleles,
+                place.batch,
+                "is not a list of the texts of the alleles",
+            )
+        })?;
+    let mut alleles =
+        AllelesColumn::with_num_vars(num_vars).map_err(|_| block_too_large(num_vars, metadata))?;
+    // One window for each variant: where its alleles start in the texts of
+    // the column and where they end.
+    for (row, window) in column.offsets().windows(2).enumerate() {
+        let (Some(start), Some(end)) = (window.first(), window.get(1)) else {
+            break;
+        };
+        if column.is_null(row) {
+            return Err(null_value(VarsColumn::Alleles, place, row));
+        }
+        let ends = usize::try_from(*start)
+            .ok()
+            .zip(usize::try_from(*end).ok())
+            .filter(|(start, end)| end >= start && *end <= values.len());
+        let Some((start, end)) = ends else {
+            return Err(column_not_read(
+                VarsColumn::Alleles,
+                place.batch,
+                "says its alleles are at bytes that are not in it",
+            ));
+        };
+        let num_alleles = end.saturating_sub(start);
+        for (allele, index) in (start..end).enumerate() {
+            if values.is_null(index) {
+                return Err(null_value(VarsColumn::Alleles, place, row));
+            }
+            // The index is one of the column: the window it comes from was
+            // checked against the length of the texts above.
+            let text = values.value(index);
+            match texts.get_mut(allele) {
+                Some(held) => {
+                    held.clear();
+                    held.push_str(text);
+                }
+                None => texts.push(text.to_owned()),
+            }
+        }
+        alleles.push(texts.get(..num_alleles).unwrap_or(&[]));
+    }
+    Ok(alleles)
+}
+
+/// The genotypes of the batch, the alleles of every variant one after
+/// another, copied out of the buffer arrow decompressed into the vector of
+/// the block.
+///
+/// # Errors
+///
+/// When a variant has no genotypes or one of its alleles is a null, when the
+/// column is not a fixed size list of signed bytes or holds another number
+/// of alleles for each variant than the `popnei` key of the file gives, and
+/// when the machine does not give the memory of the genotypes of the block.
+fn genotypes(
+    array: &ArrayRef,
+    num_vars: usize,
+    metadata: &VarsMetadata,
+    place: BatchPlace,
+) -> Result<Vec<i8>> {
+    let column = column_of::<FixedSizeListArray>(array, VarsColumn::Gts, place)?;
+    if let Some(row) = first_null(column) {
+        return Err(null_value(VarsColumn::Gts, place, row));
+    }
+    let num_individuals = metadata.individuals.len();
+    let ploidy = metadata.ploidy;
+    let expected = num_individuals
+        .checked_mul(ploidy)
+        .ok_or_else(|| block_too_large(num_vars, metadata))?;
+    let found = usize::try_from(column.value_length()).unwrap_or(usize::MAX);
+    // The width of the column was checked against the `popnei` key when the
+    // file was opened, and it is what turns the flat buffer into variants.
+    if found != expected {
+        return Err(Error::VarsGtsWidth {
+            found,
+            expected,
+            num_individuals,
+            ploidy,
+        });
+    }
+    let values = column
+        .values()
+        .as_any()
+        .downcast_ref::<Int8Array>()
+        .ok_or_else(|| {
+            column_not_read(
+                VarsColumn::Gts,
+                place.batch,
+                "does not hold the alleles as signed bytes",
+            )
+        })?;
+    if let Some(index) = first_null(values) {
+        return Err(null_value(
+            VarsColumn::Gts,
+            place,
+            index.checked_div(found).unwrap_or(0),
+        ));
+    }
+    let wanted = num_vars
+        .checked_mul(found)
+        .ok_or_else(|| block_too_large(num_vars, metadata))?;
+    let Some(alleles) = values.values().get(..wanted) else {
+        return Err(column_not_read(
+            VarsColumn::Gts,
+            place.batch,
+            "holds fewer alleles than the variants of the batch",
+        ));
+    };
+    let mut genotypes = Vec::new();
+    genotypes
+        .try_reserve_exact(wanted)
+        .map_err(|_| block_too_large(num_vars, metadata))?;
+    genotypes.extend_from_slice(alleles);
+    Ok(genotypes)
+}
+
+/// One column of the batch as the array it holds.
+///
+/// # Errors
+///
+/// When it is not that array, which the schema of the file said it is, so
+/// the file was damaged after it was written.
+fn column_of<A: Array + 'static>(
+    array: &ArrayRef,
+    column: VarsColumn,
+    place: BatchPlace,
+) -> Result<&A> {
+    array.as_any().downcast_ref::<A>().ok_or_else(|| {
+        column_not_read(
+            column,
+            place.batch,
+            "is not of the arrow type that the schema of the file gives it",
+        )
+    })
+}
+
+/// The first row of the column with no value, or `None` when every row has
+/// one.
+fn first_null(column: &dyn Array) -> Option<usize> {
+    let nulls = column.nulls()?;
+    nulls.iter().position(|there| !there)
+}
+
+/// The memory of one column of a block of `num_vars` variants, empty.
+///
+/// The memory is asked for with `try_reserve_exact`, which gives it back as
+/// an error: `Vec::with_capacity` ends the process when the machine has not
+/// the memory, and a batch of a file that a caller of popnei wrote reaches
+/// it.
+///
+/// # Errors
+///
+/// When the machine does not give it.
+fn reserved_column<T>(num_vars: usize, metadata: &VarsMetadata) -> Result<Vec<T>> {
+    let mut column = Vec::new();
+    column
+        .try_reserve_exact(num_vars)
+        .map_err(|_| block_too_large(num_vars, metadata))?;
+    Ok(column)
+}
+
+/// The error of a block of a batch that the machine does not give the memory
+/// for.
+///
+/// The blocks of a vars file are its batches, so the size in the message is
+/// the one the file was written with, which is the size the caller of
+/// `write_vars` asked for.
+fn block_too_large(num_vars: usize, metadata: &VarsMetadata) -> Error {
+    Error::BlockTooLarge {
+        num_vars_per_block: num_vars,
+        num_individuals: metadata.individuals.len(),
+        ploidy: metadata.ploidy,
+        size: BlockSize::AskedFor,
+    }
+}
+
+/// The error of a null in a column where every variant has a value, with the
+/// column and the variant, counted from 1 over the whole file.
+fn null_value(column: VarsColumn, place: BatchPlace, row: usize) -> Error {
+    Error::VarsNullValue {
+        column: column.name(),
+        var: place.vars_before.saturating_add(counted_from_one(row)),
+    }
+}
+
+/// That place of a file, counted from 1, as the messages count.
+fn counted_from_one(place: usize) -> u64 {
+    u64::try_from(place).unwrap_or(u64::MAX).saturating_add(1)
+}
+
+/// The error of a column of a batch that is not what the schema of the file
+/// says it is, which is a file that was damaged after it was written.
+fn column_not_read(column: VarsColumn, batch: u64, problem: &str) -> Error {
+    batch_of_other_bytes(
+        batch,
+        format!("its `{name}` column {problem}", name = column.name()),
+    )
+}
+
+/// The error of a batch whose bytes are not what the file says they are.
+fn batch_of_other_bytes(batch: u64, problem: String) -> Error {
+    Error::VarsBatchNotRead { batch, problem }
+}
+
+/// What arrow-rs said about a batch it could not read, as the error of the
+/// crate.
+///
+/// A file whose buffers are compressed with zstd is the case of its own that
+/// says so: no build of popnei carries the zstd crate, and arrow-rs asks for
+/// it with an error that says the feature is off, which is told from every
+/// other by its kind and by the name of the compression in it. The test on
+/// `tests/reference/vars/zstd.vars` is what holds this when arrow-rs changes
+/// what it says.
+fn batch_not_read(problem: &ArrowError, batch: u64) -> Error {
+    if let ArrowError::InvalidArgumentError(said) = problem
+        && said.contains("zstd")
+    {
+        return Error::VarsZstd;
+    }
+    batch_of_other_bytes(batch, problem.to_string())
 }
 
 /// The file at `path` could not be opened, with the path, which a binding
@@ -1687,17 +2316,18 @@ fn cut_short(problem: String) -> Error {
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::io::{Cursor, ErrorKind, Write};
-    use std::path::Path;
+    use std::fs::File;
+    use std::io::{BufReader, Cursor, ErrorKind, Write};
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
-    use arrow_array::builder::{Int8Builder, ListBuilder};
+    use arrow_array::builder::{Int8Builder, ListBuilder, StringBuilder};
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
     use arrow_array::{
         Array, ArrayRef, FixedSizeListArray, Float64Array, Int8Array, Int32Array, ListArray,
-        RecordBatch,
+        RecordBatch, StringArray, UInt64Array,
     };
     use arrow_buffer::ScalarBuffer;
     use arrow_ipc::reader::FileReader;
@@ -1705,14 +2335,15 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
 
     use super::{
-        ALLELES_COLUMN, BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, GTS_COLUMN, ITEM_FIELD,
-        MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region,
-        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
-        batches_from_json, chrom_column, id_column, metadata_as_json, metadata_from_json,
-        schema_of, write_vars,
+        ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
+        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN,
+        QUAL_COLUMN, Region, VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter,
+        alleles_column, batches_as_json, batches_from_json, block_of_the_batch, chrom_column,
+        id_column, metadata_as_json, metadata_from_json, projection_of, schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader};
     use crate::error::{Error, Result};
+    use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
     /// One row of the table of `cases.vcf` of "How it is verified" of
@@ -3228,6 +3859,112 @@ mod tests {
         VarsReader::new(Cursor::new(bytes))
     }
 
+    /// The path of one of the reference files, which live at the root of the
+    /// repository, beside the Python tests that read the same ones, and not
+    /// inside this crate.
+    fn reference(kind: &str, name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference")
+            .join(kind)
+            .join(name)
+    }
+
+    /// The reader over `tests/reference/vars/zstd.vars`, the four variants
+    /// of `cases.vcf` in one batch compressed with zstd, which
+    /// `tests/reference/vars/make_reference.py` writes with pyarrow because
+    /// no build of popnei can write one.
+    fn zstd_vars() -> VarsReader<Cursor<Vec<u8>>> {
+        let path = reference("vars", "zstd.vars");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(problem) => panic!("{path:?}: {problem}"),
+        };
+        opened(bytes).expect("zstd.vars is a vars file")
+    }
+
+    /// The reader over `many.vcf`, the 500 variants of 50 diploid
+    /// individuals of `docs/specs/io_vcf.md`, with the variants that failed
+    /// a filter among them.
+    fn many_vcf_reader(num_vars_per_block: Option<usize>) -> VcfReader<BufReader<File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        let path = reference("vcf", "many.vcf");
+        match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(problem) => panic!("{path:?}: {problem}"),
+        }
+    }
+
+    /// The bytes of the vars file of `many.vcf`, written from the VCF
+    /// reader with batches of that many variants.
+    fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
+        write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block)
+            .expect("many.vcf was written as a vars file")
+    }
+
+    /// Where the variants of those rows are, one entry for each of their
+    /// chromosomes, for the footer of a file built in a test.
+    fn regions_of(rows: &[Row]) -> Vec<Region> {
+        let mut regions: Vec<Region> = Vec::new();
+        for row in rows {
+            match regions.iter_mut().find(|region| region.chrom == row.chrom) {
+                Some(region) => {
+                    region.min_pos = region.min_pos.min(row.pos);
+                    region.max_pos = region.max_pos.max(row.pos);
+                }
+                None => regions.push(Region {
+                    chrom: row.chrom.to_owned(),
+                    min_pos: row.pos,
+                    max_pos: row.pos,
+                }),
+            }
+        }
+        regions
+    }
+
+    /// The bytes of a file whose batches hold that many of the four
+    /// variants of `cases.vcf`, in their order, with the entry of the
+    /// footer of each batch to match. A size of 0 gives a batch of no
+    /// variants, which no writer of popnei makes and another arrow program
+    /// can.
+    fn cases_in_batches_of(sizes: &[usize]) -> Vec<u8> {
+        let parts = FileParts::of_cases();
+        let fields: Vec<Field> = parts
+            .columns
+            .iter()
+            .map(|(field, _)| field.clone())
+            .collect();
+        let arrays: Vec<ArrayRef> = parts
+            .columns
+            .iter()
+            .map(|(_, array)| Arc::clone(array))
+            .collect();
+        let popnei = parts.popnei.clone().expect("the `popnei` key");
+        let schema = Arc::new(
+            Schema::new(fields).with_metadata(HashMap::from([(POPNEI_KEY.to_owned(), popnei)])),
+        );
+        let whole = RecordBatch::try_new(Arc::clone(&schema), arrays).expect("the four variants");
+        let mut writer = FileWriter::try_new(Vec::new(), &schema).expect("the file was started");
+        let mut batches = Vec::new();
+        let mut first = 0;
+        for size in sizes {
+            writer
+                .write(&whole.slice(first, *size))
+                .expect("the batch was written");
+            let rows = CASES.get(first..first.saturating_add(*size)).unwrap_or(&[]);
+            batches.push(BatchInfo {
+                num_vars: *size,
+                regions: regions_of(rows),
+            });
+            first = first.saturating_add(*size);
+        }
+        writer.write_metadata(POPNEI_BATCHES_KEY, batches_as_json(&batches));
+        writer.into_inner().expect("the file was finished")
+    }
+
     /// What the reader said about bytes it refused. That it took them is a
     /// failure of the test itself.
     fn refused(bytes: Vec<u8>) -> Error {
@@ -3744,5 +4481,755 @@ mod tests {
         };
         assert_eq!(*named, missing);
         assert_eq!(source.kind(), ErrorKind::NotFound);
+    }
+
+    /// Every vars file has a `gts` column, so a file without one is not a
+    /// vars file: a reader of this version cannot tell a file whose column
+    /// was lost from one that a later version of the format wrote without
+    /// it.
+    #[test]
+    fn a_file_with_no_gts_column_is_not_a_vars_file() {
+        let mut parts = FileParts::of_cases();
+        parts
+            .columns
+            .retain(|(field, _)| field.name() != GTS_COLUMN);
+
+        let problem = problem_of(opening(parts.written()));
+
+        assert!(problem.contains(&format!("`{GTS_COLUMN}`")), "{problem}");
+    }
+
+    /// One variant as a block gives it, for the comparison with the rows of
+    /// the tables of `cases.vcf` and of the variants that are not sorted:
+    /// the name of its chromosome and not its number, and `None` for the
+    /// quality of a variant that has none, which a block holds as a NaN.
+    ///
+    /// A field is `None` when the block has no such column, so a block that
+    /// lost a column is not one that holds another value there.
+    #[derive(Debug, PartialEq)]
+    struct ReadRow {
+        chrom: Option<String>,
+        pos: Option<u64>,
+        id: Option<String>,
+        alleles: Option<Vec<String>>,
+        qual: Option<Option<f32>>,
+        gts: Vec<i8>,
+    }
+
+    /// The variants of the blocks, in their order, with the names behind the
+    /// chromosome numbers taken from `chroms`, the table of the reader that
+    /// gave them.
+    fn rows_of(blocks: &[Block], chroms: &ChromTable) -> Vec<ReadRow> {
+        let mut rows = Vec::new();
+        for block in blocks {
+            for variant in block.variants() {
+                rows.push(ReadRow {
+                    chrom: variant.chrom().map(|number| {
+                        chroms
+                            .name(number)
+                            .unwrap_or_else(|| panic!("the name of the chromosome {number}"))
+                            .to_owned()
+                    }),
+                    pos: variant.pos(),
+                    id: variant.id().map(str::to_owned),
+                    alleles: variant.num_alleles().map(|num_alleles| {
+                        (0..num_alleles)
+                            .map(|allele| {
+                                variant
+                                    .allele(allele)
+                                    .unwrap_or_else(|| panic!("the allele {allele}"))
+                                    .to_owned()
+                            })
+                            .collect()
+                    }),
+                    qual: variant
+                        .qual()
+                        .map(|quality| (!quality.is_nan()).then_some(quality)),
+                    gts: variant.gts().to_vec(),
+                });
+            }
+        }
+        rows
+    }
+
+    /// One row of the tables of the variants as a block would give it, which
+    /// is what a round trip through the file compares with.
+    fn row_read(row: &Row) -> ReadRow {
+        ReadRow {
+            chrom: Some(row.chrom.to_owned()),
+            pos: Some(row.pos),
+            id: Some(row.id.to_owned()),
+            alleles: Some(row.alleles.iter().map(|text| (*text).to_owned()).collect()),
+            qual: Some(row.qual),
+            gts: row.gts.to_vec(),
+        }
+    }
+
+    /// Every block of a reader, until it has no more or it fails.
+    fn blocks_of(reader: &mut impl BlockReader) -> Result<Vec<Block>> {
+        let mut blocks = Vec::new();
+        while let Some(block) = reader.next_block()? {
+            blocks.push(block);
+        }
+        Ok(blocks)
+    }
+
+    /// How many variants each block holds.
+    fn num_vars_of(blocks: &[Block]) -> Vec<usize> {
+        blocks.iter().map(|block| block.num_vars).collect()
+    }
+
+    /// The blocks of the file in those bytes, asked for `needs`, and the
+    /// names of the chromosomes of the reader that gave them.
+    fn blocks_read(bytes: Vec<u8>, needs: Needs) -> (Vec<Block>, ChromTable) {
+        let mut reader = opened(bytes).expect("the bytes are a vars file");
+        reader.set_needs(needs);
+        let blocks = match blocks_of(&mut reader) {
+            Ok(blocks) => blocks,
+            Err(error) => panic!("the blocks of the file: {error}"),
+        };
+        for block in &blocks {
+            block.check().expect("a block of the reader");
+        }
+        (blocks, reader.chroms)
+    }
+
+    /// What the reader said about a file whose blocks it refused. That it
+    /// gave them is a failure of the test itself.
+    fn refused_at_the_block(bytes: Vec<u8>) -> Error {
+        let mut reader = opened(bytes).expect("the bytes are a vars file");
+        match blocks_of(&mut reader) {
+            Ok(blocks) => panic!("the file gave {count} blocks", count = blocks.len()),
+            Err(error) => error,
+        }
+    }
+
+    /// The four variants of the table of `cases.vcf`, written in batches of
+    /// three and read back: two blocks, of 3 variants and of 1, with every
+    /// field of every variant as it went in, the empty id of the last three
+    /// among them.
+    #[test]
+    fn the_four_variants_of_cases_vcf_are_read_back_as_two_blocks_with_every_field() {
+        let (blocks, chroms) = blocks_read(cases_written_in_batches_of(3), Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+        for block in &blocks {
+            assert_eq!(block.fields(), Needs::ALL);
+            assert_eq!(block.num_individuals, CASES_INDIVIDUALS);
+            assert_eq!(block.ploidy, CASES_PLOIDY);
+        }
+    }
+
+    /// The variants of a file are in no order in general, and the reader
+    /// gives them in the order of the file: the numbers of the chromosomes
+    /// are the order in which their names first appear among the variants
+    /// that were given, as in the VCF reader.
+    #[test]
+    fn the_chromosome_numbers_of_the_blocks_are_the_order_in_which_the_names_first_appear() {
+        let mut chroms = ChromTable::new();
+        let rows: Vec<&Row> = NOT_SORTED.iter().collect();
+        let block = block_of(&rows, &mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [4]);
+        let expected: Vec<ReadRow> = NOT_SORTED.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+        // `chr2` is the chromosome of the first variant of the file, so it
+        // is the number 0, although it comes second in the alphabet.
+        assert_eq!(chroms.name(0), Some("chr2"));
+        assert_eq!(chroms.name(1), Some("chr1"));
+        assert_eq!(
+            blocks[0].chrom.as_deref(),
+            Some([0, 1, 0, 1].as_slice()),
+            "the number of a name is looked up once and used for the variants that follow it"
+        );
+    }
+
+    /// A file holds the columns its source could fill, and a field whose
+    /// column the file lacks gives a block without that column: a source
+    /// whose blocks carried the genotypes alone gives a file of one column,
+    /// and the blocks read back hold the genotypes and nothing else,
+    /// although every field was asked for.
+    #[test]
+    fn a_file_of_the_genotypes_alone_gives_blocks_of_the_genotypes_alone() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.chrom = None;
+        block.pos = None;
+        block.id = None;
+        block.alleles = None;
+        block.qual = None;
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+
+        let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+        let expected: Vec<ReadRow> = CASES
+            .iter()
+            .map(|row| ReadRow {
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+                gts: row.gts.to_vec(),
+            })
+            .collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+        for block in &blocks {
+            assert_eq!(block.fields(), Needs::GTS);
+        }
+    }
+
+    /// The reader gives the batches of the file as they are, so a file
+    /// written with batches of a hundred variants is read back in blocks of
+    /// a hundred with no `reblock` in between.
+    #[test]
+    fn a_file_written_with_batches_of_a_hundred_gives_blocks_of_a_hundred() {
+        let bytes = many_vcf_written(Some(100));
+
+        let (blocks, _) = blocks_read(bytes, Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [100, 100, 100, 100, 100]);
+    }
+
+    /// `many.vcf` through the VCF reader, written and read back: the
+    /// genotypes, the chromosome names and the positions of the blocks of
+    /// the file are those of the blocks of the VCF, variant by variant.
+    ///
+    /// What the VCF reader gives is checked against bcftools and against
+    /// pyNei in `docs/specs/io_vcf.md` and in `docs/specs/block.md`, so this
+    /// carries those checks over to the file.
+    #[test]
+    fn the_blocks_of_many_vcf_are_read_back_from_the_file_they_were_written_to() {
+        let mut vcf = many_vcf_reader(None);
+        let from_the_vcf = blocks_of(&mut vcf).expect("the blocks of many.vcf");
+        let expected = rows_of(&from_the_vcf, vcf.chroms());
+        // The 500 variants of `many.vcf`, which is read with the variants
+        // that failed a filter among them, in one block of the size popnei
+        // chooses for 50 individuals.
+        assert_eq!(num_vars_of(&from_the_vcf), [500]);
+
+        let (blocks, chroms) = blocks_read(many_vcf_written(None), Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [500]);
+        let read = rows_of(&blocks, &chroms);
+        assert_eq!(read.len(), expected.len());
+        for (var, (read, expected)) in read.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(read, expected, "the variant {var} of many.vcf");
+        }
+        // The two chromosomes of the file, in the order of the VCF.
+        assert_eq!(chroms.name(0), Some("chr1"));
+        assert_eq!(chroms.name(1), Some("chr2"));
+    }
+
+    /// The reader is asked for the fields the consumer wants and gives a
+    /// block with those columns alone, and a change of them holds from the
+    /// next block, as `docs/specs/block.md` asks of every reader: the
+    /// projection of each batch is chosen when that batch is read.
+    #[test]
+    fn the_genotypes_alone_asked_for_give_blocks_with_no_other_column_and_a_change_holds_at_once() {
+        let mut reader = opened(cases_written_in_batches_of(3)).expect("the file is a vars file");
+        reader.set_needs(Needs::GTS);
+
+        let first = reader
+            .next_block()
+            .expect("the first block")
+            .expect("a block");
+        assert_eq!(first.fields(), Needs::GTS);
+        assert_eq!(first.num_vars, 3);
+        assert_eq!(
+            first.gts,
+            [
+                0, 0, 0, 1, 1, 1, MISSING, MISSING, 0, 1, MISSING, 0, 1, 2, 2, 1, 2, 2
+            ]
+        );
+        assert_eq!(first.chrom, None);
+        assert_eq!(first.pos, None);
+        assert_eq!(first.id, None);
+        assert_eq!(first.qual, None);
+
+        reader.set_needs(Needs::CHROM_POS | Needs::GTS);
+        let second = reader
+            .next_block()
+            .expect("the second block")
+            .expect("a block");
+        assert_eq!(second.fields(), Needs::CHROM_POS | Needs::GTS);
+        assert_eq!(second.pos.as_deref(), Some([400].as_slice()));
+        assert_eq!(second.id, None);
+        assert!(reader.next_block().expect("the end of the file").is_none());
+    }
+
+    /// Only the columns a consumer asks for are decompressed: a `Needs`
+    /// becomes a list of the places of those columns in the schema, which
+    /// arrow-rs walks past the buffers of the rest with, without
+    /// decompressing them.
+    ///
+    /// What shows it is `zstd.vars`, whose buffers no build of popnei can
+    /// decompress: a consumer that asks for no field gets its four variants
+    /// and no column, and one that asks for the genotypes gets the error of
+    /// a file compressed with zstd.
+    #[test]
+    fn only_the_columns_that_were_asked_for_are_decompressed() {
+        let mut reader = zstd_vars();
+        reader.set_needs(Needs::empty());
+
+        let block = reader
+            .next_block()
+            .expect("no buffer of the batch was decompressed")
+            .expect("a block");
+
+        assert_eq!(block.num_vars, 4);
+        assert_eq!(block.fields(), Needs::empty());
+        assert!(block.gts.is_empty());
+        assert_eq!(block.chrom, None);
+    }
+
+    /// The columns that a `Needs` asks the reader to decompress are those
+    /// of the file, in the order the file has them, and a field whose
+    /// column the file lacks is not among them.
+    #[test]
+    fn the_projection_of_a_needs_is_the_columns_of_the_file_it_asks_for() {
+        let six = VarsColumns {
+            chrom: Some(0),
+            pos: Some(1),
+            id: Some(2),
+            alleles: Some(3),
+            qual: Some(4),
+            gts: Some(5),
+        };
+        assert_eq!(
+            projection_of(Needs::ALL, &six),
+            vec![
+                (VarsColumn::Chrom, 0),
+                (VarsColumn::Pos, 1),
+                (VarsColumn::Id, 2),
+                (VarsColumn::Alleles, 3),
+                (VarsColumn::Qual, 4),
+                (VarsColumn::Gts, 5),
+            ]
+        );
+        assert_eq!(projection_of(Needs::GTS, &six), vec![(VarsColumn::Gts, 5)]);
+        assert_eq!(
+            projection_of(Needs::CHROM_POS, &six),
+            vec![(VarsColumn::Chrom, 0), (VarsColumn::Pos, 1)]
+        );
+        assert_eq!(projection_of(Needs::empty(), &six), Vec::new());
+
+        // A file of one column: every field is asked for and the only one
+        // the file has is given.
+        let one = VarsColumns {
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+            gts: Some(0),
+        };
+        assert_eq!(projection_of(Needs::ALL, &one), vec![(VarsColumn::Gts, 0)]);
+        assert_eq!(projection_of(Needs::ID, &one), Vec::new());
+
+        // The chromosome and the position are one field: a file with one of
+        // the two columns and not the other gives neither, since a block
+        // holds both or neither.
+        let half = VarsColumns {
+            chrom: Some(0),
+            pos: None,
+            ..one
+        };
+        assert_eq!(projection_of(Needs::ALL, &half), vec![(VarsColumn::Gts, 0)]);
+
+        // The columns are taken at the place they have in the file, which a
+        // column popnei does not know moves.
+        let moved = VarsColumns {
+            chrom: Some(3),
+            pos: Some(4),
+            id: None,
+            alleles: None,
+            qual: None,
+            gts: Some(1),
+        };
+        assert_eq!(
+            projection_of(Needs::ALL, &moved),
+            vec![
+                (VarsColumn::Gts, 1),
+                (VarsColumn::Chrom, 3),
+                (VarsColumn::Pos, 4),
+            ]
+        );
+    }
+
+    /// A batch of no variants is not given as a block, since
+    /// `docs/specs/block.md` says that a reader never gives one: the reader
+    /// takes the next batch, as a filter does with a block it emptied. No
+    /// writer of popnei makes such a batch and another arrow program can.
+    #[test]
+    fn a_batch_of_no_variants_between_two_others_is_passed_over() {
+        let (blocks, chroms) = blocks_read(cases_in_batches_of(&[2, 0, 2]), Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [2, 2]);
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+    }
+
+    /// A file with no variants is read and is not an error, as a VCF with no
+    /// variants is: it holds the two keys, one column and no batch, and its
+    /// reader gives no block at the first call and at every call after.
+    #[test]
+    fn a_file_with_no_variants_gives_no_block() {
+        let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let mut reader = opened(bytes).expect("the file with no batch is a vars file");
+
+        assert!(reader.next_block().expect("the empty file").is_none());
+        assert!(reader.next_block().expect("the empty file again").is_none());
+    }
+
+    /// A file written with no compression is read as the lz4 that popnei
+    /// writes is: another arrow program writes one, and the compression of a
+    /// batch is what the batch itself says.
+    #[test]
+    fn a_file_written_with_no_compression_is_read() {
+        let (blocks, chroms) = blocks_read(FileParts::of_cases().written(), Needs::ALL);
+
+        assert_eq!(num_vars_of(&blocks), [4]);
+        let expected: Vec<ReadRow> = CASES.iter().map(row_read).collect();
+        assert_eq!(rows_of(&blocks, &chroms), expected);
+    }
+
+    /// The two binding crates hold their reader as a `Box<dyn BlockReader>`,
+    /// because neither a pyo3 class nor a wasm-bindgen class can be generic,
+    /// so the reader of a vars file is one.
+    #[test]
+    fn a_vars_reader_gives_its_blocks_as_a_boxed_block_reader() {
+        let reader = opened(cases_written_in_batches_of(3)).expect("the file is a vars file");
+        let mut boxed: Box<dyn BlockReader> = Box::new(reader);
+
+        boxed.set_needs(Needs::GTS);
+        let blocks = blocks_of(&mut boxed).expect("the blocks of the file");
+
+        assert_eq!(boxed.individuals(), cases_individuals());
+        assert_eq!(boxed.ploidy(), 2);
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+    }
+
+    /// A null in a column where every variant has a value is an error that
+    /// names the column and the variant, counted from 1 over the whole file
+    /// and not inside its batch, so that the message points at the variant a
+    /// user counts.
+    #[test]
+    fn a_null_position_names_the_column_and_the_variant() {
+        let mut parts = FileParts::of_cases();
+        let positions: ArrayRef = Arc::new(UInt64Array::from(vec![
+            Some(100),
+            Some(200),
+            None,
+            Some(400),
+        ]));
+        *parts.column(POS_COLUMN) = (Field::new(POS_COLUMN, DataType::UInt64, true), positions);
+
+        let error = refused_at_the_block(parts.written());
+
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose third position is a null gave {error}");
+        };
+        assert_eq!((column, var), ("pos", 3));
+        let message = Error::VarsNullValue { column, var }.to_string();
+        assert!(message.contains("`pos`"), "{message}");
+        assert!(message.contains("variant 3"), "{message}");
+    }
+
+    /// A null in the chromosome, in the alleles or in the genotypes is an
+    /// error too, and a null inside one of the two lists is a null of that
+    /// column: arrow gives the values inside a list a field of their own
+    /// that can hold nulls, and no value popnei writes is one.
+    #[test]
+    fn a_null_chromosome_a_null_allele_and_a_null_genotype_are_errors_with_their_column() {
+        let mut parts = FileParts::of_cases();
+        let names: ArrayRef = Arc::new(StringArray::from(vec![
+            Some("chr1"),
+            None,
+            Some("chr1"),
+            Some("chr1"),
+        ]));
+        *parts.column(CHROM_COLUMN) = (Field::new(CHROM_COLUMN, DataType::Utf8, true), names);
+        let error = refused_at_the_block(parts.written());
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose second chromosome is a null gave {error}");
+        };
+        assert_eq!((column, var), ("chrom", 2));
+
+        // A null among the alleles of the first variant, where the file
+        // holds the list and the allele inside it is the null.
+        let mut parts = FileParts::of_cases();
+        let mut alleles = ListBuilder::new(StringBuilder::new());
+        for row in 0..4 {
+            match row {
+                0 => {
+                    alleles.values().append_value("A");
+                    alleles.values().append_null();
+                }
+                _ => {
+                    alleles.values().append_value("A");
+                    alleles.values().append_value("T");
+                }
+            }
+            alleles.append(true);
+        }
+        *parts.column(ALLELES_COLUMN) = (
+            Field::new(ALLELES_COLUMN, alleles_type(), false),
+            Arc::new(alleles.finish()),
+        );
+        let error = refused_at_the_block(parts.written());
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose first variant has a null allele gave {error}");
+        };
+        assert_eq!((column, var), ("alleles", 1));
+
+        // A null among the genotypes of the last variant, which is an
+        // allele that was not called written as a null and not as the -1
+        // that popnei writes.
+        let mut parts = FileParts::of_cases();
+        let mut genotypes = Int8Builder::new();
+        for allele in 0..24 {
+            match allele {
+                20 => genotypes.append_null(),
+                _ => genotypes.append_value(0),
+            }
+        }
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true));
+        let column =
+            FixedSizeListArray::try_new(Arc::clone(&inside), 6, Arc::new(genotypes.finish()), None)
+                .expect("the genotypes with a null");
+        *parts.column(GTS_COLUMN) = (
+            Field::new(GTS_COLUMN, DataType::FixedSizeList(inside, 6), false),
+            Arc::new(column),
+        );
+        let error = refused_at_the_block(parts.written());
+        let Error::VarsNullValue { column, var } = error else {
+            panic!("the file whose last variant has a null genotype gave {error}");
+        };
+        assert_eq!((column, var), ("gts", 4));
+    }
+
+    /// A null `id` is the empty id and a null `qual` is a variant with no
+    /// quality, which a block holds as a NaN: both are what any other
+    /// program that opens the file writes for a value that is not there, and
+    /// neither is an error.
+    #[test]
+    fn a_null_id_is_the_empty_id_and_a_null_quality_is_not_a_number() {
+        let (blocks, _) = blocks_read(cases_written_in_batches_of(4), Needs::ALL);
+
+        let ids = blocks[0].id.as_ref().expect("the ids of the block");
+        assert_eq!(ids, &["rs1", "", "", ""]);
+        let quals = blocks[0].qual.as_ref().expect("the qualities of the block");
+        assert!(quals[1].is_nan(), "the second quality is {}", quals[1]);
+        // The same qualities with the NaN of the variant that has none as a
+        // `None`, which is how the quality of a variant is compared without
+        // comparing two NaNs.
+        let there: Vec<Option<f32>> = quals
+            .iter()
+            .map(|quality| (!quality.is_nan()).then_some(*quality))
+            .collect();
+        assert_eq!(there, [Some(29.5), None, Some(67.0), Some(47.0)]);
+    }
+
+    /// A batch that does not hold the variants its entry of the footer gives
+    /// is refused when it is read, with the batch and both counts, so that
+    /// the number of variants the file announces, which is read from those
+    /// entries with no batch read, is never a wrong one that goes unnoticed.
+    #[test]
+    fn a_batch_of_another_number_of_variants_than_its_entry_of_the_footer_is_refused() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei_batches = Some(batches_as_json(&[BatchInfo {
+            num_vars: 3,
+            regions: vec![Region {
+                chrom: "chr1".to_owned(),
+                min_pos: 100,
+                max_pos: 300,
+            }],
+        }]));
+
+        let error = refused_at_the_block(parts.written());
+
+        let Error::VarsBatchNumVars {
+            batch,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the batch of four variants whose entry says three gave {error}");
+        };
+        assert_eq!((batch, found, expected), (1, 4, 3));
+    }
+
+    /// No build of popnei carries the zstd crate, so a file whose buffers
+    /// are compressed with zstd is refused: it opens, because the two keys
+    /// are not compressed, and the error comes with the first block, because
+    /// arrow decompresses a batch when it reads it.
+    #[test]
+    fn a_file_compressed_with_zstd_opens_and_gives_its_error_at_the_first_block() {
+        let mut reader = zstd_vars();
+
+        // The two keys of the file are read although no batch can be.
+        assert_eq!(reader.num_vars(), 4);
+        assert_eq!(reader.metadata().individuals, cases_individuals());
+
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the file compressed with zstd gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::VarsZstd),
+            "the file compressed with zstd gave {error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("zstd"), "{message}");
+        assert!(message.contains("lz4"), "{message}");
+        assert!(
+            reader
+                .next_block()
+                .expect("the reader gave its error once")
+                .is_none()
+        );
+    }
+
+    /// A batch whose bytes are not what the file says they are is a file
+    /// that was damaged after it was written, which the reader refuses with
+    /// the batch and what arrow-rs said, instead of giving the variants it
+    /// can still read.
+    #[test]
+    fn a_batch_that_arrow_cannot_decode_is_a_file_that_was_damaged() {
+        let mut bytes = cases_written_in_batches_of(4);
+        let at = opened(bytes.clone())
+            .expect("the file is a vars file")
+            .blocks[0];
+        // The bytes of the message of the batch, which say where its buffers
+        // are and how long they are.
+        let start = usize::try_from(at.offset).expect("the offset of the batch");
+        for byte in 8..24 {
+            if let Some(place) = bytes.get_mut(start.saturating_add(byte)) {
+                *place = 0xff;
+            }
+        }
+
+        let error = refused_at_the_block(bytes);
+
+        let Error::VarsBatchNotRead { batch, problem } = &error else {
+            panic!("the file whose batch was damaged gave {error}");
+        };
+        assert_eq!(*batch, 1);
+        assert!(!problem.is_empty(), "the error says nothing");
+        let message = error.to_string();
+        assert!(message.contains("damaged"), "{message}");
+    }
+
+    /// After an error a reader gives no block at every call, as
+    /// `docs/specs/block.md` asks: one that went on would give the variants
+    /// that follow a batch it could not read as if nothing had happened.
+    #[test]
+    fn a_reader_that_failed_gives_no_block_at_every_call_after() {
+        let mut parts = FileParts::of_cases();
+        let positions: ArrayRef = Arc::new(UInt64Array::from(vec![
+            Some(100),
+            None,
+            Some(300),
+            Some(400),
+        ]));
+        *parts.column(POS_COLUMN) = (Field::new(POS_COLUMN, DataType::UInt64, true), positions);
+        parts.num_batches = 2;
+        parts.popnei_batches = Some(batches_as_json(&[
+            BatchInfo {
+                num_vars: 4,
+                regions: Vec::new(),
+            },
+            BatchInfo {
+                num_vars: 4,
+                regions: Vec::new(),
+            },
+        ]));
+        let mut reader = opened(parts.written()).expect("the file is a vars file");
+
+        let error = match reader.next_block() {
+            Ok(block) => panic!("the batch with a null position gave {block:?}"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, Error::VarsNullValue { .. }),
+            "the batch with a null position gave {error}"
+        );
+
+        assert!(
+            reader
+                .next_block()
+                .expect("the reader gave its error once")
+                .is_none()
+        );
+        assert!(
+            reader
+                .next_block()
+                .expect("and at every call after")
+                .is_none()
+        );
+    }
+
+    /// A batch whose arrays are a window into longer ones is read through
+    /// that window: arrow gives an array an offset when it is sliced, and
+    /// the values of a column are taken through it and not from the start of
+    /// its buffer.
+    ///
+    /// The decoder of arrow-rs gives the arrays of a batch of a file with no
+    /// offset, so the file cannot hold one and this is made at the block
+    /// that one batch becomes.
+    #[test]
+    fn a_batch_whose_arrays_are_a_window_into_longer_ones_is_read_through_it() {
+        let parts = FileParts::of_cases();
+        let fields: Vec<Field> = parts
+            .columns
+            .iter()
+            .map(|(field, _)| field.clone())
+            .collect();
+        let arrays: Vec<ArrayRef> = parts
+            .columns
+            .iter()
+            .map(|(_, array)| array.slice(1, 2))
+            .collect();
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
+            .expect("the window is a batch");
+        let wanted = projection_of(
+            Needs::ALL,
+            &VarsColumns {
+                chrom: Some(0),
+                pos: Some(1),
+                id: Some(2),
+                alleles: Some(3),
+                qual: Some(4),
+                gts: Some(5),
+            },
+        );
+        let mut chroms = ChromTable::new();
+
+        let block = block_of_the_batch(
+            &batch,
+            &wanted,
+            &metadata_of_cases(),
+            &mut chroms,
+            BatchPlace {
+                batch: 1,
+                vars_before: 0,
+            },
+        )
+        .expect("the window of two variants is a block");
+
+        block.check().expect("the block of the window");
+        assert_eq!(block.num_vars, 2);
+        let expected: Vec<ReadRow> = CASES[1..3].iter().map(row_read).collect();
+        assert_eq!(rows_of(&[block], &chroms), expected);
     }
 }
