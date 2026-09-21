@@ -372,7 +372,8 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
 ///
 /// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
 /// above 1, and what [`FilteredReader::new`] refuses, a criterion of the
-/// kind of one before it in `criteria`. No block was read then.
+/// kind of one before it in `criteria` or of a filter that `reader` holds
+/// already, which a chain built over a chain has. No block was read then.
 pub fn chain_of(
     reader: Box<dyn BlockReader>,
     criteria: &[VarFilteringCriterion],
@@ -382,6 +383,37 @@ pub fn chain_of(
         chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
     }
     Ok(chain)
+}
+
+/// The error of a second filter of one kind, when `new` is of the kind of
+/// one of `set`, the criteria of the filters that are set already.
+///
+/// Two threshold filters of one kind keep the variants that the stricter of
+/// the two keeps alone, so the second says that the user has lost track of
+/// what their variants carry. Both binding crates call this when a user
+/// adds a filter to a `Variants`, where no reader exists yet and the steps
+/// are what says which filters are set.
+///
+/// # Errors
+///
+/// When a criterion of `set` has the kind of `new`. The error carries both
+/// thresholds, the one of `new` and the one that is set, where the same
+/// error from [`FilteredReader::new`] carries the first alone: a chain of
+/// readers says which kinds of filter it holds and not with which
+/// thresholds.
+pub fn refuse_a_second_filter_of_a_kind(
+    set: &[VarFilteringCriterion],
+    new: VarFilteringCriterion,
+) -> Result<()> {
+    let kind = new.kind();
+    if let Some(that_is_set) = set.iter().find(|criterion| criterion.kind() == kind) {
+        return Err(Error::VarFilterOfAKindThatIsSet {
+            kind,
+            threshold: new.threshold(),
+            threshold_that_is_set: Some(that_is_set.threshold()),
+        });
+    }
+    Ok(())
 }
 
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
@@ -553,7 +585,7 @@ mod tests {
 
     use super::{
         FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, chain_of,
-        keep_of_the_rows, keep_of_the_rows_one_by_one,
+        keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -1604,8 +1636,10 @@ mod tests {
 
         let blocks = blocks_of(&mut chain).expect("the blocks");
 
-        // The variants 4 and 6 have nothing called and no filter of the
-        // three keeps them.
+        // The variants 4 and 6 have no called genotype, so neither has an
+        // observed heterozygosity and a filter of it would keep neither at
+        // any threshold: they come out here because no filter is over the
+        // source.
         assert_eq!(positions_of_blocks(&blocks), [1, 2, 3, 4, 5, 6]);
         assert!(chain.filtering_stats().is_empty());
     }
@@ -1633,6 +1667,68 @@ mod tests {
             refused(&[MaxMaf(0.8), MaxMissingRate(0.04), MaxMaf(0.5)]).contains("0.5"),
             "a criterion of another kind between the two"
         );
+    }
+
+    /// A criterion of the kind of a filter that the reader handed in holds
+    /// is refused too: a binding crate reaches it by building a chain over
+    /// a chain, and it is `FilteredReader::new` that says which kinds a
+    /// reader holds.
+    #[test]
+    fn chain_of_a_criterion_of_a_kind_the_reader_holds_is_the_error_of_the_reader() {
+        let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+        let with_a_maf_filter = chain_of(source, &[MaxMaf(0.8)]).expect("the chain of one");
+
+        let error = chain_of(with_a_maf_filter, &[MaxMissingRate(0.04), MaxMaf(0.95)])
+            .err()
+            .expect("the chain over it was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "maf", .. }),
+            "{message}"
+        );
+        assert!(message.contains("0.95"), "{message}");
+    }
+
+    /// The criteria that are set and a new one, which is what a binding
+    /// crate has when a user adds a filter: no reader exists then, and the
+    /// steps of the `Variants` are the criteria that are set.
+    #[test]
+    fn refuse_a_second_filter_of_a_kind_takes_a_kind_that_is_not_set_and_refuses_one_that_is() {
+        let set = [MaxMissingRate(0.04), MaxMaf(0.8)];
+
+        assert!(refuse_a_second_filter_of_a_kind(&set, MaxObsHet(0.5)).is_ok());
+        assert!(refuse_a_second_filter_of_a_kind(&[], MaxMaf(0.95)).is_ok());
+        // A criterion of another kind between the two changes nothing: the
+        // kind is looked for among all of them.
+        assert!(
+            refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8), MaxObsHet(0.5)], MaxMaf(0.95)).is_err()
+        );
+    }
+
+    /// The message names the kind and both thresholds, the one that is set
+    /// and the one that was written, which is what a user needs in order to
+    /// see which of their cells they ran twice.
+    #[test]
+    fn refuse_a_second_filter_of_a_kind_names_the_kind_and_both_thresholds() {
+        let error = refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8)], MaxMaf(0.95))
+            .expect_err("the second maf filter was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterOfAKindThatIsSet {
+                    kind: "maf",
+                    threshold_that_is_set: Some(_),
+                    ..
+                }
+            ),
+            "{message}"
+        );
+        assert!(message.contains("maf"), "{message}");
+        assert!(message.contains("0.95"), "{message}");
+        assert!(message.contains("0.8"), "{message}");
     }
 
     /// A threshold that is not a number from 0 to 1 is the error of

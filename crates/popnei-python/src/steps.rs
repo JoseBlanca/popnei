@@ -24,7 +24,7 @@ use std::sync::{Mutex, MutexGuard};
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::filters::{VarFilter, VarFilteringCriterion};
+use popnei::filters::{VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind};
 
 use crate::errors::PyPopneiError;
 use crate::source::threshold_of;
@@ -56,14 +56,6 @@ impl Step {
     fn args(self) -> Vec<(&'static str, f64)> {
         match self {
             Step::Filter(criterion) => vec![(argument_of(criterion), criterion.threshold())],
-        }
-    }
-
-    /// The threshold a filter compares the number of a variant with, which
-    /// the refusal of a second filter of its kind names.
-    fn threshold(self) -> f64 {
-        match self {
-            Step::Filter(criterion) => criterion.threshold(),
         }
     }
 }
@@ -176,29 +168,17 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, which the core is
-    /// what says: the filter built here is dropped, and every pass builds
+    /// When the threshold is not a number from 0 to 1, and when the list
+    /// holds a filter of the kind of `criterion` already. The core is what
+    /// says both: the filter built here is dropped, and every pass builds
     /// its own from the criterion, so the rule that a threshold has to keep
-    /// is written in one place. And when the list holds a filter of the
-    /// kind of `criterion` already, since two threshold filters of one kind
-    /// keep the variants that the stricter of them keeps alone. After
-    /// either, the list is as it was.
+    /// and which filters can stand together are written in one place. The
+    /// threshold is refused first, since it is wrong whatever the list
+    /// holds. After either, the list is as it was.
     fn add(&self, criterion: VarFilteringCriterion) -> Result<(), PyPopneiError> {
         VarFilter::new(criterion).map_err(|error| under_the_argument(error, criterion))?;
         let mut steps = self.locked()?;
-        if let Some(set) = steps.iter().find(|step| step.kind() == criterion.kind()) {
-            // The core leaves the threshold of the filter that is set out,
-            // because a chain of readers says which kinds it holds and not
-            // with which thresholds. Here the steps are at hand, so the
-            // user reads the number they set as well as the one they wrote.
-            return Err(PyPopneiError::Core(
-                popnei::Error::VarFilterOfAKindThatIsSet {
-                    kind: criterion.kind(),
-                    threshold: criterion.threshold(),
-                    threshold_that_is_set: Some(set.threshold()),
-                },
-            ));
-        }
+        refuse_a_second_filter_of_a_kind(&criteria_of(&steps), criterion)?;
         steps.push(Step::Filter(criterion));
         Ok(())
     }
@@ -254,11 +234,19 @@ pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
 ) -> Result<Box<dyn BlockReader>, popnei::Error> {
-    let criteria: Vec<VarFilteringCriterion> = steps
+    popnei::filters::chain_of(reader, &criteria_of(steps))
+}
+
+/// What each step filters by, in the order of the steps: what the core is
+/// given, out of what the steps of this crate hold.
+///
+/// The match is what stops this crate from building when a step of another
+/// kind is added and nothing here is told what to filter by for it.
+fn criteria_of(steps: &[Step]) -> Vec<VarFilteringCriterion> {
+    steps
         .iter()
         .map(|step| match *step {
             Step::Filter(criterion) => criterion,
         })
-        .collect();
-    popnei::filters::chain_of(reader, &criteria)
+        .collect()
 }
