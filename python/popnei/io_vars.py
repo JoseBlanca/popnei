@@ -44,4 +44,13 @@ def write_vars(
     away; and every column is written, where pyNei writes the ones its
     chunks happen to carry.
     """
+    if not isinstance(variants, Variants):
+        # The path of the VCF where the variants of it go is the mistake
+        # that is easiest to make, and what it gave was the `AttributeError`
+        # of an object with no source inside it.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`write_vars` writes the variants of a source: give it what "
+            f"`open_vcf` gives, write_vars(open_vcf(vcf_path), path)"
+        )
     _core.write_vars(variants._source, path, num_vars_per_block)

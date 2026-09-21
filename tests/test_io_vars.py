@@ -530,6 +530,25 @@ def test_write_vars_refuses_a_path_that_a_file_is_already_at(
     assert path.read_bytes() == written
 
 
+def test_write_vars_says_what_it_takes_when_it_is_given_a_path(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A user who gives the VCF where the variants of it go.
+
+    It is the easiest mistake to make, and what it gave was the
+    ``AttributeError`` of a `str` with no ``_source``. The refusal names the
+    argument, says what was given and says that the variants come from
+    `open_vcf`, as the refusal of a `fields` that is one name does.
+    """
+    path = tmp_path / "cases.vars"
+
+    with pytest.raises(TypeError, match="open_vcf") as refusal:
+        write_vars(str(reference_vcf_dir / "cases.vcf"), path)
+
+    assert "variants" in str(refusal.value)
+    assert not path.exists()
+
+
 def test_what_a_user_reads_of_write_vars_is_written_in_the_package() -> None:
     """The private module explains nothing; the package is the API.
 
