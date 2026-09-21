@@ -196,14 +196,16 @@ compiler drop the bounds checks.
   all a `ValueError`, as is a case that nobody has written yet. The
   defects are the three with which `docs/specs/block.md` says that a
   reader has one, blocks of a source that do not hold the same dataset, a
-  block whose arrays are not of its size and a block of no variants, and
-  the parse of a batch of lines that did not come back. The `OSError` is
+  block whose arrays are not of its size and a block of no variants; the
+  number of values a filter gave `retain_vars`, which is one for each
+  variant of its block; and the parse of a batch of lines that did not
+  come back. The `OSError` is
   built with the number the system gave, which makes it the
   `FileNotFoundError` or the `PermissionError` of that number, and with no
   number when nothing of the system refused anything: a gzip stream that
   ends in the middle, a bgzipped file with no mark of its end, a member
   that is corrupted. The spec of a module lists its cases with the
-  exception each one is, `docs/specs/io_vcf.md` the nine of the VCF
+  exception each one is, `docs/specs/io_vcf.md` the ten of the VCF
   reader.
 - In Python every error of a file names the file: the message of a
   `ValueError` and of a `RuntimeError` starts with its path, and an

@@ -138,21 +138,34 @@ September 2026, which "Errors, and no panics" of `SKILL.md` gives: a
 not what a VCF holds is, and which a case nobody has written yet gets; a
 `RuntimeError` for a defect of popnei, which is a defect of this crate, one
 of the three cases with which `docs/specs/block.md` says that a reader has
-one, or the parse of a batch of lines that did not come back; and an
-`OSError` for a file
-that cannot be read, that was cut short or that is corrupted. The `OSError`
+one, the number of values a filter gave `retain_vars`, or the parse of a
+batch of lines that did not come back; and an `OSError` for a file that
+cannot be read, that was cut short or that is corrupted. The `OSError`
 is built with the number the system gave, so that it is the
 `FileNotFoundError`, the `IsADirectoryError` or the `PermissionError` of
 that number, and with `None` in its place when nothing of the system
 refused anything, which leaves an `OSError` whose `errno` is `None`. Either
 way it carries the file in `filename`.
 
-The message is the `Display` of the core error, which has the line, the
-column and the value, with the path of the file before it: `<path>: <what
-the core says>`. An `OSError` is the exception: Python prints `filename`
-after the message, so naming the file there too would say it twice. An
-argument that this crate or the core refuses, `fields`, `ploidy`,
-`num_vars_per_block`, names no file.
+What the message is depends on the exception, and a new case follows the
+one it is:
+
+- A `ValueError` and a `RuntimeError` of a file: the `Display` of the core
+  error, which has the line, the column and the value, with the path before
+  it, `<path>: <what the core says>`. The path is `to_string_lossy` there,
+  since a message is text and a name of a file is bytes.
+- An `OSError`: the `Display` of the core error with no path, because
+  Python prints `filename` after the message and would say it twice. The
+  file goes in as an `OsString`, which arrives as the text the standard
+  library would give, so `error.filename` is the path the caller wrote.
+- The two `OSError`s that wrap a `std::io::Error`, a file that could not be
+  opened and a read that failed: this crate writes the message itself, "the
+  file could not be opened: " and what the system said, without the number
+  that Rust puts at the end of it, `(os error 2)`, which Python prints of
+  its own in `[Errno 2]`.
+- An argument that this crate or the core refuses, `fields`, `ploidy`,
+  `num_vars_per_block`, names no file: what a user wrote is wrong whatever
+  file is read.
 
 A panic in Rust reaches Python as `PanicException`, which derives from
 `BaseException`, is not caught by `except Exception`, and usually ends the
