@@ -10,9 +10,12 @@
 //! calculation after another. What they have in common is [`OpenSource`]:
 //! the path the errors of a pass name, and the reader of one pass.
 //!
-//! [`Blocks`] is that pass, whichever source it came from: it owns a reader
-//! of blocks of the core with a `Reblock` at its end, which gives the blocks
-//! the size that was asked for.
+//! [`Blocks`] is that pass, whichever source it came from: it owns the chain
+//! of readers of the pass, the source with a filter over it for each step of
+//! the `Variants` and a `Reblock` at its end, which gives the blocks the
+//! size that was asked for. It counts the variants of the blocks it gives
+//! and reads the counts of the filters from that chain, which is the
+//! `PassStats` of `docs/specs/variant.md`.
 //!
 //! The columns of a block leave as they are in the core: the genotypes as a
 //! numpy array that holds the allocation the core filled, the positions and
@@ -28,14 +31,24 @@ use numpy::ndarray::Array3;
 use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyString, PyTuple};
+use pyo3::types::{PyBool, PyString, PyTuple};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
 use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
+use crate::steps::{Steps, chain_of};
 use crate::vars::VarsSource;
 use crate::vcf::VcfSource;
+
+/// The counts of one pass on their way to Python: how many variants it has
+/// given, and, for each filter of its chain, its kind, how many variants it
+/// was given and how many it kept.
+///
+/// The filters come in the order of the chain, the outermost first, which is
+/// the reverse of the order of the steps: the package turns them around, as
+/// "How it runs" of the counts of `docs/specs/filters.md` says.
+pub(crate) type PassCounts = (u64, Vec<(&'static str, u64, u64)>);
 
 /// The columns of one block on their way to Python: the genotypes, and then
 /// the chromosomes, the positions, the ids, the alleles and the qualities,
@@ -102,8 +115,11 @@ pub(crate) fn source_of<'a>(
     .into())
 }
 
-/// One pass over `source`, whose blocks hold `fields` besides the
-/// genotypes, `num_vars_per_block` variants each.
+/// One pass over `source`, through the steps of `steps`, whose blocks hold
+/// `fields` besides the genotypes, `num_vars_per_block` variants each.
+///
+/// The steps are taken as they are here, when the pass starts: one added
+/// while it runs holds from the next pass, as `docs/specs/filters.md` says.
 ///
 /// # Errors
 ///
@@ -115,11 +131,13 @@ pub(crate) fn blocks_of(
     source: &dyn OpenSource,
     fields: Vec<String>,
     num_vars_per_block: Option<&Bound<'_, PyAny>>,
+    steps: &Steps,
 ) -> Result<Blocks, PyPopneiError> {
     let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
     let num_vars_per_block = num_vars_per_block
         .map(|asked_for| count_of("num_vars_per_block", asked_for))
         .transpose()?;
+    let steps = steps.of_a_pass()?;
     let path = source.path();
     let reader = py
         .detach(|| -> Result<Box<dyn BlockReader>, popnei::Error> {
@@ -130,28 +148,38 @@ pub(crate) fn blocks_of(
             // the vars file whose batches were written at one size and a
             // filter among them, and it is what `docs/specs/block.md` puts
             // at the end of every `iter_blocks`.
-            let mut reader = source.reader(num_vars_per_block)?;
-            reader.set_needs(needs.union(Needs::GTS));
-            Ok(Box::new(Reblock::new(reader, num_vars_per_block)?))
+            let reader = source.reader(num_vars_per_block)?;
+            // The fields are asked of the whole chain and not of the source
+            // alone: a filter asks its source for what it was asked for and
+            // for the genotypes, which it needs itself.
+            let mut chain = chain_of(reader, &steps)?;
+            chain.set_needs(needs.union(Needs::GTS));
+            Ok(Box::new(Reblock::new(chain, num_vars_per_block)?))
         })
         .map_err(|error| PyPopneiError::of_the_file(error, path))?;
     Ok(Blocks {
         pass: Mutex::new(Pass {
             reader,
             finished: false,
+            num_vars: 0,
         }),
         path: path.to_path_buf(),
     })
 }
 
-/// The reader of one pass and whether the pass is over: they are read and
-/// written together, under one lock, because a pass that is over gives no
-/// block whatever its reader would say.
+/// The reader of one pass, whether the pass is over and how many variants
+/// it has given: they are read and written together, under one lock,
+/// because a pass that is over gives no block whatever its reader would
+/// say, and the count is of the blocks that reader gave.
 struct Pass {
     reader: Box<dyn BlockReader>,
     /// Whether the reader has no more blocks or a block was lost with an
     /// error. After either there is no block.
     finished: bool,
+    /// The variants of the blocks the pass has given, which is the
+    /// `num_vars` a user reads in its counts. A block that was lost with an
+    /// error is not among them: it never reached the user.
+    num_vars: u64,
 }
 
 // One pass over a source of variants, which gives them block by block.
@@ -179,7 +207,36 @@ impl Blocks {
         // `docs/specs/block.md` asks of every reader that it not do.
         py.check_signals()?;
         self.columns_of_the_next_block(py)
-            .inspect_err(|_| self.finish())
+            .inspect_err(|_| self.finish(py))
+    }
+
+    // How many variants the pass has given, and what each filter of it was
+    // given and kept, the outermost filter first. It is read while the pass
+    // runs too, and it then holds what has been read up to there.
+    fn pass_stats(&self, py: Python<'_>) -> Result<PassCounts, PyPopneiError> {
+        // The interpreter is released while the lock is waited for: the
+        // thread that reads a block holds that lock for the whole read,
+        // inside its own `detach`, and a thread that waited for it with the
+        // interpreter in hand would stop every other thread of the process
+        // for as long as that read takes, seconds for a block of a big
+        // file.
+        py.detach(|| {
+            let pass = self.pass.lock().map_err(|_| {
+                PyPopneiError::broken_of_the_file(
+                    "the counts of this pass cannot be read: a panic left the reader half \
+                     way through a block"
+                        .to_string(),
+                    &self.path,
+                )
+            })?;
+            let filtering = pass
+                .reader
+                .filtering_stats()
+                .into_iter()
+                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+                .collect();
+            Ok((pass.num_vars, filtering))
+        })
     }
 }
 
@@ -241,17 +298,59 @@ impl Blocks {
         let qual = qual
             .map(|qual| read_only(qual.into_pyarray(py)))
             .transpose()?;
+        self.counted(py, num_vars);
         Ok(Some((gts, chrom, pos, id, alleles, qual)))
+    }
+
+    /// The `num_vars` variants of a block that is going out, added to the
+    /// count of the pass.
+    ///
+    /// They are counted here, where the block is the user's, and not where
+    /// it was read: a block that was lost with an error, and one the pass
+    /// had read when a Ctrl-C arrived, never reached them. The counts of
+    /// the filters are another matter, since a filter sits under the
+    /// `Reblock` and has counted that block already, which "A pass that was
+    /// not finished" of `docs/specs/filters.md` says a user reads.
+    ///
+    /// A lock that a panic left broken is the end of the pass, which the
+    /// read of the next block reports: a count that was not added is not
+    /// what the user is told about then.
+    ///
+    /// The interpreter is released while the lock is waited for, as it is
+    /// in [`Blocks::pass_stats`]: another thread may hold it for a whole
+    /// block.
+    fn counted(&self, py: Python<'_>, num_vars: usize) {
+        py.detach(|| self.count(num_vars));
+    }
+
+    /// The `num_vars` variants added to the count, with the interpreter
+    /// already released.
+    fn count(&self, num_vars: usize) {
+        if let Ok(mut pass) = self.pass.lock() {
+            // A variant is a row of a file, so a pass of the
+            // 18446744073709551615 variants this count holds is more rows
+            // than any file system takes: the sum cannot reach its end. The
+            // conversion cannot fail either: a `usize` is 64 bits natively
+            // and 32 in wasm, and both fit in a `u64`.
+            pass.num_vars = pass
+                .num_vars
+                .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+        }
     }
 
     /// The pass is over, and every call after this one gives no block.
     ///
     /// A lock that a panic left broken is already the end of the pass: every
     /// read of it is the error of a reader that cannot be read any more.
-    fn finish(&self) {
-        if let Ok(mut pass) = self.pass.lock() {
-            pass.finished = true;
-        }
+    ///
+    /// The interpreter is released while the lock is waited for, as it is in
+    /// [`Blocks::pass_stats`]: another thread may hold it for a whole block.
+    fn finish(&self, py: Python<'_>) {
+        py.detach(|| {
+            if let Ok(mut pass) = self.pass.lock() {
+                pass.finished = true;
+            }
+        });
     }
 
     /// The next block of the reader, with the chromosomes of its variants,
@@ -345,6 +444,70 @@ pub(crate) fn count_of(
             })
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// The `value` that was given for the argument `name`, as the threshold of
+/// a filter: the one place where the number a user compares their variants
+/// with crosses from Python.
+///
+/// The object is taken as it is and converted here, and not by the
+/// signature, because the conversion of pyo3 answers before any rule of
+/// popnei: it takes `True` as the number 1 with no word, and what it says of
+/// a string names neither the argument nor what was given.
+///
+/// # Errors
+///
+/// When the object is no number, a string, `None` and a truth value among
+/// them, which is a `TypeError` that names the argument and what was given:
+/// `True` and `False` say nothing about the rate a user wants, and a
+/// threshold of 1 is not what whoever wrote one meant. And when it is a
+/// whole number that no float holds, which is the error of a threshold out
+/// of range, since a threshold is a number from 0 to 1.
+pub(crate) fn threshold_of(
+    name: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<f64, PyPopneiError> {
+    // A truth value is a whole number in Python, so it converts to 1 or 0
+    // and has to be refused before the conversion is asked for.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_number(name, value));
+    }
+    match value.extract::<f64>() {
+        Ok(threshold) => Ok(threshold),
+        // A whole number of Python is of any size, and one that no float
+        // holds is larger than 1 or smaller than -1: what is wrong with it
+        // is what is wrong with 1.5, and a user reads that.
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Threshold {
+                name,
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_number(name, value)),
+    }
+}
+
+/// The `TypeError` of a `value` that is no number, which names the argument
+/// as a Python user writes it and what they gave.
+fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` is a number from 0 to 1, both included, and {given} was given: a \
+         threshold is the number that the number of each variant is compared with",
+        given = written_as(value)
+    ))
+    .into()
+}
+
+/// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
+/// or `True`, and the name of its type where its own `repr` raised.
+fn written_as(value: &Bound<'_, PyAny>) -> String {
+    if let Ok(printed) = value.repr() {
+        return printed.to_string();
+    }
+    match value.get_type().name() {
+        Ok(name) => format!("an object of the type `{name}`"),
+        Err(_) => "what was given".to_owned(),
     }
 }
 

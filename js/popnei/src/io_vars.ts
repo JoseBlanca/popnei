@@ -4,7 +4,23 @@ import { open_vars as openVarsOfTheCore } from "../wasm/popnei.js";
 
 import { bytes as bytesOf, wholeNumberOfOneOrMore } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
-import { Variants, sourceOfTheVariants } from "./variant.js";
+import type { PassStats } from "./variant.js";
+import { Variants, passStatsOf, sourceOfTheVariants } from "./variant.js";
+
+/** The vars file `writeVars` wrote, and the counts of the pass it made. */
+export interface VarsWritten {
+  /**
+   * The bytes of the whole file, which a page offers as a download: a tab
+   * has no filesystem.
+   */
+  bytes: Uint8Array;
+
+  /**
+   * How many variants were written, and how many each filter of the
+   * `Variants` was given and kept.
+   */
+  passStats: PassStats;
+}
 
 /** How a vars file is written: how many variants a batch of it holds. */
 export interface WriteVarsOptions {
@@ -64,7 +80,8 @@ export function openVars(source: Uint8Array): Variants {
  * offers as a download: a tab has no filesystem.
  *
  * The source is a VCF or a vars file, whichever `Variants` holds, so a file
- * read with `openVars` is written again with another size of batch.
+ * read with `openVars` is written again with another size of batch, and the
+ * variants that are written are the ones the steps of the `Variants` keep.
  *
  * The call reads the whole source once. The file holds the six columns of a
  * VCF, the chromosome, the position, the id, the alleles, the quality and
@@ -80,6 +97,9 @@ export function openVars(source: Uint8Array): Variants {
  * JavaScript, which nothing has to free and which the memory of wasm does
  * not hold a second copy of.
  *
+ * What it gives back are those bytes and the counts of the pass it made:
+ * how many variants were written and what each filter was given and kept.
+ *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
  * `numVarsPerBlock` is not a whole number of 1 or more and at most
  * 4294967295, when the source cannot be read, a wrong line of a VCF among
@@ -89,23 +109,31 @@ export function openVars(source: Uint8Array): Variants {
 export function writeVars(
   variants: Variants,
   options: WriteVarsOptions = {},
-): Uint8Array {
+): VarsWritten {
   theWasmHasToBeLoaded();
-  const source = sourceOfTheVariants("variants", variants);
+  const { source, steps } = sourceOfTheVariants("variants", variants);
   const numVarsPerBlock =
     options.numVarsPerBlock === undefined
       ? undefined
       : wholeNumberOfOneOrMore("numVarsPerBlock", options.numVarsPerBlock);
+  // The steps of the pass are a copy of the list, made after the argument
+  // was checked so that nothing refused here leaves one behind: the call
+  // takes it over and frees it.
+  //
   // The file comes out of the memory of wasm in pieces, each of them freed
   // there as it is copied here, and the array they are put into is the
   // user's. A file that crossed in one piece would be held twice while it
   // crossed, and the memory of wasm would keep its half of that for as long
   // as the page lives.
-  const file = source.write_vars(numVarsPerBlock);
+  const file = source.write_vars(numVarsPerBlock, steps.of_a_pass());
   try {
     const bytes = new Uint8Array(file.num_bytes());
     let written = 0;
-    for (let piece = file.next_piece(); piece !== undefined; piece = file.next_piece()) {
+    for (
+      let piece = file.next_piece();
+      piece !== undefined;
+      piece = file.next_piece()
+    ) {
       bytes.set(piece, written);
       written += piece.length;
     }
@@ -114,7 +142,7 @@ export function writeVars(
         `popnei: the vars file says it holds ${bytes.length} bytes and gave ${written}`,
       );
     }
-    return bytes;
+    return { bytes, passStats: passStatsOf(file.pass_stats()) };
   } finally {
     file.free();
   }

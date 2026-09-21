@@ -16,6 +16,7 @@ use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::errors::PyPopneiError;
 use crate::source::{Blocks, OpenSource, blocks_of, count_of};
+use crate::steps::Steps;
 
 // A VCF that was opened: its path, the options it is read with, and the
 // individuals its header named. A `///` here would become the `__doc__` of
@@ -41,16 +42,32 @@ impl VcfSource {
         self.options.ploidy
     }
 
-    // One pass over the file: it is opened again, and its blocks hold
-    // `fields` besides the genotypes, `num_vars_per_block` variants each.
-    #[pyo3(signature = (fields, num_vars_per_block))]
+    // Whether the variants that failed their FILTER are left out, which is
+    // one of the two options a VCF is read with: the `repr` of a `Variants`
+    // shows them, since two handles over one path that differ in them give
+    // different variants.
+    fn only_passed(&self) -> bool {
+        self.options.only_passed
+    }
+
+    // The file the variants are read from, which the `repr` of a `Variants`
+    // shows its user.
+    fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+
+    // One pass over the file, through the steps of `steps`: it is opened
+    // again, and its blocks hold `fields` besides the genotypes,
+    // `num_vars_per_block` variants each.
+    #[pyo3(signature = (fields, num_vars_per_block, steps))]
     fn blocks(
         &self,
         py: Python<'_>,
         fields: Vec<String>,
         num_vars_per_block: Option<&Bound<'_, PyAny>>,
+        steps: &Bound<'_, Steps>,
     ) -> Result<Blocks, PyPopneiError> {
-        blocks_of(py, self, fields, num_vars_per_block)
+        blocks_of(py, self, fields, num_vars_per_block, steps.get())
     }
 }
 

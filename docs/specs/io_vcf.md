@@ -86,6 +86,16 @@ and no genotype carries is what is left when the individuals that carried
 it are taken out of a file. The owner decided this on 20 September 2026;
 pyNei reads such a number, and the option not taken was to do the same.
 
+The dot is the only way a genotype says the missing allele, and no line
+gives an allele below it. An allele number is a run of digits, so the
+minus sign is not part of one: `-2/0`, `0/-1`, `-1` and `-0` are each a
+wrong data line, which names the line and the individual and says that
+the text is not an allele number. The reader was built this way and this
+paragraph writes down what it does, so that the rule the owner gave on 21
+September 2026, that an allele below `MISSING_ALLELE`, -1, is never
+allowed and is refused by every reader of popnei, is one the VCF reader
+is held to by a test of each of those four forms.
+
 The ploidy, how many alleles a genotype holds, is the same for every
 individual and every variant, and the caller gives it. It is 1 or more
 and at most `MAX_PLOIDY`, 255, which is above the ploidy of anything that

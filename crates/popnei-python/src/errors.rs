@@ -45,6 +45,19 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// A threshold of a filter that is not a number from 0 to 1, under the
+    /// name of the argument a user wrote it in: the core refuses it and
+    /// names the filter by its kind, `maf`, and what a user has to look at
+    /// is the call they wrote, `filter_by_maf(1.5)`.
+    Threshold {
+        /// The name of the argument, as a Python user writes it,
+        /// `max_allowed_maf`.
+        name: &'static str,
+        /// What was given for it, which is NaN, below 0 or above 1, as
+        /// Python prints it: a whole number of Python is of any size, so a
+        /// threshold that was refused does not always fit in one of Rust.
+        value: String,
+    },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -133,6 +146,15 @@ impl From<PyPopneiError> for PyErr {
             PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of 1 or more that this machine can count"
+            )),
+            // The threshold of a filter, which is the number a user wrote
+            // in the call that adds it: the message names the argument, and
+            // the rule it broke is the core's, which refuses the same
+            // thresholds when a pass builds its filters.
+            PyPopneiError::Threshold { name, value } => PyValueError::new_err(format!(
+                "`{name}` is {value}, and a threshold is a number from 0 to 1, both \
+                 included: the number of the variant it is compared with is one count of \
+                 the variant divided by another"
             )),
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
@@ -230,8 +252,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // the file and not of what a user wrote, so they are an `OSError`
         // too, with no number: nothing of the system refused anything, and
         // what is wrong is in the bytes of the file. A vars file that was
-        // damaged after it was written is one of the two: it ends before
-        // what it says it holds, or a batch of it cannot be decoded.
+        // damaged after it was written is one of the two when its bytes no
+        // longer decode: it ends before what it says it holds, or a batch
+        // of it cannot be decoded. Damage that does decode, into content
+        // the format does not allow, is a `ValueError` below, as an allele
+        // of `gts` below the missing one is: the exception follows what is
+        // wrong with the content, and the reader cannot tell a file a disc
+        // changed from one another program wrote badly.
         popnei::Error::VcfBgzipEndMissing
         | popnei::Error::VcfBgzipCorrupted { .. }
         | popnei::Error::VarsFileCutShort { .. }
@@ -251,8 +278,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // that the table given with the block has no name for. `write_vars`
         // gives the writer the individuals, the fields and the table of one
         // reader, so a user reaches them only through a reader with a
-        // defect.
-        popnei::Error::BlocksDoNotFitTogether { .. }
+        // defect. The three of the counts of one variant are of that kind
+        // too, which `docs/specs/variant.md` says in "The Rust interface":
+        // the counts have no function in Python, so the genotypes they
+        // refuse, the ploidy they were given and a variant of more alleles
+        // than a count of them holds are a reader's and not a user's.
+        popnei::Error::GtsNotWholeGenotypes { .. }
+        | popnei::Error::MoreAllelesThanACountHolds { .. }
+        | popnei::Error::AlleleBelowTheMissingOne { .. }
+        | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
         | popnei::Error::KeepOfAnotherSize { .. }
@@ -265,20 +299,27 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
-        // first genotype. What is wrong with them is wrong whatever file is
-        // read, so they name no file although they are refused while one is
-        // being opened.
+        // first genotype. The two of `docs/specs/filters.md` are of the
+        // same kind: the threshold of a filter that is not a number from 0
+        // to 1, and a second filter of a kind the variants are filtered by
+        // already, which a user gets at the call that adds the filter. What
+        // is wrong with them is wrong whatever file is read, so they name
+        // no file although some of them are refused while one is being
+        // opened.
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
-        | popnei::Error::VcfPloidyOutOfRange { .. } => PyValueError::new_err(message),
+        | popnei::Error::VcfPloidyOutOfRange { .. }
+        | popnei::Error::VarFilterThresholdOutOfRange { .. }
+        | popnei::Error::VarFilterOfAKindThatIsSet { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
-        // reader, and the twelve cases of the vars file that "The Rust
+        // reader, and the thirteen cases of the vars file that "The Rust
         // interface" of `docs/specs/io_vars.md` lists as a `ValueError`,
-        // among them a `qual` that is a value and is not finite, and a file
-        // whose genotypes hold no allele, which `open_vars` gives for a
-        // `popnei` key that names no individual. The block with more text
+        // among them a `qual` that is a value and is not finite, an allele
+        // of `gts` below the missing one, and a file whose genotypes hold
+        // no allele, which `open_vars` gives for a `popnei` key that names
+        // no individual. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives.

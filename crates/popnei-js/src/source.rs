@@ -11,14 +11,21 @@
 //! the same `Variants` to one calculation after another. What they have in
 //! common is [`OpenSource`], the reader of one pass.
 //!
-//! [`Blocks`] is that pass, whichever source it came from: it owns a reader
-//! of blocks of the core with a `Reblock` at its end, which gives the blocks
-//! the size that was asked for. [`BlockColumns`] is one block on its way out.
+//! [`Blocks`] is that pass, whichever source it came from: it owns the chain
+//! of readers of the pass, the source with a filter over it for each step of
+//! the `Variants` and a `Reblock` at its end, which gives the blocks the
+//! size that was asked for. It counts the variants of the blocks it gives
+//! and reads the counts of the filters from that chain, which is the
+//! [`PassCounts`] that the package turns into the `passStats` of
+//! `docs/specs/variant.md`. [`BlockColumns`] is one block on its way out,
+//! and [`VarsWritten`] the bytes of a vars file with the counts of the pass
+//! that wrote it.
 //!
-//! The three live in the memory of wasm, which the garbage collector of
+//! They live in the memory of wasm, which the garbage collector of
 //! JavaScript does not see, so the TypeScript package frees each of them:
-//! the block as soon as its columns are read, the pass when the iteration
-//! ends or is abandoned, and the source when the user calls `free()`.
+//! the block as soon as its columns are read, the counts as soon as their
+//! numbers are read, the pass when the iteration ends or is abandoned, and
+//! the source when the user calls `free()`.
 //!
 //! The columns leave as JavaScript arrays, which wasm-bindgen copies out of
 //! the memory of wasm: a typed array that is a view into that memory stops
@@ -32,9 +39,11 @@ use std::sync::Arc;
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
+use popnei::filters::FilteringStats;
 use popnei::variant::Needs;
 
 use crate::errors::JsPopneiError;
+use crate::steps::{Steps, chain_of};
 
 /// The largest position a block hands to JavaScript, 2^53.
 ///
@@ -137,8 +146,15 @@ pub fn room_for_bytes(num_bytes: f64) -> Result<(), JsPopneiError> {
 )]
 const LARGEST_ALLOCATION: f64 = usize::MAX as f64;
 
-/// One pass over `source`, whose blocks hold `fields` besides the genotypes,
-/// `num_vars_per_block` variants each.
+/// One pass over `source`, through the steps of `steps`, whose blocks hold
+/// `fields` besides the genotypes, `num_vars_per_block` variants each.
+///
+/// The steps are taken as they are here, when the pass starts: one added
+/// while it runs holds from the next pass, as `docs/specs/filters.md` says.
+/// A pass with no step reads the source as it is, and it is asked for with
+/// an empty `Steps` and not by leaving the argument out: a caller that could
+/// omit it would read the variants of a filtered `Variants` unfiltered and
+/// say nothing.
 ///
 /// # Errors
 ///
@@ -149,6 +165,7 @@ pub(crate) fn blocks_of(
     source: &dyn OpenSource,
     fields: Vec<String>,
     num_vars_per_block: Option<usize>,
+    steps: Steps,
 ) -> Result<Blocks, JsPopneiError> {
     let needs = needs_of_the_fields(fields.iter().map(String::as_str))?;
     // The source is asked for the size the user wants, so a reader that can
@@ -157,11 +174,16 @@ pub(crate) fn blocks_of(
     // sources that give another size, the vars file whose batches were
     // written at one size and a filter among them, and it is what
     // `docs/specs/block.md` puts at the end of every `iterBlocks`.
-    let mut reader = source.reader(num_vars_per_block)?;
-    reader.set_needs(needs.union(Needs::GTS));
+    let reader = source.reader(num_vars_per_block)?;
+    // The fields are asked of the whole chain and not of the source alone: a
+    // filter asks its source for what it was asked for and for the
+    // genotypes, which it needs itself.
+    let mut chain = chain_of(reader, steps.steps())?;
+    chain.set_needs(needs.union(Needs::GTS));
     Ok(Blocks {
-        reader: Box::new(Reblock::new(reader, num_vars_per_block)?),
+        reader: Box::new(Reblock::new(chain, num_vars_per_block)?),
         finished: false,
+        num_vars: 0,
     })
 }
 
@@ -198,6 +220,9 @@ pub struct VarsFile {
     num_bytes: usize,
     /// Which piece is the next one to give.
     next: usize,
+    /// The counts of the pass that wrote the file, which the package gives
+    /// its user beside the bytes.
+    counts: PassCounts,
 }
 
 #[wasm_bindgen]
@@ -214,6 +239,13 @@ impl VarsFile {
         let piece = self.pieces.get_mut(self.next)?;
         self.next = self.next.saturating_add(1);
         Some(std::mem::take(piece))
+    }
+
+    /// How many variants were written, and what each filter of the pass was
+    /// given and kept.
+    #[must_use]
+    pub fn pass_stats(&self) -> PassCounts {
+        self.counts.clone()
     }
 }
 
@@ -290,9 +322,9 @@ impl Write for PiecesOfTheFile {
     }
 }
 
-/// Every variant of `source` as a vars file, one batch of
-/// `num_vars_per_block` variants after another, and `None` for the size
-/// popnei chooses for the individuals of the source.
+/// Every variant of `source`, through the steps of `steps`, as a vars
+/// file, one batch of `num_vars_per_block` variants after another, and
+/// `None` for the size popnei chooses for the individuals of the source.
 ///
 /// The file is built in the memory of wasm, in pieces that cross one by one:
 /// a `Uint8Array` that were a view into that memory would stop being valid
@@ -307,6 +339,7 @@ impl Write for PiecesOfTheFile {
 pub(crate) fn bytes_of_a_vars_file(
     source: &dyn OpenSource,
     num_vars_per_block: Option<usize>,
+    steps: Steps,
 ) -> Result<VarsFile, JsPopneiError> {
     // The source is asked for the size the batches will have, as a pass is,
     // so that the `reblock` the core puts over it has nothing to cut or to
@@ -316,12 +349,89 @@ pub(crate) fn bytes_of_a_vars_file(
     // batches of 100. A source that cannot give that size, the vars file
     // whose batches were written at another one, leaves it to the `reblock`.
     let reader = source.reader(num_vars_per_block)?;
-    let written = popnei::io::vars::write_vars(reader, PiecesOfTheFile::new(), num_vars_per_block)?;
+    // The chain of the pass stays here, lent to the core, so that the counts
+    // of its filters can be read when the call is over: the loop over the
+    // blocks is the core's, and so is the count of the variants it wrote,
+    // which no loop of this crate sees.
+    let mut chain = chain_of(reader, steps.steps())?;
+    let (written, num_vars) =
+        popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
     Ok(VarsFile {
         pieces: written.pieces,
         num_bytes: written.num_bytes,
         next: 0,
+        counts: PassCounts::of(num_vars, &chain.filtering_stats()),
     })
+}
+
+/// The counts of one pass on their way to JavaScript: how many variants it
+/// gave, and, for each filter of its chain, its kind, how many variants it
+/// was given and how many it kept.
+///
+/// The filters come in the order of the chain, the outermost first, which is
+/// the reverse of the order of the steps: the package turns them around, as
+/// "How it runs" of the counts of `docs/specs/filters.md` says. Every count,
+/// the one of the pass and the two of each filter, crosses as a number of
+/// JavaScript, a float64, which holds every whole number up to 2^53: a pass
+/// of wasm counts the variants of a file that is in the memory of the tab,
+/// which addresses 2^32 bytes.
+#[wasm_bindgen]
+#[derive(Clone)]
+pub struct PassCounts {
+    num_vars: f64,
+    kinds: Vec<String>,
+    vars_processed: Vec<f64>,
+    vars_kept: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl PassCounts {
+    /// How many variants the pass gave, after its filters.
+    #[must_use]
+    pub fn num_vars(&self) -> f64 {
+        self.num_vars
+    }
+
+    /// The kind of each filter of the chain, the outermost first:
+    /// `"missing_data"`, `"maf"` or `"obs_het"`.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<String> {
+        self.kinds.clone()
+    }
+
+    /// How many variants each filter of `kinds` was given.
+    #[must_use]
+    pub fn vars_processed(&self) -> Vec<f64> {
+        self.vars_processed.clone()
+    }
+
+    /// How many of them it kept.
+    #[must_use]
+    pub fn vars_kept(&self) -> Vec<f64> {
+        self.vars_kept.clone()
+    }
+}
+
+impl PassCounts {
+    /// The `num_vars` variants of a pass and the `filtering` its chain gave,
+    /// as the numbers of JavaScript.
+    fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
+        PassCounts {
+            num_vars: num_vars as f64,
+            kinds: filtering
+                .iter()
+                .map(|(kind, _)| (*kind).to_owned())
+                .collect(),
+            vars_processed: filtering
+                .iter()
+                .map(|(_, stats)| stats.vars_processed as f64)
+                .collect(),
+            vars_kept: filtering
+                .iter()
+                .map(|(_, stats)| stats.vars_kept as f64)
+                .collect(),
+        }
+    }
 }
 
 /// One pass over a source of variants, which gives them block by block.
@@ -331,6 +441,10 @@ pub struct Blocks {
     /// Whether the pass is over: the reader has no more blocks, or a block
     /// was lost with an error. After either there is no block.
     finished: bool,
+    /// The variants of the blocks the pass has given, which is the
+    /// `num_vars` a user reads in its counts. A block that was lost with an
+    /// error is not among them: it never reached the user.
+    num_vars: u64,
 }
 
 #[wasm_bindgen]
@@ -366,6 +480,16 @@ impl Blocks {
             self.finished = true;
         }
         columns
+    }
+
+    /// How many variants the pass has given, and what each filter of it was
+    /// given and kept, the outermost filter first.
+    ///
+    /// It is read while the pass runs too, and it then holds what has been
+    /// read up to there.
+    #[must_use]
+    pub fn pass_stats(&self) -> PassCounts {
+        PassCounts::of(self.num_vars, &self.reader.filtering_stats())
     }
 }
 
@@ -408,7 +532,7 @@ impl Blocks {
             Some((texts, counts)) => (Some(texts), Some(counts)),
             None => (None, None),
         };
-        Ok(Some(BlockColumns {
+        let columns = BlockColumns {
             num_vars,
             num_individuals,
             ploidy,
@@ -419,7 +543,20 @@ impl Blocks {
             alleles,
             num_alleles_per_var,
             qual,
-        }))
+        };
+        // The variants of a block that is going out are counted here, after
+        // every column of it crossed, where the block is the user's: a block
+        // that was lost with an error of the pass itself, a position above
+        // the largest a number of JavaScript holds, never reached them. A
+        // variant is a row of a file, so a pass of the 18446744073709551615
+        // variants this count holds is more rows than any file system
+        // takes: the sum cannot reach its end. The conversion cannot fail
+        // either: a `usize` is 32 bits in wasm and 64 natively, and both fit
+        // in a `u64`.
+        self.num_vars = self
+            .num_vars
+            .saturating_add(u64::try_from(num_vars).unwrap_or(u64::MAX));
+        Ok(Some(columns))
     }
 }
 

@@ -22,7 +22,7 @@ import { test } from "node:test";
 
 import { init } from "popnei";
 
-import { open_vcf } from "../wasm/popnei.js";
+import { Steps, open_vcf } from "../wasm/popnei.js";
 import { vcfOf } from "./reference.ts";
 
 await init();
@@ -46,7 +46,9 @@ const SIX_VARIANTS = vcfOf([
 
 test("a pass gives no block after an error of its own", () => {
   const source = open_vcf(SIX_VARIANTS, 2, false);
-  const pass = source.blocks(["chrom", "pos"], 2);
+  // A pass runs the steps it is given, and a pass with none is asked for
+  // with an empty list of them: the argument cannot be left out.
+  const pass = source.blocks(["chrom", "pos"], 2, new Steps());
   try {
     const first = pass.next_block();
     assert.ok(first !== undefined);

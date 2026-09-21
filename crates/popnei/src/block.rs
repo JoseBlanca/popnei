@@ -18,6 +18,7 @@ use std::collections::TryReserveError;
 use std::fmt;
 
 use crate::error::{Error, Result};
+use crate::filters::FilteringStats;
 use crate::variant::{ChromTable, Needs, VariantRef};
 
 /// How many genotypes a block holds when the caller asks for no number of
@@ -602,7 +603,15 @@ impl Block {
     /// times the ploidy, or the error of a block that cannot be. They are
     /// alleles and not genotypes: a genotype is the `ploidy` alleles of one
     /// individual, as `docs/glossary.md` has it.
-    fn alleles_per_var(&self) -> Result<usize> {
+    ///
+    /// The `filters` module reads it to cut the genotypes into rows, so it
+    /// is not private to this module.
+    ///
+    /// # Errors
+    ///
+    /// When the individuals times the ploidy are more than this machine
+    /// addresses.
+    pub(crate) fn alleles_per_var(&self) -> Result<usize> {
         self.num_individuals
             .checked_mul(self.ploidy)
             .ok_or(Error::BlockTooLarge {
@@ -876,6 +885,20 @@ pub trait BlockReader: Send {
     /// [`Needs::ALL`] until it is called, and the change holds from the
     /// next block that is built.
     fn set_needs(&mut self, needs: Needs);
+
+    /// The kind and the counts of every filter between this reader and its
+    /// source, this one first when it is a filter.
+    ///
+    /// The kind is the name the counts have for a Python or a TypeScript
+    /// user, `"missing_data"`, `"maf"` or `"obs_het"`. A source gives none,
+    /// and a reader over another reader gives what its source gives, with
+    /// its own before them when it is a filter. Whoever starts a pass keeps
+    /// the chain of readers and reads the counts from it when the pass
+    /// ends, as `docs/specs/filters.md` has it.
+    ///
+    /// The method has no default, so that a reader over another reader that
+    /// forgets to pass on the counts of its source does not compile.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
 }
 
 impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
@@ -897,6 +920,43 @@ impl<R: BlockReader + ?Sized> BlockReader for Box<R> {
 
     fn set_needs(&mut self, needs: Needs) {
         (**self).set_needs(needs);
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        (**self).filtering_stats()
+    }
+}
+
+/// A reader that is borrowed and not taken, which is how a consumer reads
+/// a pass whose chain of readers its caller keeps.
+///
+/// `docs/specs/filters.md` has the counts of the filters of a pass read
+/// from that chain when the consumer returns, so the consumer cannot own
+/// it: `write_vars` of `docs/specs/io_vars.md` takes `&mut reader` and the
+/// binding crate that built the chain reads the counts from it afterwards.
+impl<R: BlockReader + ?Sized> BlockReader for &mut R {
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        (**self).next_block()
+    }
+
+    fn individuals(&self) -> &[String] {
+        (**self).individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        (**self).ploidy()
+    }
+
+    fn chroms(&self) -> &ChromTable {
+        (**self).chroms()
+    }
+
+    fn set_needs(&mut self, needs: Needs) {
+        (**self).set_needs(needs);
+    }
+
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        (**self).filtering_stats()
     }
 }
 
@@ -1197,6 +1257,12 @@ impl<R: BlockReader> BlockReader for Reblock<R> {
     fn set_needs(&mut self, needs: Needs) {
         self.reader.set_needs(needs);
     }
+
+    /// The counts of the source: `reblock` takes no variant out, so it adds
+    /// none of its own.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.reader.filtering_stats()
+    }
 }
 
 impl<R: BlockReader> fmt::Debug for Reblock<R> {
@@ -1345,6 +1411,7 @@ mod tests {
         size_of_the_blocks,
     };
     use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs, VariantRef};
 
@@ -2385,6 +2452,11 @@ mod tests {
         calls: usize,
         /// What it was last asked to fill.
         needs: Needs,
+        /// What it reports of the filters between it and its source, so
+        /// that a test sees whether a reader over it passes them on. A
+        /// source has none, and this reader stands for a chain of filters
+        /// when a test gives it some.
+        filtering_stats: Vec<(&'static str, FilteringStats)>,
     }
 
     impl GivenBlocks {
@@ -2406,6 +2478,19 @@ mod tests {
                 fails_at: None,
                 calls: 0,
                 needs: Needs::ALL,
+                filtering_stats: Vec::new(),
+            }
+        }
+
+        /// The same reader, which reports `stats` as the counts of the
+        /// filters between it and its source.
+        fn reporting(
+            blocks: Vec<Block>,
+            stats: Vec<(&'static str, FilteringStats)>,
+        ) -> GivenBlocks {
+            GivenBlocks {
+                filtering_stats: stats,
+                ..GivenBlocks::of(blocks)
             }
         }
 
@@ -2458,6 +2543,10 @@ mod tests {
         fn set_needs(&mut self, needs: Needs) {
             self.needs = needs;
         }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            self.filtering_stats.clone()
+        }
     }
 
     /// Every block a reader gives, until it has no more or it fails.
@@ -2467,6 +2556,94 @@ mod tests {
             blocks.push(block);
         }
         Ok(blocks)
+    }
+
+    /// The counts of a chain of two filters, the outermost first, as they
+    /// are on `many.vcf` with the missing data filter at 0.04 and the maf
+    /// filter at 0.8 over it: 500 variants given and 215 kept, and then 215
+    /// given and 163 kept, which `docs/specs/filters.md` has from bcftools
+    /// 1.24 and pyNei. Here they are what a reader written for these tests
+    /// reports, and no filter works them out.
+    fn two_counts() -> Vec<(&'static str, FilteringStats)> {
+        vec![
+            (
+                "maf",
+                FilteringStats {
+                    vars_processed: 215,
+                    vars_kept: 163,
+                },
+            ),
+            (
+                "missing_data",
+                FilteringStats {
+                    vars_processed: 500,
+                    vars_kept: 215,
+                },
+            ),
+        ]
+    }
+
+    /// A source has no filter over it, and neither has a `reblock` over a
+    /// source.
+    #[test]
+    fn a_source_and_a_reblock_over_it_give_no_filtering_stats() {
+        let reader = GivenBlocks::of_one_variant_each();
+        assert!(reader.filtering_stats().is_empty());
+        let reblock = Reblock::new(reader, Some(3)).expect("the reblock");
+        assert!(reblock.filtering_stats().is_empty());
+    }
+
+    /// `reblock` is a reader over a reader and passes on what its source
+    /// reports, both counts and in the order it got them, before any block
+    /// is taken and after the last one.
+    #[test]
+    fn reblock_gives_the_filtering_stats_of_its_source() {
+        let mut reblock = Reblock::new(
+            GivenBlocks::reporting(vec![cases_block(&[0, 1]), cases_block(&[2])], two_counts()),
+            Some(2),
+        )
+        .expect("the reblock");
+        assert_eq!(reblock.filtering_stats(), two_counts());
+        let blocks = blocks_given(&mut reblock).expect("the blocks");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(reblock.filtering_stats(), two_counts());
+    }
+
+    /// A `Box<dyn BlockReader>`, which is how both binding crates hold the
+    /// reader of a pass, gives what the reader inside it gives, and a
+    /// `reblock` over a boxed reader gives the same.
+    #[test]
+    fn a_boxed_reader_gives_the_filtering_stats_of_the_reader_it_holds() {
+        let reader: Box<dyn BlockReader> = Box::new(GivenBlocks::reporting(
+            vec![cases_block(&[0, 1])],
+            two_counts(),
+        ));
+        assert_eq!(reader.filtering_stats(), two_counts());
+        let reblock = Reblock::new(reader, None).expect("the reblock");
+        assert_eq!(reblock.filtering_stats(), two_counts());
+        let boxed: Box<dyn BlockReader> = Box::new(GivenBlocks::of_one_variant_each());
+        assert!(boxed.filtering_stats().is_empty());
+    }
+
+    /// A reader that is borrowed is the reader it borrows: it gives its
+    /// blocks and its counts, what is asked of it reaches it, and it is
+    /// still there when the borrow ends. That is how a consumer takes the
+    /// chain of a pass whose caller keeps it, `write_vars` of
+    /// `docs/specs/io_vars.md` over the chain a binding crate built.
+    #[test]
+    fn a_borrowed_reader_gives_the_blocks_and_the_counts_of_the_reader_it_borrows() {
+        let mut reader =
+            GivenBlocks::reporting(vec![cases_block(&[0, 1]), cases_block(&[2])], two_counts());
+        {
+            let mut reblock = Reblock::new(&mut reader, Some(2)).expect("the reblock");
+            assert_eq!(reblock.filtering_stats(), two_counts());
+            reblock.set_needs(Needs::GTS);
+            let blocks = blocks_given(&mut reblock).expect("the blocks");
+            assert_eq!(num_vars_of(&blocks), [2, 1]);
+        }
+        assert_eq!(reader.needs, Needs::GTS);
+        assert_eq!(reader.filtering_stats(), two_counts());
+        assert!(reader.left.is_empty());
     }
 
     /// `reblock` joins the blocks that are too short: four blocks of one

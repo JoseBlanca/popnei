@@ -39,6 +39,7 @@ use crate::block::{
     default_num_vars_per_block, size_of_the_blocks,
 };
 use crate::error::{Error, Result};
+use crate::filters::FilteringStats;
 use crate::io::bgzf::BgzfReader;
 use crate::variant::{ChromTable, MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -1186,6 +1187,11 @@ impl<R: BufRead + Send> BlockReader for VcfReader<R> {
     fn set_needs(&mut self, needs: Needs) {
         self.needs = needs;
     }
+
+    /// None: a source has no filter over it.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
 }
 
 impl VcfReader<BufReader<File>> {
@@ -2198,6 +2204,17 @@ mod tests {
         }
     }
 
+    /// The reader is a source: no filter stands between it and the file,
+    /// before a block is read and after the last one.
+    #[test]
+    fn a_vcf_reader_gives_no_filtering_stats() {
+        let mut reader = reader_of_file("cases.vcf", VcfOptions::default());
+        assert!(reader.filtering_stats().is_empty());
+        let blocks = blocks_of(&mut reader).expect("the blocks");
+        assert_eq!(blocks.len(), 1);
+        assert!(reader.filtering_stats().is_empty());
+    }
+
     #[test]
     fn the_gzip_bytes_are_found_in_a_source_that_is_not_a_file() {
         let bytes = std::fs::read(reference_vcf("differences.vcf.gz")).unwrap();
@@ -2752,6 +2769,57 @@ mod tests {
             assert_eq!(
                 (line, place),
                 (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string())),
+                "{genotype}"
+            );
+        }
+    }
+
+    /// The dot is the only way a genotype says the missing allele, -1, and
+    /// no line of a VCF gives an allele below it. The owner decided on 21
+    /// September 2026 that such an allele is never allowed and is refused
+    /// "even by the vcf parser", so the reader is held to it here: an
+    /// allele number is a run of digits, so the minus sign is not part of
+    /// one, and each way a line could write a negative allele is a wrong
+    /// data line that names the line and the individual whose column it is
+    /// in.
+    #[test]
+    fn no_genotype_of_a_vcf_gives_an_allele_below_the_missing_one() {
+        // The whole genotype, one allele of it, one written after the
+        // separator that VCF 4.4 lets a genotype start with, one phased,
+        // and -0, which is 0 to a parser that reads a sign. Beside each,
+        // the text the message has to name: a genotype of the ploidy the
+        // file has not, and an allele with no digit in it, are wrong data
+        // lines too, so the message naming the negative allele itself is
+        // what says that the parser read it and refused it and not
+        // something else of the same line. `/-2/0` is the one that says it
+        // of a parser that takes the separator off first.
+        for (genotype, refused) in [
+            ("-1", "-1"),
+            ("-2/0", "-2"),
+            ("0/-2", "-2"),
+            ("/-2/0", "-2"),
+            ("-2|0", "-2"),
+            ("-0", "-0"),
+            ("0/-128", "-128"),
+        ] {
+            let line = format!("chr1 100 . A T . PASS . GT 0/0 {genotype} 1/1");
+            let error = error_reading(&vcf_of(&[&line]), VcfOptions::default());
+            let Error::VcfDataLine {
+                line,
+                place,
+                problem,
+            } = error
+            else {
+                panic!("the error of `{genotype}` is {error}");
+            };
+            assert_eq!(
+                (line, place),
+                (FIRST_DATA_LINE, VcfPlace::Individual("ind2".to_string())),
+                "{genotype}"
+            );
+            assert_eq!(
+                problem,
+                format!("`{refused}` is not an allele number, which is a run of digits"),
                 "{genotype}"
             );
         }

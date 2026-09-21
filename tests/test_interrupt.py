@@ -106,6 +106,48 @@ sys.exit(2)
 """
 
 
+# What the process of the third test prints: the counts of the pass after
+# the interrupt, or that the block was given before the interrupt arrived,
+# which says nothing about the case.
+_NO_VARIANT_IS_COUNTED = "the pass counted no variant"
+_SOME_VARIANTS_ARE_COUNTED = "the pass counted the variants of the block it lost"
+
+# The process that is interrupted while the one block of the pass is read
+# and then reads the counts of that pass. The block never reached the user,
+# so the variants of it are in no count of theirs.
+_READ_THE_COUNTS_AFTER_AN_INTERRUPT = f"""
+import os
+import signal
+import sys
+import threading
+import time
+
+import popnei
+
+variants = popnei.open_vcf(sys.argv[1])
+blocks = variants.iter_blocks(num_vars_per_block={_NUM_VARS})
+threading.Timer(
+    {_SECONDS_BEFORE_THE_INTERRUPT}, lambda: os.kill(os.getpid(), signal.SIGINT)
+).start()
+the_block_was_given = False
+try:
+    next(blocks)
+    the_block_was_given = True
+    time.sleep(2)
+except KeyboardInterrupt:
+    pass
+if the_block_was_given:
+    print("{_AFTER_THE_BLOCK}")
+    sys.exit(0)
+num_vars = blocks.pass_stats.num_vars
+if num_vars == 0:
+    print("{_NO_VARIANT_IS_COUNTED}")
+    sys.exit(0)
+print("{_SOME_VARIANTS_ARE_COUNTED}", num_vars)
+sys.exit(2)
+"""
+
+
 def _vcf_of_many_variants(path: Path) -> Path:
     """A VCF of three individuals and `_NUM_VARS` variants, at `path`."""
     header = (
@@ -161,3 +203,33 @@ def test_a_pass_gives_no_block_after_the_interrupt_that_lost_one(tmp_path: Path)
         # is sent 0.05 s after it starts.
         pytest.skip(_AFTER_THE_BLOCK)
     assert what_happened == _THE_PASS_IS_OVER, read.stdout
+
+
+def test_the_block_a_ctrl_c_lost_is_not_among_the_variants_of_the_pass(
+    tmp_path: Path,
+):
+    """The count of a pass is of the blocks the user got.
+
+    The block the interrupt happened in never reached them, so it is in no
+    count of theirs, as `docs/specs/variant.md` has `num_vars`: what a user
+    reads is how many variants the consumer took.
+    """
+    path = _vcf_of_many_variants(tmp_path / "many_variants.vcf")
+    read = subprocess.run(
+        [sys.executable, "-c", _READ_THE_COUNTS_AFTER_AN_INTERRUPT, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert read.returncode == 0, (
+        f"the process ended with {read.returncode}\nstdout: {read.stdout}\n"
+        f"stderr: {read.stderr}"
+    )
+    what_happened = read.stdout.strip()
+    if what_happened == _AFTER_THE_BLOCK:
+        # The interrupt lost no block, so its variants are the user's and
+        # the count is right to hold them. This run says nothing about the
+        # case, as in the test above.
+        pytest.skip(_AFTER_THE_BLOCK)
+    assert what_happened == _NO_VARIANT_IS_COUNTED, read.stdout

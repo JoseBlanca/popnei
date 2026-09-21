@@ -16,12 +16,13 @@ import { wasmIsLoaded } from "./core.js";
 
 export type { Block, Field } from "./block.js";
 export { version } from "./core.js";
+export type { FilteringStats, Step } from "./filters.js";
 export { openVars, writeVars } from "./io_vars.js";
-export type { WriteVarsOptions } from "./io_vars.js";
+export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";
 export { Variants } from "./variant.js";
-export type { IterBlocksOptions } from "./variant.js";
+export type { Blocks, IterBlocksOptions, PassStats } from "./variant.js";
 
 let loading: Promise<void> | undefined;
 

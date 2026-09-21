@@ -11,12 +11,21 @@ by block, `writeVars`, which gives back the bytes of a vars file with every
 variant of a `Variants`, and `openVars`, which opens such bytes as another
 `Variants`. A vars file is one arrow IPC file, also called feather v2,
 which pandas, R and polars open as a table with no popnei installed: it is
-where a user keeps their variants once the VCF has been read. Section 11
-of `docs/architecture.md` has the design, `crates/popnei-js` is the binding
-crate, the Rust that is compiled to WebAssembly and that holds no
-calculation of its own, and `docs/specs/io_vcf.md`,
-`docs/specs/io_vars.md`, `docs/specs/block.md` and `docs/specs/variant.md`
-say what they give.
+where a user keeps their variants once the VCF has been read. Each of the
+two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
+pass it made over the source, in a `passStats`: how many variants it took,
+and how many each filter of the `Variants` was given and kept. A filter is
+a step, a method of the `Variants` that `steps` then lists, and there are
+three of them: `filterByMissingData`, which keeps the variants whose missing
+genotypes divided by all the individuals are at most the threshold it is
+given, `filterByMaf`, over the count of the commonest allele of a variant
+divided by its called alleles, and `filterByObsHet`, over its heterozygous
+genotypes divided by its called ones.
+Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
+the binding crate, the Rust that is compiled to WebAssembly and that holds
+no calculation of its own, and `docs/specs/io_vcf.md`,
+`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md` and
+`docs/specs/filters.md` say what they give.
 
 ## Building it
 
@@ -71,6 +80,13 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   a block cross as one array of texts with the number of alleles of each
   variant beside it, which is how the core holds them, and the package cuts
   the one with the other.
+- An argument of a type this crate exports crosses by value, `Option<T>`
+  included, and `Option<&T>` of one does not compile: "the trait bound
+  `&Steps: OptionFromWasmAbi` is not satisfied". The generated JavaScript
+  takes the pointer out of the object it is given and leaves that object
+  dead, so a `Variants` hands each pass a copy of its steps, which is what
+  a pass runs anyway: a step added while a pass runs holds from the next
+  one.
 - A `Result<T, E>` is thrown when `E` is `Into<JsValue>`, and
   `JsError::new(message)` is the JavaScript `Error` a user catches. The
   orphan rule keeps `From<popnei::Error> for JsValue` out of this crate, so
@@ -172,7 +188,20 @@ fetches and reads a VCF through it, and that the blocks of `cases.vcf` and
 `test/vars.test.ts` writes those four variants into a vars file with
 `writeVars` and reads them back with `openVars`, and reads
 `tests/reference/vars/zstd.vars`, the file compressed with zstd that
-popnei cannot write and refuses at its first block. Several of the tests
+popnei cannot write and refuses at its first block.
+`test/pass_stats.test.ts` reads the 500 variants of `many.vcf`, and the
+vars file written from them, and asserts the counts of the pass that
+`iterBlocks` and `writeVars` give: 500 after a whole pass, 21 after three
+blocks of 7, none for a source with no variant, and, for a pass that ended
+at a wrong line, the variants of the blocks the user got and not the ones
+the file holds. `test/filters.test.ts` puts the three filters on the same
+file and asserts the numbers of the table of `docs/specs/filters.md`, which
+are bcftools 1.24's and pyNei's: 26 variants kept by the missing data filter
+at 0, 35 by the maf filter at 0.5 and 22 by the observed heterozygosity one
+at 0.1, each with the first five positions it keeps, and 106 by the three of
+them chained at 0.04, 0.8 and 0.5, which count 500 and 215, 215 and 163, and
+163 and 106. The comparison with pyNei itself is the one of the Python
+tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
 kept while enough more is read for that memory to grow still hold what
@@ -249,13 +278,25 @@ const variants = openVcf(new Uint8Array(await readFile("cases.vcf")), {
 });
 console.log(variants.individuals, variants.numIndividuals, variants.ploidy);
 try {
-  for (const block of variants.iterBlocks({ fields: ["chrom", "pos"] })) {
+  // A filter is a step: it changes the handle, gives nothing back and is
+  // run by every pass that follows. This one keeps the variants whose
+  // commonest allele is at most 0.95 of their called alleles, 2 of the 3
+  // of cases.vcf that passed their FILTER.
+  variants.filterByMaf(0.95);
+  const blocks = variants.iterBlocks({ fields: ["chrom", "pos"] });
+  for (const block of blocks) {
     // block.gts is an Int8Array of numVars x numIndividuals x ploidy
     // alleles, variant after variant, with -1 for an allele that was not
     // called: the alleles of the individual i of the variant v start at
     // (v * block.numIndividuals + i) * block.ploidy.
     console.log(block.numVars, block.chrom, block.pos);
   }
+  // How many variants the pass gave, and what each filter of the variants
+  // was given and kept: {numVars: 2, filtering: {maf: {varsProcessed: 3,
+  // varsKept: 2}}} here. Read inside the loop, it is of the blocks that
+  // have come out so far. `steps` is what the handle holds, in order:
+  // [{kind: "maf", args: {maxAllowedMaf: 0.95}}].
+  console.log(blocks.passStats, variants.steps);
 } finally {
   variants.free();
 }
@@ -281,9 +322,13 @@ import { init, openVars, openVcf, writeVars } from "popnei";
 await init();
 const fromTheVcf = openVcf(new Uint8Array(await readFile("cases.vcf")));
 // The bytes of the whole file, which a page offers as a download: a tab
-// has no filesystem. The batches hold 10000 variants each, and without
-// `numVarsPerBlock` the size popnei chooses for the individuals.
-const bytes = writeVars(fromTheVcf, { numVarsPerBlock: 10000 });
+// has no filesystem, and `passStats` says how many variants were written.
+// The batches hold 10000 variants each, and without `numVarsPerBlock` the
+// size popnei chooses for the individuals.
+const { bytes, passStats } = writeVars(fromTheVcf, {
+  numVarsPerBlock: 10000,
+});
+console.log(passStats.numVars);
 fromTheVcf.free();
 
 const fromTheFile = openVars(bytes);
@@ -318,8 +363,15 @@ an `Error` that says what was given: a `source` that is not a
 `Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
-of the five columns, and a `variants` that is not what `openVcf` or
-`openVars` gave. In TypeScript `fields` takes the five names and nothing
+of the five columns, a `variants` that is not what `openVcf` or `openVars`
+gave, and a threshold of a filter that is not a number, which a call with
+no threshold gives. Whether that number is one a filter takes, from 0 to 1,
+is a rule of the core, which holds for the threshold of every pass and not
+of that call alone; an `Error` of it names the argument the user wrote and
+the value as they wrote it, `95` and not `95.0`. A second filter of a kind
+the variants carry already is an `Error` too, which names that kind, the
+threshold it is set with and the one that was refused. In TypeScript
+`fields` takes the five names and nothing
 else, so a typo does not compile.
 
 ## What has to be freed
@@ -329,18 +381,20 @@ garbage collector of JavaScript does not see, so they are given back by
 hand:
 
 - The `Variants` of `openVcf` and of `openVars` holds the bytes of the
-  file until its `free()` is called, which `using variants =
+  file and its steps until its `free()` is called, which `using variants =
   openVcf(bytes)` does at the end of its block. Its names and its ploidy
-  are in JavaScript and answer after that; `iterBlocks` and `writeVars`
-  throw.
+  are in JavaScript and answer after that; `iterBlocks`, `writeVars` and
+  `steps` throw.
 - One pass over the variants holds the reader and the block being built.
-  The iterator of `iterBlocks` gives it back when the iteration ends, when
+  What `iterBlocks` gives back gives it back when the iteration ends, when
   it is left with a `break` and when a block throws. An iterator that is
   made and never iterated keeps it until the garbage collector reaches it:
   wasm-bindgen registers what it generates in a `FinalizationRegistry`,
   which frees it at a moment nobody chooses. The `finally` that frees it
   cannot do that one, because a generator that never ran its first line
-  never runs its last either.
+  never runs its last either. Its `passStats` is read after the pass is
+  over all the same: the counts are taken out of the pass just before it
+  is freed, and they are numbers of JavaScript.
 - The `Uint8Array` of `writeVars` is the user's own, in the heap of
   JavaScript: the file is read out of the memory of wasm in pieces, each
   of them freed there as it is copied, so nothing of it is left to free by

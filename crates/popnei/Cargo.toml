@@ -44,3 +44,12 @@ harness = false
 [[bench]]
 name = "vars_file"
 harness = false
+
+# What the missing data filter costs a whole pass, of work package 4 of
+# docs/plans/filters.md, which is what "Speed" of docs/specs/filters.md
+# states. It takes the path of a VCF or of a vars file, the threads, the
+# runs and the threshold on its command line and prints one wall time per
+# run, so it runs without a harness, as the two above do.
+[[bench]]
+name = "filter_vars"
+harness = false

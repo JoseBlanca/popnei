@@ -24,6 +24,9 @@ pub trait BlockReader: Send {
     fn chroms(&self) -> &ChromTable;
     /// Which fields the caller wants filled. The rest may be skipped.
     fn set_needs(&mut self, needs: Needs);
+    /// How many variants each filter between this reader and its source,
+    /// this one first when it is a filter, was given and kept.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
 }
 ```
 
@@ -47,7 +50,10 @@ What this gives:
   compacts every column in place and gives the block on. A filter of
   individuals compacts the genotypes of each row in place. Neither
   allocates a block. A block left with no variants is not given; the
-  filter takes the next.
+  filter takes the next. A filter counts the variants it was given and
+  the ones it kept, and a calculation borrows its reader and does not take
+  it, so that whoever started the pass reads those counts when it ends
+  (`docs/specs/filters.md`).
 - **One variant is a view into a block.** A calculation that works variant
   by variant loops over `block.variants()`, which are slices and allocate
   nothing, and the row helpers, the dosages, the masks, the allele counts
@@ -173,7 +179,14 @@ own. A calculation takes it and runs its loop over the blocks of that
 reader inside the core, so no calculation pays for a call from Python per
 block or per variant. This departs from pyNei, whose `Variants` yields
 chunks, arrays of a few thousand variants, to calculations that are
-written over them in Python. A user holds neither variants nor an
+written over them in Python. A filter is a step, a method that adds itself to
+the `Variants` and returns nothing, and every pass is built from the
+steps the `Variants` has when it starts. A consumer, a calculation, a
+writer or `iter_blocks`, takes the `Variants`, makes the passes it
+needs, and returns a result that has the counts of its pass, how many
+variants it got and how many each filter was given and kept
+(`docs/specs/variant.md`).
+A user holds neither variants nor an
 iterator of them. The one way
 genotypes come out is `Variants.iter_blocks(fields=...)`, which gives
 blocks, the genotypes as an int8 array of variants x individuals x ploidy
@@ -270,7 +283,7 @@ built: the workspace and the two crates; `Block`, `BlockReader`, `Needs`
 and the `ChromTable`; the VCF reader, parallel, with gzip; the missing
 data filter; the vars file writer and reader; `reblock`; the Python
 `Variants` over a reader, with `iter_blocks`; `open_vcf`, `write_vars`,
-`open_vars` and `filter_by_missing_data` in the Python package, with
+`open_vars` and `Variants.filter_by_missing_data` in the Python package, with
 pyNei's signatures where the specs keep them; and the tests: cargo tests of
 the reader and the filter, and pytest tests that parse the reference VCFs
 with both libraries and compare popnei's blocks with pyNei's chunks, that

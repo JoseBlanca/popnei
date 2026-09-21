@@ -24,6 +24,7 @@ use popnei::io::vars::VarsReader;
 
 use crate::errors::JsPopneiError;
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
+use crate::steps::Steps;
 
 /// A vars file that was opened: its bytes, and the individuals and the
 /// ploidy its schema named.
@@ -50,9 +51,9 @@ impl VarsSource {
         self.ploidy
     }
 
-    /// One pass over the bytes, read again from their start: its blocks
-    /// hold `fields` besides the genotypes, `num_vars_per_block` variants
-    /// each.
+    /// One pass over the bytes, read again from their start, through the
+    /// steps of `steps`: its blocks hold `fields` besides the genotypes,
+    /// `num_vars_per_block` variants each.
     ///
     /// # Errors
     ///
@@ -63,22 +64,28 @@ impl VarsSource {
         &self,
         fields: Vec<String>,
         num_vars_per_block: Option<usize>,
+        steps: Steps,
     ) -> Result<Blocks, JsPopneiError> {
-        blocks_of(self, fields, num_vars_per_block)
+        blocks_of(self, fields, num_vars_per_block, steps)
     }
 
-    /// The variants of the file as another vars file, of batches of
-    /// `num_vars_per_block` variants, and of the size popnei chooses for
-    /// these individuals when it is not given, which the package reads out
-    /// of the memory of wasm piece by piece.
+    /// The variants of the file, through the steps of `steps`, as another
+    /// vars file, of batches of `num_vars_per_block` variants, and of the
+    /// size popnei chooses for these individuals when it is not given,
+    /// which the package reads out of the memory of wasm piece by piece,
+    /// with the counts of the pass that wrote them.
     ///
     /// # Errors
     ///
     /// When `num_vars_per_block` is 0, when the file cannot be read, when a
     /// block of it is not one a vars file holds, and when the memory of the
     /// tab does not take the file.
-    pub fn write_vars(&self, num_vars_per_block: Option<usize>) -> Result<VarsFile, JsPopneiError> {
-        bytes_of_a_vars_file(self, num_vars_per_block)
+    pub fn write_vars(
+        &self,
+        num_vars_per_block: Option<usize>,
+        steps: Steps,
+    ) -> Result<VarsFile, JsPopneiError> {
+        bytes_of_a_vars_file(self, num_vars_per_block, steps)
     }
 }
 

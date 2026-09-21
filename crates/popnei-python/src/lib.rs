@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 
 mod errors;
 mod source;
+mod steps;
 mod vars;
 mod vcf;
 
@@ -35,6 +36,8 @@ mod _core {
 
     #[pymodule_export]
     use super::source::Blocks;
+    #[pymodule_export]
+    use super::steps::Steps;
     #[pymodule_export]
     use super::vars::{VarsSource, open_vars, write_vars};
     #[pymodule_export]

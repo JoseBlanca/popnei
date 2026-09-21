@@ -78,8 +78,12 @@ pyNei's `config.py`. Nobody has measured them for popnei.
 Variants.iter_blocks(
     fields: Iterable[str] = ("chrom", "pos"),
     num_vars_per_block: int | None = None,
-) -> Iterator[Block]
+) -> Blocks
 ```
+
+`Blocks` is an iterator of `Block` with one property, `pass_stats`, the
+`PassStats` of `docs/specs/variant.md`: how many variants it has given in
+its blocks so far, and the counts of the filters of its pass so far.
 
 `Variants` is the handle of `docs/specs/variant.md`, and this is its only
 method that gives genotypes. It is for the user who wants the genotypes
@@ -132,7 +136,8 @@ asked for.
 
 In TypeScript, `variants.iterBlocks({fields = ["chrom", "pos"],
 numVarsPerBlock})`
-is used in `for (const block of variants.iterBlocks())`, and a block is a
+is used in `for (const block of variants.iterBlocks())`, what it returns
+has a `passStats`, and a block is a
 plain object with `gts` an `Int8Array` of variants x individuals x ploidy
 in that order, `numVars`, `numIndividuals`, `ploidy`, `chrom`, `id` and
 `alleles` arrays, `pos` a
@@ -348,7 +353,12 @@ neither a pyo3 class nor a wasm-bindgen class can be generic, so both
 binding crates hold their reader that way, the trait has no generic method
 and no method that takes or returns `Self`, and it is implemented for
 `Box<dyn BlockReader>` too, so that what is generic over a reader, a
-filter or `reblock`, takes a boxed one. It asks for `Send`, because the
+filter or `reblock`, takes a boxed one. It is implemented for `&mut R`
+as well, so that a consumer can be given a reader it does not own:
+`write_vars` of `docs/specs/io_vars.md` is given one that way, and the
+chain of readers stays with the caller, which reads the counts of the
+filters of the pass from it when the call returns, as "How it runs" of the
+counts of `docs/specs/filters.md` asks. It asks for `Send`, because the
 read ahead thread of section 3 of the architecture moves a reader into
 another thread.
 
@@ -362,8 +372,15 @@ pub trait BlockReader: Send {
     fn chroms(&self) -> &ChromTable;
     /// ALL until it is called. It holds from the next block that is built.
     fn set_needs(&mut self, needs: Needs);
+    /// The kind and the counts of every filter between this reader and
+    /// its source, this one first when it is a filter:
+    /// `docs/specs/filters.md`. A source gives none.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
 }
 ```
+
+`filtering_stats` has no default, so that a reader over another reader
+that forgets to pass on the counts of its source does not compile.
 
 `reblock`.
 

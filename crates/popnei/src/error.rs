@@ -11,7 +11,7 @@ use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
-use crate::variant::Needs;
+use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
 /// Anything that went wrong in popnei.
 #[derive(Debug, ThisError)]
@@ -28,6 +28,58 @@ pub enum Error {
         /// The fields that were asked for and that the block does not
         /// hold.
         fields: Needs,
+    },
+
+    /// The alleles given to the counts of one variant are not genotypes
+    /// those counts can read: the ploidy is 0, or the alleles are not a
+    /// whole number of genotypes of the ploidy.
+    ///
+    /// A block of a reader of popnei holds, for each variant, one genotype
+    /// of the ploidy of the source for each individual, so a user reaches
+    /// this only through a reader with a defect.
+    #[error(
+        "the counts of one variant were given {num_alleles} alleles of the ploidy {ploidy}, and they read one genotype of the ploidy for each individual: the ploidy is 1 at least, and the alleles are a whole number of genotypes of it"
+    )]
+    GtsNotWholeGenotypes {
+        /// How many alleles the counts were given.
+        num_alleles: usize,
+        /// The ploidy they were to read them as.
+        ploidy: usize,
+    },
+
+    /// A variant given to the counts of one variant holds more alleles
+    /// than a count of them holds. Every count of the two, the genotypes
+    /// that are called and the times one allele was seen, is a `u32`, so a
+    /// variant of more than 4295 million alleles would be counted into a
+    /// number that wrapped.
+    ///
+    /// One variant holds the individuals of the source times the ploidy
+    /// alleles, and no source has that many, so a user reaches this only
+    /// through a reader with a defect.
+    #[error(
+        "the counts of one variant were given {num_alleles} alleles, and a count of the alleles of one variant holds {largest}",
+        largest = u32::MAX
+    )]
+    MoreAllelesThanACountHolds {
+        /// How many alleles the counts were given.
+        num_alleles: usize,
+    },
+
+    /// A genotype given to the counts of one variant holds an allele below
+    /// the missing one, -2 or less. Counted as it is, it would be a called
+    /// allele of the counts of the genotypes, and it has no place among the
+    /// counts of the alleles, which have one entry for each allele from 0
+    /// to [`MAX_ALLELE`].
+    ///
+    /// No reader of popnei gives such an allele, so a user reaches this
+    /// only through a reader with a defect. pyNei refuses it too, in
+    /// `_count_alleles_per_var`.
+    #[error(
+        "the genotypes of a variant hold the allele {allele}, and an allele is {MISSING_ALLELE} when it was not called and 0 to {MAX_ALLELE} when it was"
+    )]
+    AlleleBelowTheMissingOne {
+        /// The allele that was found in the genotypes.
+        allele: i8,
     },
 
     /// A reader that takes a size was asked for blocks of 0 variants. A
@@ -124,6 +176,56 @@ pub enum Error {
         found: usize,
         /// How many variants the block holds.
         num_vars: usize,
+    },
+
+    /// The threshold of a filter of variants is not a number from 0 to 1,
+    /// both included: it is NaN, it is below 0 or it is above 1. The number
+    /// of the variant that the threshold is compared with is one count of
+    /// the variant divided by another, so no other threshold says anything
+    /// about which variants a user wants.
+    ///
+    /// It is the number a user writes, in `filter_by_maf(0.95)` and in the
+    /// two other methods, so it is refused at the call that adds the
+    /// filter. pyNei takes any number: with a negative one no variant
+    /// passes, and with one above 1 every variant that has a number does,
+    /// so a 95 written for 0.95 filters nothing and says nothing.
+    #[error(
+        "the threshold of the {kind} filter is {threshold:?}, and a threshold is a number from 0 to 1, both included: the number of the variant it is compared with is one count of the variant divided by another"
+    )]
+    VarFilterThresholdOutOfRange {
+        /// Which filter it is: `missing_data`, `maf` or `obs_het`, the name
+        /// its counts have for a Python and a TypeScript user.
+        kind: &'static str,
+        /// The threshold that was given for it.
+        threshold: f64,
+    },
+
+    /// A second filter of a kind that the variants are filtered by already.
+    /// Two threshold filters of one kind keep the variants that the
+    /// stricter of the two keeps alone, so a second one says that the user
+    /// has lost track of the filters their variants carry, which running
+    /// the cell of a notebook twice gives. pyNei takes it and adds the
+    /// counts of the two together.
+    #[error(
+        "the variants are filtered by {kind} already{set}, and a second filter of that kind, whose threshold is {threshold:?}, keeps the variants that the stricter of the two keeps alone",
+        set = threshold_that_is_set
+            .map_or_else(String::new, |set| format!(", with a threshold of {set:?}"))
+    )]
+    VarFilterOfAKindThatIsSet {
+        /// The kind that is filtered twice: `missing_data`, `maf` or
+        /// `obs_het`.
+        kind: &'static str,
+        /// The threshold of the filter that was refused, which is the one
+        /// the caller wrote.
+        threshold: f64,
+        /// The threshold of the filter of that kind that is set already,
+        /// where whoever refuses the second one knows it. A chain of
+        /// readers says which kinds of filter it holds and not with which
+        /// thresholds, so a reader built over one gives `None`, and a
+        /// binding crate, which has the steps of the variants with their
+        /// thresholds, gives the number. The message leaves it out when it
+        /// is `None`.
+        threshold_that_is_set: Option<f64>,
     },
 
     /// A name that was given for a column of a block is not one of the
@@ -341,6 +443,22 @@ pub enum Error {
         found: f32,
         /// Which variant of the file it is, counted from 1, over the whole
         /// file and not inside its batch.
+        var: u64,
+    },
+
+    /// A genotype of the vars file holds an allele below
+    /// [`crate::variant::MISSING_ALLELE`], -1, which is neither an allele
+    /// of the variant nor a missing genotype. The alleles of the file are
+    /// signed bytes, so a byte of the `gts` column that was damaged after
+    /// the file was written, and a file another program wrote, can say one.
+    #[error(
+        "the `gts` column of the vars file holds the allele {found} for its variant {var}, and an allele is -1, which is the missing one, or a number of 0 or more; a byte of that column was changed after the file was written, and the file has to be fetched or copied again, or the file was written by a program other than popnei, which has to write the alleles of a genotype as -1 and the numbers of the alleles the variant declares"
+    )]
+    VarsAlleleBelowMissing {
+        /// The first allele of the batch that is below the missing one.
+        found: i8,
+        /// Which variant of the file that allele is of, counted from 1,
+        /// over the whole file and not inside its batch.
         var: u64,
     },
 
@@ -574,6 +692,115 @@ mod tests {
         assert!(message.contains("alleles"), "{message}");
         assert!(message.contains("qual"), "{message}");
         assert!(!message.contains("gts"), "{message}");
+    }
+
+    /// Whoever reports one of these has the genotypes that were counted,
+    /// and nothing else: no file and no line, since the counts are given a
+    /// row of a block. So the message names the numbers that say which
+    /// reader built it wrong.
+    #[test]
+    fn the_message_of_genotypes_that_are_not_whole_names_the_alleles_and_the_ploidy() {
+        let error = Error::GtsNotWholeGenotypes {
+            num_alleles: 7,
+            ploidy: 2,
+        };
+        let message = error.to_string();
+        assert!(message.contains("7 alleles"), "{message}");
+        assert!(message.contains("ploidy 2"), "{message}");
+
+        let error = Error::GtsNotWholeGenotypes {
+            num_alleles: 10,
+            ploidy: 0,
+        };
+        let message = error.to_string();
+        assert!(message.contains("10 alleles"), "{message}");
+        assert!(message.contains("ploidy 0"), "{message}");
+        // A ploidy of 0 is read here as one genotype of no allele for
+        // every individual, so the message says what a ploidy is.
+        assert!(message.contains("the ploidy is 1 at least"), "{message}");
+    }
+
+    /// A variant of more alleles than a count of them holds is its own
+    /// case, because the counts read every one of those alleles and the
+    /// ploidy says nothing about how many there are. The message names
+    /// what was given and what a count holds.
+    #[test]
+    fn the_message_of_more_alleles_than_a_count_holds_names_them_and_the_largest_count() {
+        // The alleles are more than a `u32` holds, so the number of the
+        // test is written as the largest `usize`, which on the machines
+        // popnei builds natively for is 18446744073709551615: a literal
+        // above 4295 million is not a `usize` in wasm, where this compiles
+        // too.
+        let error = Error::MoreAllelesThanACountHolds {
+            num_alleles: usize::MAX,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("{alleles} alleles", alleles = usize::MAX)),
+            "{message}"
+        );
+        assert!(message.contains("4294967295"), "{message}");
+        // It says nothing of a ploidy, which is the case it was taken out
+        // of: these alleles are too many whatever the ploidy is.
+        assert!(!message.contains("ploidy"), "{message}");
+    }
+
+    /// The error of a second filter of one kind is refused in two places,
+    /// by a reader over a chain, which knows the kinds of the filters of
+    /// that chain and not their thresholds, and by a binding crate, which
+    /// has the steps of the variants with both. The message says which
+    /// number is which, and says nothing of the threshold that is set when
+    /// whoever refused the filter did not have it.
+    #[test]
+    fn the_message_of_a_second_filter_of_one_kind_names_the_thresholds_it_was_given() {
+        let error = Error::VarFilterOfAKindThatIsSet {
+            kind: "maf",
+            threshold: 0.95,
+            threshold_that_is_set: None,
+        };
+        let message = error.to_string();
+        assert!(message.contains("filtered by maf already,"), "{message}");
+        assert!(message.contains("whose threshold is 0.95"), "{message}");
+
+        let error = Error::VarFilterOfAKindThatIsSet {
+            kind: "maf",
+            threshold: 0.95,
+            threshold_that_is_set: Some(0.8),
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("filtered by maf already, with a threshold of 0.8"),
+            "{message}"
+        );
+        assert!(message.contains("whose threshold is 0.95"), "{message}");
+    }
+
+    /// The allele is what says where the reader that gave it went wrong,
+    /// and the range is what says why it was refused.
+    #[test]
+    fn the_message_of_an_allele_below_the_missing_one_names_the_allele() {
+        let error = Error::AlleleBelowTheMissingOne { allele: -2 };
+        let message = error.to_string();
+        assert!(message.contains("the allele -2"), "{message}");
+        assert!(message.contains("-1"), "{message}");
+        assert!(message.contains("127"), "{message}");
+    }
+
+    /// A user who gets this one has a file that was damaged after it was
+    /// written, or one another program wrote, so the message says which
+    /// variant of it to look at and what it holds there.
+    #[test]
+    fn the_message_of_an_allele_of_a_vars_file_below_the_missing_one_names_it_and_its_variant() {
+        let error = Error::VarsAlleleBelowMissing { found: -2, var: 17 };
+        let message = error.to_string();
+        assert!(message.contains("the allele -2"), "{message}");
+        assert!(message.contains("variant 17"), "{message}");
+        assert!(message.contains("`gts`"), "{message}");
+        // A user whose disc changed that byte reads what to do, as they do
+        // for the other damaged vars files, and one whose file came from
+        // another program reads what that program has to write.
+        assert!(message.contains("fetched or copied again"), "{message}");
+        assert!(message.contains("a program other than popnei"), "{message}");
     }
 
     /// A user who gets one of these has the file open in front of them, so

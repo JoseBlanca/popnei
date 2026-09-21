@@ -200,8 +200,18 @@ not an error.
 ```python
 def write_vars(
     variants: Variants, path: str | Path, num_vars_per_block: int | None = None
-) -> None
+) -> VarsWritten
 ```
+
+`VarsWritten` is a frozen dataclass with one field, `pass_stats`, the
+`PassStats` of `docs/specs/variant.md`: how many variants were written,
+and how many each filter of the `Variants` was given and kept. The owner
+decided on 21 September 2026 that every consumer of a `Variants` returns
+it. A pytest test made at `write_vars`, once the filters of
+`docs/specs/filters.md` are built: on `many.vcf` with every variant given
+and the missing data filter at 0.04, the `pass_stats` has a `num_vars` of
+215 and a `filtering` of `{"missing_data": FilteringStats(500, 215)}`, and
+the file read back has 215 variants.
 
 `Variants` is the handle of `docs/specs/variant.md`, which holds a source and
 the filters on it and no genotypes. The call reads the whole source once. A
@@ -254,8 +264,9 @@ their VCF with a call that refuses the path and no reason.
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
 with the default size of block gives its batches as they are.
 
-In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back a
-`Uint8Array` with the bytes of the file, which the page offers as a download:
+In TypeScript, `writeVars(variants, {numVarsPerBlock})` gives back an
+object with `bytes`, a `Uint8Array` with the bytes of the file, and
+`passStats`. The page offers the bytes as a download:
 a tab has no filesystem, as section 11 of the architecture says.
 
 It has the name and the first two arguments of `write_vars` of
@@ -359,7 +370,10 @@ in any order but the one in which the chromosomes first appear is caught. A thir
 back, and the genotypes, the chromosome names and the positions of the blocks
 are those of the blocks of the VCF. A fourth writes a source whose blocks carry
 the genotypes alone and finds one column in the file it reads back, and
-`num_vars` with no `regions` in its footer.
+`num_vars` with no `regions` in its footer. A fifth asserts what the call
+says it wrote, 4 variants for the block of `cases.vcf`, 500 for `many.vcf`
+at any size of batch and 0 for a source with no variants, and that a
+`&mut reader` writes the file that the same reader given whole writes.
 
 The TypeScript test, under node, reads `cases.vcf` from a `Uint8Array` with
 `openVcf` and `onlyPassed` false, so that it gives the four variants, writes
@@ -469,6 +483,23 @@ the option not taken was to let those values into the block, which gives a
 calculation over the qualities an infinity to work with and turns a NaN into a
 variant with no quality.
 
+An allele of `gts` below `MISSING_ALLELE`, -1, is an error naming the allele
+found and the variant. The alleles are signed bytes, so a byte of that column
+that was damaged after the file was written, or a file another program wrote,
+can say -2, which is neither an allele of the variant nor a missing genotype.
+The owner decided on 21 September 2026 that such an allele "is never allowed"
+and that every reader of popnei refuses it, "even the VCF parser", after a
+reviewer wrote a vars file with popnei, changed one byte of its genotypes to
+254, and `open_vars(...).iter_blocks()` handed out a block holding -2 with no
+error: the reader checked the nulls, the type and the width of the column and
+copied the bytes. What the -2 reached is what `docs/specs/variant.md` says
+under "An allele that no reader gives": the counts of one variant refused it,
+and a pass that counted nothing put it in the array of a user, where it was
+an allele of its own. The option not taken was to leave the reader as it
+was and to make those two errors of the counts a `ValueError` instead of the
+`RuntimeError` they are, which names no file and no variant and which a pass
+with no filter and no count never reaches.
+
 These are errors of the file as a whole, found when it is opened: it is not an
 arrow IPC file; its schema has no `popnei` key, or the value is not json, or
 one of its four keys is missing; the first part of `format_version` is not
@@ -547,7 +578,20 @@ A batch becomes a block column by column. The genotypes are copied from the
 buffer that arrow-rs decompressed into the vector of the block, which a
 `Block` owns; measured on the panel of "The compression", that copy into a
 vector allocated for each batch added 0.4 ms to the 18.8 ms of the
-decompression of its four batches. The positions and the qualities are
+decompression of its four batches. Before the copy, one pass over that
+buffer takes the smallest of its alleles and refuses the batch when it is
+below the missing one, which "What it refuses" asks for: the smallest of a
+run of bytes is what a compiler reduces over the lanes of a vector
+register, where a comparison written for each allele on its own would not
+be. The reader gives the 4e7 alleles of that panel, 1000 individuals and
+20000 variants, in 20.50 to 20.61 ms with the genotypes alone asked for,
+which is the number to hold against the 21 ms of "Speed" below and leaves
+0.4 ms under it. The check is 0.35 to 0.54 ms of that, 2 in 100: the same
+reader without it gave the pass in 20.07 to 20.26 ms, and the difference is
+of each of six pairs of runs, the two builds one after the other, three
+pairs on each of two occasions. Each number is the best of 5 runs of
+`crates/popnei/benches/vars_file.rs` on the owner's Apple M5 Pro with a
+load average of 1.3 to 1.4. The positions and the qualities are
 copied too, a null quality as NaN, the ids and the alleles go into the
 columns of texts of the block, and each chromosome name gets its number from
 the table, which is looked up only when the name differs from that of the
@@ -697,7 +741,8 @@ impl<W: Write> VarsWriter<W> {
     pub fn finish(self) -> Result<W>;
 }
 
-/// Every variant of `reader` into a vars file on `sink`. It asks `reader` for
+/// Every variant of `reader` into a vars file on `sink`, and the sink back
+/// with how many variants were written. It asks `reader` for
 /// every field and puts a `reblock` of `num_vars_per_block` over it, None for
 /// `default_num_vars_per_block` for the individuals of `reader`, which is
 /// then the number that the `popnei` key says. This is what both binding crates call. The Python
@@ -705,8 +750,19 @@ impl<W: Write> VarsWriter<W> {
 /// file when this returns an error.
 pub fn write_vars<R: BlockReader, W: Write>(
     reader: R, sink: W, num_vars_per_block: Option<usize>,
-) -> Result<W>;
+) -> Result<(W, u64)>;
 ```
+
+The count is the `num_vars` of the `PassStats` that every consumer of a
+`Variants` gives back, the owner's decision of 21 September 2026 that "Its
+Python and TypeScript functions" of the writer has for this one. It comes
+from here because the loop over the blocks is here: a binding crate that
+calls this one sees no block of the pass and can count nothing. A caller
+that has to give its user the counts of the filters of that pass as well
+gives `&mut reader`, which is a `BlockReader` too, as
+`docs/specs/block.md` has it: the chain of readers stays with the caller,
+which reads `filtering_stats` from it when this returns, as "How it runs"
+of the counts of `docs/specs/filters.md` asks of every consumer.
 
 The values of the two keys are json, and which crate reads and writes it is
 the implementer's choice among those in pure Rust, since the core builds for
@@ -718,7 +774,7 @@ one is in Python. The owner gave the convention on 21 September 2026: a
 popnei, and an `OSError` a file that cannot be read, that was cut short or
 that is corrupted.
 
-Twelve are a `ValueError`, since a file whose content is not what a vars file
+Thirteen are a `ValueError`, since a file whose content is not what a vars file
 holds is a wrong input like a wrong argument: the source is not a vars file,
 with what it lacks, which is the header of an arrow file, the `popnei` key of
 the schema, the json of its value, one of that key's four values, the `gts`
@@ -727,7 +783,8 @@ column or the
 1, with the version found; a column of another type, with the column and the
 two types; a `gts` width that does not match the `popnei` key, with both
 widths; a null where there can be none, with the column and the variant; a
-`qual` that is a value and is not finite, with the value and the variant; a
+`qual` that is a value and is not finite, with the value and the variant; an
+allele of `gts` below the missing one, with the allele and the variant; a
 footer whose entries are not as many as the batches, with both counts; a
 batch that holds another number of variants than its entry of the footer,
 with the batch and both counts; a file whose buffers are compressed with
@@ -754,8 +811,14 @@ the file system, and what arrow-rs said when it is not; a file that starts
 as an arrow file and was cut short, with what was being read when the bytes
 ran out; and a batch that arrow-rs could not decode or decompress, with the
 batch and what arrow-rs said. The last two are a file that was damaged after
-it was written, which the reader refuses instead of giving the variants it
-can still read. The write has a case of its own because a Python user reads
+it was written and whose bytes no longer decode, which the reader refuses
+instead of giving the variants it can still read. Damage that does decode,
+into content the format does not allow, is one of the `ValueError` above
+instead: a byte of the `gts` column changed to 254 is a whole batch that
+arrow-rs reads and an allele of -2, and popnei's convention sorts an error
+by what is wrong with the content and not by what made it wrong, since the
+reader cannot tell a damaged file from one another program wrote badly. The
+write has a case of its own because a Python user reads
 which file went wrong from the exception, and a disc that fills up while the
 vars file is being written is not the VCF failing to be read.
 
@@ -826,8 +889,8 @@ option that was not taken.
 - The function that asks a `Variants` for the variants of a region, in Python
   and in TypeScript, and the skipping of the batches outside it. The file has
   what that needs, `popnei_batches`, and the reader gives it as `batches()`. The
-  function belongs with the filters, whose spec, `docs/specs/filters.md`, is
-  not written.
+  function belongs with the filters, as a later item of
+  `docs/specs/filters.md`.
 - The read ahead thread that decompresses the next batch while the consumer
   works: with the first calculation that consumes blocks.
 - Genotypes packed in 2 bits, the option to measure of section 4 of the

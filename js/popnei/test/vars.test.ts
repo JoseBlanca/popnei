@@ -140,7 +140,7 @@ async function varsFileOfCases(numVarsPerBlock: number): Promise<Uint8Array> {
     onlyPassed: false,
   });
   try {
-    return writeVars(variants, { numVarsPerBlock });
+    return writeVars(variants, { numVarsPerBlock }).bytes;
   } finally {
     variants.free();
   }
@@ -221,7 +221,7 @@ test("the batches of the file hold the variants that were asked for", async () =
   });
   // With no size it is the one popnei chooses for three diploid
   // individuals, which holds the four variants in one batch.
-  const chosen = numVarsPerBlockOf(writeVars(variants));
+  const chosen = numVarsPerBlockOf(writeVars(variants).bytes);
   assert.ok(chosen > 4, `popnei chose batches of ${chosen} variants`);
   variants.free();
 });
@@ -230,7 +230,7 @@ test("the bytes of a vars file are a copy, and the memory of wasm may grow", asy
   const variants = openVcf(await referenceVcf("cases.vcf"), {
     onlyPassed: false,
   });
-  const bytes = writeVars(variants, { numVarsPerBlock: 3 });
+  const bytes = writeVars(variants, { numVarsPerBlock: 3 }).bytes;
   const kept = [...bytes];
   variants.free();
   assert.ok(bytes.length > 0);
@@ -268,6 +268,55 @@ test("bytes that are not a vars file are refused when they are opened", async ()
   });
 });
 
+/**
+ * The genotypes of the four variants of `cases.vcf`, `0/0 0/1 1/1`,
+ * `./. 0/1 ./0`, `1/2 2/1 2/2` and `0/0 0/0 0/0`, as the bytes of the `gts`
+ * column of the vars file written from it: one signed byte for each allele,
+ * and 255 for the missing one, -1. lz4 makes those 24 bytes no smaller, so
+ * arrow writes the buffer as it is and each allele is one byte of the file.
+ */
+const GTS_OF_CASES = Uint8Array.of(
+  0, 0, 0, 1, 1, 1, 255, 255, 0, 1, 255, 0, 1, 2, 2, 1, 2, 2, 0, 0, 0, 0, 0, 0,
+);
+
+/** Where `run` is in `bytes`, and -1 when it is not there. */
+function indexOf(bytes: Uint8Array, run: Uint8Array): number {
+  for (let at = 0; at + run.length <= bytes.length; at += 1) {
+    if (run.every((byte, of) => bytes[at + of] === byte)) {
+      return at;
+    }
+  }
+  return -1;
+}
+
+test("an allele below the missing one is refused when its block is read", async () => {
+  // An allele of a vars file is one signed byte, so a byte of the genotypes
+  // that was damaged after the file was written can say -2, which is no
+  // allele of a variant and no missing genotype. The owner decided on 21
+  // September 2026 that every reader of popnei refuses such an allele,
+  // after a reviewer changed one byte this way and got the genotype
+  // `[-2, 0]` out of a pass with no error.
+  const bytes = await varsFileOfCases(4);
+  const at = indexOf(bytes, GTS_OF_CASES);
+  assert.notEqual(at, -1, "the genotypes are not in the file as they were written");
+  // The 13th allele of the file, which is the first of the third variant.
+  const damaged = Uint8Array.from(bytes);
+  damaged[at + 12] = 254;
+
+  const variants = openVars(damaged);
+  assert.throws(() => [...variants.iterBlocks()], {
+    name: "Error",
+    message: /the allele -2 for its variant 3/,
+  });
+  variants.free();
+
+  // The file as it was written gives that variant, and the missing allele
+  // of the second is not refused.
+  const whole = openVars(bytes);
+  assert.deepEqual(rowsOf(whole), CASES);
+  whole.free();
+});
+
 test("a vars file compressed with zstd opens and throws at its first block", async () => {
   // popnei cannot write it: no build of it carries the zstd crate, and
   // pyarrow wrote `tests/reference/vars/zstd.vars` for this test. Arrow
@@ -293,7 +342,7 @@ test("every pass over a vars file reads the same bytes again", async () => {
 
 test("a vars file is written again from the variants of one", async () => {
   const read = openVars(await varsFileOfCases(3));
-  const written = openVars(writeVars(read, { numVarsPerBlock: 2 }));
+  const written = openVars(writeVars(read, { numVarsPerBlock: 2 }).bytes);
   const blocks = [
     ...written.iterBlocks({ fields: ALL_FIELDS, numVarsPerBlock: 2 }),
   ];
@@ -316,7 +365,7 @@ test("a tetraploid VCF gives a vars file of tetraploid genotypes", () => {
     "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t1/1/1/1\t0/0/0/1\t./././.",
   ]);
   const vcf = openVcf(tetraploid, { ploidy: 4 });
-  const bytes = writeVars(vcf, { numVarsPerBlock: 2 });
+  const bytes = writeVars(vcf, { numVarsPerBlock: 2 }).bytes;
   vcf.free();
   const variants = openVars(bytes);
   // The ploidy comes from the `popnei` key of the file, and the width of

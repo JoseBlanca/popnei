@@ -84,7 +84,7 @@ let bytes: Uint8Array = new Uint8Array();
 test("a vars file is written in about the memory of wasm it holds", () => {
   const vcf = openVcf(vcfOfDrawnGenotypes(14000, 600), { onlyPassed: false });
   const before = memoryOfWasm();
-  bytes = writeVars(vcf, { numVarsPerBlock: 100 });
+  bytes = writeVars(vcf, { numVarsPerBlock: 100 }).bytes;
   const grew = memoryOfWasm() - before;
   vcf.free();
   assert.ok(bytes.length > 8 * 1024 * 1024, `the file is ${bytes.length} bytes`);

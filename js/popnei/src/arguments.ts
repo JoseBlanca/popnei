@@ -53,6 +53,29 @@ export function wholeNumberOfOneOrMore(
 }
 
 /**
+ * `value` when it is a number, and an `Error` that names `argument` and what
+ * was given otherwise.
+ *
+ * It is the threshold of a filter that comes through here, and what it
+ * refuses is what is not a number at all: whether the number is one the
+ * filter takes, from 0 to 1, is the rule of the core, which says it of the
+ * threshold of every pass and not of this call alone. A call with no
+ * threshold gives `undefined`, and the code wasm-bindgen generates would
+ * hand the core a NaN for it, `null` as a threshold of 0 and the string
+ * `"0.5"` as 0.5, each of them with no error.
+ *
+ * @throws {Error} When `value` is not a number.
+ */
+export function aNumber(argument: string, value: unknown): number {
+  if (typeof value !== "number") {
+    throw new Error(
+      `popnei: \`${argument}\` is a number, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a boolean, and an `Error` otherwise.
  *
  * @throws {Error} When `value` is not a boolean.

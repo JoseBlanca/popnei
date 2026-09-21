@@ -628,7 +628,7 @@ def test_write_vars_of_the_private_module_names_the_type_it_was_given(
     path = tmp_path / "nothing.vars"
 
     with pytest.raises(TypeError, match="open_vars") as refusal:
-        _core.write_vars(123, path, None)
+        _core.write_vars(123, path, None, _core.Steps())
 
     assert "`int`" in str(refusal.value)
     assert not path.exists()
@@ -704,6 +704,19 @@ BYTES_CUT_OFF_THE_END = 100
 A_MESSAGE_CONTINUES = b"\xff\xff\xff\xff"
 BYTES_BEFORE_THE_METADATA_OF_A_MESSAGE = 8
 BYTES_ZEROED_IN_THE_BATCH = 16
+
+# The genotypes of the four variants of `cases.vcf`, `0/0 0/1 1/1`,
+# `./. 0/1 ./0`, `1/2 2/1 2/2` and `0/0 0/0 0/0`, as the bytes of the `gts`
+# column of the vars file written from it: one signed byte for each allele,
+# and 255 for the missing one, -1. The 13th of them is the first allele of
+# the third variant, which the test of the allele below the missing one
+# changes to 254, -2.
+GTS_OF_CASES = bytes(
+    [0, 0, 0, 1, 1, 1, 255, 255, 0, 1, 255, 0, 1, 2, 2, 1, 2, 2, 0, 0, 0, 0, 0, 0]
+)
+ALLELE_CHANGED_OF_CASES = 12
+AN_ALLELE_BELOW_THE_MISSING_ONE = 254
+VAR_OF_THE_CHANGED_ALLELE = 3
 
 # The batches of the file that is written again from what `open_vars` reads,
 # 500 variants in batches of 37, and the blocks of 7 variants and the one
@@ -926,6 +939,47 @@ def test_open_vars_refuses_a_batch_of_a_vars_file_that_was_damaged(
         list(variants.iter_blocks())
     assert refusal.value.filename == str(path)
     assert refusal.value.errno is None
+
+
+def test_open_vars_refuses_an_allele_below_the_missing_one(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A vars file one of whose alleles was changed to -2.
+
+    An allele of a vars file is one signed byte, so a byte of the genotypes
+    that was damaged after the file was written can say a number below -1,
+    the missing allele, which is no allele of a variant. The owner decided
+    on 21 September 2026 that such an allele is never allowed and that every
+    reader refuses it, after a reviewer changed one byte this way and got
+    the genotype ``[-2, 0]`` out of ``iter_blocks`` with no error.
+
+    It is the content of a file that is not what the format holds, so it is
+    a ``ValueError`` with the path at the start of its message, and not the
+    ``OSError`` of a vars file whose bytes no longer decode: the exception
+    follows what is wrong with the content, and the reader cannot tell a
+    file a disc changed from one another program wrote badly. The message
+    says which allele and which variant of the file, and what to do.
+    """
+    whole = tmp_path / "whole.vars"
+    write_vars(open_vcf(reference_vcf_dir / "cases.vcf", only_passed=False), whole)
+    written = bytearray(whole.read_bytes())
+    # lz4 makes the 24 alleles of the four variants no smaller, so arrow
+    # writes that buffer as it is and each allele is one byte of the file.
+    assert written.count(GTS_OF_CASES) == 1, "the genotypes are not in the file"
+    at = written.index(GTS_OF_CASES) + ALLELE_CHANGED_OF_CASES
+    written[at] = AN_ALLELE_BELOW_THE_MISSING_ONE
+    path = tmp_path / "below_the_missing_one.vars"
+    path.write_bytes(written)
+
+    variants = open_vars(path)
+
+    with pytest.raises(ValueError, match="the allele -2") as refusal:
+        list(variants.iter_blocks())
+    assert str(refusal.value).startswith(str(path))
+    assert f"variant {VAR_OF_THE_CHANGED_ALLELE}" in str(refusal.value)
+    # A user whose disc changed that byte reads what to do, as they do for
+    # the vars files that were damaged so far that they no longer decode.
+    assert "fetched or copied again" in str(refusal.value)
 
 
 def test_open_vars_refuses_a_file_compressed_with_zstd_at_its_first_block() -> None:

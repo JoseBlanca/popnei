@@ -484,6 +484,12 @@ test("variants that were freed cannot be read again", async () => {
     name: "Error",
     message: /freed/,
   });
+  // The steps live in the memory of wasm beside the source, so they go
+  // with it.
+  assert.throws(() => variants.steps, {
+    name: "Error",
+    message: /freed/,
+  });
   // A second free is not an error: it has nothing left to give back.
   variants.free();
 });

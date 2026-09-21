@@ -43,7 +43,8 @@ use serde_json::{Map, Value};
 
 use crate::block::{AllelesColumn, Block, BlockReader, BlockSize, Reblock, size_of_the_blocks};
 use crate::error::{Error, Result};
-use crate::variant::{ChromTable, Needs};
+use crate::filters::FilteringStats;
+use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
 /// The key of the schema of a vars file whose value says what is known
 /// before its first variant.
@@ -707,7 +708,14 @@ impl<W: Write> VarsWriter<W> {
 }
 
 /// Every variant of `reader` into a vars file on `sink`, one batch for each
-/// block, and the sink back.
+/// block, and the sink back with how many variants were written.
+///
+/// That count is what a Python or a TypeScript user reads as the variants
+/// of the pass, `num_vars` of the `PassStats` of `docs/specs/variant.md`.
+/// The binding crate cannot count them itself, as it does in an
+/// `iter_blocks`, because the loop over the blocks is here; the counts of
+/// the filters of the pass it reads from the chain of readers it keeps,
+/// which it lends here as `&mut reader`.
 ///
 /// It asks `reader` for every field, so a file written from a VCF holds its
 /// six columns and can stand in for it in any later analysis, and it puts a
@@ -733,7 +741,7 @@ pub fn write_vars<R: BlockReader, W: Write>(
     mut reader: R,
     sink: W,
     num_vars_per_block: Option<usize>,
-) -> Result<W> {
+) -> Result<(W, u64)> {
     // Every field, so that a file written from a VCF holds its six columns
     // whether or not the user will read them.
     reader.set_needs(Needs::ALL);
@@ -746,10 +754,18 @@ pub fn write_vars<R: BlockReader, W: Write>(
         size_of_the_blocks(num_vars_per_block, individuals.len(), ploidy)?;
     let mut writer = VarsWriter::new(sink, &individuals, ploidy, num_vars_per_block)?;
     let mut blocks = Reblock::new(reader, Some(num_vars_per_block))?;
+    let mut num_vars: u64 = 0;
     while let Some(block) = blocks.next_block()? {
+        let of_the_block = u64::try_from(block.num_vars).unwrap_or(u64::MAX);
         writer.write_block(block, blocks.chroms())?;
+        // A variant is a row of the file that is being written, so a pass
+        // of the 18446744073709551615 variants this count holds is more
+        // rows than any file system takes: the sum cannot reach its end.
+        // The conversion above cannot fail either: a `usize` is 64 bits
+        // natively and 32 in wasm, and both fit in a `u64`.
+        num_vars = num_vars.saturating_add(of_the_block);
     }
-    writer.finish()
+    Ok((writer.finish()?, num_vars))
 }
 
 /// The schema of a vars file whose blocks hold `fields`, with the `popnei`
@@ -1678,6 +1694,11 @@ impl<R: Read + Seek + Send> BlockReader for VarsReader<R> {
     fn set_needs(&mut self, needs: Needs) {
         self.needs = needs;
     }
+
+    /// None: a source has no filter over it.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        Vec::new()
+    }
 }
 
 impl VarsReader<BufReader<File>> {
@@ -2275,8 +2296,9 @@ fn alleles_of_the_batch(
 ///
 /// When a variant has no genotypes or one of its alleles is a null, when the
 /// column is not a fixed size list of signed bytes or holds another number
-/// of alleles for each variant than the `popnei` key of the file gives, and
-/// when the machine does not give the memory of the genotypes of the block.
+/// of alleles for each variant than the `popnei` key of the file gives, when
+/// an allele of it is below [`MISSING_ALLELE`], and when the machine does
+/// not give the memory of the genotypes of the block.
 fn genotypes(
     array: &ArrayRef,
     num_vars: usize,
@@ -2331,12 +2353,48 @@ fn genotypes(
             "holds fewer alleles than the variants of the batch",
         ));
     };
+    // No reader of popnei gives an allele below the missing one, which the
+    // owner decided on 21 September 2026 and `docs/specs/variant.md` says
+    // under "An allele that no reader gives": the two counts of one variant
+    // refuse such an allele as a defect of the reader, and a pass that
+    // counts nothing would put it in the array of a user. The alleles of
+    // the file are signed bytes, so a damaged one and a file of another
+    // program can say -2.
+    if let Some((at, allele)) = first_allele_below_the_missing_one(alleles) {
+        return Err(Error::VarsAlleleBelowMissing {
+            found: allele,
+            var: place
+                .vars_before
+                .saturating_add(counted_from_one(at.checked_div(found).unwrap_or(0))),
+        });
+    }
     let mut genotypes = Vec::new();
     genotypes
         .try_reserve_exact(wanted)
         .map_err(|_| block_too_large(num_vars, metadata))?;
     genotypes.extend_from_slice(alleles);
     Ok(genotypes)
+}
+
+/// The first allele of `alleles` below [`MISSING_ALLELE`], with its place
+/// in the slice, and `None` when every one of them is an allele.
+///
+/// Whether there is one is the smallest of them in one pass, which the
+/// compiler reduces over the lanes of a vector register; a comparison
+/// written for each allele on its own does not vectorise, and this reads
+/// every allele of every batch. Which one it is and where it is come from
+/// one walk of the same slice, which only a batch that is refused pays
+/// for, so the allele the error names is the allele at the place it names,
+/// whatever either pass is changed into.
+fn first_allele_below_the_missing_one(alleles: &[i8]) -> Option<(usize, i8)> {
+    if alleles.iter().copied().fold(i8::MAX, i8::min) >= MISSING_ALLELE {
+        return None;
+    }
+    alleles
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, allele)| *allele < MISSING_ALLELE)
 }
 
 /// One column of the batch as the array it holds.
@@ -2764,6 +2822,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
 
     use arrow_array::builder::{Int8Builder, ListBuilder, StringBuilder};
     use arrow_array::cast::AsArray;
@@ -2780,15 +2839,16 @@ mod tests {
 
     use super::{
         ALLELES_COLUMN, BatchInfo, BatchPlace, CHROM_COLUMN, FORMAT_VERSION, FORMAT_VERSION_READ,
-        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, POPNEI_BATCHES_KEY,
-        POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES, VarsColumn,
-        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
-        batches_from_json, block_of_the_batch, block_too_large, chrom_column, counted_from_one,
-        id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file, projection_of,
-        schema_of, write_vars,
+        GTS_COLUMN, ITEM_FIELD, MAX_COLUMN_BYTES, MESSAGE_START_BYTES, NOT_COMPRESSED,
+        POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region, UNCOMPRESSED_LENGTH_BYTES,
+        VarsColumn, VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column,
+        batches_as_json, batches_from_json, block_of_the_batch, block_too_large, chrom_column,
+        counted_from_one, id_column, metadata_as_json, metadata_from_json, num_vars_of_the_file,
+        projection_of, schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader, BlockSize};
     use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
@@ -3004,6 +3064,10 @@ mod tests {
                 *asked_for = needs;
             }
         }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
     }
 
     /// A vars file opened as any other program with an arrow library opens
@@ -3162,7 +3226,9 @@ mod tests {
         let mut chroms = ChromTable::new();
         let block = cases_block(&mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        write_vars(reader, Vec::new(), Some(num_vars_per_block)).expect("the file was written")
+        write_vars(reader, Vec::new(), Some(num_vars_per_block))
+            .expect("the file was written")
+            .0
     }
 
     /// `write_vars` asks its reader for every field, so that a file written
@@ -3187,6 +3253,48 @@ mod tests {
             *asked_for.lock().expect("what the reader was asked for"),
             Needs::ALL
         );
+    }
+
+    /// `write_vars` says how many variants it wrote, which is what a Python
+    /// or a TypeScript user reads as the variants of the pass: the four of
+    /// `cases.vcf`, the 500 of `many.vcf` whatever the size of the batches,
+    /// and none for a source that has no variants.
+    #[test]
+    fn write_vars_says_how_many_variants_it_wrote() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let (_, num_vars) = write_vars(reader, Vec::new(), Some(3)).expect("the file");
+        assert_eq!(num_vars, 4);
+
+        let (_, num_vars) =
+            write_vars(many_vcf_reader(None), Vec::new(), Some(100)).expect("the file");
+        assert_eq!(num_vars, 500);
+        let (_, num_vars) = write_vars(many_vcf_reader(None), Vec::new(), None).expect("the file");
+        assert_eq!(num_vars, 500);
+
+        let of_no_variants = GivenBlocks::of(Vec::new(), ChromTable::new());
+        let (_, num_vars) = write_vars(of_no_variants, Vec::new(), Some(3)).expect("the file");
+        assert_eq!(num_vars, 0);
+    }
+
+    /// A reader that is borrowed and not taken is what `write_vars` reads
+    /// when its caller keeps the chain of the pass, which is how a binding
+    /// crate reads the counts of the filters of that pass when the call
+    /// returns, as `docs/specs/filters.md` has it: the file is the one the
+    /// same reader written gives.
+    #[test]
+    fn write_vars_writes_the_same_file_from_a_reader_it_borrows() {
+        let mut chroms = ChromTable::new();
+        let block = cases_block(&mut chroms);
+        let mut reader = GivenBlocks::of(vec![block], chroms);
+
+        let (bytes, num_vars) =
+            write_vars(&mut reader, Vec::new(), Some(3)).expect("the file was written");
+
+        assert_eq!(num_vars, 4);
+        assert_eq!(bytes, cases_written_in_batches_of(3));
+        assert!(reader.filtering_stats().is_empty());
     }
 
     /// The four variants of the table of `cases.vcf`, in batches of three:
@@ -3303,7 +3411,7 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(num_rows_of(&file.rows), [4]);
@@ -3348,7 +3456,7 @@ mod tests {
         block.qual = None;
         assert_eq!(block.fields(), Needs::GTS);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -3373,7 +3481,7 @@ mod tests {
     #[test]
     fn a_source_with_no_variants_gives_a_file_with_both_keys_and_no_batch() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(file.columns, vec![("gts".to_owned(), gts_type(6), false)]);
@@ -3410,7 +3518,7 @@ mod tests {
             ploidy: 4,
             ..GivenBlocks::of(vec![block], chroms)
         };
-        let bytes = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(2)).expect("the file was written");
         let file = file_read(bytes);
 
         assert_eq!(
@@ -3478,7 +3586,7 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), None).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), None).expect("the file was written");
 
         let frames = bytes
             .windows(LZ4_FRAME_MARK.len())
@@ -4389,6 +4497,7 @@ mod tests {
     fn many_vcf_written(num_vars_per_block: Option<usize>) -> Vec<u8> {
         write_vars(many_vcf_reader(None), Vec::new(), num_vars_per_block)
             .expect("many.vcf was written as a vars file")
+            .0
     }
 
     /// Where the variants of those rows are, one entry for each of their
@@ -4912,7 +5021,7 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let reader = opened(bytes).expect("the file of one column is a vars file");
 
@@ -4949,7 +5058,7 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_is_opened_and_says_it_holds_none() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let reader = opened(bytes).expect("the file with no batch is a vars file");
 
@@ -5223,6 +5332,17 @@ mod tests {
         }
     }
 
+    /// The reader is a source: no filter stands between it and the file,
+    /// before a block is read and after the last one.
+    #[test]
+    fn a_vars_file_reader_gives_no_filtering_stats() {
+        let mut reader = opened(cases_written_in_batches_of(3)).expect("the bytes are a vars file");
+        assert!(reader.filtering_stats().is_empty());
+        let blocks = blocks_of(&mut reader).expect("the blocks of the file");
+        assert_eq!(num_vars_of(&blocks), [3, 1]);
+        assert!(reader.filtering_stats().is_empty());
+    }
+
     /// The four variants of the table of `cases.vcf`, written in batches of
     /// three and read back: two blocks, of 3 variants and of 1, with every
     /// field of every variant as it went in, the empty id of the last three
@@ -5251,7 +5371,7 @@ mod tests {
         let rows: Vec<&Row> = NOT_SORTED.iter().collect();
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(4)).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -5284,7 +5404,7 @@ mod tests {
         block.alleles = None;
         block.qual = None;
         let reader = GivenBlocks::of(vec![block], chroms);
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
 
         let (blocks, chroms) = blocks_read(bytes, Needs::ALL);
 
@@ -5503,7 +5623,7 @@ mod tests {
     #[test]
     fn a_file_with_no_variants_gives_no_block() {
         let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
-        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+        let (bytes, _) = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
         let mut reader = opened(bytes).expect("the file with no batch is a vars file");
 
         assert!(reader.next_block().expect("the empty file").is_none());
@@ -6147,8 +6267,21 @@ mod tests {
     /// not, and `docs/specs/io_vars.md` says so. What must not happen is a
     /// panic that comes out of the reader, which fails the test where it
     /// happens, or an abort, which kills the test binary.
+    ///
+    /// The hook a panic runs is the one of the whole process, and cargo
+    /// runs the other tests of this binary in threads of that process
+    /// while the sweep runs, so a test that fails elsewhere at that moment
+    /// panics into this hook: it was counted as a panic the reader caught,
+    /// the sweep failed as well, and its message named the file of the
+    /// other test. Two reviewers got `popnei panicked at
+    /// crates/popnei/src/filters.rs:1588:9, 1 times` that way on 21
+    /// September 2026, by breaking a test of the filters. So each panic is
+    /// counted under the thread it happened in, and the sweep keeps the
+    /// ones of its own: the reader of a vars file uses no threads, so every
+    /// panic of the files this makes is on this thread.
     fn swept(whole: &[u8], values: &[u8], expected: &[ReadRow]) -> Sweep {
-        let seen: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let seen: Arc<Mutex<HashMap<(ThreadId, String), u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let hook = std::panic::take_hook();
         let writing = Arc::clone(&seen);
         std::panic::set_hook(Box::new(move |panic| {
@@ -6156,10 +6289,13 @@ mod tests {
                 .location()
                 .map_or_else(|| "nowhere".to_owned(), |at| format!("{at}"));
             if let Ok(mut seen) = writing.lock() {
-                let counted = seen.entry(place).or_insert(0);
+                let counted = seen
+                    .entry((std::thread::current().id(), place))
+                    .or_insert(0);
                 *counted = counted.saturating_add(1);
             }
         }));
+        let sweeping = std::thread::current().id();
         let mut errors: u64 = 0;
         let mut the_same: u64 = 0;
         let mut others: u64 = 0;
@@ -6183,7 +6319,8 @@ mod tests {
             .map(|seen| {
                 let mut places: Vec<(String, u64)> = seen
                     .iter()
-                    .map(|(at, count)| (at.clone(), *count))
+                    .filter(|((thread, _), _)| *thread == sweeping)
+                    .map(|((_, at), count)| (at.clone(), *count))
                     .collect();
                 places.sort();
                 places
@@ -6208,8 +6345,10 @@ mod tests {
     /// what that does not see in `catch_unwind`.
     ///
     /// On 21 September 2026 the four values of each byte gave 16296 files
-    /// in 0.13 s: 6922 errors, 8988 read as the whole file, 386 read as
-    /// another file with no error, 14 panics caught and no abort.
+    /// in 0.13 s: 6946 errors, 8988 read as the whole file, 362 read as
+    /// another file with no error, 14 panics caught and no abort. The check
+    /// of an allele below the missing one moved 24 files from the third
+    /// count to the first.
     ///
     /// Every byte is set to four values here, the low bit and the high bit
     /// flipped, 0 and 255; the sweep over all 255 is the ignored test that
@@ -6258,12 +6397,14 @@ mod tests {
     }
 
     /// The same sweep with every byte set to each of the 255 other values.
-    /// It is run by hand: 1299990 files and 8.2 s in the profile of the
+    /// It is run by hand: 1299990 files and 8.4 s in the profile of the
     /// tests on the owner's Apple M5 Pro on 21 September 2026, where it
-    /// gave 550055 errors, 726033 files read as the whole one, 23902 read
+    /// gave 553104 errors, 726033 files read as the whole one, 20853 read
     /// as another file with no error, which is what a checksum of the
     /// format would catch and nothing else does, 2783 panics of arrow-rs
-    /// that the net caught and no abort.
+    /// that the net caught and no abort. The check of an allele below the
+    /// missing one moved 3049 files, 13 in 100 of the 23902 that were read
+    /// as another file before it, from the third count to the first.
     ///
     ///     cargo test -p popnei --lib \
     ///         no_change_of_any_byte_of_a_vars_file -- --ignored
@@ -6289,15 +6430,15 @@ mod tests {
         println!("{sweep:?}");
     }
 
-    /// Where the length of the last buffer of the first batch of the file
-    /// is declared: the eight bytes arrow writes before the bytes it
-    /// compressed, which say how long that buffer is once it is
-    /// decompressed. The last buffer of a batch of the six columns holds
-    /// the genotypes, which is the large one.
-    fn the_length_of_the_genotypes(bytes: &[u8]) -> usize {
+    /// Where the length of the last buffer of the batch `batch` of the
+    /// file, counted from 0, is declared: the eight bytes arrow writes
+    /// before the bytes it compressed, which say how long that buffer is
+    /// once it is decompressed. The last buffer of a batch of the six
+    /// columns holds the genotypes, which is the large one.
+    fn the_length_of_the_genotypes(bytes: &[u8], batch: usize) -> usize {
         let at = opened(bytes.to_vec())
             .expect("the file is a vars file")
-            .blocks[0];
+            .blocks[batch];
         let offset = usize::try_from(at.offset).expect("the offset of the batch");
         let metadata_len = usize::try_from(at.metadata_len).expect("the message of the batch");
         let starts_at = offset.saturating_add(MESSAGE_START_BYTES);
@@ -6317,10 +6458,86 @@ mod tests {
             .saturating_add(in_the_body)
     }
 
+    /// The byte of the first allele of the batch `batch` of the file,
+    /// counted from 0.
+    ///
+    /// lz4 makes the genotypes of a file of four variants no smaller, so
+    /// arrow writes that buffer as it is and says -1 where its length would
+    /// be: each allele of the batch is one byte of the file, in the order
+    /// the variants are in, and the test that fails here is one whose file
+    /// grew until lz4 had something to take out of it.
+    fn the_first_allele_of(bytes: &[u8], batch: usize) -> usize {
+        let at = the_length_of_the_genotypes(bytes, batch);
+        let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
+            &bytes[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
+        )
+        .map(i64::from_le_bytes)
+        .expect("what the buffer of the genotypes says");
+        assert_eq!(
+            says, NOT_COMPRESSED,
+            "the genotypes of the batch {batch} are compressed"
+        );
+        at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)
+    }
+
+    /// An allele below the missing one is neither an allele of a variant
+    /// nor a missing genotype, and the reader refuses the batch that holds
+    /// one instead of handing it over. The owner decided on 21 September
+    /// 2026 that such an allele "is never allowed", after a reviewer wrote
+    /// a vars file with popnei, changed one byte of its genotypes to 254
+    /// and got the genotype `[-2, 0]` out of `iter_blocks` with no error.
+    ///
+    /// The genotypes of the four variants of `cases.vcf` are `0/0 0/1 1/1`,
+    /// `./. 0/1 ./0`, `1/2 2/1 2/2` and `0/0 0/0 0/0`, two batches of two
+    /// variants here, so the last allele of the first batch is of the
+    /// variant 2 and the first of the second batch is of the variant 3.
+    #[test]
+    fn an_allele_below_the_missing_one_is_refused_with_the_allele_and_its_variant() {
+        let whole = cases_written_in_batches_of(2);
+
+        for (batch, allele_of_the_batch, allele, var) in [
+            (0_usize, 11_usize, -2_i8, 2_u64),
+            (1, 0, -3, 3),
+            (1, 6, i8::MIN, 4),
+        ] {
+            let at = the_first_allele_of(&whole, batch).saturating_add(allele_of_the_batch);
+            let mut bytes = whole.clone();
+            bytes[at] = allele.to_le_bytes()[0];
+
+            let error = refused_at_the_block(bytes);
+
+            let Error::VarsAlleleBelowMissing { found, var: of } = error else {
+                panic!("the allele {allele} of the variant {var} gave {error}");
+            };
+            assert_eq!((found, of), (allele, var));
+        }
+
+        // The file as it was written is read, and the missing allele, which
+        // the second variant holds three of, is not refused.
+        let (blocks, _) = blocks_read(whole, Needs::GTS);
+        assert_eq!(
+            blocks[0].gts,
+            vec![
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                MISSING_ALLELE,
+                MISSING_ALLELE,
+                0,
+                1,
+                MISSING_ALLELE,
+                0
+            ]
+        );
+    }
+
     /// Those bytes with the length that the buffer of the genotypes
     /// declares changed to `says`.
     fn genotypes_that_say(bytes: &[u8], says: i64) -> Vec<u8> {
-        let at = the_length_of_the_genotypes(bytes);
+        let at = the_length_of_the_genotypes(bytes, 0);
         let mut changed = bytes.to_vec();
         changed[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)]
             .copy_from_slice(&says.to_le_bytes());
@@ -6344,8 +6561,8 @@ mod tests {
         let rows: Vec<&Row> = vec![&CASES[0]; 1000];
         let block = block_of(&rows, &mut chroms);
         let reader = GivenBlocks::of(vec![block], chroms);
-        let whole = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
-        let at = the_length_of_the_genotypes(&whole);
+        let (whole, _) = write_vars(reader, Vec::new(), Some(1000)).expect("the file was written");
+        let at = the_length_of_the_genotypes(&whole, 0);
         let says = <[u8; UNCOMPRESSED_LENGTH_BYTES]>::try_from(
             &whole[at..at.saturating_add(UNCOMPRESSED_LENGTH_BYTES)],
         )
