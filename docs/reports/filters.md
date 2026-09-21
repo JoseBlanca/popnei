@@ -27,7 +27,7 @@ plan records. pyNei's `filter_by_maf` and `gather_filtering_stats`
 import. `/Users/jose/devel/popnei-bench/big.vcf` is there, 403572954
 bytes.
 
-## Work package 1, while it is under way
+## Work package 1: what the new specs change in the code that exists
 
 Task 1.1, commit 080b1da: `FilteringStats` alone in the new module
 `filters`, and `filtering_stats` in the trait with no default, in `Box`,
@@ -95,6 +95,74 @@ How the work went. The orchestrator committed the tick of task 3.1 with
 so the orchestrator split it in two, with the subagent's message, and the
 tree did not change. Two sessions in one tree commit with `git commit
 -F <message> -- <paths>`, and the prompts of the tasks now say so.
+
+The review, at 0a7c9ea, with the seven categories, `spec` and `tests` in
+worktrees of their own. What held and is fixed, in 8baf37b, f6d2c30 and
+9914e33, each defect with a test that failed first where a test can see
+it:
+
+- In TypeScript `numVars` counted a block that the pass lost after the
+  reader gave it: four variants with the last at the position
+  9007199254740993, in blocks of 1, gave 3 blocks and `numVars: 4`. Three
+  reviewers ran it. Python counted right.
+- In Python `pass_stats` waited for the lock of the pass with the GIL
+  held, so every thread of Python stopped until the block being read was
+  read: 0.79 s for a block of 500000 variants. The lock is now taken with
+  the interpreter released; on a block of 20000 variants of 500
+  individuals the longest stop of a third thread fell from 0.163 s to
+  0.020 s. It has no test: what it gives shows only as a timing.
+- The steps of a pass were an optional argument of the TypeScript
+  binding crate that became no steps when left out, which four reviewers
+  reported: with filters, a silent unfiltered pass. It is required now,
+  and one line of `pass.test.ts` passes `new Steps()`.
+- "How it runs" of the counts in `docs/specs/filters.md` said that the
+  binding crate counts the variants of every consumer, against
+  `docs/specs/io_vars.md` as corrected. It has the exception of
+  `write_vars`. The `spec` and the `api` reviewers found the corrected
+  signature of `write_vars` right.
+- The README example said 4 variants where it gives 3; a comment in both
+  binding crates said that a lost block is in the count of no filter,
+  which a filter makes false; `args` of a TypeScript `Step` took numbers
+  alone.
+- Five tests that were missing: the order of `filtering`, which no test
+  failed without, in both packages, with the spec's pairs; `VarsWritten`
+  frozen; `steps` after `free()`; `passStats` after a `break`; and a
+  block that was read when a Ctrl-C arrived is not in `num_vars`.
+
+Not taken: that a dict keyed by the kind loses a pair of counts when two
+filters have one kind, because `FilteredReader::new` refuses the second,
+in work package 3; and `Blocks` declared in `variant.py` and not beside
+`Block`, which an import cycle forbids.
+
+After the fixes, run by the orchestrator at 9914e33: `cargo test
+--workspace` `257 passed`; `uv run pytest` `117 passed`; `npm test`
+`tests 79`, `fail 0`; fmt, clippy, ruff and `cargo wasm-check` pass. The
+subagent built the wheel of pyodide and its smoke test exited with 0.
+
+For the owner, from the review:
+
+- The two binding crates each hold the same code for the kinds of step
+  and for building the chain of a pass, and work package 3 adds the three
+  criteria to both. The `architecture` reviewer proposes a function of
+  the core that builds the chain from a list of criteria, which "The
+  Rust interface" of `docs/specs/filters.md` does not have. The
+  orchestrator follows the spec, and recommends the function: it can be
+  added after work package 3 at the cost of a small task.
+- "Not in this spec" of `docs/specs/filters.md` has the read ahead
+  thread take the reader and give it back when the pass ends. While it
+  has the reader nobody can ask it for `filtering_stats`, which
+  `pass_stats` does mid pass, and a thread that is spawned cannot take
+  the chain that `write_vars` is lent, only a scoped one. The reviewer
+  tried both in a scratch crate. The item of the read ahead thread will
+  need a snapshot of the counts, or the owner's word that the counts are
+  read at the end alone.
+- With the default `only_passed=True`, `many.vcf` gives 475 of its 500
+  variants, and no count of a pass says that the FILTER column took 25
+  out. Seen by the `numbers` reviewer, outside the scope.
+
+How the work went, besides the commit above: tasks 1.2 and 1.3 cost
+279083 and 273909 tokens, twice the core task; the seven reviewers
+114325 to 178423 each; the fixes 70724 more of the subagent of 1.3.
 
 ## Work package 3, while it is under way
 
