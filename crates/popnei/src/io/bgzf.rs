@@ -748,10 +748,7 @@ fn four_bytes_of(bytes: &[u8], at: usize) -> u32 {
 pub(crate) mod tests {
     use std::io::Cursor;
 
-    use super::{
-        BgzfReader, Decompress, ROOM_FOR_THE_TEXT, WhatTheMemberStates, WhichMember,
-        decompress_a_whole_member, four_bytes_of, room_for,
-    };
+    use super::BgzfReader;
     use crate::error::Error;
 
     /// The empty gzip member of 28 bytes that bgzip writes at the end of a
@@ -880,6 +877,15 @@ pub(crate) mod tests {
     #[test]
     #[cfg(not(target_family = "wasm"))]
     fn the_data_of_two_members_is_decompressed_on_two_threads_at_once() {
+        // What the decompression is given, which the reader gives it too,
+        // and nothing of the reader. These are used by this test alone, so
+        // they are imported here: in the wasm targets, which have no
+        // threads, the test is not compiled.
+        use super::{
+            Decompress, ROOM_FOR_THE_TEXT, WhatTheMemberStates, WhichMember,
+            decompress_a_whole_member, four_bytes_of, room_for,
+        };
+
         let members = [bgzf_member(b"one\n"), bgzf_member(b"two\n")];
         let texts = std::thread::scope(|threads| {
             let working: Vec<_> = members
