@@ -435,3 +435,30 @@ ms, against the 21 ms of the spec. Work package 4 measures it.
 
 The reviews cost 1131 thousand tokens, the four tasks 857 thousand and
 the fixes 232 thousand. No task was sent twice.
+
+## Work package 3: `writeVars` and `openVars` in TypeScript
+
+Task 3.1, commit 1ed9a5a; one subagent run of 231 thousand tokens and 16
+minutes. `openVars(source)` and `writeVars(variants, {numVarsPerBlock})`
+are exported by both entry points of the package. In the JavaScript
+binding crate the two sources share a trait, the reader of one pass, and
+the blocks code that was in the VCF file is one copy for both. No
+manifest changed.
+
+### The deliverables, run by the orchestrator at 1ed9a5a
+
+1. `npm run build` in `js/popnei` ended with no error of TypeScript, and
+   `npm test` gave `tests 62`, `pass 62`, `fail 0`, 46 before, none
+   changed. fmt, clippy, `cargo test --workspace` `249 passed`, `cargo
+   wasm-check` and `uv run pytest` `99 passed` as before.
+2. `js/popnei/wasm/popnei_bg.wasm` is 1679488 bytes, and was 225344
+   before arrow-rs: 1.45 MB more, release, with no work on its size. The
+   trial crate of the spec gave 2.64 MB for arrow-rs with lz4 alone.
+
+The memory of wasm, measured by the subagent on a vars file of 26.9 MB,
+20000 variants of 1000 individuals in batches of 1000: `openVars` takes
+27.1 MB, one copy of the bytes; a pass over the genotypes 12.2 MB more,
+the batch being decoded; a second pass nothing. A test opens twelve
+passes at once and fails when a pass copies the bytes. `writeVars` of
+that file from its VCF of 76.9 MB took 106.8 MB beyond the source with
+batches of 1000 and 158.5 MB with batches of 10000.

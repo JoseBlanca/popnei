@@ -424,7 +424,7 @@ to offer as a download, and `openVars(bytes)` gives it a `Variants`.
 
 **Tasks.**
 
-- [ ] 3.1 In `crates/popnei-js`, the source that is a vars file in
+- [x] 3.1 In `crates/popnei-js`, the source that is a vars file in
   memory and the function that writes one into a `Vec<u8>`; in
   `js/popnei`, `io_vars.ts` with the two functions, exported by both
   entry points, `Variants` over either source; the tests, in
