@@ -7,11 +7,11 @@
  * in, `docs/specs/filters.md` the counts of one filter and the step that a
  * filter is, and `docs/specs/io_vars.md` what `writeVars` gives back.
  *
- * No filter is built yet, so every `filtering` here is empty and every
- * `steps` is an empty array: what the counts of a filter are is asserted by
- * `test/filters.test.ts`, when the three filters exist. The numbers are
- * those of `many.vcf` of `docs/specs/io_vcf.md`, 500 variants of 50
- * individuals read with every variant given.
+ * No test here puts a filter on a `Variants`, so every `filtering` is empty
+ * and every `steps` is an empty array: what a filter counts and what it
+ * keeps are asserted by `test/filters.test.ts`. The numbers are those of
+ * `many.vcf` of `docs/specs/io_vcf.md`, 500 variants of 50 individuals read
+ * with every variant given.
  */
 
 import assert from "node:assert/strict";

@@ -15,8 +15,12 @@ where a user keeps their variants once the VCF has been read. Each of the
 two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
 pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
-a step, a method of the `Variants` that `steps` then lists; no filter is
-built yet, so `steps` is empty and so are the counts of the filters.
+a step, a method of the `Variants` that `steps` then lists, and there are
+three of them: `filterByMissingData`, which keeps the variants whose missing
+genotypes divided by all the individuals are at most the threshold it is
+given, `filterByMaf`, over the count of the commonest allele of a variant
+divided by its called alleles, and `filterByObsHet`, over its heterozygous
+genotypes divided by its called ones.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
@@ -190,7 +194,14 @@ vars file written from them, and asserts the counts of the pass that
 `iterBlocks` and `writeVars` give: 500 after a whole pass, 21 after three
 blocks of 7, none for a source with no variant, and, for a pass that ended
 at a wrong line, the variants of the blocks the user got and not the ones
-the file holds. Several of the tests
+the file holds. `test/filters.test.ts` puts the three filters on the same
+file and asserts the numbers of the table of `docs/specs/filters.md`, which
+are bcftools 1.24's and pyNei's: 26 variants kept by the missing data filter
+at 0, 35 by the maf filter at 0.5 and 22 by the observed heterozygosity one
+at 0.1, each with the first five positions it keeps, and 106 by the three of
+them chained at 0.04, 0.8 and 0.5, which count 500 and 215, 215 and 163, and
+163 and 106. The comparison with pyNei itself is the one of the Python
+tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
 kept while enough more is read for that memory to grow still hold what
@@ -267,6 +278,11 @@ const variants = openVcf(new Uint8Array(await readFile("cases.vcf")), {
 });
 console.log(variants.individuals, variants.numIndividuals, variants.ploidy);
 try {
+  // A filter is a step: it changes the handle, gives nothing back and is
+  // run by every pass that follows. This one keeps the variants whose
+  // commonest allele is at most 0.95 of their called alleles, 2 of the 3
+  // of cases.vcf that passed their FILTER.
+  variants.filterByMaf(0.95);
   const blocks = variants.iterBlocks({ fields: ["chrom", "pos"] });
   for (const block of blocks) {
     // block.gts is an Int8Array of numVars x numIndividuals x ploidy
@@ -276,10 +292,10 @@ try {
     console.log(block.numVars, block.chrom, block.pos);
   }
   // How many variants the pass gave, and what each filter of the variants
-  // was given and kept: {numVars: 3, filtering: {}} for the three variants
-  // of cases.vcf that passed their FILTER, with no filter of popnei on
-  // them. Read inside the loop, it is of the blocks that have come out so
-  // far.
+  // was given and kept: {numVars: 2, filtering: {maf: {varsProcessed: 3,
+  // varsKept: 2}}} here. Read inside the loop, it is of the blocks that
+  // have come out so far. `steps` is what the handle holds, in order:
+  // [{kind: "maf", args: {maxAllowedMaf: 0.95}}].
   console.log(blocks.passStats, variants.steps);
 } finally {
   variants.free();
@@ -347,8 +363,13 @@ an `Error` that says what was given: a `source` that is not a
 `Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
-of the five columns, and a `variants` that is not what `openVcf` or
-`openVars` gave. In TypeScript `fields` takes the five names and nothing
+of the five columns, a `variants` that is not what `openVcf` or `openVars`
+gave, and a threshold of a filter that is not a number, which a call with
+no threshold gives. Whether that number is one a filter takes, from 0 to 1,
+is a rule of the core, which holds for the threshold of every pass and not
+of that call alone; an `Error` of it names the argument the user wrote and
+the value, as does the `Error` of a second filter of a kind the variants
+carry already. In TypeScript `fields` takes the five names and nothing
 else, so a typo does not compile.
 
 ## What has to be freed

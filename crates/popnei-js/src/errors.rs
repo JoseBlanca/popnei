@@ -16,9 +16,15 @@ use wasm_bindgen::{JsError, JsValue};
 /// `js/popnei/src/arguments.ts`, because a number of JavaScript reaches a
 /// whole number of the core as 32 bits with no error, and it throws the
 /// `Error` itself. What it cannot check there is whether the memory of the
-/// tab takes what is about to be copied into it, which is [`NoMemory`].
+/// tab takes what is about to be copied into it, which is [`NoMemory`], and
+/// what it does not check there is a rule of the core: the threshold of a
+/// filter is a number from 0 to 1 by the core's rule, and the package
+/// refuses only what is not a number at all, so that the rule lives in one
+/// place. What the core says of it crosses as [`Threshold`], which names the
+/// argument the user wrote.
 ///
 /// [`NoMemory`]: JsPopneiError::NoMemory
+/// [`Threshold`]: JsPopneiError::Threshold
 pub enum JsPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
     /// found in the bytes it was given.
@@ -26,6 +32,17 @@ pub enum JsPopneiError {
     /// Something the core read that JavaScript does not hold: a position
     /// above 2^53, which a float64 rounds.
     NotInJavaScript(String),
+    /// A threshold of a filter that is not a number from 0 to 1, under the
+    /// name of the argument a user wrote it in: the core refuses it and
+    /// names the filter by its kind, `maf`, and what a user has to look at
+    /// is the call they wrote, `filterByMaf(1.5)`.
+    Threshold {
+        /// The name of the argument, as a TypeScript user writes it,
+        /// `maxAllowedMaf`.
+        name: &'static str,
+        /// What was given for it, which is NaN, below 0 or above 1.
+        threshold: f64,
+    },
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -48,11 +65,20 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the four cases are one `Error`, where Python tells a `ValueError`
+    /// the five cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
             JsPopneiError::Core(error) => error.to_string(),
+            // The threshold of a filter, which is the number a user wrote
+            // in the call that adds it: the message names the argument, and
+            // the rule it broke is the core's, which refuses the same
+            // thresholds when a pass builds its filters.
+            JsPopneiError::Threshold { name, threshold } => format!(
+                "`{name}` is {threshold:?}, and a threshold is a number from 0 to 1, both \
+                 included: the number of the variant it is compared with is one count of \
+                 the variant divided by another"
+            ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::NoMemory(message)
             | JsPopneiError::Broken(message) => message,

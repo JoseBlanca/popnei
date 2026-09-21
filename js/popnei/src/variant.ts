@@ -18,6 +18,7 @@ import type {
 import { Steps } from "../wasm/popnei.js";
 
 import {
+  aNumber,
   namesOfFields,
   whatWasGiven,
   wholeNumberOfOneOrMore,
@@ -278,6 +279,100 @@ export class Variants {
   get steps(): Step[] {
     theWasmHasToBeLoaded();
     return stepsOf(this.#stepsThatWereNotFreed());
+  }
+
+  /**
+   * Keeps the variants whose missing rate is at most
+   * `maxAllowedMissingRate`.
+   *
+   * The missing rate of a variant is its missing genotypes divided by all
+   * the individuals of the dataset, and not by the ones that were called at
+   * it. A genotype is missing when one of its alleles at least was not
+   * called, so `0/.` in a VCF is a missing genotype, as it is in pyNei and
+   * in bcftools.
+   *
+   * The call adds a step and gives nothing back. What runs it is the next
+   * pass over the source, which every consumer makes: a filter added
+   * between two of them holds for the second, and one added while a pass
+   * runs holds from the pass after it.
+   *
+   * `maxAllowedMissingRate` has no default, where pyNei's is 0, which keeps
+   * only the variants with every genotype called.
+   *
+   * @throws {Error} When the threshold is not a number from 0 to 1, both
+   * included, which names the argument and the value, and when it is not
+   * given at all. A second filter of this kind on the same `Variants` is an
+   * `Error` too, with the threshold that is set: two thresholds of one kind
+   * keep what the stricter of them keeps alone, so the second says that the
+   * steps are not what their user thinks, which running a cell of a
+   * notebook twice gives, and `steps` is what they hold. It also throws
+   * when the variants were freed and when `init` has not been awaited.
+   */
+  filterByMissingData(maxAllowedMissingRate: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_by_missing_data(
+      aNumber("maxAllowedMissingRate", maxAllowedMissingRate),
+    );
+  }
+
+  /**
+   * Keeps the variants whose major allele frequency is at most
+   * `maxAllowedMaf`.
+   *
+   * The major allele frequency of a variant, "maf" in pyNei and in popnei,
+   * is the count of its commonest allele divided by its called alleles,
+   * where most of the literature and plink2 give those letters to the minor
+   * allele. Every allele of a multiallelic variant has its own count, and
+   * an allele is counted wherever it was called, in a half called genotype
+   * too. A filter at 0.95 takes out the variants that hardly vary among
+   * these individuals. A variant with no called allele has no major allele
+   * frequency and is not kept, whatever the threshold.
+   *
+   * It asks for no minimum of called data, as pyNei does not: a variant
+   * with one called genotype has the frequency of the alleles of that
+   * genotype. A user who does not want the variants that have little called
+   * data puts `filterByMissingData` before this one.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} What `filterByMissingData` throws: a threshold that is
+   * not a number from 0 to 1 or is not given, a second filter of this kind,
+   * variants that were freed, and `init` that was not awaited.
+   */
+  filterByMaf(maxAllowedMaf: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_by_maf(
+      aNumber("maxAllowedMaf", maxAllowedMaf),
+    );
+  }
+
+  /**
+   * Keeps the variants whose observed heterozygosity is at most
+   * `maxAllowedObsHet`.
+   *
+   * The observed heterozygosity of a variant is its heterozygous genotypes
+   * divided by its called ones, where a genotype is heterozygous when it is
+   * called and its alleles are not all the same, at any ploidy. It takes
+   * out the variants in which too many individuals are heterozygous, which
+   * in most datasets are paralogous regions read as one site. A variant
+   * with no called genotype has no observed heterozygosity and is not kept,
+   * whatever the threshold.
+   *
+   * It asks for no minimum of called data, as pyNei does not: a variant
+   * with one called genotype, heterozygous, has an observed heterozygosity
+   * of 1.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} What `filterByMissingData` throws: a threshold that is
+   * not a number from 0 to 1 or is not given, a second filter of this kind,
+   * variants that were freed, and `init` that was not awaited.
+   */
+  filterByObsHet(maxAllowedObsHet: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_by_obs_het(
+      aNumber("maxAllowedObsHet", maxAllowedObsHet),
+    );
   }
 
   /**

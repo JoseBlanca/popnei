@@ -3,9 +3,11 @@
  *
  * A filter is a step of a `Variants`: a method of it that adds itself to the
  * list of steps and returns nothing, and that every pass over the source
- * runs inside the Rust core. The three threshold filters, over the missing
- * rate of a variant, over its major allele frequency and over its observed
- * heterozygosity, are being written.
+ * runs inside the Rust core. The three threshold filters are
+ * `filterByMissingData`, over the missing rate of a variant, `filterByMaf`,
+ * over its major allele frequency, and `filterByObsHet`, over its observed
+ * heterozygosity, and each of them keeps the variants whose number is at
+ * most the threshold it was given.
  *
  * What is here is what a user reads of them: the step that a filter is in
  * the steps of a `Variants`, and the counts that a pass holds for each
@@ -51,7 +53,7 @@ export interface Step {
    *
    * The values are what the argument of that method takes, so that the
    * steps of the later filters, which take other arguments than a
-   * threshold, fit in it. The three that are being written take a number.
+   * threshold, fit in it. The three that are there take a number.
    */
   args: Record<string, unknown>;
 }
