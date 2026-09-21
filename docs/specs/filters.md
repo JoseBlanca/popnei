@@ -464,6 +464,10 @@ pub enum VarFilteringCriterion {
 impl VarFilteringCriterion {
     /// "missing_data", "maf" or "obs_het".
     pub fn kind(&self) -> &'static str;
+    /// The largest value of the number that keeps the variant, whichever
+    /// of the three it is. A binding crate reads it for the `args` of the
+    /// step it shows the user.
+    pub fn threshold(&self) -> f64;
 }
 ```
 

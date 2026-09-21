@@ -189,8 +189,15 @@ it has no place among the allele counts. pyNei refuses it too, with a
 
 One pass over the alleles of the row each, with no allocation: the allele
 counts are written into an array of the caller, one entry for each of the
-128 alleles a genotype can hold, which the caller clears and hands over
-again for the next variant.
+128 alleles a genotype can hold, which the caller hands over again for the
+next variant. The counts of the alleles clear that array themselves before
+they count, so what they leave is the counts of the variant they were
+given, whatever the array held. A caller that hands over an array it did
+not clear would otherwise get two variants added together, and a count
+that is already at the largest number its entry holds would wrap in a
+release build and say nothing, where the function cannot see that the
+caller meant to add: the entries are the counts of one variant, and one
+allele of one variant is counted once.
 
 ### How it is verified
 
@@ -313,39 +320,44 @@ pub struct GtCounts {
 }
 
 /// An error for a ploidy of 0, for genotypes whose length is not a
-/// multiple of the ploidy, and for an allele below MISSING_ALLELE.
+/// multiple of the ploidy, for an allele below MISSING_ALLELE, and for a
+/// variant of more alleles than a count of them holds.
 pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts>;
 
 /// One entry for each allele from 0 to MAX_ALLELE.
 pub type AlleleCounts = [u32; 128];
 
-/// It adds, to `counts[a]`, how often the allele a is in `gts`, and gives
-/// how many alleles it added, the called alleles. The caller clears
-/// `counts` between two variants. An error for an allele below
-/// MISSING_ALLELE.
+/// It writes into `counts[a]` how often the allele a is in `gts`, and
+/// gives how many it counted, the called alleles. It clears `counts`
+/// first, so the caller hands the same array over for every variant and
+/// clears nothing. An error for an allele below MISSING_ALLELE and for a
+/// variant of more alleles than a count of them holds.
 pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32>;
 ```
 
 The error of the crate. Each module adds its cases to one enum, marked
 `non_exhaustive`, and `Result<T>` is `std::result::Result<T, Error>`.
-This module adds three cases. A ploidy of 0 or genotypes that are not a
-whole number of genotypes of that ploidy, and an allele below the missing
-one, both of the counts of one variant. And a consumer that did not get a
-field it depends on. It carries the fields as a `Needs`, the ones that were asked
+This module adds four cases. Three are of the counts of one variant: a
+ploidy of 0 or genotypes that are not a whole number of genotypes of that
+ploidy; an allele below the missing one; and a variant of more alleles
+than a count of them holds, which is its own case because the other two
+say nothing about a variant whose alleles are too many to count. And a
+consumer that did not get a field it depends on. It carries the fields as a `Needs`, the ones that were asked
 for and that the block does not hold, which a consumer gets with
 `asked_for.difference(block.fields())`, and its message names them: a
 consumer that depends on two fields reports both in one error.
 
-The two cases of the counts of one variant are a `RuntimeError` in Python,
-by the convention the owner gave on 21 September 2026, where a
+The three cases of the counts of one variant are a `RuntimeError` in
+Python, by the convention the owner gave on 21 September 2026, where a
 `RuntimeError` is a defect of popnei and a `ValueError` a wrong input of a
 function. The two counts have no function in Python or in TypeScript, so
 no user writes the ploidy or the genotypes they refuse: the ploidy is the
 one of the reader that built the block, the block of a reader of popnei
-holds a whole number of genotypes of it, and no reader gives an allele
-below the missing one, which is what the item above says. A user who gets
-one of the two reports it instead of looking at what they wrote. In
-TypeScript both are an `Error`, as every error of the core is.
+holds a whole number of genotypes of it, no reader gives an allele below
+the missing one, which is what the item above says, and a variant of more
+than 4295 million alleles is a block that no source holds. A user who gets
+one of the three reports it instead of looking at what they wrote. In
+TypeScript they are an `Error`, as every error of the core is.
 
 ## Open points
 
