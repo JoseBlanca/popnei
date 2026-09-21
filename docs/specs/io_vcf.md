@@ -199,17 +199,30 @@ deflate data on its own, and checks what came out against the CRC32 and
 the length of the text that the last eight bytes of the member hold. These
 are errors, each of them with the member, counted from 1, the byte of the
 compressed source where that member starts, and what is wrong: a member
-that does not start as a gzip member with an extra field does; an extra
-field whose subfields do not end where it ends, or that holds no `BC` of
-two bytes; a size that leaves no room for the header, the deflate data and
-the last eight bytes; deflate data that the decoder refuses or that does
-not end where the member does; and a CRC32 or a length of the text that is
-not the one of the text that came out. The extra field of a member can
-hold other subfields beside `BC`, before it or after it, and the reader
-walks them; the `BC` of the first member, the one that decides how the
-whole source is read, is looked for at the bytes 12 and 13 of the file,
-where bgzip writes it, so a file whose first member carries another
-subfield before its `BC` is read as the gzip file it also is.
+that does not start with the two bytes of gzip; one whose method is not
+deflate, the method 8; one whose flags are not exactly the flag of an
+extra field, 4; an extra field whose subfields do not end where it ends,
+or that holds no `BC` of two bytes; a size that leaves no room for the
+header, the deflate data and the last eight bytes; deflate data that the
+decoder refuses, that does not end where the member does or that gives
+more text than a member holds; and a CRC32 or a length of the text that is
+not the one of the text that came out.
+
+The flags and the method are the two of those that bcftools reads and
+popnei refuses: bcftools 1.24 reads a member whose flags are `0c`, the
+flag of an extra field with those of a name and a comment. BGZF fixes the
+flags of a member to 4, and the reader cuts a member by a size and does not
+follow its bytes one by one, so a name or a comment in a header would move
+the data of that member to a place the reader does not look at.
+
+The extra field of a member can hold other subfields beside `BC`, before it
+or after it, and the reader walks them to its end. It walks the extra field
+of the first member too, the one whose `BC` says that bgzip wrote the
+source: a file whose first member carries another subfield before its `BC`
+is read by the sizes of its members like any other, where a reader that
+looked for the `BC` at the bytes 12 and 13, which is where bgzip writes it
+and where htslib looks for it, would read it as a plain gzip file and check
+none of its members.
 
 A gzip file that bgzip did not
 write, whose first member has no `BC`, is read with a decoder that goes on
@@ -236,6 +249,18 @@ those files a header, no variant and the exit status 0: htslib takes a
 member whose header it cannot read for the end of the data, and the 28
 bytes that mark the end of the file are still where they were.
 
+What no reader of a BGZF file can see is a member that was removed,
+repeated or moved: every member is a whole gzip stream, checked by its own
+CRC32, and none of them records which member of the file it is. A reviewer
+made those files from `many.vcf.gz` on 21 September 2026 and read them with
+popnei and with bcftools 1.24: with its second member dropped it gives the
+220 variants of its third, with that member written twice 780 variants,
+with its second and third members swapped the same 500 variants in another
+order, and with the mark of the end written twice 500 variants, all of them
+with no error in either program. So "an error never passes silently" is the rule for the bytes of a
+member and for the end of the file, and the order and the number of the
+members are outside what the format lets anybody check.
+
 A file made by bgzip ends with a member that holds no text, the empty
 block of 28 bytes, and a source that bgzip wrote and that does not end
 with one is an error. A member with no text in the middle of a file is not
@@ -252,8 +277,9 @@ bcftools says "no BGZF EOF marker". The owner decided this on 20 September
 its end.
 
 A bgzipped source that ends early is that error wherever it was cut, and
-the variants that were read before the cut are given first in every case.
-Where the cut falls decides how the reader learns of it. A cut where a
+the reader gives the variants it read before the cut first in every case;
+what a user of `iter_blocks` gets of them is below. Where the cut falls
+decides how the reader learns of it. A cut where a
 member ends leaves whole members that nothing is wrong with, and what says
 that the file is cut short is the mark that is not at its end. A cut
 inside the header of a member, or inside its data, leaves the reader with
@@ -262,7 +288,12 @@ the deflate data, gives the lines that came whole out of it, and then the
 same error, so a user whose download stopped is told that the
 file is cut short and not that a deflate stream is incomplete. Such a
 member has no CRC32 and no length of its text to be checked against, since
-those are among the bytes that are missing. An error of
+those are among the bytes that are missing. A cut inside the first member
+is the same error, and not the error of a VCF with no `#CHROM` line, which
+is what the text that came out of that member has: the reader knows that
+the bytes ran out. Bytes after the member that holds no text are another
+thing: the file did not end where it says it ends, so a source with bytes
+after that member is a corrupted file and not one that was cut short. An error of
 the file system, a disc that fails while the file is read, is not one of
 those: it stays the error of the input it is, with the blocks that were
 read before it given first.
@@ -452,13 +483,19 @@ for the callers that have one; a file that cannot be opened is an error
 that carries the path.
 
 A source that bgzip wrote is read through the reader of its members, which
-holds one member at a time, the bytes of that member as the file has them
-and the text that came out of them, 64 KiB each at most: the memory of a
-reader does not grow with the file, and the lines of a batch are read from
-the text of the member without a copy. Cutting a member from the source
-and decompressing it are two steps, which is what a later plan that
-decompresses the members of one file side by side will build on; here the
-two run one after the other, on the thread that reads.
+holds one member at a time: the bytes of that member as the file has them
+and the text that came out of them, 64 KiB each, which is what it asks of
+the machine when it is built, and the extra field of the header of that
+member, which is 6 bytes in what bgzip writes and 64 KiB at most. The
+memory of a reader does not grow with the file. The bytes of a member are
+copied once out of the buffer of the source, which the decoder that goes
+from member to member does not do, and every line is then copied out of the
+text of the member into the text of its batch, as the lines of a plain file
+are. A review of 21 September 2026 put the two together at 7 ms of a read
+of 0.99 s of the 38 MB file of "Speed", from a sampling profile. Cutting a member
+from the source and decompressing it are two steps, which is what a later
+plan that decompresses the members of one file side by side will build on;
+here the two run one after the other, on the thread that reads.
 
 ### How it is verified
 
@@ -598,18 +635,35 @@ members start at the bytes 0, 310, 12336 and 21876, so a cut at 315 or at
 325 falls inside the header of its second member and one at 21903 a byte
 before the end of the file: each gives the variants of the members that
 were whole and then the error of the mark that is missing, and a cut
-inside a header gives no variant of the member it cuts. These are read and
+inside a header gives no variant of the member it cuts. A cut inside its
+first member, at 100 bytes, is that error too and not one of the header of
+the VCF. These are read and
 are not errors: a member whose extra field holds another subfield before
-its `BC`; a member of 65536 bytes of text, which is the most one holds;
+its `BC`, in the first member and in a later one; a member of 65536 bytes
+of text, which is the most one holds;
 and a member with no text in the middle of a file, which bgzip can write
-and which is the end of a file only when nothing follows it. These are
-errors that name the member: `many.vcf.gz` with its bytes 320 and 321
-changed from `06 00` to `44 54`, which is the file of the review, read at
-`VcfReader::new` or at `next_block`; and a file written in the test whose
-second member has, each in a case of its own, a size two bytes too small,
-a size two bytes too large, a length of its text that is not the one of
+and which is the end of a file only when nothing follows it.
+
+These are errors that name the member, each with a test that asserts the
+words of that error, so that a check taken out of the reader is seen:
+`many.vcf.gz` with its bytes 320 and 321 changed from `06 00` to `44 54`,
+which is the file of the review, read at `VcfReader::new` or at
+`next_block`; the same file with the `BC` of its first member moved behind
+another subfield, which a reader that looked for the `BC` at the bytes 12
+and 13 would read as a plain gzip and give no variant and no error; and a
+file written in the test whose second member has, each in a case of its
+own, a size two bytes too small, a size two bytes too large, a size that
+leaves no room for its data, a length of its text that is not the one of
 its text, a CRC32 that is not the one of its text, bytes where a gzip
-header has its own, and an extra field with no `BC` in it.
+member has those of gzip, a method that is not deflate, flags that are not
+the one flag of an extra field, an extra field with no `BC` in it, a
+subfield that ends after the extra field does before its `BC` and another
+after it, an extra field that ends in the middle of a subfield, three bytes
+of junk after a deflate stream that ends where it should, a deflate stream
+cut by three bytes whose CRC32 and length are those of the text it gives,
+a length of its text above the 65536 bytes a member holds, and data that
+gives more text than that. And a file with 11 bytes after the member that
+marks its end, which is corrupted and not cut short.
 
 That an error never passes silently is tested on `cases.vcf.gz`, 399
 bytes: every byte of it in turn, set to each of the 255 other values,
@@ -618,7 +672,11 @@ either an error or exactly the four variants of "What it gives", with
 their genotypes; none gives other variants, or fewer, with no error. The
 time stamp in the header of a member is among the bytes that are changed,
 and a file that differs from `cases.vcf.gz` in it alone is read: what the
-test refuses is a file that is read as a whole one and is not.
+test refuses is a file that is read as a whole one and is not. It changes
+one byte and never the place or the number of the members, which is the
+corruption no reader of a BGZF file can see; and it says nothing about
+which check of a member refuses which file, so every check has a test of
+its own that asserts the words it gives.
 
 The cargo tests are made at `VcfReader::new` for what is wrong in the
 header, the source that is not a VCF, the FORMAT column or the
@@ -750,10 +808,13 @@ One is a `RuntimeError`: a parse of a batch that did not come back, with
 the number of the last line that was read, which says that popnei has a
 defect and not that the file or the call was wrong.
 
-In Python the message of every error of a file starts with the path of
-that file. The core does not have it, since a reader is built over bytes
-and `from_path` carries it in one case alone, so it is the binding crate
-that puts it there.
+In Python every error of a file names the file. The core does not have the
+path, since a reader is built over bytes and `from_path` carries it in one
+case alone, so it is the binding crate that puts it there, and where it
+puts it follows the exception. The message of a `ValueError` starts with
+the path. An `OSError` carries it in `filename`, which is where a Python
+user of any library looks for it and which Python prints after the message
+of the exception, so putting it in the message too would say it twice.
 
 ## Speed
 
