@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -406,6 +407,43 @@ def test_write_vars_says_when_it_could_not_take_away_the_file_it_was_writing(
     assert path.exists()
     notes = getattr(refusal.value, "__notes__", [])
     assert any(str(path) in note for note in notes), notes
+
+
+# How long the test below waits before it sends itself the signal of a
+# Ctrl-C. Writing the VCF above as a vars file took 0.313 s in the build
+# `maturin develop` makes, on the owner's Apple M5 Pro, so the call is in
+# the middle of its pass over the source when the signal arrives.
+SECONDS_BEFORE_THE_CTRL_C = 0.1
+
+
+def test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file(
+    long_vcf: Path, tmp_path: Path
+) -> None:
+    """A user who stops a call that is writing a big file.
+
+    The signal arrives while the pass over the source runs, with the
+    interpreter released, so Python raises it when the call is over. What
+    the user gets is the `KeyboardInterrupt` of any Ctrl-C, and the path is
+    free for the call they make again.
+    """
+    variants = open_vcf(long_vcf, only_passed=False)
+    path = tmp_path / "stopped.vars"
+    # The default handler of SIGINT is the one that raises
+    # `KeyboardInterrupt`, and it is put back where the test found it.
+    handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+    ctrl_c = threading.Timer(
+        SECONDS_BEFORE_THE_CTRL_C, lambda: os.kill(os.getpid(), signal.SIGINT)
+    )
+
+    try:
+        ctrl_c.start()
+        with pytest.raises(KeyboardInterrupt):
+            write_vars(variants, path)
+    finally:
+        ctrl_c.cancel()
+        signal.signal(signal.SIGINT, handler)
+
+    assert not path.exists()
 
 
 # What a child process does with a limit on the size of the files it may
