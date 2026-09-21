@@ -368,8 +368,10 @@ gave, and a threshold of a filter that is not a number, which a call with
 no threshold gives. Whether that number is one a filter takes, from 0 to 1,
 is a rule of the core, which holds for the threshold of every pass and not
 of that call alone; an `Error` of it names the argument the user wrote and
-the value, as does the `Error` of a second filter of a kind the variants
-carry already. In TypeScript `fields` takes the five names and nothing
+the value as they wrote it, `95` and not `95.0`. A second filter of a kind
+the variants carry already is an `Error` too, which names that kind, the
+threshold it is set with and the one that was refused. In TypeScript
+`fields` takes the five names and nothing
 else, so a typo does not compile.
 
 ## What has to be freed

@@ -109,16 +109,34 @@ const MISSING_DATA_AT_0_04 = {
 const VARS_KEPT_AT_0_04 = 215;
 
 /**
- * The thresholds that are not a number from 0 to 1, which every filter
- * refuses at the call, and how each one is written in the message. A
- * threshold that is not given arrives as `undefined`, which is the call a
- * user makes when they take the default that pyNei has and popnei does not.
+ * The numbers that no filter takes, and how the message spells each of
+ * them: as JavaScript spells a number, `95` and not the `95.0` of Rust and
+ * `Infinity` and not its `inf`, so that a user reads what they wrote. 95 is
+ * the 0.95 that pyNei takes and filters nothing with.
  */
 const THRESHOLDS_REFUSED: [number, string][] = [
-  [undefined as unknown as number, "undefined"],
   [Number.NaN, "NaN"],
   [-0.1, "-0.1"],
   [1.5, "1.5"],
+  [95, "95"],
+  [Number.POSITIVE_INFINITY, "Infinity"],
+];
+
+/**
+ * What is not a number at all, with what the message says was given.
+ *
+ * The code wasm-bindgen generates turns each of them into a float64 with no
+ * error: `undefined`, which is the call of a user who takes the default that
+ * pyNei has and popnei does not, arrives as NaN, `null` as a threshold of 0,
+ * the string as the number it reads and `true` as 1. A filter at 0 that
+ * nobody wrote keeps the variants with every genotype called and says
+ * nothing, so the package refuses them before the call.
+ */
+const NOT_NUMBERS: [unknown, string][] = [
+  [undefined, "undefined"],
+  [null, "null"],
+  ["0.5", "the string `0.5`"],
+  [true, "the boolean true"],
 ];
 
 /** The 500 variants of `many.vcf`, the ones that failed their FILTER among
@@ -219,14 +237,38 @@ for (const kind of Object.keys(FILTERS) as Kind[]) {
   for (const [threshold, written] of THRESHOLDS_REFUSED) {
     test(`the ${kind} filter refuses a threshold of ${written} at the call`, () => {
       // The number of a variant that the threshold is compared with is one
-      // count of the variant divided by another, so no other threshold says
-      // anything about which variants a user wants: pyNei takes them, and a
-      // 95 written for 0.95 filters nothing there and says nothing. The
-      // message names the argument and the value, and no step is added.
+      // count of the variant divided by another, so no number outside 0 to
+      // 1 says anything about which variants a user wants: pyNei takes
+      // them, and a 95 written for 0.95 filters nothing there and says
+      // nothing. The message names the argument and the value as the user
+      // wrote it, which is what the words around it are asserted for, and
+      // no step is added.
       const variants = many();
 
       assert.throws(
         () => FILTERS[kind].filter(variants, threshold),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes(
+            `\`${FILTERS[kind].argument}\` is ${written},`,
+          ),
+      );
+
+      assert.deepEqual(variants.steps, []);
+      variants.free();
+    });
+  }
+
+  for (const [threshold, written] of NOT_NUMBERS) {
+    test(`the ${kind} filter refuses a threshold that is ${written}`, () => {
+      // Each of these reaches the core as a number of its own, `null` as a
+      // filter at 0 among them: what a user gets has to be an error and not
+      // a filter they did not write. The message names the argument and
+      // what was given.
+      const variants = many();
+
+      assert.throws(
+        () => FILTERS[kind].filter(variants, threshold as number),
         (error: unknown) =>
           error instanceof Error &&
           error.message.includes(FILTERS[kind].argument) &&
@@ -285,6 +327,29 @@ test("a filter added after a whole iteration holds in the next one", () => {
   variants.free();
 });
 
+test("a pass takes the steps at the call of iterBlocks and not at its first block", () => {
+  // The chain of readers is built by the call, so a filter put on the
+  // `Variants` before the first block comes out is not in that pass: a chain
+  // built at the first `next` of the iteration would have it, and the pass
+  // would give 215 variants and count a filter the user added after it
+  // started.
+  const variants = many();
+  const blocks = variants.iterBlocks({ fields: ["pos"] });
+
+  variants.filterByMissingData(0.04);
+  let given = 0;
+  for (const block of blocks) {
+    given += block.numVars;
+  }
+
+  assert.equal(given, MANY_NUM_VARS);
+  assert.deepEqual(blocks.passStats, {
+    numVars: MANY_NUM_VARS,
+    filtering: {},
+  });
+  variants.free();
+});
+
 test("a filter added inside a loop of blocks takes no variant out of that pass", () => {
   // The pass that runs took the steps when it started, so it gives the 500
   // variants of the file and counts no filter, and the pass after it has the
@@ -335,14 +400,17 @@ test("writeVars writes the variants the filter kept and counts them", () => {
 
 test("the three filters throw after the variants were freed", () => {
   // The steps live in the memory of wasm, which `free` gives back, so a
-  // filter has nothing to be added to.
+  // filter has nothing to be added to. What the message says is that they
+  // cannot be changed either, because adding a filter is what these calls
+  // do: a user who reads that their steps cannot be read would look for a
+  // call of `steps` they did not make.
   const variants = many();
   variants.free();
 
   for (const kind of Object.keys(FILTERS) as Kind[]) {
     assert.throws(() => FILTERS[kind].filter(variants, 0.5), {
       name: "Error",
-      message: /freed/,
+      message: /freed, so their steps cannot be read or changed/,
     });
   }
 });

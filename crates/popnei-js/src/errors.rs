@@ -75,9 +75,10 @@ impl From<JsPopneiError> for JsValue {
             // the rule it broke is the core's, which refuses the same
             // thresholds when a pass builds its filters.
             JsPopneiError::Threshold { name, threshold } => format!(
-                "`{name}` is {threshold:?}, and a threshold is a number from 0 to 1, both \
+                "`{name}` is {value}, and a threshold is a number from 0 to 1, both \
                  included: the number of the variant it is compared with is one count of \
-                 the variant divided by another"
+                 the variant divided by another",
+                value = as_javascript_writes_it(threshold)
             ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::NoMemory(message)
@@ -85,4 +86,25 @@ impl From<JsPopneiError> for JsValue {
         };
         JsError::new(&message).into()
     }
+}
+
+/// `number` written as JavaScript writes it, which is how a user wrote it:
+/// `95` and not the `95.0` of Rust, `Infinity` and not its `inf`.
+///
+/// Rust and JavaScript both write a float64 as the shortest text that reads
+/// back as the same number, so the digits are the same, and they differ in
+/// the two infinities and in where they turn to an exponent: JavaScript
+/// writes 1e21 and larger, and anything below 1e-6, with one, and Rust
+/// writes every number in full. No threshold of a filter is in either range,
+/// and a number that is refused for being out of 0 to 1 can be: `1e30` is
+/// written here as its 31 digits.
+fn as_javascript_writes_it(number: f64) -> String {
+    if number.is_infinite() {
+        return if number.is_sign_negative() {
+            "-Infinity".to_owned()
+        } else {
+            "Infinity".to_owned()
+        };
+    }
+    number.to_string()
 }

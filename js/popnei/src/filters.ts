@@ -53,7 +53,10 @@ export interface Step {
    *
    * The values are what the argument of that method takes, so that the
    * steps of the later filters, which take other arguments than a
-   * threshold, fit in it. The three that are there take a number.
+   * threshold, fit in it. The value of each of the three filters that are
+   * there is a number, and it arrives here as an `unknown` all the same, so
+   * a user who does arithmetic with a threshold narrows it first: `const
+   * maf = step.args["maxAllowedMaf"]; if (typeof maf === "number") ...`.
    */
   args: Record<string, unknown>;
 }
