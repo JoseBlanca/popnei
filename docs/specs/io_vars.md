@@ -200,6 +200,26 @@ pyNei. When the source fails halfway, on a wrong line of a VCF, the error is
 given and the file that was being written is removed. It is decided here:
 pyNei leaves the file, 3458 bytes of it in a trial with a wrong line, and
 then the path is taken and the same call cannot be tried again.
+A Ctrl-C is raised when the pass over the source is over and not while it
+runs, and it takes the file away as an error does. The whole file is written
+inside one call of the core, with the interpreter released for all of it, so
+Python raises a signal that arrived meanwhile when that call returns. A
+Ctrl-C raised between two blocks, which a user gets from `iter_blocks`,
+would ask the binding crate to write again the loop over the blocks that the
+core has. That the file goes was decided on 21 September 2026 by the session
+that ran `docs/plans/vars-file.md`: a user who stopped the call finds the
+path free for the call they make again. The option not taken was to keep the
+file that the call had finished writing.
+
+The file that an error names is the VCF, a wrong line of it and a failure of
+the file system while the vars file is being written alike, because the core
+says that a write failed and not which of the two files it was reading or
+writing when it did. The path that was written to is named by the two errors
+that come before anything is read, a file that is already there and a path
+that no file can be made at. The same session decided this on 21 September
+2026; the option not taken was to tell the two files apart in the binding
+crate, with a sink that keeps the error the file system gave it.
+
 `num_vars_per_block` is how many variants a batch holds, and `None` is
 `default_num_vars_per_block` of `docs/specs/block.md`, so a file read back
 with the default size of block gives its batches as they are.
