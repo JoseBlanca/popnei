@@ -151,8 +151,29 @@ fn exception_of(error: popnei::Error, path: Option<String>) -> PyErr {
         popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
-        | popnei::Error::VcfParseNotFinished { .. } => PyRuntimeError::new_err(message),
-        _ => PyValueError::new_err(message),
+        | popnei::Error::VcfParseNotFinished { .. } => {
+            PyRuntimeError::new_err(of_the_file(message, path))
+        }
+        // How many variants a block holds is an argument of `iter_blocks`,
+        // and what is wrong with it is wrong whatever file is read, so
+        // these two name no file although they are refused while one is
+        // being opened.
+        popnei::Error::BlockOfNoVariants | popnei::Error::BlockTooLarge { .. } => {
+            PyValueError::new_err(message)
+        }
+        _ => PyValueError::new_err(of_the_file(message, path)),
+    }
+}
+
+/// The message with the file it happened in before it, which is what a user
+/// who reads a directory of VCFs needs in order to know which one to look
+/// at. The core has the line, the column and the value, and not the file: a
+/// reader is built over bytes, and the call that opened the path is where
+/// the two meet.
+fn of_the_file(message: String, path: Option<String>) -> String {
+    match path {
+        Some(path) => format!("{path}: {message}"),
+        None => message,
     }
 }
 

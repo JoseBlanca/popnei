@@ -1,16 +1,22 @@
-"""The file a read failed on, where Python keeps it: ``OSError.filename``.
+"""The file a read went wrong on, in what the user is told about it.
 
-An `OSError` of the standard library carries the number the system gave,
-which decides which exception it is, and the file in `filename`, which is
-where a caller looks for it. A read of popnei can fail with no number from
-the system: the decoder of gzip refuses a stream that ends in the middle,
-and that is an error of Rust's own. The file is what a user needs either
-way, so it is in `filename` either way.
+A user who reads a directory of VCFs, one after another, is told which file
+went wrong: every error that comes from reading one names it. Where the
+exception is an `OSError` the file is in `filename`, which is where a caller
+looks for it and where Python prints it, after the message; where it is a
+`ValueError` or a `RuntimeError` the message starts with it. An argument
+that popnei refuses, a field that is not one of the five or a block of no
+variant, is no error of a file and names none.
 
-The case is a VCF compressed with the gzip of Python and cut, which is not
-what `many.vcf.gz` of `tests/reference/vcf/` is: that one bgzip wrote, and a
-bgzipped file that was cut is refused with the error that says so, a
-``ValueError``.
+An `OSError` of the standard library also carries the number the system
+gave, which decides which exception it is. A read of popnei can fail with no
+number: the decoder of gzip refuses a stream that ends in the middle, and
+that is an error of Rust's own, not of the file system. The file is what a
+user needs either way.
+
+The gzipped file here is one that the gzip of Python wrote, which is not
+what `many.vcf.gz` of `tests/reference/vcf/` is: that one bgzip wrote, and
+the files that bgzip wrote are in `test_truncated_and_infinite.py`.
 """
 
 import gzip
@@ -49,3 +55,45 @@ def test_a_gzipped_vcf_that_was_cut_names_the_file_in_filename(tmp_path: Path) -
     assert refusal.value.errno is None
     assert refusal.value.filename == str(path)
     assert str(path) in str(refusal.value)
+
+
+def test_the_message_of_a_wrong_data_line_starts_with_the_file(write_vcf) -> None:
+    """The `x` in the POS column is a `ValueError`, a file whose content is
+    not what a VCF holds, and the message names the file and then the line
+    and the column, which is what the core says."""
+    path = write_vcf(["chr1\tx\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+    variants = open_vcf(path)
+    with pytest.raises(ValueError) as refusal:
+        list(variants.iter_blocks())
+    message = str(refusal.value)
+    assert message.startswith(f"{path}: "), message
+    # The header of the fixture is three lines, so the variant is in the
+    # fourth line of the file.
+    assert "line 4 of the VCF" in message
+    assert "POS" in message
+
+
+def test_the_message_of_bytes_that_are_not_a_vcf_starts_with_the_file(
+    tmp_path: Path,
+) -> None:
+    """The header is read when the file is opened, so this is the message of
+    `open_vcf` and not of a block."""
+    path = tmp_path / "not_a_vcf.txt"
+    path.write_text("chr1,100,A,T\n")
+    with pytest.raises(ValueError) as refusal:
+        open_vcf(path)
+    message = str(refusal.value)
+    assert message.startswith(f"{path}: "), message
+    assert "not a VCF" in message
+
+
+def test_an_argument_that_is_refused_names_no_file(reference_vcf_dir: Path) -> None:
+    """What a user wrote is wrong wherever the file is, and the file has
+    nothing to do with it: `fields` and `num_vars_per_block` are refused by
+    their own words."""
+    variants = open_vcf(reference_vcf_dir / "cases.vcf")
+    for asked_for in ({"fields": ("depth",)}, {"num_vars_per_block": 0}):
+        with pytest.raises(ValueError) as refusal:
+            list(variants.iter_blocks(**asked_for))
+        message = str(refusal.value)
+        assert str(reference_vcf_dir) not in message, message
