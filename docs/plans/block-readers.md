@@ -382,8 +382,10 @@ questions of `docs/reports/block-readers.md`:
 
 - A bgzip file that is corrupted is an error, however improbable the
   corruption: the reader reads a bgzip file by the size that each of its
-  members states, as bcftools does, and no longer with a decoder that
-  goes from one gzip member to the next on its own. Decompression stays
+  members states, and no longer with a decoder that goes from one gzip
+  member to the next on its own. (The report said "as bcftools does";
+  bcftools 1.24 reads the corrupted file of the review as no variants
+  with no message, so popnei is stricter than bcftools here.) Decompression stays
   on one thread; decompressing on several is not in this plan.
 - A file that was cut gives its error in the iteration as soon as the cut
   is found, and `reblock` keeps the rule of the block spec, that an error
@@ -432,12 +434,12 @@ questions of `docs/reports/block-readers.md`:
 
 **Tasks.**
 
-- [ ] 4.1 The amendments of `docs/specs/io_vcf.md`, in a commit of their
+- [x] 4.1 The amendments of `docs/specs/io_vcf.md`, in a commit of their
   own, and then the reader of a bgzip file by the sizes of its members,
   in the core, with its tests. From the decisions above and from the
   specification of BGZF in the SAM format specification, section 4.1.
   Serves deliverables 1 and 3.
-- [ ] 4.2 The exceptions and the name of the file in the Python binding
+- [x] 4.2 The exceptions and the name of the file in the Python binding
   crate, the JavaScript side where it has something to say, their tests,
   and the two paragraphs of the `coding` skill. Serves deliverables 2 and
   3. Needs 4.1.
