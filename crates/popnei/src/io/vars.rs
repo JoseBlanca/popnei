@@ -14,13 +14,17 @@
 //! [`write_vars`] writes the variants of any reader of blocks into such a
 //! file, one batch for each block, with its buffers compressed with lz4,
 //! and [`VarsWriter`] is what it does it with, for a caller that has the
-//! blocks and not a reader.
+//! blocks and not a reader. [`VarsReader`] opens such a file and says what
+//! it holds.
 //!
 //! `docs/specs/io_vars.md` has the format, the writer and the reader. What
-//! is here is the two keys and the writer; the reader is being written.
+//! is here is the two keys, the writer, and the opening of a file; the
+//! blocks that a file gives are being written.
 
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -29,8 +33,9 @@ use arrow_array::{
     UInt64Array,
 };
 use arrow_buffer::{NullBuffer, ScalarBuffer};
-use arrow_ipc::CompressionType;
+use arrow_ipc::convert::try_fb_to_schema;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
+use arrow_ipc::{Block as ArrowBlock, CompressionType, Footer, MetadataVersion, root_as_footer};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use serde_json::{Map, Value};
 
@@ -59,16 +64,6 @@ pub const FORMAT_VERSION: &str = "1.0";
 
 /// The major version of the format that popnei reads, the part of
 /// [`FORMAT_VERSION`] before the dot.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the reader of the vars file is what refuses a file of another major version \
-                  and is being written; the tests of this module hold it against the version \
-                  that is written already, so this holds for the build without them, and the \
-                  lint itself asks for it to go when the reader lands"
-    )
-)]
 pub(crate) const FORMAT_VERSION_READ: &str = "1";
 
 /// What a vars file says about itself before its first variant, the value
@@ -156,15 +151,6 @@ pub(crate) fn batches_as_json(batches: &[BatchInfo]) -> String {
 /// The source is not a vars file when that value is not a json object or
 /// when one of its four keys is missing or does not hold what that key
 /// holds.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the reader of the vars file is its caller and is being written; the tests of \
-                  this module call it already, so this holds for the build without them, and \
-                  the lint itself asks for it to go when the reader lands"
-    )
-)]
 pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
     let value = json_of_the_popnei_key(text)?;
     let Some(object) = value.as_object() else {
@@ -188,15 +174,6 @@ pub(crate) fn metadata_from_json(text: &str) -> Result<VarsMetadata> {
 /// The source is not a vars file when that value is not a json array of
 /// entries, or when an entry does not hold the number of variants of its
 /// batch or holds a region that is not one.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the reader of the vars file is its caller and is being written; the tests of \
-                  this module call it already, so this holds for the build without them, and \
-                  the lint itself asks for it to go when the reader lands"
-    )
-)]
 pub(crate) fn batches_from_json(text: &str) -> Result<Vec<BatchInfo>> {
     let value: Value = serde_json::from_str(text).map_err(|problem| {
         not_a_vars_file(format!(
@@ -1007,24 +984,732 @@ fn the_sink_is_gone() -> Error {
     }
 }
 
+/// The six bytes an arrow IPC file starts with, and the six it ends with.
+const ARROW_MAGIC: [u8; 6] = *b"ARROW1";
+
+/// How many bytes the trailer of an arrow IPC file holds: the length of the
+/// footer as four bytes, and then [`ARROW_MAGIC`] again.
+const TRAILER_BYTES: u64 = 10;
+
+/// The number the system gives for a directory where a file was asked for,
+/// `EISDIR`, which is 21 on macOS, on Linux and in emscripten, the systems
+/// popnei runs on. Opening a directory succeeds on those systems and only
+/// the first read of it fails, so [`VarsReader::from_path`] gives this
+/// number itself.
+const A_DIRECTORY_IS_THERE: i32 = 21;
+
+/// One column of the table of "What it holds" of `docs/specs/io_vars.md`,
+/// the six a vars file can have and popnei knows. A column of any other
+/// name is ignored, which is what lets a later version of the format add
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VarsColumn {
+    /// The name of the chromosome of each variant.
+    Chrom,
+    /// The position of each variant.
+    Pos,
+    /// The id of each variant, null for a variant with none.
+    Id,
+    /// The alleles of each variant, the reference one first.
+    Alleles,
+    /// The quality of each variant, null for a variant with none.
+    Qual,
+    /// The genotypes, the individuals times the ploidy for each variant.
+    Gts,
+}
+
+impl VarsColumn {
+    /// The column of that name, or `None` for a name popnei does not know.
+    fn of_the_name(name: &str) -> Option<VarsColumn> {
+        match name {
+            CHROM_COLUMN => Some(VarsColumn::Chrom),
+            POS_COLUMN => Some(VarsColumn::Pos),
+            ID_COLUMN => Some(VarsColumn::Id),
+            ALLELES_COLUMN => Some(VarsColumn::Alleles),
+            QUAL_COLUMN => Some(VarsColumn::Qual),
+            GTS_COLUMN => Some(VarsColumn::Gts),
+            _ => None,
+        }
+    }
+
+    /// Its name in the file.
+    fn name(self) -> &'static str {
+        match self {
+            VarsColumn::Chrom => CHROM_COLUMN,
+            VarsColumn::Pos => POS_COLUMN,
+            VarsColumn::Id => ID_COLUMN,
+            VarsColumn::Alleles => ALLELES_COLUMN,
+            VarsColumn::Qual => QUAL_COLUMN,
+            VarsColumn::Gts => GTS_COLUMN,
+        }
+    }
+
+    /// The arrow type it holds, as the table of the spec writes it, which
+    /// is the type the message of a column of another one gives.
+    fn arrow_type(self) -> &'static str {
+        match self {
+            VarsColumn::Chrom | VarsColumn::Id => "Utf8",
+            VarsColumn::Pos => "UInt64",
+            VarsColumn::Alleles => "List<Utf8>",
+            VarsColumn::Qual => "Float32",
+            VarsColumn::Gts => "FixedSizeList<Int8>",
+        }
+    }
+
+    /// Whether the column of the file is of the type it holds.
+    ///
+    /// What is compared is the type of the values: for the two lists, the
+    /// type inside the list, and for `gts` that the width the list gives is
+    /// a count. Neither the name of the field arrow gives the values of a
+    /// list nor whether that field takes nulls is compared: popnei writes
+    /// the `item` that takes nulls that pyarrow writes, and arrow programs
+    /// differ in both, so a file whose list holds texts under another name
+    /// is read.
+    fn holds(self, found: &DataType) -> bool {
+        match self {
+            VarsColumn::Chrom | VarsColumn::Id => *found == DataType::Utf8,
+            VarsColumn::Pos => *found == DataType::UInt64,
+            VarsColumn::Alleles => {
+                matches!(found, DataType::List(item) if *item.data_type() == DataType::Utf8)
+            }
+            VarsColumn::Qual => *found == DataType::Float32,
+            VarsColumn::Gts => matches!(
+                found,
+                DataType::FixedSizeList(item, width)
+                    if *item.data_type() == DataType::Int8 && *width >= 0
+            ),
+        }
+    }
+
+    /// Where this column's place in the file is kept.
+    fn place_in(self, columns: &mut VarsColumns) -> &mut Option<usize> {
+        match self {
+            VarsColumn::Chrom => &mut columns.chrom,
+            VarsColumn::Pos => &mut columns.pos,
+            VarsColumn::Id => &mut columns.id,
+            VarsColumn::Alleles => &mut columns.alleles,
+            VarsColumn::Qual => &mut columns.qual,
+            VarsColumn::Gts => &mut columns.gts,
+        }
+    }
+}
+
+/// Where each column popnei knows is in the file, by its place in the
+/// schema, and `None` for one the file does not have: a file holds only the
+/// columns its source could fill. The places are what the projection that a
+/// [`Needs`] becomes is built from, which is why they come from the schema
+/// of the file and not from the table of the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VarsColumns {
+    /// Where `chrom` is.
+    chrom: Option<usize>,
+    /// Where `pos` is.
+    pos: Option<usize>,
+    /// Where `id` is.
+    id: Option<usize>,
+    /// Where `alleles` is.
+    alleles: Option<usize>,
+    /// Where `qual` is.
+    qual: Option<usize>,
+    /// Where `gts` is.
+    gts: Option<usize>,
+}
+
+impl VarsColumns {
+    /// Where the columns popnei knows are in that schema, each checked
+    /// against the type it holds.
+    ///
+    /// # Errors
+    ///
+    /// When a column popnei knows is of another arrow type, and when the
+    /// `gts` column holds another number of alleles for each variant than
+    /// the individuals and the ploidy of the `popnei` key give.
+    fn of(schema: &Schema, metadata: &VarsMetadata) -> Result<VarsColumns> {
+        let mut columns = VarsColumns {
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+            gts: None,
+        };
+        for (place, field) in schema.fields().iter().enumerate() {
+            let Some(column) = VarsColumn::of_the_name(field.name()) else {
+                continue;
+            };
+            let found = field.data_type();
+            if !column.holds(found) {
+                return Err(Error::VarsColumnType {
+                    column: column.name(),
+                    found: type_name(found),
+                    expected: column.arrow_type().to_owned(),
+                });
+            }
+            if let DataType::FixedSizeList(_, width) = found
+                && column == VarsColumn::Gts
+            {
+                gts_width_fits(*width, metadata)?;
+            }
+            // A file with two columns of one name is read with the first of
+            // them, as any program that asks a table for a column by its
+            // name reads it; the second is checked against its type too.
+            column.place_in(&mut columns).get_or_insert(place);
+        }
+        Ok(columns)
+    }
+}
+
+/// That the `gts` column holds the alleles of the individuals that the
+/// `popnei` key names: the width of that column is what turns its flat
+/// buffer into variants, so a file whose two say different things is
+/// refused and not read one allele beside another.
+///
+/// # Errors
+///
+/// When the width is not the individuals times the ploidy, with both
+/// numbers.
+fn gts_width_fits(width: i32, metadata: &VarsMetadata) -> Result<()> {
+    let num_individuals = metadata.individuals.len();
+    let ploidy = metadata.ploidy;
+    // The individuals are a vector of this machine and the ploidy comes
+    // from the file, so their product can carry past what a `usize` counts;
+    // a width, which an arrow file keeps in 32 bits, is never the product
+    // that saturated, so such a file is refused here.
+    let expected = num_individuals.saturating_mul(ploidy);
+    let found = usize::try_from(width).unwrap_or(usize::MAX);
+    if found != expected {
+        return Err(Error::VarsGtsWidth {
+            found,
+            expected,
+            num_individuals,
+            ploidy,
+        });
+    }
+    Ok(())
+}
+
+/// The arrow type of a column as the table of "What it holds" of
+/// `docs/specs/io_vars.md` writes it, so that the type a file has and the
+/// type popnei reads are written the same way in one message.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "arrow has forty types and the two lists are what popnei writes in its own notation; \
+              every other one is written as arrow writes it"
+)]
+fn type_name(found: &DataType) -> String {
+    match found {
+        DataType::List(item) => format!("List<{inside}>", inside = type_name(item.data_type())),
+        DataType::FixedSizeList(item, width) => {
+            format!(
+                "FixedSizeList<{inside}>[{width}]",
+                inside = type_name(item.data_type())
+            )
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Where one batch of a vars file is, from the footer of the arrow file:
+/// the message of the batch and then its buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BatchAt {
+    /// The byte of the file where the message of the batch starts.
+    offset: u64,
+    /// How many bytes that message holds.
+    metadata_len: u64,
+    /// How many bytes the buffers after it hold.
+    body_len: u64,
+}
+
+/// The reader of a vars file: what the file says about itself, from its
+/// schema and its footer. The blocks of its batches, which
+/// `docs/specs/io_vars.md` asks of it, are being written.
+///
+/// [`VarsReader::new`] reads the schema and the footer, so the names of the
+/// individuals, the ploidy, the variants of the file and the regions of
+/// every batch are known when it returns, before any batch is read, and a
+/// source that is not a vars file fails there and not at the first block.
+///
+/// The source is anything that can be read and seeked in, natively a file
+/// and in a tab the bytes the user picked: the footer of an arrow file is
+/// at its end, so the reader seeks there when it is opened and then to each
+/// batch in turn.
+pub struct VarsReader<R: Read + Seek> {
+    /// The bytes of the file.
+    #[expect(
+        dead_code,
+        reason = "the batches are read from the source in the work that follows, and the lint \
+                  itself asks for this to go when the blocks land"
+    )]
+    source: R,
+    /// The columns of the file as arrow gives them, with the column popnei
+    /// does not know among them, which is what a batch is decoded with.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the decoder of a batch is built with the schema and is being written; the \
+                      tests of this module read it already, so this holds for the build without \
+                      them, and the lint itself asks for it to go when the blocks land"
+        )
+    )]
+    schema: SchemaRef,
+    /// Which version of the messages of arrow the file was written with,
+    /// which the decoder of a batch is built with.
+    #[expect(
+        dead_code,
+        reason = "the decoder of a batch is built with it and is being written, and the lint \
+                  itself asks for this to go when the blocks land"
+    )]
+    version: MetadataVersion,
+    /// Where each batch of the file is, in the order of the batches.
+    ///
+    /// A batch is read with the `FileDecoder` of arrow-rs, which takes the
+    /// bytes of one batch and the columns to decompress, and not with its
+    /// `FileReader`, which takes the columns when it is built and holds the
+    /// source: a consumer changes which fields it asks for between two
+    /// blocks, and `docs/specs/io_vars.md` asks that the columns of a batch
+    /// be chosen when that batch is read.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the bytes of a batch are read from here in the work that follows; the tests \
+                      of this module read them already, so this holds for the build without them, \
+                      and the lint itself asks for it to go when the blocks land"
+        )
+    )]
+    blocks: Vec<BatchAt>,
+    /// Where each column popnei knows is in the schema.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the projection of a batch is built from the places and is being written; \
+                      the tests of this module read them already, so this holds for the build \
+                      without them, and the lint itself asks for it to go when the blocks land"
+        )
+    )]
+    columns: VarsColumns,
+    /// What the `popnei` key of the schema says.
+    metadata: VarsMetadata,
+    /// What the `popnei_batches` key of the footer says of each batch.
+    batches: Vec<BatchInfo>,
+    /// The variants of the whole file, the sum of those of its batches.
+    num_vars: usize,
+}
+
+impl<R: Read + Seek> VarsReader<R> {
+    /// The reader over the vars file in `source`, whose schema and footer
+    /// it reads.
+    ///
+    /// # Errors
+    ///
+    /// When the source is not a vars file: it does not start as an arrow
+    /// IPC file, its footer is not one of an arrow file, its schema has no
+    /// `popnei` key or that key does not hold its four values, or its
+    /// footer has no `popnei_batches` key. When the version of the format
+    /// it gives does not start with the one popnei reads, when a column
+    /// popnei knows is of another arrow type, when the `gts` column holds
+    /// another number of alleles for each variant than the `popnei` key
+    /// gives, when that key names one individual twice, and when the
+    /// entries of the footer are not as many as the batches of the file.
+    /// When the file starts as an arrow file and was cut short. And when
+    /// the source cannot be read.
+    pub fn new(mut source: R) -> Result<VarsReader<R>> {
+        let file_len = source.seek(SeekFrom::End(0))?;
+        starts_as_an_arrow_file(&mut source, file_len)?;
+        let footer_bytes = footer_of(&mut source, file_len)?;
+        let footer = root_as_footer(&footer_bytes).map_err(|problem| {
+            not_a_vars_file(format!(
+                "it starts as an arrow IPC file and its footer is not one of an arrow file: {problem}"
+            ))
+        })?;
+        let schema = Arc::new(schema_of_the_footer(&footer)?);
+        // The version is read before the columns: a file of a version
+        // popnei does not know holds whatever that version says, and what a
+        // user does about it is get a later popnei and not a file of other
+        // columns.
+        let metadata = metadata_of_the_schema(&schema)?;
+        let columns = VarsColumns::of(&schema, &metadata)?;
+        let blocks = batches_of_the_footer(&footer, file_len)?;
+        let batches = batch_info_of_the_footer(&footer, blocks.len())?;
+        let num_vars = num_vars_of_the_file(&batches)?;
+        Ok(VarsReader {
+            source,
+            schema,
+            version: footer.version(),
+            blocks,
+            columns,
+            metadata,
+            batches,
+            num_vars,
+        })
+    }
+
+    /// What the `popnei` key of the schema of the file says: the version of
+    /// the format, the names of the individuals, the ploidy and how many
+    /// variants a batch holds.
+    #[must_use]
+    pub fn metadata(&self) -> &VarsMetadata {
+        &self.metadata
+    }
+
+    /// What the `popnei_batches` key of the footer says, one entry for each
+    /// batch of the file, in the order of the batches: how many variants it
+    /// holds and where they are.
+    #[must_use]
+    pub fn batches(&self) -> &[BatchInfo] {
+        &self.batches
+    }
+
+    /// The variants of the whole file, the sum of those of its batches,
+    /// which the footer says without a batch being read.
+    #[must_use]
+    pub fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+}
+
+impl VarsReader<BufReader<File>> {
+    /// The reader over the vars file at `path`, for the callers that have a
+    /// path and not bytes.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be opened, with the path in the error, and a
+    /// directory at the path among them: opening a directory succeeds on
+    /// macOS and on Linux and only the first read of it fails, so the
+    /// reader asks the file it opened what it is. And everything
+    /// [`VarsReader::new`] fails with.
+    pub fn from_path(path: &Path) -> Result<Self> {
+        let file = File::open(path).map_err(|problem| not_opened(path, problem))?;
+        // What was opened is asked and not the path, so what happens at the
+        // path between the two calls does not change the answer.
+        let what_it_is = file
+            .metadata()
+            .map_err(|problem| not_opened(path, problem))?;
+        if what_it_is.is_dir() {
+            return Err(not_opened(
+                path,
+                std::io::Error::from_raw_os_error(A_DIRECTORY_IS_THERE),
+            ));
+        }
+        VarsReader::new(BufReader::new(file))
+    }
+}
+
+/// The file at `path` could not be opened, with the path, which a binding
+/// crate builds the exception of its language with.
+fn not_opened(path: &Path, problem: std::io::Error) -> Error {
+    Error::FileNotOpened {
+        path: path.to_path_buf(),
+        source: problem,
+    }
+}
+
+/// That the source starts with the six bytes every arrow IPC file starts
+/// with.
+///
+/// # Errors
+///
+/// The source is not a vars file when it does not, which the bytes of a VCF
+/// are; a source that does and ends before what it says it holds is a file
+/// that was cut short, which is another error and another exception.
+fn starts_as_an_arrow_file<R: Read + Seek>(source: &mut R, file_len: u64) -> Result<()> {
+    let not_one = || {
+        not_a_vars_file(format!(
+            "it does not start with the {bytes} bytes `ARROW1` that an arrow IPC file starts with",
+            bytes = ARROW_MAGIC.len()
+        ))
+    };
+    if file_len < magic_bytes() {
+        return Err(not_one());
+    }
+    let start = bytes_at(source, 0, ARROW_MAGIC.len())?;
+    if start != ARROW_MAGIC {
+        return Err(not_one());
+    }
+    Ok(())
+}
+
+/// The bytes of the footer of the arrow file, which its last four bytes
+/// before the mark of its end say the length of.
+///
+/// # Errors
+///
+/// The file was cut short when it does not end with the mark an arrow file
+/// ends with, and when the footer it says it has does not fit in it: both
+/// are a file whose bytes ran out after its header was written.
+fn footer_of<R: Read + Seek>(source: &mut R, file_len: u64) -> Result<Vec<u8>> {
+    let Some(trailer_at) = file_len.checked_sub(TRAILER_BYTES) else {
+        return Err(cut_short(format!(
+            "the file is {file_len} bytes and the {TRAILER_BYTES} of the trailer that says where \
+             its footer is are not in it"
+        )));
+    };
+    let trailer = bytes_at(source, trailer_at, usize_of(TRAILER_BYTES)?)?;
+    let (Some(said), Some(magic)) = (trailer.get(..4), trailer.get(4..)) else {
+        return Err(cut_short(format!(
+            "the trailer of the file is {TRAILER_BYTES} bytes and fewer were read"
+        )));
+    };
+    if magic != ARROW_MAGIC {
+        return Err(cut_short(
+            "it does not end with the six bytes `ARROW1` that come after the footer of an arrow \
+             file, so the bytes after its last batch are missing"
+                .to_owned(),
+        ));
+    }
+    let footer_len = <[u8; 4]>::try_from(said).map_or(-1, i32::from_le_bytes);
+    let Some(footer_at) = u64::try_from(footer_len)
+        .ok()
+        .and_then(|len| trailer_at.checked_sub(len))
+        .filter(|at| *at >= magic_bytes())
+    else {
+        return Err(cut_short(format!(
+            "the file says its footer is {footer_len} bytes and it holds {trailer_at} before the \
+             four bytes of that number"
+        )));
+    };
+    let len = trailer_at.saturating_sub(footer_at);
+    bytes_at(source, footer_at, usize_of(len)?)
+}
+
+/// The columns of the file, from its footer.
+///
+/// # Errors
+///
+/// The source is not a vars file when its footer says nothing of the
+/// columns, when they are not ones arrow reads, and when the file was
+/// written on a machine whose bytes are in the other order, which is what
+/// the columns of every batch of it would be read in.
+fn schema_of_the_footer(footer: &Footer<'_>) -> Result<Schema> {
+    let Some(columns) = footer.schema() else {
+        return Err(not_a_vars_file(
+            "its footer says nothing of the columns of the file".to_owned(),
+        ));
+    };
+    if !columns.endianness().equals_to_target_endianness() {
+        return Err(not_a_vars_file(
+            "it was written on a machine that holds the bytes of a number in the other order"
+                .to_owned(),
+        ));
+    }
+    try_fb_to_schema(columns).map_err(|problem| {
+        not_a_vars_file(format!(
+            "the columns its footer gives are not ones of an arrow file: {problem}"
+        ))
+    })
+}
+
+/// What the `popnei` key of the schema says, with the version and the names
+/// of the individuals checked.
+///
+/// # Errors
+///
+/// The source is not a vars file when its schema has no `popnei` key and
+/// for everything [`metadata_from_json`] refuses. The version is refused
+/// when its first part is not the one popnei reads, with the whole version
+/// in the message. And two individuals of one name are refused, as they are
+/// for the VCF reader.
+fn metadata_of_the_schema(schema: &Schema) -> Result<VarsMetadata> {
+    let Some(value) = schema.metadata().get(POPNEI_KEY) else {
+        return Err(not_a_vars_file(format!(
+            "its schema has no `{POPNEI_KEY}` key"
+        )));
+    };
+    let metadata = metadata_from_json(value)?;
+    let major = metadata.format_version.split('.').next().unwrap_or("");
+    if major != FORMAT_VERSION_READ {
+        return Err(Error::VarsFormatVersion {
+            found: metadata.format_version.clone(),
+            read: FORMAT_VERSION_READ,
+        });
+    }
+    let mut seen: HashSet<&str> = HashSet::with_capacity(metadata.individuals.len());
+    for name in &metadata.individuals {
+        if !seen.insert(name.as_str()) {
+            return Err(Error::VarsIndividualTwice { name: name.clone() });
+        }
+    }
+    Ok(metadata)
+}
+
+/// Where each batch of the file is, from its footer.
+///
+/// # Errors
+///
+/// The source is not a vars file when its footer says nothing of its
+/// batches or puts one at a byte that is not one of a file, and it was cut
+/// short when a batch it names ends past the end of the file.
+fn batches_of_the_footer(footer: &Footer<'_>, file_len: u64) -> Result<Vec<BatchAt>> {
+    let Some(blocks) = footer.recordBatches() else {
+        return Err(not_a_vars_file(
+            "its footer says nothing of the batches of the file".to_owned(),
+        ));
+    };
+    blocks
+        .iter()
+        .map(|block| batch_at(block, file_len))
+        .collect()
+}
+
+/// Where one batch is, from one entry of the footer.
+///
+/// # Errors
+///
+/// As [`batches_of_the_footer`], for one batch.
+fn batch_at(block: &ArrowBlock, file_len: u64) -> Result<BatchAt> {
+    let (Ok(offset), Ok(metadata_len), Ok(body_len)) = (
+        u64::try_from(block.offset()),
+        u64::try_from(block.metaDataLength()),
+        u64::try_from(block.bodyLength()),
+    ) else {
+        return Err(not_a_vars_file(
+            "its footer puts a batch at a byte of the file that is not one".to_owned(),
+        ));
+    };
+    let ends_at = metadata_len
+        .checked_add(body_len)
+        .and_then(|bytes| offset.checked_add(bytes));
+    if ends_at.is_none_or(|end| end > file_len) {
+        return Err(cut_short(format!(
+            "its footer says a batch of {metadata_len} and {body_len} bytes starts at the byte \
+             {offset}, and the file is {file_len} bytes"
+        )));
+    }
+    Ok(BatchAt {
+        offset,
+        metadata_len,
+        body_len,
+    })
+}
+
+/// What the `popnei_batches` key of the footer says of each batch, checked
+/// against the batches the file has.
+///
+/// # Errors
+///
+/// The source is not a vars file when its footer has no `popnei_batches`
+/// key and for everything [`batches_from_json`] refuses, and the entries of
+/// that key are refused when they are not as many as the batches, since no
+/// entry could then be trusted to be that of its batch.
+fn batch_info_of_the_footer(footer: &Footer<'_>, num_batches: usize) -> Result<Vec<BatchInfo>> {
+    let no_key = || not_a_vars_file(format!("its footer has no `{POPNEI_BATCHES_KEY}` key"));
+    let mut value = None;
+    for entry in footer.custom_metadata().into_iter().flatten() {
+        if entry.key() == Some(POPNEI_BATCHES_KEY) {
+            value = entry.value();
+        }
+    }
+    let Some(value) = value else {
+        return Err(no_key());
+    };
+    let batches = batches_from_json(value)?;
+    if batches.len() != num_batches {
+        return Err(Error::VarsBatchesDoNotMatch {
+            found: batches.len(),
+            expected: num_batches,
+        });
+    }
+    Ok(batches)
+}
+
+/// The variants of the whole file, the sum of those of its batches.
+///
+/// # Errors
+///
+/// The source is not a vars file when its footer says more variants than
+/// this machine counts, which under wasm, where a `usize` is 32 bits, is
+/// 4295 million.
+fn num_vars_of_the_file(batches: &[BatchInfo]) -> Result<usize> {
+    let mut num_vars: usize = 0;
+    for batch in batches {
+        num_vars = num_vars.checked_add(batch.num_vars).ok_or_else(|| {
+            not_a_vars_file(format!(
+                "the `{POPNEI_BATCHES_KEY}` key of its footer says more variants than this machine counts"
+            ))
+        })?;
+    }
+    Ok(num_vars)
+}
+
+/// `len` bytes of the source from `offset`, which the length of the file
+/// says are there.
+///
+/// # Errors
+///
+/// The file was cut short when the bytes run out although the length of the
+/// file said they were there, which is a file that changed while it was
+/// being read, and [`Error::Io`] when the source fails.
+fn bytes_at<R: Read + Seek>(source: &mut R, offset: u64, len: usize) -> Result<Vec<u8>> {
+    source.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![0; len];
+    source.read_exact(&mut bytes).map_err(|problem| {
+        if problem.kind() == ErrorKind::UnexpectedEof {
+            cut_short(format!(
+                "{len} bytes were asked for at the byte {offset} of the file and the bytes ran out"
+            ))
+        } else {
+            Error::Io(problem)
+        }
+    })?;
+    Ok(bytes)
+}
+
+/// How many bytes an arrow file starts with, as the machine counts bytes.
+fn magic_bytes() -> u64 {
+    u64::try_from(ARROW_MAGIC.len()).unwrap_or(u64::MAX)
+}
+
+/// A length the file gives, as a length this machine can hold at once.
+///
+/// # Errors
+///
+/// The source is not a vars file when the length is more than a `usize`,
+/// which under wasm, where a `usize` is 32 bits, is a file of 4 GB.
+fn usize_of(len: u64) -> Result<usize> {
+    usize::try_from(len).map_err(|_| {
+        not_a_vars_file(format!(
+            "it says one of its parts is {len} bytes, which this machine does not hold at once"
+        ))
+    })
+}
+
+/// The error of a vars file that starts as an arrow file and ends before
+/// what it says it holds.
+fn cut_short(problem: String) -> Error {
+    Error::VarsFileCutShort { problem }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::io::{Cursor, Write};
+    use std::collections::HashMap;
+    use std::io::{Cursor, ErrorKind, Write};
+    use std::path::Path;
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
+    use arrow_array::builder::{Int8Builder, ListBuilder};
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Float32Type, Int8Type, UInt64Type};
-    use arrow_array::{Array, FixedSizeListArray, RecordBatch};
+    use arrow_array::{
+        Array, ArrayRef, FixedSizeListArray, Float64Array, Int8Array, Int32Array, ListArray,
+        RecordBatch,
+    };
+    use arrow_buffer::ScalarBuffer;
     use arrow_ipc::reader::FileReader;
-    use arrow_schema::{DataType, Field};
+    use arrow_ipc::writer::FileWriter;
+    use arrow_schema::{DataType, Field, Schema};
 
     use super::{
-        BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY,
-        POPNEI_KEY, Region, VarsMetadata, VarsWriter, alleles_column, batches_as_json,
+        ALLELES_COLUMN, BatchInfo, FORMAT_VERSION, FORMAT_VERSION_READ, GTS_COLUMN, ITEM_FIELD,
+        MAX_COLUMN_BYTES, POPNEI_BATCHES_KEY, POPNEI_KEY, POS_COLUMN, QUAL_COLUMN, Region,
+        VarsColumns, VarsMetadata, VarsReader, VarsWriter, alleles_column, batches_as_json,
         batches_from_json, chrom_column, id_column, metadata_as_json, metadata_from_json,
-        write_vars,
+        schema_of, write_vars,
     };
     use crate::block::{AllelesColumn, Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2446,5 +3131,618 @@ mod tests {
             Err(Error::NotAVarsFile { problem }) => problem,
             other => panic!("the source was not refused as a vars file: {other:?}"),
         }
+    }
+
+    /// The pieces of a vars file built with arrow-rs and not with popnei's
+    /// writer: one field and one array for each column, the text of the
+    /// `popnei` key of the schema, the text of the `popnei_batches` key of
+    /// the footer, and how many batches the file holds, the columns written
+    /// once for each. A test changes one of them and [`FileParts::written`]
+    /// gives the bytes of the file that comes out, which is how the files
+    /// another arrow program writes, and popnei's writer does not, are made.
+    ///
+    /// The file is written with no compression, which popnei reads as it
+    /// reads the lz4 that it writes.
+    struct FileParts {
+        columns: Vec<(Field, ArrayRef)>,
+        popnei: Option<String>,
+        popnei_batches: Option<String>,
+        num_batches: usize,
+    }
+
+    impl FileParts {
+        /// The six columns of the four variants of `cases.vcf` in one
+        /// batch, with the two keys popnei's writer writes for them.
+        fn of_cases() -> FileParts {
+            let mut chroms = ChromTable::new();
+            let block = cases_block(&mut chroms);
+            let fields = block.fields();
+            let metadata = metadata_of_cases();
+            // 3 individuals of the ploidy 2.
+            let schema = schema_of(fields, 6, &metadata);
+            let writer: VarsWriter<Vec<u8>> =
+                VarsWriter::new(Vec::new(), &cases_individuals(), 2, 3).expect("the writer");
+            let (arrays, regions) = writer
+                .arrays_of(block, &chroms, fields)
+                .expect("the columns of the batch");
+            let columns = schema
+                .fields()
+                .iter()
+                .map(|field| field.as_ref().clone())
+                .zip(arrays)
+                .collect();
+            FileParts {
+                columns,
+                popnei: Some(metadata_as_json(&metadata)),
+                popnei_batches: Some(batches_as_json(&[BatchInfo {
+                    num_vars: 4,
+                    regions,
+                }])),
+                num_batches: 1,
+            }
+        }
+
+        /// The field and the array of the column of that name, for a test
+        /// that puts another one there.
+        fn column(&mut self, name: &str) -> &mut (Field, ArrayRef) {
+            self.columns
+                .iter_mut()
+                .find(|(field, _)| field.name() == name)
+                .unwrap_or_else(|| panic!("the `{name}` column"))
+        }
+
+        /// The bytes of the file these pieces make.
+        fn written(&self) -> Vec<u8> {
+            let fields: Vec<Field> = self
+                .columns
+                .iter()
+                .map(|(field, _)| field.clone())
+                .collect();
+            let arrays: Vec<ArrayRef> = self
+                .columns
+                .iter()
+                .map(|(_, array)| Arc::clone(array))
+                .collect();
+            let mut schema = Schema::new(fields);
+            if let Some(popnei) = &self.popnei {
+                schema =
+                    schema.with_metadata(HashMap::from([(POPNEI_KEY.to_owned(), popnei.clone())]));
+            }
+            let batch = RecordBatch::try_new(Arc::new(schema.clone()), arrays)
+                .expect("the columns are a batch");
+            let mut writer =
+                FileWriter::try_new(Vec::new(), &schema).expect("the file was started");
+            for _ in 0..self.num_batches {
+                writer.write(&batch).expect("the batch was written");
+            }
+            if let Some(batches) = &self.popnei_batches {
+                writer.write_metadata(POPNEI_BATCHES_KEY, batches.clone());
+            }
+            writer.into_inner().expect("the file was finished")
+        }
+    }
+
+    /// The reader over those bytes, which is how a test opens a vars file
+    /// it holds in memory.
+    fn opened(bytes: Vec<u8>) -> Result<VarsReader<Cursor<Vec<u8>>>> {
+        VarsReader::new(Cursor::new(bytes))
+    }
+
+    /// What the reader said about bytes it refused. That it took them is a
+    /// failure of the test itself.
+    fn refused(bytes: Vec<u8>) -> Error {
+        match opened(bytes) {
+            Ok(_) => panic!("the bytes were opened as a vars file"),
+            Err(error) => error,
+        }
+    }
+
+    /// Whether the reader takes those bytes, with nothing of the reader
+    /// kept, for a test that looks at what it says of the ones it refuses.
+    fn opening(bytes: Vec<u8>) -> Result<()> {
+        opened(bytes).map(|_| ())
+    }
+
+    /// What a vars file says about itself is in its schema and its footer,
+    /// so it is known as soon as the file is opened: the names of the
+    /// individuals, the ploidy, the variants of the file and where those of
+    /// each batch are.
+    #[test]
+    fn a_vars_file_says_what_it_holds_and_where_its_variants_are_before_any_batch_is_read() {
+        let reader = opened(cases_written_in_batches_of(3)).expect("the file is a vars file");
+
+        assert_eq!(
+            reader.metadata(),
+            &VarsMetadata {
+                format_version: FORMAT_VERSION.to_owned(),
+                individuals: cases_individuals(),
+                ploidy: 2,
+                num_vars_per_block: 3,
+            }
+        );
+        assert_eq!(
+            reader.batches(),
+            [
+                BatchInfo {
+                    num_vars: 3,
+                    regions: vec![Region {
+                        chrom: "chr1".to_owned(),
+                        min_pos: 100,
+                        max_pos: 300,
+                    }],
+                },
+                BatchInfo {
+                    num_vars: 1,
+                    regions: vec![Region {
+                        chrom: "chr1".to_owned(),
+                        min_pos: 400,
+                        max_pos: 400,
+                    }],
+                },
+            ]
+        );
+        // The four variants of the two batches, counted with no batch read.
+        assert_eq!(reader.num_vars(), 4);
+    }
+
+    /// The footer of an arrow file says where each of its batches is, which
+    /// is what the reader seeks to when it reads one, and the file holds
+    /// the bytes of every one of them.
+    #[test]
+    fn the_reader_knows_where_each_batch_of_the_file_is() {
+        let bytes = cases_written_in_batches_of(3);
+        let file_len = u64::try_from(bytes.len()).expect("the length of the file");
+        let reader = opened(bytes).expect("the file is a vars file");
+
+        assert_eq!(reader.schema.fields().len(), 6);
+        assert_eq!(reader.blocks.len(), 2);
+        let first = reader.blocks[0];
+        let second = reader.blocks[1];
+        // The batches come after the six bytes of the header, one after
+        // another, and the last one ends before the footer.
+        assert!(first.offset >= 6, "the first batch is at {first:?}");
+        assert!(
+            second.offset >= first.offset + first.metadata_len + first.body_len,
+            "the batches are at {first:?} and {second:?}"
+        );
+        assert!(
+            second.offset + second.metadata_len + second.body_len < file_len,
+            "the last batch is at {second:?} of a file of {file_len} bytes"
+        );
+    }
+
+    /// A source that does not start as an arrow file is not a vars file and
+    /// is a wrong input of the call, which the bytes of a VCF are.
+    #[test]
+    fn bytes_that_are_not_an_arrow_file_are_not_a_vars_file() {
+        let vcf = b"##fileformat=VCFv4.3\n#CHROM\tPOS\tID\tREF\tALT\n".to_vec();
+        let problem = problem_of(opening(vcf));
+        assert!(problem.contains("ARROW1"), "{problem}");
+
+        let problem = problem_of(opening(Vec::new()));
+        assert!(problem.contains("ARROW1"), "{problem}");
+    }
+
+    /// A file that starts as an arrow file and ends before what it says it
+    /// holds is refused and not read as a file of fewer variants: the
+    /// variants after the cut are not in it, and a download that stopped is
+    /// what a user has to know about.
+    #[test]
+    fn a_vars_file_that_was_cut_short_is_refused_and_not_read_as_a_file_of_fewer_variants() {
+        let whole = cases_written_in_batches_of(3);
+        let len = whole.len();
+        assert!(len > 400, "the file of the test is {len} bytes");
+        // The four bytes before the mark of the end of an arrow file say
+        // how many bytes its footer holds.
+        let said = <[u8; 4]>::try_from(&whole[len - 10..len - 6]).expect("the four bytes");
+        let footer_len = usize::try_from(i32::from_le_bytes(said)).expect("the footer");
+
+        for (what, cut) in [
+            ("the middle of a batch", 200),
+            ("the middle of its footer", len - 10 - footer_len / 2),
+            ("its last byte", len - 1),
+        ] {
+            let error = refused(whole[..cut].to_vec());
+            let Error::VarsFileCutShort { problem } = &error else {
+                panic!("the file cut at {what} gave {error}");
+            };
+            let message = error.to_string();
+            assert!(message.contains("cut short"), "{what}: {message}");
+            assert!(!problem.is_empty(), "{what}: the error says nothing");
+        }
+
+        // The six bytes of the header alone, with nothing of the footer.
+        let error = refused(b"ARROW1".to_vec());
+        assert!(
+            matches!(error, Error::VarsFileCutShort { .. }),
+            "the header alone gave {error}"
+        );
+    }
+
+    /// An arrow file of another program has no `popnei` key, and so has a
+    /// vars file of pyNei: what is refused is the source and not the key,
+    /// since a user with such a file has the wrong file.
+    #[test]
+    fn an_arrow_file_whose_schema_has_no_popnei_key_is_not_a_vars_file() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = None;
+
+        let problem = problem_of(opening(parts.written()));
+
+        assert!(problem.contains(&format!("`{POPNEI_KEY}`")), "{problem}");
+        assert!(problem.contains("schema"), "{problem}");
+    }
+
+    /// A reader refuses a file whose major version is not the one it reads,
+    /// with the version the file gives, so that a user of an old popnei and
+    /// a file of a later format is told to get a later popnei.
+    #[test]
+    fn a_file_of_another_major_version_is_refused_with_the_version_it_gives() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(metadata_as_json(&VarsMetadata {
+            format_version: "2.0".to_owned(),
+            ..metadata_of_cases()
+        }));
+
+        let error = refused(parts.written());
+
+        let Error::VarsFormatVersion { found, read } = &error else {
+            panic!("the file of the version 2.0 gave {error}");
+        };
+        assert_eq!((found.as_str(), *read), ("2.0", FORMAT_VERSION_READ));
+        let message = error.to_string();
+        assert!(message.contains("2.0"), "{message}");
+    }
+
+    /// A file of a later minor version is read, the keys and the columns it
+    /// holds that popnei does not know ignored: that is what lets a later
+    /// version of the format add a column without making the files or the
+    /// readers that are there useless.
+    #[test]
+    fn a_file_of_a_later_minor_version_is_read() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(metadata_as_json(&VarsMetadata {
+            format_version: "1.7".to_owned(),
+            ..metadata_of_cases()
+        }));
+
+        let reader = opened(parts.written()).expect("a file of the version 1.7 is read");
+
+        assert_eq!(reader.metadata().format_version, "1.7");
+        assert_eq!(reader.num_vars(), 4);
+    }
+
+    /// A column popnei knows is read as the type that column holds and as
+    /// no other: a file whose numbers are of another type would be read as
+    /// other numbers or not at all, so it is refused with the column, the
+    /// type it has and the type popnei reads.
+    #[test]
+    fn a_column_of_another_type_names_the_column_and_both_types() {
+        let mut parts = FileParts::of_cases();
+        let positions: ArrayRef = Arc::new(Int32Array::from(vec![100, 200, 300, 400]));
+        *parts.column(POS_COLUMN) = (Field::new(POS_COLUMN, DataType::Int32, false), positions);
+        let error = refused(parts.written());
+        let Error::VarsColumnType {
+            column,
+            found,
+            expected,
+        } = &error
+        else {
+            panic!("the file whose `pos` is Int32 gave {error}");
+        };
+        assert_eq!(
+            (*column, found.as_str(), expected.as_str()),
+            ("pos", "Int32", "UInt64")
+        );
+
+        let mut parts = FileParts::of_cases();
+        let qualities: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(29.5),
+            None,
+            Some(67.0),
+            Some(47.0),
+        ]));
+        *parts.column(QUAL_COLUMN) = (Field::new(QUAL_COLUMN, DataType::Float64, true), qualities);
+        let error = refused(parts.written());
+        let Error::VarsColumnType {
+            found, expected, ..
+        } = &error
+        else {
+            panic!("the file whose `qual` is Float64 gave {error}");
+        };
+        assert_eq!((found.as_str(), expected.as_str()), ("Float64", "Float32"));
+
+        // What is inside a list is compared too: a file of one number for
+        // each allele is not a file of the texts of the alleles.
+        let mut parts = FileParts::of_cases();
+        let mut alleles = ListBuilder::new(Int8Builder::new());
+        for row in 0..4 {
+            alleles.values().append_value(row);
+            alleles.append(true);
+        }
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true));
+        *parts.column(ALLELES_COLUMN) = (
+            Field::new(ALLELES_COLUMN, DataType::List(inside), false),
+            Arc::new(alleles.finish()),
+        );
+        let error = refused(parts.written());
+        let Error::VarsColumnType {
+            found, expected, ..
+        } = &error
+        else {
+            panic!("the file whose alleles are numbers gave {error}");
+        };
+        assert_eq!(
+            (found.as_str(), expected.as_str()),
+            ("List<Int8>", "List<Utf8>")
+        );
+    }
+
+    /// The width of the `gts` column is what turns its flat buffer into
+    /// variants, so a file whose width and whose `popnei` key say different
+    /// things is refused and not read one allele beside another.
+    #[test]
+    fn a_gts_column_of_another_width_than_the_individuals_and_the_ploidy_is_refused() {
+        let mut parts = FileParts::of_cases();
+        let inside = Arc::new(Field::new(ITEM_FIELD, DataType::Int8, true));
+        // 4 variants of 7 alleles each, where the three individuals of the
+        // ploidy 2 of the `popnei` key hold 6.
+        let alleles = Int8Array::new(ScalarBuffer::from(vec![0_i8; 28]), None);
+        let column = FixedSizeListArray::try_new(Arc::clone(&inside), 7, Arc::new(alleles), None)
+            .expect("the genotypes of seven alleles");
+        *parts.column(GTS_COLUMN) = (
+            Field::new(GTS_COLUMN, DataType::FixedSizeList(inside, 7), false),
+            Arc::new(column),
+        );
+
+        let error = refused(parts.written());
+
+        let Error::VarsGtsWidth {
+            found,
+            expected,
+            num_individuals,
+            ploidy,
+        } = error
+        else {
+            panic!("the file of seven alleles for each variant gave {error}");
+        };
+        assert_eq!((found, expected, num_individuals, ploidy), (7, 6, 3, 2));
+    }
+
+    /// Arrow gives the values inside a list a field of their own, and arrow
+    /// programs differ in the name of that field and in whether it takes
+    /// nulls. What a reader compares is what the list holds, so a file
+    /// whose alleles and whose genotypes are under another name is read.
+    #[test]
+    fn the_name_of_the_field_inside_a_list_is_not_what_the_reader_compares() {
+        let mut parts = FileParts::of_cases();
+        let (_, alleles) = parts.column(ALLELES_COLUMN).clone();
+        let alleles = alleles
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .expect("the alleles are a list")
+            .clone();
+        let (_, offsets, texts, nulls) = alleles.into_parts();
+        let inside = Arc::new(Field::new("element", DataType::Utf8, false));
+        *parts.column(ALLELES_COLUMN) = (
+            Field::new(ALLELES_COLUMN, DataType::List(Arc::clone(&inside)), false),
+            Arc::new(ListArray::new(inside, offsets, texts, nulls)),
+        );
+
+        let (_, gts) = parts.column(GTS_COLUMN).clone();
+        let gts = gts
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .expect("the genotypes are a fixed size list")
+            .clone();
+        let (_, width, alleles, nulls) = gts.into_parts();
+        let inside = Arc::new(Field::new("element", DataType::Int8, false));
+        let column = FixedSizeListArray::try_new(Arc::clone(&inside), width, alleles, nulls)
+            .expect("the genotypes under another name");
+        *parts.column(GTS_COLUMN) = (
+            Field::new(GTS_COLUMN, DataType::FixedSizeList(inside, width), false),
+            Arc::new(column),
+        );
+
+        let reader = opened(parts.written()).expect("the file is read");
+
+        assert_eq!(reader.num_vars(), 4);
+        assert_eq!(reader.columns.alleles, Some(3));
+        assert_eq!(reader.columns.gts, Some(5));
+    }
+
+    /// A column popnei does not know is ignored, which is what lets a later
+    /// version of the format add one, and the columns it knows are read at
+    /// the place they have in the file and not at the place the table of
+    /// the spec gives them.
+    #[test]
+    fn a_column_popnei_does_not_know_is_ignored_and_the_others_are_read_where_they_are() {
+        let mut parts = FileParts::of_cases();
+        let depth: ArrayRef = Arc::new(Int32Array::from(vec![Some(10), None, Some(30), Some(40)]));
+        parts
+            .columns
+            .insert(0, (Field::new("depth", DataType::Int32, true), depth));
+
+        let reader = opened(parts.written()).expect("the file with a seventh column is read");
+
+        assert_eq!(reader.schema.fields().len(), 7);
+        assert_eq!(
+            reader.columns,
+            VarsColumns {
+                chrom: Some(1),
+                pos: Some(2),
+                id: Some(3),
+                alleles: Some(4),
+                qual: Some(5),
+                gts: Some(6),
+            }
+        );
+        assert_eq!(reader.num_vars(), 4);
+    }
+
+    /// A file holds the columns its source could fill, so a file whose
+    /// source gave the genotypes alone has one column and its batches say
+    /// nothing about where their variants are.
+    #[test]
+    fn a_file_of_the_genotypes_alone_is_opened_and_its_batches_have_no_region() {
+        let mut chroms = ChromTable::new();
+        let mut block = cases_block(&mut chroms);
+        block.chrom = None;
+        block.pos = None;
+        block.id = None;
+        block.alleles = None;
+        block.qual = None;
+        let reader = GivenBlocks::of(vec![block], chroms);
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+
+        let reader = opened(bytes).expect("the file of one column is a vars file");
+
+        assert_eq!(
+            reader.columns,
+            VarsColumns {
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+                gts: Some(0),
+            }
+        );
+        assert_eq!(reader.num_vars(), 4);
+        assert_eq!(
+            reader.batches(),
+            [
+                BatchInfo {
+                    num_vars: 3,
+                    regions: Vec::new(),
+                },
+                BatchInfo {
+                    num_vars: 1,
+                    regions: Vec::new(),
+                },
+            ]
+        );
+    }
+
+    /// A source with no variants is written and is read back as no
+    /// variants, as a VCF with no variants is read and is not an error:
+    /// the file has the two keys, one column and no batch.
+    #[test]
+    fn a_file_with_no_variants_is_opened_and_says_it_holds_none() {
+        let reader = GivenBlocks::of(Vec::new(), ChromTable::new());
+        let bytes = write_vars(reader, Vec::new(), Some(3)).expect("the file was written");
+
+        let reader = opened(bytes).expect("the file with no batch is a vars file");
+
+        assert_eq!(reader.num_vars(), 0);
+        assert_eq!(reader.batches(), []);
+        assert_eq!(reader.blocks, Vec::new());
+        assert_eq!(reader.metadata().individuals, cases_individuals());
+    }
+
+    /// The key of the footer is what says how many variants the file holds
+    /// and where they are, and a file without it is not a vars file: an
+    /// arrow file of another program has the columns and none of that.
+    #[test]
+    fn a_file_whose_footer_has_no_popnei_batches_key_is_not_a_vars_file() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei_batches = None;
+
+        let problem = problem_of(opening(parts.written()));
+
+        assert!(
+            problem.contains(&format!("`{POPNEI_BATCHES_KEY}`")),
+            "{problem}"
+        );
+        assert!(problem.contains("footer"), "{problem}");
+    }
+
+    /// There is one entry of the footer for each batch, and a file with
+    /// another number of one than of the other is refused with both counts:
+    /// no entry of such a file can be trusted to be that of its batch.
+    #[test]
+    fn a_footer_whose_entries_are_not_as_many_as_the_batches_is_refused_with_both_counts() {
+        let mut parts = FileParts::of_cases();
+        // The same columns written twice, with the one entry of a file of
+        // one batch left in the footer.
+        parts.num_batches = 2;
+
+        let error = refused(parts.written());
+
+        let Error::VarsBatchesDoNotMatch { found, expected } = error else {
+            panic!("the file of two batches and one entry gave {error}");
+        };
+        assert_eq!((found, expected), (1, 2));
+    }
+
+    /// The names of the individuals are how a user asks for one, so two of
+    /// one name are refused, with the name, as they are for the VCF reader:
+    /// they would be one individual for the user and two columns of
+    /// genotypes in the file.
+    #[test]
+    fn two_individuals_of_one_name_are_refused_with_the_name() {
+        let mut parts = FileParts::of_cases();
+        parts.popnei = Some(metadata_as_json(&VarsMetadata {
+            individuals: vec!["ind1".to_owned(), "ind2".to_owned(), "ind1".to_owned()],
+            ..metadata_of_cases()
+        }));
+
+        let error = refused(parts.written());
+
+        let Error::VarsIndividualTwice { name } = &error else {
+            panic!("the file of two individuals of one name gave {error}");
+        };
+        assert_eq!(name, "ind1");
+    }
+
+    /// `from_path` opens the file at the path for a caller that has a path,
+    /// and what cannot be opened carries the path, a directory among them:
+    /// opening a directory succeeds on macOS and on Linux and only the
+    /// first read of it fails, so a reader that did not ask would say that
+    /// the directory is not a vars file.
+    #[test]
+    fn from_path_opens_the_file_at_the_path_and_refuses_a_directory_and_a_path_that_is_not_there() {
+        let path = std::env::temp_dir().join(format!(
+            "popnei-{process}-from-path.vars",
+            process = std::process::id()
+        ));
+        std::fs::write(&path, cases_written_in_batches_of(3)).expect("the file was written");
+        let reader = VarsReader::from_path(&path).expect("the file at the path is a vars file");
+        assert_eq!(reader.num_vars(), 4);
+        assert_eq!(reader.metadata().individuals, cases_individuals());
+        drop(reader);
+        std::fs::remove_file(&path).expect("the file was taken away");
+
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let error = match VarsReader::from_path(directory) {
+            Ok(_) => panic!("a directory was opened as a vars file"),
+            Err(error) => error,
+        };
+        let Error::FileNotOpened {
+            path: named,
+            source,
+        } = &error
+        else {
+            panic!("the directory gave {error}");
+        };
+        assert_eq!(named, directory);
+        // `EISDIR`, which is what makes it the `IsADirectoryError` of
+        // Python.
+        assert_eq!(source.raw_os_error(), Some(21));
+
+        let missing = directory.join("there-is-no-such-vars-file.vars");
+        let error = match VarsReader::from_path(&missing) {
+            Ok(_) => panic!("a path with no file at it was opened"),
+            Err(error) => error,
+        };
+        let Error::FileNotOpened {
+            path: named,
+            source,
+        } = &error
+        else {
+            panic!("the path with no file at it gave {error}");
+        };
+        assert_eq!(*named, missing);
+        assert_eq!(source.kind(), ErrorKind::NotFound);
     }
 }
