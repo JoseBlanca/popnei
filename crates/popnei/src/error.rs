@@ -466,20 +466,25 @@ pub enum Error {
     },
 
     /// A column of texts of a block given to the vars file writer holds
-    /// more bytes than one column of a batch takes. Arrow keeps where each
-    /// text of a column ends in a 32 bit number, and arrow-rs panics at the
-    /// text that goes past it, so the writer counts the bytes of the
-    /// `chrom`, the `id` and the `alleles` columns of a block before it
-    /// fills one and writes nothing of that block.
+    /// more than one column of a batch takes: more bytes, or, in the
+    /// `alleles` column, more alleles. Arrow keeps where each text of a
+    /// column ends, and where the alleles of each variant end, in a 32 bit
+    /// number, and arrow-rs panics at the one that goes past it, so the
+    /// writer counts the bytes of the `chrom`, the `id` and the `alleles`
+    /// columns of a block, and the alleles of the last, before it fills one
+    /// and writes nothing of that block.
     #[error(
-        "the `{column}` column of a block given to the writer of the vars file holds {found} bytes of text, and one column of a batch of an arrow file holds {largest}; write the file with a smaller `num_vars_per_block`"
+        "the `{column}` column of a block given to the writer of the vars file holds {found} {counted}, and one column of a batch of an arrow file holds {largest}; write the file with a smaller `num_vars_per_block`"
     )]
     VarsTextTooLarge {
         /// Which column of the block it is: `chrom`, `id` or `alleles`.
         column: &'static str,
-        /// How many bytes of text it holds.
+        /// What was counted: `bytes of text`, or `alleles` for the entries
+        /// of the `alleles` column.
+        counted: &'static str,
+        /// How many of those it holds.
         found: u64,
-        /// How many bytes one column of a batch holds.
+        /// How many one column of a batch holds.
         largest: u64,
     },
 

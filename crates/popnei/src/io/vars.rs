@@ -871,12 +871,21 @@ fn id_column(ids: &[String], largest: u64) -> Result<StringArray> {
 ///
 /// # Errors
 ///
-/// When the alleles hold more than `largest` bytes.
+/// When the alleles hold more than `largest` bytes, and when they are more
+/// than `largest` alleles: arrow keeps where the alleles of each variant
+/// end in a 32 bit number as it keeps where each text ends, and a block of
+/// empty alleles holds more entries than bytes.
 fn alleles_column(alleles: &AllelesColumn, largest: u64) -> Result<ListArray> {
     let texts = (0..alleles.num_vars()).flat_map(|var| {
         (0..alleles.num_alleles(var)).map(move |allele| alleles.allele(var, allele).len())
     });
     text_fits(ALLELES_COLUMN, texts, largest)?;
+    let mut num_alleles: u64 = 0;
+    for var in 0..alleles.num_vars() {
+        num_alleles =
+            num_alleles.saturating_add(u64::try_from(alleles.num_alleles(var)).unwrap_or(u64::MAX));
+    }
+    count_fits(ALLELES_COLUMN, "alleles", num_alleles, largest)?;
     let mut column = ListBuilder::new(StringBuilder::new());
     for var in 0..alleles.num_vars() {
         for allele in 0..alleles.num_alleles(var) {
@@ -907,9 +916,20 @@ fn text_fits(
     for length in lengths {
         found = found.saturating_add(u64::try_from(length).unwrap_or(u64::MAX));
     }
+    count_fits(column, "bytes of text", found, largest)
+}
+
+/// That a count of one column of a block fits in one column of a batch.
+///
+/// # Errors
+///
+/// When it is more than `largest`: the error names the column, what was
+/// counted, both numbers and the way out, a smaller `num_vars_per_block`.
+fn count_fits(column: &'static str, counted: &'static str, found: u64, largest: u64) -> Result<()> {
     if found > largest {
         return Err(Error::VarsTextTooLarge {
             column,
+            counted,
             found,
             largest,
         });
@@ -3175,6 +3195,7 @@ mod tests {
             column,
             found,
             largest,
+            ..
         } = &error
         else {
             panic!("the error is {error}");
@@ -3193,6 +3214,7 @@ mod tests {
             column,
             found,
             largest,
+            ..
         } = error
         else {
             panic!("the error is {error}");
@@ -3205,13 +3227,50 @@ mod tests {
         };
         let Error::VarsTextTooLarge {
             column,
+            counted,
             found,
             largest,
         } = error
         else {
             panic!("the error is {error}");
         };
-        assert_eq!((column, found, largest), ("alleles", 8, 7));
+        assert_eq!(
+            (column, counted, found, largest),
+            ("alleles", "bytes of text", 8, 7)
+        );
+    }
+
+    /// Arrow keeps where the alleles of each variant end in a 32 bit number
+    /// too, and the builder of arrow-rs panics at the entry that goes past
+    /// it, so the alleles of a block are counted as well as their bytes: a
+    /// block whose alleles are empty texts holds no byte and one entry for
+    /// each of them.
+    #[test]
+    fn a_block_of_more_alleles_than_a_list_column_holds_is_refused() {
+        let mut empty = AllelesColumn::with_num_vars(2).expect("the alleles");
+        empty.push(&["".to_owned(), "".to_owned(), "".to_owned()]);
+        empty.push(&["".to_owned(), "".to_owned()]);
+        // Five alleles of no byte at all.
+        assert!(alleles_column(&empty, 5).is_ok());
+
+        let error = match alleles_column(&empty, 4) {
+            Ok(_) => panic!("the five alleles were taken"),
+            Err(error) => error,
+        };
+
+        let Error::VarsTextTooLarge {
+            column,
+            counted,
+            found,
+            largest,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!(
+            (column, counted, found, largest),
+            ("alleles", "alleles", 5, 4)
+        );
     }
 
     /// The number the system gives when a disc fills up, `ENOSPC`, which
