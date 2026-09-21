@@ -20,6 +20,7 @@ the files that bgzip wrote are in `test_truncated_and_infinite.py`.
 """
 
 import gzip
+import os
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,21 @@ def test_a_gzipped_vcf_that_was_cut_names_the_file_in_filename(tmp_path: Path) -
     assert refusal.value.errno is None
     assert refusal.value.filename == str(path)
     assert str(path) in str(refusal.value)
+
+
+def test_the_file_in_the_exception_is_the_one_that_was_given(tmp_path: Path) -> None:
+    """A name of a file is bytes on Linux and on macOS, and Python carries
+    the bytes that are not UTF-8 as the surrogates that `os.fsdecode` makes
+    of them. What `filename` holds is what the caller gave, so that
+    `open(error.filename)` opens the file they asked for.
+
+    The file is one that is not there: APFS refuses to create a name whose
+    bytes are not UTF-8, and what is tested is the name and not the read.
+    """
+    path = os.fsdecode(os.fsencode(str(tmp_path)) + b"/gone\xffutf8.vcf")
+    with pytest.raises(FileNotFoundError) as refusal:
+        open_vcf(path)
+    assert refusal.value.filename == path
 
 
 def test_the_message_of_a_wrong_data_line_starts_with_the_file(write_vcf) -> None:

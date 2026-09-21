@@ -8,7 +8,7 @@
 //! have, the path of the file, which is what
 //! `.claude/skills/coding/pyo3.md` asks for.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -25,8 +25,13 @@ pub(crate) enum PyPopneiError {
     OfTheFile {
         /// What the core refused.
         error: popnei::Error,
-        /// The file that was being read.
-        path: String,
+        /// The file that was being read, as the caller gave it and not as
+        /// text: the name of a file is bytes under Linux and macOS, and
+        /// pyo3 gives a `PathBuf` back to Python as the standard library
+        /// does, with the bytes that are not UTF-8 as the surrogates of
+        /// `os.fsdecode`, so that `open(error.filename)` opens the file
+        /// the caller asked for.
+        path: PathBuf,
     },
     /// An argument that says how many of something there are, the ploidy or
     /// the variants of a block, and holds a number that counts nothing: a
@@ -60,7 +65,7 @@ impl PyPopneiError {
     pub(crate) fn of_the_file(error: popnei::Error, path: &Path) -> PyPopneiError {
         PyPopneiError::OfTheFile {
             error,
-            path: path.to_string_lossy().into_owned(),
+            path: path.to_path_buf(),
         }
     }
 }
@@ -114,7 +119,7 @@ impl From<PyPopneiError> for PyErr {
               which is what every case that is neither of the file system nor a defect of \
               popnei is"
 )]
-fn exception_of(error: popnei::Error, path: Option<String>) -> PyErr {
+fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
     let message = error.to_string();
     match error {
         // The two that carry a cause of the file system. The path goes to
@@ -127,7 +132,7 @@ fn exception_of(error: popnei::Error, path: Option<String>) -> PyErr {
         } => os_error(
             source.raw_os_error(),
             format!("the file could not be opened: {source}"),
-            path.or_else(|| Some(of_the_core.to_string_lossy().into_owned())),
+            path.or(Some(of_the_core)),
         ),
         popnei::Error::Io(source) => os_error(
             source.raw_os_error(),
@@ -172,9 +177,15 @@ fn exception_of(error: popnei::Error, path: Option<String>) -> PyErr {
 /// at. The core has the line, the column and the value, and not the file: a
 /// reader is built over bytes, and the call that opened the path is where
 /// the two meet.
-fn of_the_file(message: String, path: Option<String>) -> String {
+fn of_the_file(message: String, path: Option<PathBuf>) -> String {
     match path {
-        Some(path) => format!("{path}: {message}"),
+        // A message is text, and the name of a file is bytes under Linux
+        // and macOS. A byte that is not UTF-8 is shown here as the
+        // replacement character, which is what a reader of the message
+        // needs; the name itself travels whole in `filename`, where the
+        // exception is an `OSError`, and a caller who has to open the file
+        // again has it from the call they made.
+        Some(path) => format!("{path}: {message}", path = path.to_string_lossy()),
         None => message,
     }
 }
@@ -190,9 +201,16 @@ fn of_the_file(message: String, path: Option<String>) -> String {
 /// `errno` is `None` and whose `filename` is the file all the same: it is
 /// the file a user needs, and which of the two ways the read failed is not
 /// theirs to tell apart.
-fn os_error(number: Option<i32>, message: String, path: Option<String>) -> PyErr {
+///
+/// The file goes in as an `OsString`, which pyo3 gives to Python as the
+/// text the standard library would, the bytes that are not UTF-8 as the
+/// surrogates of `os.fsdecode`, so that `error.filename` is the path the
+/// caller wrote and `open(error.filename)` opens their file. A `PathBuf`
+/// would arrive as a `pathlib.Path`, which no `OSError` of Python carries
+/// and which is not what the caller gave when they gave a `str`.
+fn os_error(number: Option<i32>, message: String, path: Option<PathBuf>) -> PyErr {
     match path {
-        Some(path) => PyOSError::new_err((number, message, path)),
+        Some(path) => PyOSError::new_err((number, message, path.into_os_string())),
         // A source that is not a file, which Python has none of yet.
         None => PyOSError::new_err(message),
     }
