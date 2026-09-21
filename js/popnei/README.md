@@ -34,6 +34,15 @@ function exported from Rust; and the TypeScript compiler, which writes
 `js/popnei/dist/` from `src/` and checks the tests against it. Neither
 `wasm/` nor `dist/` nor `node_modules/` is in git.
 
+The `wasm-bindgen` command line is given `--remove-name-section`, which
+takes out of the wasm file the section that holds the name of every
+function of it: `js/popnei/wasm/popnei_bg.wasm` is 1242562 bytes with the
+flag and 1687938 bytes without, 443209 bytes of names that every user of
+the package downloads. What they are for is the stack of a trap, a panic
+of Rust among the causes, which with the flag names the functions by their
+number and without it by their name. To read one, build again without the
+flag and make the trap happen there.
+
 The version of the `wasm-bindgen` crate, in the `Cargo.toml` of the
 workspace, has to be the version of the `wasm-bindgen` command line that
 is installed, so it is pinned there, `=0.2.128`. The crate writes into the
