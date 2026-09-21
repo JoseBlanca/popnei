@@ -767,6 +767,24 @@ def test_open_vars_gives_the_variants_of_the_vcf_the_file_was_written_from(
     assert int(gts[~missing].sum()) == MANY_SUM_OF_THE_CALLED_ALLELES
 
 
+def test_every_pass_over_what_open_vars_gives_reads_the_file_again(
+    many_vars: Path,
+) -> None:
+    """A `Variants` can be given to any number of calculations.
+
+    The vars file is opened again at every pass, as the VCF is, so the
+    second pass holds the 500 variants of the first and not the none that a
+    reader kept from one pass to the next would have left.
+    """
+    variants = open_vars(many_vars)
+
+    first = _joined(variants, num_vars_per_block=13)
+    second = _joined(variants)
+
+    assert first["gts"].shape[0] == MANY_NUM_VARS
+    _assert_the_same_variants(first, second)
+
+
 def test_open_vars_gives_the_genotypes_alone_when_no_other_field_is_asked_for(
     many_vars: Path,
 ) -> None:
