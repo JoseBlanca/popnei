@@ -272,7 +272,7 @@ arrow-rs into the wheel of pyodide.
   1.1. A wrong null or a wrong region here is silent, so it is a commit
   of its own, and the comparison with `many.bcftools.tsv` of deliverable
   3 is what guards it.
-- [ ] 1.3 The Python side: in `crates/popnei-python`, the function that
+- [x] 1.3 The Python side: in `crates/popnei-python`, the function that
   opens the file, refuses a path that exists, calls the core
   `write_vars` with the interpreter released, and removes the file when
   the core gives an error; `write_vars` in the Python package, in a
