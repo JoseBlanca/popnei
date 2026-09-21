@@ -1,8 +1,11 @@
 # Plan: readers that give blocks
 
-September 2026. Approved by the owner on 20 September 2026 and done on 21
-September 2026, on the branch `plan/block-readers`, with its work report
-in `docs/reports/block-readers.md`. The owner decided on 20 September
+September 2026. Approved by the owner on 20 September 2026 and under way
+on the branch `plan/block-readers`, with its work report in
+`docs/reports/block-readers.md`: its three work packages were done on 21
+September 2026, and the owner, who read the report that day, answered
+the decisions it left him and asked for their work before the merge,
+which is work package 4. The owner decided on 20 September
 2026 that the variants flow through popnei in blocks, from the source to
 the calculation, and that the single variant that a reader filled goes;
 `docs/architecture.md`, as revised that day, has the decision and its
@@ -363,6 +366,90 @@ called is gone can take with it the only check of a rule that still
 holds, the chromosome numbers in the order of the variants that are
 given, the line number of an error: the table of task 2.4 is what the
 reviewer of the tests reads against.
+
+## Work package 4: the owner's decisions of 21 September 2026
+
+**What it gives.** No file that was cut or corrupted is read as a good
+one, and what a Python user is told of a file that went wrong names the
+file and comes as the exception that Python's conventions give it. The
+owner's rule, given with these decisions: an error never passes silently.
+His convention for the exceptions: a `ValueError` is a wrong input to a
+function, a `RuntimeError` a defect of popnei, an `OSError` a file that
+cannot be read, that was cut short or that is corrupted.
+
+The decisions, as the owner gave them in chat on 21 September 2026 to the
+questions of `docs/reports/block-readers.md`:
+
+- A bgzip file that is corrupted is an error, however improbable the
+  corruption: the reader reads a bgzip file by the size that each of its
+  members states, as bcftools does, and no longer with a decoder that
+  goes from one gzip member to the next on its own. Decompression stays
+  on one thread; decompressing on several is not in this plan.
+- A file that was cut gives its error in the iteration as soon as the cut
+  is found, and `reblock` keeps the rule of the block spec, that an error
+  loses what it was keeping. The VCF reader spec says what a user of
+  `iter_blocks` gets.
+- Every error of a file names the file, in Python.
+- A parse that did not come back is a `RuntimeError` in Python.
+- A bgzipped file that was cut short is an `OSError` in Python, with the
+  name of the file, and not a `ValueError`.
+- A missing quality is NaN inside the core too, as the block spec has it.
+  "Floats" of the `coding` skill says so.
+- The constructors of the alleles column stay visible inside the crate
+  alone. The default size of the blocks checked at the first block, the
+  case of the error renamed `FieldsNotInTheBlock`, the FILTER read whole,
+  the bytes that are not text checked in the nine first columns, and a
+  batch of 16 MiB of text all stay as the plan left them.
+
+**Deliverables.**
+
+1. A bgzip file is read by the sizes of its members. Check: the file of
+   the review, `many.vcf.gz` with its bytes 320 and 321 changed from `06
+   00` to `44 54`, which gives no variant and no error today, gives an
+   error, in a cargo test, a pytest test and a node test; a cargo test
+   changes each byte of `cases.vcf.gz` in turn and finds no change that
+   gives other variants than the whole file with no error; every test of
+   the gzipped and bgzipped files that was there passes untouched, the
+   cuts of `many.vcf.gz` among them; a gzip file that bgzip did not write
+   is still read; `cargo wasm-check` passes.
+2. The exceptions of Python. Check: pytest tests see an `OSError` whose
+   `filename` is the path for `many.vcf.gz` cut at 12336 bytes, cut
+   inside a member and without its last 28 bytes, and for the corrupted
+   file of deliverable 1; a data line that is wrong is still a
+   `ValueError`, and its message starts with the path of the file; the
+   one place of the Python binding crate where the exception is chosen
+   has the parse that did not come back as a `RuntimeError`.
+3. The documents agree with the code. Check: "The cases a reader of the
+   rules would not guess", "How it runs" and "The Rust interface" of
+   `docs/specs/io_vcf.md` say how a bgzip file is read, which exception
+   each case is, and what `iter_blocks` gives of a file that was cut;
+   "Floats" and "Errors, and no panics" of the `coding` skill say what the
+   owner decided.
+4. The speed is what it was. Check: the four timings of task 2.6, taken
+   the same way, in the work report beside the ones of that task.
+
+**What it stands on.** Work packages 2 and 3.
+
+**Tasks.**
+
+- [ ] 4.1 The amendments of `docs/specs/io_vcf.md`, in a commit of their
+  own, and then the reader of a bgzip file by the sizes of its members,
+  in the core, with its tests. From the decisions above and from the
+  specification of BGZF in the SAM format specification, section 4.1.
+  Serves deliverables 1 and 3.
+- [ ] 4.2 The exceptions and the name of the file in the Python binding
+  crate, the JavaScript side where it has something to say, their tests,
+  and the two paragraphs of the `coding` skill. Serves deliverables 2 and
+  3. Needs 4.1.
+- [ ] 4.3 The four timings. Serves deliverable 4. Needs 4.1 and 4.2, and
+  the fixes of their review.
+
+**What could go wrong.** flate2 does not say where a gzip member ends,
+which is why the members are cut by the size their headers state and each
+is decompressed on its own, with its checksum and its length checked. A
+bgzip member holds 64 KB of text at most, so the reader decompresses 6000
+members for the 403 MB file: if that is slower than the decoder it
+replaces, task 4.3 says by how much.
 
 ## How the whole plan is checked
 
