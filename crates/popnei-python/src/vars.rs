@@ -51,18 +51,23 @@ pub(crate) fn write_vars(
         let sink = popnei::io::vars::write_vars(reader, BufWriter::new(file), num_vars_per_block)?;
         // What the buffer still holds goes to the file here, where its
         // error is read; a buffer that is dropped writes it and loses it.
-        sink.into_inner()
-            .map_err(|error| popnei::Error::Io(error.into_error()))?;
+        let file = sink
+            .into_inner()
+            .map_err(|failure| not_written(failure.into_error()))?;
+        // The bytes reach the disc here and not when the file is closed,
+        // where nothing reads what the close said: a file system that only
+        // then says that it is full would leave a file that is not whole
+        // after a call that returned and said nothing.
+        file.sync_all().map_err(not_written)?;
         Ok(())
     });
     if let Err(error) = written {
         take_away(&path);
-        // The file the error names is the VCF: what a user fixes is the
-        // line of it that popnei could not read. An error of the file that
-        // was being written, a disk with no room left among them, names the
-        // VCF too, since the core says that a write failed and not which of
-        // the two files it was reading or writing when it did.
-        return Err(PyPopneiError::of_the_file(error, &vcf));
+        // The file the error names is the one it is about: a wrong line of
+        // the VCF names the VCF, and a disc that filled up names the file
+        // that was being written, which the core keeps apart from an error
+        // of a source that could not be read.
+        return Err(of_the_file_it_is_about(error, &vcf, &path));
     }
     // A Ctrl-C that arrived while the file was being written is still
     // pending: the interpreter was released and no bytecode ran to raise
@@ -74,6 +79,24 @@ pub(crate) fn write_vars(
         return Err(interrupted.into());
     }
     Ok(())
+}
+
+/// `error` with the file it is about: the vars file when the write is what
+/// failed, and the source that was being read otherwise.
+fn of_the_file_it_is_about(error: popnei::Error, vcf: &Path, vars: &Path) -> PyPopneiError {
+    let of_the_write = matches!(error, popnei::Error::VarsFileNotWritten { .. });
+    PyPopneiError::of_the_file(error, if of_the_write { vars } else { vcf })
+}
+
+/// What the file system said while the vars file was being written, as the
+/// error of a vars file that could not be written, which is the case the
+/// core keeps for it. The number the system gave travels with it, since
+/// that number is what the exception of Python is built with.
+fn not_written(failure: std::io::Error) -> popnei::Error {
+    popnei::Error::VarsFileNotWritten {
+        problem: failure.to_string(),
+        source: Some(failure),
+    }
 }
 
 /// The file to write the variants into, made at `path`.

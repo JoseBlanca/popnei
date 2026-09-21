@@ -11,7 +11,10 @@ the literals of that spec, and what the columns hold is compared with
 run here: it reads another file.
 """
 
+import errno
 import json
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -302,6 +305,83 @@ def test_write_vars_leaves_no_file_when_the_vcf_fails_half_way(
 
     assert str(refusal.value).startswith(str(vcf_path))
     assert not path.exists()
+
+
+# What a child process does with a limit on the size of the files it may
+# write: it writes a vars file that would go past the limit, and prints what
+# the call raised as json. The limit is of the process and not of a
+# directory, so it is set in a process of its own, after popnei is imported,
+# and the signal that ends a process which writes past it is ignored, so
+# that the write gets the error instead. Nothing here opens the file that
+# was written: what the test asks is which file the error names.
+_WRITE_PAST_A_LIMIT = '''
+"""Writes a vars file in a process that may write only so many bytes."""
+
+import json
+import resource
+import signal
+import sys
+
+import popnei
+
+vcf_path, vars_path, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+answer = {"raised": None}
+try:
+    popnei.write_vars(popnei.open_vcf(vcf_path, only_passed=False), vars_path)
+except OSError as error:
+    answer = {
+        "raised": type(error).__name__,
+        "errno": error.errno,
+        "filename": error.filename,
+        "message": str(error),
+    }
+except BaseException as error:  # noqa: BLE001
+    answer = {"raised": type(error).__name__, "message": str(error)}
+print(json.dumps(answer))
+'''
+
+# How many bytes that child process may write, which is fewer than the vars
+# file of `many.vcf` holds, so the write fails part way through it.
+BYTES_THE_CHILD_MAY_WRITE = 4096
+
+
+def test_write_vars_names_the_vars_file_when_the_write_is_what_failed(
+    reference_vcf_dir: Path, tmp_path: Path
+) -> None:
+    """A process that may write 4096 bytes and a file that needs more.
+
+    What fails is the write and not the read of the VCF, so the exception
+    carries the path of the vars file, which is the file the user acts on,
+    and says that it could not be written. `filename` is where Python keeps
+    the file of an `OSError` and `errno` the number the system gave, 27 for
+    a file that grew past what the process may write.
+    """
+    pytest.importorskip("resource", reason="the limit is of a Unix process")
+    script = tmp_path / "write_past_a_limit.py"
+    script.write_text(_WRITE_PAST_A_LIMIT)
+    vars_path = tmp_path / "past_the_limit.vars"
+
+    child = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(reference_vcf_dir / "many.vcf"),
+            str(vars_path),
+            str(BYTES_THE_CHILD_MAY_WRITE),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    answer = json.loads(child.stdout)
+    assert answer["raised"] == "OSError", child.stderr
+    assert answer["errno"] == errno.EFBIG
+    assert answer["filename"] == str(vars_path)
+    assert "could not be written" in answer["message"]
+    assert not vars_path.exists()
 
 
 def test_write_vars_refuses_a_path_that_a_file_is_already_at(

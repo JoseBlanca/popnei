@@ -173,6 +173,18 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
             format!("the file could not be read: {}", what_went_wrong(&source)),
             path,
         ),
+        // The vars file that a call was writing and that the file system
+        // or arrow-rs refused, which is an error of that file and not of
+        // the source the call was reading: `path` is the file being
+        // written wherever this case travels, and the message of the core
+        // says already that it could not be written. The number is the
+        // system's when the file system is what refused, so that Python
+        // raises the exception of that number, and there is none when
+        // arrow-rs refused what it was handed.
+        popnei::Error::VarsFileNotWritten { ref source, .. } => {
+            let number = source.as_ref().and_then(std::io::Error::raw_os_error);
+            os_error(number, without_the_number(message, number), path)
+        }
         // A file that was cut short and one that is corrupted are errors of
         // the file and not of what a user wrote, so they are an `OSError`
         // too, with no number: nothing of the system refused anything, and
@@ -227,12 +239,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
 /// Python prints an `OSError` with that number before the message,
 /// `[Errno 2]`, and a user reads it once.
 fn what_went_wrong(source: &std::io::Error) -> String {
-    let said = source.to_string();
-    let Some(number) = source.raw_os_error() else {
+    without_the_number(source.to_string(), source.raw_os_error())
+}
+
+/// `said` without the ` (os error 2)` that Rust writes at the end of what
+/// an error of the file system says, when `number` is that number.
+fn without_the_number(said: String, number: Option<i32>) -> String {
+    let Some(number) = number else {
         return said;
     };
     match said.strip_suffix(&format!(" (os error {number})")) {
-        Some(without_the_number) => without_the_number.to_owned(),
+        Some(without_it) => without_it.to_owned(),
         None => said,
     }
 }
