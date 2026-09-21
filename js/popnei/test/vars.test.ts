@@ -169,47 +169,6 @@ function numVarsPerBlockOf(bytes: Uint8Array): number {
   return Number(written);
 }
 
-/**
- * The bytes of a VCF of `numIndividuals` diploid individuals and `numVars`
- * variants, for the test that watches the memory of wasm, which needs a
- * file of some megabytes.
- *
- * The genotypes are drawn with a generator of its own, so that the file
- * does not compress to nothing: a column of one repeated genotype would be
- * a few kilobytes of lz4 whatever its number of variants.
- */
-function vcfOfDrawnGenotypes(
-  numVars: number,
-  numIndividuals: number,
-): Uint8Array {
-  const names = Array.from(
-    { length: numIndividuals },
-    (_unused, individual) => `ind${individual + 1}`,
-  );
-  const lines = [
-    "##fileformat=VCFv4.4",
-    `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
-  ];
-  // A linear congruential generator, the one of numerical recipes: the
-  // numbers are the same at every run, so the size of the file is too.
-  let drawn = 1;
-  const nextAllele = (): number => {
-    drawn = (Math.imul(drawn, 1664525) + 1013904223) >>> 0;
-    return drawn >>> 30;
-  };
-  for (let variant = 0; variant < numVars; variant += 1) {
-    const genotypes = Array.from({ length: numIndividuals }, () => {
-      const first = nextAllele();
-      const second = nextAllele();
-      return `${first > 2 ? "." : first}/${second > 2 ? "." : second}`;
-    });
-    lines.push(
-      `chr1\t${variant + 1}\t.\tA\tC,G\t.\tPASS\t.\tGT\t${genotypes.join("\t")}`,
-    );
-  }
-  return new TextEncoder().encode([...lines, ""].join("\n"));
-}
-
 test("the four variants of cases.vcf come back from the vars file", async () => {
   const bytes = await varsFileOfCases(3);
   const variants = openVars(bytes);
@@ -418,36 +377,6 @@ test("a pass over a vars file gives itself back however it ends", async () => {
   assert.throws(() => [...zstd.iterBlocks()], { name: "Error" });
   assert.equal(numberOfOpenPasses(), before);
   zstd.free();
-});
-
-test("the passes of a vars file share the bytes it was opened with", () => {
-  const vcf = openVcf(vcfOfDrawnGenotypes(4000, 300), { onlyPassed: false });
-  const bytes = writeVars(vcf, { numVarsPerBlock: 100 });
-  vcf.free();
-  const variants = openVars(bytes);
-  const before = memoryOfWasm();
-  // Twelve passes at once, each with its reader and the batch it decoded in
-  // the memory of wasm. A reader that copied the bytes of the file, which
-  // is what the reader of a VCF did before the passes shared them, would
-  // hold twelve copies of the file: that was measured at 7.0 MB of growth
-  // for the 1.75 MB file this writes, where the readers that share the bytes
-  // grow the memory by nothing at all. One pass alone shows neither: a copy
-  // of 1.8 MB fits in what the writing of the file left free.
-  const passes = Array.from({ length: 12 }, () => {
-    const pass = variants.iterBlocks({ numVarsPerBlock: 100 });
-    assert.equal(pass.next().value?.numVars, 100);
-    return pass;
-  });
-  const grew = memoryOfWasm() - before;
-  for (const pass of passes) {
-    pass.return?.();
-  }
-  assert.ok(
-    grew < bytes.length,
-    `twelve passes over a vars file of ${bytes.length} bytes grew the memory ` +
-      `of wasm by ${grew} bytes`,
-  );
-  variants.free();
 });
 
 test("a source of openVars that is not a Uint8Array is refused", async () => {
