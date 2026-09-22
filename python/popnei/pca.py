@@ -154,10 +154,21 @@ def do_pca(
             _the_trait_out_of_range(error.args[1], error.args[2], data.columns, error)
         ) from None
     names = _component_names(projections.shape[1])
+    # `copy=False` on each of the three: without it pandas allocates a
+    # second array of the same size and copies into it, which at 10000
+    # individuals is 1.6 GB of peak memory against 2 MB. What the keyword
+    # needs is that nothing else holds the array, and nothing does: each
+    # one was allocated by the core crate for this call, `_core.pca` is
+    # the only reference to it, and the frame is what outlives the call,
+    # so no caller can see the frame and the array as two things.
     return PCAResult(
-        projections=pandas.DataFrame(projections, index=data.index, columns=names),
-        explained_variance_percent=pandas.Series(percent, index=names),
-        princomps=pandas.DataFrame(princomps, index=names, columns=data.columns),
+        projections=pandas.DataFrame(
+            projections, index=data.index, columns=names, copy=False
+        ),
+        explained_variance_percent=pandas.Series(percent, index=names, copy=False),
+        princomps=pandas.DataFrame(
+            princomps, index=names, columns=data.columns, copy=False
+        ),
         pass_stats=None,
     )
 
@@ -247,13 +258,19 @@ def do_pca_from_variants(
     # names are made for the projections and the weights take the first of
     # them: one component has one name in both frames.
     names = _component_names(projections.shape[1])
+    # `copy=False` on each of the three, for the reason `do_pca` gives: the
+    # three arrays come straight from the core crate, nothing but this call
+    # holds them, and only the frames outlive it.
     return PCAResult(
         projections=pandas.DataFrame(
-            projections, index=list(variants.individuals), columns=names
+            projections, index=list(variants.individuals), columns=names, copy=False
         ),
-        explained_variance_percent=pandas.Series(percent, index=names),
+        explained_variance_percent=pandas.Series(percent, index=names, copy=False),
         princomps=pandas.DataFrame(
-            princomps, index=names[: princomps.shape[0]], columns=used_vars
+            princomps,
+            index=names[: princomps.shape[0]],
+            columns=used_vars,
+            copy=False,
         ),
         pass_stats=_pass_stats_of(counts),
     )
