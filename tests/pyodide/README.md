@@ -5,7 +5,8 @@ under node. popnei is installed in it as a wheel whose platform tag is
 `pyemscripten`, built from the same core crate and the same binding crate
 as the native wheel, and what this directory checks is that the wheel
 builds, that it installs, and that inside pyodide popnei answers with the
-version of the core and reads a VCF as the specs say it does.
+version of the core, reads a VCF and calculates over its variants as the
+specs say it does.
 
 From the root of the repository, from a clean checkout:
 
@@ -14,7 +15,7 @@ From the root of the repository, from a clean checkout:
     node tests/pyodide/smoke.mjs
 
 The first command prints the path of the wheel it left in `dist/`. The
-third takes that wheel, installs it in pyodide and checks four things, and
+third takes that wheel, installs it in pyodide and checks six things, and
 exits with an error naming each one that differs:
 
 - `popnei.__version__` is the version in `[workspace.package]` of the
@@ -45,6 +46,22 @@ exits with an error naming each one that differs:
   `ValueError` of a block the machine has not the memory for. The same case
   is in `js/popnei/test/open.test.ts`, under node, where a count of things
   is 64 bits and nothing is refused for its size.
+- `popnei.calc_per_var_distribs` gives the means, the histogram counts and
+  the counts of the polymorphism ratio of the worked example of "How it is
+  verified" of the per variant distributions of `docs/specs/stats.md`: six
+  variants of five diploid individuals, written inside pyodide as a VCF,
+  with `min_num_individuals` 1 and four bins from 0 to 1, once over the two
+  populations of that example and once with no `pops`, which is one
+  population of the five individuals. Every number is in the test as a
+  literal from that spec, and the means, which the spec prints to six
+  digits after the point, are compared within 1e-6.
+- `popnei.calc_per_individual_stats` gives the missing rate and the
+  heterozygosity rate of the five individuals of the same six variants,
+  which the worked example of "How it is verified" of the per individual
+  statistics gives. These two checks are what says that the calculations
+  reach the same values in a build that has one thread and is not the
+  native one; the same two examples run natively in
+  `crates/popnei/src/stats.rs`.
 
 Neither `dist/` nor `node_modules/` is in git.
 
@@ -89,11 +106,13 @@ and checks `emcc` against it, so changing the cross build environment and
 the emsdk is enough on that side; the npm dependency is the one line to
 change by hand.
 
-A newer pyodide brings a newer numpy with it, and the smoke test prints
-which one answered. It has to be one that `dependencies` of
-`pyproject.toml` accepts and that the `numpy` crate of the binding crate
-supports; when it is not, the wheel still installs, and the failure comes
-when the genotypes are asked for.
+A newer pyodide brings a newer numpy and a newer pandas with it, and the
+smoke test prints which ones answered. Each has to be one that
+`dependencies` of `pyproject.toml` accepts, and the numpy one that the
+`numpy` crate of the binding crate supports; when the numpy is not, the
+wheel still installs and the failure comes when the genotypes are asked
+for, and when the pandas is not, micropip refuses to install the wheel,
+since it finds no other pandas to fetch for a wasm build.
 
 ## Two traps
 
@@ -126,15 +145,18 @@ asks micropip for a file of that file system instead of a package of an
 index. It writes the two VCFs there as well, under `/vcf`, because
 `open_vcf` takes a path and opens it, as it does natively.
 
-Neither micropip nor numpy is in the npm package of pyodide: the first run
-downloads both from the CDN of pyodide and caches them under
+Neither micropip nor numpy nor pandas is in the npm package of pyodide: the
+first run downloads them from the CDN of pyodide and caches them under
 `node_modules/`, so that first run needs the network and the later ones do
-not. The whole test takes 1.2 s on the owner's Mac once they are cached.
+not. The whole test takes 2.3 s once they are cached, measured on 22
+September 2026 on the owner's Apple M5 Pro, 18 cores, 64 GB, macOS 27.0.
 
 A block is a run of consecutive variants of a source, held as arrays, and
 it is how the genotypes leave popnei: they arrive in a numpy array of
-variants x individuals x ploidy. So popnei cannot be imported before numpy
-is loaded. pyodide 314.0.7 brings numpy 2.4.6, which is what `dependencies`
-of `pyproject.toml` asks for and what the `numpy` crate 0.29 of the binding
-crate was compiled against; the version the test prints is the one that
-answered.
+variants x individuals x ploidy. The mean of a statistic and the counts of
+its histogram leave it as pandas series and frames, one value per
+population. So popnei cannot be imported before numpy and pandas are
+loaded. pyodide 314.0.7 brings numpy 2.4.6 and pandas 3.0.2, which are what
+`dependencies` of `pyproject.toml` asks for, the numpy being what the
+`numpy` crate 0.29 of the binding crate was compiled against; the versions
+the test prints are the ones that answered.
