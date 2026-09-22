@@ -493,6 +493,33 @@ pub enum Error {
         largest: usize,
     },
 
+    /// A user asked for a statistic of a variant under a name that is of
+    /// none of the five. The names are those of the fields of the result,
+    /// and they are `stats::PerVarStat::NAMES`, which the message lists.
+    #[error(
+        "`{name}` is not one of the statistics of a variant, which are {the_five}",
+        the_five = the_five_statistics()
+    )]
+    StatOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// A user asked for bins of a kind that is neither of the two: bins of
+    /// equal width, `stats::LINEAR_BINS`, and bins of equal ratio,
+    /// `stats::LOGARITHMIC_BINS`. pyNei spells the first one `lineal`, the
+    /// Spanish word, and popnei refuses that name as any other unknown one,
+    /// which the owner decided on 22 September 2026.
+    #[error(
+        "`bin_type` is `{kind}`, and the bins of a histogram are `{linear}`, of equal width, or `{logarithmic}`, of equal ratio; pyNei spells the first one `lineal`, the Spanish word",
+        linear = crate::stats::LINEAR_BINS,
+        logarithmic = crate::stats::LOGARITHMIC_BINS
+    )]
+    HistBinsOfAnUnknownKind {
+        /// The name the user wrote.
+        kind: String,
+    },
+
     /// The threshold below which a variant counts as polymorphic in a
     /// population is not a number from 0 to 1. A major allele frequency is
     /// a count of one allele divided by the called alleles, so every value
@@ -1006,6 +1033,21 @@ fn a_pass_that_gave_no_variant(
          variants the pass gives",
         counts = of_each_filter.join(", "),
     )
+}
+
+/// The five statistics of a variant under the names a user writes them, for
+/// the message that refuses a name that is of none of them: "`obs_het`,
+/// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
+fn the_five_statistics() -> String {
+    let named: Vec<String> = crate::stats::PerVarStat::NAMES
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect();
+    match named.split_last() {
+        Some((last, before)) => format!("{} and {last}", before.join(", ")),
+        // `NAMES` holds five names, so it has a last one.
+        None => String::new(),
+    }
 }
 
 /// What every operation of popnei that can fail returns.

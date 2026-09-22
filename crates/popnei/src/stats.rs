@@ -295,6 +295,26 @@ impl HistBins {
         Ok(HistBins { edges })
     }
 
+    /// The bins of the kind a user named, [`LINEAR_BINS`] of equal width or
+    /// [`LOGARITHMIC_BINS`] of equal ratio.
+    ///
+    /// A user writes the kind as a string in Python and in TypeScript, so
+    /// the name is read here and not in each binding crate.
+    ///
+    /// # Errors
+    ///
+    /// A `kind` that is neither of the two names, with both of them, and
+    /// what the constructor the name picks refuses.
+    pub fn of_kind(kind: &str, start: f64, end: f64, num_bins: usize) -> Result<HistBins> {
+        match kind {
+            LINEAR_BINS => HistBins::linear(start, end, num_bins),
+            LOGARITHMIC_BINS => HistBins::logarithmic(start, end, num_bins),
+            of_no_kind => Err(Error::HistBinsOfAnUnknownKind {
+                kind: of_no_kind.to_owned(),
+            }),
+        }
+    }
+
     /// The edges, from the start of the range up to its end, one more than
     /// there are bins.
     #[must_use]
@@ -538,6 +558,25 @@ impl ExpHet {
         })
     }
 
+    /// The same with the exponent the caller asked for, or the ploidy of
+    /// the variants when they asked for none.
+    ///
+    /// It is what `ploidy=None` means in the pass in Python and in
+    /// TypeScript, where the argument is the exponent and takes the ploidy
+    /// of the variants when it is not given: the default is here and not in
+    /// each binding crate.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`ExpHet::new`].
+    pub fn of_the_exponent_asked_for(
+        exponent: Option<usize>,
+        ploidy: usize,
+        min_num_individuals: u32,
+    ) -> Result<ExpHet> {
+        ExpHet::new(exponent.unwrap_or(ploidy), ploidy, min_num_individuals)
+    }
+
     /// The expected heterozygosity of one variant in one population, the
     /// plain one or, with `unbiased`, the unbiased one.
     ///
@@ -692,6 +731,58 @@ pub enum PerVarStat {
     /// How many of the variants vary in a population, in three counts and
     /// two ratios, which is a count and not a distribution.
     PolyVarsRatio,
+}
+
+impl PerVarStat {
+    /// The name of each of the five statistics, in the order of the
+    /// variants above, which is the order of the fields of a result.
+    ///
+    /// The names are what a Python and a TypeScript user writes in `stats`,
+    /// and each one is the field of the result that holds that statistic.
+    /// They are here and not in the binding crates so that a rename is one
+    /// change and not four.
+    pub const NAMES: [&'static str; 5] = [
+        "obs_het",
+        "maf",
+        "exp_het",
+        "unbiased_exp_het",
+        "poly_vars_ratio",
+    ];
+
+    /// The name a user writes for this statistic, which is the field of the
+    /// result that holds it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        let of_the_five = match self {
+            PerVarStat::ObsHet => 0,
+            PerVarStat::Maf => 1,
+            PerVarStat::ExpHet => 2,
+            PerVarStat::UnbiasedExpHet => 3,
+            PerVarStat::PolyVarsRatio => 4,
+        };
+        // The five names are there, one for each variant of the enum.
+        PerVarStat::NAMES.get(of_the_five).copied().unwrap_or("")
+    }
+
+    /// The statistic a user named.
+    ///
+    /// # Errors
+    ///
+    /// A name that is of none of the five, with the five names.
+    pub fn of_name(name: &str) -> Result<PerVarStat> {
+        // The names are in [`PerVarStat::NAMES`] alone, in the order of the
+        // variants, so a name that is renamed is renamed in one place.
+        match PerVarStat::NAMES.iter().position(|known| *known == name) {
+            Some(0) => Ok(PerVarStat::ObsHet),
+            Some(1) => Ok(PerVarStat::Maf),
+            Some(2) => Ok(PerVarStat::ExpHet),
+            Some(3) => Ok(PerVarStat::UnbiasedExpHet),
+            Some(4) => Ok(PerVarStat::PolyVarsRatio),
+            Some(_) | None => Err(Error::StatOfAnUnknownName {
+                name: name.to_owned(),
+            }),
+        }
+    }
 }
 
 /// What one pass of [`calc_per_var_distribs`] calculates: which statistics,
@@ -1646,6 +1737,61 @@ mod pops {
 }
 
 #[cfg(test)]
+mod per_var_stat {
+    use super::PerVarStat;
+    use crate::error::Error;
+
+    /// The name of each statistic is what a user writes in `stats` and the
+    /// field of the result that holds it, and `of_name` gives back the
+    /// statistic of each name. The names live in `NAMES` alone, so a rename
+    /// is one change; the literals here are the names of the fields of
+    /// `PerVarDistribs` in Python and in TypeScript.
+    #[test]
+    fn each_name_is_the_name_of_the_statistic_it_gives_back() {
+        assert_eq!(
+            PerVarStat::NAMES,
+            [
+                "obs_het",
+                "maf",
+                "exp_het",
+                "unbiased_exp_het",
+                "poly_vars_ratio"
+            ]
+        );
+        for (name, statistic) in [
+            ("obs_het", PerVarStat::ObsHet),
+            ("maf", PerVarStat::Maf),
+            ("exp_het", PerVarStat::ExpHet),
+            ("unbiased_exp_het", PerVarStat::UnbiasedExpHet),
+            ("poly_vars_ratio", PerVarStat::PolyVarsRatio),
+        ] {
+            assert_eq!(
+                PerVarStat::of_name(name).unwrap_or_else(|error| panic!("{name}: {error}")),
+                statistic
+            );
+            assert_eq!(statistic.name(), name);
+        }
+    }
+
+    /// A name that is of none of the five is refused, with the five names:
+    /// a user who writes one of them wrong has to read which they are.
+    #[test]
+    fn a_name_of_no_statistic_is_refused_with_the_five() {
+        for name in ["obs_hets", "OBS_HET", "", "exp_het "] {
+            let error = PerVarStat::of_name(name).unwrap_err();
+            assert!(
+                matches!(&error, Error::StatOfAnUnknownName { name: found } if found == name),
+                "{name}: {error:?}"
+            );
+            let message = error.to_string();
+            for of_the_five in PerVarStat::NAMES {
+                assert!(message.contains(of_the_five), "{message}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod fixtures {
     use std::fs::File;
     use std::io::BufReader;
@@ -1780,7 +1926,7 @@ mod fixtures {
 
 #[cfg(test)]
 mod hist {
-    use super::{HistBins, MAX_NUM_BINS};
+    use super::{HistBins, LINEAR_BINS, LOGARITHMIC_BINS, MAX_NUM_BINS};
     use crate::error::Error;
 
     /// One unit of the last digit that numpy and pyNei print of a
@@ -2030,6 +2176,46 @@ mod hist {
                 .expect("the largest histogram")
                 .num_bins(),
             MAX_NUM_BINS
+        );
+    }
+
+    /// The kind a user writes picks the constructor: `linear` builds the
+    /// bins of equal width and `logarithmic` those of equal ratio, and the
+    /// two give what the constructors give. A kind that is neither is
+    /// refused with both names, and `lineal`, which is how pyNei spells the
+    /// first one, is one of those: the owner decided on 22 September 2026
+    /// that popnei spells it `linear` and refuses the Spanish word.
+    #[test]
+    fn the_kind_of_bins_a_user_names_picks_the_constructor() {
+        assert_eq!(
+            HistBins::of_kind(LINEAR_BINS, 0.0, 1.0, 4)
+                .expect("the bins of equal width")
+                .edges(),
+            [0.0, 0.25, 0.5, 0.75, 1.0]
+        );
+        assert_eq!(
+            HistBins::of_kind(LOGARITHMIC_BINS, 0.01, 100.0, 4)
+                .expect("the bins of equal ratio")
+                .num_bins(),
+            4
+        );
+        for kind in ["lineal", "log", "", "LINEAR"] {
+            let error = HistBins::of_kind(kind, 0.0, 1.0, 4).unwrap_err();
+            assert!(
+                matches!(&error, Error::HistBinsOfAnUnknownKind { kind: found }
+                    if found == kind),
+                "{kind}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(LINEAR_BINS), "{message}");
+            assert!(message.contains(LOGARITHMIC_BINS), "{message}");
+        }
+        // The kind names a constructor and refuses nothing of its own: what
+        // that constructor refuses travels out as it is.
+        let error = HistBins::of_kind(LOGARITHMIC_BINS, 0.0, 1.0, 4).unwrap_err();
+        assert!(
+            matches!(&error, Error::HistLogRangeNotAboveZero { .. }),
+            "{error:?}"
         );
     }
 
@@ -2545,6 +2731,32 @@ mod exp_het {
             0.995_960,
             OF_A_PRINTED_VALUE,
             "the unbiased expected heterozygosity of the tetraploid variant",
+        );
+    }
+
+    /// A caller that asks for no exponent gets the ploidy of the variants,
+    /// which is what `ploidy=None` of the pass means in Python and in
+    /// TypeScript. On the tetraploid variant above, 4, 4, 2 and 2 of 12,
+    /// the exponent 4 gives 0.995960 and the exponent 2 another number, so
+    /// the case says which of the two was taken.
+    #[test]
+    fn the_exponent_a_caller_asks_for_none_of_is_the_ploidy_of_the_variants() {
+        let counts = allele_counts(&[4, 4, 2, 2]);
+        let of_no_exponent = ExpHet::of_the_exponent_asked_for(None, 4, 1).unwrap();
+        assert_value(
+            of_no_exponent.of_var(&counts, 12, true),
+            0.995_960,
+            OF_A_PRINTED_VALUE,
+            "the tetraploid variant with no exponent asked for",
+        );
+        let of_the_exponent_2 = ExpHet::of_the_exponent_asked_for(Some(2), 4, 1).unwrap();
+        assert_eq!(
+            of_the_exponent_2.of_var(&counts, 12, true),
+            ExpHet::new(2, 4, 1).unwrap().of_var(&counts, 12, true)
+        );
+        assert_ne!(
+            of_the_exponent_2.of_var(&counts, 12, true),
+            of_no_exponent.of_var(&counts, 12, true)
         );
     }
 
