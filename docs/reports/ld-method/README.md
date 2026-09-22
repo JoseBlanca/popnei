@@ -96,6 +96,12 @@ rule of `docs/specs/filters.md` on plink2's own r² matrix, checks the two
 properties the spec says hold of the set it keeps, and runs plink2's
 `--indep-pairwise` beside it. It needs `ld_r2` and `ex`.
 
+`residual_ld.py` and `threshold_knob.py` are the table of what popnei's
+rule and plink2's `--indep-pairwise` cost each other and the sweep of the
+threshold beside it, both in "How it is verified" of the filter item of
+`docs/specs/filters.md`: how many variants each rule keeps and how much
+r² is still standing between the variants it kept. They need `ld_r2`.
+
 `speed.py` and `tiles.py` are the two tables of "Speed" of
 `docs/specs/ld.md`, the cost of the six products against one product on a
 block of 5000 variants and 1000 individuals, and the cost of a tile pair

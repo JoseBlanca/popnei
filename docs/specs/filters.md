@@ -725,6 +725,34 @@ and its order of removal, which its `--help` does not state. So
 `--indep-pairwise` is not what popnei's set is compared with; the three
 properties above are.
 
+What the two sets cost each other was measured on the same file on 22
+September 2026, with the r² of plink2 throughout. Neither rule leaves a
+pair above the threshold, and the mean r² still standing between the
+variants each one kept, over the pairs of them inside the window, is:
+
+| max_dist | max_allowed_r2 | popnei kept | its mean r² left | plink2 kept | its mean r² left |
+|---|---|---|---|---|---|
+| 10000 | 0.1 | 84 | 0.04317 | 65 | 0.00657 |
+| 10000 | 0.3 | 133 | 0.14662 | 84 | 0.08450 |
+| 50000 | 0.3 | 85 | 0.10558 | 41 | 0.07920 |
+| 250000 | 0.3 | 85 | 0.04850 | 32 | 0.03432 |
+
+So the two rules trade the same two things against each other and neither
+is the better one at every threshold: popnei keeps more variants, and
+those variants carry more of the linkage disequilibrium the user asked to
+be rid of, all of it under the threshold they set. The knob that moves
+popnei to plink2's sparsity is that threshold, and the two are not
+interchangeable: at a window of 50000 bp, where plink2 at 0.3 keeps 41
+variants with a mean r² left of 0.0792, popnei reaches 46 and 0.0679 at
+0.15 and 35 and 0.0494 at 0.1. A user who pruned with plink2 at a
+threshold and writes the same number here gets a denser set, and this is
+where they are told so.
+
+Neither rule bounds what several kept variants together say about
+another one: both compare pairs, which is what `--indep-pairwise` is
+named for, and the denser set has more pairs to do it over, 1764 inside
+the window against plink2's 241 in the last row.
+
 The worked example, the first cargo test, made at `LdFilter::filter_block`
 on the five variants of 6 individuals of "How it is verified" of
 `docs/specs/ld.md`, whose r² are worked out there by hand and confirmed
