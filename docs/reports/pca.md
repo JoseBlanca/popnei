@@ -72,3 +72,42 @@ test -p popnei-linalg` `20 passed` and the same with
 operation at size too, and asserts the trace from the diagonal and from
 the sum of the eigenvalues. The subagent, the one of task 1.1, had used
 210394 tokens at the end of the two tasks.
+
+Task 1.3, the wasm builds, is at 0e4791d: the `wasm-check` alias names
+the crate beside the core, the feature `wasm-simd128-enable` of `gemm`
+0.19 is a dependency of the crate under the wasm cfg, and one `gemm`
+alone is in the tree of the wasm target, under faer, carrying the
+feature; the core crate depends on the crate with a `use popnei_linalg
+as _;`, which is what keeps it in the link until work package 2 calls
+it. The extension module that maturin links natively carries
+`-framework Accelerate` through `accelerate-src` with no build script:
+`otool -L` on `python/popnei/_core.cpython-314-darwin.so` lists the
+framework. So the first "What could go wrong" of the work package did
+not happen. The subagent had used 232493 tokens at the end of its three
+tasks.
+
+The deliverables, checked by the orchestrator at 0e4791d:
+
+1. `cargo test -p popnei-linalg` `20 passed`, and with
+   `--no-default-features` `20 passed`; `-- --list` names 20 tests, among
+   them the self product with an A of no rows, the product of two
+   matrices that are not square, the 3 x 3 eigendecomposition and the
+   1000 x 1000 one of the generator. 8 were asked.
+2. The errors: a dimension that does not match (a `g` that is not cols x
+   cols, a `b` without the inner dimension, a `g` shorter than n x n), a
+   buffer too short (an `a`, a `c`), a `cols`, an `inner` and an `n` of
+   0, a value that is not finite in `a`, in the lower half of `g` and in
+   the operands of the product, and the decomposition that did not
+   converge, each a test in that list.
+3. `cargo wasm-check` finished; the manifest of the crate has `gemm`
+   under `[target.'cfg(target_family = "wasm")'.dependencies]`;
+   `scripts/build_pyodide_wheel.sh` exit 0 and `node
+   tests/pyodide/smoke.mjs` exit 0; `npm run build && npm test` in
+   `js/popnei` `tests 126`, `fail 0`.
+4. `grep -n "linalg"` on the three documents finds no "module" beside
+   it, and section 8 of the architecture lists `crates/popnei-linalg/`.
+5. `cargo fmt --all --check` exit 0; `cargo clippy --workspace
+   --all-targets -- -D warnings` no warning; `cargo test --workspace`
+   `306 passed`, 2 ignored, and `20 passed`; ruff `18 files already
+   formatted` and `All checks passed!`; `uv run maturin develop && uv
+   run pytest` `174 passed`.

@@ -130,7 +130,7 @@ Tasks:
       builds" says, and the 1000 x 1000 test from the generator of "How
       it is verified", with its literals, run with both commands of
       deliverable 1. Needs 1.1. Serves deliverables 1 and 5.
-- [ ] 1.3 The wasm builds: the `wasm-check` alias extended to the crate,
+- [x] 1.3 The wasm builds: the `wasm-check` alias extended to the crate,
       the feature of `gemm` under the wasm cfg, the core crate depending
       on the new crate with nothing calling it yet, the wheel built and
       the smoke test and `npm test` run, as the `coding` skill asks when a
