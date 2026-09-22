@@ -8,11 +8,14 @@ the result objects an application uses. What the package exports today is
 crate, `openVcf`, which reads the header of a VCF held as bytes and
 gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
 by block, `writeVars`, which gives back the bytes of a vars file with every
-variant of a `Variants`, and `openVars`, which opens such bytes as another
-`Variants`. A vars file is one arrow IPC file, also called feather v2,
+variant of a `Variants`, `openVars`, which opens such bytes as another
+`Variants`, and `calcPairwiseKosmanDists`, which gives the Kosman distance
+of every pair of individuals of a `Variants` in a `Distances`.
+A vars file is one arrow IPC file, also called feather v2,
 which pandas, R and polars open as a table with no popnei installed: it is
 where a user keeps their variants once the VCF has been read. Each of the
-two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
+three consumers, `iterBlocks`, `writeVars` and `calcPairwiseKosmanDists`,
+gives back the counts of the
 pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
 a step, a method of the `Variants` that `steps` then lists, and there are
@@ -24,8 +27,8 @@ genotypes divided by its called ones.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
-`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md` and
-`docs/specs/filters.md` say what they give.
+`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
+`docs/specs/filters.md` and `docs/specs/dists.md` say what they give.
 
 ## Building it
 

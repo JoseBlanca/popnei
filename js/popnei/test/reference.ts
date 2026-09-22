@@ -26,6 +26,11 @@ const REFERENCE_VARS_DIR = new URL(
   import.meta.url,
 );
 
+const REFERENCE_DISTS_DIR = new URL(
+  "../../../tests/reference/dists/",
+  import.meta.url,
+);
+
 /** The bytes of the reference VCF `name`, `cases.vcf` or `many.vcf.gz`. */
 export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));
@@ -34,6 +39,21 @@ export async function referenceVcf(name: string): Promise<Uint8Array> {
 /** The bytes of the reference vars file `name`, `zstd.vars`. */
 export async function referenceVars(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VARS_DIR)));
+}
+
+/**
+ * The bytes of the reference file `name` of the Kosman distances,
+ * `panel.vcf.gz` or `panel.gdkosman.tsv`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/dists.md`, in
+ * `tests/reference/dists/`, which `tests/reference/dists/make_reference.py`
+ * writes: the four datasets as gzipped VCFs and, beside each, the distance
+ * and the number of variants that `gd.kosman` of the R package
+ * PopGenReport 3.1.3 gives for every pair. The Python tests read the same
+ * files.
+ */
+export async function referenceDists(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_DISTS_DIR)));
 }
 
 /**

@@ -16,6 +16,8 @@ import { wasmIsLoaded } from "./core.js";
 
 export type { Block, Field } from "./block.js";
 export { version } from "./core.js";
+export { calcPairwiseKosmanDists, Distances } from "./dists.js";
+export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
 export type { FilteringStats, Step } from "./filters.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
