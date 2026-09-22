@@ -262,14 +262,14 @@ Tasks:
       weights: the worked example with 3, the panel's five literals, the
       error of a second pass that differs. Needs 3.1. Serves deliverables
       1 and 4.
-- [ ] 3.3 The Python function: the binding that opens the two readers
+- [x] 3.3 The Python function: the binding that opens the two readers
       from the source and the steps, lends them to the core and reads the
       counts, as `write_vars` of `crates/popnei-python/src/vars.rs` does
       for one; `do_pca_from_variants` in `python/popnei/pca.py`, with the
       `PCAResult` of "What it is in Python and in TypeScript" of "The
       PCA of the variants" and its `pass_stats`; the tests of deliverable
       2. Needs 3.2. Serves deliverables 2 and 4.
-- [ ] 3.4 The TypeScript function: the binding in `crates/popnei-js` on
+- [x] 3.4 The TypeScript function: the binding in `crates/popnei-js` on
       the pattern of its `write_vars`, `doPcaFromVariants` in
       `js/popnei/src/pca.ts`, and its test. Needs 3.2; can run side by
       side with 3.3. Serves deliverable 3.

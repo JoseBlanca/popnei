@@ -389,3 +389,45 @@ components with variance, which is what the bindings read for the names
 of the components. `cargo test -p popnei --lib pca` `41 passed`, all in
 30 ms. The subagent, the one of task 3.1, had used 375363 tokens at the
 end of the two tasks.
+
+Tasks 3.3 and 3.4 ran side by side. Task 3.4, `doPcaFromVariants`, is at
+7113c7c: the binding opens both chains over the source and the steps and
+lends them to the core, as `writeVars` does for one, and each source, a
+VCF and a vars file, gets the method; the result extends the one of
+`doPca` with the individuals, the used variants and the pass stats; 8
+tests. The names of the individuals do not cross wasm a second time, the
+package having read them when the file was opened. The subagent used
+250839 tokens. Task 3.3, `do_pca_from_variants`, is at 1f7e516: the
+binding opens a reader per pass and reads the filters' counts from the
+first; the four errors of a dataset the analysis cannot read are a
+`ValueError` naming the file and the two of a second pass that differs a
+`RuntimeError`; 10 tests, 27 in the file. One decision to know: the
+components are named for the components of the projections and the
+weights take the first of those names, so the panel's first weight row
+is `PC000` and not `PC00`, which is what makes one component have one
+name in both frames. A negative `num_prin_comps` is refused in the
+Python layer, where the message names the argument. Over the panel's
+first 10 components popnei and pyNei differ by 1.0e-12 at most, where
+the projections reach 17.10; without the sign rule the same comparison
+differs by 34.2. The subagent used 304934 tokens.
+
+The deliverables, checked by the orchestrator at 1f7e516:
+
+1. `cargo test -p popnei --lib pca -- --list` names 41 tests, 22 of them
+   of the variants, 12 asked: the worked example with `num_prin_comps` 3
+   and 0, `worked3` without and with `transform_to_biallelic`, the panel
+   with its five literals, the five cases pyNei asserts, the result that
+   does not change with the size of the blocks, each error, and the
+   second pass whose variants differ. They pass.
+2. `uv run pytest tests/test_pca.py` `27 passed`: the panel and the
+   worked example against pyNei at ef0ca6e, 10 and 3 components within
+   1e-9 after the sign rule, `pass_stats` with `num_vars` 1200 and the
+   count a `filter_by_maf` step kept, and `num_prin_comps` 0 giving
+   `princomps` with no rows and the used variants as columns.
+3. `npm run build && npm test` `tests 150`, `fail 0`, with the worked
+   example at `doPcaFromVariants`, its projections, `usedVars` and
+   `passStats`.
+4. `cargo fmt --all --check` exit 0; clippy no warning; `cargo test
+   --workspace` `347 passed`, 2 ignored, and `33 passed`; ruff clean;
+   `uv run maturin develop && uv run pytest` `201 passed`; `cargo
+   wasm-check` finished.
