@@ -3,13 +3,14 @@
 22 September 2026. The review of `calc_kosman_sums` of the core, the
 calculation that the plan `docs/plans/dists-kosman.md` built and that
 its measurement, `docs/reports/dists-kosman-measurement.md`, found short
-of the three numbers of "Speed" of `docs/specs/dists.md`. It says where
-the time goes, which was not known, what to change in which order, and,
-at the end of each finding, what its experiment gave. It was run on the
-branch `perf/dists-kosman` by the session of the assistant, with one
-reviewer subagent per category and one subagent per measurement, as the
-`performance-review` skill says. The next review starts from its
-measurement plan and its numbers.
+of the three numbers of "Speed" of `docs/specs/dists.md`. The three are
+met now, on the branch `perf/dists-kosman`, which is not merged: section
+2 has the numbers and section 9 the five changes that gave them. The
+report also says where the time goes, which was not known before it, and
+what was left unrun and why, so that the next review starts from its
+measurement plan and its numbers. It was run by the session of the
+assistant, with one reviewer subagent per category and one subagent per
+measurement, as the `performance-review` skill says.
 
 The words this document uses. The **calculation** is one call of
 `calc_kosman_sums` over a reader, which gives, for every pair of
@@ -59,9 +60,27 @@ build strips the names of the functions; the plan below says how.
 
 ## 2. The verdict
 
-Run the experiments. The profile names the sites, the reviewers agree on
-them from every side, and each has a gate that can be counted before the
-wall time is looked at:
+The three numbers of "Speed" are met, by five changes of
+`crates/popnei/src/dists.rs` that section 9 gives one by one, none of
+which alters a distance. On 100000 variants x 1000 individuals with the
+reading taken out, on the machine below:
+
+| | before | after | the target | pyNei |
+|---|---|---|---|---|
+| one thread | 1.147 s | 0.767 s | 0.97 s | 0.719 s |
+| 18 cores | 0.635 s | 0.102 s | 0.38 s | 0.280 s on 6 |
+| wasm under node | 2.158 s | 1.423 s | 1.43 s | not measured |
+
+popnei is now 6 in 100 above pyNei on one thread and 2.7 times faster
+than pyNei's best, where the spec accepted being 1.3 times slower. The
+wasm number sits on its line: two rounds gave 1.429 and 1.423 s where
+the runs of one round spread 1.6 in 100, so it is met by less than the
+noise, and it is the one to watch. Over the vars file on 18 threads the
+reader is now 0.127 s of the 0.229 s a user waits, more than the
+calculation it feeds, which is where the next work on this path is.
+
+The verdict when the review was written, before the experiments, was
+"run the experiments", on this evidence:
 
 - On 18 cores the sets phase is 0.569 s of the 0.624 s and runs on the
   calling thread while 17 workers wait; the pairs phase scales 10.8
@@ -598,3 +617,89 @@ line is what H3 was judged on. And the one thread line fell, 0.817 to
 genotypes once per item: at 64 individuals an item writes into 202 KB of
 the block's 3.16 MB of sets, which is the cache effect of H5 got for
 free, and H5's own reorderings have that much less left to take.
+
+### The browser
+
+The four changes that the wasm build shares, H1, H2, L1 and L2, took it
+from 2.158 s to 1.423 s with the reading taken out, 34 in 100. H3 is
+behind its `cfg` and does nothing there, wasm having one thread. The
+target is 1.43 s, and the number sits on the line: two rounds of the
+node script gave 1.429 s and 1.423 s, 0.1 and 0.5 in 100 below it, where
+the five runs of one round spread 1.6 in 100, and the build that carries
+the names of its functions, for the profile below, gave 1.434 s, above
+it. Met, and by less than the spread. The 2.158 s before the changes
+agrees with the 2.130 s of the plan's measurement to 1.3 in 100.
+
+    the calculation: best 1.593 s, median 1.610 s, worst 1.619 s
+    the reading alone: best 0.163 s, median 0.171 s, worst 0.182 s
+    the calculation with the reading taken out, on the bests: 1.429 s
+
+The first profile ever taken of popnei in wasm, plan item 1: built
+without the `--remove-name-section` of `build:wasm`, which is what left
+the earlier attempts with nothing but `wasm-function[N]`, then `node
+--cpu-prof` over three runs of each kind. Everything above half a per
+cent is wasm; the JavaScript frames together are under half a per cent,
+which says that nothing of the pass crosses into the page. Per call of
+the calculation, from the 7.289 s of the profile:
+
+| phase | of the call | native, one thread |
+|---|---|---|
+| the pairs phase | 1.17 s, 72 in 100 | 0.603 s |
+| the sets phase | 0.28 s, 17 in 100 | 0.172 s |
+| the reader | 0.17 s, 11 in 100 | 0.107 s |
+
+So in wasm the pairs phase is 1.94 times the native one and the sets
+phase 1.66 times, and the pairs phase is where the headroom of the
+browser is: L3, the popcount reduction, and L5, a vector popcount behind
+`+simd128`, which is the owner's decision because it raises the floor of
+the browsers popnei runs in. `+simd128` was not measured: the target is
+met and the review closes.
+
+### What was not run, and why
+
+- **H4**, the 1 + k sets of a biallelic block, and **H5**, the layout of
+  the writes: the three targets are met and both cost a second kernel or
+  a second layout to keep right at every ploidy. H5 also lost most of
+  what it could take to H3, whose work items write into 202 KB each. The
+  measurement plan of section 4 stands if the owner wants more, and
+  item 7, the two shapes the bench does not have, comes first.
+- **L3**, the popcount reduction, and **L5**, the vector popcount of
+  wasm: the pairs phase is 72 in 100 of the wasm call and 78 of the
+  native one thread call, so these are where a next round would start,
+  and they are the two whose cost is a dependency or a floor on the
+  browsers.
+- **L4**, `alleles_of` on the threads: it is 3 in 100 of a sets phase
+  that is now 0.054 s of a 0.103 s call on 18 threads, so at most 2 in
+  1000 of the call.
+- **L6**, the block size at 10000 individuals, and **N1**, the memory of
+  the result in Python: both are about a size nothing has been measured
+  at. They belong to the next review with item 7 of the plan.
+- **S1**, the handoff to the pool at one thread: not run. The phase
+  split leaves no room for it, and H3 did not change it.
+- **The build flags** of section 5: not run. They were to inline the two
+  calls that H1 and H2 removed from the source, and the three targets
+  are met without the link time they cost.
+
+### What the work found about the checks
+
+H3 left a constant that only the native side uses, and the wasm build
+warned about it in a commit whose fmt, clippy, cargo test, ruff, pytest
+and node checks were all green: `cargo wasm-check`, which compiles the
+core for the two wasm targets in six seconds, was not among the commands
+that `.claude/skills/coding/SKILL.md` lists as run for every change, and
+a change behind `cfg(not(target_family = "wasm"))` is exactly what the
+other commands do not compile. It is in that list now, in 9f28546's
+branch, with the case as its reason, and so is the build and the tests
+of the TypeScript package for a change that touches what wasm builds
+differently. The warning itself was fixed in 9f28546.
+
+The state of the branch at the end: `cargo fmt --all --check` exit 0;
+`cargo clippy --workspace --all-targets -- -D warnings` no warning;
+`cargo test --workspace` `346 passed`, 2 ignored, one more than `main`,
+the test that compares the parallel and the serial building of the sets;
+`cargo wasm-check` finished; `cargo clippy -p popnei --target
+wasm32-unknown-unknown -- -D warnings` no warning; ruff `20 files
+already formatted` and `All checks passed!`; `uv run maturin develop &&
+uv run pytest` `208 passed`; `npm run build && npm test` in `js/popnei`
+`tests 144`, `fail 0`. Every one of them run by the orchestrator, in the
+worktree, after the last commit.
