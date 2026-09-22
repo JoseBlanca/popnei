@@ -11,21 +11,27 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The three methods that add a filter are here as well, one for each of the
-//! three numbers of a variant a filter compares, and each of them refuses at
-//! the call what a user cannot filter by: a threshold that is not a number
-//! from 0 to 1, under the name of the argument they wrote it in, and a
-//! second filter of a kind the list holds, with the threshold of the one
-//! that is set. No reader exists at that call, so neither refusal can come
-//! from the chain.
+//! The four methods that add a filter are here as well, one for each of the
+//! three numbers of a variant a filter compares and one for the individuals
+//! to keep, and each of them refuses at the call what a user cannot filter
+//! by: a threshold that is not a number from 0 to 1, under the name of the
+//! argument they wrote it in; a name that is not an individual of the
+//! source, a name that is there twice and no name at all; and a second
+//! filter of a kind the list holds, with the threshold of the one that is
+//! set when both are threshold filters. No reader exists at that call, so
+//! none of those refusals can come from the chain, and the individuals of
+//! the source, which the names are resolved against, are held here from the
+//! moment the `Variants` is built.
 
 use std::sync::{Mutex, MutexGuard};
 
 use pyo3::prelude::*;
+use pyo3::types::{PyFloat, PyTuple};
 
 use popnei::block::BlockReader;
 use popnei::filters::{
     PassStep, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+    resolve_individuals,
 };
 
 use crate::errors::PyPopneiError;
@@ -46,11 +52,38 @@ pub(crate) struct Step {
     pass_step: PassStep,
     /// The arguments of the step, each under the name a Python user writes
     /// it in.
-    args: Vec<(&'static str, f64)>,
+    args: Vec<(&'static str, Argument)>,
 }
 
-/// The names a Python user writes the threshold of each filter under, which
-/// are the arguments of the three methods that add one.
+/// What a user gave one argument of a step: the threshold of a filter, a
+/// number from 0 to 1, or the names of the individuals to keep, in the
+/// order they named them.
+///
+/// It goes to Python as the value of that argument, a float for a
+/// threshold and a tuple of strings for the individuals, which is what
+/// "In Python and in TypeScript" of `docs/specs/filters.md` gives the
+/// `args` of each step.
+#[derive(Clone)]
+enum Argument {
+    Threshold(f64),
+    Individuals(Vec<String>),
+}
+
+impl<'py> IntoPyObject<'py> for Argument {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        match self {
+            Argument::Threshold(threshold) => Ok(PyFloat::new(py, threshold).into_any()),
+            Argument::Individuals(names) => Ok(PyTuple::new(py, names)?.into_any()),
+        }
+    }
+}
+
+/// The names a Python user writes the argument of each filter under, which
+/// are the arguments of the four methods that add one.
 ///
 /// The core names a filter by its kind, `maf`, and knows nothing of the
 /// arguments of Python, so the two names meet here: a user who is told that
@@ -58,31 +91,38 @@ pub(crate) struct Step {
 const MAX_ALLOWED_MISSING_RATE: &str = "max_allowed_missing_rate";
 const MAX_ALLOWED_MAF: &str = "max_allowed_maf";
 const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
+const INDIVIDUALS: &str = "individuals";
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
-type StepOfAVariants = (&'static str, Vec<(&'static str, f64)>);
+type StepOfAVariants = (&'static str, Vec<(&'static str, Argument)>);
 
-// The steps of one `Variants`, in the order in which they were put on it. A
-// `///` here would become the `__doc__` of the class, and what a Python user
-// reads belongs to the package, which is the API.
+// The steps of one `Variants`, in the order in which they were put on it,
+// and the individuals of its source. A `///` here would become the `__doc__`
+// of the class, and what a Python user reads belongs to the package, which
+// is the API.
 //
 // It is frozen with its list behind a `Mutex`, as every class of this crate
 // is: a step can be added at any time, also between two passes, and any
-// thread may hold the `Variants`.
+// thread may hold the `Variants`. The individuals of the source are read
+// from the header once and never change, so they are behind no lock.
 #[pyclass(frozen, module = "popnei._core")]
 pub(crate) struct Steps {
     steps: Mutex<Vec<Step>>,
+    /// The individuals of the source, in its order, which the names given
+    /// to the filter of individuals are resolved against at the call.
+    of_the_source: Vec<String>,
 }
 
 #[pymethods]
 impl Steps {
-    // The steps of a `Variants` that nothing has been put on yet, which is
-    // what `open_vcf` and `open_vars` give.
+    // The steps of a `Variants` over a source of `individuals` that nothing
+    // has been put on yet, which is what `open_vcf` and `open_vars` give.
     #[new]
-    fn new() -> Steps {
+    fn new(individuals: Vec<String>) -> Steps {
         Steps {
             steps: Mutex::new(Vec::new()),
+            of_the_source: individuals,
         }
     }
 
@@ -134,6 +174,27 @@ impl Steps {
             )?),
         )
     }
+
+    // The genotypes of `individuals` kept at every variant, in the order
+    // they are named here, and those of no other individual. The names are
+    // resolved against the individuals of the source, so a name that is not
+    // one of them, a name that is there twice and no name at all are
+    // refused at this call and not when a pass runs.
+    fn filter_individuals(&self, individuals: Vec<String>) -> Result<(), PyPopneiError> {
+        // What the names give is dropped: every pass resolves them again
+        // when it builds its chain, so the rule lives in the core alone.
+        // They are refused before the list is looked at, since a name that
+        // is of no individual is wrong whatever the list holds.
+        resolve_individuals(&individuals, &self.of_the_source)?;
+        let step = Step {
+            pass_step: PassStep::KeepIndividuals(individuals.clone()),
+            args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
+        };
+        let mut steps = self.locked()?;
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
+        steps.push(step);
+        Ok(())
+    }
 }
 
 impl Steps {
@@ -170,7 +231,7 @@ impl Steps {
         VarFilter::new(criterion).map_err(|error| under_the_argument(error, argument))?;
         let step = Step {
             pass_step: PassStep::VarFilter(criterion),
-            args: vec![(argument, criterion.threshold())],
+            args: vec![(argument, Argument::Threshold(criterion.threshold()))],
         };
         let mut steps = self.locked()?;
         refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;

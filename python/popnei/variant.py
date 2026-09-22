@@ -1,7 +1,7 @@
 """The handle a user holds: a source of variants, its individuals and the
 steps that were put on it, and the counts of a pass over it."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from popnei import _core
@@ -127,10 +127,12 @@ class Variants:
         """The handle over `source`, which :func:`popnei.open_vcf` and
         :func:`popnei.open_vars` build."""
         self._source = source
-        # The names come from the header, which was read once, so they are
-        # taken out of the core here and not at every use.
-        self._individuals = tuple(source.individuals())
-        self._steps = _core.Steps()
+        # The names of the individuals of the source come from the header,
+        # which was read once, so they are taken out of the core here and
+        # not at every use. They are given to the steps as well, which
+        # resolve the names of a filter of individuals against them.
+        self._of_the_source = tuple(source.individuals())
+        self._steps = _core.Steps(list(self._of_the_source))
 
     def __repr__(self) -> str:
         """The source the variants are read from, the options it is read
@@ -153,13 +155,24 @@ class Variants:
 
     @property
     def individuals(self) -> tuple[str, ...]:
-        """The names of the individuals, in the order the source has them."""
-        return self._individuals
+        """The names of the individuals the next pass gives, in its order.
+
+        They are those of the source, in the order the source has them,
+        until :meth:`filter_individuals` is put on the ``Variants``: from
+        then on they are the ones that filter keeps, in the order they were
+        named, which is the order of the genotypes of every block. A pass
+        changes nothing of them, so they are the same read before one and
+        after one.
+        """
+        for step in self.steps:
+            if step.kind == "individuals":
+                return step.args["individuals"]
+        return self._of_the_source
 
     @property
     def num_individuals(self) -> int:
-        """How many individuals the source holds."""
-        return len(self._individuals)
+        """How many individuals the next pass gives the genotypes of."""
+        return len(self.individuals)
 
     @property
     def ploidy(self) -> int:
@@ -262,6 +275,46 @@ class Variants:
         0 to 1 and a second filter of this kind are a ``ValueError``.
         """
         self._steps.filter_by_obs_het(max_allowed_obs_het)
+
+    def filter_individuals(self, individuals: Sequence[str]) -> None:
+        """Keep the genotypes of `individuals` at every variant and drop
+        those of the rest.
+
+        Every variant stays: the step takes columns of the genotypes away
+        and no row, so it has no entry in the counts of a pass. The
+        individuals are kept in the order they are named here, which is the
+        order of the genotypes of every block and of the rows of every
+        result over individuals, so it is also the way to put a dataset's
+        individuals in the order a user wants. pyNei's ``filter_samples``
+        keeps them in the order of the source instead.
+
+        A step of it is what every step that comes after it sees:
+        :meth:`filter_by_missing_data` before the call divides by all the
+        individuals of the source, and after it by the kept ones alone.
+        :attr:`individuals` and :attr:`num_individuals` are the kept ones
+        from the call on, since they are what the next pass gives.
+
+        A name that is not an individual of the source is a ``ValueError``
+        that names it, where pyNei drops it in silence and gives the
+        individuals it did find; a name that is there twice is a
+        ``ValueError`` too, since one individual is kept once; and so is a
+        call with no name, because variants of nobody are no dataset. A
+        second filter of individuals on the same ``Variants`` is a
+        ``ValueError`` as well: two lists keep the individuals that are in
+        both, which is one list, so the second says that the steps are not
+        what their user thinks. A user who wants two sets of individuals
+        over one file opens it twice. After any of them the steps are as
+        they were.
+        """
+        if isinstance(individuals, str):
+            # A string is a sequence of its letters, and one name written
+            # without its comma would ask for the individuals `i`, `n`,
+            # `d`...
+            raise TypeError(
+                f"`individuals` is a sequence of names and not one name: write "
+                f'individuals=("{individuals}",) for that one individual'
+            )
+        self._steps.filter_individuals(list(individuals))
 
     def iter_blocks(
         self,
