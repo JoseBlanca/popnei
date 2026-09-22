@@ -226,27 +226,24 @@ impl KosmanBits {
                             .filter(|&&other| other == allele)
                             .count()
                     };
-                    // The allele is 0 or more and at most `MAX_ALLELE`: a
-                    // genotype with an allele that was not called was left
-                    // above, and an allele below the missing one was
-                    // refused before the loop. One that got past both would
-                    // be dropped here while its variant counted as called
-                    // for the pair, which is a wrong number and no message,
-                    // so it is an error and not a genotype read without it.
-                    #[expect(
-                        clippy::unnecessary_lazy_evaluations,
-                        reason = "building the error eagerly writes it to the stack and \
-                                  calls its out of line drop on the success path of this \
-                                  loop, once for every allele of the block, which a \
-                                  profile of 100000 variants of 1000 diploid individuals \
-                                  had at 10.3 in 100 of the CPU on one thread; the \
-                                  closure moves both into the `None` arm, which no block \
-                                  that got past the check of the smallest allele reaches"
-                    )]
-                    let place = usize::try_from(allele)
-                        .ok()
-                        .and_then(|value| alleles.place.get(value).copied())
-                        .ok_or_else(|| Error::AlleleBelowTheMissingOne { allele })?;
+                    // Every allele that reaches here is 0 to `MAX_ALLELE`,
+                    // which is 127, so it is one of the 128 values of the
+                    // table of places and the lookup cannot fail: a
+                    // genotype that holds the missing allele was skipped
+                    // above, and a block whose smallest allele is below the
+                    // missing one was refused before the loop, so no allele
+                    // of this loop is negative and `cast_unsigned` gives
+                    // its own value. The `unwrap_or` is what a table of 128
+                    // places costs against one of 256, and it is never
+                    // taken; were it taken, the allele would be counted as
+                    // the first allele of the block.
+                    let place = usize::from(
+                        alleles
+                            .place
+                            .get(usize::from(allele.cast_unsigned()))
+                            .copied()
+                            .unwrap_or(0),
+                    );
                     // The set of the allele and the count is below k * A,
                     // since the place of the allele among the alleles of
                     // the block is below A and the copies are the ploidy at
@@ -372,8 +369,10 @@ struct AllelesOfTheBlock {
     /// alleles the block holds, counting from 0 in the order of the values:
     /// in a block whose genotypes hold the alleles 0 and 127, the 0 is at 0
     /// and the 127 at 1. A value no genotype holds is at 0, which no
-    /// genotype of the block looks up.
-    place: [usize; ALLELE_VALUES],
+    /// genotype of the block looks up. A place is below 128, the values of
+    /// the table, so each of them is a number a `u8` holds and the table is
+    /// 128 bytes.
+    place: [u8; ALLELE_VALUES],
     /// How many allele values the genotypes hold, and so how many sets of
     /// each count each individual gets. It is 1 at least, also for a block
     /// whose genotypes are all missing, so that the `holds` sets of an
@@ -410,12 +409,15 @@ fn alleles_of(gts: &[i8]) -> AllelesOfTheBlock {
             *held = true;
         }
     }
-    let mut place = [0; ALLELE_VALUES];
+    let mut place = [0_u8; ALLELE_VALUES];
     let mut num_alleles: usize = 0;
     for (value, held) in held.iter().enumerate() {
         if *held {
             if let Some(place) = place.get_mut(value) {
-                *place = num_alleles;
+                // The places are as many as the values of the table at
+                // most, which is 128, so this place is 127 at most and the
+                // conversion never takes its 0.
+                *place = u8::try_from(num_alleles).unwrap_or(0);
             }
             // The places are as many as the values of the table at most,
             // which is 128.
