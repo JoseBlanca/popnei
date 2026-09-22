@@ -352,3 +352,25 @@ How the work went: the three tasks went to three subagents, 213330,
 173885 after the fixes; the seven reviewers used 132110, 119847,
 120233, 110675, 115533, 104737 and 94049 tokens. No task had to be sent
 twice.
+
+## Work package 3: the PCA of the variants
+
+Task 3.1, the first pass, is at 5a14396, after 292d96b, which put into
+the spec three sizes the analysis refuses: a ploidy above 254, since a
+genotype's code is one byte; more than 46340 individuals, since the
+linalg crate counts a matrix in the 32 bit integer of BLAS and 46341²
+is above it; and more variants than a `usize` counts. `cargo test -p
+popnei --lib pca` `35 passed`, 16 of them of the variants, the panel's
+in 12 ms. Three things to know. `reblock` inside `pca_of_variants`
+takes the size popnei chooses, 10000 variants at 5 or at 200
+individuals, so the reader's block size never reaches the product
+through the public function: the test of the block size is at the
+first pass, with blocks of 1, 2 and 3, comparing G within 1e-10, and the
+test through `pca_of_variants` with blocks of 1, 2 and 5 of the reader
+stays. The standardizing loop is three passes over a row and not two,
+because the major allele has to be known before a dosage is: one writes
+a byte per genotype, the dosage or 255 for a missing one, one counts
+the codes in runs of 255 with counters of one byte, and one looks each
+code up in a table of 256 values. The used variants are kept as the
+positions the result carries and not as one bit per variant, which
+would be a second copy. The subagent used 323610 tokens.

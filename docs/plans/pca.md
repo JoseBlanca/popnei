@@ -246,7 +246,7 @@ binding crates builds.
 
 Tasks:
 
-- [ ] 3.1 In the core, the first pass: the standardizing of a block as
+- [x] 3.1 In the core, the first pass: the standardizing of a block as
       "What it gives" and "How it runs" of "The PCA of the variants"
       describe it, the counts of the dosages per row with rayon, the
       check of the alleles, the rows without variance left out, the
