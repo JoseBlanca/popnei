@@ -153,10 +153,15 @@ It mirrors `calc_pairwise_kosman_dists` and `Distances` of
   has it, so that giving it to the user later changes no Rust.
 - The result has `pass_stats`, which pyNei's has not; pyNei keeps the
   counts of its filters in its `Variants`.
+- `Distances` holds the array it is given, where pyNei copies it: a user
+  who writes into an array they gave `Distances` changes what the result
+  holds. A copy would make the 400 MB of 10000 individuals 800 MB while
+  the result is built. Decided by the plan on 22 September 2026.
 
-The first three were the owner's decisions, the last follows from his
-decision of 21 September 2026 on the consumers, in `docs/specs/filters.md`,
-and the other six are decided here: none changes a distance that pyNei gives rightly.
+The first three were the owner's decisions, the one before the last
+follows from his decision of 21 September 2026 on the consumers, in
+`docs/specs/filters.md`, and the other seven are decided here: none
+changes a distance that pyNei gives rightly.
 
 In TypeScript it is `calcPairwiseKosmanDists(variants, {minNumSnps})`,
 which gives a `Distances` with `distVector`, a `Float64Array` in the same

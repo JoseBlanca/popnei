@@ -194,3 +194,134 @@ For the owner, from tasks 2.3 and 2.4, his to reverse:
   a `ValueError` or an `Error`, and no test outside the core reaches
   them: one needs thousands of millions of variants and the other a
   machine that refuses hundreds of megabytes.
+
+The deliverables of work package 2, run by the orchestrator at b9ced15:
+`cargo test -p popnei --lib -- dists:: --list` 33 tests, the worked
+examples, the 14 literals, the four files pair by pair, the blocks of 7,
+64, 65 and 300 variants and the pools of 1 and 4 threads, the three
+errors among them, where the check asks 14; `uv run pytest
+tests/test_dists.py` `29 passed`; `npm test` `tests 139`, `fail 0`, with
+`test/dists.test.ts` running the panel's five literals, the worked
+example and the error of a source with no variant. The work package
+finished as planned. One thing was added to the plan's text, the third
+error of task 2.2, above.
+
+The review, all seven categories over 576499c, 4834445, 49e99c6 and
+b9ced15, `spec` and `tests` in worktrees of their own. What it found
+that mattered:
+
+- A wrong number in silence, from `errors`: `Distances.from_square_dists`
+  took the names from the index and the values from the upper triangle
+  and never looked at the columns, so a frame whose rows a user had
+  reordered gave d(c, a) as 0.0 where it is 0.2.
+- Three reviewers, `api`, `binding` and `errors`, from different sides:
+  the message of a pass with no variant was worded differently in Python
+  and in TypeScript, both within the spec, and the TypeScript one dropped
+  the filters' counts when the source had none. And, from `tests`, the
+  two pytest tests of that message could not fail, because the tmp path
+  of pytest already held every word they looked for: the branches
+  swapped and the counts swapped left the suite green. The two crates
+  now build one sentence, and the tests assert the whole of it.
+- From `architecture`: the sets of a block were sized by the largest
+  allele value, not by the alleles the block holds. On 3000 diploid
+  variants of 1000 individuals, one variant with the alleles 0 and 127
+  beside biallelic ones took 7.74 s and 231 MB of peak memory where the
+  biallelic file took 0.75 s and 134 MB, every pair walking 10240 words
+  instead of 160; a wrong cost and not a wrong number. The alleles of a
+  block are ranked to a dense index now.
+- From `tests`: three error branches of the sets' builder that no test
+  reached, one of which is the only guard against an allele below the
+  missing one being dropped while its variant counts as called, a wrong
+  count in silence. From `spec`: the error of a panel too large was
+  reached by no test, and its message for more pairs than a `usize`
+  counts blamed the machine's memory; the TypeScript tests were all
+  diploid and had no case of a pair with no called variant, nor of the
+  `Variants` being as it was after the call; and the test of
+  `pass_stats` with a filter used one that keeps everything, so a
+  `num_vars` counting the source's variants would have passed.
+- From `numbers`: the message for a vector of a wrong length gave two
+  counts both below the length, because the number of individuals
+  around it was computed one too low; and two doc comments stated
+  bounds and claims that do not hold as written, the pairs' comment on
+  bit equality with R and pyNei holding only for a ploidy that is a
+  power of two, since those sum d and divide once, which is exact for k
+  = 2 and 4 and differs in the last bit from popnei's one division for
+  k = 3 in 14350 of 20000 random pairs.
+- From `errors` and `binding`: three wrong inputs of `Distances` came
+  out as numpy's or Python's own message; the dtype was not made right
+  before the array was held.
+- From `api`: the README of the TypeScript package did not list
+  `minNumSnps` among the checked arguments nor show the new function;
+  messages that count 1 individuals; a test only method of the sets with
+  a name one letter from another.
+- From task 3.2: pandas was imported by the new module and not declared
+  in `dependencies` of `pyproject.toml`, so `import popnei` failed under
+  pyodide; it is declared now.
+- Also taken: the sets of a block dropped before the next block is read;
+  the comment on the pass saying that a Ctrl-C is raised when it
+  returns.
+
+Not taken, with the reason:
+
+- `numbers` suggested asserting the reference distances bit for bit in
+  the cargo tests, since all 20812 pairs are; the spec and the plan ask
+  1e-9 there, and the exact comparison is the pytest one with pyNei.
+- `binding` and `spec` noted that the pass checks the interpreter's
+  signals once before it starts, so a Ctrl-C waits for the end of the
+  pass, as it does in `write_vars`; nothing is lost, and the report of
+  the filters plan already put the question to the owner for a spec of
+  its own.
+- `architecture` found that `cargo wasm-check` checks the core alone, so
+  the wasm binding crate's new file is compiled for wasm only by `npm
+  run build`. The alias also builds for emscripten, where that crate
+  does not compile, because wasm-bindgen wants `RefUnwindSafe` of the
+  `dyn BlockReader` it holds; a second alias for `wasm32-unknown-unknown`
+  alone would check it, and the plan runs `npm run build` for every task
+  that touches the crate. Left as it is, for the owner.
+
+What the review checked and found right is worth a line: the three
+worked examples at the three layers; the 14 literals and the 20812 pairs
+of the four files; pyNei's four tests; 24 random datasets of ploidies 1
+to 4 with half called genotypes against an independent loop, bit for
+bit; twelve mutations of the core each failing at least one test; every
+allocation asked with `try_reserve_exact`; no `unsafe`, no new
+dependency, rayon behind its `cfg` with the serial path beside it and
+never with the interpreter held; the vector handed to numpy without a
+copy.
+
+Tokens of the reviewers: `spec` 162229, `tests` 129376, `numbers` 89184,
+`errors` 132948, `api` 128888, `architecture` 108887, `binding` 86064.
+
+The fixes, one commit per layer by the subagent that wrote it: 1cbd94e
+the core, b39c30c the TypeScript side, a996652 the Python side. The
+subagent of the core, on the probe of one block of 5000 variants x 1000
+individuals, biallelic, one thread, release profile, best of 3: the pairs
+take 0.030 s as before the ranking of the alleles; 3000 variants of
+1000 individuals with one variant of the alleles 0 and 127 take 0.025 s
+for the pairs against 0.018 s biallelic, 282 words of `holds` per
+individual against 188, where it had 10240. Two things the subagent of
+the Python side decided and the owner may reverse: `Distances([],
+names=[])` is taken, with no individual, since an empty vector is what
+one individual gives and what none would give; and the messages name the
+type of what was given without an article, as the Rust ones do.
+
+Run by the orchestrator at a996652, after the fixes: `cargo fmt --all
+--check` exit 0; clippy no warning; `cargo test --workspace` `345
+passed`, 2 ignored; `cargo wasm-check` finished; `cargo test -p popnei
+--lib -- dists:: --list` 39 tests; ruff `20 files already formatted` and
+`All checks passed!`; `uv run maturin develop && uv run pytest` `208
+passed`, `tests/test_dists.py` `34 passed`; `npm run build && npm test`
+`tests 144`, `fail 0`. The wheel for pyodide built, and its smoke test
+then failed: the floor of pandas had been taken from `uv.lock`, 3.0.6,
+and pyodide 314.0.7 ships 3.0.2, which micropip refuses to go past. The
+floor is pyodide's now, as numpy's is, in 6647303, and at that commit
+the wheel builds, `node tests/pyodide/smoke.mjs` exits with 0 and
+`pytest` gives `208 passed`.
+
+How the work went. Two subagents fixing side by side in one tree each
+had a commit swallow the other's staged files once, with `git commit`
+without paths, and both undid it with a soft reset and no loss; the form
+that stages and commits in one call, `git commit -F - -- <paths>`, is
+the one that closes the window. Tokens of the fixes: 275438 for the
+core's subagent over its task and the fixes, 244672 the TypeScript
+one, 309568 the Python one.
