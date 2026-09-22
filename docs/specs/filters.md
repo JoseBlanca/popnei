@@ -728,6 +728,19 @@ impl Block {
 }
 ```
 
+Its first three refusals are three new cases of the error of the crate.
+They mark a defect of popnei, a `RuntimeError` in Python, and not a wrong
+input of a user, as the `keep` of `retain_vars` that has not one value for
+each variant of its block does: the indices come from
+`resolve_individuals`, which refuses the name behind each of them, so no
+call of a user reaches them. Each carries what finds the cause, the index
+and the individuals of the block for an index at or beyond them, and the
+index for one that is there twice. A block with variants and no genotypes
+is the error of a field that is not in the block, the one
+`VarFilter::filter_block` gives for the same block, and a block whose
+arrays are not of the size it states is the error `Block::check` finds,
+since the rows are cut out of the genotypes by those sizes.
+
 The chain of the filters of one pass, which both binding crates build with
 this function and neither writes itself. It takes the source of the pass
 and gives the outermost reader of the chain, so that whoever started the
