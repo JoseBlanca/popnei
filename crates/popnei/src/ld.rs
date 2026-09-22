@@ -16,8 +16,14 @@
 //! of each dosage. Everything this module computes is taken from those
 //! three, so the genotypes are read once for a whole set of variants and
 //! never again.
+//!
+//! [`r2_between`] gives the r² of every variant of one set of dosages
+//! against every variant of another, which is six products of those
+//! matrices and the formula of the spec over the six sums they give.
 
 use std::num::NonZeroUsize;
+
+use popnei_linalg::product;
 
 use crate::block::Block;
 use crate::error::{Error, Result};
@@ -297,6 +303,244 @@ impl LdDosages {
     }
 }
 
+/// The r² of every variant of `a` against every variant of `b`, one value
+/// for each pair.
+///
+/// `out` holds the variants of `a` one row after another, `b.num_vars()`
+/// values in each, and the value of the row `i` and the column `j` is the
+/// r² of the variant `i` of `a` and the variant `j` of `b`. A pair that
+/// has no r² is NaN, which is what "What it gives" of `docs/specs/ld.md`
+/// gives a pair whose two variants were called in no individual together,
+/// and one where the dosages of either variant are all the same among the
+/// individuals called at both. The r² of a variant against itself is 1
+/// when it has two dosages at least and NaN when it has not.
+///
+/// The six sums of every pair come from six products of the three
+/// matrices of the two sets, and four of them are enough when `a` and `b`
+/// are the same dosages given as one reference, which is how a tile of
+/// the matrix of r² against itself is asked for: n and Σxy are then each
+/// their own transpose, and Σy and Σyy are the transposes of Σx and Σxx.
+///
+/// # Errors
+///
+/// [`Error::LdR2OfAnotherSize`] when `out` does not hold one value for
+/// each pair, [`Error::LdDosagesOfOtherIndividuals`] when `a` and `b`
+/// were built over a different number of individuals, and
+/// [`Error::LdLinalg`] when a product could not be worked out.
+pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
+    if a.num_individuals != b.num_individuals {
+        return Err(Error::LdDosagesOfOtherIndividuals {
+            of_a: a.num_individuals,
+            of_b: b.num_individuals,
+        });
+    }
+    let num_values = out.len();
+    if a.num_vars.checked_mul(b.num_vars) != Some(num_values) {
+        return Err(Error::LdR2OfAnotherSize {
+            num_values,
+            num_vars_of_a: a.num_vars,
+            num_vars_of_b: b.num_vars,
+        });
+    }
+    if num_values == 0 {
+        // One of the two sets has no variant, so there is no pair and
+        // `out` holds nothing.
+        return Ok(());
+    }
+    if a.num_individuals == 0 {
+        // The sums of a pair run over the individuals both of its variants
+        // were called in and there is no individual, so every pair has an
+        // n of 0 and no r². The products are not taken, since the linear
+        // algebra sums over a dimension of 1 at least. No reader of popnei
+        // gives such dosages: a block of variants and no individual holds
+        // no genotype, which `of_block` refuses.
+        out.fill(f64::NAN);
+        return Ok(());
+    }
+    let sums = TheSumsOfThePairs::of(a, b, num_values)?;
+    let values = out
+        .iter_mut()
+        .zip(&sums.num_individuals)
+        .zip(&sums.products)
+        .zip(&sums.of_a)
+        .zip(&sums.of_b)
+        .zip(&sums.squares_of_a)
+        .zip(&sums.squares_of_b);
+    for ((((((r2, individuals), products), of_a), of_b), squares_of_a), squares_of_b) in values {
+        *r2 = the_r2_of_a_pair(
+            *individuals,
+            *products,
+            *of_a,
+            *of_b,
+            *squares_of_a,
+            *squares_of_b,
+        );
+    }
+    Ok(())
+}
+
+/// The six sums of every pair of two sets of variants, each one a matrix
+/// of the variants of the first set by those of the second, row after row.
+///
+/// They are the six products of "How it runs" of `docs/specs/ld.md`, and
+/// each sum runs over the individuals both variants of the pair were
+/// called in: the matrix of the called genotypes of one set holds a 0
+/// where a genotype was not called, so every product it is in leaves that
+/// individual out.
+struct TheSumsOfThePairs {
+    /// n, how many individuals both variants of the pair were called in.
+    num_individuals: Vec<f64>,
+    /// Σxy, the sum of the products of the two dosages of each of those
+    /// individuals.
+    products: Vec<f64>,
+    /// Σx, the sum of the dosages of the variant of the first set over
+    /// those individuals.
+    of_a: Vec<f64>,
+    /// Σy, the sum of the dosages of the variant of the second set over
+    /// them.
+    of_b: Vec<f64>,
+    /// Σxx, the sum of the squares of the dosages of the variant of the
+    /// first set over them.
+    squares_of_a: Vec<f64>,
+    /// Σyy, the sum of the squares of the dosages of the variant of the
+    /// second set over them.
+    squares_of_b: Vec<f64>,
+}
+
+impl TheSumsOfThePairs {
+    /// The six sums of every pair of `a` and `b`, which hold the same
+    /// individuals in the same order and have `num_values` pairs between
+    /// them, the variants of `a` times those of `b`, a number the caller
+    /// has counted.
+    ///
+    /// A product sums over the columns of its first matrix and the rows of
+    /// its second, and the three matrices of a set of dosages are variants
+    /// x individuals, so the matrices of `b` are transposed to individuals
+    /// x variants before they are multiplied. Each transpose copies 8
+    /// bytes for every variant of `b` and individual, 4.1 MB for 512
+    /// variants of 1000 individuals.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdLinalg`] when a product could not be worked out.
+    fn of(a: &LdDosages, b: &LdDosages, num_values: usize) -> Result<TheSumsOfThePairs> {
+        let (rows, inner, cols) = (a.num_vars, a.num_individuals, b.num_vars);
+        let called_of_b = the_transpose_of(&b.called, cols, inner);
+        let dosages_of_b = the_transpose_of(&b.dosages, cols, inner);
+        let mut num_individuals = vec![0.0; num_values];
+        let mut products = vec![0.0; num_values];
+        let mut of_a = vec![0.0; num_values];
+        let mut squares_of_a = vec![0.0; num_values];
+        let sum_of = |of_the_variants: &[f64], by_individual: &[f64], into: &mut [f64], sum| {
+            product(of_the_variants, rows, inner, by_individual, cols, into).map_err(|source| {
+                Error::LdLinalg {
+                    operation: sum,
+                    source,
+                }
+            })
+        };
+        sum_of(&a.called, &called_of_b, &mut num_individuals, "n")?;
+        sum_of(&a.dosages, &dosages_of_b, &mut products, "Σxy")?;
+        sum_of(&a.dosages, &called_of_b, &mut of_a, "Σx")?;
+        sum_of(&a.squares, &called_of_b, &mut squares_of_a, "Σxx")?;
+        let (of_b, squares_of_b) = if std::ptr::eq(a, b) {
+            // One set of variants against itself: the pair of the variants
+            // i and j holds the two variants of the pair of j and i the
+            // other way round, so Σy and Σyy are the transposes of Σx and
+            // Σxx and two of the six products are not taken.
+            (
+                the_transpose_of(&of_a, rows, cols),
+                the_transpose_of(&squares_of_a, rows, cols),
+            )
+        } else {
+            let squares_of_b_by_individual = the_transpose_of(&b.squares, cols, inner);
+            let mut of_b = vec![0.0; num_values];
+            let mut squares_of_b = vec![0.0; num_values];
+            sum_of(&a.called, &dosages_of_b, &mut of_b, "Σy")?;
+            sum_of(
+                &a.called,
+                &squares_of_b_by_individual,
+                &mut squares_of_b,
+                "Σyy",
+            )?;
+            (of_b, squares_of_b)
+        };
+        Ok(TheSumsOfThePairs {
+            num_individuals,
+            products,
+            of_a,
+            of_b,
+            squares_of_a,
+            squares_of_b,
+        })
+    }
+}
+
+/// The r² of one pair from its six sums, and NaN where it has none.
+///
+/// It is the formula of "What it gives" of `docs/specs/ld.md`, with n the
+/// individuals both variants of the pair were called in and every sum
+/// running over those individuals alone,
+///
+/// ```text
+/// r² = (n·Σxy − Σx·Σy)² / ((n·Σxx − (Σx)²) · (n·Σyy − (Σy)²))
+/// ```
+///
+/// A pair has no r² when n is 0 and when the dosages of one of its two
+/// variants are all the same among those individuals, and each of those
+/// leaves one of the two factors below the line at 0, which is the one
+/// test made here. Neither factor is ever below 0: n times the sum of the
+/// squares, less the square of the sum, is n² times the variance of the
+/// dosages.
+///
+/// The six sums are whole numbers and each is held exactly in an `f64`,
+/// so the only rounding is in the square and the division at the end.
+fn the_r2_of_a_pair(
+    individuals: f64,
+    products: f64,
+    of_a: f64,
+    of_b: f64,
+    squares_of_a: f64,
+    squares_of_b: f64,
+) -> f64 {
+    let above_the_line = individuals * products - of_a * of_b;
+    let spread_of_a = individuals * squares_of_a - of_a * of_a;
+    let spread_of_b = individuals * squares_of_b - of_b * of_b;
+    if spread_of_a <= 0.0 || spread_of_b <= 0.0 {
+        return f64::NAN;
+    }
+    above_the_line * above_the_line / (spread_of_a * spread_of_b)
+}
+
+/// The transpose of `matrix`, which holds `num_rows` rows of `num_cols`
+/// values one after another and whose transpose holds `num_cols` rows of
+/// `num_rows` values.
+///
+/// The three matrices of [`LdDosages`] hold exactly their variants times
+/// their individuals, and so do the sums of a set of pairs: a matrix that
+/// held more values than its rows times its columns would be transposed
+/// up to that many, and one that held fewer would leave the rest of the
+/// transpose at 0.
+fn the_transpose_of(matrix: &[f64], num_rows: usize, num_cols: usize) -> Vec<f64> {
+    let mut transposed = vec![0.0; matrix.len()];
+    if num_rows == 0 || num_cols == 0 {
+        // A matrix with no row or no column has no value to transpose, and
+        // neither of the two runs below is over a chunk of nothing.
+        return transposed;
+    }
+    for (col, row_of_the_transpose) in transposed.chunks_exact_mut(num_rows).enumerate() {
+        let values = row_of_the_transpose
+            .iter_mut()
+            .zip(matrix.chunks_exact(num_cols));
+        for (value, row) in values {
+            if let Some(found) = row.get(col) {
+                *value = *found;
+            }
+        }
+    }
+    transposed
+}
+
 /// How many values a matrix of `num_vars` variants of `num_individuals`
 /// individuals holds, or `None` when they are more than the linear algebra
 /// counts in.
@@ -430,7 +674,10 @@ fn the_dosage_of(value: f64) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, the_values_of};
+    use super::{
+        LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheSumsOfThePairs,
+        r2_between, the_values_of,
+    };
     use crate::block::Block;
     use crate::error::Error;
     use crate::variant::MISSING_ALLELE;
@@ -803,5 +1050,358 @@ mod tests {
         assert_eq!((dosages.num_vars(), dosages.num_individuals()), (0, 6));
         assert!(dosages.dosages(0).is_none(), "a variant has dosages");
         assert_eq!(dosages.maf(0), None);
+    }
+
+    /// Six of the seven pairs of the worked example of "How it is
+    /// verified" of `docs/specs/ld.md`: the two variants of the pair,
+    /// counted from 0, its six sums, n, Σx, Σy, Σxy, Σxx and Σyy, and its
+    /// r². The seventh, v1 against v4, has no sums in the spec, since v4
+    /// has one dosage in every individual, and it is asserted as NaN with
+    /// the other pairs of v4.
+    const THE_PAIRS_OF_THE_EXAMPLE: [(usize, usize, [f64; 6], f64); 6] = [
+        (0, 1, [6.0, 6.0, 4.0, 1.0, 10.0, 6.0], 0.675),
+        (0, 2, [5.0, 4.0, 3.0, 5.0, 6.0, 5.0], 0.7544642857142857),
+        (0, 4, [6.0, 6.0, 6.0, 5.0, 10.0, 10.0], 0.0625),
+        (1, 2, [5.0, 4.0, 3.0, 0.0, 6.0, 5.0], 0.6428571428571429),
+        (1, 4, [6.0, 4.0, 6.0, 4.0, 6.0, 10.0], 0.0),
+        (2, 4, [5.0, 3.0, 4.0, 1.0, 5.0, 6.0], 0.21875),
+    ];
+
+    /// The r² of every pair of the two sets of dosages, the variants of
+    /// the first one row after another.
+    fn the_r2_of(a: &LdDosages, b: &LdDosages) -> Vec<f64> {
+        let num_values = a
+            .num_vars()
+            .checked_mul(b.num_vars())
+            .expect("one value for each pair");
+        let mut r2 = vec![0.0; num_values];
+        r2_between(a, b, &mut r2).expect("the r²");
+        r2
+    }
+
+    /// The value of the pair of the variant `of_a` of the first set and
+    /// the variant `of_b` of the second, in a matrix that holds
+    /// `num_vars_of_b` values in each row.
+    fn of_the_pair(matrix: &[f64], num_vars_of_b: usize, of_a: usize, of_b: usize) -> f64 {
+        matrix
+            .chunks_exact(num_vars_of_b)
+            .nth(of_a)
+            .and_then(|row| row.get(of_b))
+            .copied()
+            .unwrap_or_else(|| panic!("the pair {of_a}, {of_b} is not in the matrix"))
+    }
+
+    /// That the r² is the one of the spec, within the 1e-12 relative of
+    /// "How it is verified", which for the 0 of a pair whose dosages do
+    /// not vary together at all is equality.
+    fn assert_the_r2_is(found: f64, expected: f64, what: &str) {
+        assert!(
+            (found - expected).abs() <= 1e-12 * expected.abs(),
+            "{what}: the r² is {found} and not {expected}"
+        );
+    }
+
+    /// That the six sums of a pair are the whole numbers of the spec.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the six sums are whole numbers below 2^53, which an f64 holds exactly, so one that is not the number of the spec is not a rounding"
+    )]
+    fn assert_the_sums_are(found: &[f64; 6], expected: &[f64; 6], what: &str) {
+        let named = ["n", "Σx", "Σy", "Σxy", "Σxx", "Σyy"];
+        for (sum, (found, expected)) in named.iter().zip(found.iter().zip(expected)) {
+            assert!(
+                *found == *expected,
+                "{what}: {sum} is {found} and not {expected}"
+            );
+        }
+    }
+
+    /// That a matrix of r² holds the values expected, `None` for a pair
+    /// that has none.
+    fn assert_the_matrix_is(found: &[f64], expected: &[Option<f64>], what: &str) {
+        assert_eq!(
+            found.len(),
+            expected.len(),
+            "{what}: the values are not as many"
+        );
+        for (at, (found, expected)) in found.iter().zip(expected).enumerate() {
+            match expected {
+                None => assert!(
+                    found.is_nan(),
+                    "{what}: the pair {at} is {found} and not NaN"
+                ),
+                Some(expected) => {
+                    assert_the_r2_is(*found, *expected, &format!("{what}: the pair {at}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_r2_of_the_worked_example_is_the_one_of_the_spec() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let matrix = the_r2_of(&dosages, &dosages);
+        for (of_a, of_b, _, expected) in THE_PAIRS_OF_THE_EXAMPLE {
+            assert_the_r2_is(
+                of_the_pair(&matrix, 5, of_a, of_b),
+                expected,
+                &format!("the pair of the variants {of_a} and {of_b}"),
+            );
+            // r² is the same whichever variant of the pair comes first.
+            assert_the_r2_is(
+                of_the_pair(&matrix, 5, of_b, of_a),
+                expected,
+                &format!("the pair of the variants {of_b} and {of_a}"),
+            );
+        }
+        // v4, the variant 3, has one dosage in every individual, so it has
+        // no r² against any variant, itself among them, and the seventh
+        // pair of the spec, v1 against v4, is one of these.
+        for var in 0..5 {
+            let of_v4 = of_the_pair(&matrix, 5, 3, var);
+            assert!(
+                of_v4.is_nan(),
+                "the pair of v4 and the variant {var}: {of_v4}"
+            );
+            let against_v4 = of_the_pair(&matrix, 5, var, 3);
+            assert!(
+                against_v4.is_nan(),
+                "the pair of the variant {var} and v4: {against_v4}"
+            );
+        }
+        // A variant that has two dosages among its called genotypes has an
+        // r² of 1 against itself.
+        for var in [0, 1, 2, 4] {
+            assert_the_r2_is(
+                of_the_pair(&matrix, 5, var, var),
+                1.0,
+                &format!("the variant {var} against itself"),
+            );
+        }
+    }
+
+    #[test]
+    fn the_six_sums_of_the_worked_example_are_the_whole_numbers_of_the_spec() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 25).expect("the sums");
+        for (of_a, of_b, expected, _) in THE_PAIRS_OF_THE_EXAMPLE {
+            let found = [
+                of_the_pair(&sums.num_individuals, 5, of_a, of_b),
+                of_the_pair(&sums.of_a, 5, of_a, of_b),
+                of_the_pair(&sums.of_b, 5, of_a, of_b),
+                of_the_pair(&sums.products, 5, of_a, of_b),
+                of_the_pair(&sums.squares_of_a, 5, of_a, of_b),
+                of_the_pair(&sums.squares_of_b, 5, of_a, of_b),
+            ];
+            assert_the_sums_are(
+                &found,
+                &expected,
+                &format!("the pair of the variants {of_a} and {of_b}"),
+            );
+            // The same pair the other way round has Σx and Σy, and Σxx and
+            // Σyy, the other way round too.
+            let [n, of_x, of_y, products, squares_of_x, squares_of_y] = expected;
+            let back = [
+                of_the_pair(&sums.num_individuals, 5, of_b, of_a),
+                of_the_pair(&sums.of_a, 5, of_b, of_a),
+                of_the_pair(&sums.of_b, 5, of_b, of_a),
+                of_the_pair(&sums.products, 5, of_b, of_a),
+                of_the_pair(&sums.squares_of_a, 5, of_b, of_a),
+                of_the_pair(&sums.squares_of_b, 5, of_b, of_a),
+            ];
+            assert_the_sums_are(
+                &back,
+                &[n, of_y, of_x, products, squares_of_y, squares_of_x],
+                &format!("the pair of the variants {of_b} and {of_a}"),
+            );
+        }
+    }
+
+    #[test]
+    fn the_r2_of_two_sets_of_different_sizes_is_that_of_each_of_their_pairs() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let first_two = dosages.rows(0, 2).expect("v1 and v2");
+        let last_three = dosages.rows(2, 3).expect("v3, v4 and v5");
+        // Two sets that are not the same dosages, so the six products are
+        // taken: the two rows of v1 and of v2 against the three columns of
+        // v3, of v4, which has no r², and of v5.
+        assert_the_matrix_is(
+            &the_r2_of(&first_two, &last_three),
+            &[
+                Some(0.7544642857142857),
+                None,
+                Some(0.0625),
+                Some(0.6428571428571429),
+                None,
+                Some(0.0),
+            ],
+            "the two variants against the three",
+        );
+        assert_the_matrix_is(
+            &the_r2_of(&last_three, &first_two),
+            &[
+                Some(0.7544642857142857),
+                Some(0.6428571428571429),
+                None,
+                None,
+                Some(0.0625),
+                Some(0.0),
+            ],
+            "the three variants against the two",
+        );
+        // One variant against the five, which is the shape of pyNei's
+        // `test_the_r_matrix_does_not_build_the_square_of_both_sets_together`.
+        let v3 = dosages.rows(2, 1).expect("v3");
+        assert_the_matrix_is(
+            &the_r2_of(&v3, &dosages),
+            &[
+                Some(0.7544642857142857),
+                Some(0.6428571428571429),
+                Some(1.0),
+                None,
+                Some(0.21875),
+            ],
+            "v3 against the five variants",
+        );
+    }
+
+    #[test]
+    fn a_pair_whose_variants_were_called_in_no_individual_together_has_no_r2() {
+        // Two variants of four individuals, each called in the two the
+        // other was not: they have two dosages each, and no individual to
+        // be counted in a pair.
+        let block = block_of(
+            &[&[0, 0, 0, 1, M, M, M, M], &[M, M, M, M, 0, 0, 0, 1]],
+            4,
+            2,
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        assert!(
+            dosages.has_variance(0) && dosages.has_variance(1),
+            "a variant of 0/0 and 0/1 has one dosage"
+        );
+        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 4).expect("the sums");
+        assert_the_sums_are(
+            &[
+                of_the_pair(&sums.num_individuals, 2, 0, 1),
+                of_the_pair(&sums.of_a, 2, 0, 1),
+                of_the_pair(&sums.of_b, 2, 0, 1),
+                of_the_pair(&sums.products, 2, 0, 1),
+                of_the_pair(&sums.squares_of_a, 2, 0, 1),
+                of_the_pair(&sums.squares_of_b, 2, 0, 1),
+            ],
+            &[0.0; 6],
+            "the pair of two variants with no individual in common",
+        );
+        assert_the_matrix_is(
+            &the_r2_of(&dosages, &dosages),
+            &[Some(1.0), None, None, Some(1.0)],
+            "two variants called in no individual together",
+        );
+    }
+
+    #[test]
+    fn two_variants_with_variance_have_no_r2_when_the_individuals_of_the_pair_hold_one_dosage() {
+        // The first variant is 0/0 0/0 0/1 0/1 and the second 0/0 0/1 ./.
+        // ./., so both have two dosages among their called genotypes and
+        // the two individuals called at both hold 0 at the first.
+        let block = block_of(
+            &[&[0, 0, 0, 0, 0, 1, 0, 1], &[0, 0, 0, 1, M, M, M, M]],
+            4,
+            2,
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        assert!(
+            dosages.has_variance(0) && dosages.has_variance(1),
+            "one of the two variants has one dosage"
+        );
+        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 4).expect("the sums");
+        assert_the_sums_are(
+            &[
+                of_the_pair(&sums.num_individuals, 2, 0, 1),
+                of_the_pair(&sums.of_a, 2, 0, 1),
+                of_the_pair(&sums.of_b, 2, 0, 1),
+                of_the_pair(&sums.products, 2, 0, 1),
+                of_the_pair(&sums.squares_of_a, 2, 0, 1),
+                of_the_pair(&sums.squares_of_b, 2, 0, 1),
+            ],
+            &[2.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+            "the pair of two individuals of one dosage at the first variant",
+        );
+        assert_the_matrix_is(
+            &the_r2_of(&dosages, &dosages),
+            &[Some(1.0), None, None, Some(1.0)],
+            "two variants whose shared individuals hold one dosage",
+        );
+    }
+
+    #[test]
+    fn the_r2_of_a_set_of_no_variant_writes_nothing() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let none = dosages.rows(5, 0).expect("no variant");
+        assert!(the_r2_of(&none, &dosages).is_empty());
+        assert!(the_r2_of(&dosages, &none).is_empty());
+        assert!(the_r2_of(&none, &none).is_empty());
+    }
+
+    #[test]
+    fn dosages_of_no_individual_give_no_r2_for_any_pair() {
+        // No block of popnei gives these: one of variants and no
+        // individual holds no genotype, which `of_block` refuses. Every
+        // pair of them has an n of 0.
+        let dosages = LdDosages {
+            num_vars: 2,
+            num_individuals: 0,
+            dosages: Vec::new(),
+            called: Vec::new(),
+            squares: Vec::new(),
+            has_variance: vec![false; 2],
+            maf: vec![None; 2],
+        };
+        assert_the_matrix_is(
+            &the_r2_of(&dosages, &dosages),
+            &[None; 4],
+            "two variants of no individual",
+        );
+    }
+
+    #[test]
+    fn an_out_that_does_not_hold_one_value_for_each_pair_is_refused() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let two = dosages.rows(0, 2).expect("v1 and v2");
+        for (num_values, num_vars_of_b) in [(24, 5), (26, 5), (0, 5), (9, 2)] {
+            let against = match num_vars_of_b {
+                2 => &two,
+                _ => &dosages,
+            };
+            let mut r2 = vec![0.0; num_values];
+            match r2_between(&dosages, against, &mut r2) {
+                Err(Error::LdR2OfAnotherSize {
+                    num_values: found,
+                    num_vars_of_a,
+                    num_vars_of_b: found_of_b,
+                }) => {
+                    assert_eq!(
+                        (found, num_vars_of_a, found_of_b),
+                        (num_values, 5, num_vars_of_b)
+                    );
+                }
+                other => panic!("a buffer of {num_values} values was taken: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn dosages_of_another_number_of_individuals_are_refused() {
+        let block = the_worked_example();
+        let of_six = LdDosages::of_block(&block, &[]).expect("the dosages of the six");
+        let of_two = LdDosages::of_block(&block, &[0, 1]).expect("the dosages of two");
+        let mut r2 = vec![0.0; 25];
+        match r2_between(&of_six, &of_two, &mut r2) {
+            Err(Error::LdDosagesOfOtherIndividuals { of_a, of_b }) => {
+                assert_eq!((of_a, of_b), (6, 2));
+            }
+            other => panic!("dosages of six individuals against two were taken: {other:?}"),
+        }
     }
 }

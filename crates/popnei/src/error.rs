@@ -592,6 +592,54 @@ pub enum Error {
         ploidy: usize,
     },
 
+    /// The r² of two sets of dosages that were built over a different
+    /// number of individuals was asked for. The sums of a pair run over
+    /// the individuals both of its variants were called in, which are the
+    /// value at the same place of the two sets, so the two hold the same
+    /// individuals in the same order. It is a defect of popnei, and in
+    /// Python it is a `ValueError`, as every case of this module is.
+    #[error(
+        "the r² of dosages of {of_a} individuals against dosages of {of_b} was asked for, and the sums of a pair run over the individuals both of its variants were called in, which are the same individuals in the same order in both sets"
+    )]
+    LdDosagesOfOtherIndividuals {
+        /// How many individuals the first set of dosages was built over.
+        of_a: usize,
+        /// How many individuals the second set was built over.
+        of_b: usize,
+    },
+
+    /// The buffer given for the r² of two sets of variants does not hold
+    /// one value for each pair of them. It is a defect of popnei, and in
+    /// Python it is a `ValueError`, as every case of this module is.
+    #[error(
+        "the r² of {num_vars_of_a} variants against {num_vars_of_b} is one value for each pair of them, and the buffer given holds {num_values}"
+    )]
+    LdR2OfAnotherSize {
+        /// How many values the buffer holds.
+        num_values: usize,
+        /// How many variants the first set of dosages has.
+        num_vars_of_a: usize,
+        /// How many variants the second set has.
+        num_vars_of_b: usize,
+    },
+
+    /// One of the products the r² of two sets of variants is worked out
+    /// from that the crate `popnei-linalg` did not do, with the sum it
+    /// gives. The three matrices hold whole numbers and their sizes are
+    /// checked where the dosages are built, so what is left is a result of
+    /// more values than the routines of BLAS and LAPACK count in, the r²
+    /// of two sets whose variants multiplied together are more than
+    /// 2147483647. In Python it is a `ValueError`, as every case of this
+    /// module is.
+    #[error("the {operation} of the r² of two sets of variants could not be worked out: {source}")]
+    LdLinalg {
+        /// Which of the six sums of the formula was being computed, as
+        /// "How it runs" of `docs/specs/ld.md` names them.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
