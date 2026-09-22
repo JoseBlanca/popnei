@@ -197,3 +197,163 @@ with everything else `make_reference.py` writes rather than beside
 `many.vcf`, and `run_plink2.sh` makes and compares six files now instead
 of five. That the script still exits 0 is what proves the generator
 behind every literal of the two specs was not disturbed by the new work.
+
+### Work package 1 as a whole
+
+It finished as planned. The six deliverables, each with the command the
+plan gives for it, run by the orchestrator on the last commit:
+
+| Deliverable | Command | What it gave |
+| --- | --- | --- |
+| 1, the reference dataset | `tests/reference/ld/run_plink2.sh` into an empty directory | exit 0, which is the script saying none of the six files it made again differed from the ones in git |
+| 2, one major allele | `grep -c "fn the_major_allele" crates/popnei/src/pca.rs` | `0` |
+| 3, the worked example | `cargo test -p popnei --lib ld::` | the seven pairs with their six whole numbers, and their r² equal to the spec's decimals with the tolerance at 0 |
+| 4, every pair against plink2 | the same | 93096 pairs with an r², 31654 NaN, none of the 93096 differing from plink2 at all |
+| 5, the dosages against pyNei | the same | every one of the 25000 equal to what `to_012` gave |
+| 6, the tests exist | `cargo test -p popnei --lib ld:: -- --list` | `35 tests`, where the plan started from `0 tests` |
+
+The seven checks of the `coding` skill on the last commit: `cargo fmt
+--all --check` no output; `cargo clippy --workspace --all-targets -- -D
+warnings` no warning; `cargo test --workspace` `431 passed` in the core
+crate and `35 passed` in the linalg crate, from 395 and 35; the same with
+`--no-default-features`, which is faer instead of the system BLAS, `431
+passed` and `30 passed`; `cargo wasm-check` finished; ruff `22 files
+already formatted` and `All checks passed!`; `uv run maturin develop &&
+uv run pytest` `242 passed`, unchanged, since nothing of this work
+package reaches Python.
+
+#### What the review found
+
+Six reviewers read the work package: spec, tests, numbers, errors, api
+and binding. Seventeen findings held and all are fixed, in eleven
+commits from 98f8545 to b3b35b0. Nothing was set aside as not holding.
+
+Three reviewers each wrote their own implementation of the formula and
+compared it with the stored numbers, one of them in exact rational
+arithmetic: all three got a relative difference of 0 from plink2 over the
+93096 pairs, and one of them ran pyNei's `to_012` itself and matched the
+stored dosages. So the agreement rests on three implementations and not
+on the one under test. The counts the tests assert were recomputed from
+the files rather than read from the constants: 54 variants of more than
+two alleles and 257 half called genotypes in `many.vcf`, 68 variants of
+no variance in `ld.vcf.gz`.
+
+What mattered most, in the order of what it would have cost:
+
+- **A population that names an individual twice was counted twice**, in
+  n, in the major allele frequency and in every sum, and nothing said
+  so: the r² of two variants of the worked example goes from 0.0625 to
+  0.051470588235294115 when one individual of six is repeated.
+  `of_block` refuses it now.
+- **`r2_between` compared how many individuals the two sets held, not
+  which**, although the message of its own error said they hold the same
+  individuals in the same order. Two sets over individuals that do not
+  overlap gave a number. A set of dosages now records which individuals
+  it was built over and the two are compared.
+- **The claim that the arithmetic is exact had no bound and nothing
+  enforced one.** What has to be held exactly is not the six sums but
+  the four products of the formula, so the limit is the individuals
+  times the ploidy at most 94906265, which is 47453132 diploid
+  individuals or 372181 at a ploidy of 255. Above it the r² loses
+  digits with no word: 1.3e-12 relative at a million individuals of
+  ploidy 255, wider than the tolerance the spec compares within. It is
+  seven orders away from the 10000 diploid individuals popnei is built
+  for. `of_block` refuses beyond it and the spec says where the
+  arithmetic stops.
+- **Ten allocations would have ended the process** instead of returning
+  an error, where `crates/popnei/src/dists.rs` states the crate's rule
+  and its reason, and where the spec asks `try_reserve_exact` of the
+  matrix of `calc_r2_matrix`. A block `of_block` accepted could ask for
+  17 GB in each of three vectors; under wasm, where a `usize` is 32
+  bits, the byte count overflowed above 2^29 and panicked. All of them
+  ask the machine now, through a case of the error called `LdNoMemory`.
+- **Four of popnei's own defects would have reached Python as
+  `ValueError`**, the exception a user catches for their own mistake,
+  where the matching cases of the principal component analysis are a
+  `RuntimeError`. Nothing in Python reached them yet, since the binding
+  of this module is task 2.2, so no user could have seen it. They are a
+  `RuntimeError` now and the spec says which cases are which and why.
+- **One mutation of fifteen was caught by no test.** The four-product
+  shortcut fires when the two sets are the same object, and every test
+  of the six-product path used sets of different sizes, so replacing the
+  condition with one that compares sizes left all 26 tests passing while
+  giving r² values above 1. Task 2.1 of the next work package is a tiler
+  that compares tile sizes on that line. There is a test now, and the
+  orchestrator reran the mutation against it and saw it fail.
+- **The major allele frequency was written twice**, in `ld.rs` and in
+  `filters.rs`, one commit after the major allele itself was moved into
+  `variant` so that it would be worked out in one place. It is in
+  `variant` now and both call it.
+- **plink2's matrix for the worked example was stored and read by no
+  test.** The test of the worked example asserted hand-typed constants
+  with nothing tying them to `example.vcf`. It reads the stored matrix
+  now, so the spec's decimals, the VCF and plink2 all have to agree.
+
+Smaller ones, each fixed: the test of every pair compared only the upper
+triangle, so the diagonal and the lower half of the 500 x 500 matrix were
+unchecked, and the spec asks that the 68 variants of no variance have NaN
+in their row, their column and their diagonal cell; two test helpers said
+their tolerance was zero and used 1e-12 and 1e-15, and the tests pass at
+zero; `MAX_VALUES_OF_THE_DOSAGES` was a third copy of a limit the linalg
+crate kept private; the error list of `of_block` omitted the cases the
+counting of alleles refuses; a genotype that was not in the row left the
+previous variant's genotype behind rather than a missing one; and a float
+reached a `u8` with no check for NaN or range.
+
+#### What the owner should know
+
+The sentence this report's orchestrator added to the spec on 22 September
+2026, that no reader of popnei gives a block of more than 255 alleles in
+a genotype, was wrong. It holds for the VCF reader, which caps at 255,
+and not for the vars reader, which takes the ploidy from the `popnei` key
+of the file with no upper bound. So four of the cases this module refuses
+are reachable from a vars file, and the spec says so now. Whether the
+vars reader should cap the ploidy itself belongs to
+`docs/specs/io_vars.md` and not to this plan.
+
+The question the plan's "What could go wrong" raised has come back with a
+measurement, and it is the one thing waiting on the owner.
+`crates/popnei-linalg` has no product that takes its second matrix
+transposed, and the three matrices are variants x individuals, so
+`r2_between` transposes its second matrix itself. The `coding` skill says
+that linear algebra goes through the linalg crate and nowhere else and
+that no code of the core crate does its own, which the transpose in
+`ld.rs` is. A transpose of a 512-variant by 1000-individual matrix takes
+0.422 ms and an off-diagonal tile pair does three of them, so the matrix
+of 5000 variants of work package 4 would spend about 69 ms of its 0.50 s
+target copying, a seventh of it; transposing each tile once instead of
+once per pair brings that to about 13 ms without touching linalg. Adding
+the product to linalg costs one flag in the `dgemm` call of `blas.rs` and
+a `.transpose()` on the matrix reference of `faer.rs`, both of which
+those libraries do internally, and it changes `docs/specs/linalg.md`, a
+spec this plan does not build.
+
+One finding was left for the owner rather than acted on: `has_variance`
+and `maf` answer `false` and `None` both for a variant that has no data
+and for an index that is not a variant of the set at all, so a tile or a
+window that runs one past its end writes a NaN row or drops a variant
+with no error. The spec fixes those two signatures, `-> bool` and
+`-> Option<f64>`, so narrowing them is the owner's.
+
+#### How the work went
+
+The five tasks cost their subagents 102k, 97k, 206k, 181k and 189k
+tokens. The two that were only a move, 1.1 and 1.2, cost half of what
+the three that wrote the module cost. The six reviewers cost 144k, 121k,
+134k, 163k, 135k and 92k, and the subagent that fixed the seventeen
+findings ran to 324k in all, having written `r2_between` first.
+
+Nothing had to be sent back to a subagent as wrong. The orchestrator
+checked every claim that the next step rested on by running it, and twice
+found the claim understated: the r² of the worked example and of the
+whole dataset is not within the tolerance but equal to plink2's bits,
+which was confirmed by setting the tolerance to 0 and rerunning.
+
+Two things about the orchestration are worth the next plan's attention.
+The orchestrator left task 1.5 unticked in the plan while it checked the
+deliverables, and it was a reviewer that noticed. And a figure from a
+subagent's hand-back, the size of the transposes, went into this report
+without being recomputed and was wrong: two of the four transposes of a
+set against itself are 4.1 MB and not 2.1 MB. The `following-plans` skill
+says to check what a subagent claims when the next step rests on it; no
+step rested on either of these, and both were wrong in the record.
