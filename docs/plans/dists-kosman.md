@@ -253,7 +253,7 @@ the calculation in it.
   file of `big.vcf` written outside the repository beside `big.vars`.
   Serves deliverable 1. Its numbers change no code; a number under the target is reported,
   and what to do about it is the owner's.
-- [ ] 3.2 The pyodide smoke test with the worked example, in
+- [x] 3.2 The pyodide smoke test with the worked example, in
   `tests/pyodide/smoke.mjs`, and the build. Serves deliverable 2. Can
   run side by side with 3.1.
 
