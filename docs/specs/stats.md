@@ -1095,12 +1095,26 @@ pub fn count_alleles_of(gts: &[i8], ploidy: usize, individuals: &[usize],
 The bins of the histogram. The edges are computed as "In Python and in
 TypeScript" of the pass says, and a value is placed by them.
 
+`MAX_NUM_BINS`, 100000, is the most bins a histogram is built with, and a
+`num_bins` above it is refused like a `num_bins` of 0, a `ValueError` in
+Python. A histogram a person reads has tens of bins, pyNei's default is
+40, and each bin is a count of 8 bytes for every population and every
+statistic, held once by the pass and once more by each chunk of rows a
+thread is reading, so 100000 bins of the four statistics of one population
+are 3.2 MB per chunk. Above the bound the counts are a vector no machine
+gives: 2^60 bins are the `PanicException` of a capacity that overflowed,
+which derives from `BaseException`, so `except Exception` does not catch
+it and a notebook dies, and 1e12 bins abort the interpreter where the
+allocation fails.
+
 ```rust
 pub struct HistBins { /* private */ }
 impl HistBins {
     /// `num_bins` equal widths from `start` to `end`. An error when
-    /// `num_bins` is 0, `start` is not below `end`, or either is not a
-    /// number.
+    /// `num_bins` is 0 or above `MAX_NUM_BINS`, when `start` is not below
+    /// `end`, when either is not a number, and when the distance between
+    /// the two is above the largest float64, which leaves the edges NaN
+    /// and infinite instead of going up.
     pub fn linear(start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
     /// `num_bins` equal ratios. As above, and an error when `start` is
     /// 0 or below.
