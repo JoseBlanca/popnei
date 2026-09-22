@@ -2337,11 +2337,11 @@ mod maf {
 
 #[cfg(test)]
 mod exp_het {
-    use super::ExpHet;
     use super::fixtures::{
         POP1, POP2, THE_SIX_VARIANTS, THE_THREE_VARIANTS, allele_counts, allele_counts_of,
         assert_value,
     };
+    use super::{DEFAULT_HIST_RANGE, DEFAULT_NUM_BINS, ExpHet, HistBins};
     use crate::error::Error;
 
     /// One unit of the last of the six digits plink2 and the spec print of
@@ -2526,6 +2526,34 @@ mod exp_het {
                 &format!("the expected heterozygosity at ploidy 1, unbiased {unbiased}"),
             );
         }
+    }
+
+    /// The 0 of the exponent 1 is the 0 of exact arithmetic: the
+    /// frequencies are rounded, so their sum is not always 1. A haploid
+    /// variant of nine individuals with the alleles 0, 1, 1, 1, 1, 1, 2, 3
+    /// and 4 gives -2.220446049250313e-16, which numpy computes too, and
+    /// that value falls below the range of the default histogram, so the
+    /// variant counts in the mean and in no bin. popnei does not round it
+    /// to 0, which would count it in the first bin where pyNei counts it in
+    /// none.
+    ///
+    /// The value is compared to the bit: the frequencies and their sum are
+    /// two of the four operations, which are rounded the same on every
+    /// machine popnei runs on.
+    #[test]
+    fn at_ploidy_1_a_variant_can_fall_a_little_below_0() {
+        let exp_het = ExpHet::new(1, 1, 1).unwrap();
+        let counts = allele_counts(&[1, 5, 1, 1, 1]);
+        for unbiased in [false, true] {
+            assert_eq!(
+                exp_het.of_var(&counts, 9, unbiased),
+                Some(-2.220_446_049_250_313e-16),
+                "the haploid variant of nine individuals, unbiased {unbiased}"
+            );
+        }
+        let bins = HistBins::linear(DEFAULT_HIST_RANGE.0, DEFAULT_HIST_RANGE.1, DEFAULT_NUM_BINS)
+            .expect("the default histogram");
+        assert_eq!(bins.bin_of(-2.220_446_049_250_313e-16), None);
     }
 
     /// A population that has called fewer than `min_num_individuals`
