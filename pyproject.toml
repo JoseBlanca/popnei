@@ -27,10 +27,11 @@ requires-python = ">=3.14"
 # pandas holds the square matrix of a `Distances`, indexed by the names of
 # the individuals, which is what a user gives to a tree or a principal
 # coordinate analysis. It is imported by `popnei.dists` and so by `import
-# popnei`, and the version is the one this project resolves to, which is
-# what the tests and the wheel for pyodide are run with; nothing here needs
-# a feature of pandas 3, and an older one is untried.
-dependencies = ["numpy>=2.4.6", "pandas>=3.0.6"]
+# popnei`. It is the pandas of the pyodide the wheel is built for, 3.0.2 in
+# pyodide 314.0.7, as numpy's floor is its numpy: micropip refuses a wheel
+# that asks for more than what pyodide ships, and nothing here needs a
+# newer pandas.
+dependencies = ["numpy>=2.4.6", "pandas>=3.0.2"]
 
 [project.urls]
 repository = "https://github.com/JoseBlanca/popnei"
