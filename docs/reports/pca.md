@@ -80,7 +80,8 @@ alone is in the tree of the wasm target, under faer, carrying the
 feature; the core crate depends on the crate with a `use popnei_linalg
 as _;`, which is what keeps it in the link until work package 2 calls
 it. The extension module that maturin links natively carries
-`-framework Accelerate` through `accelerate-src` with no build script:
+`-framework Accelerate` through the build script of `accelerate-src`,
+and popnei needs none of its own:
 `otool -L` on `python/popnei/_core.cpython-314-darwin.so` lists the
 framework. So the first "What could go wrong" of the work package did
 not happen. The subagent had used 232493 tokens at the end of its three
@@ -111,3 +112,88 @@ The deliverables, checked by the orchestrator at 0e4791d:
    `306 passed`, 2 ignored, and `20 passed`; ruff `18 files already
    formatted` and `All checks passed!`; `uv run maturin develop && uv
    run pytest` `174 passed`.
+
+The review, six reviewers at 0e4791d, spec, tests, numbers, errors, api
+and architecture, and the fixes at 27f66e1 to dbcecb3. What was found
+and is fixed:
+
+- The `gemm` line of the workspace kept gemm's default features, which
+  put rayon and ten more crates into both wasm trees, against "Threads"
+  of the spec; `default-features = false` takes them out and the
+  feature `wasm-simd128-enable` still reaches the one gemm faer uses.
+- Nothing above the linalg crate could turn BLAS off, so the spec's
+  sentence that a machine with no BLAS builds popnei held for the crate
+  alone; the core and the Python binding crate now have a feature `blas`,
+  on by default, that forwards to the crate's, and `cargo test -p popnei
+  --no-default-features` passes on faer.
+- Four tests could not fail: the product test had a symmetric result on
+  a 2 x 2, so a transposed `c` passed; `c` was always zeros, so a product
+  that accumulated passed; no test put a value that is not finite on the
+  diagonal of `g`, so a check cut one entry short passed; and the two
+  comparison helpers of the tests returned false on NaN, so an all NaN
+  eigendecomposition passed every assertion. Each has its test now.
+- Two silent returns in the reversal of the eigenvectors of the BLAS
+  backend, unreachable today, would have paired values from the largest
+  with vectors from the smallest; the reversal is made once in the
+  crate's own function over a length it has checked.
+- A `g` longer than its dimensions was truncated in silence by the
+  eigendecomposition and written in part by the product; both refuse it,
+  and the spec says so.
+- The workspace of `dsyevd`, 2n² floats, was allocated with `vec!`,
+  which ends the process when the machine has not the memory; it is
+  asked for with `try_reserve` and the crate's `Error` has a case
+  `Memory`, added to the spec.
+- The message of a decomposition that did not converge said "it gave
+  the info 0" for faer, which gives none, and "did not converge" for a
+  negative info of LAPACK, which is an argument the routine refused, a
+  defect of popnei; the three cases have their own message.
+- A dimension above `i32::MAX`, the integer of BLAS, was an error on one
+  backend only, and the count of values of a matrix was not bounded
+  against it; both backends refuse them in the crate, and the spec
+  names the limit.
+- The 12 digit literals of the spec left the test of the smallest
+  eigenvalue, compared within 1e-12 relative, 3.6e-13 of its budget for
+  the rounding of the literal; the spec and the test carry the digits
+  that name numpy's `f64`.
+- `Eigen` derived `PartialEq`, an `==` on floats that nothing used;
+  dropped. Doc comments, one function name and a comment corrected.
+
+Not taken, with the reason: the panic inside faer's
+`get_global_parallelism` when a program disabled it, which nothing in
+popnei does; a test of no convergence coming out of `dsyevd`, for which
+no input is known; a test of the threads under wasm, which work package
+4 runs; `Error` not `#[non_exhaustive]`, which is the spec's enum.
+
+What the owner should know:
+
+- The two scans for values that are not finite, which "Errors" of the
+  spec asks for before any routine runs, take 1.68 ms of the 12.05 ms of
+  the product of a 5000 x 1000 block with itself on one thread, best of
+  10, and the spec's "Speed" now says so. Dropping the scan of `g`, the
+  matrix the crate itself wrote, would save about half; that is a change
+  to "Errors" of the spec.
+- A finite input can give a result that is not finite with no error:
+  `eigh_lower` of a 2 x 2 of 1e308 gives an infinite eigenvalue on both
+  backends, and the second one is 0 on BLAS and NaN on faer. The spec
+  checks the inputs and says nothing of the outputs.
+- faer's smallest eigenvalue of the 1000 x 1000 matrix moves by 3.6e-17
+  relative between one thread of rayon and the pool, so a test of the
+  PCA compares within the tolerance of the spec and not to the bit.
+- The `accelerate` feature of the BLAS crates is unconditional, and
+  `accelerate-src` emits `-framework Accelerate` on every OS; the Linux
+  build is the next plan's and the workspace manifest says the two lines
+  are macOS only.
+
+After the fixes, at dbcecb3: `cargo test -p popnei-linalg` `33 passed`,
+with `--no-default-features` `28 passed`, the five of the workspace of
+`dsyevd` being of the BLAS backend; `cargo test --workspace` `306
+passed`, 2 ignored, and `33 passed`; `cargo test -p popnei
+--no-default-features` `306 passed`; clippy, fmt and `cargo wasm-check`
+clean; ruff clean; pytest `174 passed`; the wheel built and the smoke
+test exited 0; `npm run build && npm test` `tests 126`, `fail 0`; rayon
+in neither wasm tree, and no BLAS crate under `-p popnei
+--no-default-features`.
+
+How the work went: the four tasks and the fixes went to one subagent,
+371966 tokens at the end; the six reviewers used 93145, 123151, 95743,
+91363, 95193 and 109045 tokens. No task had to be sent twice.
