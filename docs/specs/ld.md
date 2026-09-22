@@ -588,9 +588,9 @@ would hold more variants than the memory can take is the error of
 ### How it is verified
 
 Against plink2 v2.0.0-a.7.7 on `tests/reference/ld/ld.vcf.gz`, the
-dataset of the item above. The reference
-script picks, for each population, the individuals and the variants that
-pass its major allele frequency with popnei's rule, which
+dataset of the item above. The reference script picks, for each
+population, the individuals and the variants that pass its major allele
+frequency with popnei's rule, which
 `docs/specs/filters.md` verifies against bcftools, and runs plink2 on
 those alone,
 
@@ -640,8 +640,10 @@ over those of the population:
 | 200001 to 225000 | 1240 | 0.01792337843122636 | 1275 | 0.022448095913909734 |
 | 225001 to 250000 | 438 | 0.020745833685396994 | 415 | 0.016086351215632733 |
 
-The standard deviations of the two populations are in
-`tests/reference/ld/` beside the script and are asserted with the means.
+The standard deviations of the two populations are left out of the table
+to keep it readable and are asserted with the means;
+`docs/reports/ld-method/bins.py` prints all three tables with them, and
+the implementation plan stores its output beside the reference script.
 The counts of pairs are compared exactly and the means and the standard
 deviations within 1e-12 relative, since both sides add the same r² and
 only the order of the sum can differ. These checks are made at
@@ -846,7 +848,8 @@ individual or an individual that the dataset has not.
 Measured on 22 September 2026 on the owner's Apple M5 Pro, 18 cores, with
 numpy 2.5.3 on Accelerate, which is the BLAS that `docs/specs/linalg.md`
 gives the native build, on dosages made at random with 3 in 100 genotypes
-missing, the best of 3 runs for the first table and of 5 for the second.
+missing, the best of 3 runs for the first table and the mean of 5 for
+the second.
 They are the cost of the products and the arithmetic over them, with no
 reader and no binding in them, and they are what popnei has to reach with
 a tenth over them, since the products are the work and popnei adds the

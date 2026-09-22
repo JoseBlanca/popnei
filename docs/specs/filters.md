@@ -532,9 +532,12 @@ and differs from it in five ways.
   with the last kept one alone**, and the window is a distance along a
   chromosome, where pyNei reads neither the chromosome nor the position
   (under "What pyNei does that is odd"). The owner decided on 22
-  September 2026 that popnei compares within a window, as plink2's
-  `--indep-pairwise` does, and that the chromosome ends the window; the
-  option not taken was pyNei's rule.
+  September 2026 that popnei compares within a window and that the
+  chromosome ends it; the option not taken was pyNei's rule. plink2's
+  `--indep-pairwise` is the program that compares within a window, and
+  the owner's decision was made on it, but the set popnei keeps is not
+  plink2's and cannot be: "How it is verified" has the measurement and
+  what the tests compare instead.
 - **The threshold is on r² and not on the absolute value of r.** pyNei's
   argument is called `min_allowed_r2` and is compared with the absolute
   value of the correlation. The owner decided on 22 September 2026 that
