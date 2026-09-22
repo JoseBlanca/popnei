@@ -1262,9 +1262,10 @@ impl Totals {
 ///
 /// A `poly_threshold` that is not a number from 0 to 1; what the reader
 /// fails with; a block that holds no genotypes, which is a reader that was
-/// asked for them and gave none, and a block of no variants, which is a
-/// defect of a reader too; and a pass that gave no variant, whether its
-/// source holds none or its steps kept none of them.
+/// asked for them and gave none, a block of no variants and a block whose
+/// individuals or ploidy are not the ones the reader says its source has,
+/// each a defect of a reader too; and a pass that gave no variant, whether
+/// its source holds none or its steps kept none of them.
 pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader: &mut R,
     config: &PerVarDistribsConfig,
@@ -1281,27 +1282,10 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
     reader.set_needs(Needs::GTS);
     let mut totals = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
     let mut num_vars: u64 = 0;
+    let num_individuals = reader.individuals().len();
+    let ploidy = reader.ploidy();
     while let Some(block) = reader.next_block()? {
-        // The rows are cut out of the genotypes by the sizes the block
-        // states, so those sizes are checked before anything is read.
-        block.check()?;
-        if block.num_vars == 0 {
-            return Err(Error::ReaderGaveABlockOfNoVariants);
-        }
-        // A block of no individual, or of the ploidy 0, has no genotype of
-        // a variant and empty `gts` for that reason, which has nothing to
-        // do with genotypes that nobody asked the reader for: each is a
-        // defect of a reader, and the message names the one that happened.
-        let alleles_per_var = block.alleles_per_var()?;
-        if alleles_per_var == 0 {
-            return Err(Error::BlockWithNoGenotypeOfAVariant {
-                num_individuals: block.num_individuals,
-                ploidy: block.ploidy,
-            });
-        }
-        if block.gts.is_empty() {
-            return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
-        }
+        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
         add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
         // A `usize` is 64 bits on the targets popnei builds natively for
         // and 32 in wasm, so every one of them is a `u64`; and a pass of
@@ -1320,6 +1304,55 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
         });
     }
     Ok(the_distribs(&totals, config, asked, num_vars))
+}
+
+/// How many alleles one variant of a block holds, its individuals times its
+/// ploidy, which is how the rows of the block are cut, after the checks
+/// both passes of this module make of every block their reader gives them.
+///
+/// `num_individuals` and `ploidy` are what the reader says its source has.
+/// A pass reads the rows of every block as rows of one run over the
+/// variants, so each block has to be of those individuals and of that
+/// ploidy: a block of others is read one individual at the place of
+/// another, or counted whole for a population of every individual of the
+/// reader, and the numbers that come out say nothing about themselves.
+///
+/// # Errors
+///
+/// An array of the block that is not of the size the block states; a block
+/// of no variant; a block that holds the genotypes of no individual,
+/// because it has no individual or because its ploidy is 0, which is told
+/// apart from the genotypes that nobody asked the reader for, since a block
+/// is empty of them in the same way; a block the genotypes are not in,
+/// which a pass asked its reader for; and a block of other individuals or
+/// of another ploidy than the reader says its source has. Each of them is a
+/// defect of the reader that gave the block.
+fn alleles_per_var_of(block: &Block, num_individuals: usize, ploidy: usize) -> Result<usize> {
+    // The rows are cut out of the genotypes by the sizes the block states,
+    // so those sizes are checked before anything is read.
+    block.check()?;
+    if block.num_vars == 0 {
+        return Err(Error::ReaderGaveABlockOfNoVariants);
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    if alleles_per_var == 0 {
+        return Err(Error::BlockWithNoGenotypeOfAVariant {
+            num_individuals: block.num_individuals,
+            ploidy: block.ploidy,
+        });
+    }
+    if block.gts.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+    }
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
+    Ok(alleles_per_var)
 }
 
 /// How many alleles one chunk of the pass holds: [`ROWS_PER_CHUNK`] rows of
@@ -1725,38 +1758,7 @@ pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
     let mut counted = vec![OfAnIndividual::none(); num_individuals];
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
-        // The rows are cut out of the genotypes by the sizes the block
-        // states, so those sizes are checked before anything is read.
-        block.check()?;
-        if block.num_vars == 0 {
-            return Err(Error::ReaderGaveABlockOfNoVariants);
-        }
-        // The counts of an individual are of the genotype at its place in
-        // every row of the pass, so a block of other individuals, or of
-        // another ploidy, would count one individual at the place of
-        // another.
-        if block.num_individuals != num_individuals || block.ploidy != ploidy {
-            return Err(Error::BlocksDoNotFitTogether {
-                num_individuals,
-                ploidy,
-                found_num_individuals: block.num_individuals,
-                found_ploidy: block.ploidy,
-            });
-        }
-        // A block of no individual, or of the ploidy 0, has no genotype of
-        // a variant and empty `gts` for that reason, which has nothing to
-        // do with genotypes that nobody asked the reader for: each is a
-        // defect of a reader, and the message names the one that happened.
-        let alleles_per_var = block.alleles_per_var()?;
-        if alleles_per_var == 0 {
-            return Err(Error::BlockWithNoGenotypeOfAVariant {
-                num_individuals: block.num_individuals,
-                ploidy: block.ploidy,
-            });
-        }
-        if block.gts.is_empty() {
-            return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
-        }
+        let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
         count_the_block(&block, alleles_per_var, &mut counted)?;
         // A `usize` is 64 bits on the targets popnei builds natively for
         // and 32 in wasm, so every one of them is a `u64`; and a pass of
@@ -4034,8 +4036,9 @@ mod distribs {
     /// individual of the reader, and it checks the width of the row before
     /// it does: a `Pops` built against another reader would otherwise count
     /// individuals the population does not hold and give a mean of them. A
-    /// `Pops::all(5)` over a block of three individuals is the error of the
-    /// counts of one variant, which name the individual beyond the row.
+    /// `Pops::all(5)` over the blocks of a reader of three individuals is
+    /// the error of the counts of one variant, which name the individual
+    /// beyond the row.
     #[test]
     fn a_pops_of_more_individuals_than_the_block_holds_is_refused() {
         let of_three_individuals = Block {
@@ -4049,7 +4052,7 @@ mod distribs {
             alleles: None,
             qual: None,
         };
-        let mut reader = GivenBlocks::of(vec![of_three_individuals]);
+        let mut reader = GivenBlocks::of_a_source_of(3, 2, vec![of_three_individuals]);
         let error = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
             .expect_err("a population of five individuals over a block of three");
         assert!(
@@ -4058,6 +4061,46 @@ mod distribs {
                 Error::IndividualBeyondTheVariant {
                     individual: 3,
                     num_individuals: 3
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A block of other individuals than the reader says its source has is
+    /// refused, and so is one of another ploidy. The pass reads the rows of
+    /// every block as rows of one run over the variants, and a population
+    /// of every individual of the reader is read as the whole row: a block
+    /// of seven individuals after one of five would put seven genotypes
+    /// into the counts of a population of five, which is a frequency over
+    /// more data than the population holds.
+    #[test]
+    fn a_block_of_other_individuals_than_the_reader_says_is_refused() {
+        let of_seven_individuals = Block {
+            num_vars: 1,
+            num_individuals: 7,
+            ploidy: 2,
+            gts: vec![0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1],
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut blocks = blocks_of(&THE_SIX_VARIANTS, 6);
+        blocks.push(of_seven_individuals);
+        let mut reader = GivenBlocks::of(blocks);
+        let error = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
+            .expect_err("a block of seven individuals of a reader of five");
+
+        assert!(
+            matches!(
+                &error,
+                Error::BlocksDoNotFitTogether {
+                    num_individuals: 5,
+                    ploidy: 2,
+                    found_num_individuals: 7,
+                    found_ploidy: 2
                 }
             ),
             "{error:?}"
