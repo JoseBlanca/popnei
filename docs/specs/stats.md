@@ -329,10 +329,17 @@ variants that had a value, and the counts of the bins; for the
 polymorphism ratio its three counts. What is kept from one block to the
 next is those accumulators, whose size is populations x bins per
 statistic and grows neither with the variants nor with the individuals.
-The mean is the sum over the count, once, at the end. The sums are added
-in an order that depends on the threads and the blocks, so two runs agree
-to about 1e-15 relative and not to the bit, which "How it is verified"
-allows for; the counts are integers and agree exactly.
+The mean is the sum over the count, once, at the end. The rows of a block
+are added up in chunks of a fixed number of rows, the chunks are
+collected in the order of the block and added one after another, so two
+runs of the same pass over the same blocks add the same values in the
+same order and give every mean to the bit, whatever the number of
+threads: the same pass over `many.vcf` at 1, 2, 3, 4, 8 and 16 threads,
+measured on 22 September 2026, gives the same bits of every mean, and the
+cargo test of the thread pools compares the bits. Where the blocks are
+cut changes which rows are added together, and with them the last bits of
+a mean, which "How it is verified" allows for at 1e-12 relative; the
+counts are integers and agree exactly.
 
 With `pops` given, the genotypes of a population are gathered from the
 row by its indices for each variant. Whether a population that is every
