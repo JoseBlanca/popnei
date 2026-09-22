@@ -218,12 +218,12 @@ after it in the steps counts over the three.
 
 **Tasks.**
 
-- [ ] 2.1 `Block::retain_individuals` in `crates/popnei/src/block.rs`,
+- [x] 2.1 `Block::retain_individuals` in `crates/popnei/src/block.rs`,
   with the two passes of "How it runs" of the filter, and its tests.
   From "How it runs" and "The Rust interface" of `docs/specs/filters.md`.
   Serves deliverable 1. A wrong gather is silent: its own commit, guarded
   by deliverables 1 and 3.
-- [ ] 2.2 `resolve_individuals`, `IndividualsReader`, the `KeepIndividuals`
+- [x] 2.2 `resolve_individuals`, `IndividualsReader`, the `KeepIndividuals`
   step in `chain_of`, and the four new cases of the error, in
   `crates/popnei/src/filters.rs` and `error.rs`, with the arm of each
   binding crate's `errors.rs`, and the cargo tests of deliverable 2.
