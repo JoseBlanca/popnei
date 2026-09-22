@@ -11,7 +11,7 @@ use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
-use crate::ld::{MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
+use crate::ld::{MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
 /// Anything that went wrong in popnei.
@@ -606,6 +606,25 @@ pub enum Error {
     LdDosagesOfOtherIndividuals {
         /// How the individuals of the two sets differ.
         problem: crate::ld::TheIndividualsThatDiffer,
+    },
+
+    /// The individuals of the block times its ploidy are more alleles in
+    /// one variant than the r² comes out of exactly. The four products
+    /// the formula takes of the six sums, n·Σxx, n·Σxy, Σx·Σy and (Σx)²,
+    /// are each at most the individuals times the ploidy squared, and a
+    /// product of two whole numbers is exact in an `f64` while it is at
+    /// most 2^53, so above this bound an r² loses digits with nothing to
+    /// show for it. No dataset of this world reaches it. In Python it is a
+    /// `ValueError` that names no file: calculate over fewer individuals.
+    #[error(
+        "the {num_individuals} individuals of the block at the ploidy {ploidy} are more than the {largest} alleles of one variant the r² is worked out exactly over, which is 47453132 diploid individuals; calculate over fewer individuals",
+        largest = MAX_ALLELES_OF_A_VARIANT
+    )]
+    LdTooManyAllelesInAVariant {
+        /// How many individuals the dosages were to be built over.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
     },
 
     /// One of the matrices the r² of a set of variants is worked out

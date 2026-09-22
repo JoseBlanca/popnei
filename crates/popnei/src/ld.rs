@@ -48,6 +48,25 @@ pub const MAX_VALUES_OF_THE_DOSAGES: usize = 2_147_483_647;
 /// no dataset that a reader of popnei gives.
 pub const MAX_PLOIDY_OF_THE_DOSAGES: usize = 255;
 
+/// The most alleles one variant of a set of dosages holds, its individuals
+/// times the ploidy, for the r² to carry the bits the formula gives.
+///
+/// The six sums of a pair are whole numbers, and an `f64` holds each of
+/// them exactly, but what the r² needs is that the four products the
+/// formula takes of them be exact too: n·Σxx, n·Σxy, Σx·Σy and (Σx)². The
+/// largest of the four is at most N²k², for N individuals of the ploidy k,
+/// and a product of two whole numbers is exact while it is at most the
+/// 2^53 up to which an `f64` counts one by one. So the bound is
+/// Nk ≤ sqrt(2^53), which is this number: 47453132 diploid individuals,
+/// and 372181 at the ploidy of 255 that the dosages take. Above it an r²
+/// loses digits with nothing to show for it, 1.3e-12 of relative error at
+/// a million individuals of the ploidy 255, which is past the 1e-12 the
+/// spec compares within.
+///
+/// No dataset of this world reaches it: the objectives of popnei go to
+/// 10000 individuals, and the largest ploidy of an organism is a dozen.
+pub const MAX_ALLELES_OF_A_VARIANT: usize = 94_906_265;
+
 /// How the individuals of two sets of dosages whose r² was asked for
 /// differ.
 ///
@@ -160,6 +179,22 @@ impl LdDosages {
                 ploidy: block.ploidy,
             });
         }
+        let num_individuals = match individuals.is_empty() {
+            true => block.num_individuals,
+            false => individuals.len(),
+        };
+        // The alleles of one variant are counted before anything is
+        // allocated: what this refuses is more individuals than any
+        // machine holds the dosages of anyway.
+        if num_individuals
+            .checked_mul(block.ploidy)
+            .is_none_or(|alleles| alleles > MAX_ALLELES_OF_A_VARIANT)
+        {
+            return Err(Error::LdTooManyAllelesInAVariant {
+                num_individuals,
+                ploidy: block.ploidy,
+            });
+        }
         let mut asked_for_already =
             a_vector_of(false, block.num_individuals, &|| Error::LdNoMemory {
                 what: "the individuals asked for",
@@ -179,10 +214,6 @@ impl LdDosages {
             }
             *asked_for = true;
         }
-        let num_individuals = match individuals.is_empty() {
-            true => block.num_individuals,
-            false => individuals.len(),
-        };
         let too_large = || Error::LdDosagesTooLarge {
             num_vars: block.num_vars,
             num_individuals,
@@ -591,8 +622,13 @@ impl TheSumsOfThePairs {
 /// squares, less the square of the sum, is n² times the variance of the
 /// dosages.
 ///
-/// The six sums are whole numbers and each is held exactly in an `f64`,
-/// so the only rounding is in the square and the division at the end.
+/// The six sums are whole numbers that an `f64` holds exactly, and so are
+/// the four products taken of them here, n·Σxy, Σx·Σy, n·Σxx and (Σx)²,
+/// and the two differences of "above the line" and of each spread, while
+/// the individuals times the ploidy are at most
+/// [`MAX_ALLELES_OF_A_VARIANT`], which [`LdDosages::of_block`] refuses a
+/// block above. Three operations round after that: the square of what is
+/// above the line, the product of the two spreads, and the division.
 fn the_r2_of_a_pair(
     individuals: f64,
     products: f64,
@@ -605,6 +641,12 @@ fn the_r2_of_a_pair(
     let spread_of_a = individuals * squares_of_a - of_a * of_a;
     let spread_of_b = individuals * squares_of_b - of_b * of_b;
     if spread_of_a <= 0.0 || spread_of_b <= 0.0 {
+        // The rule of the spec, written out. The division would give NaN
+        // here without it: with the sums exact, a spread of 0 is a variant
+        // whose dosages do not vary among the individuals of the pair, and
+        // what is above the line is then 0 as well, so the pair comes out
+        // 0/0. The test is what says so, and it is not there because the
+        // arithmetic reaches a case the division gets wrong.
         return f64::NAN;
     }
     above_the_line * above_the_line / (spread_of_a * spread_of_b)
@@ -813,8 +855,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheIndividualsThatDiffer,
-        TheSumsOfThePairs, a_vector_of, r2_between, the_memory_for, the_values_of,
+        LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES,
+        TheIndividualsThatDiffer, TheSumsOfThePairs, a_vector_of, r2_between, the_memory_for,
+        the_values_of,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
@@ -1180,6 +1223,49 @@ mod tests {
         .to_string();
         assert!(message.contains("46341 variants"), "{message}");
         assert!(message.contains("2147483647"), "{message}");
+    }
+
+    #[test]
+    fn a_block_of_more_alleles_in_one_variant_than_the_r2_comes_out_of_exactly_is_refused() {
+        // 94906265 alleles in one variant is sqrt(2^53) rounded down, the
+        // largest whose square an f64 holds one by one, and the products
+        // the r² takes of its six sums reach that square. At the ploidy of
+        // 255 the dosages take it is 372181 individuals, 94906155 alleles,
+        // and one individual more is 94906410, which is above it. The
+        // blocks are of no variant, so nothing of them is read.
+        let refused = block_of(&[], 372_182, MAX_PLOIDY_OF_THE_DOSAGES);
+        match LdDosages::of_block(&refused, &[]) {
+            Err(Error::LdTooManyAllelesInAVariant {
+                num_individuals,
+                ploidy,
+            }) => {
+                assert_eq!((num_individuals, ploidy), (372_182, 255));
+                let message = Error::LdTooManyAllelesInAVariant {
+                    num_individuals,
+                    ploidy,
+                }
+                .to_string();
+                assert!(message.contains("94906265 alleles"), "{message}");
+                assert!(message.contains("47453132 diploid"), "{message}");
+            }
+            other => panic!("94906410 alleles in one variant gave dosages: {other:?}"),
+        }
+        let taken = block_of(&[], 372_181, MAX_PLOIDY_OF_THE_DOSAGES);
+        assert_eq!(
+            LdDosages::of_block(&taken, &[])
+                .expect("94906155 alleles in one variant")
+                .num_individuals(),
+            372_181
+        );
+        // The same bound over the individuals that were asked for: two of
+        // a block of that many are taken.
+        assert_eq!(
+            LdDosages::of_block(&refused, &[0, 1])
+                .expect("two individuals of the block")
+                .num_individuals(),
+            2
+        );
+        assert_eq!(MAX_ALLELES_OF_A_VARIANT, 94_906_265);
     }
 
     #[test]
