@@ -10,8 +10,22 @@
 
 use std::path::{Path, PathBuf};
 
+use pyo3::create_exception;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+
+create_exception!(
+    popnei._core,
+    TraitsWithNoVariance,
+    PyValueError,
+    "The traits of a table that is to be standardized and that have no \
+     variance, by their position among the traits, which is `args[0]`.\n\n\
+     `popnei.do_pca` catches it and raises the `ValueError` its user reads, \
+     whose message names those traits as the frame names them. The core has \
+     the positions and not the names, and this class is how they reach the \
+     layer that has the frame. It derives from `ValueError`, so a user who \
+     catches that one catches this one as well."
+);
 
 /// What a function of this crate fails with.
 pub(crate) enum PyPopneiError {
@@ -57,6 +71,15 @@ pub(crate) enum PyPopneiError {
         /// Python prints it: a whole number of Python is of any size, so a
         /// threshold that was refused does not always fit in one of Rust.
         value: String,
+    },
+    /// An array that does not lie in memory row after row, which the core
+    /// reads as a slice of values and cannot take, under the name of the
+    /// argument a user wrote it in. The Python package makes every array C
+    /// contiguous before the call, so a user reaches it only through
+    /// `popnei._core`, and the message says what makes one.
+    ArrayNotContiguous {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
     },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
@@ -155,6 +178,15 @@ impl From<PyPopneiError> for PyErr {
                 "`{name}` is {value}, and a threshold is a number from 0 to 1, both \
                  included: the number of the variant it is compared with is one count of \
                  the variant divided by another"
+            )),
+            // The values of an array that does not lie row after row are
+            // not a slice, and the core takes a slice: what a user does
+            // about it is to make an array that is contiguous, which is
+            // what the message says.
+            PyPopneiError::ArrayNotContiguous { name } => PyValueError::new_err(format!(
+                "`{name}` does not lie in memory row after row, and popnei reads the \
+                 values of an array as they lie: `numpy.ascontiguousarray({name})` \
+                 gives one that does"
             )),
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
@@ -293,8 +325,26 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
         | popnei::Error::VarsBlockColumns { .. }
-        | popnei::Error::VarsChromNameMissing { .. } => {
+        | popnei::Error::VarsChromNameMissing { .. }
+        // The two of the principal component analysis that no argument of
+        // `do_pca` gives, which is what "Errors and the cases pyNei asserts"
+        // of `docs/specs/pca.md` says of them: a buffer that does not hold
+        // the rows times the traits it was said to hold, which this crate
+        // takes from the array itself, and an operation of the linear
+        // algebra that did not run, which is left with a table whose
+        // products are not finite and a machine with too little memory for
+        // the workspace of the eigendecomposition.
+        | popnei::Error::PcaTableOfAnotherSize { .. }
+        | popnei::Error::PcaLinalg { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
+        }
+        // The traits of a table that has no variance, which the layer that
+        // holds the frame names: this crate has their positions and not
+        // their names, and `popnei.do_pca` catches this exception and
+        // raises the `ValueError` a user reads. It is a `ValueError`
+        // itself, so nothing of a user's changes when it reaches them.
+        popnei::Error::PcaTraitsWithNoVariance { positions, .. } => {
+            TraitsWithNoVariance::new_err(positions)
         }
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
@@ -310,7 +360,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. }
         | popnei::Error::VarFilterThresholdOutOfRange { .. }
-        | popnei::Error::VarFilterOfAKindThatIsSet { .. } => PyValueError::new_err(message),
+        | popnei::Error::VarFilterOfAKindThatIsSet { .. }
+        // The three of the table of a principal component analysis that a
+        // user writes: a value of it that is not finite, a table to be
+        // standardized and not centered, and one of fewer than 2 rows or of
+        // no traits. The table comes from the user and not from a file, so
+        // they name none.
+        | popnei::Error::PcaValueNotFinite { .. }
+        | popnei::Error::PcaStandardizeWithoutCentering
+        | popnei::Error::PcaTableTooSmall { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF

@@ -10,6 +10,7 @@
 use pyo3::prelude::*;
 
 mod errors;
+mod pca;
 mod source;
 mod steps;
 mod vars;
@@ -34,6 +35,24 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_ONLY_PASSED: bool = popnei::io::vcf::DEFAULT_ONLY_PASSED;
 
+    // The exception that carries the positions of the traits with no
+    // variance to `popnei.do_pca`, which names them and raises the
+    // `ValueError` its user reads. A class made with `create_exception!` is
+    // not a `#[pyclass]`, so it is added to the module here.
+    #[pymodule_init]
+    fn add_the_exceptions(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        use pyo3::prelude::PyModuleMethods as _;
+
+        module.add(
+            "TraitsWithNoVariance",
+            module
+                .py()
+                .get_type::<super::errors::TraitsWithNoVariance>(),
+        )
+    }
+
+    #[pymodule_export]
+    use super::pca::pca;
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

@@ -23,7 +23,13 @@ requires-python = ">=3.14"
 # binding crate hands it the arrays of the core, so a user gets them without
 # a copy. It is the version pyNei asks for, so that the two libraries share
 # one numpy in the environment where they are compared.
-dependencies = ["numpy>=2.4.6"]
+#
+# pandas holds the results that a user reads by name: the projections of a
+# principal component analysis are a frame of the individuals by the
+# components, and the names come from the frame the user gave. It is the
+# version pyNei asks for, so that the two libraries share one pandas in the
+# environment where they are compared.
+dependencies = ["numpy>=2.4.6", "pandas>=3.0.2"]
 
 [project.urls]
 repository = "https://github.com/JoseBlanca/popnei"
