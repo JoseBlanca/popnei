@@ -228,6 +228,103 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
+    /// A value of the table of a principal component analysis is not
+    /// finite, an infinity or a NaN, with the place where it is. There is
+    /// nothing to give for such a table: the mean of that trait, and with
+    /// it every projection, would be a NaN. pyNei refuses a NaN and lets
+    /// an infinity through to numpy's decomposition, which raises
+    /// `LinAlgError`. In Python it is a `ValueError`.
+    #[error(
+        "the value at row {row}, trait {col} of the table is {value}, and a principal component analysis needs every value finite"
+    )]
+    PcaValueNotFinite {
+        /// Which row of the table holds it, from 0.
+        row: usize,
+        /// Which trait of the table holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// The table of a principal component analysis is to be standardized
+    /// and not centered. Standardizing divides each trait by the standard
+    /// deviation it has once it is centered, so the two go together, which
+    /// is what pyNei's `do_pca` says as well. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the table is to be standardized and not centered, and standardizing divides each trait by the standard deviation it has once it is centered: center the table or do not standardize it"
+    )]
+    PcaStandardizeWithoutCentering,
+
+    /// The table of a principal component analysis has fewer than 2 rows
+    /// or no traits. One row has no variation for the components to hold:
+    /// pyNei raises the error of the traits with no variance for it when
+    /// it standardizes, and without standardizing divides by n - 1 = 0 and
+    /// gives percentages that are NaN. In Python it is a `ValueError`.
+    #[error(
+        "the table is {num_rows} x {num_cols}, and a principal component analysis needs 2 rows at least and 1 trait at least"
+    )]
+    PcaTableTooSmall {
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// The traits of a table that is to be standardized and that have no
+    /// variance, every value of each one being equal to the others. There
+    /// is nothing to divide them by, so the user takes them out or does
+    /// not standardize; without standardizing they are no error and get a
+    /// weight of 0. In Python it is a `ValueError` whose message names the
+    /// traits, since the layer that has the frame puts the name of each
+    /// column in the place of its position.
+    #[error(
+        "{count} of the {num_cols} traits have no variance and cannot be standardized: take them out of the table or do not standardize; they are the traits at {shown}",
+        count = positions.len(),
+        shown = crate::pca::the_positions_listed(positions)
+    )]
+    PcaTraitsWithNoVariance {
+        /// The position of each trait with no variance among the traits of
+        /// the table, from 0 and in order.
+        positions: Vec<usize>,
+        /// How many traits the table has.
+        num_cols: usize,
+    },
+
+    /// The buffer of the table of a principal component analysis holds
+    /// fewer than its rows times its traits. Only a caller of the function
+    /// of the core crate reaches it, since each binding crate takes the
+    /// two numbers from the array it was given, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the table was given as {num_rows} x {num_cols} and its buffer holds {num_values} values"
+    )]
+    PcaTableOfAnotherSize {
+        /// How many values the buffer holds.
+        num_values: usize,
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a principal
+    /// component analysis asked for did not run, with what was being
+    /// computed. The dimensions and the values that crate refuses are
+    /// checked before it is called, so what is left is a table whose
+    /// products are not finite and a machine with too little memory for
+    /// the workspace of the eigendecomposition. In Python it is a
+    /// `RuntimeError`.
+    #[error("the {operation} of the principal component analysis could not be done: {source}")]
+    PcaLinalg {
+        /// What was being computed: the product of the table with itself,
+        /// the eigendecomposition, or the product that gives the
+        /// projections or the weights.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

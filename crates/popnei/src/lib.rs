@@ -18,8 +18,10 @@
 //! fields a consumer wants, the table of the chromosome names and the view
 //! of one variant of a block; and `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept.
-//! The modules that calculate over blocks are being written, and
-//! `docs/architecture.md` has their order.
+//! `pca` is the first module that calculates: the principal components of
+//! a table of numbers, individuals by traits. The modules that calculate
+//! over blocks are being written, and `docs/architecture.md` has their
+//! order.
 //!
 //! The linear algebra those modules need, the products of matrices and
 //! the eigendecomposition, is not a module here but a crate beside this
@@ -29,20 +31,11 @@
 
 #![forbid(unsafe_code)]
 
-// The linear algebra of popnei is the crate `popnei-linalg`, which holds
-// the products and the eigendecomposition and the `unsafe` blocks of the
-// calls to BLAS and LAPACK, so that this crate keeps the line above. The
-// principal component analysis is the first module to call it, and until
-// it is written this line is what puts the crate in the build: it is what
-// carries `-framework Accelerate`, which the crate that links the library
-// of the system emits, to the link line of the Python extension module and
-// of the wasm package.
-use popnei_linalg as _;
-
 pub mod block;
 pub mod error;
 pub mod filters;
 pub mod io;
+pub mod pca;
 pub mod variant;
 
 pub use error::{Error, Result};
