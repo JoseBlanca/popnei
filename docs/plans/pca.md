@@ -323,12 +323,16 @@ Tasks:
       timing at a time with nothing building, written into the report
       as "Speed" of `docs/specs/pca.md` states its numbers. Serves
       deliverable 1.
-- [ ] 4.2 The wasm measurement: the wasm package built and timed under
+- [x] 4.2 The wasm measurement: the wasm package built and timed under
       node, the wheel built and smoke tested. Needs 4.1. Serves
       deliverable 2.
-- [ ] 4.3 The flag, only when Open 1 of the linalg spec is answered as
+- [~] 4.3 The flag, only when Open 1 of the linalg spec is answered as
       on: the two build commands, the builds and their tests, the times
-      again. Needs 4.2. Serves deliverable 3.
+      again. Needs 4.2. Serves deliverable 3. SKIPPED: the owner has not
+      answered Open 1, and task 4.2 found that the flag changes nothing,
+      since the feature of `gemm`, which the workspace has on, is what
+      gives the vector instructions. Deliverable 3 asks for the flag only
+      when the answer is on.
 
 What could go wrong: the target of 0.3 s counts 20 blocks at 12 ms on
 one thread and an eigendecomposition of 0.04 s, from the two trial

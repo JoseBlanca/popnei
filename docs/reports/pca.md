@@ -568,3 +568,27 @@ ploidy 2 falls to its scalar tail; the lookup gathers from a table of
 is not a reason to change the code inside this plan, as the plan says,
 and the owner is asked at the end of this report what to do with it.
 The subagent used 239402 tokens.
+
+Task 4.2, the wasm measurement, is at 741e7ec, with its section of
+`docs/reports/pca-measurement.md` and two benchmarks, and at c9b11e2,
+which corrected "Speed" and Open 6 of the PCA spec, "Speed" and Open 1
+of the linalg spec, and the comment of the `gemm` dependency, which said
+the flag was what mattered.
+
+**The target of the browser was met.** The analysis of 100000 variants
+of 1000 individuals over a vars file takes 4.500 s under node on the
+wasm package, where "Speed" asks for 5 s with the vector instructions
+and 7 s without, and 5.164 s with the weights of 10 components; 20000
+variants take 1.058 s. The wheel under pyodide takes 4.481 s on the same
+variants. The orchestrator ran the first again and got 4.462 s at best
+and 4.512 s as the median of three runs, with the first component
+holding the same share of the variance as natively, 6.228 per 100.
+WebAssembly is 5.6 times the native one thread: a block of 5000 variants
+costs 215 ms there against 33.3 ms natively. The subagent used 346654
+tokens.
+
+Task 4.3, the `simd128` flag, is skipped: deliverable 3 asks for it only
+when the owner answers Open 1 of the linalg spec as on, and they have
+not answered. Task 4.2 also found that the answer matters less than the
+spec thought, which is under "What is asked of the owner" at the top of
+this report.
