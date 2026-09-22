@@ -53,6 +53,27 @@ lapack = "0.20"
 # optional dependencies of the targets that are not wasm.
 blas-src = { version = "0.14", features = ["accelerate"] }
 lapack-src = { version = "0.13", features = ["accelerate"] }
+# The other backend of crates/popnei-linalg, and the only one in
+# WebAssembly, where there is no BLAS and no library of the system to
+# link: a linear algebra library written in Rust, which builds for the two
+# wasm targets and gives the same three operations, the triangular product
+# and the general one of `linalg::matmul` and `self_adjoint_eigen`. What
+# it gives is what BLAS and LAPACK give, a blocked product that uses the
+# vector instructions of the target and a symmetric eigendecomposition
+# with its reduction to tridiagonal form, so it is not a few lines of our
+# own either: written by hand, the product of a block of 5000 variants x
+# 1000 individuals would run at the speed of a triple loop, and the
+# eigendecomposition is the harder half. It is also a native backend,
+# behind the cargo feature of that crate, which is how the open question
+# of docs/rust_core.md, whether faer is level with OpenBLAS on x86, gets
+# measured: the same binary built twice. 0.24.4 is the version of the
+# spike of section 3.2 of that document, which built it for emscripten.
+# Of its features only `std` and `linalg` are on, and `rayon`, which does
+# not build for emscripten, only off the wasm targets.
+faer = { version = "0.24.4", default-features = false, features = [
+  "std",
+  "linalg",
+] }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"

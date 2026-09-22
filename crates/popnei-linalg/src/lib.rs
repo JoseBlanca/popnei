@@ -10,20 +10,42 @@
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
 //! the layout of the blocks and of everything the core crate holds, with
-//! its numbers of rows and of columns beside it. What runs is the BLAS and
-//! LAPACK of the system, the routines numpy calls, and they read a matrix
-//! column after column: the buffer of an r x c matrix read that way is its
-//! transpose, c x r, so each call is made on the transposes, and a caller
-//! sees nothing of it.
+//! its numbers of rows and of columns beside it.
 //!
-//! Those calls are the `unsafe` of popnei and they are here and nowhere
-//! else. Each routine is an `unsafe fn` over slices whose lengths nothing
-//! checks against the dimensions it is given, so every function of this
-//! crate checks the dimensions and the values of what it was given before
-//! any routine runs, and the core crate keeps its
-//! `#![forbid(unsafe_code)]`.
+//! Two backends run under that interface and give the same numbers within
+//! the tolerance of "How it is verified" of the spec. One is the BLAS and
+//! LAPACK of the system, the routines numpy calls, which is what runs when
+//! the target is not WebAssembly and the cargo feature `blas` is on, as it
+//! is by default. The other is faer, a linear algebra library written in
+//! Rust, which runs on both wasm targets, where there is no BLAS, and
+//! natively when the crate is built with `--no-default-features`, so that
+//! a machine with no BLAS and no Fortran compiler builds popnei. A caller
+//! does not know which one ran.
+//!
+//! The routines of BLAS and LAPACK read a matrix column after column: the
+//! buffer of an r x c matrix read that way is its transpose, c x r, so
+//! that backend calls each routine on the transposes. faer is told that
+//! the buffers are row major. Neither shows in what a caller gets.
+//!
+//! The calls to BLAS and LAPACK are the `unsafe` of popnei and they are
+//! here and nowhere else. Each routine is an `unsafe fn` over slices whose
+//! lengths nothing checks against the dimensions it is given, so every
+//! function of this crate checks the dimensions and the values of what it
+//! was given before any routine runs, whichever backend is to run it, and
+//! the core crate keeps its `#![forbid(unsafe_code)]`.
 
-mod blas;
+// The backend is BLAS and LAPACK when the target is not WebAssembly and
+// the cargo feature `blas` is on, which it is by default, and faer
+// otherwise: on both wasm targets, where there is no BLAS, and natively
+// when the crate is built with `--no-default-features`. Each file holds
+// the calls of one library and nothing else, and the two are the same
+// module to the rest of the crate.
+#[cfg(all(feature = "blas", not(target_family = "wasm")))]
+#[path = "blas.rs"]
+mod backend;
+#[cfg(not(all(feature = "blas", not(target_family = "wasm"))))]
+#[path = "faer.rs"]
+mod backend;
 
 use thiserror::Error as ThisError;
 
@@ -117,7 +139,7 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
     if rows == 0 {
         return Ok(());
     }
-    crate::blas::add_self_product_lower(a, rows, cols, g)
+    backend::add_self_product_lower(a, rows, cols, g)
 }
 
 /// The product `c = a b`, where `a` is `rows` x `inner`, `b` is `inner` x
@@ -163,7 +185,7 @@ pub fn product(
     if rows == 0 {
         return Ok(());
     }
-    crate::blas::product(a, rows, inner, b, cols, c)
+    backend::product(a, rows, inner, b, cols, c)
 }
 
 /// The eigendecomposition of the symmetric `g` of `n` x `n`, given by its
@@ -204,7 +226,7 @@ pub fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
     }
     g.truncate(values);
     refuse_a_value_that_is_not_finite_in_the_lower_half(&g, n, "g")?;
-    crate::blas::eigh_lower(g, n)
+    backend::eigh_lower(g, n)
 }
 
 /// The values of a matrix of `rows` x `cols`.
@@ -346,6 +368,33 @@ mod tests {
                 .any(|(one, other)| (one - other).abs() > tolerance)
     }
 
+    /// The two differ by more than `tolerance` times the size of the value
+    /// that was expected, which is how the spec compares an eigenvalue: an
+    /// eigenvalue of 361 and one of 0.79 are asked for the same number of
+    /// digits and not for the same absolute error.
+    fn differ_in_their_digits(got: f64, expected: f64, tolerance: f64) -> bool {
+        (got - expected).abs() > tolerance * expected.abs()
+    }
+
+    /// The first `how_many` numbers of the generator of "How it is
+    /// verified" of `docs/specs/linalg.md`, so that the test and numpy
+    /// make the same matrix: a 64 bit state that starts at 7 with its
+    /// lowest bit set, and for each number `s ^= s << 13; s ^= s >> 7;
+    /// s ^= s << 17`, the shifts dropping the bits that leave the 64, and
+    /// the number is `(s >> 11) / 2^53 - 0.5`.
+    fn the_numbers_of_the_generator(how_many: usize) -> Vec<f64> {
+        let mut state = 7_u64;
+        (0..how_many)
+            .map(|_| {
+                state ^= state.wrapping_shl(13);
+                state ^= state.wrapping_shr(7);
+                state ^= state.wrapping_shl(17);
+                // 2^53, below which a count is an exact f64.
+                state.wrapping_shr(11) as f64 / 9_007_199_254_740_992.0 - 0.5
+            })
+            .collect()
+    }
+
     #[test]
     fn the_self_product_writes_the_lower_half_and_leaves_the_upper_as_it_was() {
         // A'A is (1, 2, 0), (2, 5, 3), (0, 3, 9), and every entry is a sum
@@ -420,6 +469,75 @@ mod tests {
             );
         }
         assert_eq!(vectors.len(), 9);
+    }
+
+    #[test]
+    fn the_eigendecomposition_of_the_1000_by_1000_matrix_of_the_generator() {
+        // The G of "How it is verified" is ZZ' for a Z of 1000 rows and
+        // 1200 columns whose z(i, c) is the (c * 1000 + i)-th number of the
+        // generator. ZZ' is A'A for A = Z', of 1200 rows and 1000 columns,
+        // and the numbers in the order the generator gives them are the
+        // rows of that A, one after another. The matrix is of the size the
+        // two backends run at, and it has full rank, so no two of its
+        // eigenvalues are closer than 0.003 and each eigenvector is the
+        // only one of its eigenvalue up to its sign.
+        const INDIVIDUALS: usize = 1000;
+        const VARIANTS: usize = 1200;
+        let a = the_numbers_of_the_generator(VARIANTS * INDIVIDUALS);
+        let mut g = vec![0.0_f64; INDIVIDUALS * INDIVIDUALS];
+        add_self_product_lower(&a, VARIANTS, INDIVIDUALS, &mut g).unwrap();
+
+        let trace: f64 = g
+            .as_chunks::<INDIVIDUALS>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(row, entries)| entries[row])
+            .sum();
+        assert!(
+            !differ_in_their_digits(trace, 99_996.387_308_167_7, 1e-12),
+            "the trace of the product is {trace}"
+        );
+
+        let Eigen { values, vectors } = eigh_lower(g, INDIVIDUALS).unwrap();
+        assert_eq!(values.len(), INDIVIDUALS);
+        let sum: f64 = values.iter().sum();
+        assert!(
+            !differ_in_their_digits(sum, 99_996.387_308_167_7, 1e-12),
+            "the eigenvalues add up to {sum}"
+        );
+        for (got, expected) in values.iter().zip([
+            361.912_511_901_133,
+            359.665_171_786_593,
+            356.443_932_994_956,
+        ]) {
+            assert!(
+                !differ_in_their_digits(*got, expected, 1e-12),
+                "an eigenvalue among the three largest is {got} and not {expected}"
+            );
+        }
+        let smallest = values[INDIVIDUALS - 1];
+        assert!(
+            !differ_in_their_digits(smallest, 0.793_328_921_541, 1e-12),
+            "the smallest eigenvalue is {smallest}"
+        );
+
+        // An eigenvector is less well determined than its eigenvalue by the
+        // gap to its neighbours, so its entries are compared to 1e-9.
+        let first = with_the_sign_of_the_spec(&vectors[..INDIVIDUALS]);
+        assert!(
+            !differ(
+                &first[..3],
+                &[
+                    0.018_111_301_861_995_9,
+                    -0.004_576_022_169_100_46,
+                    -0.005_187_489_850_918_27
+                ],
+                1e-9
+            ),
+            "the first three entries of the eigenvector of the largest eigenvalue are {:?}",
+            &first[..3]
+        );
     }
 
     #[test]
