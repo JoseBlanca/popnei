@@ -13,6 +13,7 @@ numbers the tests assert.
 
 import math
 import operator
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy
@@ -38,11 +39,13 @@ class Distances:
     ``Distances(dist_vector, names=...)`` or with
     :meth:`Distances.from_square_dists`.
 
-    ``dists == other`` is true for the same result and false for any other
-    one, as it is for a :class:`popnei.Block`: an array of distances is
-    neither equal nor unequal to another, it is equal element by element.
+    ``dists == other`` is true for the same object and false for any other,
+    as it is for a :class:`popnei.Block`: two results are not compared value
+    by value, because an array of distances is neither equal nor unequal to
+    another, it is equal element by element.
     ``numpy.array_equal(dists.dist_vector, other.dist_vector,
-    equal_nan=True)`` is how two vectors are compared.
+    equal_nan=True)`` is how two vectors are compared, NaN counting as equal
+    to NaN.
 
     It is pyNei's ``Distances`` of ``pynei/dists.py``, with these
     differences: `names` is a tuple, where pyNei has a numpy array; a vector
@@ -69,12 +72,13 @@ class Distances:
     what the result holds, where pyNei copies it.
     """
 
-    names: tuple[str, ...] | tuple[int, ...] | None = None
+    names: Iterable[str] | Iterable[int] | None = None
     """The names of the individuals, in the order of the pairs.
 
-    ``None`` asks for the names 0 to N-1, as in pyNei, and what a built
-    ``Distances`` holds is always a tuple. The calculation gives the names
-    the source has for its individuals.
+    Any sequence of names is taken, and what a built ``Distances`` holds is
+    always a tuple of them. ``None`` asks for the names 0 to N-1, as in
+    pyNei, and the calculation gives the names the source has for its
+    individuals.
     """
 
     pass_stats: PassStats | None = None
@@ -89,7 +93,14 @@ class Distances:
     def __post_init__(self) -> None:
         """The vector as a read only array of float64, and the names of the
         individuals its length says there are."""
-        vector = numpy.asarray(self.dist_vector, dtype=numpy.float64)
+        try:
+            vector = numpy.asarray(self.dist_vector, dtype=numpy.float64)
+        except (TypeError, ValueError) as problem:
+            raise ValueError(
+                f"`dist_vector` is of the type "
+                f"`{type(self.dist_vector).__name__}` and holds what is no "
+                f"number, and the distance of a pair is one: {problem}"
+            ) from None
         if vector.ndim != 1:
             raise ValueError(
                 f"`dist_vector` has {vector.ndim} dimensions, and the distances "
@@ -103,15 +114,29 @@ class Distances:
             # neither: the vector of 10000 individuals is 400 MB.
             vector = vector.view()
             vector.flags.writeable = False
-        num_individuals = _num_individuals_of(vector.shape[0])
+        num_pairs = vector.shape[0]
+        num_individuals = _num_individuals_of(num_pairs)
         if self.names is None:
             names = tuple(range(num_individuals))
         else:
-            names = tuple(self.names)
-            if len(names) != num_individuals:
+            try:
+                names = tuple(self.names)
+            except TypeError:
+                raise TypeError(
+                    f"`names` is {self.names!r}, of the type "
+                    f"`{type(self.names).__name__}`, and the names of the "
+                    f"individuals are a sequence of one name for each of "
+                    f"them: give a tuple or a list, or `None` for the names "
+                    f"0 to N-1"
+                ) from None
+            # An empty vector is what one individual gives, and what no
+            # individual would give: the two cannot be told apart from it,
+            # so a user who names either is taken at their word.
+            named = (0, 1) if num_pairs == 0 else (num_individuals,)
+            if len(names) not in named:
                 raise ValueError(
-                    f"{len(names)} names were given and the {vector.shape[0]} "
-                    f"distances are the pairs of {num_individuals} individuals: "
+                    f"{len(names)} names were given and {num_pairs} distances "
+                    f"are the pairs of {_of_how_many_individuals(num_pairs)}: "
                     f"a name is needed for each of them"
                 )
         object.__setattr__(self, "dist_vector", vector)
@@ -125,7 +150,8 @@ class Distances:
         """
         pairs = self.dist_vector.shape[0]
         return (
-            f"<Distances of {len(self.names)} individuals, {pairs} pairs"
+            f"<Distances of {_individuals(len(self.names))}, {pairs} "
+            f"{'pair' if pairs == 1 else 'pairs'}"
             f"{'' if self.pass_stats is None else ', with the counts of its pass'}>"
         )
 
@@ -138,11 +164,24 @@ class Distances:
         individuals on both sides, which are the names of the result. Its
         diagonal is not read, and neither is its lower triangle.
 
-        A frame whose two sides are not of the same size is a ``ValueError``.
+        A frame that is not square is a ``ValueError``, and so is one whose
+        index and columns are not the same individuals in the same order,
+        which sorting the rows of a square matrix and not its columns
+        gives: its cells are then no longer the distance of the pair of
+        their row and their column, and the upper triangle of it is the
+        distance of another pair in every place.
 
         The result has no :attr:`pass_stats`, since no pass over a source
         gave it.
         """
+        if not isinstance(dists, pandas.DataFrame):
+            raise TypeError(
+                f"`dists` is of the type `{type(dists).__name__}`, and "
+                f"`from_square_dists` builds a result from the pandas frame "
+                f"that `square_dists` gives, indexed by the names of the "
+                f"individuals on both sides: give one, or build the result "
+                f"from the distances of the pairs with `Distances(...)`"
+            )
         rows, columns = dists.shape
         if rows != columns:
             raise ValueError(
@@ -150,6 +189,7 @@ class Distances:
                 f"of individuals are a square matrix with one row and one "
                 f"column for each of them"
             )
+        _refuse_two_sides_that_differ(list(dists.index), list(dists.columns))
         values = numpy.asarray(dists.values, dtype=numpy.float64)
         first, second = numpy.triu_indices(rows, k=1)
         return cls(dist_vector=values[first, second], names=tuple(dists.index))
@@ -183,7 +223,7 @@ class Distances:
         the lower triangle from four individuals on.
         """
         square = self.square_dists.values
-        return [[*square[row, :row].tolist(), 0] for row in range(len(self.names))]
+        return [[*square[row, :row].tolist(), 0.0] for row in range(len(self.names))]
 
 
 def calc_pairwise_kosman_dists(
@@ -242,8 +282,9 @@ def calc_pairwise_kosman_dists(
         # what it gave was the `AttributeError` of an object with no source
         # inside it.
         raise TypeError(
-            f"`variants` is {variants!r}, a {type(variants).__name__}, and the "
-            f"Kosman distances are calculated over the variants of a source: "
+            f"`variants` is {variants!r}, of the type "
+            f"`{type(variants).__name__}`, and the Kosman distances are "
+            f"calculated over the variants of a source: "
             f"give it what `open_vcf` or `open_vars` gives, "
             f"calc_pairwise_kosman_dists(open_vcf(vcf_path))"
         )
@@ -317,9 +358,53 @@ def _num_individuals_of(num_pairs: int) -> int:
 def _the_pairs_around(num_pairs: int) -> str:
     """The numbers of pairs nearest to `num_pairs`, each with the
     individuals that make them, for the message of a vector whose length is
-    of no set of individuals."""
-    below = (math.isqrt(1 + 8 * num_pairs) - 1) // 2
+    of no set of individuals.
+
+    `below` is the largest number of individuals whose pairs are not more
+    than `num_pairs`, so the two numbers named are the one under the length
+    that was given and the one over it.
+    """
+    below = (1 + math.isqrt(1 + 8 * num_pairs)) // 2
     return (
         f"{below * (below - 1) // 2} for {below} individuals and "
         f"{below * (below + 1) // 2} for {below + 1}"
     )
+
+
+def _individuals(count: int) -> str:
+    """`count` individuals, in the singular when there is one of them."""
+    return f"{count} individual" if count == 1 else f"{count} individuals"
+
+
+def _of_how_many_individuals(num_pairs: int) -> str:
+    """How many individuals make `num_pairs` pairs, for the message of a
+    number of names that is not that many.
+
+    No distance is what one individual gives and what no individual would
+    give, and nothing in the vector tells the two apart.
+    """
+    if num_pairs == 0:
+        return "0 or of 1 individual"
+    return _individuals(_num_individuals_of(num_pairs))
+
+
+def _refuse_two_sides_that_differ(index: list, columns: list) -> None:
+    """The first name of `index` that is not the name of the column at the
+    same place, refused.
+
+    # Raises
+
+    ``ValueError`` when the two sides of the frame are not the same
+    individuals in the same order.
+    """
+    for place, (row, column) in enumerate(zip(index, columns, strict=True)):
+        if row != column:
+            raise ValueError(
+                f"the name of the row {place} is {row!r} and the name of its "
+                f"column is {column!r}, and the two sides of a square matrix "
+                f"of distances are the same individuals in the same order: "
+                f"the cell of the row {row!r} and the column {column!r} is "
+                f"the distance of that pair and not of a pair of one of "
+                f"them. Give the frame `square_dists` gives, or sort both "
+                f"sides of yours the same way"
+            )

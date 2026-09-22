@@ -26,11 +26,11 @@ use crate::steps::{Step, Steps, chain_of};
 /// What one pass gives: the distance of every pair, NaN where there is
 /// none; the names of the individuals of the source; and the counts of the
 /// pass.
-type KosmanDists = (Vec<f64>, Vec<String>, PassCounts);
+type KosmanDistances = (Vec<f64>, Vec<String>, PassCounts);
 
 /// The same on its way to Python, with the distances as a numpy array of
 /// float64 that holds the allocation the core filled.
-type KosmanDistsForPython<'py> = (Bound<'py, PyArray1<f64>>, Vec<String>, PassCounts);
+type KosmanDistancesForPython<'py> = (Bound<'py, PyArray1<f64>>, Vec<String>, PassCounts);
 
 /// What a pass that could not be finished failed with.
 ///
@@ -60,7 +60,7 @@ pub(crate) fn calc_pairwise_kosman_dists<'py>(
     source: &Bound<'_, PyAny>,
     min_num_vars: u32,
     steps: &Bound<'_, Steps>,
-) -> Result<KosmanDistsForPython<'py>, PyPopneiError> {
+) -> Result<KosmanDistancesForPython<'py>, PyPopneiError> {
     let source = source_of(source)?;
     let steps = steps.get().of_a_pass()?;
     // A Ctrl-C that was pending when this was called is raised here, before
@@ -70,7 +70,13 @@ pub(crate) fn calc_pairwise_kosman_dists<'py>(
     // The whole source is read inside this one call, minutes for a dataset
     // of a million variants, so the interpreter is released for all of it;
     // it is what lets the core spread the pairs of a block over the threads
-    // of rayon, which deadlock on a caller that holds the interpreter.
+    // of rayon, which deadlock on a caller that holds the interpreter. A
+    // Ctrl-C that arrives meanwhile is raised when the call is over and not
+    // between two blocks, as it is in `Blocks::__next__`: the loop over the
+    // blocks is the core's, which `docs/specs/dists.md` has this crate call
+    // instead of writing that loop again, and a pass that is interrupted
+    // loses only itself, since it writes no file and the `Variants` is as
+    // it was.
     let calculated = py.detach(|| over_the_source(source, &steps, min_num_vars));
     let (dists, individuals, counts) = match calculated {
         Ok(calculated) => calculated,
@@ -101,7 +107,7 @@ fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
     min_num_vars: u32,
-) -> Result<KosmanDists, Refusal> {
+) -> Result<KosmanDistances, Refusal> {
     // The source is opened at the size of its own blocks: the calculation
     // adds whole numbers, so the same distances come out whatever the size,
     // and no `Reblock` is put over the chain.

@@ -450,6 +450,40 @@ def test_a_filter_that_takes_nothing_out_leaves_the_distances_and_counts_all(
         )
 
 
+def test_the_distances_are_over_the_variants_the_steps_kept(write_vcf) -> None:
+    """Five variants of three individuals, two of which have a missing
+    genotype, and a filter that keeps the variants with none.
+
+    The distances are those of the three variants that passed, and the
+    counts say so: `num_vars` is the 3 the calculation took and not the 5
+    the source gave, which the filter reports beside it.
+    """
+    variants = open_vcf(
+        write_vcf(
+            [
+                "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+                "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t0/1\t1/1",
+                "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t0/1\t0/1",
+                "chr1\t40\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t0/0",
+                "chr1\t50\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\t0/1\t0/0",
+            ]
+        )
+    )
+    variants.filter_by_missing_data(0)
+
+    dists = calc_pairwise_kosman_dists(variants)
+
+    # Over the three variants that passed, the two individuals of each pair
+    # share one allele at the first and the last and hold the same genotype
+    # at the middle one, but for ind1 and ind3, which share no allele at the
+    # first and the last: 2 over 2 x 3, 4 over 2 x 3 and 2 over 2 x 3.
+    assert list(dists.dist_vector) == [1 / 3, 2 / 3, 1 / 3]
+    assert dists.pass_stats == PassStats(
+        num_vars=3,
+        filtering={"missing_data": FilteringStats(vars_processed=5, vars_kept=3)},
+    )
+
+
 def test_a_pair_called_together_at_no_variant_has_no_distance(vcf_of) -> None:
     """Three individuals over two variants, where the first two are never
     called at the same variant.
@@ -478,7 +512,8 @@ def test_a_pair_called_together_at_no_variant_has_no_distance(vcf_of) -> None:
 def test_one_individual_gives_an_empty_vector(vcf_of) -> None:
     """A dataset of one individual, which makes no pair.
 
-    Its square matrix is the one cell of its diagonal, which is 0.
+    Its square matrix is the one cell of its diagonal, which is 0, and what
+    a user prints of the result counts that individual in the singular.
     """
     gts = [[[0, 0]], [[0, 1]]]
 
@@ -487,7 +522,13 @@ def test_one_individual_gives_an_empty_vector(vcf_of) -> None:
     assert dists.dist_vector.shape == (0,)
     assert dists.names == ("only",)
     assert dists.square_dists.values.tolist() == [[0.0]]
-    assert dists.triang_list_of_lists == [[0]]
+    assert dists.triang_list_of_lists == [[0.0]]
+    assert repr(dists) == (
+        "<Distances of 1 individual, 0 pairs, with the counts of its pass>"
+    )
+    assert repr(Distances([], names=["only"])) == (
+        "<Distances of 1 individual, 0 pairs>"
+    )
 
 
 def test_the_counts_of_the_pass_hold_the_variants_of_the_dataset() -> None:
@@ -546,51 +587,99 @@ def test_a_negative_min_num_snps_is_refused(write_vcf) -> None:
         calc_pairwise_kosman_dists(variants, min_num_snps=2**40)
 
 
+def _what_it_said_of(refusal: pytest.ExceptionInfo, path: Path) -> str:
+    """What a refusal says after the path of the file, which every message
+    of a file starts with."""
+    message = str(refusal.value)
+    assert message.startswith(f"{path}: ")
+    return message.removeprefix(f"{path}: ")
+
+
 def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
     """A VCF whose header names three individuals and that has no data line.
 
     A calculation over no variant gives no number, so it is a wrong input
-    and not a result of NaN, and the message says that the source is what
-    had none.
+    and not a result of NaN, and the message says which of the two happened,
+    the source having none or the steps keeping none. This one is the first,
+    and the whole sentence is asserted, because every word of it is what
+    tells the two apart.
     """
-    variants = open_vcf(write_vcf([]))
+    path = write_vcf([])
 
-    with pytest.raises(ValueError, match="no variant") as refusal:
+    with pytest.raises(ValueError) as refusal:
+        calc_pairwise_kosman_dists(open_vcf(path))
+
+    assert _what_it_said_of(refusal, path) == (
+        "the source has no variant, and a calculation needs 1 variant at least"
+    )
+
+
+def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
+    write_vcf,
+) -> None:
+    """The same VCF with no data line, with a filter on it.
+
+    The filter was given no variant, which is what says that the source is
+    the one that had none: the counts come after the sentence that says it.
+    """
+    path = write_vcf([])
+    variants = open_vcf(path)
+    variants.filter_by_missing_data(0)
+
+    with pytest.raises(ValueError) as refusal:
         calc_pairwise_kosman_dists(variants)
 
-    assert "source" in str(refusal.value)
+    assert _what_it_said_of(refusal, path) == (
+        "the source has no variant, and a calculation needs 1 variant at "
+        "least: the filter `missing_data` was given 0 variants and kept 0"
+    )
 
 
 def test_steps_that_kept_no_variant_are_refused_with_what_each_filter_counted(
     write_vcf,
 ) -> None:
     """Four variants, each with one genotype of the three missing, and a
-    missing data filter that keeps the variants with no missing genotype.
+    missing data filter that keeps the variants with no missing genotype,
+    with a second filter after it.
 
     The counts of a pass that could not finish are otherwise lost, so the
-    message carries them: the filter was given the four variants of the
-    source and kept none of them.
+    message carries them, in the order of the steps: the first filter was
+    given the four variants of the source and kept none, and the second was
+    given none. The number of variants the source gave is in the sentence
+    itself, which is what says that the steps and not the source are what
+    left the calculation with nothing.
     """
-    variants = open_vcf(
-        write_vcf(
-            [
-                "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
-                "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
-                "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t0/1\t1/1",
-                "chr1\t40\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
-            ]
-        )
+    path = write_vcf(
+        [
+            "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
+            "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
+            "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t0/1\t1/1",
+            "chr1\t40\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t./.\t1/1",
+        ]
     )
+    variants = open_vcf(path)
     variants.filter_by_missing_data(0)
 
-    with pytest.raises(ValueError, match="no variant") as refusal:
+    with pytest.raises(ValueError) as refusal:
         calc_pairwise_kosman_dists(variants)
+    assert _what_it_said_of(refusal, path) == (
+        "the steps kept no variant of the 4 the source gave, and a "
+        "calculation needs 1 variant at least: the filter `missing_data` was "
+        "given 4 variants and kept 0"
+    )
 
-    message = str(refusal.value)
-    assert "steps" in message
-    assert "missing_data" in message
-    assert "4" in message
-    assert "0" in message
+    with_two = open_vcf(path)
+    with_two.filter_by_missing_data(0)
+    with_two.filter_by_maf(0.5)
+
+    with pytest.raises(ValueError) as refusal:
+        calc_pairwise_kosman_dists(with_two)
+    assert _what_it_said_of(refusal, path) == (
+        "the steps kept no variant of the 4 the source gave, and a "
+        "calculation needs 1 variant at least: the filter `missing_data` was "
+        "given 4 variants and kept 0, the filter `maf` was given 0 variants "
+        "and kept 0"
+    )
 
 
 def test_a_vector_of_no_number_of_individuals_is_refused() -> None:
@@ -601,10 +690,29 @@ def test_a_vector_of_no_number_of_individuals_is_refused() -> None:
     given in the place of the vector is refused too, and names the way to
     build a result from one.
     """
-    with pytest.raises(ValueError, match="4"):
+    with pytest.raises(ValueError) as refusal:
         Distances(VECTOR_OF_NO_NUMBER_OF_INDIVIDUALS)
+    # The numbers of pairs around 4 are those of 3 and of 4 individuals.
+    assert "3 for 3 individuals" in str(refusal.value)
+    assert "6 for 4" in str(refusal.value)
     with pytest.raises(ValueError, match="from_square_dists"):
         Distances([[0.0, 0.5], [0.5, 0.0]])
+
+
+def test_what_a_distances_cannot_be_built_from_is_refused_by_its_argument() -> None:
+    """Distances that are no numbers, names that are no sequence of names,
+    and a square matrix that is no frame.
+
+    Each of the three used to come out as the message of numpy or of Python,
+    "could not convert string to float", "'int' object is not iterable" and
+    an `AttributeError`, none of which names the argument the user wrote.
+    """
+    with pytest.raises(ValueError, match="dist_vector"):
+        Distances(numpy.array(["a", "b", "c"]))
+    with pytest.raises(TypeError, match="names"):
+        Distances([0.5, 0.75, 0.3], names=3)
+    with pytest.raises(TypeError, match="square_dists"):
+        Distances.from_square_dists(numpy.zeros((3, 3)))
 
 
 def test_the_triangle_of_a_distances_is_the_lower_one_of_its_square_matrix() -> None:
@@ -618,6 +726,11 @@ def test_the_triangle_of_a_distances_is_the_lower_one_of_its_square_matrix() -> 
     dists = Distances(ODD_VECTOR, names=["a", "b", "c", "d"])
 
     assert dists.triang_list_of_lists == ODD_TRIANGLE
+    # Every value of it is a distance, the 0 of the diagonal included, so a
+    # user who writes it to a file of their own gets one kind of number.
+    assert all(
+        isinstance(dist, float) for row in dists.triang_list_of_lists for dist in row
+    )
     square = dists.square_dists
     assert [square.loc["c", "a"], square.loc["c", "b"]] == [2, 12]
 
@@ -642,6 +755,35 @@ def test_a_distances_is_built_from_a_square_matrix_and_gives_it_back() -> None:
         Distances.from_square_dists(pandas.DataFrame([[0.0, 0.1, 0.2]]))
 
 
+def test_a_square_matrix_whose_two_sides_are_not_in_one_order_is_refused() -> None:
+    """A frame whose rows were sorted and whose columns were not, which
+    `square.loc[["c", "b", "a"]]` gives.
+
+    Its cells are no longer the distance of the pair of their row and their
+    column, and reading the upper triangle of it gave a wrong vector in
+    silence: for the three individuals a, b, c at 0.1, 0.2 and 0.3 it gave
+    0.3, 0.0, 0.3 under the names c, b, a, where the distance of c and a is
+    0.2 and no pair has a distance of 0.
+    """
+    dists = Distances([0.1, 0.2, 0.3], names=["a", "b", "c"])
+    turned_around = dists.square_dists.loc[["c", "b", "a"]]
+
+    with pytest.raises(ValueError) as refusal:
+        Distances.from_square_dists(turned_around)
+
+    message = str(refusal.value)
+    assert "'c'" in message
+    assert "'a'" in message
+    assert "0" in message
+    # The frame whose two sides were sorted together is taken, and its
+    # distances are those of the pairs of its own order: c with b, c with a
+    # and b with a.
+    sorted_together = dists.square_dists.loc[["c", "b", "a"], ["c", "b", "a"]]
+    of_the_other_order = Distances.from_square_dists(sorted_together)
+    assert of_the_other_order.names == ("c", "b", "a")
+    assert list(of_the_other_order.dist_vector) == [0.3, 0.2, 0.1]
+
+
 def test_a_distances_built_with_no_name_names_its_individuals_by_their_place() -> None:
     """Three distances and no name, which pyNei names 0, 1 and 2 too.
 
@@ -653,8 +795,26 @@ def test_a_distances_built_with_no_name_names_its_individuals_by_their_place() -
     assert dists.names == (0, 1, 2)
     assert isinstance(dists.names, tuple)
     assert list(dists.square_dists.index) == [0, 1, 2]
-    with pytest.raises(ValueError, match="names"):
+    with pytest.raises(ValueError) as refusal:
         Distances([0.5, 0.75, 0.3], names=["a", "b"])
+    assert "2 names" in str(refusal.value)
+    assert "3 individuals" in str(refusal.value)
+
+
+def test_an_empty_vector_is_of_no_individual_or_of_one() -> None:
+    """No distance, which is what one individual gives and what no
+    individual would give.
+
+    The two cannot be told apart from the vector, so both are taken, and a
+    number of names that is neither says so.
+    """
+    assert Distances([], names=[]).names == ()
+    assert Distances([], names=["only"]).names == ("only",)
+    assert Distances([]).names == (0,)
+
+    with pytest.raises(ValueError) as refusal:
+        Distances([], names=["a", "b"])
+    assert "0 or of 1 individual" in str(refusal.value)
 
 
 def test_the_vector_of_a_distances_cannot_be_written_into(

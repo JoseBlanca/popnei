@@ -212,15 +212,25 @@ impl From<PyPopneiError> for PyErr {
 /// wrote them in. The last of the chain is the innermost, the filter the
 /// source feeds, so a pass whose innermost filter was given no variant is a
 /// pass over a source that has none.
+///
+/// The wording is the one `crates/popnei-js` gives a TypeScript user, word
+/// for word, so that the two languages say the same of the same pass:
+/// `the source has no variant, and a calculation needs 1 variant at least`,
+/// or `the steps kept no variant of the N the source gave, and a calculation
+/// needs 1 variant at least`, and after either, when the pass has filters,
+/// `: the filter `kind` was given n variants and kept m`, joined with `, `.
 fn no_variant_message(filtering: &[(&'static str, u64, u64)]) -> String {
-    let source_had_none = match filtering.last() {
-        Some(&(_, vars_processed, _)) => vars_processed == 0,
-        None => true,
+    // The last filter of the chain is the innermost, the one the source
+    // feeds, so what it was given is what the source gave. A pass with no
+    // filter reaches the calculation from the source itself.
+    let from_the_source = match filtering.last() {
+        Some(&(_, vars_processed, _)) => vars_processed,
+        None => 0,
     };
-    let what_happened = if source_had_none {
-        "the source has no variant"
+    let what_happened = if from_the_source == 0 {
+        "the source has no variant".to_owned()
     } else {
-        "the steps kept no variant of the source"
+        format!("the steps kept no variant of the {from_the_source} the source gave")
     };
     if filtering.is_empty() {
         return format!("{what_happened}, and a calculation needs 1 variant at least");
