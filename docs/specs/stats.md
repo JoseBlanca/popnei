@@ -74,10 +74,12 @@ type, `Pops` of `pynei/utils_pop.py`. The rules are those of
   as in pyNei: `test_maf_stats` of `test/test_gt_counts.py` names one
   individual in both of its populations.
 
-The order of the populations in every result is the order of the `pops`
-dict, for every statistic. pyNei sorts the names for the expected
-heterozygosity and keeps the order of the dict for the others, so its
-columns do not line up; nothing in a value changes.
+The order of the populations in every result is the order in which the
+keys of `pops` iterate, which in Python is the order they were inserted
+in, for every statistic; with no `pops` there is the one population,
+`pop`. pyNei sorts the names for the expected heterozygosity and keeps
+the order of the keys for the others, so its columns do not line up;
+nothing in a value changes.
 
 In TypeScript `pops` is an object of population name to an array of
 names, `{pop1: ["a", "b"]}`, and the errors are an `Error` at the call.
@@ -246,7 +248,7 @@ differences:
 - A duplicated name in a population, an empty population and an empty
   `pops` are refused, under "The populations".
 - The result has `pass_stats`, and the populations of every statistic are
-  in the order of the `pops` dict, under "The populations".
+  in the order of the keys of `pops`, under "The populations".
 - The differences of each statistic are under its item, and the open
   points among them are in the list at the end.
 
