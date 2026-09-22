@@ -14,9 +14,10 @@ It times two passes over the same source. The **calculation** is one call of
 gives the distance of every pair. The **reading alone** is
 `iter_blocks(fields=())`, the same pass with the genotypes as the only field
 the blocks carry, which is what the calculation asks its reader for, with
-nothing done to the genotypes but adding up how many alleles came out. The
-difference of the two is what the calculation costs beyond the reader, and
-it is the number the targets of the spec are of.
+nothing done to the genotypes but adding up how many alleles each block says
+it holds, which is their shape and not their content. The difference of the
+two is what the calculation costs beyond the reader, and it is the number the
+targets of the spec are of.
 
 `open_vcf` and `open_vars` are outside both timings. They read the header of
 the VCF, or the schema and the footer of the vars file, and no genotype:
@@ -39,7 +40,9 @@ timed, for the page cache. The two kinds are run one after the other inside
 each round, so that a machine that grows busier over the runs falls on both.
 
 popnei has to be built in release, `uv run maturin develop --release`: the
-debug build is several times slower and says nothing about the targets.
+build `uv run maturin develop` makes is about fifty times slower, 65.9 s
+against 1.275 s for the calculation over `big.vars` on one thread, and says
+nothing about the targets.
 """
 
 import os
@@ -59,11 +62,12 @@ def the_calculation(variants) -> tuple[int, int]:
 
 def the_reading_alone(variants) -> tuple[int, int]:
     """One pass over `variants` with the genotypes as the only field, as the
-    alleles that came out of it and the variants the pass took.
+    alleles its blocks say they hold and the variants the pass took.
 
-    The alleles are added up so that a reader which stopped filling the
-    genotypes, or filled them only when somebody read them, would show:
-    without that count the pass would be of a column nobody touched.
+    `block.gts.size` is the shape of the array the core filled, which reaches
+    numpy without a copy, so adding it up shows a pass whose blocks carry no
+    genotype column and does not show a buffer of the right shape that
+    nothing wrote into. Nothing here reads a genotype.
     """
     blocks = variants.iter_blocks(fields=())
     alleles = sum(int(block.gts.size) for block in blocks)

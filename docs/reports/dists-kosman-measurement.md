@@ -21,9 +21,14 @@ so the dataset is 20 blocks. The **calculation** is one call of
 `calc_pairwise_kosman_dists` over a source, which makes such a pass and gives
 the distance of every pair; it is also called the whole call below. The
 **reading alone** is the same pass with the genotypes as the only field the
-blocks carry and nothing done to them but adding up how many alleles came
-out, which is there so that a reader that stopped filling the genotypes would
-show. **With the reading taken out** is the first less the second, and it is
+blocks carry and nothing done to them but adding up how many alleles each
+block says it holds. Natively that count is the shape of the array the core
+filled, `block.gts.size`, which reaches numpy without a copy: it shows a pass
+whose blocks carry no genotype column at all, and it does not show a buffer
+of the right shape that nothing wrote into, since no genotype is read. In
+wasm it is the length of the `Int8Array` that the package copies out of the
+memory of the WebAssembly for each block, so there the genotypes are moved
+whether or not anybody reads them. **With the reading taken out** is the first less the second, and it is
 what the three numbers of "Speed" are of, so that the reader is not in them;
 each of those three is a **target** here. A **vars file** is popnei's own
 format, one arrow IPC file with the genotypes compressed with lz4, which
@@ -75,8 +80,8 @@ is not timed before the timed ones.
 
 One thing to know before running the checks of the plan against a release
 build. `uv run pytest` gives 208 passed against the build `uv run maturin
-develop` makes, and 1 failed, 206 passed, 1 skipped against the release
-build: `test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file` of
+develop` makes. Against the release build one of those 208 fails:
+`test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file` of
 `tests/test_io_vars.py` sends itself the signal of a Ctrl-C 0.1 s into a
 `write_vars` that takes 0.313 s in the debug build, and in the release build
 the call is over before the signal arrives. The measurement here needs the
@@ -100,9 +105,10 @@ took 0.2 ms.
 The reading alone is the same on one thread and on 18, as it was in
 `docs/reports/filters-measurement.md`: the reader of a vars file runs on the
 thread that calls it, so over this file the threads are the calculation's
-alone. Section 1 of `docs/architecture.md` has arrow-rs decompressing the
-genotypes of a vars file of 20000 variants of 1000 individuals in 18.8 ms on
-one thread of this machine; five times that file is 94 ms, and the whole pass
+alone. Section 1 of `docs/architecture.md` has arrow-rs, the Rust
+implementation of arrow that reads a vars file, decompressing the genotypes
+of one of 20000 variants of 1000 individuals in 18.8 ms on one thread of this
+machine; five times that file is 94 ms, and the whole pass
 here, decompression, the reader and the loop in Python over 20 blocks, is
 105 ms.
 
@@ -140,9 +146,15 @@ into an `Int8Array` of JavaScript before the loop of the user sees it,
 2e8 bytes over the 20 blocks, and the calculation makes no such copy: the
 reading alone carries it and the whole call does not, so the difference of
 the two is smaller than the calculation's own share. Natively there is no
-such copy, because the array the core filled reaches numpy as it is. The
-0.161 s of the reading alone against the 0.105 s natively on one thread is
-about the size of that copy.
+such copy, because the array the core filled reaches numpy as it is.
+
+That copy is small. The review of this task timed it inside the built
+`js/popnei/dist/block.js` over this file, where it is 5 to 10 ms of the
+0.161 s, and a plain copy of 200 MB in node with nothing else going on is 4
+to 9 ms. So of the 56 ms between the 0.161 s in wasm and the 0.105 s natively
+on one thread, the copy is a tenth or less and the rest is the reader itself
+being slower in wasm, which nothing here measured on its own. The 2.130 s is
+a low end by that unmeasured amount and not by the copy.
 
 ## pyNei
 
@@ -180,8 +192,8 @@ of that file in wasm.
 | 0.38 s on 18 cores | 0.735 s | 0.110 s | 0.625 s | no, 1.64 times the target |
 | 1.43 s in wasm | 2.291 s | 0.161 s | 2.130 s | no, 1.49 times the target |
 
-The three targets are the trial of "How it runs" of the spec with a tenth
-over them, and that trial timed one block of 5000 variants of 1000
+Each of the three targets is what the trial of "How it runs" of the spec took
+with a tenth of that time added to it, and that trial timed one block of 5000 variants of 1000
 individuals at 0.044 s on one thread, 0.017 s on 18 cores and 0.065 s in
 wasm, from which 20 blocks are 0.88 s, 0.34 s and 1.30 s. The calculation
 measured here is 0.058 s a block on one thread, 0.031 s on 18 cores and
@@ -191,12 +203,24 @@ from one thread to 18 by a factor of 1.85, 1.154 s to 0.625 s, and the trial
 went by a factor of 2.6, 0.044 s to 0.017 s a block. No sampling profile was
 taken in this task, so where that goes is not known.
 
-Beside pyNei on the same dataset and the same machine, the whole call and not
-the difference, since pyNei's number has no reading taken out of it: popnei
-takes 1.259 s on one thread against pyNei's 0.719 s, and popnei's best,
-0.735 s on 18 cores, is 2.6 times pyNei's best, 0.280 s on 6 threads. "Speed"
-of the spec expected 1.3 times pyNei, which the decision for the sets of bits
-accepted.
+Beside pyNei on the same dataset and the same machine, in two ways, because
+pyNei's number has no reading taken out of it and popnei's targets do. With
+the reading taken out of popnei's alone, popnei's 0.625 s on 18 cores is 2.2
+times pyNei's 0.280 s on 6 threads. As a user waits, whole call against whole
+call, it is 0.735 s against 0.280 s, 2.6 times, and 1.259 s against 0.719 s
+on one thread.
+
+The 1.3 times of "Speed" of the spec is neither of those two. It is the
+targets themselves over pyNei's times on a dataset held in memory, 0.97 over
+0.76 on one thread and 0.38 over 0.30 on its 6 threads, so it says how much
+slower than pyNei the spec was willing to be and not what was measured here.
+That is what the owner decided on 21 September 2026 when he chose the sets of
+bits over the matrix products pyNei makes: the bits took 1.5 times
+Accelerate's time on the trial's first block and would take about 1.3 times
+pyNei's over the whole dataset, and what they gave for it is integer sums
+that do not change with the threads, no need of the `linalg` module, which
+the architecture puts after `dists` and which is not written, and a wasm
+build where there is no BLAS at all.
 
 ## What a read ahead thread could gain at most
 
@@ -256,8 +280,9 @@ review of this calculation should start from, the first two being what
 "Speed" of `docs/specs/dists.md` already names:
 
 - **Fewer sets for a block with two alleles.** A block gets 1 + k * A sets of
-  bits per individual, with k the ploidy and A the alleles the block holds, 5
-  for this biallelic diploid one, and the pairs cost in proportion. The spec
+  bits per individual, with k the ploidy and A the alleles the block holds,
+  which for this biallelic diploid dataset is 1 + 2 * 2, 5 sets, and the
+  pairs cost in proportion. The spec
   leaves the layout to the implementer and asks whether a block with only the
   alleles 0 and 1 needs all 5. Not measured here.
 - **A parallel building of the sets.** The trial of the spec built them
@@ -273,10 +298,12 @@ review of this calculation should start from, the first two being what
   individuals are the work items of a block, and
   `docs/plans/dists-kosman.md` leaves the split to the implementer with the
   timing here as what says whether it was right. Nothing here varied it.
-- **The copy of every block out of the memory of the WebAssembly**, which the
-  reading alone in wasm carries and the calculation does not: what the wasm
-  reader costs inside the calculation was not measured on its own, so the
-  2.130 s of the table is the low end.
+- **What the reader costs in wasm.** Reading this file alone takes 0.161 s
+  there against 0.105 s natively on one thread, and the copy of every block
+  out of the memory of the WebAssembly, which the reading alone carries and
+  the calculation does not, is 5 to 10 ms of it. So most of those 56 ms is
+  the reader itself, which nothing here timed on its own, and the 2.130 s of
+  the table is a low end by that much.
 
 What was not measured at all: any ploidy but 2, any dataset but this one,
 popnei under pyodide, and pyNei under pyodide.
