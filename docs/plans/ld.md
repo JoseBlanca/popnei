@@ -144,7 +144,7 @@ this plan.
       over a block and a set of individuals, `rows`, `has_variance`,
       `dosages` and `maf`, with the errors of "The Rust interface".
       Serves deliverables 5 and 6. Needs 1.2.
-- [ ] 1.4 `r2_between`: the six products through `linalg::product`, four
+- [x] 1.4 `r2_between`: the six products through `linalg::product`, four
       where a set is multiplied by itself, and the r² of every pair from
       the six sums, with NaN where "What it gives" says there is none.
       Its cargo tests are the worked example. Serves deliverables 3 and

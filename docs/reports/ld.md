@@ -133,3 +133,39 @@ each tile copies three matrices, 12 MB for 512 variants of 1000
 individuals; and the rows are built by one serial loop, where `pca.rs`
 has a loop per ploidy with the length of a genotype known at compile
 time.
+
+Task 1.4, `r2_between`, commit adfd3ce. The r² of every pair of two sets
+of variants, the six products through `linalg::product` and the formula
+over the six sums, with NaN where "What it gives" of `docs/specs/ld.md`
+says there is none. `cargo test --workspace` gives `419 passed`, nine
+more than task 1.3 left, and `ld::` stands at 24 tests.
+
+Deliverable 3 holds, and it holds more strictly than it asks. The seven
+pairs of the worked example were asserted within 1e-12 relative, as the
+plan says, and every one of them came out equal to the spec's decimal bit
+for bit, on the system BLAS and on faer alike: `cargo test --workspace
+--no-default-features` gives the same `419 passed`. So the six sums are
+being held exactly as whole numbers, which is what the work package leans
+on and what makes a difference of 1e-13 in deliverable 4 worth looking
+at. The tests were seen to fail: swapping one of the six products breaks
+four of them.
+
+What the transposes cost, for a tile of 512 variants of 1000
+individuals: 12.3 MB copied for two different sets, three matrices of 4.1
+MB, and 12.4 MB for a set against itself, which is four products and four
+transposes of 2.1 MB. Work package 4 measures whether that shows against
+the 0.50 s target.
+
+Left for the review of the work package. `r2_between` adds three errors
+that are defects of popnei and not wrong input from a user: an `out`
+buffer of the wrong size, two sets built over a different number of
+individuals, and a linear algebra operation that did not run. All three
+fall through the wildcard of `crates/popnei-python/src/errors.rs` and
+would reach Python as `ValueError`, where the matching `PcaLinalg` of the
+principal component analysis is a `RuntimeError` and
+`docs/specs/pca.md` says why: no argument of the function can give them.
+The same holds for `LdRowsNotInTheDosages` of task 1.3. Nothing in Python
+reaches any of them today, since the binding of this module is task 2.2,
+so this is not a wrong exception a user can see yet. The sentence of
+`docs/specs/ld.md` that lists the cases of this module names three, all
+of them reachable from an argument, and does not name these four.
