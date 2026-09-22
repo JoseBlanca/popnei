@@ -346,7 +346,7 @@ polymorphism ratio, with `pass_stats`; in TypeScript,
 
 **Tasks.**
 
-- [ ] 4.1 `HistBins`, `ObsHet`, `Maf` and `ExpHet` with their
+- [x] 4.1 `HistBins`, `ObsHet`, `Maf` and `ExpHet` with their
   constructors, in `crates/popnei/src/stats.rs`, and the tests of
   deliverable 1. From "In Python and in TypeScript" of the pass for the
   bins, and "What it gives", "Missing genotypes" and "How it is
