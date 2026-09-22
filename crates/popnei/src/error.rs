@@ -165,6 +165,24 @@ pub enum Error {
     )]
     ReaderGaveABlockOfNoVariants,
 
+    /// A reader gave a block that holds the genotypes of no individual,
+    /// either because it has no individual or because its ploidy is 0, and
+    /// a calculation over the variants reads the genotype of one individual
+    /// at least. The VCF reader refuses a header with no individual and a
+    /// ploidy of 0, so a user reaches this only through a reader with a
+    /// defect. It is told apart from the genotypes that nobody asked the
+    /// reader for, which are missing from a block for another reason and
+    /// leave it empty in the same way.
+    #[error(
+        "a reader gave a block of {num_individuals} individuals of the ploidy {ploidy}, which holds no genotype for a variant, and a calculation over the variants reads the genotype of 1 individual at least; the reader that gave it has a defect"
+    )]
+    BlockWithNoGenotypeOfAVariant {
+        /// How many individuals the block says it holds the genotypes of.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds in it.
+        ploidy: usize,
+    },
+
     /// An array of a block is not of the size the block says: its
     /// genotypes are not its variants times its individuals times its
     /// ploidy, or a column has not one entry for each variant. The fields

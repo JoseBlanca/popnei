@@ -1196,14 +1196,20 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
         if block.num_vars == 0 {
             return Err(Error::ReaderGaveABlockOfNoVariants);
         }
+        // A block of no individual, or of the ploidy 0, has no genotype of
+        // a variant and empty `gts` for that reason, which has nothing to
+        // do with genotypes that nobody asked the reader for: each is a
+        // defect of a reader, and the message names the one that happened.
+        let alleles_per_var = block.alleles_per_var()?;
+        if alleles_per_var == 0 {
+            return Err(Error::BlockWithNoGenotypeOfAVariant {
+                num_individuals: block.num_individuals,
+                ploidy: block.ploidy,
+            });
+        }
         if block.gts.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
         }
-        // `check` passed and the genotypes are not empty, so they are the
-        // variants of the block times this number and it is one allele at
-        // least: the rows are cut by it, and a cut of 0 is what the
-        // standard library refuses with a panic.
-        let alleles_per_var = block.alleles_per_var()?.max(1);
         add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
         // A `usize` is 64 bits on the targets popnei builds natively for
         // and 32 in wasm, so every one of them is a `u64`; and a pass of
@@ -3380,6 +3386,40 @@ mod distribs {
                 .num_vars_with_value(0),
             4,
             "{what} is over four variants and counts three of them in a bin"
+        );
+    }
+
+    /// A block that holds the genotypes of no individual is refused for
+    /// what it is and not as genotypes nobody asked the reader for: its
+    /// `gts` are empty either way, and the two have nothing to do with each
+    /// other. A reader of popnei gives neither, and the VCF reader refuses
+    /// a header with no individual, so both say that a reader has a defect
+    /// and the message has to name the right one.
+    #[test]
+    fn a_block_that_holds_the_genotypes_of_no_individual_is_refused_for_that() {
+        let of_no_individual = Block {
+            num_vars: 2,
+            num_individuals: 0,
+            ploidy: 2,
+            gts: Vec::new(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of(vec![of_no_individual]);
+        let error = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+            .expect_err("a block of no individual");
+        assert!(
+            matches!(
+                &error,
+                Error::BlockWithNoGenotypeOfAVariant {
+                    num_individuals: 0,
+                    ploidy: 2
+                }
+            ),
+            "{error:?}"
         );
     }
 
