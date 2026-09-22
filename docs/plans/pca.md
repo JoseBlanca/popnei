@@ -319,7 +319,7 @@ VCF with `--vcf`.
 
 Tasks:
 
-- [ ] 4.1 The native measurement and the vectorization check, one
+- [x] 4.1 The native measurement and the vectorization check, one
       timing at a time with nothing building, written into the report
       as "Speed" of `docs/specs/pca.md` states its numbers. Serves
       deliverable 1.

@@ -536,3 +536,35 @@ How the work went: the four tasks went to three subagents, 496656,
 355016 and 345026 tokens at the end of the fixes; the seven reviewers
 used 168381, 166407, 161196, 187959, 134920, 150346 and 127321 tokens.
 No task had to be sent twice.
+
+## Work package 4: the measurements
+
+Task 4.1, the native measurement, is at 51269c6, with `docs/reports/pca-measurement.md`,
+the benchmark `crates/popnei/benches/pca_vars.rs` and the script
+`time_pca.py` beside it, and at eb5b974, which put the measured numbers
+into "Speed" of the spec in the place of the trial's.
+
+**The target was missed.** The analysis of 100000 variants of 1000
+individuals with no weights takes 0.801 s on one thread where "Speed"
+asks for 0.3 s, 2.7 times it; with the threads the machine gives, 0.352
+s; with the weights of 10 components, 1.353 s. The orchestrator ran the
+one thread timing again and got 0.795 s at best and 0.801 s as the
+median of five runs, with nothing else building. pyNei takes 8.106 s and
+5.59 GB for the same analysis from its own file, so popnei is 10.1 times
+faster and holds 0.21 GB; plink2 takes 0.248 s from its pgen file, 3.2
+times faster than popnei. The trial's numbers for pyNei and plink2, 8.2
+s and 0.26 s, are confirmed.
+
+Where the 0.801 s goes, from `sample`: 0.413 s standardizing the 20
+blocks, 0.254 s their product, 0.107 s reading the vars file, 0.024 s
+the eigendecomposition. The standardizing is 20.6 ms per block where the
+trial measured 1.5 ms, 13.7 times more, and the machine code says why:
+of the four passes over a row, only the counting of the codes is
+vectorized, 64 codes at a time; the writing of the codes is vectorized
+over the alleles of one genotype behind a test on the ploidy that at
+ploidy 2 falls to its scalar tail; the lookup gathers from a table of
+256 values, which the vector instructions of this machine cannot do; and
+`count_alleles`, a fourth pass the spec did not count, is scalar. A miss
+is not a reason to change the code inside this plan, as the plan says,
+and the owner is asked at the end of this report what to do with it.
+The subagent used 239402 tokens.
