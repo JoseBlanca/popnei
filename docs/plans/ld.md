@@ -1,6 +1,6 @@
 # Plan: r² between variants, the matrix of it, and the filter by linkage disequilibrium
 
-22 September 2026. State: draft, not yet approved by the owner. It builds
+22 September 2026. State: under way. It builds
 from `docs/specs/ld.md`, which has r², the squared correlation between
 the dosages of two variants, and the matrix of it for a set of variants;
 and from the item "The filter by linkage disequilibrium" of
