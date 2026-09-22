@@ -21,6 +21,7 @@
 //! against every variant of another, which is six products of those
 //! matrices and the formula of the spec over the six sums they give.
 
+use std::fmt;
 use std::num::NonZeroUsize;
 
 use popnei_linalg::product;
@@ -47,6 +48,49 @@ pub const MAX_VALUES_OF_THE_DOSAGES: usize = 2_147_483_647;
 /// no dataset that a reader of popnei gives.
 pub const MAX_PLOIDY_OF_THE_DOSAGES: usize = 255;
 
+/// How the individuals of two sets of dosages whose r² was asked for
+/// differ.
+///
+/// The sums of a pair run over the individuals both of its variants were
+/// called in, which is the value at the same place of the two sets, so the
+/// r² of two sets is taken only when both were built over the same
+/// individuals of the block in the same order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TheIndividualsThatDiffer {
+    /// The two sets were built over a different number of individuals.
+    NotAsMany {
+        /// How many individuals the first set was built over.
+        of_a: usize,
+        /// How many the second was built over.
+        of_b: usize,
+    },
+    /// The two sets hold a different individual of the block at the same
+    /// place.
+    NotTheSame {
+        /// The first place at which they differ, counted from 0.
+        at: usize,
+        /// The individual the first set holds there.
+        of_a: usize,
+        /// The individual the second set holds there.
+        of_b: usize,
+    },
+}
+
+impl fmt::Display for TheIndividualsThatDiffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::NotAsMany { of_a, of_b } => write!(
+                formatter,
+                "one was built over {of_a} individuals and the other over {of_b}"
+            ),
+            Self::NotTheSame { at, of_a, of_b } => write!(
+                formatter,
+                "the individual {at} of one is the individual {of_a} of the block and that of the other is the individual {of_b}"
+            ),
+        }
+    }
+}
+
 /// The dosages of the variants of a block, for the individuals of one
 /// population, held as the three matrices that the products of r² read.
 ///
@@ -61,9 +105,12 @@ pub const MAX_PLOIDY_OF_THE_DOSAGES: usize = 255;
 pub struct LdDosages {
     /// How many variants the dosages are of.
     num_vars: usize,
-    /// How many individuals each variant has a value for, which are the
-    /// ones [`LdDosages::of_block`] was given.
-    num_individuals: usize,
+    /// The individuals each variant has a value for, in the order they
+    /// were given: the index each one has among the individuals of the
+    /// block. [`LdDosages::of_block`] over an empty slice holds every
+    /// individual of the block here, in the order the block has them, so
+    /// that set and one built over all of them by name are the same set.
+    individuals: Vec<usize>,
     /// The dosage of each genotype, with a genotype that has an allele
     /// missing written as 0. It is the A of the spec.
     dosages: Vec<f64>,
@@ -86,8 +133,8 @@ impl LdDosages {
     /// The dosages of the variants of `block`.
     ///
     /// `individuals` are indices into the individuals of the block, in the
-    /// order they are given, and an empty slice is every individual of it.
-    /// The major allele of each variant is that of
+    /// order they are given and each of them once, and an empty slice is
+    /// every individual of it. The major allele of each variant is that of
     /// [`the_major_allele`](crate::variant::the_major_allele) over those
     /// individuals alone, so the dosages of a population are counted from
     /// the allele that population was called most often at.
@@ -95,8 +142,9 @@ impl LdDosages {
     /// # Errors
     ///
     /// A block that does not pass [`Block::check`], one with variants and
-    /// no genotypes, an index that is not an individual of the block, a
-    /// block whose genotypes hold more than
+    /// no genotypes, an index that is not an individual of the block, an
+    /// individual asked for more than once, a block whose genotypes hold
+    /// more than
     /// [`MAX_PLOIDY_OF_THE_DOSAGES`] alleles each, and a block whose
     /// variants times its individuals is more than
     /// [`MAX_VALUES_OF_THE_DOSAGES`], which is what the linear algebra
@@ -112,13 +160,20 @@ impl LdDosages {
                 ploidy: block.ploidy,
             });
         }
+        let mut asked_for_already = vec![false; block.num_individuals];
         for individual in individuals {
-            if *individual >= block.num_individuals {
+            let Some(asked_for) = asked_for_already.get_mut(*individual) else {
                 return Err(Error::LdIndividualNotInTheDataset {
                     individual: *individual,
                     num_individuals: block.num_individuals,
                 });
+            };
+            if *asked_for {
+                return Err(Error::LdIndividualAskedForTwice {
+                    individual: *individual,
+                });
             }
+            *asked_for = true;
         }
         let num_individuals = match individuals.is_empty() {
             true => block.num_individuals,
@@ -131,7 +186,10 @@ impl LdDosages {
         let values = the_values_of(block.num_vars, num_individuals).ok_or_else(too_large)?;
         let mut dosages = LdDosages {
             num_vars: block.num_vars,
-            num_individuals,
+            individuals: match individuals.is_empty() {
+                true => (0..block.num_individuals).collect(),
+                false => individuals.to_vec(),
+            },
             dosages: vec![0.0; values],
             called: vec![0.0; values],
             squares: vec![0.0; values],
@@ -213,7 +271,7 @@ impl LdDosages {
     /// when it was given none.
     #[must_use]
     pub fn num_individuals(&self) -> usize {
-        self.num_individuals
+        self.individuals.len()
     }
 
     /// The variants `first..first + num_vars` of it, which the tiles of the
@@ -237,11 +295,11 @@ impl LdDosages {
         // these are at most the values of one of the matrices, which is a
         // number this machine counted when they were built: neither
         // saturates.
-        let from = first.saturating_mul(self.num_individuals);
-        let values = num_vars.saturating_mul(self.num_individuals);
+        let from = first.saturating_mul(self.num_individuals());
+        let values = num_vars.saturating_mul(self.num_individuals());
         Ok(LdDosages {
             num_vars,
-            num_individuals: self.num_individuals,
+            individuals: self.individuals.clone(),
             dosages: the_values_from(&self.dosages, from, values),
             called: the_values_from(&self.called, from, values),
             squares: the_values_from(&self.squares, from, values),
@@ -280,8 +338,8 @@ impl LdDosages {
         if var >= self.num_vars {
             return None;
         }
-        let from = var.checked_mul(self.num_individuals)?;
-        let to = from.checked_add(self.num_individuals)?;
+        let from = var.checked_mul(self.num_individuals())?;
+        let to = from.checked_add(self.num_individuals())?;
         let dosages = self.dosages.get(from..to)?;
         let called = self.called.get(from..to)?;
         Some(dosages.iter().zip(called).map(|(dosage, called)| {
@@ -325,14 +383,12 @@ impl LdDosages {
 ///
 /// [`Error::LdR2OfAnotherSize`] when `out` does not hold one value for
 /// each pair, [`Error::LdDosagesOfOtherIndividuals`] when `a` and `b`
-/// were built over a different number of individuals, and
-/// [`Error::LdLinalg`] when a product could not be worked out.
+/// were not built over the same individuals of the block in the same
+/// order, and [`Error::LdLinalg`] when a product could not be worked
+/// out.
 pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
-    if a.num_individuals != b.num_individuals {
-        return Err(Error::LdDosagesOfOtherIndividuals {
-            of_a: a.num_individuals,
-            of_b: b.num_individuals,
-        });
+    if let Some(problem) = the_individuals_that_differ(&a.individuals, &b.individuals) {
+        return Err(Error::LdDosagesOfOtherIndividuals { problem });
     }
     let num_values = out.len();
     if a.num_vars.checked_mul(b.num_vars) != Some(num_values) {
@@ -347,7 +403,7 @@ pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
         // `out` holds nothing.
         return Ok(());
     }
-    if a.num_individuals == 0 {
+    if a.num_individuals() == 0 {
         // The sums of a pair run over the individuals both of its variants
         // were called in and there is no individual, so every pair has an
         // n of 0 and no r². The products are not taken, since the linear
@@ -377,6 +433,26 @@ pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// How the individuals of the two sets of dosages differ, and `None` when
+/// both hold the same individuals of the block in the same order.
+fn the_individuals_that_differ(of_a: &[usize], of_b: &[usize]) -> Option<TheIndividualsThatDiffer> {
+    if of_a.len() != of_b.len() {
+        return Some(TheIndividualsThatDiffer::NotAsMany {
+            of_a: of_a.len(),
+            of_b: of_b.len(),
+        });
+    }
+    of_a.iter()
+        .zip(of_b)
+        .enumerate()
+        .find(|(_, (of_a, of_b))| of_a != of_b)
+        .map(|(at, (of_a, of_b))| TheIndividualsThatDiffer::NotTheSame {
+            at,
+            of_a: *of_a,
+            of_b: *of_b,
+        })
 }
 
 /// The six sums of every pair of two sets of variants, each one a matrix
@@ -424,7 +500,7 @@ impl TheSumsOfThePairs {
     ///
     /// [`Error::LdLinalg`] when a product could not be worked out.
     fn of(a: &LdDosages, b: &LdDosages, num_values: usize) -> Result<TheSumsOfThePairs> {
-        let (rows, inner, cols) = (a.num_vars, a.num_individuals, b.num_vars);
+        let (rows, inner, cols) = (a.num_vars, a.num_individuals(), b.num_vars);
         let called_of_b = the_transpose_of(&b.called, cols, inner);
         let dosages_of_b = the_transpose_of(&b.dosages, cols, inner);
         let mut num_individuals = vec![0.0; num_values];
@@ -677,8 +753,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheSumsOfThePairs,
-        r2_between, the_values_of,
+        LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheIndividualsThatDiffer,
+        TheSumsOfThePairs, r2_between, the_values_of,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
@@ -1354,7 +1430,7 @@ mod tests {
         // pair of them has an n of 0.
         let dosages = LdDosages {
             num_vars: 2,
-            num_individuals: 0,
+            individuals: Vec::new(),
             dosages: Vec::new(),
             called: Vec::new(),
             squares: Vec::new(),
@@ -1401,10 +1477,83 @@ mod tests {
         let of_two = LdDosages::of_block(&block, &[0, 1]).expect("the dosages of two");
         let mut r2 = vec![0.0; 25];
         match r2_between(&of_six, &of_two, &mut r2) {
-            Err(Error::LdDosagesOfOtherIndividuals { of_a, of_b }) => {
+            Err(Error::LdDosagesOfOtherIndividuals {
+                problem: TheIndividualsThatDiffer::NotAsMany { of_a, of_b },
+            }) => {
                 assert_eq!((of_a, of_b), (6, 2));
             }
             other => panic!("dosages of six individuals against two were taken: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dosages_of_as_many_individuals_that_are_not_the_same_ones_are_refused() {
+        let block = the_worked_example();
+        let of_the_first_three = LdDosages::of_block(&block, &[0, 1, 2]).expect("the first three");
+        let of_the_last_three = LdDosages::of_block(&block, &[3, 4, 5]).expect("the last three");
+        let mut r2 = vec![0.0; 25];
+        match r2_between(&of_the_first_three, &of_the_last_three, &mut r2) {
+            Err(Error::LdDosagesOfOtherIndividuals {
+                problem: TheIndividualsThatDiffer::NotTheSame { at, of_a, of_b },
+            }) => {
+                assert_eq!((at, of_a, of_b), (0, 0, 3));
+            }
+            other => panic!("dosages of three individuals against three others: {other:?}"),
+        }
+        // The two sets differ at their second individual and not at their
+        // first, which is the one the error names.
+        let of_two = LdDosages::of_block(&block, &[0, 1]).expect("the first two");
+        let of_two_others = LdDosages::of_block(&block, &[0, 2]).expect("two others");
+        let mut r2 = vec![0.0; 25];
+        match r2_between(&of_two, &of_two_others, &mut r2) {
+            Err(Error::LdDosagesOfOtherIndividuals {
+                problem: TheIndividualsThatDiffer::NotTheSame { at, of_a, of_b },
+            }) => {
+                assert_eq!((at, of_a, of_b), (1, 1, 2));
+            }
+            other => panic!("dosages of two individuals against two others: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_dosages_of_every_individual_are_those_of_all_of_them_named_one_by_one() {
+        let block = the_worked_example();
+        let of_the_block = LdDosages::of_block(&block, &[]).expect("the dosages of the six");
+        let named = LdDosages::of_block(&block, &[0, 1, 2, 3, 4, 5]).expect("the six by name");
+        // The two hold the same individuals, so the r² of one against the
+        // other is taken and is the matrix of the worked example.
+        assert_the_r2_is(
+            of_the_pair(&the_r2_of(&of_the_block, &named), 5, 0, 1),
+            0.675,
+            "v1 and v2 of the dosages of the six against the six by name",
+        );
+        // The variants of a range hold the individuals of the set they
+        // come from.
+        let rows = of_the_block.rows(0, 2).expect("v1 and v2");
+        assert_the_r2_is(
+            of_the_pair(&the_r2_of(&rows, &named), 5, 0, 1),
+            0.675,
+            "v1 and v2 of two variants against the six by name",
+        );
+    }
+
+    #[test]
+    fn an_individual_asked_for_more_than_once_is_refused() {
+        let block = the_worked_example();
+        // A population is a set of individuals, and one counted twice
+        // would be counted twice in n, in the major allele frequency and
+        // in every sum of every pair.
+        for (individuals, twice) in [
+            (vec![0, 0], 0),
+            (vec![0, 1, 2, 3, 4, 5, 0], 0),
+            (vec![5, 4, 3, 4], 4),
+        ] {
+            match LdDosages::of_block(&block, &individuals) {
+                Err(Error::LdIndividualAskedForTwice { individual }) => {
+                    assert_eq!(individual, twice);
+                }
+                other => panic!("the individuals {individuals:?} gave dosages: {other:?}"),
+            }
         }
     }
 

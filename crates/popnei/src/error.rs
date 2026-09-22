@@ -596,16 +596,31 @@ pub enum Error {
     /// number of individuals was asked for. The sums of a pair run over
     /// the individuals both of its variants were called in, which are the
     /// value at the same place of the two sets, so the two hold the same
-    /// individuals in the same order. It is a defect of popnei, and in
-    /// Python it is a `ValueError`, as every case of this module is.
+    /// individuals of the block in the same order.
+    /// [`crate::ld::TheIndividualsThatDiffer`] says how they differ. No
+    /// argument a user writes chooses the two sets of one call, so it is a
+    /// defect of popnei, and in Python it is a `RuntimeError`.
     #[error(
-        "the r² of dosages of {of_a} individuals against dosages of {of_b} was asked for, and the sums of a pair run over the individuals both of its variants were called in, which are the same individuals in the same order in both sets"
+        "the r² of two sets of dosages built over different individuals was asked for, and the sums of a pair run over the individuals both of its variants were called in, which are the individual at the same place of the two sets: {problem}"
     )]
     LdDosagesOfOtherIndividuals {
-        /// How many individuals the first set of dosages was built over.
-        of_a: usize,
-        /// How many individuals the second set was built over.
-        of_b: usize,
+        /// How the individuals of the two sets differ.
+        problem: crate::ld::TheIndividualsThatDiffer,
+    },
+
+    /// An individual was asked for more than once when a set of dosages
+    /// was built over some of the individuals of a block. A population is
+    /// a set of individuals, and one given twice would be counted twice in
+    /// the individuals of every pair it is in, in the major allele
+    /// frequency of every variant and in each of the six sums. In Python
+    /// it is a `ValueError`: it is the indices a user gave for the
+    /// individuals of a population.
+    #[error(
+        "the individual {individual} was asked for more than once, and the individuals of a population are given once each"
+    )]
+    LdIndividualAskedForTwice {
+        /// The index that was given more than once.
+        individual: usize,
     },
 
     /// The buffer given for the r² of two sets of variants does not hold
