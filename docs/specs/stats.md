@@ -740,9 +740,17 @@ A diploid population with one called allele, which needs
 gives 0 for the plain one and NaN for the unbiased one, and popnei
 `Some(0.0)` and `None`.
 
-At ploidy 1 the plain one is 1 minus the sum of the frequencies, 0 at
-every variant with a called allele, and so is the unbiased one, from the
-formulas; pyNei computes the same.
+At ploidy 1 the plain one is 1 minus the sum of the frequencies, and so
+is the unbiased one, from the formulas, which is 0 at every variant with
+a called allele in exact arithmetic and a few 1e-16 away from 0 in
+float64, where the frequencies are rounded. One haploid variant of nine
+individuals with the alleles 0, 1, 1, 1, 1, 1, 2, 3 and 4 gives
+-2.220446049250313e-16, below the range of the default histogram, so the
+variant is in the mean and in no bin and a user of a haploid dataset
+reads a mean a little below 0 beside a histogram that counts nothing.
+numpy computes the same value from the same counts, so popnei does not
+differ from pyNei here; popnei does not round the value to 0, which would
+count the variant in the first bin where pyNei counts it in none.
 
 `test_calc_exp_het` in `test/test_diversity.py` asserts the per variant
 numbers of the worked example below, over the same two populations, and
