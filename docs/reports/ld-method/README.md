@@ -10,8 +10,13 @@ two variants, where the dosage of a genotype is how many of its alleles
 are not the major allele of its variant; the specs say what each number
 means and what was concluded, and this page says what each file is and
 how to run it. Nothing here is part of popnei's build or of its tests.
-The plan that builds the module turns `make_ld.py` and the plink2
-commands below into the reference script of `tests/reference/ld/`.
+The plan that builds the module took `make_ld.py` and the worked example
+out of this directory on 22 September 2026: they are
+`tests/reference/ld/make_reference.py` and `tests/reference/ld/example.vcf`
+now, and `tests/reference/ld/run_plink2.sh` runs the plink2 commands below
+for the two of them and compares what they give with what is stored. The
+scripts here read the files those two write, so the paths below name them
+where they are.
 
 The machine was the owner's Apple M5 Pro, 18 cores, macOS 27.0, with
 plink2 v2.0.0-a.7.7 M1, bcftools 1.24, R 4.6.1, and the Python
@@ -25,20 +30,20 @@ repository.
 
     export LD_WORK=/tmp/ld_work
     mkdir -p $LD_WORK
-    cp docs/reports/ld-method/example.vcf $LD_WORK/
+    cp tests/reference/ld/example.vcf $LD_WORK/
 
 ## The datasets
 
-`make_ld.py` writes `$LD_WORK/ld.vcf`, the dataset the spec calls
-`tests/reference/ld/ld.vcf.gz`: two chromosomes of 250 biallelic variants
-each, 1000 bp apart, and 100 diploid individuals, whose haplotypes come
-from four founders recombined along the chromosome at a rate of 2 in 100
-between one variant and the next, with 3 in 100 genotypes then set to
-missing. Its seed is `numpy.random.default_rng(29)`, so it is the same
-file on every machine. 68 of its 500 variants end up with one dosage in
-every called genotype.
+`tests/reference/ld/make_reference.py` writes `$LD_WORK/ld.vcf`, the
+dataset the spec calls `tests/reference/ld/ld.vcf.gz`: two chromosomes of
+250 biallelic variants each, 1000 bp apart, and 100 diploid individuals,
+whose haplotypes come from four founders recombined along the chromosome
+at a rate of 2 in 100 between one variant and the next, with 3 in 100
+genotypes then set to missing. Its seed is `numpy.random.default_rng(29)`,
+so it is the same file on every machine. 68 of its 500 variants end up
+with one dosage in every called genotype.
 
-`example.vcf`, beside this file, is the worked example of both specs: 5
+`tests/reference/ld/example.vcf` is the worked example of both specs: 5
 variants of 6 individuals, one genotype missing and one variant of one
 dosage, whose r² can be worked out by hand.
 
@@ -55,7 +60,7 @@ its sign; `square bin` writes the whole matrix as float64, row after row,
 where the text plink2 writes by default has six digits. The four the
 scripts read:
 
-    python docs/reports/ld-method/make_ld.py
+    python tests/reference/ld/make_reference.py
 
     plink2 --vcf $LD_WORK/ld.vcf --double-id --allow-extra-chr \
            --r2-unphased square bin --out $LD_WORK/ld_r2
