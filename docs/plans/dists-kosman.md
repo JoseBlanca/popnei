@@ -119,7 +119,7 @@ them again.
 
 **Tasks.**
 
-- [ ] 1.1 `tests/reference/dists/make_reference.py` and what it stores,
+- [x] 1.1 `tests/reference/dists/make_reference.py` and what it stores,
   written as `tests/reference/filters/make_reference.py` is, from
   `ref_export.py`, `ref.R`, `poly_export.py` and `poly.R` of
   `docs/reports/kosman-method/`, which it replaces for the tests and
