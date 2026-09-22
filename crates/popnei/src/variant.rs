@@ -453,19 +453,65 @@ pub(crate) fn count_the_genotype(genotype: &[i8], counts: &mut GtCounts) -> Resu
 /// [`MAX_ALLELE`], which [`count_alleles`] fills.
 pub type AlleleCounts = [u32; 128];
 
+/// How many arrays of counters the alleles of one variant are counted into
+/// at once.
+///
+/// One array is one chain: a variant of two alleles lands almost every
+/// allele on the counter the allele before it has just written, and the
+/// increment waits for that store to reach the load, which over the
+/// 100000 variants of 1000 diploid individuals of
+/// `docs/reports/perf-stats-2026-09-22.md` was 1.4 ns an allele, about six
+/// cycles of this machine. Counting into this many arrays at once, the
+/// array chosen by where the allele lies and never by the allele itself,
+/// gives this many chains that do not wait for each other.
+/// [`merge_the_lanes`] adds them together afterwards, which gives the same
+/// number whatever the order because the counts are integers.
+///
+/// It cannot be changed on its own: [`count_the_alleles`] names one array
+/// for each lane and [`merge_the_lanes`] adds that many together.
+const COUNTING_LANES: usize = 4;
+
+/// The counters of one variant while it is being counted, one
+/// [`AlleleCounts`] for each of the [`COUNTING_LANES`] lanes.
+type LaneCounts = [AlleleCounts; COUNTING_LANES];
+
+/// It writes into `counts` the counts of the lanes added together.
+///
+/// Every entry of `counts` is written, so what it held before is gone and
+/// two variants cannot be added together in silence.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the entries of one allele over the lanes were each raised once for an \
+              allele of the variant, so they add up to at most the alleles of it, which \
+              each caller checks first is a number a u32 holds"
+)]
+fn merge_the_lanes(lanes: &LaneCounts, counts: &mut AlleleCounts) {
+    let [first, second, third, fourth] = lanes;
+    for ((((count, &of_the_first), &of_the_second), &of_the_third), &of_the_fourth) in counts
+        .iter_mut()
+        .zip(first)
+        .zip(second)
+        .zip(third)
+        .zip(fourth)
+    {
+        *count = of_the_first + of_the_second + of_the_third + of_the_fourth;
+    }
+}
+
 /// It writes into `counts[a]` how often the allele a was called in the
 /// genotypes of one variant, and gives how many alleles it counted, the
 /// called alleles.
 ///
 /// An allele is counted wherever it was called, in a half called genotype
 /// too, which is what `_count_each_allele` of pyNei counts over a chunk.
-/// `counts` is cleared here before the variant is counted, so what it
-/// holds afterwards is the counts of that variant and of no other: the
-/// caller hands the same array over for every variant, which is what keeps
-/// a pass over a block from allocating, and clears nothing itself. A
-/// caller that had to clear it and forgot would get two variants added
-/// together, and an entry already at the largest number a `u32` holds
-/// would wrap with nothing to show it.
+/// Every entry of `counts` is written here, so what it holds afterwards is
+/// the counts of that variant and of no other: the caller hands the same
+/// array over for every variant, which is what keeps a pass over a block
+/// from allocating, and clears nothing itself. A caller that had to clear
+/// it and forgot would get two variants added together, and an entry
+/// already at the largest number a `u32` holds would wrap with nothing to
+/// show it. When an error is raised nothing is written, and `counts` still
+/// holds what it held.
 ///
 /// # Errors
 ///
@@ -480,46 +526,81 @@ pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
             num_alleles: gts.len(),
         });
     }
-    counts.fill(0);
+    let mut lanes: LaneCounts = [[0; 128]; COUNTING_LANES];
     let mut called_alleles = 0_u32;
-    count_the_alleles(gts, counts, &mut called_alleles)?;
+    count_the_alleles(gts, &mut lanes, &mut called_alleles)?;
+    merge_the_lanes(&lanes, counts);
     Ok(called_alleles)
 }
 
-/// It counts the alleles of `gts` into `counts`, which it does not clear,
+/// It counts the alleles of `gts` into the lanes, which it does not clear,
 /// and raises `called_alleles` by the ones that were called.
+///
+/// Which lane an allele goes into is chosen by where it lies in `gts` and
+/// never by the allele, which is what [`COUNTING_LANES`] explains. `gts`
+/// is a whole row for [`count_alleles`], whose alleles fill the lanes one
+/// after another; for [`count_alleles_of`] it is the genotype of one
+/// individual, which fills as many lanes as the ploidy, since that
+/// function walks a row one genotype at a time.
+///
+/// The alleles are counted in the order they lie in, so the first allele
+/// of `gts` that popnei refuses is the one the error names.
 ///
 /// # Errors
 ///
 /// An allele below [`MISSING_ALLELE`], which no reader of popnei gives.
+fn count_the_alleles(gts: &[i8], lanes: &mut LaneCounts, called_alleles: &mut u32) -> Result<()> {
+    let [first, second, third, fourth] = lanes;
+    let (rounds, rest) = gts.as_chunks::<COUNTING_LANES>();
+    for &[of_the_first, of_the_second, of_the_third, of_the_fourth] in rounds {
+        count_one_allele(of_the_first, first, called_alleles)?;
+        count_one_allele(of_the_second, second, called_alleles)?;
+        count_one_allele(of_the_third, third, called_alleles)?;
+        count_one_allele(of_the_fourth, fourth, called_alleles)?;
+    }
+    // What `as_chunks` leaves over is fewer alleles than there are lanes,
+    // three at most, and they go into the first lanes in their order.
+    if let Some(&allele) = rest.first() {
+        count_one_allele(allele, first, called_alleles)?;
+    }
+    if let Some(&allele) = rest.get(1) {
+        count_one_allele(allele, second, called_alleles)?;
+    }
+    if let Some(&allele) = rest.get(2) {
+        count_one_allele(allele, third, called_alleles)?;
+    }
+    Ok(())
+}
+
+/// It counts one allele into `counts` and raises `called_alleles`, and
+/// counts nothing when the allele is [`MISSING_ALLELE`].
+///
+/// # Errors
+///
+/// An allele below [`MISSING_ALLELE`], which no reader of popnei gives.
+#[inline]
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "the called alleles and each entry of `counts` are raised by one at most \
               once for each allele counted, and each caller checks first that the \
               alleles it counts are a number a u32 holds"
 )]
-fn count_the_alleles(
-    gts: &[i8],
-    counts: &mut AlleleCounts,
-    called_alleles: &mut u32,
-) -> Result<()> {
-    for &allele in gts {
-        if allele == MISSING_ALLELE {
-            continue;
-        }
-        // An allele of 0 or more is at most `MAX_ALLELE`, which is the
-        // largest an i8 holds, and `counts` has an entry for each one up
-        // to it, so what the `else` catches is an allele below the
-        // missing one.
-        let Some(count) = usize::try_from(allele)
-            .ok()
-            .and_then(|entry| counts.get_mut(entry))
-        else {
-            return Err(Error::AlleleBelowTheMissingOne { allele });
-        };
-        *count += 1;
-        *called_alleles += 1;
+fn count_one_allele(allele: i8, counts: &mut AlleleCounts, called_alleles: &mut u32) -> Result<()> {
+    if allele == MISSING_ALLELE {
+        return Ok(());
     }
+    // An allele of 0 or more is at most `MAX_ALLELE`, which is the
+    // largest an i8 holds, and `counts` has an entry for each one up
+    // to it, so what the `else` catches is an allele below the
+    // missing one.
+    let Some(count) = usize::try_from(allele)
+        .ok()
+        .and_then(|entry| counts.get_mut(entry))
+    else {
+        return Err(Error::AlleleBelowTheMissingOne { allele });
+    };
+    *count += 1;
+    *called_alleles += 1;
     Ok(())
 }
 
@@ -561,9 +642,9 @@ pub fn count_gts_of(gts: &[i8], ploidy: usize, individuals: &[usize]) -> Result<
 /// individual of the reader, and `individuals` the index of each individual
 /// of the population among them, which [`Pops::individuals`] gives. It
 /// counts the alleles of those individuals and of no other, by the rules of
-/// [`count_alleles`], `counts` cleared here among them, which a population
-/// of every individual in the order of the reader is counted by instead:
-/// that one reads the row as it is.
+/// [`count_alleles`], every entry of `counts` written here among them,
+/// which a population of every individual in the order of the reader is
+/// counted by instead: that one reads the row as it is.
 ///
 /// [`Pops::individuals`]: crate::stats::Pops::individuals
 ///
@@ -581,12 +662,13 @@ pub fn count_alleles_of(
 ) -> Result<u32> {
     let num_individuals = num_individuals_of(gts, ploidy)?;
     refuse_more_alleles_than_a_count_holds(individuals.len(), ploidy)?;
-    counts.fill(0);
+    let mut lanes: LaneCounts = [[0; 128]; COUNTING_LANES];
     let mut called_alleles = 0_u32;
     for &individual in individuals {
         let genotype = genotype_of(gts, ploidy, individual, num_individuals)?;
-        count_the_alleles(genotype, counts, &mut called_alleles)?;
+        count_the_alleles(genotype, &mut lanes, &mut called_alleles)?;
     }
+    merge_the_lanes(&lanes, counts);
     Ok(called_alleles)
 }
 
@@ -816,6 +898,49 @@ mod tests {
             matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
             "{error}"
         );
+    }
+
+    /// The alleles of a row are counted into several arrays of counters at
+    /// once, one for each lane, and the arrays are added together
+    /// afterwards. This row has 11 alleles, which is two whole rounds of
+    /// the four lanes and three alleles over, so every lane counts a
+    /// different mixture and one of them counts nothing in the last round:
+    /// the three alleles of it have to come out of the lanes with the
+    /// counts they would have had in one array. The second variant then
+    /// goes into the same array, which shows that no lane carried a count
+    /// of the first one over.
+    #[test]
+    fn count_alleles_adds_the_lanes_of_a_row_that_is_not_whole_rounds_of_them() {
+        let mut counts: AlleleCounts = [0; 128];
+        let eleven_alleles = [0, 0, 1, -1, 2, 0, -1, 1, 0, -1, 1];
+        assert_eq!(count_alleles(&eleven_alleles, &mut counts).unwrap(), 8);
+        assert_eq!(counts[0], 4);
+        assert_eq!(counts[1], 3);
+        assert_eq!(counts[2], 1);
+        assert_eq!(counts[3], 0);
+
+        assert_eq!(count_alleles(&[2, 2], &mut counts).unwrap(), 2);
+        assert_eq!(counts[0], 0);
+        assert_eq!(counts[1], 0);
+        assert_eq!(counts[2], 2);
+    }
+
+    /// An allele below the missing one is refused wherever it lies in the
+    /// row, and the error names it: the lanes count the alleles in the
+    /// order they lie in, so which lane one falls into does not decide
+    /// whether it is seen.
+    #[test]
+    fn count_alleles_refuses_an_allele_below_the_missing_one_wherever_it_lies() {
+        for at in 0..11 {
+            let mut gts = [0, 1, -1, 0, 1, 0, -1, 1, 0, 1, 0];
+            gts[at] = -2;
+            let mut counts: AlleleCounts = [0; 128];
+            let error = count_alleles(&gts, &mut counts).unwrap_err();
+            assert!(
+                matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+                "at {at}: {error}"
+            );
+        }
     }
 
     /// The counts are the caller's array, handed over for one variant
@@ -1098,6 +1223,25 @@ mod tests {
             }
         );
         assert_eq!(alleles_counted_of(&gts, 2, &[0]), (vec![(0, 2)], 2));
+    }
+
+    /// A half called genotype gives the allele it has called and nothing
+    /// for the one it has not, so the called alleles of a population are
+    /// the entries of it that are not missing and not its individuals
+    /// times the ploidy. The three genotypes here are half called, half
+    /// called the other way round, and called whole.
+    #[test]
+    fn count_alleles_of_counts_the_entries_that_are_not_missing_of_half_called_genotypes() {
+        let gts = [0, -1, -1, 1, 2, 2];
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[0, 1, 2], &mut counts).unwrap(),
+            4
+        );
+        assert_eq!(counts[0], 1);
+        assert_eq!(counts[1], 1);
+        assert_eq!(counts[2], 2);
+        assert_eq!(counts[3], 0);
     }
 
     /// The counts of the alleles are cleared before the variant is
