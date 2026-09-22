@@ -676,19 +676,97 @@ fn alleles_of(gts: &[i8]) -> AllelesOfTheBlock {
               equal allele of the other are at most the ploidy"
 )]
 fn sums_of_two(first: (&[u64], &[u64]), second: (&[u64], &[u64]), ploidy: u32) -> (u32, u32) {
-    let called_in_both: u32 = first
-        .0
-        .iter()
-        .zip(second.0)
-        .map(|(one, other)| (one & other).count_ones())
-        .sum();
-    let alleles_that_pair: u32 = first
-        .1
-        .iter()
-        .zip(second.1)
-        .map(|(one, other)| (one & other).count_ones())
-        .sum();
+    let called_in_both = ones_in_both(first.0, second.0);
+    let alleles_that_pair = ones_in_both(first.1, second.1);
     (ploidy * called_in_both - alleles_that_pair, called_in_both)
+}
+
+/// How many bits are set in both of two runs of words, over as many words
+/// as the shorter of the two.
+///
+/// It is the count that both sums of a pair are made of: with the `called`
+/// sets it gives the variants both individuals were called at, and with the
+/// `holds` sets the alleles of one that pair with an equal allele of the
+/// other, added over those variants. Either is at most the ploidy times the
+/// variants of the block, which `KosmanBits::of_block` refuses a block for
+/// unless it fits in a `u32`.
+#[cfg(not(target_feature = "simd128"))]
+fn ones_in_both(one: &[u64], other: &[u64]) -> u32 {
+    one.iter()
+        .zip(other)
+        .map(|(one, other)| (one & other).count_ones())
+        .sum()
+}
+
+/// How many words of a pair are counted into lanes of 16 bits before those
+/// lanes are widened into lanes of 32.
+///
+/// Each vector of 16 bytes adds at most 16 to a lane of 16 bits, which
+/// holds 65535, so 4095 vectors, 8190 words, could be added before one
+/// could wrap. This is the largest even number of words below that, so the
+/// only run of words that is not a whole number of vectors is the last one.
+#[cfg(target_feature = "simd128")]
+const WORDS_PER_ROUND: usize = 8188;
+
+/// The same count, with the vector instructions of WebAssembly.
+///
+/// The words are ANDed two at a time, 16 bytes to a vector, and the ones of
+/// the result are counted by `i8x16.popcnt`, which gives 16 counts of 0 to
+/// 8. `u16x8.extadd_pairwise_u8x16` adds those in pairs into 8 lanes of 16
+/// bits, which are added into the lanes of the round; after
+/// [`WORDS_PER_ROUND`] words those 8 lanes are added in pairs into 4 lanes
+/// of 32 bits, which hold the count of the whole run. A run whose words are
+/// odd leaves one word over, and it is counted the way the other target
+/// counts all of them.
+///
+/// What each accumulator holds: a lane of the round at most 16 times the
+/// vectors of a round, 65504 of the 65535 a lane of 16 bits holds; a lane
+/// of 32 bits at most the ones of the whole run, which is at most the
+/// ploidy times the variants of the block and so fits in a `u32`; and their
+/// sum the same number, since the four lanes are parts of it.
+#[cfg(target_feature = "simd128")]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the four lanes and the odd word are parts of one count, which is at most the \
+              ploidy times the variants of the block, a number `of_block` refused the block \
+              unless it fits in a u32"
+)]
+fn ones_in_both(one: &[u64], other: &[u64]) -> u32 {
+    use core::arch::wasm32::{
+        i8x16_popcnt, i16x8_add, i32x4_add, u16x8_extadd_pairwise_u8x16,
+        u32x4_extadd_pairwise_u16x8, u32x4_extract_lane, u64x2, u64x2_splat, v128_and,
+    };
+
+    let mut ones = u64x2_splat(0);
+    let mut odd_word: u32 = 0;
+    for (one, other) in one
+        .chunks(WORDS_PER_ROUND)
+        .zip(other.chunks(WORDS_PER_ROUND))
+    {
+        let (one_pairs, one_over) = one.as_chunks::<2>();
+        let (other_pairs, other_over) = other.as_chunks::<2>();
+        let mut of_the_round = u64x2_splat(0);
+        for (&[one_low, one_high], &[other_low, other_high]) in one_pairs.iter().zip(other_pairs) {
+            let both = v128_and(u64x2(one_low, one_high), u64x2(other_low, other_high));
+            of_the_round = i16x8_add(
+                of_the_round,
+                u16x8_extadd_pairwise_u8x16(i8x16_popcnt(both)),
+            );
+        }
+        ones = i32x4_add(ones, u32x4_extadd_pairwise_u16x8(of_the_round));
+        // The rounds are of an even number of words, so only the last of
+        // them can leave a word over, and only when the run is odd.
+        odd_word += one_over
+            .iter()
+            .zip(other_over)
+            .map(|(one, other)| (one & other).count_ones())
+            .sum::<u32>();
+    }
+    u32x4_extract_lane::<0>(ones)
+        + u32x4_extract_lane::<1>(ones)
+        + u32x4_extract_lane::<2>(ones)
+        + u32x4_extract_lane::<3>(ones)
+        + odd_word
 }
 
 /// The two sums of every pair of individuals over the variants of
