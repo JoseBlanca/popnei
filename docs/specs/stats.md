@@ -379,7 +379,10 @@ i3, i4, i5, `min_num_individuals` 1 and 4 bins, whose edges are 0, 0.25,
 `_calc_obs_het_per_var`, `_calc_maf_per_var`,
 `_calc_unbiased_exp_het_per_var` and `_calc_num_poly_vars` at commit
 ef0ca6e on these genotypes, and the means and the histograms those of
-`calc_per_var_distribs`, the same with chunks of 6 and of 2 variants.
+`calc_per_var_distribs` of the same commit, run with
+`unbiased_exp_het=False` for the plain expected heterozygosity and with
+`unbiased_exp_het=True` for the unbiased one, the same with chunks of 6
+and of 2 variants.
 
 | variant | genotypes | obs het pop1 | obs het pop2 | maf pop1 | maf pop2 | unbiased exp het pop1 | unbiased exp het pop2 |
 |---|---|---|---|---|---|---|---|
@@ -409,8 +412,9 @@ The means and the histogram counts, over the four bins:
 The observed heterozygosity of 1 at variant 3 is in the last bin, and so
 is the maf of 1 of variants 1, 2 and 5. With no `pops`, over the five
 individuals, the mean observed heterozygosity is 0.395833 with the
-histogram 1, 2, 0, 1, the mean maf 0.699008 with 0, 1, 0, 3, and the mean
-unbiased expected heterozygosity 0.430159 with 1, 2, 0, 1, each over
+histogram 1, 2, 0, 1, the mean maf 0.699008 with 0, 1, 0, 3, the mean
+unbiased expected heterozygosity 0.430159 with 1, 2, 0, 1 and the mean
+plain expected heterozygosity 0.378107 with 2, 1, 0, 1, each over
 variants 1, 2, 3 and 5. The polymorphism ratio of the example is under
 its item. These are checked at `calc_per_var_distribs` of "The Rust
 interface", with blocks of 6 and of 2 variants, and the per variant
@@ -880,8 +884,14 @@ Rust interface".
 The worked example of the pass, at the same function: pop1 has the mafs
 0.75, 0.75, 0.25 and 1, so 3 polymorphic, 3 variable and 4 with data, and
 the ratios 0.75 and 1; pop2 has 1, 1, 0.25 and 0.666667, so 2, 2 and 4, and
-the ratios 0.5 and 1. With `min_num_individuals` 20 every count is 0 and
-both ratios NaN.
+the ratios 0.5 and 1. With no `pops`, over the five individuals, the
+mafs are 0.888889, 0.857143, 0.25 and 0.8, so 4 polymorphic, 4 variable
+and 4 with data, and both ratios 1. A `poly_threshold` of 0.5 over the
+two populations leaves 1 polymorphic variant in each, the variant 3 of
+maf 0.25, and changes neither the variable ones nor those with data, so
+the ratios are 0.25 in both populations over the variants with data and
+0.333333 and 0.5 over the variable ones. With `min_num_individuals` 20
+every count is 0 and both ratios NaN.
 
 ## The per individual statistics
 
