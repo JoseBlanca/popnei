@@ -1680,10 +1680,15 @@ impl PerIndividualStats {
     /// pass, the share of them at which it has no genotype.
     ///
     /// `individual` is one of `0..num_individuals()`; a number at or beyond
-    /// `num_individuals()` is no individual of this and has no missing
-    /// genotype here, a rate of 0.
+    /// `num_individuals()` is no individual of this and has no rate here,
+    /// NaN. A rate of 0 there would read as an individual whose genotype
+    /// was called at every variant, and this one is `f64` and not an
+    /// `Option<f64>` as the heterozygosity rate is.
     #[must_use]
     pub fn missing_rate(&self, individual: usize) -> f64 {
+        let Some(counts) = self.individuals.get(individual) else {
+            return f64::NAN;
+        };
         // A pass that gave no variant is an error, so a result of
         // `calc_per_individual_stats` holds one variant at least and this
         // never happens; what it keeps out is the NaN of 0 over 0.
@@ -1692,7 +1697,7 @@ impl PerIndividualStats {
         }
         // Every count of popnei is below 2^53, where a `f64` holds the
         // whole numbers exactly.
-        self.num_missing(individual) as f64 / self.num_vars as f64
+        counts.num_missing as f64 / self.num_vars as f64
     }
 
     /// The heterozygous genotypes of one individual over its called ones,
@@ -4543,6 +4548,36 @@ mod per_individual {
             "the missing rate of i5 is {missing_rate}, and it is 1"
         );
         assert_eq!(found.obs_het_rate(4), None, "the heterozygosity rate of i5");
+    }
+
+    /// A number at or beyond the individuals is no individual of the
+    /// result: it has no missing genotype and no heterozygous one, 0 and 0,
+    /// no heterozygosity rate, and a missing rate of NaN, which is what the
+    /// five doc comments say. A caller walks `0..num_individuals()` and
+    /// never asks for one, and what the five give beyond it is what keeps
+    /// them out of a panic; a missing rate of 0.0 there would read as an
+    /// individual whose genotype was called at every variant.
+    #[test]
+    fn a_number_beyond_the_individuals_has_no_count_and_no_rate() {
+        let mut reader = GivenBlocks::of(blocks_of(&THE_SIX_VARIANTS, 6));
+        let found =
+            calc_per_individual_stats(&mut reader).expect("the statistics of the worked example");
+
+        assert_eq!(found.num_individuals(), 5);
+        for beyond in [5, 9, usize::MAX] {
+            assert_eq!(found.num_missing(beyond), 0, "the {beyond}th individual");
+            assert_eq!(found.num_het(beyond), 0, "the {beyond}th individual");
+            let missing_rate = found.missing_rate(beyond);
+            assert!(
+                missing_rate.is_nan(),
+                "the missing rate of the {beyond}th individual is {missing_rate}"
+            );
+            assert_eq!(
+                found.obs_het_rate(beyond),
+                None,
+                "the {beyond}th individual"
+            );
+        }
     }
 
     /// The genotypes of a row are cut by the ploidy the reader says its
