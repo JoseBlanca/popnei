@@ -248,13 +248,15 @@ each call, which an operation that added to C instead of overwriting it
 would leave in the result.
 
 At `eigh_lower`: the 3 x 3 matrix with rows (4, 1, 0), (1, 3, 0) and
-(0, 0, 1). Its eigenvalues are (7 + √5)/2 = 4.6180339887498949,
-(7 - √5)/2 = 2.3819660112501051 and 1, and the eigenvectors, each with
+(0, 0, 1). Its eigenvalues are (7 + √5)/2 = 4.618033988749895,
+(7 - √5)/2 = 2.381966011250105 and 1, and the eigenvectors, each with
 the sign that makes its entry of largest absolute value positive, are
-(0.85065080835203988, 0.52573111211913348, 0), (-0.52573111211913348,
-0.85065080835203988, 0) and (0, 0, 1); the first two are (1, λ - 4)
-divided by their length. The digits are numpy's, all of them it prints,
-so that the tolerance of a test is spent on the code and not on the
+(0.8506508083520399, 0.5257311121191335, 0), (-0.5257311121191335,
+0.8506508083520399, 0) and (0, 0, 1); the first two are (1, λ - 4)
+divided by their length. Every number here and below is written with the
+digits that name the `f64` numpy computed and no more, which is what
+Python's `repr` prints and what Rust reads back as the same value, so
+that the tolerance of a test is spent on the code and not on the
 rounding of a literal. The test gives each vector that sign and compares
 the eigenvalues and the vectors within 1e-12.
 
@@ -263,15 +265,15 @@ backends are checked on the size they will run at: G = ZZ' for Z of
 1000 rows and 1200 columns, with z(i, c) the (c · 1000 + i)-th number of
 the xorshift generator below, started at 7. G then has full rank and its
 eigenvalues are apart, between 0.79 and 361.9, no two closer than 0.003.
-The literals, from numpy 2.5.3 on 22 September 2026, all the digits it
-prints: the trace 99996.387308167701, which is the sum of the
-eigenvalues, and which numpy adds up to 99996.387308167687 when it adds
+The literals, from numpy 2.5.3 on 22 September 2026: the trace
+99996.3873081677, which is the sum of the
+eigenvalues, and which numpy adds up to 99996.38730816769 when it adds
 the eigenvalues instead; the three largest eigenvalues 361.9125119011332,
 359.66517178659313 and 356.4439329949563, and the smallest
-0.79332892154084844; and the first three entries of the eigenvector of
+0.7933289215408484; and the first three entries of the eigenvector of
 the largest, with the sign of its largest entry positive,
-0.018111301861995926, -0.0045760221691004549 and
--0.0051874898509182699. The test compares the
+0.018111301861995926, -0.004576022169100455 and
+-0.00518748985091827. The test compares the
 eigenvalues within 1e-12 relative and the entries within 1e-9, because
 an eigenvector is less well determined than its eigenvalue by the gap to
 its neighbours, and a matrix of a real dataset has closer ones than
