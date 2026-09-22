@@ -119,6 +119,15 @@ export function passStatsOf(counts: PassCounts): PassStats {
   }
 }
 
+/**
+ * The kind of an argument whose value is the threshold of a filter, which
+ * is in `arg_thresholds`, and of one whose value is the names of the
+ * individuals to keep, which are in `arg_individuals`. They are the two
+ * numbers `arg_kinds` of the binding crate gives.
+ */
+const A_THRESHOLD = 0;
+const THE_NAMES_OF_INDIVIDUALS = 1;
+
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
   const kinds = steps.kinds();
@@ -126,8 +135,11 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
   const numArgsPerStep = steps.num_args_per_step();
   // The value of an argument crosses in the array of its kind: the
   // threshold of a filter is one number, and the individuals to keep are
-  // their names, one argument after another. How many names each argument
-  // holds says which of the two it is, and 0 of them is a threshold.
+  // their names, one argument after another. Which array each argument is
+  // read from is the kind that crosses beside it, and an argument of a
+  // kind this version of the package does not know is thrown for and not
+  // read as a threshold.
+  const argKinds = steps.arg_kinds();
   const numNamesPerArg = steps.num_names_per_arg();
   const thresholds = steps.arg_thresholds();
   const individuals = steps.arg_individuals();
@@ -148,14 +160,15 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
     const args: Record<string, unknown> = {};
     for (let argument = firstArg; argument < firstArg + numArgs; argument += 1) {
       const name = names[argument];
+      const argKind = argKinds[argument];
       const numNames = numNamesPerArg[argument];
-      if (name === undefined || numNames === undefined) {
+      if (name === undefined || argKind === undefined || numNames === undefined) {
         throw new Error(
           `popnei: the step \`${kind}\` of these variants holds ${numArgs} ` +
-            `arguments and not the name of every one of them`,
+            `arguments and not the name and the kind of every one of them`,
         );
       }
-      if (numNames === 0) {
+      if (argKind === A_THRESHOLD) {
         const threshold = thresholds[nextThreshold];
         if (threshold === undefined) {
           throw new Error(
@@ -165,7 +178,7 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
         }
         args[name] = threshold;
         nextThreshold += 1;
-      } else {
+      } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
         const kept = individuals.slice(firstName, firstName + numNames);
         if (kept.length !== numNames) {
           throw new Error(
@@ -175,6 +188,13 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
         }
         args[name] = kept;
         firstName += numNames;
+      } else {
+        throw new Error(
+          `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+            `variants is of the kind ${argKind}, which this version of the ` +
+            "package does not know; the package and the wasm it was built " +
+            "with are of one version",
+        );
       }
     }
     firstArg += numArgs;
@@ -273,10 +293,14 @@ export class Variants {
    * which resolve the names of a filter of individuals against them.
    */
   constructor(source: SourceOfVariants) {
-    const ofTheSource = source.individuals();
+    const steps = new Steps(source.individuals());
     this.#source = source;
-    this.#steps = new Steps(ofTheSource);
-    this.#individuals = Object.freeze(ofTheSource);
+    this.#steps = steps;
+    // The names of the individuals the next pass gives, which the steps are
+    // what says: those of the source until a filter of individuals is put
+    // on them. They are kept in JavaScript so that `individuals` answers
+    // after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
     this.#ploidy = source.ploidy();
   }
 
@@ -450,11 +474,15 @@ export class Variants {
    */
   filterIndividuals(individuals: readonly string[]): void {
     theWasmHasToBeLoaded();
-    const kept = namesOf("individuals", individuals, "individual", "ind00");
-    this.#stepsThatWereNotFreed().filter_individuals(kept);
-    // The names the next pass gives, which are the user's own array until
-    // it is copied here: freezing theirs would change what they hold.
-    this.#individuals = Object.freeze([...kept]);
+    const kept = namesOf("individuals", individuals, {
+      oneOfThem: "individual",
+      anExample: "ind00",
+    });
+    const steps = this.#stepsThatWereNotFreed();
+    steps.filter_individuals(kept);
+    // The names the next pass gives, which the core is what says: they are
+    // kept here as well so that `individuals` answers after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
   }
 
   /**
@@ -492,8 +520,7 @@ export class Variants {
     const fields = namesOf(
       "fields",
       options.fields === undefined ? FIELDS_OF_A_BLOCK : options.fields,
-      "field",
-      "chrom",
+      { oneOfThem: "field", anExample: "chrom" },
     );
     const numVarsPerBlock =
       options.numVarsPerBlock === undefined

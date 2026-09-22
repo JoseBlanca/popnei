@@ -339,7 +339,28 @@ test("one name written as a string is refused before the call", () => {
     (error: unknown) =>
       error instanceof Error &&
       error.message.includes("`individuals`") &&
+      /one individual is asked for/.test(error.message) &&
       error.message.includes('["ind05"]'),
+  );
+
+  assert.deepEqual(variants.steps, []);
+  variants.free();
+});
+
+test("what is no array of names at all is refused with an example", () => {
+  // A number is neither an array nor one name, so the message has nothing
+  // of the user's to write inside the array: it writes an individual of
+  // the kind the argument takes.
+  const variants = many();
+
+  assert.throws(
+    () => variants.filterIndividuals(3 as unknown as string[]),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("`individuals`") &&
+      error.message.includes("the number 3") &&
+      /one individual is asked for/.test(error.message) &&
+      error.message.includes('["ind00"]'),
   );
 
   assert.deepEqual(variants.steps, []);

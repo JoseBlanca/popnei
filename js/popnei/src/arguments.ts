@@ -128,10 +128,22 @@ export function bytes(argument: string, value: unknown): Uint8Array {
   return value;
 }
 
+/** What one of the names is and an example of one, for the message. */
+export interface WhatTheNamesAre {
+  /** What one name is, `field` or `individual`. */
+  oneOfThem: string;
+  /**
+   * A name of that kind, `chrom` or `ind00`, which the message writes
+   * inside the array the user should have written. What they gave is
+   * written there instead when it is one name as a string.
+   */
+  anExample: string;
+}
+
 /**
  * The names of `value` when it is an array of strings, and an `Error`
  * otherwise, which says what one of them is, a `field` or an `individual`,
- * and writes `anExample` of it in what the user should have written.
+ * and writes an example of it in what the user should have written.
  *
  * One name written where the array goes, `fields: "alleles"`, is the case
  * this catches: a string spread into an array is its letters, and popnei
@@ -142,10 +154,10 @@ export function bytes(argument: string, value: unknown): Uint8Array {
 export function namesOf(
   argument: string,
   value: unknown,
-  oneOfThem: string,
-  anExample: string,
+  whatTheNamesAre: WhatTheNamesAre,
 ): string[] {
   if (!Array.isArray(value) || value.some((name) => typeof name !== "string")) {
+    const { oneOfThem, anExample } = whatTheNamesAre;
     throw new Error(
       `popnei: \`${argument}\` is an array of names, and ${whatWasGiven(value)} ` +
         `was given; one ${oneOfThem} is asked for with ${argument}: ` +
