@@ -131,7 +131,9 @@ pub struct LdDosages {
     /// that set and one built over all of them by name are the same set.
     individuals: Vec<usize>,
     /// The dosage of each genotype, with a genotype that has an allele
-    /// missing written as 0. It is the A of the spec.
+    /// missing written as 0. It is the A of the spec, and every entry of
+    /// it is a whole number from 0 to the ploidy, which the dosages and
+    /// the products of r² are worked out from.
     dosages: Vec<f64>,
     /// A 1 where the genotype was called and a 0 where an allele of it was
     /// not. It is the M of the spec, and the products over it count the
@@ -741,8 +743,9 @@ fn the_values_from(matrix: &[f64], from: usize, values: usize) -> Vec<f64> {
 /// individual after those of the individual before it, and `chosen` holds
 /// one genotype for each index. [`LdDosages::of_block`] refuses an index
 /// that is not an individual of the block before it reads a variant, so
-/// every genotype is found; one that was not would leave that genotype of
-/// `chosen` as it was.
+/// every genotype is found; one that was not is written as a genotype with
+/// no allele called, since `chosen` is kept from one variant to the next
+/// and would otherwise hold the genotype of the variant before it.
 fn the_genotypes_of(
     gts: &[i8],
     individuals: &[usize],
@@ -759,10 +762,13 @@ fn the_genotypes_of(
         // these saturates.
         let from = individual.saturating_mul(of_a_genotype.get());
         let to = from.saturating_add(of_a_genotype.get());
-        if let Some(theirs) = gts.get(from..to) {
-            for (allele, theirs) in genotype.iter_mut().zip(theirs) {
-                *allele = *theirs;
+        match gts.get(from..to) {
+            Some(theirs) => {
+                for (allele, theirs) in genotype.iter_mut().zip(theirs) {
+                    *allele = *theirs;
+                }
             }
+            None => genotype.fill(MISSING_ALLELE),
         }
     }
 }
@@ -839,6 +845,13 @@ fn the_dosages_of_a_variant(
 }
 
 /// The dosage that an entry of the matrix of the dosages holds.
+///
+/// # Panics
+///
+/// In a build with the debug assertions on, when the value is not a whole
+/// number from 0 to the 255 a dosage is held in, which is what
+/// [`the_dosages_of_a_variant`] writes into that matrix and nothing else
+/// does.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -847,17 +860,22 @@ fn the_dosages_of_a_variant(
               the 255 a u8 holds"
 )]
 fn the_dosage_of(value: f64) -> u8 {
+    debug_assert!(
+        value.is_finite() && (0.0..=255.0).contains(&value) && value.fract() == 0.0,
+        "the matrix of the dosages holds {value}, which is not a dosage"
+    );
     value as u8
 }
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
 
     use super::{
         LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES,
-        TheIndividualsThatDiffer, TheSumsOfThePairs, a_vector_of, r2_between, the_memory_for,
-        the_values_of,
+        TheIndividualsThatDiffer, TheSumsOfThePairs, a_vector_of, r2_between, the_genotypes_of,
+        the_memory_for, the_values_of,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
@@ -1223,6 +1241,20 @@ mod tests {
         .to_string();
         assert!(message.contains("46341 variants"), "{message}");
         assert!(message.contains("2147483647"), "{message}");
+    }
+
+    #[test]
+    fn a_genotype_that_is_not_in_the_row_is_read_as_missing_and_not_as_the_variant_before_it() {
+        // The genotypes of the individuals that were asked for are read
+        // into one buffer that is kept from one variant to the next, so a
+        // genotype that was not found would otherwise leave the one of the
+        // variant before it there and be counted as a called genotype.
+        // `of_block` refuses an individual that is not one of the block, so
+        // nothing of popnei reaches this.
+        let of_a_genotype = NonZeroUsize::new(2).expect("the ploidy");
+        let mut chosen = vec![1_i8; 4];
+        the_genotypes_of(&[0, 0, 1, 1], &[1, 7], of_a_genotype, &mut chosen);
+        assert_eq!(chosen, vec![1, 1, M, M]);
     }
 
     #[test]
