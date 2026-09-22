@@ -425,7 +425,7 @@ could run it beside them, since they touch different files.
 
 **Tasks.**
 
-- [ ] 5.1 `calc_per_individual_stats` and `PerIndividualStats` in
+- [x] 5.1 `calc_per_individual_stats` and `PerIndividualStats` in
   `crates/popnei/src/stats.rs`, with the tests of deliverable 1. From
   "What they give", "How it runs" and "How it is verified" of "The per
   individual statistics" and "The Rust interface". It mirrors
