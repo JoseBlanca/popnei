@@ -289,7 +289,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // name behind an index at or beyond the individuals of the block,
         // behind one that is there twice, and a call that names no
         // individual at all, so a user who gets one of them has read what a
-        // reader with a defect built.
+        // reader with a defect built. A block that holds the genotypes of
+        // no individual, which a calculation over the variants refuses, is
+        // one more of a reader's: the VCF reader refuses a header with no
+        // individual and a ploidy of 0, which are the two ways a block
+        // comes out like that.
         popnei::Error::IndividualToKeepNotInTheBlock { .. }
         | popnei::Error::IndividualToKeepTwice { .. }
         | popnei::Error::NoIndividualToKeep
@@ -300,6 +304,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
+        | popnei::Error::BlockWithNoGenotypeOfAVariant { .. }
         | popnei::Error::KeepOfAnotherSize { .. }
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
