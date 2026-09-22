@@ -542,9 +542,40 @@ pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
     Ok(called_alleles)
 }
 
+/// The most frequent of the alleles `counts` counted, and the lowest
+/// numbered of two that are equally frequent. It is [`MISSING_ALLELE`]
+/// when no allele was called.
+///
+/// `counts` is what [`count_alleles`] left for one variant, with the
+/// called allele of a half called genotype counted. The dosage of a
+/// genotype is how many of its alleles are not the major one, so this is
+/// the allele every dosage of the variant is counted from, and the
+/// principal component analysis of `docs/specs/pca.md` and the r² of
+/// `docs/specs/ld.md` both take it from here, so that the two count the
+/// dosages of a variant from the same allele. In a variant of two alleles
+/// the other choice would give the ploidy minus each dosage, and the two
+/// calculations read a column and its opposite alike; in a variant of
+/// more alleles it changes which genotypes share a dosage.
+#[must_use]
+pub fn the_major_allele(counts: &AlleleCounts) -> i8 {
+    (0_i8..=MAX_ALLELE)
+        .zip(counts.iter())
+        .fold((MISSING_ALLELE, 0_u32), |(major, most), (allele, count)| {
+            if *count > most {
+                (allele, *count)
+            } else {
+                (major, most)
+            }
+        })
+        .0
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AlleleCounts, ChromTable, GtCounts, MAX_ALLELE, Needs, count_alleles, count_gts};
+    use super::{
+        AlleleCounts, ChromTable, GtCounts, MAX_ALLELE, MISSING_ALLELE, Needs, count_alleles,
+        count_gts, the_major_allele,
+    };
     use crate::error::Error;
 
     /// The six variants of five diploid individuals of the worked example
@@ -842,5 +873,33 @@ mod tests {
         assert_eq!(chroms.name(2), Some("scaffold_7"));
         assert_eq!(chroms.name(3), None);
         assert_eq!(chroms.name(u32::MAX), None);
+    }
+
+    /// The major allele of a variant whose two alleles were called
+    /// equally often is the lower numbered of them, which is the rule
+    /// `docs/specs/pca.md` gives so that the allele the dosages of a
+    /// variant are counted from does not turn on the order in which the
+    /// counts are read.
+    ///
+    /// Four diploid individuals, `0/0`, `1/1`, `0/1` and `0/1`: each of
+    /// the two alleles was called four times, and the major one is the
+    /// allele 0.
+    #[test]
+    fn the_major_allele_of_a_tie_is_the_lower_numbered_allele() {
+        let mut counts: AlleleCounts = [0; 128];
+        count_alleles(&[0, 0, 1, 1, 0, 1, 0, 1], &mut counts).unwrap();
+        assert_eq!(counts[0], 4);
+        assert_eq!(counts[1], 4);
+        assert_eq!(the_major_allele(&counts), 0);
+
+        // The allele called most often when there is one, here the allele
+        // 2 with three calls against the two of the allele 1 and the
+        // genotype with an allele missing, which counts no 0.
+        count_alleles(&[2, 2, 1, 2, 1, -1], &mut counts).unwrap();
+        assert_eq!(the_major_allele(&counts), 2);
+
+        // A variant of which no allele was called has no major allele.
+        count_alleles(&[-1, -1], &mut counts).unwrap();
+        assert_eq!(the_major_allele(&counts), MISSING_ALLELE);
     }
 }

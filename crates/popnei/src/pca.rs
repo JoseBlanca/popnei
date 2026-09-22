@@ -31,7 +31,7 @@ use popnei_linalg::{Eigen, add_self_product_lower, eigh_lower, product};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, MAX_ALLELE, MISSING_ALLELE, Needs, count_alleles};
+use crate::variant::{AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_major_allele};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -1708,28 +1708,6 @@ fn the_standardized_row(
     Ok(true)
 }
 
-/// The allele of the variant that was called most often, and the lowest
-/// numbered of two that were called equally often, from the counts of its
-/// alleles.
-///
-/// Which allele is the major one changes the sign of the weight of that
-/// variant and nothing else, because a standardized column with its
-/// dosages counted from the other allele is the same column times -1. The
-/// caller has looked that one allele was called, so this is never
-/// [`MISSING_ALLELE`].
-fn the_major_allele(counts: &AlleleCounts) -> i8 {
-    (0_i8..=MAX_ALLELE)
-        .zip(counts.iter())
-        .fold((MISSING_ALLELE, 0_u32), |(major, most), (allele, count)| {
-            if *count > most {
-                (allele, *count)
-            } else {
-                (major, most)
-            }
-        })
-        .0
-}
-
 /// The code of the genotype of each individual: its dosage, how many of
 /// its alleles are not the major one, or [`MISSING_CODE`] when one allele
 /// of it at least was not called.
@@ -1940,11 +1918,9 @@ pub mod bench_internals {
     use super::{
         RowScratch, VariantPcaOptions, the_center_and_the_scale_of_the_dosages,
         the_codes_of_the_genotypes as codes_of_the_genotypes,
-        the_counts_of_the_codes as counts_of_the_codes, the_major_allele as major_allele,
-        the_standardized_row as standardized_row,
+        the_counts_of_the_codes as counts_of_the_codes, the_standardized_row as standardized_row,
     };
     use crate::error::Result;
-    use crate::variant::AlleleCounts;
 
     /// The buffers one thread keeps while it standardizes the rows of a
     /// block, so that nothing is allocated for a variant. It is
@@ -1977,13 +1953,6 @@ pub mod bench_internals {
         row: &mut [f64],
     ) -> Result<bool> {
         standardized_row(gts, ploidy, position, options, &mut scratch.0, row)
-    }
-
-    /// The allele of the variant that was called most often, which is
-    /// `the_major_allele` of this module.
-    #[must_use]
-    pub fn the_major_allele(counts: &AlleleCounts) -> i8 {
-        major_allele(counts)
     }
 
     /// The code of the genotype of each individual, its dosage or the code
@@ -3363,36 +3332,6 @@ mod tests {
             &[86.3022285676, 8.33333333333, 5.36443809907],
             TOLERANCE,
             "the percentages",
-        );
-    }
-
-    /// The major allele of a variant whose two alleles were called
-    /// equally often is the lower numbered of them, which is the rule
-    /// `docs/specs/pca.md` gives so that the result does not turn on the
-    /// last bit of a comparison.
-    ///
-    /// Four individuals, `0/0`, `1/1`, `0/1` and `0/1`: each allele was
-    /// called four times. With the allele 0 as the major one the dosages
-    /// are 0, 2, 1 and 1, and with the allele 1 they would be 2, 0, 1 and
-    /// 1, which is the same column times -1. The mean is 1 and the
-    /// deviation sqrt(0.5).
-    #[test]
-    #[expect(
-        clippy::approx_constant,
-        reason = "the standardized value of a dosage that is 1 away from the mean, with the deviation sqrt(0.5), is sqrt(2)"
-    )]
-    fn the_major_allele_of_a_tie_is_the_lower_numbered_allele() {
-        let gts = [0_i8, 0, 1, 1, 0, 1, 0, 1];
-        let mut scratch = RowScratch::of(4);
-        let mut row = vec![0.0; 4];
-        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
-            .expect("the standardizing of the row");
-        assert!(used, "the variant has variance");
-        assert_close(
-            &row,
-            &[-1.41421356237, 1.41421356237, 0.0, 0.0],
-            TOLERANCE,
-            "the dosages 0 2 1 1 of the major allele 0",
         );
     }
 

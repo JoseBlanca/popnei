@@ -90,10 +90,10 @@ use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 use popnei::pca::VariantPcaOptions;
 use popnei::pca::bench_internals::{
-    Scratch, the_codes_of_the_genotypes, the_counts_of_the_codes, the_major_allele,
-    the_standardized_row, the_standardized_values,
+    Scratch, the_codes_of_the_genotypes, the_counts_of_the_codes, the_standardized_row,
+    the_standardized_values,
 };
-use popnei::variant::{AlleleCounts, Needs, count_alleles};
+use popnei::variant::{AlleleCounts, Needs, count_alleles, the_major_allele};
 
 /// How many times each pass is timed when the command line does not say.
 const DEFAULT_RUNS: usize = 5;
