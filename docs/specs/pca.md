@@ -893,8 +893,22 @@ alone takes the block from 597 ms to 306 ms, and `simd128` from there to
 The number to reach, for 100000 variants x 1000 individuals with
 `num_prin_comps` 0, was 0.3 s natively on one thread, which is 20 blocks
 at 12 ms and an eigendecomposition of 0.04 s with Accelerate's LAPACK;
-and 5 s in wasm with `simd128`, 7 s without, which task 4.2 of
-`docs/plans/pca.md` measures.
+and 5 s in wasm with `simd128`, 7 s without.
+
+**The two numbers of wasm are met.** The wasm package under node 26 takes
+4.500 s with `num_prin_comps` 0 and 5.164 s with 10, and the wheel of
+pyodide 4.481 s, over the vars file of those variants, whose bytes the
+call is given; at 20000 variants, 1.058 s and 1.046 s. The build that
+popnei ships is the one this section calls "with `simd128`", although it
+sets no flag: what puts the vector instructions in is the cargo feature
+`wasm-simd128-enable` of `gemm`, which the workspace turns on, and
+`-C target-feature=+simd128` on top of it gives a module that is the same
+file byte for byte. With that feature off, a build popnei does not ship,
+the same analysis takes 7.066 s. A block of 5000 variants costs 215 ms in
+wasm against 33.3 ms natively, and what is left of the analysis once the
+blocks are paid, the eigendecomposition of 1000 individuals and the
+building of the result, 0.197 s against the 0.035 s that
+`docs/specs/linalg.md` gives the eigendecomposition alone natively.
 
 **The native number is missed.** From the vars file on one thread this
 code takes 0.801 s with `num_prin_comps` 0, 2.7 times the 0.3 s, and
@@ -960,15 +974,24 @@ Meanwhile the implementer divides by n.
 
 **Open 6: `simd128` in the two wasm builds.** The 128 bit vector
 instructions take the product of a block, which is nearly all the time
-of the PCA in the browser, from 306 ms to 187 ms. A build with them does
-not load in a browser without them, which are in Chrome since version
-91 and in Firefox since 89, both of 2021, and in Safari since 16.4, of
-2023; that is from the release notes of the browsers and was not tried.
-The pyodide wheel built with them on 22 September 2026 loaded under
-pyodide on node 26 and passed the smoke test of `tests/pyodide/`. It is
-a decision about the builds, and it is asked, with the options and the
-recommendation, as Open 1 of `docs/specs/linalg.md`; it is here for its
-numbers. Meanwhile nothing in this module depends on it.
+of the PCA in the browser, from 306 ms to 187 ms in the trial, and the
+whole analysis of 100000 variants x 1000 individuals from 7.066 s to
+4.500 s in this code, which task 4.2 of `docs/plans/pca.md` measured. The
+decision is about the build flag `-C target-feature=+simd128`, and that
+flag turned out to change nothing: what puts those instructions in is the
+cargo feature `wasm-simd128-enable` of `gemm`, which the workspace
+manifest turns on, and with it on the module built with the flag and the
+module built without it are the same file byte for byte, on rustc 1.98
+and these dependencies. So the two builds already have the vector
+instructions, and turning the flag on would gain nothing. What that means
+for a browser without them was not tried, here or anywhere: such a
+browser would refuse the module popnei ships today, not only a module
+built with the flag. Those instructions are in Chrome since version 91
+and in Firefox since 89, both of 2021, and in Safari since 16.4, of 2023,
+which is from the release notes of the browsers. The decision is asked,
+with the options and the recommendation, as Open 1 of
+`docs/specs/linalg.md`; it is here for its numbers. Meanwhile nothing in
+this module depends on it.
 
 ## Not in this spec
 

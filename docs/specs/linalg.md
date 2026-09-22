@@ -382,6 +382,18 @@ checks: the times above for the eigendecomposition, and for the product
 of a block of 5000 x 1000 with itself, 10.5 ms with Accelerate on one
 thread, 95 ms with faer natively and 187 ms in wasm with `simd128`.
 
+What the PCA measured through this crate on 22 September 2026, in
+`docs/reports/pca-measurement.md`: natively a block of 5000 x 1000 takes
+12.7 ms in `add_self_product_lower`, the 12.05 ms of `dsyrk` and the
+checks; and in wasm a block of the analysis takes 215 ms, which is the
+product and the standardizing together, with what is left of the
+analysis once the blocks are paid, the eigendecomposition of 1000
+individuals and the building of the result, at 0.197 s under node and
+0.187 s under pyodide. Those two are a difference of two sizes and not a
+call timed by itself, and they are below the 0.31 s that section 3.2 of
+`docs/rust_core.md` measured for the eigendecomposition alone under
+pyodide on 19 September 2026, with another build.
+
 What the checks cost is the two readings of `add_self_product_lower`,
 every value of A and the lower half of G, 44 MB for that block, which
 nothing of the product needs. Measured on the same machine on 22
@@ -400,12 +412,25 @@ The owner decides this one. Until then the implementer follows its
 **Open 1: `simd128` in the two wasm builds.** With the flag and the
 feature of `gemm`, the product of a block takes 187 ms in wasm instead
 of 306 ms, and the product is nearly all the time of the PCA in the
-browser. A build with the flag does not load in a browser without those
-instructions, which every browser of 2023 and later has, as Open 6 of
-`docs/specs/pca.md` details; the pyodide wheel built with it loaded. The
-options are to turn it on in both builds, in the wasm package alone, or
-in neither. Recommendation: on in both. Meanwhile the flag is not set and
-the feature of `gemm` is.
+browser. **The flag is not what gives that**, which task 4.2 of
+`docs/plans/pca.md` measured on 22 September 2026: with the feature of
+`gemm` on, which is the meanwhile and what popnei ships, the module built
+with `-C target-feature=+simd128` and the module built without it are the
+same file byte for byte, checked on three builds from empty target
+directories with rustc 1.98, and the flag is on the rustc command line of
+every crate of the build that carries it. With the feature off instead,
+the analysis of 100000 variants x 1000 individuals under node takes
+7.066 s against 4.500 s, so the feature is what the two numbers are of.
+The options are still to turn the flag on in both builds, in the wasm
+package alone, or in neither, and on this rustc all three give the same
+files; what is not known is whether a later rustc, or a dependency that
+drops its own annotations, would make the flag matter. A build with those
+instructions does not load in a browser without them, which every browser
+of 2023 and later has, as Open 6 of `docs/specs/pca.md` details, and that
+holds for what popnei ships today and not only for a build with the flag.
+Recommendation: leave the flag off, since it changes no file, and keep
+the feature of `gemm` on, which is what the speed comes from.
+Meanwhile the flag is not set and the feature of `gemm` is.
 
 ## Not in this spec
 
