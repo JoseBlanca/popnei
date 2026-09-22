@@ -3,9 +3,11 @@
 22 September 2026. Approved by the owner on 22 September 2026, on a
 breakdown of four work packages from which he took out the first, a
 `Variants` built from an array of genotypes: the tests run on small VCF
-files written for them instead. Under way since 22 September 2026, in
-the worktree and on the branch below; `docs/reports/dists-kosman.md` is
-its work report. This plan builds the first calculation
+files written for them instead. Done on 22 September 2026, in the
+worktree and on the branch below, with every task ticked and every
+deliverable checked; `docs/reports/dists-kosman.md` is its work report,
+and none of the three numbers of "Speed" is met, which the report puts to
+the owner. This plan builds the first calculation
 of popnei: the Kosman distance of every pair of individuals,
 `calc_pairwise_kosman_dists`, and its `Distances` result. It builds from:
 

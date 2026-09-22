@@ -1,13 +1,96 @@
 # Work report: the Kosman distances between individuals
 
-The plan `docs/plans/dists-kosman.md` is under way, on the branch
+The plan `docs/plans/dists-kosman.md` is done, on the branch
 `plan/dists-kosman`, in the worktree `.claude/worktrees/dists-kosman`,
-since 22 September 2026. The orchestrator, in this report, is the session
-of the assistant that runs the plan: it sends each task to a subagent on
-Opus, checks what comes back and has each work package reviewed. The
-Kosman distance of two individuals is the share of their genotypes that
-differ, averaged over the variants at which both are called, as
-`docs/specs/dists.md` has it.
+where it ran on 22 September 2026. The orchestrator, in this report, is
+the session of the assistant that ran the plan: it sent each task to a
+subagent on Opus, checked what came back and had each work package
+reviewed. The Kosman distance of two individuals is the share of their
+genotypes that differ, averaged over the variants at which both are
+called, as `docs/specs/dists.md` has it.
+
+What exists now that did not. A user calls
+`calc_pairwise_kosman_dists(variants, min_num_snps=None)` in Python and
+`calcPairwiseKosmanDists(variants, {minNumSnps})` in TypeScript and gets
+a `Distances` with the distance of every pair of individuals, NaN for a
+pair with fewer called variants than asked, the names, the square matrix
+and the counts of the pass; at any ploidy, over a VCF or a vars file,
+through the filters the `Variants` holds. The core computes it as sets of
+bits over each block, two integers per pair added over the blocks and
+divided once, so the result is the same whatever the size of the blocks
+and the number of threads. On the four reference datasets of
+`tests/reference/dists/`, 20812 pairs, the two integers of every pair
+are those of R's `gd.kosman` and the distances are pyNei's bit for bit
+where pyNei runs. The wheel for pyodide computes the worked example of
+the spec.
+
+The final check of the plan, run by the orchestrator in the worktree at
+37d82e8: `cargo fmt --all --check` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` no warning; `cargo test --workspace` `345
+passed`, 2 ignored, from 306; `cargo wasm-check` finished; ruff `20 files
+already formatted` and `All checks passed!`; `uv run maturin develop &&
+uv run pytest` `208 passed`, from 174; `npm run build && npm test` in
+`js/popnei` `tests 144`, `fail 0`, from 126; `bash
+scripts/build_pyodide_wheel.sh && node tests/pyodide/smoke.mjs` exit 0;
+`uv run python tests/reference/dists/make_reference.py` exit 0 with the
+tree unchanged after it.
+
+What is asked of the owner.
+
+1. A decision on the speed. None of the three numbers of "Speed" of the
+   dists spec is met, on 100000 variants x 1000 individuals from a vars
+   file on his M5 Pro on 22 September 2026, with the reading of the file
+   taken out: 1.154 s against 0.97 s on one thread, 0.625 s against
+   0.38 s on 18 cores, 2.130 s against 1.43 s in wasm. pyNei takes
+   0.719 s with one thread and 0.280 s with 6, so popnei's best is 2.2
+   times pyNei's best where the spec accepted 1.3.
+   `docs/reports/dists-kosman-measurement.md` has the rest. The plan made
+   a number not met a finding and not a task, so no code was changed for
+   it. The options: order the performance review the spec names, which
+   starts from a sampling profile and from the two things the spec left
+   unmeasured, fewer sets for a biallelic block and the building of the
+   sets on the threads, which the arithmetic under work package 3 puts
+   first for the 18 core case; or accept the numbers and correct "Speed"
+   to them; or hold the merge until the review. The recommendation is
+   the first with the merge now: the numbers are right and the same at
+   every layer, what is slow is the split of the work and not its
+   shape, and a review runs on the merged code as well as on the
+   branch.
+2. The merge. The board says that the branch `spec/stats` changes the
+   signature of `chain_of` of the core, which the two new binding
+   functions of this branch call with the signature `main` has today: the
+   two branches meet in `crates/popnei-python/src/dists.rs` and
+   `crates/popnei-js/src/dists.rs` at the merge, one line each.
+3. What the plan decided that is his to reverse, each where it happened
+   below: a third error of the calculation, an accumulator the machine
+   has no memory for, written into "The Rust interface" of the spec; a
+   block whose individuals or ploidy differ from the reader's is refused;
+   `Distances(vector)` with no names gives the names 0 to N-1 as
+   integers, as pyNei does; `min_num_snps` is checked in the Python
+   package, with 4294967295 as its largest value; `Distances` holds the
+   array it is given without a copy, written into the spec's list of
+   differences from pyNei; `Distances([], names=[])` is taken, with no
+   individual; the messages of the package name the type of what was
+   given without an article; pandas is declared with the floor pyodide
+   ships, 3.0.2; the result type of both binding crates is
+   `KosmanDistances`.
+4. What waits for a spec or an issue of its own: a Ctrl-C during the
+   pass is raised when the pass returns, as in `write_vars`, which the
+   filters report already put to him; `cargo wasm-check` checks the core
+   alone, and the wasm binding crate is compiled for wasm by `npm run
+   build` only, because the alias also builds for emscripten where that
+   crate does not compile; against a release build one pytest test of
+   `write_vars` fails and two of `test_interrupt.py` skip, all three
+   timing dependent, so the release build the measurement needs and the
+   test suite are run one after the other; ruff sees neither
+   `tests/reference` nor `crates/popnei/benches`, so the reference script
+   and the timing scripts are kept clean by hand; and the spec's "How it
+   is verified" says pyNei and `gd.kosman` are 2.8e-17 apart on the
+   panel, which the reference script measures as 0.0 with the same
+   genotypes on both sides.
+5. The worktrees of the reviewers, `.claude/worktrees/agent-*`, four of
+   them, are removed after the merge with the plan's own, as the
+   following-plans skill says.
 
 ## Before the first task
 
@@ -325,3 +408,82 @@ that stages and commits in one call, `git commit -F - -- <paths>`, is
 the one that closes the window. Tokens of the fixes: 275438 for the
 core's subagent over its task and the fixes, 244672 the TypeScript
 one, 309568 the Python one.
+
+## Work package 3: speed and the browser
+
+Task 3.2, commit 0ff6fac, ran first, while the reviewers of work package
+2 read the tree: the smoke test of pyodide writes the diploid worked
+example as a VCF into the file system of emscripten and runs
+`calc_pairwise_kosman_dists` on it with the default `min_num_snps` and
+with 3, against the spec's 0.25, 5/6 and 2/6 exactly, the names and the
+`pass_stats`. Run by the orchestrator at 6647303: `bash
+scripts/build_pyodide_wheel.sh && node tests/pyodide/smoke.mjs` exits
+with 0. It found that pandas was not declared, above. 111934 tokens.
+
+Task 3.1, commit 4d4ed81: `docs/reports/dists-kosman-measurement.md`,
+with the two Python scripts beside `crates/popnei/benches/time_pynei.py`
+and the node one in `js/popnei/bench/`. None of the three numbers of
+"Speed" is met, on the owner's M5 Pro on 22 September 2026, best of 3,
+load average 1.4 to 1.9, with the reading of the file taken out:
+
+| the number to reach | with the reading taken out | the whole call | met |
+|---|---|---|---|
+| 0.97 s on one thread | 1.154 s | 1.259 s | no, 1.19 times |
+| 0.38 s on 18 cores | 0.625 s | 0.735 s | no, 1.64 times |
+| 1.43 s in wasm | 2.130 s | 2.291 s | no, 1.49 times |
+
+pyNei on its own vars file of the same VCF takes 0.719 s with one
+thread and 0.280 s with 6, its best, so popnei's best is 2.2 times
+pyNei's best with the reading taken out of popnei's number, and 2.6
+times as a user waits, where the spec accepted 1.3, of the target
+against pyNei in memory. The report has the VCF beside
+the vars file, the load averages, and what it leaves to the performance
+review. As the plan says, the numbers changed no code. 148773 tokens.
+
+What the orchestrator adds, as arithmetic and not as a measurement. The
+subagent of task 2.1 timed one block of 5000 variants x 1000 individuals
+at 14 ms to build the sets, on one thread, and 30 ms for its 499500
+pairs, which is the trial's 15 and 29 ms; twenty such blocks are 0.88 s,
+and the calculation takes 1.154 s on one thread, so 0.27 s of it, a
+quarter, is outside the sets and the pairs of the probe. On 18 cores the
+sets are built on one thread by choice of task 2.1, 0.28 s for the 20
+blocks if the probe holds, which leaves 0.34 s of the 0.625 s for the
+pairs on 18 threads against their 0.60 s on one: a gain of 1.8, where
+the trial's pairs gained 15. Whether that is the split of the pairs into
+one row of the upper triangle per work item, which the plan's "What
+could go wrong" left to this timing, or something else, is what a
+sampling profile would say, and the measurement report puts it first for
+the performance review. A pyodide measurement was not asked and was not
+made.
+
+The review, `spec` and `tests` over 0ff6fac and 4d4ed81, both reading the
+one tree since the work package changed no code of the library, and the
+first-reader on the measurement report. The tests reviewer ran every
+timing again, at a load average of 2.7 to 5.4, and every figure came
+out within 4 in 100 of the report's, every target missed by the same
+margin. What was found and fixed, all in the prose and the scripts:
+
+- The report blamed the 56 ms between the reading alone in wasm and
+  natively on the copy of every block out of the memory of the
+  WebAssembly; the tests reviewer timed that copy where it happens, 5 to
+  10 ms, so the rest is the reader itself being slower in wasm, which
+  was not measured. The conclusion that 2.130 s is a low end stands,
+  with the right reason.
+- "2.6 times pyNei" and the spec's "1.3 times" were of different bases,
+  the whole call against the target with the reading taken out; the
+  report gives both now, 2.2 and 2.6.
+- The pyodide README and smoke test said pandas is not declared, which
+  the commit after theirs made false.
+- The reading alone claimed to guard against a reader that stopped
+  filling the genotypes by adding up the size of the array, which an
+  unfilled buffer gives too; a comment saying the debug build is
+  "several times slower" where it is about fifty; a passed and skipped
+  split of the release build's pytest run that moves with a timing
+  dependent skip; and the four sentences the first-reader could not
+  follow.
+
+Nothing was set aside. The spec reviewer notes that the 18 core target
+of the spec, 0.38 s, is the trial's 0.34 s with a tenth over it rounded
+up from 0.374 s, and that a load average per script invocation is what
+the report has where the plan asked one per run; neither changes a
+verdict. Tokens: `spec` 100890, `tests` 95209, the first-reader 22490.
