@@ -8,8 +8,10 @@ maturin develop`, and with R 4.6.1 at /opt/homebrew/bin/Rscript:
 It needs three things outside the repository, and it says which one is missing
 and what puts it there when it cannot find it:
 
-- adegenet 2.1.11 in R's libraries, which holds `df2genind`, the function that
-  builds the object `gd.kosman` reads. Install it with
+- R 4.6.1 at /opt/homebrew/bin/Rscript, the R the numbers of the spec were
+  taken with, and adegenet 2.1.11 in its libraries, which holds `df2genind`,
+  the function that builds the object `gd.kosman` reads. The script refuses
+  any other version of either, and a missing adegenet is installed with
   `Rscript -e 'install.packages("adegenet")'`.
 - The source package of PopGenReport 3.1.3 from CRAN, under
   ~/.cache/popnei/reference/. PopGenReport does not install on macOS, because
@@ -54,22 +56,34 @@ It writes, beside itself, for each dataset:
   popnei checks a half called genotype, and none reached R. Every VCF is
   written with the timestamp of gzip fixed to 0, so that running the script
   again gives the same bytes.
-- `<name>.gdkosman.tsv`, what `gd.kosman` gives: the header line `dist\tn`
-  and then one line for every pair of individuals, in the order (0, 1),
-  (0, 2), ..., (0, N-1), (1, 2), ..., the order of `dist_vector` of
-  docs/specs/dists.md. The first field is the Kosman distance of the pair
-  with 17 significant digits, `NaN` for a pair with no variant called in
-  both, and the second is n, how many variants `gd.kosman` used for that
-  pair. A cargo test splits a line on the tab; a pytest test reads the file
-  with `numpy.loadtxt(path, skiprows=1)`.
+- `<name>.gdkosman.tsv`, what `gd.kosman` gives: the header line
+  `dist	n	k_sum` and then one line for every pair of individuals, in the
+  order (0, 1), (0, 2), ..., (0, N-1), (1, 2), ..., the order of
+  `dist_vector` of docs/specs/dists.md. The three fields of a line are the
+  Kosman distance of the pair, n, how many variants `gd.kosman` used for it,
+  and k times the sum of d, the integer the tests of the core assert. A cargo
+  test splits a line on the tab; a pytest test reads the file with
+  `numpy.loadtxt(path, skiprows=1)`.
 
 and, for the two diploid datasets, `<name>.pynei.tsv`, the distance vector of
-pyNei's `calc_pairwise_kosman_dists` in the same form and the same order, with
-the header line `dist`. pyNei takes diploids alone, so the tetraploid and the
-haploid datasets have R and nothing else.
+pyNei's `calc_pairwise_kosman_dists` in the same order, with the header line
+`dist`. pyNei takes diploids alone, so the tetraploid and the haploid
+datasets have R and nothing else.
 
-k times the sum of d of a pair, the integer the tests of the core assert, is
-not stored: it is the distance times the ploidy times n.
+A distance is written as the shortest text that reads back as the float64 it
+came from, `0.375` and `0.6222222222222222`, which is what `repr` of Python
+gives; every one of them round trips. `k_sum` is the distance times the
+ploidy times n rounded to the nearest whole number: that product lands just
+below or just above its integer in float64, 112.99999999999999 for the pair
+h00, h03 of the haploid dataset whose integer is 113, so a test that read the
+distance and n and truncated the product would assert the wrong number. The
+rounding is refused when the product is further than 1e-10 from a whole
+number.
+
+A pair with no variant called in both would have `nan` as its distance, 0 as
+its n and 0 as its `k_sum`. No pair of these four datasets is one: the
+smallest n is 1096 of the panel, 254 of the four allele dataset and 169 of
+each of the other two.
 
 Everything is made and checked in a directory of its own, and what is beside
 this script is written only when every one of these checks passed:
@@ -79,10 +93,17 @@ this script is written only when every one of these checks passed:
   1e-9 of the table's, and that the distance times the ploidy times n is
   within 1e-10 of the table's integer. It stops at the first that differs.
 - That the distance times the ploidy times n is a whole number within 1e-10
-  for every pair of every dataset, which is what makes it an integer a test
-  of the core can assert, and it prints the pair that is furthest from one.
+  for every pair of every dataset, and it names the pair furthest from one.
+- That a loop over the genotypes which pairs the alleles as "What it gives"
+  of the spec says, `kosman` of `poly_export.py` of
+  docs/reports/kosman-method/, gives the same n and the same k times the sum
+  of d as `gd.kosman` for every pair of every dataset, exactly, and a
+  distance within 1e-15 of R's. It reads nothing of R, so it is what says
+  that `gd.kosman` computes the distance of the spec over the whole of each
+  file and not only over the pairs of the table.
 - That the vector of pyNei and the vector of `gd.kosman` agree within 1e-15
-  on the two diploid datasets, and it prints the largest difference of each.
+  on the two diploid datasets, with the pairs that have no distance in the
+  same places, and it prints the largest difference of each.
 - That popnei's `open_vcf` reads each VCF it wrote with the number of
   variants, the number of individuals, the names and the ploidy of the
   dataset.
@@ -90,6 +111,7 @@ this script is written only when every one of these checks passed:
 
 import gzip
 import itertools
+import math
 import shutil
 import subprocess
 import tarfile
@@ -101,6 +123,7 @@ import numpy
 HERE = Path(__file__).parent
 
 RSCRIPT = Path("/opt/homebrew/bin/Rscript")
+R_VERSION = "4.6.1"
 ADEGENET_VERSION = "2.1.11"
 
 POPGENREPORT_VERSION = "3.1.3"
@@ -147,11 +170,25 @@ R_PROGRAM = r"""
 arguments <- commandArgs(trailingOnly = TRUE)
 work_dir <- arguments[1]
 popgenreport_source <- arguments[2]
-suppressMessages(library(adegenet))
+found_r <- as.character(getRversion())
+if (found_r != "R_VERSION") {
+  stop(sprintf(paste("the R that ran this is %s and this script needs R_VERSION,",
+                     "the R the numbers of docs/specs/dists.md were taken with"),
+               found_r))
+}
+if (!requireNamespace("adegenet", quietly = TRUE)) {
+  stop(paste("adegenet is not in R's libraries and this script needs",
+             "ADEGENET_VERSION; install.packages(\"adegenet\") puts there the",
+             "version CRAN gives today"))
+}
 found <- as.character(packageVersion("adegenet"))
 if (found != "ADEGENET_VERSION") {
-  stop(sprintf("the adegenet of R is %s and this script needs ADEGENET_VERSION", found))
+  stop(sprintf(paste("the adegenet of R is %s and this script needs",
+                     "ADEGENET_VERSION, which is at",
+                     "https://cran.r-project.org/src/contrib/Archive/adegenet/"),
+               found))
 }
+suppressMessages(library(adegenet))
 source(file.path(popgenreport_source, "R", "gd.kosman.r"))
 datasets <- read.table(file.path(work_dir, "datasets.tsv"), header = TRUE,
                        colClasses = c("character", "integer"))
@@ -169,7 +206,7 @@ for (row in seq_len(nrow(datasets))) {
              file.path(work_dir, paste0(name, ".gdkosman.tsv")))
   writeLines(indNames(individuals), file.path(work_dir, paste0(name, ".indnames.txt")))
 }
-""".replace("ADEGENET_VERSION", ADEGENET_VERSION)
+""".replace("ADEGENET_VERSION", ADEGENET_VERSION).replace("R_VERSION", R_VERSION)
 
 
 class Dataset:
@@ -408,9 +445,9 @@ def run_gd_kosman(datasets, work_dir):
     )
     if run.returncode != 0:
         raise SystemExit(
-            f"R did not run `gd.kosman`, which needs adegenet "
-            f"{ADEGENET_VERSION} in its libraries; install it with "
-            f"`Rscript -e 'install.packages(\"adegenet\")'`. R said:\n"
+            f"R stopped before it gave the numbers of `gd.kosman`. It runs "
+            f"under R {R_VERSION} with adegenet {ADEGENET_VERSION}, and it "
+            f"refuses any other version of either. R said:\n"
             f"{run.stdout}{run.stderr}"
         )
     from_r = {}
@@ -452,9 +489,72 @@ def pynei_dists(dataset):
     return [float(distance) for distance in distances]
 
 
+def kosman_loop(dataset):
+    """k times the sum of d and n of every pair, from the genotypes alone.
+
+    It is the loop `kosman` of `poly_export.py` of
+    docs/reports/kosman-method/, the one the spec's "How it is verified"
+    checked `gd.kosman` against pair by pair, with its loop over the variants
+    made by numpy. At a variant where both genotypes are called, d is 1 minus
+    the copies the two hold in common over the ploidy k, the copies in common
+    being the sum over the alleles a of the smaller of the copies of a each
+    genotype holds; so k times the sum of d over the variants of a pair is k
+    times n minus those copies added over the same variants. A missing
+    genotype holds no copy of any allele, so a variant where either genotype
+    is missing adds nothing to that sum and does not have to be taken out of
+    it.
+
+    It gives, for every pair in the order of `dist_vector`, k times the sum of
+    d and n, both integers.
+    """
+    # copies[allele, individual, variant] and called[individual, variant],
+    # laid this way so that the two rows of a pair are read side by side.
+    copies = numpy.stack(
+        [
+            (dataset.gts == allele).sum(axis=2).T.astype(numpy.int32)
+            for allele in range(dataset.num_alleles)
+        ]
+    )
+    called = (dataset.gts >= 0).all(axis=2).T
+    values = []
+    for first, second in dataset.pairs:
+        num_vars = int(numpy.count_nonzero(called[first] & called[second]))
+        in_common = 0
+        for allele in range(dataset.num_alleles):
+            in_common += int(
+                numpy.minimum(copies[allele, first], copies[allele, second]).sum()
+            )
+        values.append((dataset.ploidy * num_vars - in_common, num_vars))
+    return values
+
+
+def pair_name(dataset, index):
+    """The two individuals of the pair at `index` of `dist_vector`."""
+    first, second = dataset.pairs[index]
+    return f"{dataset.individuals[first]}, {dataset.individuals[second]}"
+
+
+def worst(largest, where):
+    """The largest difference that was found, with the pair it was on.
+
+    A largest difference of 0 was on every pair and on none in particular, so
+    naming one of them would say that the others were smaller.
+    """
+    if largest == 0.0:
+        return "0.0, which is what every pair gives"
+    return f"{largest}, on the pair {where}"
+
+
 def pair_index(dataset, name_a, name_b):
     """Where a pair of individuals is in the order of `dist_vector`."""
     individuals = list(dataset.individuals)
+    for name in (name_a, name_b):
+        if name not in individuals:
+            raise SystemExit(
+                f"{name} is not an individual of {dataset.name}, whose "
+                f"{len(individuals)} individuals are {individuals[0]} to "
+                f"{individuals[-1]}"
+            )
     first = individuals.index(name_a)
     second = individuals.index(name_b)
     return dataset.pairs.index((first, second))
@@ -493,32 +593,112 @@ def check_literals(datasets, from_r):
     print(f"the {len(LITERALS)} literals of the spec's table are what R gives")
 
 
-def check_whole_sums(dataset, from_r):
-    """It checks that k times the sum of d is a whole number for every pair.
+def whole_sums(dataset, from_r):
+    """k times the sum of d of every pair, as the whole number it is.
 
-    The tests of the core assert that integer, which they get from what is
-    stored here as the distance times the ploidy times n, so a pair whose
-    product is not a whole number would be a literal nobody could assert. It
-    prints the pair that is furthest from one and the smallest n of the
-    dataset, which is 0 for a pair with no variant called in both.
+    R gives the distance and n, and k times the sum of d is the distance times
+    the ploidy times n. That product lands just below or just above its whole
+    number in float64, 112.99999999999999 for the pair h00, h03 whose integer
+    is 113, so it is rounded, and the rounding is refused when the product is
+    further than 1e-10 from a whole number, because the integer would then be
+    a guess. A pair with no variant called in both has no distance and a sum
+    of 0.
+
+    It prints the pair whose product is furthest from a whole number and the
+    smallest n of the dataset.
     """
     furthest = 0.0
-    for distance, num_vars in from_r:
+    furthest_pair = pair_name(dataset, 0)
+    sums = []
+    for index, (distance, num_vars) in enumerate(from_r):
         if num_vars == 0:
+            sums.append(0)
             continue
-        k_times_sum = distance * dataset.ploidy * num_vars
-        away = abs(k_times_sum - round(k_times_sum))
-        furthest = max(furthest, away)
-    if furthest > 1e-10:
+        if math.isnan(distance):
+            raise SystemExit(
+                f"{dataset.name}: gd.kosman gives no distance to the pair "
+                f"{pair_name(dataset, index)}, which has n = {num_vars}"
+            )
+        product = distance * dataset.ploidy * num_vars
+        whole = round(product)
+        away = abs(product - whole)
+        if away > furthest:
+            furthest = away
+            furthest_pair = pair_name(dataset, index)
+        sums.append(whole)
+    if not furthest <= 1e-10:
         raise SystemExit(
-            f"{dataset.name}: k times the sum of d of one pair is {furthest} "
-            f"away from a whole number, and the tests assert it as an integer"
+            f"{dataset.name}: k times the sum of d of the pair {furthest_pair} "
+            f"is {furthest} away from a whole number, and the tests of the "
+            f"core assert it as an integer"
         )
     smallest = min(num_vars for _, num_vars in from_r)
     print(
-        f"{dataset.name}: k times the sum of d is at most {furthest} away from "
-        f"a whole number over the {len(from_r)} pairs, whose smallest n is "
-        f"{smallest}"
+        f"{dataset.name}: over the {len(from_r)} pairs, whose smallest n is "
+        f"{smallest}, k times the sum of d is away from a whole number by at "
+        f"most {worst(furthest, furthest_pair)}"
+    )
+    return sums
+
+
+def check_against_the_loop(dataset, from_r, sums):
+    """It compares R with the loop over the genotypes, pair by pair.
+
+    The loop of `kosman_loop` reads the genotypes and nothing of R, so it is
+    what says that `gd.kosman` computes the d of "What it gives" of
+    docs/specs/dists.md on every pair and not only on the three of the table.
+    The two integers are compared exactly and the distances within 1e-15, the
+    tolerance of the spec, a pair with no distance on either side being one
+    with no distance on both.
+    """
+    from_loop = kosman_loop(dataset)
+    largest = 0.0
+    largest_pair = pair_name(dataset, 0)
+    for index, (from_r_pair, from_loop_pair) in enumerate(
+        zip(from_r, from_loop, strict=True)
+    ):
+        from_r_distance, from_r_num_vars = from_r_pair
+        loop_sum, loop_num_vars = from_loop_pair
+        where = pair_name(dataset, index)
+        if loop_num_vars != from_r_num_vars:
+            raise SystemExit(
+                f"{dataset.name}: the pair {where} has {loop_num_vars} "
+                f"variants called in both and gd.kosman used {from_r_num_vars}"
+            )
+        if loop_sum != sums[index]:
+            raise SystemExit(
+                f"{dataset.name}: k times the sum of d of the pair {where} is "
+                f"{loop_sum} over the genotypes and {sums[index]} from what "
+                f"gd.kosman gives"
+            )
+        if loop_num_vars == 0:
+            if not math.isnan(from_r_distance):
+                raise SystemExit(
+                    f"{dataset.name}: the pair {where} has no variant called "
+                    f"in both and gd.kosman gives it the distance "
+                    f"{from_r_distance!r}"
+                )
+            continue
+        if math.isnan(from_r_distance):
+            raise SystemExit(
+                f"{dataset.name}: gd.kosman gives no distance to the pair "
+                f"{where}, which has {loop_num_vars} variants called in both"
+            )
+        loop_distance = loop_sum / (dataset.ploidy * loop_num_vars)
+        away = abs(loop_distance - from_r_distance)
+        if away > largest:
+            largest = away
+            largest_pair = where
+    if not largest <= 1e-15:
+        raise SystemExit(
+            f"{dataset.name}: the loop over the genotypes and gd.kosman are "
+            f"{largest} apart on the pair {largest_pair}, and the spec allows "
+            f"1e-15"
+        )
+    print(
+        f"{dataset.name}: the loop over the genotypes gives the two integers "
+        f"of every one of the {len(from_loop)} pairs, and its distance differs "
+        f"from gd.kosman's by at most {worst(largest, largest_pair)}"
     )
 
 
@@ -526,22 +706,39 @@ def check_against_pynei(dataset, from_r):
     """It compares pyNei's vector with R's and prints the largest difference.
 
     Both divide the same two integers once, so they agree to the last place of
-    a float64 of that size; the tolerance is the 1e-15 of the spec.
+    a float64 of that size; the tolerance is the 1e-15 of the spec. A pair
+    with no distance is NaN on both sides or the comparison stops: NaN is not
+    above any tolerance, so a pair that one side leaves out and the other
+    does not would otherwise pass.
     """
     from_pynei = pynei_dists(dataset)
     from_r_distances = [distance for distance, _ in from_r]
-    largest = max(
-        abs(left - right)
-        for left, right in zip(from_pynei, from_r_distances, strict=True)
-    )
-    if largest > 1e-15:
+    largest = 0.0
+    largest_pair = pair_name(dataset, 0)
+    for index, (left, right) in enumerate(
+        zip(from_pynei, from_r_distances, strict=True)
+    ):
+        where = pair_name(dataset, index)
+        if math.isnan(left) != math.isnan(right):
+            has_one = "gd.kosman" if math.isnan(left) else "pyNei"
+            raise SystemExit(
+                f"{dataset.name}: the pair {where} has a distance in "
+                f"{has_one} and none in the other"
+            )
+        if math.isnan(left):
+            continue
+        away = abs(left - right)
+        if away > largest:
+            largest = away
+            largest_pair = where
+    if not largest <= 1e-15:
         raise SystemExit(
-            f"{dataset.name}: pyNei and gd.kosman are up to {largest} apart "
-            f"over the {len(from_pynei)} pairs, and the spec allows 1e-15"
+            f"{dataset.name}: pyNei and gd.kosman are {largest} apart on the "
+            f"pair {largest_pair}, and the spec allows 1e-15"
         )
     print(
-        f"{dataset.name}: pyNei and gd.kosman are at most {largest} apart over "
-        f"the {len(from_pynei)} pairs"
+        f"{dataset.name}: over the {len(from_pynei)} pairs, pyNei and "
+        f"gd.kosman differ by at most {worst(largest, largest_pair)}"
     )
     return from_pynei
 
@@ -612,9 +809,11 @@ def main():
         work_dir = Path(directory)
         from_r = run_gd_kosman(datasets, work_dir)
         check_literals(datasets, from_r)
+        sums = {}
         from_pynei = {}
         for dataset in datasets:
-            check_whole_sums(dataset, from_r[dataset.name])
+            sums[dataset.name] = whole_sums(dataset, from_r[dataset.name])
+            check_against_the_loop(dataset, from_r[dataset.name], sums[dataset.name])
             if dataset.ploidy == 2:
                 from_pynei[dataset.name] = check_against_pynei(
                     dataset, from_r[dataset.name]
@@ -626,8 +825,13 @@ def main():
             shutil.copyfile(work_dir / f"{name}.vcf.gz", HERE / f"{name}.vcf.gz")
             write_file(
                 HERE / f"{name}.gdkosman.tsv",
-                "dist\tn",
-                [f"{distance!r}\t{num_vars}" for distance, num_vars in from_r[name]],
+                "dist\tn\tk_sum",
+                [
+                    f"{distance!r}\t{num_vars}\t{k_sum}"
+                    for (distance, num_vars), k_sum in zip(
+                        from_r[name], sums[name], strict=True
+                    )
+                ],
             )
             if name in from_pynei:
                 write_file(
