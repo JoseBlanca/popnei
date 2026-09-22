@@ -8,7 +8,7 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::pca::{Pca, PcaOptions, pca};
+use popnei::pca::{Pca, PcaOptions};
 
 use crate::errors::JsPopneiError;
 
@@ -86,18 +86,20 @@ impl From<Pca> for PcaOfATable {
 /// then divides each trait by its standard deviation; standardizing without
 /// centering is an error. No value may be missing.
 ///
-/// The package checks that `data` holds `num_rows` times `num_cols` values
-/// before this is called, so the error the core has for a buffer that is not
-/// of its table is not reached from TypeScript.
+/// The package checks that `data` holds exactly `num_rows` times `num_cols`
+/// values before this is called, so the error the core has for a buffer that
+/// is not of its table is not reached from TypeScript.
 ///
 /// # Errors
 ///
 /// When a value of the table is an infinity or a NaN, when the table is to
 /// be standardized and not centered, when it has fewer than 2 rows or no
-/// traits, when it is standardized and a trait has no variance, and when the
-/// linear algebra of the analysis could not be done.
+/// traits, when it is standardized and a trait has no variance, when no
+/// trait of it has any, when the mean or the standard deviation of a trait
+/// is not a number the analysis can use, and when the linear algebra of the
+/// analysis could not be done.
 #[wasm_bindgen]
-pub fn do_pca(
+pub fn pca(
     data: Vec<f64>,
     num_rows: usize,
     num_cols: usize,
@@ -108,5 +110,21 @@ pub fn do_pca(
         center: center_data,
         standardize: standardize_data,
     };
-    Ok(pca(&data, num_rows, num_cols, &options)?.into())
+    Ok(popnei::pca::pca(&data, num_rows, num_cols, &options)?.into())
+}
+
+/// Whether the mean of each trait is taken from it when the caller says
+/// nothing.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_center_data() -> bool {
+    popnei::pca::DEFAULT_CENTER_DATA
+}
+
+/// Whether each trait is divided by its standard deviation when the caller
+/// says nothing.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_standardize_data() -> bool {
+    popnei::pca::DEFAULT_STANDARDIZE_DATA
 }

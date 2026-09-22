@@ -17,7 +17,11 @@
  * pass to it.
  */
 
-import { do_pca as doPcaOfTheCore } from "../wasm/popnei.js";
+import {
+  default_center_data as defaultCenterData,
+  default_standardize_data as defaultStandardizeData,
+  pca as pcaOfTheCore,
+} from "../wasm/popnei.js";
 
 import {
   aBoolean,
@@ -80,6 +84,13 @@ export interface DoPcaOptions {
    * with the largest numbers dominate. True when it is not given, and true
    * with `centerData` false is an `Error`: the standard deviation it divides
    * by is the one the trait has once it is centered.
+   *
+   * The divisor of that standard deviation is the number of rows and not the
+   * number of rows less one, which is pyNei's. R's `prcomp` divides by the
+   * number of rows less one, so the projections it gives for a standardized
+   * table are these times the square root of (n - 1) / n, 0.9975 at 200
+   * rows; the percentages and the weights are the same in both, and so are
+   * the projections of a table that is not standardized.
    */
   standardizeData?: boolean;
 }
@@ -103,7 +114,10 @@ export interface DoPcaOptions {
  * more, when an option is not a boolean, when a value of the table is not
  * finite, when the table is to be standardized and not centered, when it has
  * fewer than 2 rows or no traits, when it is standardized and a trait has no
- * variance, and when `init` has not been awaited.
+ * variance, when no trait of it has any, when the values of a trait are so
+ * large or so small that its mean or its standard deviation is not a number
+ * the analysis can use, when the linear algebra of the analysis could not be
+ * done, and when `init` has not been awaited.
  */
 export function doPca(
   data: Float64Array,
@@ -115,17 +129,18 @@ export function doPca(
   const rows = wholeNumberOfOneOrMore("numRows", numRows);
   const cols = wholeNumberOfOneOrMore("numCols", numCols);
   const values = valuesOfATable("data", data, rows, cols);
-  // The two defaults are pyNei's, which `docs/specs/pca.md` keeps: a table
-  // is centered and standardized when the caller says nothing.
+  // The two defaults are the core's, as the ploidy of `openVcf` is, so that
+  // Python and TypeScript cannot drift apart on what a table is analysed as
+  // when the caller says nothing.
   const centerData =
     options.centerData === undefined
-      ? true
+      ? defaultCenterData()
       : aBoolean("centerData", options.centerData);
   const standardizeData =
     options.standardizeData === undefined
-      ? true
+      ? defaultStandardizeData()
       : aBoolean("standardizeData", options.standardizeData);
-  const result = doPcaOfTheCore(values, rows, cols, centerData, standardizeData);
+  const result = pcaOfTheCore(values, rows, cols, centerData, standardizeData);
   try {
     return {
       numComps: result.num_comps(),
@@ -152,7 +167,7 @@ export function doPca(
  *
  * @throws {Error} When the array had been read already.
  */
-function theValuesOf(
+export function theValuesOf(
   values: Float64Array | undefined,
   name: string,
 ): Float64Array {

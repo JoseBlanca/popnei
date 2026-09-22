@@ -7,8 +7,9 @@
  * "How it is verified" of "The PCA of a table" of `docs/specs/pca.md`, which
  * R's `prcomp` gave: where the first row falls on each of the four
  * components, and the percentage of the variance each component holds, with
- * the traits standardized and with them centered only. The Python tests
- * assert the same numbers.
+ * the traits standardized and with them centered only. The tests of the core
+ * crate assert the same numbers; the Python tests hold no literal of R and
+ * compare with pyNei instead.
  *
  * The analysis itself is tested in the core crate, over every row of the
  * reference files. What these tests say is that the table reaches the core
@@ -22,6 +23,7 @@ import { test } from "node:test";
 
 import { doPca, init } from "popnei";
 
+import { theValuesOf } from "../dist/pca.js";
 import { referenceTable } from "./reference.ts";
 
 await init();
@@ -209,5 +211,57 @@ test("an option that is not a boolean is an Error", () => {
         centerData: "yes" as unknown as boolean,
       }),
     /popnei: `centerData` is true or false/,
+  );
+});
+
+test("a table in which no trait has variance is an Error", () => {
+  // Centered and not standardized, a table whose traits are each one number
+  // repeated is no error at the traits and has no component left: every
+  // value of it is 0 once the means are taken out.
+  const flat = Float64Array.from([4, 7, 4, 7, 4, 7]);
+  assert.throws(
+    () => doPca(flat, 3, 2, { standardizeData: false }),
+    /no trait has variance, there is nothing to do a PCA with/,
+  );
+});
+
+test("a trait whose values are too large to standardize is an Error", () => {
+  // The squares of the deviations of the first trait sum above the largest
+  // float64, so its standard deviation is an infinity and the trait would
+  // become a column of zeros, which is what a trait with no variance gives.
+  const huge = Float64Array.from([1e154, 1, -1e154, 2, 0, 3]);
+  assert.throws(
+    () => doPca(huge, 3, 2),
+    /the trait at the position 0 cannot be centered or standardized: the squares of its deviations sum above the largest f64/,
+  );
+});
+
+test("the values of an array of the result are read once", () => {
+  // Each array leaves the memory of wasm the first time it is asked for, so
+  // a second read gives nothing; `doPca` reads each of them once and what
+  // this asserts is that a defect that read one twice would be said and not
+  // handed out as an empty array.
+  assert.deepEqual(
+    theValuesOf(Float64Array.from([1, 2]), "projections"),
+    Float64Array.from([1, 2]),
+  );
+  assert.throws(
+    () => theValuesOf(undefined, "projections"),
+    /popnei: `projections` was read twice out of the memory of WebAssembly/,
+  );
+});
+
+test("a table whose buffer was transferred away is an Error", () => {
+  const values = Float64Array.from([1, 2, 3, 4, 5, 6]);
+  // What a page does when it sends the values to a web worker: the buffer
+  // moves and the array that is left has nothing behind it, and the
+  // generated code would read it as a table of its own.
+  structuredClone(values.buffer, { transfer: [values.buffer] });
+  // `detached` is of ES2024, which is later than the library this package
+  // is compiled against.
+  assert.equal((values.buffer as { detached?: boolean }).detached, true);
+  assert.throws(
+    () => doPca(values, 3, 2),
+    /popnei: the buffer of `data` was transferred/,
   );
 });
