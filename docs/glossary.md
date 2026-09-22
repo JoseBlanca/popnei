@@ -73,6 +73,18 @@ is heterozygous when it is called and its alleles are not all the same.
 **called alleles.** How many alleles of a population at a variant are not
 missing, the denominator of its allele frequencies.
 
+**expected heterozygosity.** Of a variant in a population, one minus the
+sum over the alleles of the frequency of each to the power of the ploidy:
+the chance that as many gene copies as a genotype holds, taken at random
+from the population, are not all alike. The unbiased one multiplies it by
+2n/(2n - 1), with n the called genotypes, and is the default.
+`exp_het` in identifiers. `docs/specs/stats.md`.
+
+**polymorphic variant.** In a population, a variant whose major allele
+frequency is below the polymorphism threshold, 0.95 by default, strictly;
+a variable one has it below 1. `poly` in identifiers, as in pyNei's
+`poly_threshold` and `num_poly`.
+
 **major allele.** The allele of a variant with the highest frequency among
 the called alleles of the individuals considered. How a tie is broken is for
 the spec of the calculation to say.
@@ -139,7 +151,8 @@ JavaScript in it, where every calculation is.
 **binding crate.** A crate that translates between another language and
 the core crate and holds no calculation. There are two, and a text that
 **step.** One entry of the list that a `Variants` holds besides its
-source, a filter with its threshold. A step is added with a method of the
+source, a filter with its threshold or the filter of individuals with
+its names. A step is added with a method of the
 `Variants`, which returns nothing, it is run in every pass that starts
 after it was added, and `variants.steps` lists them.
 
