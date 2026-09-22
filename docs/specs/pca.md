@@ -84,6 +84,40 @@ when two individuals have the same absolute value it is that of the first
 of them; the princomps of that component take the same sign. Python natively, Python under pyodide and TypeScript then
 give the same numbers.
 
+Two projections have the same absolute value when they are within 64
+times 2.2e-16 of the larger of the two, which is 1.4e-14 of it. Without
+that tolerance the rule is decided by the last bit, and the last bit is
+what the two libraries differ in, so it gives opposite signs on the same
+data. Six individuals of three variants, in which the individuals 2 and 5
+have the same genotype at every variant and the individual 0 has the
+opposite dosage at every one, have the three projections of the same
+absolute value, 1.98902864125, in exact arithmetic: Accelerate's LAPACK
+gives that of the individual 5 one unit in the last place above the other
+two, so the largest of the three is positive already and the individual 0
+comes out at -1.989, and numpy's eigendecomposition spreads the three over
+five units in the last place with that of the individual 0 the largest, so
+it turns the component round and the individual 0 comes out at +1.989. The
+two differ by 3.98 in the projections of that individual and by twice each
+weight in that component. With the tolerance the three are one absolute
+value, the first of them decides, and the individual 0 is positive on
+both.
+
+The tolerance is 64 units in the last place and not a handful because the
+spread of a tie grows with the matrix: the same tie came out over one unit
+on Accelerate and five on numpy at six individuals, and nothing has been
+measured at a thousand. It is 1.4e-14 of the largest projection, five
+orders of magnitude below the 1e-9 within which the results are compared,
+so no pair of projections it takes for one is a pair a user could tell
+apart. What it does not fix is two projections that are not equal in exact
+arithmetic and come out closer than the tolerance on one library and
+further on another: a fixture of six individuals gave two that differ by
+18 units in the last place, which is outside it, and there the larger
+decides as it did before.
+
+`tests/reference/pca/make_reference.py` applies the same rule with
+numpy's floats and exact equality, so a reference dataset with a tie would
+need this tolerance there too. None of them has one.
+
 **A component with no variance is not given.** Centering takes one
 dimension out of the data, so a table of 8 individuals and 30 variants
 has 7 components and not 8. pyNei gives `min(n, p)` of them. In `worked3`
@@ -589,24 +623,23 @@ and the trait with no variance has a weight of 0 in both:
 | | PC0 | PC1 |
 |---|---|---|
 | projection of row 0 | 1.41421356237 | 0 |
-| projection of row 1 | -0.707106781187 | -0.707106781187 |
-| projection of row 2 | -0.707106781187 | 0.707106781187 |
+| projection of row 1 | -0.707106781187 | 0.707106781187 |
+| projection of row 2 | -0.707106781187 | -0.707106781187 |
 | explained_variance_percent | 75 | 25 |
-| weight of `a` | -0.707106781187 | 0.707106781187 |
+| weight of `a` | -0.707106781187 | -0.707106781187 |
 | weight of `fixed` | 0 | 0 |
-| weight of `b` | 0.707106781187 | 0.707106781187 |
+| weight of `b` | 0.707106781187 | -0.707106781187 |
 
-The second component of that table is given up to its sign, and the test
-compares the size of its numbers and not their sign. Its two largest
-projections are the same number with opposite signs, 0.707106781187, and
-whether they are equal bit for bit or a bit or two apart depends on the
-route to them: popnei gives them equal natively, on Accelerate's LAPACK,
-where the rule takes the first of the two; one bit apart in WebAssembly,
-on faer, where the larger of the two decides; and numpy's
-eigendecomposition of the same table gives them two bits apart. So which
-of the two the sign rule finds largest, and with it the sign of the whole
-component, can differ between the backends and the platforms. The rule fixes the sign of a component whose largest projection
-is one number; it does not fix it when two are that close.
+The two largest projections of the second component of that table are the
+same number with opposite signs, 0.707106781187, and how far apart the
+two come out depends on the route to them: popnei gives them equal bit for
+bit natively, on Accelerate's LAPACK, one bit apart in WebAssembly, on
+faer, and numpy's eigendecomposition of the same table gives them two bits
+apart. All three are inside the tolerance of "The sign", so the first of
+the two is the positive one on every backend, and the numbers above are
+what each of them gives. Before that tolerance the component came out with
+one sign natively and the other under faer, and the spec gave it up to its
+sign.
 
 Two more tables are checked in the core alone, for what the two above do
 not reach. Their numbers come from the same two routes of numpy 2.5.3 and
