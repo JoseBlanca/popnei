@@ -431,3 +431,108 @@ The deliverables, checked by the orchestrator at 1f7e516:
    --workspace` `347 passed`, 2 ignored, and `33 passed`; ruff clean;
    `uv run maturin develop && uv run pytest` `201 passed`; `cargo
    wasm-check` finished.
+
+The review, seven reviewers at 1f7e516, and the fixes at 1050085 to
+b876a21. What was found and is fixed:
+
+- The sign rule was decided by the last bit. It says the projection of
+  the largest absolute value is positive and that two individuals of the
+  same absolute value are settled by the first of them, but two
+  projections that are equal in exact arithmetic almost never come out
+  equal bit for bit. On six individuals and three variants where two
+  projections are both the square root of 3, Accelerate made the second
+  one unit in the last place larger and numpy the first, so the two gave
+  the component with opposite signs, the projections differing by 3.46
+  and the weights by 1.41. That is the one thing the rule exists to
+  prevent, and the spec's promise that the three builds give the same
+  numbers was false. Two projections are now one absolute value when
+  they are within 64 units in the last place, 1.4e-14 of the largest,
+  which the spec states; with the tolerance at 0 only the new test
+  fails, so no reference number moved. One number of the spec changed,
+  which no test asserted: the second component of pyNei's table of a
+  fixed trait, whose two largest projections are the same number with
+  opposite signs, is now signed rather than given up to its sign.
+- The analysis of 10000 individuals ended the WebAssembly module with a
+  trap and no message, where popnei's objectives name that size: the
+  eigendecomposition of faer allocates its own workspace and aborts.
+  Measured under node, 9410 individuals ran and 9415 trapped, and the
+  analysis holds about six times its matrix, so both functions now
+  refuse above 9381 individuals, or above that on the smaller side of a
+  table, with an error that says the limit is the browser's, which
+  addresses 4 GB in one page. The same dataset is analysed natively and
+  in Python.
+- No fixture of the variants had a ploidy other than 2, so fixing the
+  dosages of a genotype at three values, or reading only its first two
+  alleles, passed all 41 tests. A tetraploid variant and a tetraploid
+  dataset are in the spec and in the tests.
+- A source of no individual panicked in the public function of the core,
+  which no reader of popnei can give but a caller of the crate can; it
+  is an error. A weight of the second pass that landed outside its row
+  was dropped in silence; it is an error that says popnei has a defect.
+  The counter of one byte that counts the codes of the genotypes in runs
+  of 255 had no test at its boundary, where a run of 256 would wrap it;
+  it has one, and an assertion beside the constant.
+- `num_prin_comps` was the only count of the Python layer not checked as
+  a count: a string, a float or a number above what the machine counts
+  gave an exception naming neither popnei nor the argument, and a truth
+  value was taken as 1. It goes through the crate's own helper now. That
+  helper had the same two holes, so `open_vcf(path, ploidy=True)` read a
+  haploid VCF and said nothing; it is fixed with a test, outside this
+  plan's scope and in it.
+- The columns of `princomps` in Python were an unsigned index, so
+  subtracting 1 from the position 0 gave 18446744073709551615; they are
+  signed, as pyNei's are.
+- Tests that could not fail: no test ran a `Variants` with a filter step
+  through both passes, so dropping the steps from the second reader
+  failed nothing; the default of the number of components in TypeScript
+  was pinned by no test; the panel's projections were compared at 6 of
+  the 200 x 199 values while its weights were compared whole. Each is
+  fixed.
+- Five statements of the spec that the code contradicts, corrected: what
+  a pass keeps is the position of each used variant and not one bit per
+  variant; the standardizing loop is three passes and not two, and its
+  1.5 ms is the trial's number, which work package 4 measures on this
+  code; the claim that no function under `pca_of_variants` is pinned by
+  a test, which is how the size of the blocks is checked at all, since
+  `reblock` hides it from the public function; the count of the sizes
+  refused, four and not three; and two messages quoted capitalised.
+- The result of the variants in TypeScript inherited the documentation
+  of the table's, so a user read that the weights are one per trait of
+  the table where they are one per used variant. Doc comments, the
+  duplicated scaling of the eigenvectors, and a comment giving the wrong
+  difference between the two routes, all corrected.
+
+Not taken, with the reason: a Ctrl-C cannot interrupt a pass, which
+needs a callback in the core and is the owner's to decide, so the Python
+binding says so in a comment as `write_vars` does; the projection of an
+individual with every genotype missing comes out as a signed zero; a
+test of the two sizes that only a 32 bit build reaches.
+
+What the owner should know:
+
+- The sign rule now has a tolerance, 64 units in the last place. It is a
+  value a user sees and the owner can reverse it. What it does not fix:
+  two projections that differ by more than the tolerance and are not
+  equal in exact arithmetic are still settled by the larger, and a
+  dataset can put two of them 18 units apart, which the spec records.
+- `tests/reference/pca/make_reference.py` applies the sign rule with
+  numpy's floats and exact equality. No reference dataset has a tie, so
+  nothing moved, but a dataset with one would need the same tolerance
+  there.
+- In a browser tab the analysis is refused above 9381 individuals. The
+  factor of six times the matrix was measured on two sizes, not derived,
+  and a build of faer that allocates differently would move it.
+- A source of no individual cannot come from Python: both readers refuse
+  such a file when it is opened.
+
+After the fixes, at b876a21: `cargo test -p popnei --lib pca` `46
+passed`; `cargo test --workspace` `352 passed`, 2 ignored, and `33
+passed`; clippy, fmt and `cargo wasm-check` clean; ruff clean; `uv run
+maturin develop && uv run pytest` `208 passed`, 33 in
+`tests/test_pca.py`; `npm run build && npm test` `tests 154`, `fail 0`;
+the wheel built and the smoke test exited 0.
+
+How the work went: the four tasks went to three subagents, 496656,
+355016 and 345026 tokens at the end of the fixes; the seven reviewers
+used 168381, 166407, 161196, 187959, 134920, 150346 and 127321 tokens.
+No task had to be sent twice.
