@@ -17,9 +17,10 @@ everything that gives blocks; on `docs/specs/variant.md`, which has the
 `docs/specs/filters.md`, which builds the chain of filters of a pass; on
 `docs/specs/pca.md`, which defines the dosage that both modules read the
 genotypes as; and on `docs/specs/linalg.md`, which has the matrix product
-that runs on the BLAS of the system natively and on faer in
-WebAssembly. The filter that thins variants out by their r² is an item
-of `docs/specs/filters.md`, written with this spec, because a filter is a
+that runs on the BLAS of the system natively and, in WebAssembly, where
+there is none, on faer, a linear algebra library written in Rust. The
+filter that thins variants out by their r² is an item of
+`docs/specs/filters.md`, written with this spec, because a filter is a
 reader over a reader and every other filter is there.
 
 ## r² between two variants
@@ -229,10 +230,11 @@ with ' the transpose,
     Σxx = S M'    Σyy = M S'
 
 each of which is a matrix over the pairs, and the r² of every pair is the
-formula of "What it gives" applied to the six entries. Three of the six
-are the transposes of the other three when the two sets of variants are
-the same, so the diagonal blocks of the matrix cost four products and the
-others six. r² is symmetric, so only the lower half is computed and the
+formula of "What it gives" applied to the six entries. When the two sets
+of variants are the same, n and Σxy are each their own transpose and Σy
+and Σyy are the transposes of Σx and Σxx, so a block of the matrix
+against itself costs four products and one against another six. r² is
+symmetric, so only the lower half of the whole matrix is computed and the
 upper half is a copy of it.
 
 The products are made in tiles of a few hundred variants and not on the
@@ -244,10 +246,16 @@ matrices of the dosages, 24 bytes per variant and individual, 120 MB for
 5000 variants of 1000 individuals, and the tiles.
 
 When no genotype of either tile is missing, five of the six products give
-nothing that a sum over each row does not: n is the individuals, Σx and
-Σxx are the row sums of A and of S repeated along the columns, and only A
-A' is a product. Whether that path is built is for the plan to decide on
-a measurement; the numbers of "Speed" are of the six products.
+nothing that a sum over each row does not. n is then the individuals for
+every pair; Σx of the pair (i, j) is the sum of row i of A, whatever j
+is, and Σy is the sum of row j; and Σxx and Σyy are the sums of the rows
+of S in the same way. So five of the six matrices are one number per
+variant read across a row or down a column, and only A A' is a product.
+Whether that path is built is for the implementation plan that builds
+this module to decide on a measurement, as the plans under `docs/plans/`
+decide what a spec leaves to a measurement. The numbers of "Speed" are of
+the six products whether it is built or not, since it can only take less
+time than they do.
 
 A product is called from outside rayon, as section 3 of the architecture
 asks, so that the threads of the backend of the linear algebra and those
@@ -707,8 +715,11 @@ of the filters from the chain and the variants of the pass from
 ///
 /// More than `max_num_vars` variants, with both numbers and the memory
 /// the matrix would have needed; no variant in the reader; a block with
-/// variants and no position; the memory of the matrix, asked of the
-/// machine before the pass; and those of the reader.
+/// variants and no position; the memory of the matrix, which is asked
+/// of the machine with `try_reserve_exact` before the pass and not
+/// taken, as `docs/specs/linalg.md` asks for the workspace of the
+/// eigendecomposition, so that a matrix this machine cannot hold is an
+/// error and not a process that ends; and those of the reader.
 pub fn calc_r2_matrix<R: BlockReader + ?Sized>(
     reader: &mut R,
     max_num_vars: usize,
@@ -843,7 +854,7 @@ matrix of each chunk pair. Neither was measured in WebAssembly, where the
 products run on faer and where `docs/specs/linalg.md` measured the
 product of a 5000 x 1000 block with itself at 187 ms against 10.5 ms with
 Accelerate on one thread, so the numbers above are to be read as roughly
-eighteen times larger there; the plan measures it.
+eighteen times larger there; the implementation plan measures it.
 
 ## Open points
 

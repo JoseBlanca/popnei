@@ -587,8 +587,9 @@ pyNei keeps 1 of the 6 when the first variant has one dosage and 5 of the
 
 The name `min_allowed_r2` is the r below which a variant counts as
 unlinked and is kept, so raising it keeps more variants: on
-`tests/reference/dists/panel.vcf.gz` pyNei keeps 768 of 1200 at 0.1 and
-1167 at 0.3.
+`tests/reference/dists/panel.vcf.gz`, with its `max_allowed_maf` at its
+default of 0.95, pyNei keeps 768 of the 1200 variants at 0.1 and 1167 at
+0.3.
 
 ### How it runs
 
@@ -940,7 +941,8 @@ linkage disequilibrium has none: what it costs is the products of r² of
 each variant against the variants of its window, which
 `docs/specs/ld.md` measures at 1.9 ms for a tile pair of 256 variants of
 1000 individuals, and how many variants a window holds depends on the
-dataset and on `max_dist`. The plan that builds it measures a whole pass,
+dataset and on `max_dist`. The implementation plan that builds it, under
+`docs/plans/`, measures a whole pass,
 on `tests/reference/ld/ld.vcf.gz` and on the 400 MB VCF of the table
 above, and this section gets the numbers.
 
