@@ -360,13 +360,26 @@ def test_per_var_distribs_takes_one_statistic_on_its_own() -> None:
 def test_per_var_distribs_refuses_a_statistic_written_as_a_string() -> None:
     """`stats` takes the members of `PerVarStat` alone, so that a name with
     a typo in it cannot pass: a string is a `TypeError`, where pyNei takes
-    the names as well and refuses an unknown one with a `ValueError`."""
-    with pytest.raises(TypeError, match="PerVarStat"):
+    the names as well and refuses an unknown one with a `ValueError`.
+
+    One name written without its comma is refused as the name the user
+    wrote, and not as its first letter: a string is a sequence of its
+    letters, so `stats="maf"` would otherwise be read as `m`, `a` and `f`.
+    """
+    with pytest.raises(TypeError, match="'maf', a str, is not one of them"):
         calc_per_var_distribs(_many(), stats="maf")
-    with pytest.raises(TypeError, match="PerVarStat"):
+    with pytest.raises(TypeError, match="'maf', a str, is not one of them"):
         calc_per_var_distribs(_many(), stats=("maf",))
-    with pytest.raises(TypeError, match="PerVarStat"):
+    with pytest.raises(TypeError, match="'mafs', a str, is not one of them"):
         calc_per_var_distribs(_many(), stats=("mafs",))
+
+
+def test_per_var_distribs_refuse_a_stats_that_names_nothing_at_all() -> None:
+    """What is no sequence of members names no statistic, and the message
+    says which argument it was and what was given, where Python's own says
+    only that an int cannot be iterated over."""
+    with pytest.raises(TypeError, match="`stats` is a sequence.*and 5, a int"):
+        calc_per_var_distribs(_many(), stats=5)
 
 
 def test_per_var_distribs_refuses_no_statistic_at_all() -> None:

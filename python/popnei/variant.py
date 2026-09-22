@@ -335,7 +335,7 @@ class Variants:
                 raise TypeError(
                     f"`individuals` is a sequence of the names of the "
                     f"individuals to keep, and {name!r}, a "
-                    f"{type(name).__name__}, is one of them"
+                    f"{type(name).__name__}, is not one of them"
                 )
         self._steps.filter_individuals(names)
 

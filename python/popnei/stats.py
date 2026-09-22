@@ -264,12 +264,31 @@ def _the_stats(stats: Iterable[PerVarStat]) -> list[str]:
     """
     if isinstance(stats, PerVarStat):
         stats = (stats,)
+    elif isinstance(stats, str):
+        # A string is a sequence of its letters, so a name written where the
+        # members go would be refused for its first letter, `m`, and the
+        # user would read about a statistic they never wrote.
+        raise TypeError(
+            f"`stats` takes the members of `PerVarStat`, and {stats!r}, a "
+            f"{type(stats).__name__}, is not one of them: write "
+            f"stats=(PerVarStat.MAF,) for the major allele frequency"
+        )
+    try:
+        stats = list(stats)
+    except TypeError:
+        # What Python says of its own here, `'int' object is not iterable`,
+        # names neither the argument nor the call.
+        raise TypeError(
+            f"`stats` is a sequence of the members of `PerVarStat`, and "
+            f"{stats!r}, a {type(stats).__name__}, was given: write "
+            f"stats=(PerVarStat.MAF,) for the major allele frequency"
+        ) from None
     asked_for: list[str] = []
     for stat in stats:
         if not isinstance(stat, PerVarStat):
             raise TypeError(
                 f"`stats` takes the members of `PerVarStat`, and {stat!r}, a "
-                f"{type(stat).__name__}, is one of them: write "
+                f"{type(stat).__name__}, is not one of them: write "
                 f"stats=(PerVarStat.MAF,) for the major allele frequency"
             )
         if str(stat) not in asked_for:
@@ -322,7 +341,7 @@ def _the_pops(
                 raise ValueError(  # noqa: TRY004
                     f"the individuals of the population `{pop}` are a sequence of "
                     f"the names of the individuals in it, and {name!r}, a "
-                    f"{type(name).__name__}, is one of them"
+                    f"{type(name).__name__}, is not one of them"
                 )
         named.append((pop, list(individuals)))
     return named
