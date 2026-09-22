@@ -12,9 +12,9 @@
 //!
 //! A filter of a pass over the variants is a reader over another reader,
 //! [`FilteredReader`], and several filters are several of them, one over
-//! the other, in the order in which the user put them on. [`chain_of`]
-//! builds that chain from the criteria of one pass, and it is what each
-//! binding crate calls when a pass starts.
+//! the other, in the order in which the user put them on. What the user put
+//! on is a [`PassStep`], and [`chain_of`] builds the chain from the steps of
+//! one pass: it is what each binding crate calls when a pass starts.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
@@ -354,13 +354,49 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
     }
 }
 
-/// One [`FilteredReader`] over `reader` for each criterion, in their order,
-/// so that each filter sees what the one before it kept: the chain of the
-/// filters of one pass. No criterion gives `reader` as it is.
+/// One step of a pass over the variants: what every pass built from a
+/// `Variants` does to the variants it reads, in the order in which the user
+/// put the steps on.
+///
+/// Each binding crate keeps the steps of its `Variants` as a list of these,
+/// and [`chain_of`] builds the readers of one pass from that list: which
+/// reader a step becomes, and in which order, is of the filters and not of
+/// Python or of TypeScript.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum PassStep {
+    /// The variants whose number is at most the threshold of the criterion
+    /// are kept, and the others are left out of every block of the pass.
+    VarFilter(VarFilteringCriterion),
+    /// The names of the individuals to keep, in the order to keep them:
+    /// every variant stays, and of each one the genotypes of these
+    /// individuals alone go on.
+    KeepIndividuals(Vec<String>),
+}
+
+impl PassStep {
+    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"individuals"`: the name
+    /// the step has for a Python and a TypeScript user, under which the
+    /// counts of a filter reach them and by which a second step of the same
+    /// kind is refused.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            PassStep::VarFilter(criterion) => criterion.kind(),
+            PassStep::KeepIndividuals(_) => "individuals",
+        }
+    }
+}
+
+/// One reader over `reader` for each step, in their order, so that each
+/// step sees what the one before it gave: the chain of one pass. A
+/// [`PassStep::VarFilter`] becomes a [`FilteredReader`], and no step gives
+/// `reader` as it is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
-/// writes the loop: in which order the filters go, and what comes out while
-/// they are built, are of the filters and not of Python or of TypeScript.
+/// writes the loop: in which order the steps go, and what comes out while
+/// the readers are built, are of the filters and not of Python or of
+/// TypeScript.
 ///
 /// What it gives is the outermost reader of the chain, which whoever started
 /// the pass holds: they read [`BlockReader::filtering_stats`] from it when
@@ -371,22 +407,26 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
 /// # Errors
 ///
 /// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
-/// above 1, and what [`FilteredReader::new`] refuses, a criterion of the
-/// kind of one before it in `criteria` or of a filter that `reader` holds
-/// already, which a chain built over a chain has. No block was read then.
-pub fn chain_of(
-    reader: Box<dyn BlockReader>,
-    criteria: &[VarFilteringCriterion],
-) -> Result<Box<dyn BlockReader>> {
+/// above 1, and what [`FilteredReader::new`] refuses, a threshold filter of
+/// the kind of one before it in `steps` or of a filter that `reader` holds
+/// already, which a chain built over a chain has. No block was read then. A
+/// [`PassStep::KeepIndividuals`] is the error of a step that popnei declares
+/// and does not build yet.
+pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
-    for criterion in criteria {
-        chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+    for step in steps {
+        match step {
+            PassStep::VarFilter(criterion) => {
+                chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+            }
+            PassStep::KeepIndividuals(_) => return Err(not_built_yet(step)),
+        }
     }
     Ok(chain)
 }
 
 /// The error of a second filter of one kind, when `new` is of the kind of
-/// one of `set`, the criteria of the filters that are set already.
+/// one of `set`, the steps that are set already.
 ///
 /// Two threshold filters of one kind keep the variants that the stricter of
 /// the two keeps alone, so the second says that the user has lost track of
@@ -396,24 +436,43 @@ pub fn chain_of(
 ///
 /// # Errors
 ///
-/// When a criterion of `set` has the kind of `new`. The error carries both
-/// thresholds, the one of `new` and the one that is set, where the same
+/// When a threshold filter of `set` has the kind of `new`. The error carries
+/// both thresholds, the one of `new` and the one that is set, where the same
 /// error from [`FilteredReader::new`] carries the first alone: a chain of
 /// readers says which kinds of filter it holds and not with which
-/// thresholds.
-pub fn refuse_a_second_filter_of_a_kind(
-    set: &[VarFilteringCriterion],
-    new: VarFilteringCriterion,
-) -> Result<()> {
-    let kind = new.kind();
-    if let Some(that_is_set) = set.iter().find(|criterion| criterion.kind() == kind) {
+/// thresholds. A `new` that is a [`PassStep::KeepIndividuals`] is the error
+/// of a step that popnei declares and does not build yet.
+pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
+    let criterion = match new {
+        PassStep::VarFilter(criterion) => criterion,
+        PassStep::KeepIndividuals(_) => return Err(not_built_yet(new)),
+    };
+    let kind = criterion.kind();
+    let that_is_set = set
+        .iter()
+        .filter_map(|step| match step {
+            PassStep::VarFilter(of_the_step) => Some(of_the_step),
+            PassStep::KeepIndividuals(_) => None,
+        })
+        .find(|of_the_step| of_the_step.kind() == kind);
+    if let Some(that_is_set) = that_is_set {
         return Err(Error::VarFilterOfAKindThatIsSet {
             kind,
-            threshold: new.threshold(),
+            threshold: criterion.threshold(),
             threshold_that_is_set: Some(that_is_set.threshold()),
         });
     }
     Ok(())
+}
+
+/// The error of a step that `docs/specs/filters.md` describes, that
+/// [`PassStep`] declares and that popnei does not build yet.
+///
+/// It marks a defect of popnei and not a wrong input of a user: neither
+/// binding crate has a method that adds such a step, so no user can put one
+/// among the steps of their variants.
+fn not_built_yet(step: &PassStep) -> Error {
+    Error::PassStepNotBuilt { kind: step.kind() }
 }
 
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
@@ -584,7 +643,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{
-        FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion, chain_of,
+        FilteredReader, FilteringStats, PassStep, VarFilter, VarFilteringCriterion, chain_of,
         keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
     };
     use crate::block::{Block, BlockReader};
@@ -593,6 +652,15 @@ mod tests {
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
     use VarFilteringCriterion::{MaxMaf, MaxMissingRate, MaxObsHet};
+
+    /// The steps of the threshold filters of `criteria`, in their order,
+    /// which is what `chain_of` and `refuse_a_second_filter_of_a_kind` take.
+    fn steps_of(criteria: &[VarFilteringCriterion]) -> Vec<PassStep> {
+        criteria
+            .iter()
+            .map(|criterion| PassStep::VarFilter(*criterion))
+            .collect()
+    }
 
     /// The six variants of five diploid individuals of the worked example
     /// of "How it is verified" of `docs/specs/filters.md`, each at the
@@ -1604,8 +1672,11 @@ mod tests {
     #[test]
     fn chain_of_the_three_criteria_over_many_vcf_keeps_the_106_variants_with_their_counts() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS));
-        let mut chain = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(0.8), MaxObsHet(0.5)])
-            .expect("the chain of the three criteria");
+        let mut chain = chain_of(
+            source,
+            &steps_of(&[MaxMissingRate(0.04), MaxMaf(0.8), MaxObsHet(0.5)]),
+        )
+        .expect("the chain of the three criteria");
 
         let blocks = blocks_of(&mut chain).expect("the blocks");
         let positions = positions_of_blocks(&blocks);
@@ -1651,7 +1722,7 @@ mod tests {
     fn chain_of_a_criterion_of_a_kind_that_is_set_is_the_error_of_the_reader() {
         let refused = |criteria: &[VarFilteringCriterion]| {
             let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-            let error = chain_of(source, criteria)
+            let error = chain_of(source, &steps_of(criteria))
                 .err()
                 .expect("the chain was refused");
             let message = error.to_string();
@@ -1676,11 +1747,15 @@ mod tests {
     #[test]
     fn chain_of_a_criterion_of_a_kind_the_reader_holds_is_the_error_of_the_reader() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-        let with_a_maf_filter = chain_of(source, &[MaxMaf(0.8)]).expect("the chain of one");
+        let with_a_maf_filter =
+            chain_of(source, &steps_of(&[MaxMaf(0.8)])).expect("the chain of one");
 
-        let error = chain_of(with_a_maf_filter, &[MaxMissingRate(0.04), MaxMaf(0.95)])
-            .err()
-            .expect("the chain over it was refused");
+        let error = chain_of(
+            with_a_maf_filter,
+            &steps_of(&[MaxMissingRate(0.04), MaxMaf(0.95)]),
+        )
+        .err()
+        .expect("the chain over it was refused");
 
         let message = error.to_string();
         assert!(
@@ -1695,14 +1770,20 @@ mod tests {
     /// steps of the `Variants` are the criteria that are set.
     #[test]
     fn refuse_a_second_filter_of_a_kind_takes_a_kind_that_is_not_set_and_refuses_one_that_is() {
-        let set = [MaxMissingRate(0.04), MaxMaf(0.8)];
+        let set = steps_of(&[MaxMissingRate(0.04), MaxMaf(0.8)]);
 
-        assert!(refuse_a_second_filter_of_a_kind(&set, MaxObsHet(0.5)).is_ok());
-        assert!(refuse_a_second_filter_of_a_kind(&[], MaxMaf(0.95)).is_ok());
+        assert!(
+            refuse_a_second_filter_of_a_kind(&set, &PassStep::VarFilter(MaxObsHet(0.5))).is_ok()
+        );
+        assert!(refuse_a_second_filter_of_a_kind(&[], &PassStep::VarFilter(MaxMaf(0.95))).is_ok());
         // A criterion of another kind between the two changes nothing: the
         // kind is looked for among all of them.
         assert!(
-            refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8), MaxObsHet(0.5)], MaxMaf(0.95)).is_err()
+            refuse_a_second_filter_of_a_kind(
+                &steps_of(&[MaxMaf(0.8), MaxObsHet(0.5)]),
+                &PassStep::VarFilter(MaxMaf(0.95))
+            )
+            .is_err()
         );
     }
 
@@ -1711,8 +1792,11 @@ mod tests {
     /// see which of their cells they ran twice.
     #[test]
     fn refuse_a_second_filter_of_a_kind_names_the_kind_and_both_thresholds() {
-        let error = refuse_a_second_filter_of_a_kind(&[MaxMaf(0.8)], MaxMaf(0.95))
-            .expect_err("the second maf filter was refused");
+        let error = refuse_a_second_filter_of_a_kind(
+            &steps_of(&[MaxMaf(0.8)]),
+            &PassStep::VarFilter(MaxMaf(0.95)),
+        )
+        .expect_err("the second maf filter was refused");
 
         let message = error.to_string();
         assert!(
@@ -1736,7 +1820,7 @@ mod tests {
     #[test]
     fn chain_of_a_threshold_out_of_range_is_the_error_of_the_filter() {
         let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
-        let error = chain_of(source, &[MaxMissingRate(0.04), MaxMaf(1.5)])
+        let error = chain_of(source, &steps_of(&[MaxMissingRate(0.04), MaxMaf(1.5)]))
             .err()
             .expect("the chain was refused");
 
@@ -1766,5 +1850,100 @@ mod tests {
             maf.filtering_stats(),
             vec![("maf", pair(4, 3)), ("missing_data", pair(6, 4))]
         );
+    }
+
+    /// The tests of [`PassStep`] and of the chain of readers built from a
+    /// list of them. The module is named after the type, and not
+    /// `pass_steps`, so that `cargo test -- PassStep` runs them.
+    #[expect(
+        non_snake_case,
+        reason = "the module is named after the type it tests, PassStep, so that the \
+                  tests of the steps of a pass are the ones cargo test -- PassStep runs"
+    )]
+    mod PassSteps {
+        use super::{
+            Error, GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, PassStep,
+            block_of_the_worked_example, blocks_of, chain_of, pair, positions_of_blocks,
+            refuse_a_second_filter_of_a_kind, steps_of,
+        };
+
+        /// The kind of each step is the name a Python and a TypeScript user
+        /// reads for it: the three of the threshold filters, which are the
+        /// keys their counts have, and `individuals` for the filter of
+        /// individuals.
+        #[test]
+        fn the_kind_of_each_step_is_the_name_the_user_reads() {
+            assert_eq!(
+                PassStep::VarFilter(MaxMissingRate(0.04)).kind(),
+                "missing_data"
+            );
+            assert_eq!(PassStep::VarFilter(MaxMaf(0.8)).kind(), "maf");
+            assert_eq!(PassStep::VarFilter(MaxObsHet(0.5)).kind(), "obs_het");
+            assert_eq!(
+                PassStep::KeepIndividuals(vec!["ind05".to_owned()]).kind(),
+                "individuals"
+            );
+        }
+
+        /// The chain built from a list of steps is the chain of the filters
+        /// of those steps, in their order: the three threshold filters at
+        /// the thresholds of the worked example of "How it is verified" of
+        /// `docs/specs/filters.md`, 0.4, 0.88 and 0.25, leave variant 5 of
+        /// its six, which is what the filters put one over another by hand
+        /// leave, with the counts of each filter.
+        #[test]
+        fn the_chain_of_the_three_threshold_filters_keeps_variant_5_of_the_worked_example() {
+            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1, 2, 3, 4, 5])]);
+            let steps = steps_of(&[MaxMissingRate(0.4), MaxMaf(0.88), MaxObsHet(0.25)]);
+
+            let mut chain = chain_of(Box::new(source), &steps).expect("the chain of the steps");
+
+            let blocks = blocks_of(&mut chain).expect("the blocks");
+            // The missing data filter keeps the variants 1, 2, 3 and 5 of
+            // the six; the maf filter keeps 2, 3 and 5 of those four, since
+            // the 8/9 of variant 1 is above 0.88; and the observed
+            // heterozygosity filter keeps 5 of those three, since the 1/3 of
+            // variant 2 and the 4/4 of variant 3 are above 0.25.
+            assert_eq!(positions_of_blocks(&blocks), [5]);
+            assert_eq!(
+                chain.filtering_stats(),
+                vec![
+                    ("obs_het", pair(3, 1)),
+                    ("maf", pair(4, 3)),
+                    ("missing_data", pair(6, 4)),
+                ]
+            );
+        }
+
+        /// The step of the filter of individuals is declared and not built
+        /// yet, so a chain that holds one is the error that marks a defect of
+        /// popnei, and so is the refusal of a second filter asked about one:
+        /// neither binding crate has a method that adds such a step, and
+        /// whoever gets there wrote it in Rust.
+        #[test]
+        fn a_step_that_is_not_built_yet_is_the_error_of_a_defect_of_popnei() {
+            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1])]);
+            let keep = PassStep::KeepIndividuals(vec!["i1".to_owned()]);
+
+            let of_the_chain = chain_of(Box::new(source), std::slice::from_ref(&keep))
+                .err()
+                .expect("the chain was refused");
+            let of_the_refusal =
+                refuse_a_second_filter_of_a_kind(&[], &keep).expect_err("the step was refused");
+
+            for error in [of_the_chain, of_the_refusal] {
+                let message = error.to_string();
+                assert!(
+                    matches!(
+                        error,
+                        Error::PassStepNotBuilt {
+                            kind: "individuals"
+                        }
+                    ),
+                    "{message}"
+                );
+                assert!(message.contains("individuals"), "{message}");
+            }
+        }
     }
 }

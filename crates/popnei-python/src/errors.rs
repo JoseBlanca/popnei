@@ -282,8 +282,12 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // too, which `docs/specs/variant.md` says in "The Rust interface":
         // the counts have no function in Python, so the genotypes they
         // refuse, the ploidy they were given and a variant of more alleles
-        // than a count of them holds are a reader's and not a user's.
-        popnei::Error::GtsNotWholeGenotypes { .. }
+        // than a count of them holds are a reader's and not a user's. A step
+        // of a pass that popnei declares and does not build yet is of that
+        // kind as well: no method of this crate adds one, so a user cannot
+        // put one among the steps of their variants.
+        popnei::Error::PassStepNotBuilt { .. }
+        | popnei::Error::GtsNotWholeGenotypes { .. }
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }

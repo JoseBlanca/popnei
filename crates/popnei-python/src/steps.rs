@@ -24,40 +24,29 @@ use std::sync::{Mutex, MutexGuard};
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::filters::{VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind};
+use popnei::filters::{
+    PassStep, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+};
 
 use crate::errors::PyPopneiError;
 use crate::source::threshold_of;
 
-/// One step of a `Variants`.
+/// One step of a `Variants`: what the core does with it, and the arguments
+/// a Python user wrote it with.
 ///
-/// A filter of `docs/specs/filters.md` is the only kind of step there is: it
-/// holds which number of a variant is compared and the threshold it is
-/// compared with, which is what the core needs to build the filter of a
-/// pass.
-#[derive(Clone, Copy)]
-pub(crate) enum Step {
-    /// The variants whose number is at most the threshold of the criterion
-    /// are kept, and the others are left out of every block of the pass.
-    Filter(VarFilteringCriterion),
-}
-
-impl Step {
-    /// The kind of the step, which is the name its counts have for a Python
-    /// user, `"missing_data"`, `"maf"` or `"obs_het"`.
-    fn kind(self) -> &'static str {
-        match self {
-            Step::Filter(criterion) => criterion.kind(),
-        }
-    }
-
-    /// The arguments of the step, each with the name a Python user writes
-    /// for it, `max_allowed_maf`.
-    fn args(self) -> Vec<(&'static str, f64)> {
-        match self {
-            Step::Filter(criterion) => vec![(argument_of(criterion), criterion.threshold())],
-        }
-    }
+/// What the pass does is the core's `PassStep`, which is what builds the
+/// readers of the pass. Beside it this crate keeps the name each argument of
+/// the step has in Python, `max_allowed_maf`, and the value under it: the
+/// core names a filter by its kind, `maf`, and knows nothing of the
+/// arguments of Python, and a user who reads their steps reads the names
+/// they wrote.
+#[derive(Clone)]
+pub(crate) struct Step {
+    /// What every pass does to its variants at this step.
+    pass_step: PassStep,
+    /// The arguments of the step, each under the name a Python user writes
+    /// it in.
+    args: Vec<(&'static str, f64)>,
 }
 
 /// The names a Python user writes the threshold of each filter under, which
@@ -69,15 +58,6 @@ impl Step {
 const MAX_ALLOWED_MISSING_RATE: &str = "max_allowed_missing_rate";
 const MAX_ALLOWED_MAF: &str = "max_allowed_maf";
 const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
-
-/// The name a Python user writes the threshold of `criterion` under.
-fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
-    match criterion {
-        VarFilteringCriterion::MaxMissingRate(_) => MAX_ALLOWED_MISSING_RATE,
-        VarFilteringCriterion::MaxMaf(_) => MAX_ALLOWED_MAF,
-        VarFilteringCriterion::MaxObsHet(_) => MAX_ALLOWED_OBS_HET,
-    }
-}
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
@@ -112,7 +92,7 @@ impl Steps {
         Ok(self
             .of_a_pass()?
             .into_iter()
-            .map(|step| (step.kind(), step.args()))
+            .map(|step| (step.pass_step.kind(), step.args))
             .collect())
     }
 
@@ -126,27 +106,33 @@ impl Steps {
         &self,
         max_allowed_missing_rate: &Bound<'_, PyAny>,
     ) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxMissingRate(threshold_of(
+        self.add_a_threshold_filter(
             MAX_ALLOWED_MISSING_RATE,
-            max_allowed_missing_rate,
-        )?))
+            VarFilteringCriterion::MaxMissingRate(threshold_of(
+                MAX_ALLOWED_MISSING_RATE,
+                max_allowed_missing_rate,
+            )?),
+        )
     }
 
     fn filter_by_maf(&self, max_allowed_maf: &Bound<'_, PyAny>) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxMaf(threshold_of(
+        self.add_a_threshold_filter(
             MAX_ALLOWED_MAF,
-            max_allowed_maf,
-        )?))
+            VarFilteringCriterion::MaxMaf(threshold_of(MAX_ALLOWED_MAF, max_allowed_maf)?),
+        )
     }
 
     fn filter_by_obs_het(
         &self,
         max_allowed_obs_het: &Bound<'_, PyAny>,
     ) -> Result<(), PyPopneiError> {
-        self.add(VarFilteringCriterion::MaxObsHet(threshold_of(
+        self.add_a_threshold_filter(
             MAX_ALLOWED_OBS_HET,
-            max_allowed_obs_het,
-        )?))
+            VarFilteringCriterion::MaxObsHet(threshold_of(
+                MAX_ALLOWED_OBS_HET,
+                max_allowed_obs_het,
+            )?),
+        )
     }
 }
 
@@ -163,8 +149,9 @@ impl Steps {
         Ok(self.locked()?.clone())
     }
 
-    /// The filter of `criterion` added at the end of the list, where the
-    /// next pass takes it.
+    /// The step of the filter of `criterion` added at the end of the list,
+    /// where the next pass takes it, with its threshold under `argument`,
+    /// the name the user wrote it in.
     ///
     /// # Errors
     ///
@@ -175,11 +162,19 @@ impl Steps {
     /// and which filters can stand together are written in one place. The
     /// threshold is refused first, since it is wrong whatever the list
     /// holds. After either, the list is as it was.
-    fn add(&self, criterion: VarFilteringCriterion) -> Result<(), PyPopneiError> {
-        VarFilter::new(criterion).map_err(|error| under_the_argument(error, criterion))?;
+    fn add_a_threshold_filter(
+        &self,
+        argument: &'static str,
+        criterion: VarFilteringCriterion,
+    ) -> Result<(), PyPopneiError> {
+        VarFilter::new(criterion).map_err(|error| under_the_argument(error, argument))?;
+        let step = Step {
+            pass_step: PassStep::VarFilter(criterion),
+            args: vec![(argument, criterion.threshold())],
+        };
         let mut steps = self.locked()?;
-        refuse_a_second_filter_of_a_kind(&criteria_of(&steps), criterion)?;
-        steps.push(Step::Filter(criterion));
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&steps), &step.pass_step)?;
+        steps.push(step);
         Ok(())
     }
 
@@ -198,16 +193,16 @@ impl Steps {
     }
 }
 
-/// `error`, and a threshold the core refused under the name of the argument
-/// a Python user wrote it in.
+/// `error`, and a threshold the core refused under `argument`, the name a
+/// Python user wrote it in.
 ///
 /// The core names the filter by its kind, `maf`, and the message a user
 /// reads names `max_allowed_maf`, which only this crate knows: what they
 /// have to look at is the call they wrote.
-fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) -> PyPopneiError {
+fn under_the_argument(error: popnei::Error, argument: &'static str) -> PyPopneiError {
     if let popnei::Error::VarFilterThresholdOutOfRange { threshold, .. } = error {
         return PyPopneiError::Threshold {
-            name: argument_of(criterion),
+            name: argument,
             value: format!("{threshold:?}"),
         };
     }
@@ -219,11 +214,11 @@ fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) ->
 /// sees only what the one before it kept.
 ///
 /// The chain itself is the core's, `popnei::filters::chain_of`, which both
-/// binding crates call: what this one does is read the criterion of each
-/// step, which is what the steps of this crate hold and the core does not
-/// know. The filters belong to the pass this chain is built for, so no
-/// count is shared with another pass, and the chain is asked for the fields
-/// the consumer wants once it is built.
+/// binding crates call: what this one does is hand it the steps of the core
+/// out of the steps of this crate, which carry the names of their arguments
+/// in Python beside them. The readers belong to the pass this chain is built
+/// for, so no count is shared with another pass, and the chain is asked for
+/// the fields the consumer wants once it is built.
 ///
 /// # Errors
 ///
@@ -234,19 +229,11 @@ pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
 ) -> Result<Box<dyn BlockReader>, popnei::Error> {
-    popnei::filters::chain_of(reader, &criteria_of(steps))
+    popnei::filters::chain_of(reader, &pass_steps_of(steps))
 }
 
-/// What each step filters by, in the order of the steps: what the core is
-/// given, out of what the steps of this crate hold.
-///
-/// The match is what stops this crate from building when a step of another
-/// kind is added and nothing here is told what to filter by for it.
-fn criteria_of(steps: &[Step]) -> Vec<VarFilteringCriterion> {
-    steps
-        .iter()
-        .map(|step| match *step {
-            Step::Filter(criterion) => criterion,
-        })
-        .collect()
+/// What the pass does at each step, in the order of the steps: what the core
+/// is given, out of what the steps of this crate hold.
+fn pass_steps_of(steps: &[Step]) -> Vec<PassStep> {
+    steps.iter().map(|step| step.pass_step.clone()).collect()
 }

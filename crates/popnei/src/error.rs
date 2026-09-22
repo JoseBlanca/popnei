@@ -228,6 +228,20 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
+    /// A step of a pass that `docs/specs/filters.md` describes, that
+    /// [`crate::filters::PassStep`] declares and that popnei does not build
+    /// yet: the filter of individuals, whose reader and whose method in each
+    /// binding crate are still to be written. No user can put such a step
+    /// among the steps of their variants, since no method adds one, so
+    /// whoever gets this has found a defect of popnei.
+    #[error(
+        "the `{kind}` step of a pass is declared and not built yet, and popnei was asked for a pass that holds one"
+    )]
+    PassStepNotBuilt {
+        /// The kind of the step, which is `individuals`.
+        kind: &'static str,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
