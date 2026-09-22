@@ -153,8 +153,8 @@ four of them.
 What the transposes cost, for a tile of 512 variants of 1000
 individuals: 12.3 MB copied for two different sets, three matrices of 4.1
 MB, and 12.4 MB for a set against itself, which is four products and four
-transposes of 2.1 MB. Work package 4 measures whether that shows against
-the 0.50 s target.
+transposes, two of the dosages at 4.1 MB and two of the sums at 2.1 MB.
+Work package 4 measures whether that shows against the 0.50 s target.
 
 Left for the review of the work package. `r2_between` adds three errors
 that are defects of popnei and not wrong input from a user: an `out`
