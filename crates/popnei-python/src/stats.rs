@@ -305,9 +305,9 @@ fn no_count_of_genotypes(value: &Bound<'_, PyAny>) -> String {
 ///
 /// # Errors
 ///
-/// When the counts are not the bins of the distribution times its
-/// populations, and when a count is above what a count of a result holds,
-/// which are both a defect of popnei.
+/// When the histogram of a population does not hold one count for each bin
+/// of the distribution, and when a count is above what a count of a result
+/// holds, which are both a defect of popnei.
 fn distrib_of<'py>(
     py: Python<'py>,
     distrib: Option<&StatsDistrib>,
@@ -329,10 +329,23 @@ fn distrib_of<'py>(
     // row per bin and one column per population.
     let mut counts = Vec::new();
     for pop in 0..num_pops {
-        for count in distrib.hist_counts(pop) {
+        let of_the_pop = distrib.hist_counts(pop);
+        if of_the_pop.len() != num_bins {
+            return Err(PyPopneiError::Broken {
+                message: format!(
+                    "the histogram of a statistic has {num_bins} bins and holds {given} \
+                     counts for one of its {num_pops} populations",
+                    given = of_the_pop.len()
+                ),
+                path: None,
+            });
+        }
+        for count in of_the_pop {
             counts.push(of_a_result(*count)?);
         }
     }
+    // Every population holds one count for each bin, which the loop above
+    // checked, so the counts are the populations times the bins.
     let counts = Array2::from_shape_vec((num_pops, num_bins), counts).map_err(|error| {
         PyPopneiError::Broken {
             message: format!(

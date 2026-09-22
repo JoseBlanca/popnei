@@ -247,8 +247,12 @@ fn the_pops_given(asked: &ArgumentsOfThePass) -> Result<Option<PopsGiven>, JsPop
 ///
 /// # Errors
 ///
-/// When a bin of the histogram counted more variants than a JavaScript array
-/// of counts holds, which is more rows than a file of a tab has.
+/// When the histogram of a population does not hold one count for each bin
+/// of the distribution, which is a defect of popnei: the package reads the
+/// counts of a population by their place, `pop * numBins + bin`, so a
+/// population with fewer would give its user the counts of the next one.
+/// And when a bin of the histogram counted more variants than a JavaScript
+/// array of counts holds, which is more rows than a file of a tab has.
 fn distrib_of(
     distrib: Option<&popnei::stats::StatsDistrib>,
     statistic: PerVarStat,
@@ -257,6 +261,7 @@ fn distrib_of(
         return Ok(None);
     };
     let num_pops = distrib.num_pops();
+    let num_bins = distrib.bins().num_bins();
     // A population in which no variant had a value has no mean, and NaN is
     // what the package gives its user for one.
     let mean = (0..num_pops)
@@ -264,7 +269,16 @@ fn distrib_of(
         .collect();
     let mut hist_counts = Vec::new();
     for pop in 0..num_pops {
-        for count in distrib.hist_counts(pop) {
+        let of_the_pop = distrib.hist_counts(pop);
+        if of_the_pop.len() != num_bins {
+            return Err(JsPopneiError::Broken(format!(
+                "the histogram of the {name} has {num_bins} bins and holds {given} \
+                 counts for one of its {num_pops} populations",
+                name = statistic.name(),
+                given = of_the_pop.len()
+            )));
+        }
+        for count in of_the_pop {
             hist_counts.push(for_javascript(*count, statistic)?);
         }
     }
