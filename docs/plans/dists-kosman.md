@@ -186,7 +186,7 @@ TypeScript,
 
 **Tasks.**
 
-- [ ] 2.1 The sets of bits of a block and the counts of a pair, in
+- [x] 2.1 The sets of bits of a block and the counts of a pair, in
   `crates/popnei/src/dists.rs`, with the worked examples as their tests.
   From "What it gives" and "How it runs" of the dists spec. Serves
   deliverable 1. Its failure would be silent, a wrong integer, so the
