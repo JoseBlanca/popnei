@@ -1,8 +1,8 @@
 # Plan: the per variant and the per individual statistics, and the filter of individuals
 
 22 September 2026. Approved by the owner on 22 September 2026, in chat,
-when he asked for the handoff that runs it. Under way since 22 September
-2026 on the branch `plan/stats`, with its report in
+when he asked for the handoff that runs it. Done on 22 September 2026 on
+the branch `plan/stats`, which is not merged; its report is
 `docs/reports/stats.md`. This plan builds the
 `stats` module of popnei, whole: the populations a statistic is
 calculated for, the one pass that gives the distributions of five per
@@ -473,7 +473,7 @@ both in it.
   average as `docs/reports/filters-measurement.md` gives them, and the
   paragraph of "Speed". From "Speed" of the stats spec. Serves
   deliverable 1. It changes no code of the library.
-- [ ] 6.2 The pyodide smoke test with the worked example, in
+- [x] 6.2 The pyodide smoke test with the worked example, in
   `tests/pyodide/smoke.mjs`, and the build. Serves deliverable 2. Can run
   side by side with 6.1.
 
