@@ -230,6 +230,16 @@ def calc_per_var_distribs(
     populations of every statistic are in the order of the keys of `pops`,
     where pyNei sorts them for the expected heterozygosity alone.
     """
+    if not isinstance(variants, Variants):
+        # The path of the VCF whose variants are read is the mistake that is
+        # easiest to make, and what it gave was the `AttributeError` of an
+        # object with no source inside it.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`calc_per_var_distribs` reads the variants of a source: give it what "
+            f"`open_vcf` or `open_vars` gives, "
+            f"calc_per_var_distribs(open_vcf(vcf_path))"
+        )
     asked_for = _the_stats(stats)
     named = _the_pops(pops)
     hist_range, num_bins, bin_type = _the_histogram(hist_kwargs)
@@ -500,6 +510,16 @@ def calc_per_individual_stats(variants: Variants) -> PerIndividualStats:
     no `num_threads`, since the threads are those of the pool of the Rust
     core.
     """
+    if not isinstance(variants, Variants):
+        # The path of the VCF whose variants are read is the mistake that is
+        # easiest to make, and what it gave was the `AttributeError` of an
+        # object with no source inside it.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`calc_per_individual_stats` reads the variants of a source: give it what "
+            f"`open_vcf` or `open_vars` gives, "
+            f"calc_per_individual_stats(open_vcf(vcf_path))"
+        )
     individuals, missing_gt_rate, obs_het_rate, counts = (
         _core.calc_per_individual_stats(variants._source, variants._steps)
     )

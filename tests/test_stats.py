@@ -1037,6 +1037,29 @@ def test_per_individual_stats_give_the_counts_of_the_pass_and_of_its_filters() -
     assert filtered.pass_stats.filtering["missing_data"].vars_kept == 423
 
 
+def test_per_var_distribs_say_what_they_take_when_they_are_given_a_path() -> None:
+    """A user who gives the VCF where the variants of it come from.
+
+    It is the easiest mistake to make, and what it gave was the
+    ``AttributeError`` of a `str` with no ``_source``, which names popnei's
+    internals and not the argument. The refusal names the argument, says
+    what was given and says that the variants come from `open_vcf`, as the
+    refusal of `write_vars` does.
+    """
+    with pytest.raises(TypeError, match="open_vcf") as refusal:
+        calc_per_var_distribs(str(PANEL))
+
+    assert "variants" in str(refusal.value)
+
+
+def test_per_individual_stats_say_what_they_take_when_they_are_given_a_path() -> None:
+    """The same for the per individual pass."""
+    with pytest.raises(TypeError, match="open_vcf") as refusal:
+        calc_per_individual_stats(str(PANEL))
+
+    assert "variants" in str(refusal.value)
+
+
 def test_per_individual_stats_come_in_the_order_the_individuals_were_named_in() -> None:
     """A filter of individuals keeps them in the order the user named them,
     and the two series are indexed in that order, which is the order of the
