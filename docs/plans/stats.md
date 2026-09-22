@@ -436,7 +436,7 @@ could run it beside them, since they touch different files.
   `python/popnei/stats.py`, with the tests of deliverable 2. From "In
   Python and in TypeScript" and "What pyNei asserts" of the item. Needs
   5.1. Serves deliverable 2.
-- [ ] 5.3 The TypeScript side, in `crates/popnei-js` and
+- [x] 5.3 The TypeScript side, in `crates/popnei-js` and
   `js/popnei/src/stats.ts`. Needs 5.1. Serves deliverable 3. After 5.2
   in the plan's worktree.
 
