@@ -795,23 +795,44 @@ of a table with more rows than columns.
 ## Speed
 
 Every time below is of one thread on the owner's Apple M5 Pro, rustc
-1.98, the best of 3 to 9 runs, on 21 September 2026, from a trial crate
-kept in `tmp/pca_trial/`, which is not in git. Its blocks have random
+1.98. Two kinds of number are mixed here and each one says which it is.
+**Measured on this code** on 22 September 2026, the best of 5 runs, over
+`big.vcf` and the vars file of it, 100000 variants x 1000 individuals
+written by `crates/popnei/benches/make_big_vcf.py` with 3 in 100
+genotypes missing, by the benchmark `crates/popnei/benches/pca_vars.rs`
+and the script `time_pca.py` beside it; `docs/reports/pca-measurement.md`
+has every one of those with the command that produced it. **From the
+trial**, the best of 3 to 9 runs on 21 September 2026 from a crate kept
+in `tmp/pca_trial/`, which is not in git, whose blocks have random
 genotypes of two alleles, frequencies between 0.05 and 0.95, and 3 in 100
-genotypes missing.
+genotypes missing; those numbers are of options this code does not have,
+and of wasm, which task 4.2 of `docs/plans/pca.md` measures.
 
-What there is to beat, on 100000 variants x 1000 individuals: pyNei's
-`do_pca_from_variants` takes 8.2 s and 6.7 GB from genotypes in memory;
-plink2 v2.0.0-a.7.7 `--pca 10 meanimpute --threads 1` takes 0.26 s from
-its own file of 2 bit genotypes, reading included. `meanimpute` makes
-plink2 give a missing genotype the mean of its variant, as pyNei does;
-without it plink2 divides the product of each pair of individuals by the
-variants that both have called, and takes 0.72 s.
+What there is to beat, on 100000 variants x 1000 individuals, both
+measured again on this dataset: pyNei's `do_pca_from_variants` takes
+8.11 s and 5.59 GB, reading its own vars file, and 22.27 s reading the
+VCF; plink2 v2.0.0-a.7.7 `--pca 10 meanimpute --threads 1` takes 0.248 s
+from its own file of 2 bit genotypes, reading included, and 0.507 s from
+the VCF, writing its own file first. `meanimpute` makes plink2 give a
+missing genotype the mean of its variant, as pyNei does; without it
+plink2 divides the product of each pair of individuals by the variants
+that both have called, and takes 0.72 s, which is the trial's number.
 
 The first pass has two steps per block, to standardize it and to add its
-product. Per block of 5000 variants x 1000 individuals:
+product. What this code takes for each of them, per block of 5000
+variants x 1000 individuals, from the shares of a profile of the whole
+analysis taken with `sample`:
 
-| step | native | wasm under node 26 |
+| step, measured on this code | native, one thread |
+|---|---|
+| standardize the block, the four passes over each row | 20.6 ms |
+| the product, lower half, through the linalg crate with Accelerate's `dsyrk` | 12.7 ms, of which 1.3 ms is the crate's two scans for a value that is not finite |
+
+The options of the trial, for the same block, none of which this code
+has except the loop of the second row, which it makes four passes of and
+not two:
+
+| step, from the trial | native | wasm under node 26 |
 |---|---|---|
 | standardize from the `i8` alleles, the loop as one would first write it | 3.9 ms | 7.1 ms |
 | the same in two passes that the compiler vectorizes | 1.5 ms | 5.2 ms, and 1.8 ms with `simd128` |
@@ -827,43 +848,66 @@ done by the crate `gemm`, which uses those instructions only when its
 cargo feature `wasm-simd128-enable` is on as well. At 1000 variants x 5000 individuals the product takes Accelerate
 58 ms on one thread and the standardizing the same 1.3 ms.
 
-**The 2 bit coding is not taken for the PCA.** It makes the standardizing
-0.5 ms shorter in a block that takes 12 ms natively, and 0.4 ms in one
-that takes 190 ms or more in wasm, and only when the block comes packed
-from the file, since packing it costs a pass like the one it saves. What
-it would change is the reading: decompressing a block of `i8` genotypes
-from the vars file takes 4.7 ms (`docs/specs/io_vars.md`), as much as the
-two steps of the PCA natively, and that question belongs to the vars file
-and to section 4 of the architecture, where the option stays open.
+**The 2 bit coding is not taken for the PCA.** In the trial it makes the
+standardizing 0.5 ms shorter in a block that takes 12 ms natively, and
+0.4 ms in one that takes 190 ms or more in wasm, and only when the block
+comes packed from the file, since packing it costs a pass like the one it
+saves. This code's block takes 33.3 ms natively, of which 20.6 ms is the
+standardizing, so what the packed genotypes would save here has not been
+measured and is not the trial's 0.5 ms. What the coding would change
+besides is the reading: decompressing a block of `i8` genotypes from the
+vars file takes 4.7 ms (`docs/specs/io_vars.md`), and the whole reading of
+one block of this dataset 5.3 ms, and that question belongs to the vars
+file and to section 4 of the architecture, where the option stays open.
 
 **The vector instructions are taken twice, in safe code.** The core crate
 forbids `unsafe`, and the intrinsics of `std::arch` need it, so the first
 is a loop written for the compiler to vectorize. As it is written it makes
-three passes over a row, since the major allele has to be known before any
+four passes over a row, since the major allele has to be known before any
 dosage can be worked out: the counts of the alleles of the variant, which
 give the major allele; a pass that writes the code of each genotype, 0, 1,
-2 or missing, into a buffer of one byte per individual; and a pass that
-looks each code up in the four values it can take. The counts of the codes
-go with the second of them, in runs of 255 genotypes with counters of one
-byte, each pass over a run comparing the code with one dosage and adding.
-In the trial the two passes that the codes are written and read in took
-1.5 ms against the 3.9 ms of the plain loop, 2.7 times faster, and within
-0.5 ms of what the 2 bit coding gives; those are the trial's numbers and
-not this code's, which work package 4 of `docs/plans/pca.md` measures,
-with `cargo asm`, which prints the machine code of a function, for whether
-the compiler vectorized the loop, since what it vectorizes changes with
-the version of rustc. The second is `simd128` in the wasm builds,
+2 or missing, into a buffer of one byte per individual; a pass that counts
+the codes, in runs of 255 genotypes with counters of one byte, each pass
+over a run comparing the code with one dosage and adding; and a pass that
+looks each code up in the four values it can take.
+
+Of those four, `cargo asm`, which prints the machine code of a function,
+shows for rustc 1.98 on this machine that the compiler vectorized one:
+the counting of the codes, which compares 64 codes at a time with `cmeq`
+and adds them with `udot`, and which is the path that runs at 1000
+individuals. The pass that writes the codes was vectorized over the
+alleles of one genotype, which is the ploidy, so at a ploidy of 2 no
+vector instruction of it runs and the row is read one byte at a time. The
+lookup and the counts of the alleles both read a table at an index that
+is a value in memory, which NEON has no instruction for, and both are
+scalar. The four passes together take 20.6 ms of the block, where the
+trial's two took 1.5 ms; `docs/reports/pca-measurement.md` has what was
+read in the machine code and where the time of the analysis goes, and
+what to do about it is not decided here.
+
+The second of the two is `simd128` in the wasm builds,
 where the product takes 99 of every 100 ms of a block: computing the lower half
 alone takes the block from 597 ms to 306 ms, and `simd128` from there to
 187 ms (**Open 6**, below).
 
-The number to reach, for 100000 variants x 1000 individuals from blocks in
-memory with `num_prin_comps` 0: 0.3 s natively on one thread, which is
-20 blocks at 12 ms and an eigendecomposition of 0.04 s with Accelerate's
-LAPACK, and 27 times less than pyNei; and 5 s in wasm with
-`simd128`, 7 s without. The second pass has not been measured, and is the
-reading and the standardizing again. These are the times of a trial, and they are measured again on the code
-before they are claimed.
+The number to reach, for 100000 variants x 1000 individuals with
+`num_prin_comps` 0, was 0.3 s natively on one thread, which is 20 blocks
+at 12 ms and an eigendecomposition of 0.04 s with Accelerate's LAPACK;
+and 5 s in wasm with `simd128`, 7 s without, which task 4.2 of
+`docs/plans/pca.md` measures.
+
+**The native number is missed.** From the vars file on one thread this
+code takes 0.801 s with `num_prin_comps` 0, 2.7 times the 0.3 s, and
+1.353 s with 10, the second pass being the reading and the standardizing
+again; with the threads the machine gives, 0.352 s and 0.537 s; from the
+VCF on one thread, 1.329 s. Called from Python it takes 0.022 s more,
+which is the building of the pandas frames. Of the 0.801 s, 0.41 s is the
+standardizing of the 20 blocks, 0.25 s their product, 0.107 s the reading
+of the vars file and 0.024 s the eigendecomposition; the target counted
+none of the reading and 1.5 ms per block of standardizing where this code
+takes 20.6 ms. It is 10.1 times faster than pyNei and 3.2 times slower
+than plink2 on the same dataset, and it holds 0.21 GB against pyNei's
+5.59 GB. `docs/reports/pca-measurement.md` has all of it.
 
 ## Open points
 
