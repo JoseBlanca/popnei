@@ -101,10 +101,11 @@ is where popnei is first compared with pyNei.
    why a difference of 1e-13 there is worth looking at.
 5. The dosages of `tests/reference/vcf/many.vcf`, which has 54 variants
    of more than two alleles and 257 half called genotypes, are those of
-   pyNei's `to_012`: a pytest test at `LdDosages::dosages` through a
-   small binding, or a cargo test against the dosages stored by the
-   reference script, whichever the task finds cheaper, over all 500
-   variants and 50 individuals.
+   pyNei's `to_012`. `make_reference.py` runs pyNei once and stores the
+   500 x 50 dosages beside the dataset, and a cargo test at
+   `LdDosages::dosages` compares every one of the 25000 with it. It is a
+   cargo test and not a pytest one because nothing of this work package
+   reaches Python.
 6. `cargo test -p popnei --lib ld:: -- --list` prints more than `0
    tests` and names the tests of deliverables 3, 4 and 5.
 
@@ -140,8 +141,10 @@ this plan.
       Its cargo tests are the worked example. Serves deliverables 3 and
       6. Needs 1.3.
 - [ ] 1.5 The two checks against the stored numbers: the test over every
-      pair of `ld.vcf.gz`, and the dosages of `many.vcf` against pyNei's.
-      Serves deliverables 4, 5 and 6. Needs 1.1 and 1.4.
+      pair of `ld.vcf.gz` against the plink2 matrix, and the test of the
+      dosages of `many.vcf` against the ones pyNei gave, which this task
+      adds to `make_reference.py` and stores. Serves deliverables 4, 5
+      and 6. Needs 1.1 and 1.4.
 
 ### What could go wrong
 
