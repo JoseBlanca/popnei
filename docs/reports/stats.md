@@ -599,3 +599,63 @@ where the plan asks 5; `uv run pytest` `244 passed`, from 241, of which
 The reviewers used, in tokens: spec 140303, tests 140293, numbers
 106724, errors with api 154581, architecture with binding 175360. The
 fixer used 207563 in 134 tool calls.
+
+## Work package 6: speed and the browser
+
+Task 6.1, commits 41b4c38 and 99d78e8: the measurement, in
+`docs/reports/stats-measurement.md`, with the two scripts that took the
+numbers beside the benchmarks of the core. It changed no code of the
+library. Task 6.2, commit 0dd6096: the smoke test of the wheel for the
+browser writes the six variants of the worked example as a VCF inside
+pyodide and runs both calculations over them, asserting the bin edges,
+the four means, the histograms, the three polymorphism counts and the
+two ratios, and then the ten rates of the five individuals, all as
+literals of the spec.
+
+Both deliverables are met. `bash scripts/build_pyodide_wheel.sh && node
+tests/pyodide/smoke.mjs` exits with 0, and the smoke test was seen to
+fail when four of its literals were changed on purpose.
+
+Three of the four numbers of "Speed" are met and one is not. On
+`big.vars`, 100000 variants of 1000 diploid individuals, read through
+`open_vars`, best of 5 runs on the owner's Apple M5 Pro at a load
+average of 1.6 to 2.3, two sets of runs that agree within 0.005 s:
+
+| | asked | 1 thread | 18 cores |
+|---|---|---|---|
+| the read alone | | 0.102, 0.104 s | 0.102, 0.105 s |
+| the five statistics, no populations | 0.25 / 0.15 s | 0.479, 0.483 s | 0.139, 0.143 s |
+| the same, 4 populations of 250 | | 0.599, 0.623 s | 0.154, 0.158 s |
+| the per individual statistics | 0.25 / 0.15 s | 0.202, 0.207 s | 0.118, 0.122 s |
+
+The five statistics on one thread take 0.479 to 0.483 s where the spec
+asks 0.25 s, 1.9 times over. The plan says a number not met is a finding
+for the owner and not a task of this plan, so nothing was changed to
+make it. Where the time goes, from the numbers and not from a profile:
+the pass reads each row twice, once to count the genotypes and once to
+count the alleles, and the spec built its 0.25 s on the two reads
+costing the same. They do not. With the observed heterozygosity alone
+the pass takes 0.193 s, so the genotype count adds 0.089 to 0.091 s to
+the read, about what the spec assumed; with the major allele frequency
+alone it takes 0.383 s, so the allele count adds 0.279 to 0.281 s, three
+times as much. The four populations, which "Speed" had no number for,
+cost 0.120 to 0.140 s on one thread and 0.015 s on 18.
+
+Against pyNei at ef0ca6e on its own vars file of the same variants, run
+again the same day, best of 5, popnei is 2.4 times faster on the five
+statistics with no populations on one thread, 4.4 times on the four
+populations and 5.1 times on the per individual statistics; the spec
+expected 4.5 on the first. pyNei's own numbers came out within 0.05 s of
+the spec's table, so the table holds.
+
+A trap for the next session, which cost this one a confused half hour.
+`uv run maturin develop --release` leaves the installed package as a
+release build, and in a release build
+`tests/test_io_vars.py::test_a_ctrl_c_while_write_vars_runs_is_raised_and_leaves_no_file`
+fails: it writes a file and sends itself a Ctrl-C after a fixed delay,
+and the release build finishes the write first. Whoever builds with
+`--release` for a measurement builds again without it before running
+pytest.
+
+The subagents used: task 6.1 163477 tokens in 97 tool calls; task 6.2
+153762 in 72. Neither had to be sent back.
