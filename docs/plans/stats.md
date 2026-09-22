@@ -151,7 +151,7 @@ result: every test that exists passes untouched.
 
 **Tasks.**
 
-- [ ] 1.1 `PassStep` with its `kind`, and `chain_of` and
+- [x] 1.1 `PassStep` with its `kind`, and `chain_of` and
   `refuse_a_second_filter_of_a_kind` taking steps, in
   `crates/popnei/src/filters.rs`; the `Step` of
   `crates/popnei-python/src/steps.rs` and its counterpart in
