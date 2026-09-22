@@ -86,21 +86,29 @@ impl KosmanBits {
     /// [`MISSING_ALLELE`], when the sums of a pair over the block would go
     /// above what a `u32` holds, and when the machine does not give the
     /// memory of the sets.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the word of a variant and its bit are a division and a remainder by 64, \
-                  which is not 0, and a shift by a remainder of 64, which is below the bits \
-                  of a u64; `at + 1`, how far into a genotype an allele is, is at most the \
-                  ploidy, which `block.check` above made at most the genotypes of the block, \
-                  their number being the variants times the individuals times the ploidy; \
-                  and the set of an allele and a count, `place * ploidy + copies - 1`, is 0 \
-                  at least, since the copies are 1 at least, and below `A * k`, since the \
-                  place of the allele among the A alleles of the block is below A and the \
-                  copies are at most the ploidy, so its word is below the words of the \
-                  `holds` sets of one individual, which were checked above to be a number a \
-                  usize holds"
-    )]
     pub(crate) fn of_block(block: &Block) -> Result<KosmanBits> {
+        KosmanBits::of_block_built(block, HowTheSetsAreBuilt::OnTheThreads)
+    }
+
+    /// The same sets, with the bits of one individual written after those
+    /// of the individual before it, which is what the test that compares
+    /// the two ways of building them calls.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`KosmanBits::of_block`].
+    #[cfg(test)]
+    pub(crate) fn of_block_one_by_one(block: &Block) -> Result<KosmanBits> {
+        KosmanBits::of_block_built(block, HowTheSetsAreBuilt::OneAfterAnother)
+    }
+
+    /// The sets of bits of the genotypes of `block`, written the way `how`
+    /// says.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`KosmanBits::of_block`].
+    fn of_block_built(block: &Block, how: HowTheSetsAreBuilt) -> Result<KosmanBits> {
         if block.ploidy == 0 {
             return Err(Error::GtsNotWholeGenotypes {
                 num_alleles: block.gts.len(),
@@ -176,52 +184,24 @@ impl KosmanBits {
             &too_large_for_the_memory,
         )?;
 
-        for (var, row) in block.gts.chunks_exact(alleles_per_var).enumerate() {
-            let word_of_the_var = var / VARS_PER_WORD;
-            let bit_of_the_var = 1_u64 << (var % VARS_PER_WORD);
-            let individuals = called
-                .chunks_exact_mut(words_per_set.get())
-                .zip(holds.chunks_exact_mut(holds_per_individual.get()));
-            for ((called, holds), genotype) in individuals.zip(row.chunks_exact(block.ploidy)) {
-                if genotype.contains(&MISSING_ALLELE) {
-                    continue;
-                }
-                // The word of the variant is below the words of a set, and
-                // a `called` set is the words of one set, so `get_mut`
-                // gives that word.
-                if let Some(word) = called.get_mut(word_of_the_var) {
-                    *word |= bit_of_the_var;
-                }
-                for (at, &allele) in genotype.iter().enumerate() {
-                    // The copies of this allele up to this place of the
-                    // genotype: the m-th time the allele is met is the set
-                    // of the genotypes that hold m copies of it or more.
-                    let copies = genotype
-                        .iter()
-                        .take(at + 1)
-                        .filter(|&&other| other == allele)
-                        .count();
-                    // The allele is 0 or more and at most `MAX_ALLELE`: a
-                    // genotype with an allele that was not called was left
-                    // above, and an allele below the missing one was
-                    // refused before the loop. One that got past both would
-                    // be dropped here while its variant counted as called
-                    // for the pair, which is a wrong number and no message,
-                    // so it is an error and not a genotype read without it.
-                    let place = usize::try_from(allele)
-                        .ok()
-                        .and_then(|value| alleles.place.get(value).copied())
-                        .ok_or(Error::AlleleBelowTheMissingOne { allele })?;
-                    // The set of the allele and the count is below k * A,
-                    // since the place of the allele among the alleles of
-                    // the block is below A and the copies are the ploidy at
-                    // most, so its word is below the words of the `holds`
-                    // sets of one individual.
-                    let set = place * block.ploidy + copies - 1;
-                    if let Some(word) = holds.get_mut(set * words_per_set.get() + word_of_the_var) {
-                        *word |= bit_of_the_var;
-                    }
-                }
+        let shape = ShapeOfTheSets {
+            ploidy: block.ploidy,
+            words_per_set,
+            holds_per_individual,
+            place: &alleles.place,
+        };
+        match how {
+            HowTheSetsAreBuilt::OnTheThreads => {
+                write_the_sets(&block.gts, alleles_per_var, shape, &mut called, &mut holds);
+            }
+            HowTheSetsAreBuilt::OneAfterAnother => {
+                write_the_sets_one_by_one(
+                    &block.gts,
+                    alleles_per_var,
+                    shape,
+                    &mut called,
+                    &mut holds,
+                );
             }
         }
 
@@ -239,7 +219,289 @@ impl KosmanBits {
     pub(crate) fn num_individuals(&self) -> usize {
         self.num_individuals
     }
+}
 
+/// Whether the sets of a block are built on the threads of rayon or one
+/// individual after another.
+///
+/// In wasm, which has no threads, both write the same bits one individual
+/// after another.
+#[derive(Clone, Copy)]
+enum HowTheSetsAreBuilt {
+    /// The individuals shared out over the threads of the pool the caller
+    /// is running in.
+    OnTheThreads,
+    /// One individual after another, on the thread that asked.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "outside the tests nothing asks for this: `of_block` asks for the \
+                      threads, and in wasm, which has none, that is already the same pass \
+                      one individual after another"
+        )
+    )]
+    OneAfterAnother,
+}
+
+/// How many individuals the sets of one work item are built for, when the
+/// sets of a block are built on the threads.
+///
+/// An item reads, out of every row of the block, the alleles of its own
+/// individuals and no others, this many times the ploidy bytes of each
+/// row, and writes the sets of those individuals and no others. The
+/// smaller it is, the more often the items read the same 128 byte line of
+/// the genotypes, 64 diploid individuals being exactly one such line; the
+/// larger it is, the fewer items there are for the threads to share, 1000
+/// individuals giving 125 items at 8 and 16 at 64. What it also sets is
+/// how much of the sets an item writes into at a time: at 64 the words of
+/// the item are 202 KB of the 3.16 MB of a block of 1000 individuals.
+///
+/// It was swept over 8, 14, 32 and 64 on 100000 variants of 1000 diploid
+/// individuals, biallelic, 3 in 100 genotypes missing, the blocks handed
+/// out from memory, on the owner's Apple M5 Pro. The sets phase took
+/// 0.062 s, 0.061 s, 0.058 s and 0.054 s on 18 threads and 0.230 s,
+/// 0.192 s, 0.183 s and 0.172 s on one, so the largest of the four won on
+/// both and nothing in the sweep says where it stops winning. A dataset of
+/// fewer than about 1000 individuals gets fewer items than the machine has
+/// threads, and 500 individuals of 5000 variants is the second shape
+/// `docs/reports/perf-dists-kosman-2026-09-22.md` asks the benchmark for.
+///
+/// wasm has no threads and builds the sets one individual after another,
+/// so nothing there reads this.
+#[cfg(not(target_family = "wasm"))]
+const INDIVIDUALS_PER_ITEM: usize = 64;
+
+/// What the writing of a row needs to know besides the row itself and the
+/// sets it writes into: the ploidy of the block, the words of one set and
+/// of the `holds` sets of one individual, and where each allele value of
+/// the block sits among its alleles.
+#[derive(Clone, Copy)]
+struct ShapeOfTheSets<'a> {
+    /// How many alleles the genotype of one individual holds.
+    ploidy: usize,
+    /// How many `u64` one set holds.
+    words_per_set: NonZeroUsize,
+    /// How many `u64` the `holds` sets of one individual hold.
+    holds_per_individual: NonZeroUsize,
+    /// Where each allele value sits among the alleles of the block, the
+    /// `place` of [`AllelesOfTheBlock`].
+    place: &'a [u8; ALLELE_VALUES],
+}
+
+/// The sets of bits of the individuals of a block, written from its
+/// genotypes.
+///
+/// `gts` holds the rows of the block, `alleles_per_var` alleles each, one
+/// individual's after the one before it. `called` holds the `called` set of
+/// every individual and `holds` their `holds` sets, an individual's side by
+/// side in each, and both come in zeroed.
+///
+/// Natively the individuals are shared out over the threads of rayon,
+/// [`INDIVIDUALS_PER_ITEM`] of them to a work item: the bits of an
+/// individual lie in its own words of the two arrays, so no two items write
+/// the same word and none of them reads another's, and the bits are the
+/// same however many threads there are. Inside an item the rows are read in
+/// the order of the variants, so that `gts` is still read from its start to
+/// its end. The threads are those of the pool the caller is running in, as
+/// in `parse_rows` of the VCF reader. In wasm there are no threads and the
+/// same bits are written one individual after another.
+#[cfg(not(target_family = "wasm"))]
+fn write_the_sets(
+    gts: &[i8],
+    alleles_per_var: usize,
+    shape: ShapeOfTheSets<'_>,
+    called: &mut [u64],
+    holds: &mut [u64],
+) {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+    use rayon::slice::ParallelSliceMut;
+
+    // The three sizes are of the same run of individuals, so either all
+    // three are there or the sets are written one after another: two of
+    // them cut into runs of a different length would pair the words of one
+    // individual with the words of another. A block large enough to
+    // overflow any of them is a block whose sets the machine did not give
+    // the memory of, so this is the arithmetic and not a case a caller
+    // meets.
+    let sizes = shape
+        .words_per_set
+        .get()
+        .checked_mul(INDIVIDUALS_PER_ITEM)
+        .zip(
+            shape
+                .holds_per_individual
+                .get()
+                .checked_mul(INDIVIDUALS_PER_ITEM),
+        )
+        .zip(shape.ploidy.checked_mul(INDIVIDUALS_PER_ITEM));
+    let Some(((called_per_item, holds_per_item), alleles_per_item)) = sizes else {
+        write_the_sets_one_by_one(gts, alleles_per_var, shape, called, holds);
+        return;
+    };
+    called
+        .par_chunks_mut(called_per_item)
+        .zip(holds.par_chunks_mut(holds_per_item))
+        .enumerate()
+        .for_each(|(item, (called_of_the_item, holds_of_the_item))| {
+            for (var, row) in gts.chunks_exact(alleles_per_var).enumerate() {
+                // The rows are all of `alleles_per_var` alleles and every
+                // item takes the same run of every row, so the item that
+                // has a run of the words has a run of the alleles.
+                if let Some(alleles_of_the_item) = row.chunks(alleles_per_item).nth(item) {
+                    write_the_row(
+                        alleles_of_the_item,
+                        var,
+                        shape,
+                        called_of_the_item,
+                        holds_of_the_item,
+                    );
+                }
+            }
+        });
+}
+
+/// The same bits, written one individual after another, which is what wasm
+/// does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn write_the_sets(
+    gts: &[i8],
+    alleles_per_var: usize,
+    shape: ShapeOfTheSets<'_>,
+    called: &mut [u64],
+    holds: &mut [u64],
+) {
+    write_the_sets_one_by_one(gts, alleles_per_var, shape, called, holds);
+}
+
+/// The bits of every individual written one after another, over the rows of
+/// the block in the order of the variants.
+///
+/// It is compiled for every target and not for wasm alone, so that the
+/// cargo tests, which run natively, can build the sets of the same block
+/// with it and with the threads and compare the bits.
+fn write_the_sets_one_by_one(
+    gts: &[i8],
+    alleles_per_var: usize,
+    shape: ShapeOfTheSets<'_>,
+    called: &mut [u64],
+    holds: &mut [u64],
+) {
+    for (var, row) in gts.chunks_exact(alleles_per_var).enumerate() {
+        write_the_row(row, var, shape, called, holds);
+    }
+}
+
+/// The bits of one row of the genotypes of a block, for the run of
+/// individuals whose sets `called` and `holds` are.
+///
+/// `alleles` is the alleles of those individuals at the variant `var` of
+/// the block, the ploidy of each after the one before it, and `called` and
+/// `holds` hold their sets in the same order. A genotype that holds the
+/// missing allele sets no bit, so its variant counts as called for no pair
+/// the individual is in.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the word of a variant and its bit are a division and a remainder by 64, \
+              which is not 0, and a shift by a remainder of 64, which is below the bits \
+              of a u64; `at + 1`, how far into a genotype an allele is, is at most the \
+              ploidy, which `Block::check` made at most the genotypes of the block, their \
+              number being the variants times the individuals times the ploidy; and the \
+              set of an allele and a count, `place * ploidy + copies - 1`, is 0 at least, \
+              since the copies are 1 at least, and below `A * k`, since the place of the \
+              allele among the A alleles of the block is below A and the copies are at \
+              most the ploidy, so its word is below the words of the `holds` sets of one \
+              individual, which `of_block_built` checked to be a number a usize holds"
+)]
+fn write_the_row(
+    alleles: &[i8],
+    var: usize,
+    shape: ShapeOfTheSets<'_>,
+    called: &mut [u64],
+    holds: &mut [u64],
+) {
+    let word_of_the_var = var / VARS_PER_WORD;
+    let bit_of_the_var = 1_u64 << (var % VARS_PER_WORD);
+    let individuals = called
+        .chunks_exact_mut(shape.words_per_set.get())
+        .zip(holds.chunks_exact_mut(shape.holds_per_individual.get()));
+    for ((called, holds), genotype) in individuals.zip(alleles.chunks_exact(shape.ploidy)) {
+        #[expect(
+            clippy::manual_contains,
+            reason = "`contains` on a slice of `i8` goes to `memchr`, which searches \
+                              a word at a time and pays its setup for a genotype of the \
+                              ploidy, 2 bytes here; a profile of 100000 variants of 1000 \
+                              diploid individuals had it at 9.4 in 100 of the CPU on one \
+                              thread, and `any` inlines to one compare per allele"
+        )]
+        if genotype.iter().any(|&allele| allele == MISSING_ALLELE) {
+            continue;
+        }
+        // The word of the variant is below the words of a set, and
+        // a `called` set is the words of one set, so `get_mut`
+        // gives that word.
+        if let Some(word) = called.get_mut(word_of_the_var) {
+            *word |= bit_of_the_var;
+        }
+        for (at, &allele) in genotype.iter().enumerate() {
+            // The copies of this allele up to this place of the
+            // genotype: the m-th time the allele is met is the set
+            // of the genotypes that hold m copies of it or more.
+            //
+            // A genotype of two alleles answers that with one
+            // compare: the first allele of the genotype has one
+            // copy of itself so far, and the second has two when it
+            // equals the first and one otherwise. The general count
+            // below is a loop of an unknown length, which the
+            // compiler lowers to a 32 byte vector loop, an 8 byte
+            // one and a scalar tail, for the one or two alleles a
+            // diploid genotype gives it.
+            let copies = if shape.ploidy == 2 {
+                if at == 1 && genotype.first().is_some_and(|&first| first == allele) {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                genotype
+                    .iter()
+                    .take(at + 1)
+                    .filter(|&&other| other == allele)
+                    .count()
+            };
+            // Every allele that reaches here is 0 to `MAX_ALLELE`,
+            // which is 127, so it is one of the 128 values of the
+            // table of places and the lookup cannot fail: a
+            // genotype that holds the missing allele was skipped
+            // above, and a block whose smallest allele is below the
+            // missing one was refused before the loop, so no allele
+            // of this loop is negative and `cast_unsigned` gives
+            // its own value. The `unwrap_or` is what a table of 128
+            // places costs against one of 256, and it is never
+            // taken; were it taken, the allele would be counted as
+            // the first allele of the block.
+            let place = usize::from(
+                shape
+                    .place
+                    .get(usize::from(allele.cast_unsigned()))
+                    .copied()
+                    .unwrap_or(0),
+            );
+            // The set of the allele and the count is below k * A,
+            // since the place of the allele among the alleles of
+            // the block is below A and the copies are the ploidy at
+            // most, so its word is below the words of the `holds`
+            // sets of one individual.
+            let set = place * shape.ploidy + copies - 1;
+            let word_of_the_set = set * shape.words_per_set.get() + word_of_the_var;
+            if let Some(word) = holds.get_mut(word_of_the_set) {
+                *word |= bit_of_the_var;
+            }
+        }
+    }
+}
+
+impl KosmanBits {
     /// The ploidy times the sum of d over the block, and n, the variants
     /// of the block at which both genotypes were called, for the pair of
     /// the individuals `first` and `second`.
@@ -337,8 +599,10 @@ struct AllelesOfTheBlock {
     /// alleles the block holds, counting from 0 in the order of the values:
     /// in a block whose genotypes hold the alleles 0 and 127, the 0 is at 0
     /// and the 127 at 1. A value no genotype holds is at 0, which no
-    /// genotype of the block looks up.
-    place: [usize; ALLELE_VALUES],
+    /// genotype of the block looks up. A place is below 128, the values of
+    /// the table, so each of them is a number a `u8` holds and the table is
+    /// 128 bytes.
+    place: [u8; ALLELE_VALUES],
     /// How many allele values the genotypes hold, and so how many sets of
     /// each count each individual gets. It is 1 at least, also for a block
     /// whose genotypes are all missing, so that the `holds` sets of an
@@ -375,12 +639,15 @@ fn alleles_of(gts: &[i8]) -> AllelesOfTheBlock {
             *held = true;
         }
     }
-    let mut place = [0; ALLELE_VALUES];
+    let mut place = [0_u8; ALLELE_VALUES];
     let mut num_alleles: usize = 0;
     for (value, held) in held.iter().enumerate() {
         if *held {
             if let Some(place) = place.get_mut(value) {
-                *place = num_alleles;
+                // The places are as many as the values of the table at
+                // most, which is 128, so this place is 127 at most and the
+                // conversion never takes its 0.
+                *place = u8::try_from(num_alleles).unwrap_or(0);
             }
             // The places are as many as the values of the table at most,
             // which is 128.
@@ -409,19 +676,97 @@ fn alleles_of(gts: &[i8]) -> AllelesOfTheBlock {
               equal allele of the other are at most the ploidy"
 )]
 fn sums_of_two(first: (&[u64], &[u64]), second: (&[u64], &[u64]), ploidy: u32) -> (u32, u32) {
-    let called_in_both: u32 = first
-        .0
-        .iter()
-        .zip(second.0)
-        .map(|(one, other)| (one & other).count_ones())
-        .sum();
-    let alleles_that_pair: u32 = first
-        .1
-        .iter()
-        .zip(second.1)
-        .map(|(one, other)| (one & other).count_ones())
-        .sum();
+    let called_in_both = ones_in_both(first.0, second.0);
+    let alleles_that_pair = ones_in_both(first.1, second.1);
     (ploidy * called_in_both - alleles_that_pair, called_in_both)
+}
+
+/// How many bits are set in both of two runs of words, over as many words
+/// as the shorter of the two.
+///
+/// It is the count that both sums of a pair are made of: with the `called`
+/// sets it gives the variants both individuals were called at, and with the
+/// `holds` sets the alleles of one that pair with an equal allele of the
+/// other, added over those variants. Either is at most the ploidy times the
+/// variants of the block, which `KosmanBits::of_block` refuses a block for
+/// unless it fits in a `u32`.
+#[cfg(not(target_feature = "simd128"))]
+fn ones_in_both(one: &[u64], other: &[u64]) -> u32 {
+    one.iter()
+        .zip(other)
+        .map(|(one, other)| (one & other).count_ones())
+        .sum()
+}
+
+/// How many words of a pair are counted into lanes of 16 bits before those
+/// lanes are widened into lanes of 32.
+///
+/// Each vector of 16 bytes adds at most 16 to a lane of 16 bits, which
+/// holds 65535, so 4095 vectors, 8190 words, could be added before one
+/// could wrap. This is the largest even number of words below that, so the
+/// only run of words that is not a whole number of vectors is the last one.
+#[cfg(target_feature = "simd128")]
+const WORDS_PER_ROUND: usize = 8188;
+
+/// The same count, with the vector instructions of WebAssembly.
+///
+/// The words are ANDed two at a time, 16 bytes to a vector, and the ones of
+/// the result are counted by `i8x16.popcnt`, which gives 16 counts of 0 to
+/// 8. `u16x8.extadd_pairwise_u8x16` adds those in pairs into 8 lanes of 16
+/// bits, which are added into the lanes of the round; after
+/// [`WORDS_PER_ROUND`] words those 8 lanes are added in pairs into 4 lanes
+/// of 32 bits, which hold the count of the whole run. A run whose words are
+/// odd leaves one word over, and it is counted the way the other target
+/// counts all of them.
+///
+/// What each accumulator holds: a lane of the round at most 16 times the
+/// vectors of a round, 65504 of the 65535 a lane of 16 bits holds; a lane
+/// of 32 bits at most the ones of the whole run, which is at most the
+/// ploidy times the variants of the block and so fits in a `u32`; and their
+/// sum the same number, since the four lanes are parts of it.
+#[cfg(target_feature = "simd128")]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the four lanes and the odd word are parts of one count, which is at most the \
+              ploidy times the variants of the block, a number `of_block` refused the block \
+              unless it fits in a u32"
+)]
+fn ones_in_both(one: &[u64], other: &[u64]) -> u32 {
+    use core::arch::wasm32::{
+        i8x16_popcnt, i16x8_add, i32x4_add, u16x8_extadd_pairwise_u8x16,
+        u32x4_extadd_pairwise_u16x8, u32x4_extract_lane, u64x2, u64x2_splat, v128_and,
+    };
+
+    let mut ones = u64x2_splat(0);
+    let mut odd_word: u32 = 0;
+    for (one, other) in one
+        .chunks(WORDS_PER_ROUND)
+        .zip(other.chunks(WORDS_PER_ROUND))
+    {
+        let (one_pairs, one_over) = one.as_chunks::<2>();
+        let (other_pairs, other_over) = other.as_chunks::<2>();
+        let mut of_the_round = u64x2_splat(0);
+        for (&[one_low, one_high], &[other_low, other_high]) in one_pairs.iter().zip(other_pairs) {
+            let both = v128_and(u64x2(one_low, one_high), u64x2(other_low, other_high));
+            of_the_round = i16x8_add(
+                of_the_round,
+                u16x8_extadd_pairwise_u8x16(i8x16_popcnt(both)),
+            );
+        }
+        ones = i32x4_add(ones, u32x4_extadd_pairwise_u16x8(of_the_round));
+        // The rounds are of an even number of words, so only the last of
+        // them can leave a word over, and only when the run is odd.
+        odd_word += one_over
+            .iter()
+            .zip(other_over)
+            .map(|(one, other)| (one & other).count_ones())
+            .sum::<u32>();
+    }
+    u32x4_extract_lane::<0>(ones)
+        + u32x4_extract_lane::<1>(ones)
+        + u32x4_extract_lane::<2>(ones)
+        + u32x4_extract_lane::<3>(ones)
+        + odd_word
 }
 
 /// The two sums of every pair of individuals over the variants of
@@ -1137,6 +1482,72 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    /// How many genotypes the block below holds, its 100 variants of its
+    /// 40 individuals.
+    const GENOTYPES_OF_THE_BLOCK_OF_40: usize = 4000;
+
+    /// A block of 100 variants of 40 diploid individuals, drawn by a
+    /// generator of its own so that it is the same block on every run and
+    /// on every machine.
+    ///
+    /// The 64 variants a word of a set holds do not divide its 100
+    /// variants, so the last word of every set is partial, and the
+    /// individuals of a work item do not divide its 40 individuals, so the
+    /// last item of the threads is short. One genotype in six is missing
+    /// whole and one in six is half called, so a third of them set no bit,
+    /// and the alleles are 0, 1 and 2, in homozygous and heterozygous
+    /// genotypes.
+    fn a_block_of_100_variants_of_40_individuals() -> Block {
+        let mut gts: Vec<i8> = Vec::new();
+        // A linear congruential generator, of which this test needs
+        // nothing but that it draws the same genotypes every time.
+        let mut drawn: u32 = 1_234_567;
+        for _ in 0..GENOTYPES_OF_THE_BLOCK_OF_40 {
+            drawn = drawn.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            match (drawn >> 24) % 6 {
+                0 => gts.extend_from_slice(&[M, M]),
+                1 => gts.extend_from_slice(&[0, M]),
+                2 => gts.extend_from_slice(&[0, 0]),
+                3 => gts.extend_from_slice(&[0, 1]),
+                4 => gts.extend_from_slice(&[1, 1]),
+                _ => gts.extend_from_slice(&[1, 2]),
+            }
+        }
+        Block {
+            num_vars: 100,
+            num_individuals: 40,
+            ploidy: 2,
+            gts,
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        }
+    }
+
+    /// The bits the threads write are the bits of the pass that writes one
+    /// individual after another, which is what wasm runs and what the
+    /// worked examples of the spec were checked against. Each individual
+    /// owns its own words of the two arrays, so the threads write no word
+    /// twice, and the block above makes the two places that could go wrong
+    /// reachable: a last word of a set that is partial, and a last work
+    /// item that holds fewer individuals than the others.
+    #[test]
+    fn the_sets_built_on_the_threads_are_the_ones_built_one_after_another() {
+        let block = a_block_of_100_variants_of_40_individuals();
+
+        let on_the_threads = KosmanBits::of_block(&block).unwrap();
+        let one_after_another = KosmanBits::of_block_one_by_one(&block).unwrap();
+
+        assert_eq!(on_the_threads.called, one_after_another.called);
+        assert_eq!(on_the_threads.holds, one_after_another.holds);
+        // Two arrays of zeroes would be equal whatever either pass did, so
+        // the block has to have set bits for the test to be able to fail.
+        assert!(on_the_threads.called.iter().any(|word| *word != 0));
+        assert!(on_the_threads.holds.iter().any(|word| *word != 0));
     }
 
     /// Every block a reader of popnei gives holds one variant at least, and

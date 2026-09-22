@@ -163,3 +163,13 @@ opt-level = 2 # numerical tests; overflow checks stay on
 
 [profile.release]
 overflow-checks = false # the code does not rely on them: see the coding skill
+
+# The benchmarks are what a sampling profile of popnei is taken on, and
+# `cargo bench` builds them with this profile, which inherits release. A
+# release binary with no debug info gives a profile whose frames have no
+# function name, so `sample` cannot say where the time went; the line
+# tables are what it needs and they cost only the size of the binary,
+# leaving the code the same as release. The methodology checklist of
+# .claude/skills/performance-review has it.
+[profile.bench]
+debug = "line-tables-only"
