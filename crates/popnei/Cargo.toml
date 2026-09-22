@@ -66,3 +66,15 @@ harness = false
 [[bench]]
 name = "filter_vars"
 harness = false
+
+# How long the principal component analysis of the variants of a file
+# takes, of work package 4 of docs/plans/pca.md, against the 0.3 s of
+# "Speed" of docs/specs/pca.md. It takes the path of a VCF or of a vars
+# file, the runs and how many components the weights are given for, and
+# prints one wall time per run, so it runs without a harness, as the three
+# above do. It builds no pool of threads: those come from
+# RAYON_NUM_THREADS and VECLIB_MAXIMUM_THREADS in the environment of the
+# command.
+[[bench]]
+name = "pca_vars"
+harness = false
