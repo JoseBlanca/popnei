@@ -1007,7 +1007,12 @@ variants of five individuals with chunks of 2, the missing rates 1/3,
 1/3, 1/3, 1/3 and 2/3 and the heterozygosity rates 0, 1/3, 1/3, 1/3 and 0;
 the third variant has every genotype missing. popnei's test asserts the
 same missing rates and, over the called genotypes, the heterozygosity
-rates 0, 1/2, 1/2, 1/2 and 0.
+rates 0, 1/2, 1/2, 1/2 and 0. It writes the missing genotype of `ind0` at
+the third variant as `0/.`, the half called genotype whose missing allele
+is the last one, which changes no rate and is the form the other fixtures
+of the two bindings have none of: all 257 half called genotypes of
+`many.vcf` have the missing allele first, so a rule that read the first
+allele alone would pass every one of their tests.
 `test_per_sample_stats_with_threads` asserts that 2 or 4 threads change
 nothing.
 
