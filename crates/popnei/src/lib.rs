@@ -18,12 +18,15 @@
 //! fields a consumer wants, the table of the chromosome names and the view
 //! of one variant of a block; and `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept.
-//! The modules that calculate over blocks are being written, and
-//! `docs/architecture.md` has their order.
+//! The modules that calculate over blocks are being written: `dists`, the
+//! distances between individuals, holds so far the genotypes of a block as
+//! the sets of bits that the counts of a pair are read from.
+//! `docs/architecture.md` has the order of the ones that follow.
 
 #![forbid(unsafe_code)]
 
 pub mod block;
+pub mod dists;
 pub mod error;
 pub mod filters;
 pub mod io;

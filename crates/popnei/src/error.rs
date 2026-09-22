@@ -228,6 +228,24 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
+    /// The sums the Kosman distances are worked out from do not fit in a
+    /// `u32`. popnei keeps, for each pair of individuals, the ploidy times
+    /// the sum of d and how many variants both of them were called at, and
+    /// the first is at most the ploidy times the second. So it takes more
+    /// than 4295 million variants of the ploidy 1, and 2147 million of the
+    /// ploidy 2, in one block or over a whole pass.
+    #[error(
+        "the Kosman distances of {num_vars} variants of the ploidy {ploidy} add up, for a pair of individuals, beyond the {largest} that popnei keeps for a pair: it keeps the ploidy times the sum of the distances of the pair, which is at most the ploidy times the variants; calculate over fewer variants",
+        largest = u32::MAX
+    )]
+    KosmanSumsTooLarge {
+        /// The variants whose distances were being added: those of the
+        /// block that was given, or those the pass has read so far.
+        num_vars: u64,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
