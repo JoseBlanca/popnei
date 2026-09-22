@@ -29,7 +29,7 @@ use std::num::NonZeroUsize;
 
 use popnei_linalg::{Eigen, add_self_product_lower, eigh_lower, product};
 
-use crate::block::{BlockReader, Reblock};
+use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
 use crate::variant::{AlleleCounts, MAX_ALLELE, MISSING_ALLELE, Needs, count_alleles};
 
@@ -292,6 +292,16 @@ pub enum VariantsTooLarge {
     /// The reader gave more variants than a `usize` counts, which is
     /// 4294967295 in WebAssembly, where a `usize` is 32 bits.
     Variants,
+    /// The weights asked for are more values than a `usize` counts: that
+    /// many components of that many variants that were used. Fewer
+    /// variants reach it than the count of the variants does, since it
+    /// grows with the components the weights are asked for.
+    Weights {
+        /// How many components the weights are given for.
+        num_prin_comps: usize,
+        /// How many variants were used.
+        num_used: usize,
+    },
 }
 
 impl fmt::Display for VariantsTooLarge {
@@ -309,6 +319,72 @@ impl fmt::Display for VariantsTooLarge {
                 formatter,
                 "the variants given are more than {largest}, which is what this machine counts the columns of the analysis in",
                 largest = usize::MAX
+            ),
+            Self::Weights {
+                num_prin_comps,
+                num_used,
+            } => write!(
+                formatter,
+                "the weights of {num_prin_comps} components of the {num_used} variants that were used are more values than the {largest} this machine counts them in; ask for fewer components",
+                largest = usize::MAX
+            ),
+        }
+    }
+}
+
+/// How the variants of the second pass differ from those of the first,
+/// which is what a source that changed between the two passes gives.
+///
+/// The weights of the second pass belong to the variants of the first, the
+/// ones the eigenvectors were worked out from, so a pass over other
+/// variants has nothing to give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantsOfTheSecondPass {
+    /// The second pass is over another dataset: that many individuals of
+    /// that ploidy, where the first pass had the ones the analysis was
+    /// done on.
+    Dataset {
+        /// The individuals of the second pass.
+        num_individuals: usize,
+        /// The ploidy of the second pass.
+        ploidy: usize,
+    },
+    /// The second pass gave another number of variants.
+    Count {
+        /// How many variants the second pass gave.
+        found: usize,
+        /// How many the first pass gave.
+        expected: usize,
+    },
+    /// The variant at that position, among the variants each pass gave,
+    /// has variance in the second pass and had none in the first.
+    UsedNow(usize),
+    /// The variant at that position had variance in the first pass and has
+    /// none in the second.
+    NotUsedNow(usize),
+}
+
+impl fmt::Display for VariantsOfTheSecondPass {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Dataset {
+                num_individuals,
+                ploidy,
+            } => write!(
+                formatter,
+                "it reads {num_individuals} individuals of the ploidy {ploidy}, which are not the individuals of the first pass"
+            ),
+            Self::Count { found, expected } => write!(
+                formatter,
+                "it gave {found} variants and the first pass gave {expected}"
+            ),
+            Self::UsedNow(position) => write!(
+                formatter,
+                "the variant at the position {position} has variance now and had none in the first pass"
+            ),
+            Self::NotUsedNow(position) => write!(
+                formatter,
+                "the variant at the position {position} had variance in the first pass and has none now"
             ),
         }
     }
@@ -346,6 +422,12 @@ pub struct VariantPcaOptions {
 /// used are [`Pca::used_cols`], their positions among the variants the
 /// reader gave.
 ///
+/// The weights of the first `num_prin_comps` components, the weight of
+/// each variant that was used in each of them, come from a second pass
+/// over the same variants: a weight needs the eigenvectors, which are
+/// known when the first pass ends. More components than there are gives
+/// those there are, and [`Pca::num_prin_comps`] says how many that was.
+///
 /// The two readers are over the same variants, and opening one reads no
 /// variant. `second_pass` is `None` when `num_prin_comps` is 0 and is not
 /// read then. This pass borrows the readers and does not take them, so
@@ -361,7 +443,10 @@ pub struct VariantPcaOptions {
 /// [`Error::PcaVariantWithMoreThanTwoAlleles`] when a variant has more
 /// than two different alleles among its called genotypes and
 /// `transform_to_biallelic` is false. [`Error::PcaSecondPassMissing`] when
-/// `num_prin_comps` is above 0 and no second pass gave the weights.
+/// `num_prin_comps` is above 0 and no reader was given for the second
+/// pass, and [`Error::PcaSecondPassDiffers`] when that reader gives other
+/// variants than the first, which is what a source that changed between
+/// the two passes gives.
 /// [`Error::PcaVariantsTooLarge`] when a size of the dataset is beyond
 /// what the analysis counts in, which [`VariantsTooLarge`] lists.
 /// [`Error::FieldsNotInTheBlock`] when a block holds no genotypes, and
@@ -420,15 +505,36 @@ pub fn pca_of_variants<R1: BlockReader, R2: BlockReader>(
     }
     let explained_variance_percent = the_percentages_of(&eigen.values, num_comps);
     let mut projections = the_projections_of(&eigen, num_individuals, num_comps);
-    let mut princomps = match (options.num_prin_comps, second_pass) {
+    // The weights of more components than there are are the weights of
+    // those there are.
+    let num_prin_comps = options.num_prin_comps.min(num_comps);
+    let mut princomps = match (num_prin_comps, second_pass) {
         // With 0 there is no second pass and no weight, and the variants
         // that were used are the columns of `princomps` all the same.
         (0, _) => Vec::new(),
-        // Task 3.2 of `docs/plans/pca.md` writes the second pass, which
-        // standardizes each block again and multiplies it by the
-        // eigenvectors divided by sqrt(λ). Until it is there no weight can
-        // be given, whether a reader for that pass was handed over or not.
-        (num_prin_comps, _) => return Err(Error::PcaSecondPassMissing { num_prin_comps }),
+        // A `num_prin_comps` above 0 with no second reader was refused
+        // before the first variant was read.
+        (num_prin_comps, None) => return Err(Error::PcaSecondPassMissing { num_prin_comps }),
+        (num_prin_comps, Some(second_pass)) => {
+            if second_pass.individuals().len() != num_individuals || second_pass.ploidy() != ploidy
+            {
+                return Err(Error::PcaSecondPassDiffers {
+                    problem: VariantsOfTheSecondPass::Dataset {
+                        num_individuals: second_pass.individuals().len(),
+                        ploidy: second_pass.ploidy(),
+                    },
+                });
+            }
+            second_pass.set_needs(Needs::GTS);
+            let mut blocks = Reblock::new(second_pass, None)?;
+            let after = AfterTheFirstPass {
+                scaled_vectors: &the_scaled_vectors_of(&eigen, num_individuals, num_prin_comps),
+                num_prin_comps,
+                used_cols: &used_cols,
+                num_cols,
+            };
+            the_weights_of_a_second_pass(&mut blocks, options, num_individuals, ploidy, &after)?
+        }
     };
     fix_the_signs(&mut projections, &mut princomps, num_comps, used_cols.len());
     Ok(Pca {
@@ -438,9 +544,231 @@ pub fn pca_of_variants<R1: BlockReader, R2: BlockReader>(
         projections,
         explained_variance_percent,
         used_cols,
-        num_prin_comps: options.num_prin_comps,
+        num_prin_comps,
         princomps,
     })
+}
+
+/// What the first pass leaves the second: what each block of it is
+/// multiplied by, and which variants the first pass used.
+struct AfterTheFirstPass<'a> {
+    /// The individuals x `num_prin_comps` matrix of the eigenvectors of
+    /// the first components divided by sqrt of their eigenvalue, row after
+    /// row, which a block of standardized rows times gives the weight of
+    /// each of its variants in each of those components.
+    scaled_vectors: &'a [f64],
+    /// How many components the weights are given for, which is at most how
+    /// many components have variance.
+    num_prin_comps: usize,
+    /// The positions of the variants the first pass used, in order.
+    used_cols: &'a [usize],
+    /// How many variants the first pass gave, used or not.
+    num_cols: usize,
+}
+
+/// The weights of the first `num_prin_comps` components, from a second
+/// pass over the variants: `num_prin_comps` x the variants the first pass
+/// used, row after row.
+///
+/// Each block is standardized as the first pass standardized it and
+/// multiplied by the eigenvectors divided by sqrt(λ), which gives the
+/// weight of each variant of the block in each component. The product
+/// gives them variant after variant and the result holds them component
+/// after component, so the weights of each block are written into the
+/// columns that belong to its variants and no copy of the whole matrix is
+/// made.
+///
+/// # Errors
+///
+/// [`Error::PcaSecondPassDiffers`] when the variants are not those of the
+/// first pass, what the standardizing of a block refuses, and
+/// [`Error::PcaLinalg`] when a product could not be done.
+fn the_weights_of_a_second_pass<R: BlockReader>(
+    reader: &mut R,
+    options: &VariantPcaOptions,
+    num_individuals: usize,
+    ploidy: usize,
+    after: &AfterTheFirstPass<'_>,
+) -> Result<Vec<f64>> {
+    let num_used = after.used_cols.len();
+    // The weights are the one matrix here whose two sides are not both at
+    // most the individuals, so this is the product that is taken with a
+    // check: 80 MB for 10 components of a million variants, and more
+    // values than a `usize` counts where a `usize` is 32 bits.
+    let num_values =
+        after
+            .num_prin_comps
+            .checked_mul(num_used)
+            .ok_or(Error::PcaVariantsTooLarge {
+                problem: VariantsTooLarge::Weights {
+                    num_prin_comps: after.num_prin_comps,
+                    num_used,
+                },
+            })?;
+    let mut princomps = vec![0.0; num_values];
+    // The buffer a block is standardized into and the one the product
+    // writes the weights of its variants into, both kept from one block to
+    // the next.
+    let mut standardized: Vec<f64> = Vec::new();
+    let mut of_the_block: Vec<f64> = Vec::new();
+    let mut num_cols = 0_usize;
+    // How many variants that were used the passes before this block gave,
+    // which is the column of `princomps` its first one goes into.
+    let mut used_before = 0_usize;
+    while let Some(block) = reader.next_block()? {
+        let used = the_standardized_block(
+            &block,
+            num_individuals,
+            ploidy,
+            options,
+            num_cols,
+            &mut standardized,
+        )?;
+        let kept = the_variants_of_the_first_pass(&used, num_cols, used_before, after)?;
+        // The variants of a block that were used are at most all of the
+        // ones the first pass used, so this product is at most the values
+        // of the weights, which were counted above.
+        let needed = num_values_of(kept, after.num_prin_comps);
+        if of_the_block.len() < needed {
+            of_the_block.resize(needed, 0.0);
+        }
+        // The weight of each variant of the block in each component: the
+        // standardized rows of the block, which are the columns of Z of
+        // those variants, times the eigenvectors divided by sqrt(λ). A
+        // block whose rows all had no variance has no row here and writes
+        // nothing.
+        product(
+            &standardized,
+            kept,
+            num_individuals,
+            after.scaled_vectors,
+            after.num_prin_comps,
+            &mut of_the_block,
+        )
+        .map_err(|source| Error::PcaLinalg {
+            operation: "product that gives the weights of a block of variants",
+            source,
+        })?;
+        // The product gives the weights variant after variant and the
+        // result holds them component after component, so each variant of
+        // the block writes its weights into its own column of every
+        // component. No copy of the whole matrix is made.
+        for (variant, of_the_variant) in of_the_block
+            .chunks_exact(after.num_prin_comps)
+            .take(kept)
+            .enumerate()
+        {
+            let column = used_before
+                .checked_add(variant)
+                .ok_or_else(the_variants_are_too_many)?;
+            for (of_the_component, weight) in
+                princomps.chunks_exact_mut(num_used).zip(of_the_variant)
+            {
+                // The column is below the variants the first pass used,
+                // which were counted here as the pass went, so every
+                // weight has its place.
+                if let Some(target) = of_the_component.get_mut(column) {
+                    *target = *weight;
+                }
+            }
+        }
+        used_before = used_before
+            .checked_add(kept)
+            .ok_or_else(the_variants_are_too_many)?;
+        num_cols = num_cols
+            .checked_add(block.num_vars)
+            .ok_or_else(the_variants_are_too_many)?;
+    }
+    if num_cols != after.num_cols {
+        return Err(Error::PcaSecondPassDiffers {
+            problem: VariantsOfTheSecondPass::Count {
+                found: num_cols,
+                expected: after.num_cols,
+            },
+        });
+    }
+    Ok(princomps)
+}
+
+/// How many variants of the block have variance, once each of them has
+/// been found to be one the first pass used and each of the others one it
+/// left out.
+///
+/// `used` says which variants of the block have variance now,
+/// `first_position` is the position of its first variant among the
+/// variants this pass has given, and `used_before` how many variants that
+/// were used the blocks before it gave. The variants of both passes come
+/// in the order of the source, so the one to compare each with is the next
+/// of the first pass that has not been matched yet.
+///
+/// # Errors
+///
+/// [`Error::PcaSecondPassDiffers`] at the first variant that has variance
+/// now and had none, or that had variance and has none, and
+/// [`Error::PcaVariantsTooLarge`] when the position of a variant is beyond
+/// what a `usize` counts.
+fn the_variants_of_the_first_pass(
+    used: &[bool],
+    first_position: usize,
+    used_before: usize,
+    after: &AfterTheFirstPass<'_>,
+) -> Result<usize> {
+    let mut kept = 0_usize;
+    for (var, was_used) in used.iter().enumerate() {
+        let position = first_position
+            .checked_add(var)
+            .ok_or_else(the_variants_are_too_many)?;
+        let of_the_first_pass = used_before
+            .checked_add(kept)
+            .and_then(|matched| after.used_cols.get(matched));
+        if *was_used {
+            if of_the_first_pass != Some(&position) {
+                return Err(Error::PcaSecondPassDiffers {
+                    problem: VariantsOfTheSecondPass::UsedNow(position),
+                });
+            }
+            kept = kept.checked_add(1).ok_or_else(the_variants_are_too_many)?;
+        } else if of_the_first_pass == Some(&position) {
+            return Err(Error::PcaSecondPassDiffers {
+                problem: VariantsOfTheSecondPass::NotUsedNow(position),
+            });
+        }
+    }
+    Ok(kept)
+}
+
+/// The eigenvectors of the first `num_comps` components divided by sqrt of
+/// their eigenvalue, `num_rows` x `num_comps`, row after row.
+///
+/// A matrix of rows x `num_rows`, the standardized values of some columns
+/// of the data, times this gives the weight of each of those columns in
+/// each of the components: the weights of the component j are Z' u_j over
+/// sqrt(λ_j).
+fn the_scaled_vectors_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
+    let mut scaled = vec![0.0; num_values_of(num_rows, num_comps)];
+    // A matrix of no component has no value to write, and this keeps
+    // `step_by` below off a step of 0, which panics.
+    if num_comps == 0 {
+        return scaled;
+    }
+    for (component, (vector, value)) in eigen
+        .vectors
+        .chunks_exact(num_rows)
+        .zip(&eigen.values)
+        .take(num_comps)
+        .enumerate()
+    {
+        let size = value.sqrt();
+        for (target, coordinate) in scaled
+            .iter_mut()
+            .skip(component)
+            .step_by(num_comps)
+            .zip(vector)
+        {
+            *target = coordinate / size;
+        }
+    }
+    scaled
 }
 
 /// What the first pass over the variants leaves, which is all that is kept
@@ -490,50 +818,20 @@ fn the_first_pass<R: BlockReader>(
     // are not used are left as they were and nothing reads them.
     let mut standardized: Vec<f64> = Vec::new();
     while let Some(block) = reader.next_block()? {
-        let missing = Needs::GTS.difference(block.fields());
-        if !missing.is_empty() {
-            return Err(Error::FieldsNotInTheBlock { fields: missing });
-        }
-        let alleles_per_var = block.alleles_per_var()?;
-        // The block holds its genotypes, so its rows hold one genotype of
-        // the ploidy for each individual: `reblock` checked that the
-        // genotypes are the variants of the block times those alleles, so
-        // this division is exact, and it is `None` only for a ploidy of 0,
-        // which such a block does not have.
-        let Some(num_values) = block.gts.len().checked_div(ploidy) else {
-            return Err(Error::GtsNotWholeGenotypes {
-                num_alleles: block.gts.len(),
-                ploidy,
-            });
-        };
-        standardized.resize(num_values, 0.0);
-        let used = the_standardized_rows(
-            &block.gts,
-            alleles_per_var,
+        let used = the_standardized_block(
+            &block,
             num_individuals,
             ploidy,
             options,
             num_cols,
             &mut standardized,
         )?;
-        // The rows that were used are moved to the start of the buffer, so
-        // that the product is over them alone. A block with no row to
-        // leave out moves nothing.
-        for (to, (var, _)) in used
-            .iter()
-            .enumerate()
-            .filter(|(_, was_used)| **was_used)
-            .enumerate()
-        {
-            let position = num_cols
-                .checked_add(var)
-                .ok_or_else(the_variants_are_too_many)?;
-            used_cols.push(position);
-            if to != var {
-                let from = the_row_of(var, num_individuals);
-                let start = the_row_of(to, num_individuals).start;
-                standardized.copy_within(from, start);
-            }
+        for (var, _) in used.iter().enumerate().filter(|(_, was_used)| **was_used) {
+            used_cols.push(
+                num_cols
+                    .checked_add(var)
+                    .ok_or_else(the_variants_are_too_many)?,
+            );
         }
         let kept = used.iter().filter(|was_used| **was_used).count();
         add_self_product_lower(&standardized, kept, num_individuals, &mut gram).map_err(
@@ -551,6 +849,77 @@ fn the_first_pass<R: BlockReader>(
         used_cols,
         num_cols,
     })
+}
+
+/// The rows of one block standardized into `standardized`, with the rows
+/// of the variants that have variance at its start, in the order of the
+/// block; it gives whether each variant of the block was used.
+///
+/// The rows that were left out are not in those first rows, so the product
+/// of a block is over its variants that have variance alone. The buffer is
+/// the caller's and is kept from one block to the next: it is made as long
+/// as the block needs and the rows that are left out keep whatever they
+/// held, which nothing reads.
+///
+/// `first_position` is the position, among the variants the reader has
+/// given, of the first variant of the block, which the error of a variant
+/// with more than two alleles names.
+///
+/// # Errors
+///
+/// [`Error::FieldsNotInTheBlock`] when the block holds no genotypes, what
+/// the standardizing of a row refuses, and
+/// [`Error::PcaVariantsTooLarge`] when the position of a variant is beyond
+/// what a `usize` counts.
+fn the_standardized_block(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &VariantPcaOptions,
+    first_position: usize,
+    standardized: &mut Vec<f64>,
+) -> Result<Vec<bool>> {
+    let missing = Needs::GTS.difference(block.fields());
+    if !missing.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: missing });
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    // The block holds its genotypes, so its rows hold one genotype of the
+    // ploidy for each individual: `reblock` checked that the genotypes are
+    // the variants of the block times those alleles, so this division is
+    // exact, and it is `None` only for a ploidy of 0, which such a block
+    // does not have.
+    let Some(num_values) = block.gts.len().checked_div(ploidy) else {
+        return Err(Error::GtsNotWholeGenotypes {
+            num_alleles: block.gts.len(),
+            ploidy,
+        });
+    };
+    standardized.resize(num_values, 0.0);
+    let used = the_standardized_rows(
+        &block.gts,
+        alleles_per_var,
+        num_individuals,
+        ploidy,
+        options,
+        first_position,
+        standardized,
+    )?;
+    // The rows that were used are moved to the start of the buffer. A
+    // block with no row to leave out moves nothing.
+    for (to, (var, _)) in used
+        .iter()
+        .enumerate()
+        .filter(|(_, was_used)| **was_used)
+        .enumerate()
+    {
+        if to != var {
+            let from = the_row_of(var, num_individuals);
+            let start = the_row_of(to, num_individuals).start;
+            standardized.copy_within(from, start);
+        }
+    }
+    Ok(used)
 }
 
 /// The error of a pass that gave more variants than a `usize` counts,
@@ -729,10 +1098,12 @@ enum Layout {
 /// took with `checked_mul` before it built any of them. Every matrix of
 /// the variants has both of its sides at most the individuals, which
 /// [`pca_of_variants`] refuses above [`MAX_INDIVIDUALS_OF_THE_VARIANTS`],
-/// whose square is 2147395600.
+/// whose square is 2147395600, but for the weights, whose values
+/// [`the_weights_of_a_second_pass`] takes with `checked_mul` before it
+/// builds either of the two buffers that hold them.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "for a table one side is its smaller side or a count of components, at most that side, and the other is at most the other side, so the product is at most the values of the table; for the variants both sides are at most the 46340 individuals the analysis takes"
+    reason = "for a table one side is its smaller side or a count of components, at most that side, and the other is at most the other side, so the product is at most the values of the table; for the variants both sides are at most the 46340 individuals the analysis takes, but for the weights, whose values the second pass took with checked_mul and which are more than the buffer of one block of them holds"
 )]
 fn num_values_of(rows: usize, cols: usize) -> usize {
     rows * cols
@@ -1465,11 +1836,14 @@ mod tests {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
+    use popnei_linalg::eigh_lower;
+
     use super::{
-        FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS, MAX_PLOIDY_OF_THE_VARIANTS, Pca, PcaOptions,
-        RowScratch, TraitScale, VariantPcaOptions, VariantsTooLarge, fix_the_signs, pca,
-        pca_of_variants, the_first_pass, the_row_of, the_standardized_row, the_standardized_rows,
-        the_standardized_rows_one_by_one,
+        AfterTheFirstPass, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS, MAX_PLOIDY_OF_THE_VARIANTS,
+        Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions, VariantsOfTheSecondPass,
+        VariantsTooLarge, fix_the_signs, pca, pca_of_variants, the_components_with_variance,
+        the_first_pass, the_row_of, the_scaled_vectors_of, the_standardized_row,
+        the_standardized_rows, the_standardized_rows_one_by_one, the_weights_of_a_second_pass,
     };
     use crate::block::{BlockReader, Reblock};
     use crate::error::{Error, Result};
@@ -2948,6 +3322,309 @@ mod tests {
                 assert!(message.contains("3 components"), "{message}");
             }
             other => panic!("the weights were given with no second pass: {other:?}"),
+        }
+    }
+
+    /// The principal components of the variants of two readers over the
+    /// same variants, which is how the weights are got.
+    fn the_pca_of_two_passes(
+        first_pass: &mut impl BlockReader,
+        second_pass: &mut impl BlockReader,
+        options: &VariantPcaOptions,
+    ) -> Result<Pca> {
+        pca_of_variants(first_pass, Some(second_pass), options)
+    }
+
+    /// The same options with the weights of that many components.
+    fn with_weights(num_prin_comps: usize) -> VariantPcaOptions {
+        VariantPcaOptions {
+            transform_to_biallelic: false,
+            num_prin_comps,
+        }
+    }
+
+    /// The genotypes of the five variants of the worked example, as the
+    /// lines of a VCF write them.
+    fn the_worked_rows() -> Vec<Vec<String>> {
+        [
+            ["0/0", "0/1", "1/1", "0/0", "0/1"],
+            ["1/1", "1/1", "0/1", "./.", "1/1"],
+            ["0/0", "0/0", "0/0", "0/0", "0/0"],
+            ["0/1", "0/1", "0/1", "0/1", "0/1"],
+            ["0/2", "0/0", "2/2", "0/.", "0/0"],
+        ]
+        .iter()
+        .map(|row| row.iter().map(ToString::to_string).collect())
+        .collect()
+    }
+
+    /// The weights of the worked example, the three components of its
+    /// three variants that were used, which R gives in
+    /// `worked.r.princomps.tsv` as one row for each component: that is the
+    /// layout of `princomps`. With more components than there are, the
+    /// weights are those of the components there are.
+    #[test]
+    fn the_worked_example_gives_the_weights_of_r() {
+        let vcf = the_reference_vcf("worked.vcf");
+        let princomps = row_after_row(the_reference("worked.r.princomps.tsv", true));
+        for num_prin_comps in [3_usize, 10] {
+            let mut first_pass = reader_over(&vcf, None);
+            let mut second_pass = reader_over(&vcf, None);
+            let result = the_pca_of_two_passes(
+                &mut first_pass,
+                &mut second_pass,
+                &with_weights(num_prin_comps),
+            )
+            .expect("the analysis");
+            let what = format!("the weights of {num_prin_comps} components");
+            assert_eq!(result.num_comps, 3, "{what}: the components");
+            assert_eq!(
+                result.num_prin_comps, 3,
+                "{what}: the components the weights are given for"
+            );
+            assert_eq!(result.used_cols, vec![0, 1, 4], "{what}: the variants used");
+            assert_close(&result.princomps, &princomps, TOLERANCE, &what);
+        }
+    }
+
+    /// The weights of `worked3.vcf` with every allele that is not the
+    /// major one counting the same: the three components popnei gives, of
+    /// the four `worked3.r.princomps.tsv` holds.
+    #[test]
+    fn the_weights_of_a_variant_of_three_alleles_are_the_ones_of_r() {
+        let vcf = the_reference_vcf("worked3.vcf");
+        let mut first_pass = reader_over(&vcf, None);
+        let mut second_pass = reader_over(&vcf, None);
+        let options = VariantPcaOptions {
+            transform_to_biallelic: true,
+            num_prin_comps: 3,
+        };
+        let result = the_pca_of_two_passes(&mut first_pass, &mut second_pass, &options)
+            .expect("the analysis");
+        assert_eq!(result.num_prin_comps, 3, "the components of the weights");
+        let princomps: Vec<f64> = row_after_row(the_reference("worked3.r.princomps.tsv", true))
+            .into_iter()
+            .take(12)
+            .collect();
+        assert_close(
+            &result.princomps,
+            &princomps,
+            TOLERANCE,
+            "the weights of worked3",
+        );
+    }
+
+    /// The panel with the weights of its first 10 components, which is the
+    /// default of `do_pca_from_variants`: 10 components of 1200 variants,
+    /// where the two sides of `princomps` differ in count, so a transpose
+    /// that swapped them would not even have the shape. The numbers are
+    /// R's, from `sim_missing.r.princomps.tsv`, and the five literals of
+    /// the table of "How it is verified" are in it.
+    #[test]
+    fn the_panel_gives_the_weights_of_r() {
+        let vcf = the_reference_vcf("sim_missing.vcf");
+        let mut first_pass = reader_over(&vcf, None);
+        let mut second_pass = reader_over(&vcf, None);
+        let result = the_pca_of_two_passes(&mut first_pass, &mut second_pass, &with_weights(10))
+            .expect("the analysis");
+        assert_eq!(result.num_comps, 199, "the components with variance");
+        assert_eq!(result.num_prin_comps, 10, "the components of the weights");
+        assert_eq!(
+            result.princomps.len(),
+            12000,
+            "ten components of the 1200 variants"
+        );
+        let princomps = row_after_row(the_reference("sim_missing.r.princomps.tsv", true));
+        assert_close(
+            &result.princomps,
+            &princomps,
+            TOLERANCE,
+            "the weights of the panel",
+        );
+        // The four literals of the table of the spec: the weights of the
+        // variants 0 and 1 in the first two components.
+        let of_the_first_two = [
+            result.princomps.first().copied().expect("variant 0, PC000"),
+            result.princomps.get(1).copied().expect("variant 1, PC000"),
+            result
+                .princomps
+                .get(1200)
+                .copied()
+                .expect("variant 0, PC001"),
+            result
+                .princomps
+                .get(1201)
+                .copied()
+                .expect("variant 1, PC001"),
+        ];
+        assert_close(
+            &of_the_first_two,
+            &[
+                0.0665938024571,
+                0.0131069975393,
+                -0.0296301101543,
+                0.0518944546112,
+            ],
+            TOLERANCE,
+            "the weights of the variants 0 and 1",
+        );
+        // The projections are what the second pass must not change.
+        let of_s000: Vec<f64> = result.projections.iter().take(3).copied().collect();
+        assert_close(
+            &of_s000,
+            &[1.57303591801, 12.9003037259, -5.07968498438],
+            TOLERANCE,
+            "the projections of s000",
+        );
+    }
+
+    /// A second pass over other variants than the first is refused: its
+    /// weights would belong to variants the eigenvectors did not come
+    /// from. It is what a source that changed between the two passes
+    /// gives, and the message says what differed.
+    #[test]
+    fn a_second_pass_over_other_variants_is_refused() {
+        let rows = the_worked_rows();
+        let vcf = vcf_of(5, &rows);
+
+        // A variant more, which has variance: the first pass used three
+        // variants and the second has a fourth.
+        let mut with_one_more = rows.clone();
+        with_one_more.push(every_individual("0/1", 5));
+        with_one_more[5] = ["1/1", "0/0", "0/1", "0/0", "1/1"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        // A variant fewer, which leaves the count short.
+        let with_one_fewer = rows.get(..4).expect("the first four variants").to_vec();
+        // A variant that had variance and has none.
+        let mut without_the_first = rows.clone();
+        without_the_first[0] = every_individual("0/0", 5);
+
+        for (what, changed, expected) in [
+            (
+                "a variant more",
+                vcf_of(5, &with_one_more),
+                VariantsOfTheSecondPass::UsedNow(5),
+            ),
+            (
+                "a variant fewer",
+                vcf_of(5, &with_one_fewer),
+                VariantsOfTheSecondPass::Count {
+                    found: 4,
+                    expected: 5,
+                },
+            ),
+            (
+                "a variant that lost its variance",
+                vcf_of(5, &without_the_first),
+                VariantsOfTheSecondPass::NotUsedNow(0),
+            ),
+            (
+                "another dataset",
+                vcf_of(4, &vcf_rows_of_four_individuals()),
+                VariantsOfTheSecondPass::Dataset {
+                    num_individuals: 4,
+                    ploidy: 2,
+                },
+            ),
+        ] {
+            let mut first_pass = reader_over(&vcf, None);
+            let mut second_pass = reader_over(&changed, None);
+            match the_pca_of_two_passes(&mut first_pass, &mut second_pass, &with_weights(2)) {
+                Err(Error::PcaSecondPassDiffers { problem }) => {
+                    assert_eq!(problem, expected, "{what}");
+                    let message = Error::PcaSecondPassDiffers { problem }.to_string();
+                    assert!(message.contains("second pass"), "{what}: {message}");
+                    assert!(message.contains("source changed"), "{what}: {message}");
+                }
+                other => panic!("{what} was taken: {other:?}"),
+            }
+        }
+    }
+
+    /// The five variants of the worked example for four individuals, which
+    /// is a second pass over another dataset.
+    fn vcf_rows_of_four_individuals() -> Vec<Vec<String>> {
+        the_worked_rows()
+            .into_iter()
+            .map(|row| row.get(..4).expect("four individuals").to_vec())
+            .collect()
+    }
+
+    /// The weights of the worked example from a second pass over blocks of
+    /// that many variants.
+    fn the_weights_over_blocks_of(vcf: &[u8], num_vars_per_block: usize) -> Vec<f64> {
+        let first = the_first_pass_over(vcf, 5);
+        let eigen = match eigh_lower(first.gram.clone(), 5) {
+            Ok(eigen) => eigen,
+            Err(error) => panic!("the eigendecomposition: {error}"),
+        };
+        let num_comps = the_components_with_variance(&eigen.values, 5, first.used_cols.len());
+        let scaled_vectors = the_scaled_vectors_of(&eigen, 5, num_comps);
+        let after = AfterTheFirstPass {
+            scaled_vectors: &scaled_vectors,
+            num_prin_comps: num_comps,
+            used_cols: &first.used_cols,
+            num_cols: first.num_cols,
+        };
+        let mut reader = reader_over(vcf, None);
+        reader.set_needs(Needs::GTS);
+        let mut blocks = match Reblock::new(&mut reader, Some(num_vars_per_block)) {
+            Ok(blocks) => blocks,
+            Err(error) => panic!("the blocks were not put back to one size: {error}"),
+        };
+        match the_weights_of_a_second_pass(&mut blocks, &NO_WEIGHTS, 5, 2, &after) {
+            Ok(weights) => weights,
+            Err(error) => panic!("the second pass: {error}"),
+        }
+    }
+
+    /// The weights do not change with the size of the blocks of the second
+    /// pass: each block is multiplied on its own and its weights are
+    /// written into the columns of its variants, so blocks of another size
+    /// cut the same product in another place.
+    ///
+    /// The sizes are tried where the pass takes the blocks it is given, as
+    /// they are for the matrix of the products: `pca_of_variants` puts
+    /// `reblock` before each reader with the size popnei chooses, which is
+    /// 10000 variants for five individuals. Blocks of 3 variants are the
+    /// ones whose second block holds one used variant, which goes into the
+    /// third column of the weights.
+    #[test]
+    fn the_weights_do_not_change_with_the_size_of_the_blocks() {
+        let vcf = the_reference_vcf("worked.vcf");
+        let whole = the_weights_over_blocks_of(&vcf, 5);
+        assert_eq!(whole.len(), 9, "three components of three variants");
+        for num_vars_per_block in [1_usize, 2, 3] {
+            let weights = the_weights_over_blocks_of(&vcf, num_vars_per_block);
+            assert_close(
+                &weights,
+                &whole,
+                1e-10,
+                &format!("the weights over blocks of {num_vars_per_block} variants"),
+            );
+        }
+    }
+
+    /// The result does not change with the size of the blocks the second
+    /// reader gives, which `reblock` puts back to the size the pass works
+    /// in, as it does for the first.
+    #[test]
+    fn the_weights_do_not_change_with_the_size_of_the_blocks_of_the_reader() {
+        let vcf = the_reference_vcf("worked.vcf");
+        let princomps = row_after_row(the_reference("worked.r.princomps.tsv", true));
+        for num_vars_per_block in [1_usize, 2, 5] {
+            let mut first_pass = reader_over(&vcf, Some(num_vars_per_block));
+            let mut second_pass = reader_over(&vcf, Some(num_vars_per_block));
+            let result = the_pca_of_two_passes(&mut first_pass, &mut second_pass, &with_weights(3))
+                .expect("the analysis");
+            assert_close(
+                &result.princomps,
+                &princomps,
+                1e-10,
+                &format!("the weights over blocks of {num_vars_per_block} variants"),
+            );
         }
     }
 

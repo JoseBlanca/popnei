@@ -404,6 +404,23 @@ pub enum Error {
         num_prin_comps: usize,
     },
 
+    /// The second pass of a principal component analysis of the variants
+    /// read other variants than the first. The weights it works out belong
+    /// to the variants of the first pass, which the eigenvectors come
+    /// from, so there is nothing to give. It is what a source that changed
+    /// between the two passes gives.
+    /// [`crate::pca::VariantsOfTheSecondPass`] says what differed. In
+    /// Python it is a `RuntimeError`: no argument is wrong, and the core
+    /// has no name of a source to give.
+    #[error(
+        "the second pass over the variants read other variants than the first: {problem}; the source changed between the two passes"
+    )]
+    PcaSecondPassDiffers {
+        /// What the second pass found that the first did not, or the other
+        /// way round.
+        problem: crate::pca::VariantsOfTheSecondPass,
+    },
+
     /// A dataset the principal components of its variants cannot be taken
     /// on, because one of its sizes is beyond what the analysis counts in.
     /// [`crate::pca::VariantsTooLarge`] says which of the three it is. In
