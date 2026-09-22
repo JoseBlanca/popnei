@@ -17,13 +17,24 @@
 //!
 //! The products of matrices and the eigendecomposition are those of the
 //! crate `popnei-linalg`, which runs them on the BLAS and LAPACK of the
-//! system natively and on faer in WebAssembly.
+//! system natively, and on faer in WebAssembly and natively when the cargo
+//! feature `blas` is off.
 
 use std::cmp::Ordering;
+use std::fmt;
 
 use popnei_linalg::{Eigen, add_self_product_lower, eigh_lower, product};
 
 use crate::error::{Error, Result};
+
+/// Whether the table is centered, which `do_pca` of pyNei does by default
+/// and so does popnei.
+pub const DEFAULT_CENTER_DATA: bool = true;
+
+/// Whether the table is standardized, which `do_pca` of pyNei does by
+/// default and so does popnei. A table that is standardized is centered as
+/// well, so turning the centering off turns this off too.
+pub const DEFAULT_STANDARDIZE_DATA: bool = true;
 
 /// The two steps on the columns of a table before its components are
 /// taken.
@@ -43,6 +54,49 @@ pub struct PcaOptions {
     /// with the number of rows in it and not the number of rows less one,
     /// which is pyNei's.
     pub standardize: bool,
+}
+
+/// What the mean or the standard deviation of a trait came out as when it
+/// is not a number the analysis can use.
+///
+/// Each of the three is a trait whose values are too large or too small
+/// for the arithmetic of an `f64`, and the user scales that trait or takes
+/// it out of the table. They are found before anything is computed from
+/// the mean or the deviation, so no analysis is done on the numbers they
+/// would give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraitScale {
+    /// The values of the trait sum above the largest `f64`, 1.8e308, so
+    /// its mean is an infinity and every centered value of it would be a
+    /// NaN.
+    MeanNotFinite,
+    /// The squares of the deviations of the trait sum above the largest
+    /// `f64`, which values of 1e154 give, so its standard deviation is an
+    /// infinity and the standardized trait would be a column of zeros,
+    /// which is what a trait with no variance gives.
+    DeviationNotFinite,
+    /// The squares of the deviations of the trait all fall below the
+    /// smallest `f64` above 0, 5e-324, which values of 1e-200 give, so its
+    /// standard deviation is 0 although its values are not all equal, and
+    /// dividing by it would give infinities.
+    DeviationOfZero,
+}
+
+impl fmt::Display for TraitScale {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let said = match *self {
+            Self::MeanNotFinite => {
+                "its values sum above the largest f64, so its mean is not finite"
+            }
+            Self::DeviationNotFinite => {
+                "the squares of its deviations sum above the largest f64, so its standard deviation is not finite"
+            }
+            Self::DeviationOfZero => {
+                "the squares of its deviations are all below the smallest f64 above 0, so its standard deviation is 0 although its values are not all equal"
+            }
+        };
+        formatter.write_str(said)
+    }
 }
 
 /// What a principal component analysis gives.
@@ -92,10 +146,12 @@ pub struct Pca {
 /// ask for the second and not the first. [`Error::PcaTableTooSmall`] when
 /// the table has fewer than 2 rows or no traits.
 /// [`Error::PcaTraitsWithNoVariance`] when the table is standardized and a
-/// trait has no variance. [`Error::PcaTableOfAnotherSize`] when `data`
-/// holds fewer than `num_rows` times `num_cols` values.
-/// [`Error::PcaLinalg`] when the product or the eigendecomposition could
-/// not be done.
+/// trait has no variance, and [`Error::PcaNoTraitWithVariance`] when no
+/// trait of it has any. [`Error::PcaTraitOutOfRange`] when the mean or the
+/// standard deviation of a trait is not a number the analysis can use.
+/// [`Error::PcaTableOfAnotherSize`] when `data` does not hold exactly
+/// `num_rows` times `num_cols` values. [`Error::PcaLinalg`] when the
+/// product or the eigendecomposition could not be done.
 pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions) -> Result<Pca> {
     if options.standardize && !options.center {
         return Err(Error::PcaStandardizeWithoutCentering);
@@ -103,14 +159,19 @@ pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions)
     if num_rows < 2 || num_cols == 0 {
         return Err(Error::PcaTableTooSmall { num_rows, num_cols });
     }
-    let table = num_rows
-        .checked_mul(num_cols)
-        .and_then(|num_values| data.get(..num_values))
-        .ok_or(Error::PcaTableOfAnotherSize {
-            num_values: data.len(),
-            num_rows,
-            num_cols,
-        })?;
+    // The buffer holds the table and nothing more: a longer one would be
+    // analysed on its first values, which is not the table its caller
+    // meant.
+    let table = match num_rows.checked_mul(num_cols) {
+        Some(num_values) if num_values == data.len() => data,
+        _ => {
+            return Err(Error::PcaTableOfAnotherSize {
+                num_values: data.len(),
+                num_rows,
+                num_cols,
+            });
+        }
+    };
     refuse_a_value_that_is_not_finite(table, num_cols)?;
     let (means, deviations) =
         the_center_and_the_scale_of_each_trait(table, num_rows, num_cols, options)?;
@@ -120,19 +181,16 @@ pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions)
     // the product of a matrix with itself over its columns. So the copy
     // that is centered and standardized is written with the traits as its
     // rows in the first case and as its columns in the second.
-    let traits_are_rows = num_rows <= num_cols;
-    let standardized = the_standardized_table(
-        table,
-        num_rows,
-        num_cols,
-        &means,
-        &deviations,
-        traits_are_rows,
-    );
-    let (num_summed, side) = if traits_are_rows {
-        (num_cols, num_rows)
+    let layout = if num_rows <= num_cols {
+        Layout::TraitsAsRows
     } else {
-        (num_rows, num_cols)
+        Layout::TraitsAsColumns
+    };
+    let standardized =
+        the_standardized_table(table, num_rows, num_cols, &means, &deviations, layout);
+    let (num_summed, side) = match layout {
+        Layout::TraitsAsRows => (num_cols, num_rows),
+        Layout::TraitsAsColumns => (num_rows, num_cols),
     };
     let mut gram = vec![0.0; num_values_of(side, side)];
     add_self_product_lower(&standardized, num_summed, side, &mut gram).map_err(|source| {
@@ -146,29 +204,34 @@ pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions)
         source,
     })?;
     let num_comps = the_components_with_variance(&eigen.values, num_rows, num_cols);
+    if num_comps == 0 {
+        return Err(Error::PcaNoTraitWithVariance);
+    }
     let variance_of_every_component: f64 = eigen.values.iter().sum();
     let explained_variance_percent = eigen
         .values
         .iter()
         .take(num_comps)
-        .map(|value| 100.0 * value / variance_of_every_component)
+        // The share of the total before the 100, so that an eigenvalue
+        // above 1.8e306, which a table of values of 1e153 gives, does not
+        // become an infinity on the way to a number between 0 and 100.
+        .map(|value| 100.0 * (value / variance_of_every_component))
         .collect();
-    let (mut projections, mut princomps) = if traits_are_rows {
-        the_components_of_the_product_of_the_rows(
+    let (mut projections, mut princomps) = match layout {
+        Layout::TraitsAsRows => the_components_of_the_product_of_the_rows(
             &standardized,
             &eigen,
             num_rows,
             num_cols,
             num_comps,
-        )?
-    } else {
-        the_components_of_the_product_of_the_traits(
+        )?,
+        Layout::TraitsAsColumns => the_components_of_the_product_of_the_traits(
             &standardized,
             &eigen,
             num_rows,
             num_cols,
             num_comps,
-        )?
+        )?,
     };
     fix_the_signs(&mut projections, &mut princomps, num_comps, num_cols);
     Ok(Pca {
@@ -183,14 +246,35 @@ pub fn pca(data: &[f64], num_rows: usize, num_cols: usize, options: &PcaOptions)
     })
 }
 
+/// Where the traits of the table are in the copy of it that is centered
+/// and standardized.
+///
+/// `add_self_product_lower` gives the product of a matrix with itself over
+/// its columns, so the side of the table that is to be the side of that
+/// product has to be the columns of the copy. The copy is written in the
+/// layout that puts the smaller side there, and nothing is transposed
+/// afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    /// The traits are the rows of the copy, which is the transpose of the
+    /// table. The product is then the rows x rows Z Z', which is what a
+    /// table with more traits than rows takes.
+    TraitsAsRows,
+    /// The traits are the columns of the copy, which is the table as it
+    /// came. The product is the traits x traits Z' Z.
+    TraitsAsColumns,
+}
+
 /// The values of a matrix of `rows` x `cols`.
 ///
-/// Every matrix of this module has each of its two sides at most the rows
-/// or the traits of the table, whose product was taken without overflow
-/// before any of them was built, so no multiplication here can overflow.
+/// Every matrix of this module has one of its two sides the smaller side
+/// of the table, or a count of components, which is at most that side, and
+/// the other side at most the other side of the table. So every product
+/// here is at most the rows of the table times its traits, which [`pca`]
+/// took with `checked_mul` before it built any of them.
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "each side is at most a side of the table, whose product the caller took with checked_mul"
+    reason = "one side is the smaller side of the table or a count of components, at most that side, and the other is at most the other side, so the product is at most the values of the table"
 )]
 fn num_values_of(rows: usize, cols: usize) -> usize {
     rows * cols
@@ -229,7 +313,9 @@ fn refuse_a_value_that_is_not_finite(table: &[f64], num_cols: usize) -> Result<(
 /// # Errors
 ///
 /// [`Error::PcaTraitsWithNoVariance`] when the table is standardized and
-/// the values of a trait are all equal.
+/// the values of a trait are all equal. [`Error::PcaTraitOutOfRange`] when
+/// the mean or the standard deviation of a trait is not a number the
+/// analysis can use, which [`TraitScale`] lists.
 fn the_center_and_the_scale_of_each_trait(
     table: &[f64],
     num_rows: usize,
@@ -246,6 +332,14 @@ fn the_center_and_the_scale_of_each_trait(
         }
         for mean in &mut means {
             *mean /= rows;
+        }
+        for (position, mean) in means.iter().enumerate() {
+            if !mean.is_finite() {
+                return Err(Error::PcaTraitOutOfRange {
+                    position,
+                    problem: TraitScale::MeanNotFinite,
+                });
+            }
         }
     }
     let mut deviations = vec![1.0; num_cols];
@@ -266,6 +360,23 @@ fn the_center_and_the_scale_of_each_trait(
         }
         for (deviation, total) in deviations.iter_mut().zip(&squares) {
             *deviation = (total / rows).sqrt();
+        }
+        for (position, deviation) in deviations.iter().enumerate() {
+            if !deviation.is_finite() {
+                return Err(Error::PcaTraitOutOfRange {
+                    position,
+                    problem: TraitScale::DeviationNotFinite,
+                });
+            }
+            // The traits whose values are all equal were refused above, so
+            // a deviation of 0 here is one whose squares were all too
+            // small for an `f64` to hold.
+            if *deviation == 0.0 {
+                return Err(Error::PcaTraitOutOfRange {
+                    position,
+                    problem: TraitScale::DeviationOfZero,
+                });
+            }
         }
     }
     Ok((means, deviations))
@@ -304,42 +415,43 @@ fn the_traits_with_no_variance(table: &[f64], num_cols: usize) -> Vec<usize> {
         .collect()
 }
 
-/// The table centered and divided by the deviations, in the layout that
-/// the product of the smaller side needs: the traits as the rows when
-/// `traits_are_rows`, which is the transpose of the table, and as the
-/// columns otherwise, which is the table as it came.
+/// The table centered and divided by the deviations, in the layout the
+/// product of the smaller side needs.
 fn the_standardized_table(
     table: &[f64],
     num_rows: usize,
     num_cols: usize,
     means: &[f64],
     deviations: &[f64],
-    traits_are_rows: bool,
+    layout: Layout,
 ) -> Vec<f64> {
     let mut standardized = vec![0.0; num_values_of(num_rows, num_cols)];
-    if traits_are_rows {
-        for (position, ((values, mean), deviation)) in standardized
-            .chunks_exact_mut(num_rows)
-            .zip(means)
-            .zip(deviations)
-            .enumerate()
-        {
-            for (target, value) in values
-                .iter_mut()
-                .zip(table.iter().skip(position).step_by(num_cols))
+    match layout {
+        Layout::TraitsAsRows => {
+            for (position, ((values, mean), deviation)) in standardized
+                .chunks_exact_mut(num_rows)
+                .zip(means)
+                .zip(deviations)
+                .enumerate()
             {
-                *target = (value - mean) / deviation;
+                for (target, value) in values
+                    .iter_mut()
+                    .zip(table.iter().skip(position).step_by(num_cols))
+                {
+                    *target = (value - mean) / deviation;
+                }
             }
         }
-    } else {
-        for (values, row) in standardized
-            .chunks_exact_mut(num_cols)
-            .zip(table.chunks_exact(num_cols))
-        {
-            for (((target, value), mean), deviation) in
-                values.iter_mut().zip(row).zip(means).zip(deviations)
+        Layout::TraitsAsColumns => {
+            for (values, row) in standardized
+                .chunks_exact_mut(num_cols)
+                .zip(table.chunks_exact(num_cols))
             {
-                *target = (value - mean) / deviation;
+                for (((target, value), mean), deviation) in
+                    values.iter_mut().zip(row).zip(means).zip(deviations)
+                {
+                    *target = (value - mean) / deviation;
+                }
             }
         }
     }
@@ -357,11 +469,16 @@ fn the_standardized_table(
 /// component with no variance came out between -2e-16 and 3e-16 times the
 /// largest on four tables, and 1.3e-14 times it at 1000 x 20000, where the
 /// threshold is 4.4e-12 times it.
+///
+/// The side and the epsilon are multiplied first, so that a largest
+/// eigenvalue near the largest `f64`, which a table of values of 2.5e153
+/// gives, does not become an infinity on the way to a threshold that is a
+/// small part of it.
 fn the_components_with_variance(values: &[f64], num_rows: usize, num_cols: usize) -> usize {
     let Some(largest) = values.first() else {
         return 0;
     };
-    let threshold = largest * (num_rows.max(num_cols) as f64) * f64::EPSILON;
+    let threshold = largest * (num_rows.max(num_cols) as f64 * f64::EPSILON);
     values
         .iter()
         .take_while(|value| **value > threshold)
@@ -533,13 +650,22 @@ fn fix_the_signs(
 }
 
 /// The positions of the first ten traits of a list, as text, with how many
-/// more there are: `0, 3, 7`, or `0, 1, 2, 3, 4, 5, 6, 7, 8, 9, and 2
-/// more`.
+/// more there are: `the position 3`, `the positions 0, 3, 7`, or `the
+/// positions 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, and 2 more`.
 ///
+/// The word comes with the numbers because a message that ends in one
+/// number, `the traits at 1`, reads as a count of traits to whoever gets
+/// it in TypeScript, where no name replaces it.
 /// [`Error::PcaTraitsWithNoVariance`] carries the positions and the Python
 /// layer puts the name of each trait in their place, as pyNei's message
-/// has it, so this is what a reader of the message in Rust gets.
+/// has it, so this is what a reader of the message in Rust or in
+/// TypeScript gets.
 pub(crate) fn the_positions_listed(positions: &[usize]) -> String {
+    let word = if positions.len() == 1 {
+        "the position"
+    } else {
+        "the positions"
+    };
     let shown = positions
         .iter()
         .take(10)
@@ -547,8 +673,8 @@ pub(crate) fn the_positions_listed(positions: &[usize]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     match positions.len().saturating_sub(10) {
-        0 => shown,
-        more => format!("{shown}, and {more} more"),
+        0 => format!("{word} {shown}"),
+        more => format!("{word} {shown}, and {more} more"),
     }
 }
 
@@ -556,12 +682,14 @@ pub(crate) fn the_positions_listed(positions: &[usize]) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{Pca, PcaOptions, fix_the_signs, pca};
+    use super::{Pca, PcaOptions, TraitScale, fix_the_signs, pca};
     use crate::error::Error;
 
-    /// The tolerance of "How it is verified" of `docs/specs/pca.md`: the
-    /// literals of the reference files are written with 12 significant
-    /// digits, of projections up to 13.3.
+    /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
+    /// literal here and in the reference files is written with 12
+    /// significant digits, and the largest of them is a projection of iris
+    /// of 3.7956, so a literal is within 1e-11 of the number it stands
+    /// for.
     const TOLERANCE: f64 = 1e-9;
 
     /// Centered and standardized, which is what `do_pca` does by default.
@@ -598,6 +726,26 @@ mod tests {
         1.0, 5.0, 3.0, //
         2.0, 5.0, 1.0, //
         3.0, 5.0, 2.0,
+    ];
+
+    /// The 5 rows x 3 traits of "How it is verified", which has more rows
+    /// than traits, as iris has, and loses a component, which iris does
+    /// not: its second trait has no variance.
+    const FIVE_ROWS: [f64; 15] = [
+        1.0, 5.0, 3.0, //
+        2.0, 5.0, 1.0, //
+        3.0, 5.0, 2.0, //
+        4.0, 5.0, 9.0, //
+        7.0, 5.0, 2.0,
+    ];
+
+    /// The 3 rows x 3 traits of "How it is verified" whose values are
+    /// multiplied by 1e153 or by 2.5e153, which puts the eigenvalues of
+    /// its product near the largest `f64`.
+    const NEAR_THE_LARGEST: [f64; 9] = [
+        1.0, 2.0, 3.0, //
+        2.0, 4.0, 1.0, //
+        5.0, 1.0, 4.0,
     ];
 
     /// The rows of one of the files of `tests/reference/pca/`, without the
@@ -831,8 +979,10 @@ mod tests {
     ///
     /// The second component is given up to its sign, as "How it is
     /// verified" says: its two largest projections are the same number
-    /// with opposite signs but for the last bit, so which one the sign
-    /// rule finds is decided by the rounding of the eigendecomposition.
+    /// with opposite signs, equal bit for bit on Accelerate's LAPACK and
+    /// one bit apart on faer, so which of the two the sign rule finds is
+    /// decided by the rounding of the eigendecomposition and is not the
+    /// same on every backend.
     #[test]
     #[expect(
         clippy::approx_constant,
@@ -877,7 +1027,7 @@ mod tests {
             .collect();
         assert_close(
             &second,
-            &[1.19454087712e-16, 0.707106781187, 0.707106781187],
+            &[0.0, 0.707106781187, 0.707106781187],
             TOLERANCE,
             "the projections of the second component",
         );
@@ -1035,6 +1185,9 @@ mod tests {
                 .to_string();
                 assert!(message.contains("1 of the 3 traits"), "{message}");
                 assert!(message.contains("no variance"), "{message}");
+                // The position comes with the word, so that a message
+                // that ends in one number does not read as a count.
+                assert!(message.contains("at the position 1,"), "{message}");
             }
             other => panic!("a fixed trait was standardized: {other:?}"),
         }
@@ -1055,6 +1208,7 @@ mod tests {
                 }
                 .to_string();
                 assert!(message.contains("12 of the 12 traits"), "{message}");
+                assert!(message.contains("at the positions 0, 1,"), "{message}");
                 assert!(message.contains("and 2 more"), "{message}");
                 assert!(!message.contains("10, 11"), "{message}");
             }
@@ -1080,6 +1234,165 @@ mod tests {
             }
             other => panic!("a buffer of 9 values was read as 4 x 3: {other:?}"),
         }
+
+        // One value too many is refused as well: the analysis of the first
+        // nine would be of a table the caller did not mean.
+        let mut longer = ONE_TRAIT_FIXED.to_vec();
+        longer.push(0.0);
+        match pca(&longer, 3, 3, &CENTERED) {
+            Err(Error::PcaTableOfAnotherSize {
+                num_values,
+                num_rows,
+                num_cols,
+            }) => {
+                assert_eq!(num_values, 10);
+                assert_eq!(num_rows, 3);
+                assert_eq!(num_cols, 3);
+            }
+            other => panic!("a buffer of 10 values was read as 3 x 3: {other:?}"),
+        }
+    }
+
+    /// The table of 5 rows x 3 traits of "How it is verified", which has
+    /// more rows than traits, so that the matrix that is decomposed is the
+    /// 3 x 3 product of the traits, and which loses a component, its
+    /// second trait having no variance. Iris, the other table with more
+    /// rows than traits, keeps all four of its components, so nothing but
+    /// this pins that the weights of that side are cut to the components
+    /// that have variance.
+    #[test]
+    fn a_table_of_more_rows_than_traits_drops_the_component_with_no_variance() {
+        let result = pca(&FIVE_ROWS, 5, 3, &CENTERED).expect("the analysis of the table");
+        let projections = [
+            -0.765373820993,
+            -2.30958933885,
+            -2.58720936972,
+            -1.01308818829,
+            -1.44494156963,
+            -0.179287089168,
+            5.62553292806,
+            -0.270886092928,
+            -0.828008167714,
+            3.77285070924,
+        ];
+        let percent = [66.8261599339, 33.1738400661];
+        let princomps = [
+            0.15423335048,
+            0.0,
+            0.988034449602,
+            0.988034449602,
+            0.0,
+            -0.15423335048,
+        ];
+        assert_the_result_is(
+            &result,
+            5,
+            3,
+            2,
+            (&projections, &percent, &princomps),
+            "the table of five rows",
+        );
+    }
+
+    /// A table whose eigenvalues are near the largest `f64`. The
+    /// percentages are what the table gives unscaled, and the count of the
+    /// components does not change with the scale: both are computed in the
+    /// order that does not overflow, the share of the total before the 100
+    /// and the tolerance of the threshold before the largest eigenvalue.
+    /// At 1e153 the largest eigenvalue is 1.4e307, so 100 times it is an
+    /// infinity; at 2.5e153 it is 8.9e307, so it times the larger side of
+    /// the table is an infinity as well.
+    #[test]
+    fn a_table_whose_eigenvalues_are_near_the_largest_float_gives_its_percentages() {
+        for scale in [1e153, 2.5e153] {
+            let table: Vec<f64> = NEAR_THE_LARGEST.iter().map(|value| value * scale).collect();
+            let result = pca(&table, 3, 3, &CENTERED).expect("the analysis of the large table");
+            assert_eq!(result.num_comps, 2, "the components at the scale {scale}");
+            assert_close(
+                &result.explained_variance_percent,
+                &[78.8675134595, 21.1324865405],
+                TOLERANCE,
+                &format!("the percentages at the scale {scale}"),
+            );
+        }
+    }
+
+    /// A trait whose values sum above the largest `f64` has a mean that is
+    /// not finite, and every centered value of it would be a NaN. It is
+    /// found whenever the table is centered, standardized or not.
+    #[test]
+    fn a_trait_whose_mean_is_not_finite_is_refused() {
+        let table = [f64::MAX, 1.0, f64::MAX, 2.0];
+        match pca(&table, 2, 2, &CENTERED) {
+            Err(Error::PcaTraitOutOfRange { position, problem }) => {
+                assert_eq!(position, 0);
+                assert_eq!(problem, TraitScale::MeanNotFinite);
+                let message = Error::PcaTraitOutOfRange { position, problem }.to_string();
+                assert!(message.contains("the trait at the position 0"), "{message}");
+                assert!(message.contains("mean"), "{message}");
+            }
+            other => panic!("a trait whose mean is an infinity was centered: {other:?}"),
+        }
+    }
+
+    /// A trait whose squared deviations sum above the largest `f64` has a
+    /// standard deviation that is not finite, and dividing by it would
+    /// make the trait a column of zeros, which looks like a trait with no
+    /// variance and would leave the analysis with a weight of 0 and no
+    /// word.
+    #[test]
+    fn a_trait_whose_standard_deviation_is_not_finite_is_refused() {
+        let table = [1e154, 1.0, -1e154, 2.0];
+        match pca(&table, 2, 2, &STANDARDIZED) {
+            Err(Error::PcaTraitOutOfRange { position, problem }) => {
+                assert_eq!(position, 0);
+                assert_eq!(problem, TraitScale::DeviationNotFinite);
+            }
+            other => panic!("a trait whose deviation is an infinity was standardized: {other:?}"),
+        }
+    }
+
+    /// A trait whose squared deviations all fall below the smallest `f64`
+    /// above 0 has a standard deviation of 0 although its values differ,
+    /// and dividing by it would give infinities, which the linear algebra
+    /// would then refuse as a defect of popnei.
+    #[test]
+    fn a_trait_whose_standard_deviation_falls_to_zero_is_refused() {
+        let table = [1e-200, 1.0, 2e-200, 2.0];
+        match pca(&table, 2, 2, &STANDARDIZED) {
+            Err(Error::PcaTraitOutOfRange { position, problem }) => {
+                assert_eq!(position, 0);
+                assert_eq!(problem, TraitScale::DeviationOfZero);
+                let message = Error::PcaTraitOutOfRange { position, problem }.to_string();
+                assert!(message.contains("not all equal"), "{message}");
+            }
+            other => panic!("a trait whose deviation is 0 was standardized: {other:?}"),
+        }
+    }
+
+    /// A table with no direction to give: every trait the same value in
+    /// every row, which centering turns into zeros, and a table of zeros
+    /// that is not centered. pyNei gives 0 for every projection and a
+    /// percentage of NaN for every component.
+    #[test]
+    fn a_table_in_which_no_trait_has_variance_is_refused() {
+        let fixed = [1.0, 5.0, 1.0, 5.0, 1.0, 5.0];
+        let result = pca(&fixed, 3, 2, &CENTERED);
+        assert!(
+            matches!(result, Err(Error::PcaNoTraitWithVariance)),
+            "{result:?}"
+        );
+        if let Err(error) = result {
+            let message = error.to_string();
+            assert!(message.contains("no trait has variance"), "{message}");
+        }
+
+        let zeros = [0.0; 6];
+        let result = pca(&zeros, 3, 2, &AS_IT_IS);
+        assert!(
+            matches!(result, Err(Error::PcaNoTraitWithVariance)),
+            "{result:?}"
+        );
     }
 
     /// An error of the linalg crate becomes one of popnei, with the

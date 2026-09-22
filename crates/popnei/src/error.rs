@@ -279,7 +279,7 @@ pub enum Error {
     /// traits, since the layer that has the frame puts the name of each
     /// column in the place of its position.
     #[error(
-        "{count} of the {num_cols} traits have no variance and cannot be standardized: take them out of the table or do not standardize; they are the traits at {shown}",
+        "{count} of the {num_cols} traits have no variance and cannot be standardized: take them out of the table or do not standardize; they are the traits at {shown}, counting from 0",
         count = positions.len(),
         shown = crate::pca::the_positions_listed(positions)
     )]
@@ -291,8 +291,36 @@ pub enum Error {
         num_cols: usize,
     },
 
-    /// The buffer of the table of a principal component analysis holds
-    /// fewer than its rows times its traits. Only a caller of the function
+    /// A trait whose mean or whose standard deviation is not a number the
+    /// principal component analysis can use, because the values of that
+    /// trait are too large or too small for the arithmetic of an `f64`.
+    /// [`crate::pca::TraitScale`] says which of the three it is, and each
+    /// of them would otherwise give a result with no meaning: NaN
+    /// projections, a trait that quietly becomes a column of zeros, or a
+    /// division by 0. The user scales that trait or takes it out. In
+    /// Python it is a `ValueError` whose message names the trait, as the
+    /// error of the traits with no variance does.
+    #[error(
+        "the trait at the position {position} cannot be centered or standardized: {problem}; scale that trait or take it out of the table"
+    )]
+    PcaTraitOutOfRange {
+        /// The position of the trait among the traits of the table, from
+        /// 0.
+        position: usize,
+        /// Which of the three it is.
+        problem: crate::pca::TraitScale,
+    },
+
+    /// No trait of the table of a principal component analysis has
+    /// variance once it is centered: every value of every trait is equal
+    /// to the others, or the table is all zeros. There is no direction to
+    /// give. pyNei gives 0 for every projection and a percentage of NaN
+    /// for every component. In Python it is a `ValueError`.
+    #[error("no trait has variance, there is nothing to do a PCA with")]
+    PcaNoTraitWithVariance,
+
+    /// The buffer of the table of a principal component analysis does not
+    /// hold exactly its rows times its traits. Only a caller of the function
     /// of the core crate reaches it, since each binding crate takes the
     /// two numbers from the array it was given, so in Python it is a
     /// `RuntimeError`.
