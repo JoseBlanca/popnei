@@ -246,13 +246,16 @@ Each of these is a `ValueError` in Python:
   same. The alleles are those the genotypes hold and not those the VCF
   lists: a variant with `ALT` of `C,G` and no `G` called has two.
 - No variants, and no variant with variance, which is what one individual
-  gives. popnei's messages are "There are no variants to do a PCA with"
-  and "Every variant has the same genotype in every individual, there is
+  gives. popnei's messages are "there are no variants to do a PCA with"
+  and "every variant has the same genotype in every individual, there is
   nothing to do a PCA with", pyNei's without its "012 matrix" and its
-  "sample".
+  "sample", and starting in lower case as every message of the core does.
 - A negative `num_prin_comps`.
-- A dataset beyond what this analysis reads, which is one of three and
-  the message says which. A ploidy above 254: the first pass writes the
+- A dataset beyond what this analysis reads, which is one of five and
+  the message says which. A source of no individual: the components
+  place the individuals of a dataset on axes, and there is nobody to
+  place. No reader of popnei gives one, so it is the function of the
+  core crate that refuses it. A ploidy above 254: the first pass writes the
   genotype of each individual as one byte, its dosage or the missing
   genotype, as "Speed" below has it, and the 256 dosages of a ploidy of
   255, the largest the VCF reader takes, are with the missing genotype
@@ -322,19 +325,29 @@ dosages and then one more reading of its genotypes, and a row with no
 variance is not written. Then, from outside rayon, the product of the
 buffer with itself is added to G, the lower half only, through `linalg`.
 What is kept from one block to the next is G, individuals x individuals,
-and one bit per variant for whether it was used. When the variants end,
-`linalg` gives the eigenvalues and the eigenvectors of G.
+and the position of each variant that was used, which is `used_cols` of
+the result: one bit per variant would say the same and the result carries
+the positions anyway, so the bits would be a second copy of them. When the
+variants end, `linalg` gives the eigenvalues and the eigenvectors of G.
 
 The second pass, when `num_prin_comps` is above 0, standardizes each block
 again and multiplies it by the first eigenvectors divided by sqrt(λ), a
-product of variants x individuals by individuals x `num_prin_comps`. It
-checks that the variants it uses are those of the first pass, and stops
-with an error if they are not, which is what a file that changed between
-the two gives; in Python a `RuntimeError`, since no argument is wrong and
-the core has no file name to give.
+product of variants x individuals by individuals x `num_prin_comps`. That
+product gives the weights variant after variant and the result holds them
+component after component, so each block writes its weights into the
+columns of its own variants and no copy of the whole matrix is made. It
+checks that its variants are those of the first pass, and stops with an
+error if they are not, which is what a file that changed between the two
+gives; in Python a `RuntimeError`, since no argument is wrong and the core
+has no file name to give. Four things it compares: the individuals and the
+ploidy of its reader, which a second reader over another dataset differs
+in and which would otherwise be read as rows of the size the first pass
+had; how many variants it gave; and which of them have variance, each in
+the order of the source.
 
 Memory: G and its eigenvectors, 16 MB at 1000 individuals and 1.6 GB at
-10000, which no browser tab holds; the buffer of a block; and the
+10000, which no browser tab holds; the buffer of a block; the positions of
+the variants that were used, 8 bytes each, 8 MB for a million; and the
 princomps, 80 MB for 10 components of a million variants.
 
 ### How it is verified
@@ -822,15 +835,21 @@ and to section 4 of the architecture, where the option stays open.
 
 **The vector instructions are taken twice, in safe code.** The core crate
 forbids `unsafe`, and the intrinsics of `std::arch` need it, so the first
-is a loop written for the compiler to vectorize: one pass that writes the
-code of each genotype, 0, 1, 2 or missing, into a buffer of one byte per
-individual and counts the codes in runs of 255 with counters of one byte,
-and one pass that looks each code up in the four values it can take. It is
-2.7 times faster than the plain loop, 1.5 ms against 3.9 ms, and within
-0.5 ms of what the 2 bit coding gives. Whether the compiler did vectorize
-it is checked when it is written with `cargo asm`, which prints the machine
-code of a function, since what the compiler vectorizes changes with the
-version of rustc. The second is `simd128` in the wasm builds,
+is a loop written for the compiler to vectorize. As it is written it makes
+three passes over a row, since the major allele has to be known before any
+dosage can be worked out: the counts of the alleles of the variant, which
+give the major allele; a pass that writes the code of each genotype, 0, 1,
+2 or missing, into a buffer of one byte per individual; and a pass that
+looks each code up in the four values it can take. The counts of the codes
+go with the second of them, in runs of 255 genotypes with counters of one
+byte, each pass over a run comparing the code with one dosage and adding.
+In the trial the two passes that the codes are written and read in took
+1.5 ms against the 3.9 ms of the plain loop, 2.7 times faster, and within
+0.5 ms of what the 2 bit coding gives; those are the trial's numbers and
+not this code's, which work package 4 of `docs/plans/pca.md` measures,
+with `cargo asm`, which prints the machine code of a function, for whether
+the compiler vectorized the loop, since what it vectorizes changes with
+the version of rustc. The second is `simd128` in the wasm builds,
 where the product takes 99 of every 100 ms of a block: computing the lower half
 alone takes the block from 597 ms to 306 ms, and `simd128` from there to
 187 ms (**Open 6**, below).
