@@ -32,6 +32,7 @@ genotypes of that individual, which the owner decided on 22 September 2026,
 so popnei's rate is pyNei's times the variants over the called genotypes.
 """
 
+import dataclasses
 import json
 import math
 import os
@@ -42,6 +43,7 @@ from pathlib import Path
 import numpy
 import pytest
 from popnei import (
+    PerIndividualStats,
     PerVarStat,
     PolyVarsStats,
     StatsDistrib,
@@ -1035,6 +1037,21 @@ def test_per_individual_stats_give_the_counts_of_the_pass_and_of_its_filters() -
     assert list(filtered.pass_stats.filtering) == ["missing_data"]
     assert filtered.pass_stats.filtering["missing_data"].vars_processed == 500
     assert filtered.pass_stats.filtering["missing_data"].vars_kept == 423
+
+
+def test_per_individual_stats_are_a_frozen_dataclass_of_two_float64_series() -> None:
+    """The result is a frozen dataclass, and its two series hold float64,
+    which is what the spec gives for them: a rate is a number with a
+    fraction, and a user who reads them into a frame of their own gets the
+    dtype pyNei's frame has.
+    """
+    ours = calc_per_individual_stats(_many())
+
+    assert dataclasses.is_dataclass(PerIndividualStats)
+    assert ours.missing_gt_rate.dtype == numpy.float64
+    assert ours.obs_het_rate.dtype == numpy.float64
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ours.missing_gt_rate = ours.obs_het_rate
 
 
 def test_per_var_distribs_say_what_they_take_when_they_are_given_a_path() -> None:
