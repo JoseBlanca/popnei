@@ -472,13 +472,14 @@ knowing one says nothing about the other, and `docs/specs/ld.md` defines
 it, with the individuals that count for a pair, those called at both, and
 the pairs that have no r².
 
-The filter walks the variants in the order they come and keeps the
-kept ones of the last `max_dist` base pairs of the chromosome it is on.
-A variant is kept when
+The filter walks the variants in the order they come. The window of a
+variant is the variants the filter has already kept that are on that
+variant's chromosome and no more than `max_dist` base pairs behind it. A
+variant is kept when
 
 - its called genotypes hold two dosages at least, and
-- its r² against every kept variant that is on its chromosome and no more
-  than `max_dist` base pairs behind it is at most `max_allowed_r2`.
+- its r² against every variant of its window is at most
+  `max_allowed_r2`.
 
 A pair whose r² is not defined does not drop the candidate: only an r²
 above the threshold does. So the first variant of each chromosome whose
@@ -610,13 +611,14 @@ are unlinked to each other by construction, so a window holds few of
 them; a window whose dosages the machine has not the memory for is the
 error of `docs/specs/block.md` for the same case.
 
-The r² of a run of candidates against the variants that were kept before
-that run is one set of the products of `docs/specs/ld.md`, so the work
-that the window bounds is done as matrix products and not one pair at a
-time. What cannot be batched is the candidates against the variants kept
-inside the same run, which have to be settled in order, since whether one
-is kept decides what the next is compared with. How the two are divided is
-for the implementer to choose.
+The variants of a block can be compared with the variants that were
+already in the window when the block arrived in one set of the products
+of `docs/specs/ld.md`, so the work that the window bounds is done as
+matrix products and not one pair at a time. What cannot be done that way
+is a candidate against the variants kept inside the same block: whether
+one candidate is kept decides what the next one is compared with, so
+those are settled in order. How much of a block is taken at a time is for
+the implementer to choose.
 
 Whether the result changes with the size of the blocks is the test that
 "How it is verified" names: it must not, since the rule reads positions
@@ -939,8 +941,9 @@ performance review.
 The numbers above are of the three threshold filters. The filter by
 linkage disequilibrium has none: what it costs is the products of r² of
 each variant against the variants of its window, which
-`docs/specs/ld.md` measures at 1.9 ms for a tile pair of 256 variants of
-1000 individuals, and how many variants a window holds depends on the
+`docs/specs/ld.md` measures at 1.9 ms for the r² of 256 variants against
+another 256 over 1000 individuals, and how many variants a window holds
+depends on the
 dataset and on `max_dist`. The implementation plan that builds it, under
 `docs/plans/`, measures a whole pass,
 on `tests/reference/ld/ld.vcf.gz` and on the 400 MB VCF of the table
