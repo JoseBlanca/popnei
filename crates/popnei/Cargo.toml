@@ -53,3 +53,12 @@ harness = false
 [[bench]]
 name = "filter_vars"
 harness = false
+
+# What the per variant pass of the stats module costs over blocks that are
+# already in memory, of the performance review of
+# docs/reports/perf-stats-2026-09-22.md. It builds one block, gives it to
+# the pass a stated number of times and prints one wall time per run, so it
+# runs without a harness, as the three above do.
+[[bench]]
+name = "stats_pass"
+harness = false
