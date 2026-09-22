@@ -6,8 +6,9 @@ the dosages of two variants, and the matrix of it for a set of variants;
 and from the item "The filter by linkage disequilibrium" of
 `docs/specs/filters.md`, which takes out the variants that repeat what a
 variant near them on the chromosome already said. Both specs went through
-their first readers and their reviews on 22 September 2026. The branch is
-`plan/ld` and the report is `docs/reports/ld.md`.
+their first readers and their reviews on 22 September 2026. It is carried
+out in the worktree `.claude/worktrees/ld` on the branch `plan/ld`, and
+the report is `docs/reports/ld.md`.
 
 ## In and out
 
@@ -35,9 +36,13 @@ Not built, with where it goes:
   half called genotypes, is task 1.2 and deliverable 1.5. Its
   "meanwhile" is the rule `docs/specs/pca.md` has and that `pca.rs`
   already computes, so under the meanwhile the code does not change and
-  the task is the move of that function into `variant`. The other answer
-  makes a new task in work package 1 and moves the r² of
-  `tests/reference/vcf/many.vcf`.
+  the task is the move of that function into `variant`. The other answer,
+  that a half called genotype is counted as plink2 counts it, would change
+  which allele is the major one in some variants of more than two
+  alleles, and so the dosages and the r² that popnei reads from
+  `tests/reference/vcf/many.vcf`; it makes a new task in work package 1
+  and lets that file be checked against plink2, which deliverable 5
+  cannot do under the meanwhile.
 - **The variants of a region of a chromosome**, which would make the cap
   of `calc_rogers_huff_r2_matrix` rarely bite: a later item of
   `docs/specs/filters.md`.
@@ -81,10 +86,13 @@ is where popnei is first compared with pyNei.
 
 1. `tests/reference/ld/` holds `make_reference.py`, `ld.vcf.gz`,
    `example.vcf` and the output of plink2 for both, with the commands in
-   a shell script beside them. Running `make_reference.py` into an empty
-   directory and `diff`ing its `ld.vcf` against the one in git prints
-   nothing, and rerunning the plink2 commands gives the stored matrices.
-   The directory does not exist today.
+   a shell script beside them. The script writes the VCF uncompressed, as
+   `docs/reports/ld-method/make_ld.py` does now, and the task gzips it to
+   `ld.vcf.gz`, which is how `tests/reference/dists/` keeps its own. The
+   check: run the script into an empty directory and `diff` the `ld.vcf`
+   it wrote against `zcat`ing the `ld.vcf.gz` in git, which prints
+   nothing, and rerun the plink2 commands, which give the stored
+   matrices. The directory does not exist today.
 2. `variant::the_major_allele` is public and `pca.rs` has none of its
    own: `grep -c "fn the_major_allele" crates/popnei/src/pca.rs` is 0 and
    `cargo test --workspace` still passes its 395 and 35 tests, none of
@@ -99,9 +107,10 @@ is where popnei is first compared with pyNei.
    pairs, and asserts that the 93096 that have one agree within 1e-12
    relative and that the other 31654 are NaN on both sides. The spec says
    why a difference of 1e-13 there is worth looking at.
-5. The dosages of `tests/reference/vcf/many.vcf`, which has 54 variants
-   of more than two alleles and 257 half called genotypes, are those of
-   pyNei's `to_012`. `make_reference.py` runs pyNei once and stores the
+5. The dosages of `tests/reference/vcf/many.vcf` are those of pyNei's
+   `to_012`. That file has 500 variants of 50 individuals, of which 54
+   variants have more than two alleles, and 257 of its 25000 genotypes
+   are half called. `make_reference.py` runs pyNei once and stores the
    500 x 50 dosages beside the dataset, and a cargo test at
    `LdDosages::dosages` compares every one of the 25000 with it. It is a
    cargo test and not a pytest one because nothing of this work package
@@ -362,9 +371,11 @@ The target of deliverable 1 comes from numpy on Accelerate, which runs
 its products on the matrix units of the Apple chip, and the core calls
 the same Accelerate through `linalg`. What popnei adds is the building of
 the three matrices, 24 bytes for each variant and individual, and the
-element wise arithmetic over six matrices of 200 MB, which is 1.2 GB of
-traffic and is a part of the 0.455 s that the plan may find is worth
-fusing. If the target is missed, the report says by how much and the
+element wise arithmetic that turns the six products into r², which reads
+six matrices of 200 MB and writes one, 1.4 GB of traffic. numpy pays that
+traffic too, and it is part of the 0.455 s, so a core that fuses those
+six readings into one pass could come in under the target rather than
+over it. If the target is missed, the report says by how much and the
 owner decides whether a performance review follows, as
 `docs/reports/pca.md` did.
 
