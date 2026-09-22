@@ -124,7 +124,7 @@ Tasks:
       `docs/specs/linalg.md`. The tests of the two products, the 3 x 3
       eigendecomposition and the errors, written first. Serves
       deliverables 1, 2 and 5.
-- [ ] 1.2 The faer backend and the feature `blas`: the BLAS crates as
+- [x] 1.2 The faer backend and the feature `blas`: the BLAS crates as
       optional dependencies of the targets that are not wasm, the backend
       chosen as "What it gives" of "The crate, its backends and the
       builds" says, and the 1000 x 1000 test from the generator of "How

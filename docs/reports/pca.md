@@ -57,3 +57,18 @@ the code. One choice the spec did not state, that `product` takes a
 second pass of the PCA gives such a matrix for a block whose rows all
 had no variance, goes into the spec with task 1.2. The subagent used
 144815 tokens.
+
+Task 1.2, the faer backend and the feature `blas`, is at 6bb3685, after
+cda2579, which put into the spec what task 1.1 chose for a product of
+no rows. The four BLAS crates are optional dependencies of the targets
+that are not wasm behind the feature, on by default, and faer 0.24.4 is
+in every build; `cargo tree -p popnei-linalg -e normal --depth 1` lists
+blas, blas-src, faer, lapack, lapack-src and thiserror, and with
+`--no-default-features` faer and thiserror alone, so cargo takes an
+optional dependency under a target table as the spec assumed. `cargo
+test -p popnei-linalg` `20 passed` and the same with
+`--no-default-features` `20 passed`, run by the orchestrator. The 1000 x
+1000 test builds G with the crate's own self product, so it checks that
+operation at size too, and asserts the trace from the diagonal and from
+the sum of the eigenvalues. The subagent, the one of task 1.1, had used
+210394 tokens at the end of the two tasks.
