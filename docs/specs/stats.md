@@ -368,7 +368,27 @@ the panel and of 5 on `many.vcf`, and the default histogram; and once
 more with no `pops`. The histogram counts and the counts of the polymorphism
 ratio have to be equal, and the means and the ratios equal within 1e-12
 relative, with NaN in the same places, because numpy and the Rust loop
-add the variants of a population in different orders. The default of
+add the variants of a population in different orders.
+
+The histogram counts of the unbiased expected heterozygosity are the one
+exception. The two libraries reach that value by different arithmetic:
+popnei multiplies the k factors of each of its terms one over another,
+`(c_a / c) · ((c_a - 1) / (c - 1))` at k = 2, and pyNei multiplies the
+plain value by `c / (c - 1)`. The two agree to the last bit or the one
+before it and not always to the last, so a variant whose value lies on an
+edge of the histogram falls on either side of it. Two of them do, both
+measured on 22 September 2026 with the default histogram of 40 bins from
+0 to 1. `var235` of `many.vcf`, at the position 9695, with no `pops`, has
+the allele counts 55 and 45 of its 100 called alleles, whose unbiased
+value is exactly 0.5; popnei gives 0.5 and pyNei 0.4999999999999999, so
+popnei counts it in the bin that starts at 0.5 and pyNei in the one
+below. `var0978` of the panel in `p2` has 106 and 54 of 160, whose value
+is exactly 0.45; popnei gives 0.45000000000000007 and pyNei
+0.44999999999999996, one on each side of the edge 0.45. So the counts of
+that one statistic are compared allowing the variants whose value lies
+within 1e-9 of an edge to fall on either side of it, which the test
+counts from pyNei's own per variant values, and the counts of the other
+four are compared exactly. The default of
 `min_num_individuals` is asserted by a call without it on the panel, with
 `pops` of one population of 15 individuals: every mean is NaN with an
 empty histogram and the counts of the polymorphism ratio are 0. The edges of the histogram are compared exactly for
