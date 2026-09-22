@@ -14,6 +14,7 @@ arrow-ipc.workspace = true
 arrow-schema.workspace = true
 flate2.workspace = true
 memchr.workspace = true
+popnei-linalg.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

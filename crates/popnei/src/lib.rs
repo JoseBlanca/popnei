@@ -23,6 +23,16 @@
 
 #![forbid(unsafe_code)]
 
+// The linear algebra of popnei is the crate `popnei-linalg`, which holds
+// the products and the eigendecomposition and the `unsafe` blocks of the
+// calls to BLAS and LAPACK, so that this crate keeps the line above. The
+// principal component analysis is the first module to call it, and until
+// it is written this line is what puts the crate in the build: it is what
+// carries `-framework Accelerate`, which the crate that links the library
+// of the system emits, to the link line of the Python extension module and
+// of the wasm package.
+use popnei_linalg as _;
+
 pub mod block;
 pub mod error;
 pub mod filters;

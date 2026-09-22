@@ -35,5 +35,16 @@ faer = { workspace = true, features = ["rayon"] }
 lapack = { workspace = true, optional = true }
 lapack-src = { workspace = true, optional = true }
 
+# faer's products go through `gemm`, which faer brings by itself and which
+# this line names again so that its feature `wasm-simd128-enable` is on
+# where it can be: without it the products do not use the 128 bit vector
+# instructions of WebAssembly even in a build told to emit them. Nothing of
+# this crate calls `gemm`, so the dependency is here to add that feature to
+# the one faer uses. The flag that emits the instructions is not set: it is
+# Open 1 of docs/specs/linalg.md, and its "meanwhile" is this line without
+# the flag.
+[target.'cfg(target_family = "wasm")'.dependencies]
+gemm.workspace = true
+
 [lints]
 workspace = true

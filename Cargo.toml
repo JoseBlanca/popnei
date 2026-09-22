@@ -25,6 +25,7 @@ license = "MIT"
 
 [workspace.dependencies]
 popnei = { path = "crates/popnei", version = "0.1.0" }
+popnei-linalg = { path = "crates/popnei-linalg", version = "0.1.0" }
 # The three routines of BLAS and LAPACK that crates/popnei-linalg calls
 # natively, dsyrk, dsyevd and dgemm: the product of a matrix with itself,
 # the eigendecomposition of a symmetric matrix and the product of two
@@ -74,6 +75,16 @@ faer = { version = "0.24.4", default-features = false, features = [
   "std",
   "linalg",
 ] }
+# The crate that does faer's products, which faer 0.24.4 brings by itself:
+# `cargo tree -p popnei-linalg -i gemm` finds this one version under it and
+# no other. crates/popnei-linalg names it again, for the wasm targets
+# alone, to turn on the feature `wasm-simd128-enable`, without which its
+# products do not use the 128 bit vector instructions of WebAssembly even
+# when the build is told to emit them. The flag that emits them,
+# `-C target-feature=+simd128`, is Open 1 of docs/specs/linalg.md and is
+# not set anywhere: with both, the product of a block of 5000 variants x
+# 1000 individuals takes 187 ms under node 26 instead of 306 ms.
+gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
