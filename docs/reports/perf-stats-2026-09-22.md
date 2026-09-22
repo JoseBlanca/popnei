@@ -387,4 +387,136 @@ serial path allocates less than the parallel one.
 
 ## What the experiments gave
 
-This section is filled as each experiment is run.
+Four experiments were run, one at a time, each delegated, each taking
+its own baseline first. Two changes were kept and two were closed with
+no gain, which is what a measurement plan is for.
+
+The pass this review exists for, the five per variant statistics with no
+populations over `big.vars` on one thread, was 0.477 to 0.483 s when the
+review began and is 0.285 to 0.290 s now. The target is 0.25 s, so it is
+still 0.035 to 0.040 s over, and 0.102 s of what is left is the read of
+the file, which no experiment here touched.
+
+### Applied: the alleles of a variant are counted into four arrays
+
+H1, commit fc16d43. The counting loop now walks four interleaved arrays
+of counters, choosing the array by the position of the allele, and adds
+the four together at the end of the row. The assembly shows four
+independent read, add and write chains to four base registers where
+there was one, with no bounds check added. Three tests were added, each
+shown to fail on a deliberate break: a dropped remainder allele, a
+dropped array, and a merge that assigns where it should add.
+
+On the benchmark, one thread, best of five at a load average of 1.5:
+
+| | before | after |
+|---|---|---|
+| the allele frequency alone, one population | 0.274 s | 0.087 s |
+| the five statistics, one population | 0.371 s | 0.180 s |
+| the five statistics, four populations | 0.418 s | 0.318 s |
+
+Over `big.vars` from Python the five statistics with no populations went
+from 0.477 s to 0.285 s and the allele frequency alone from 0.381 s to
+0.188 s. The same figures came out at load averages of 1.0, 1.6 and 2.4,
+so they are not an artefact of the machine being busy. The mechanism the
+three reviewers proposed is therefore the right one: the cost was the
+chain of dependent stores and not the count of instructions.
+
+It cost a constant, a type alias, two private functions and one more
+exception to the arithmetic lint.
+
+### Applied: the lookup of an individual builds no error it throws away
+
+H2, commit 4b977be, at one of the two sites the finding named. The count
+of the destructor call inside the per individual loops went from three
+to zero. On the benchmark the four population pass went from 0.507 s to
+0.416 s and from Python from 0.595 s to 0.526 s, with the pass with no
+populations unmoved at 0.376 and 0.477 s, which is the control the
+change should not touch.
+
+The second site was measured and not kept: it is called once per row
+rather than once per individual, it gave the four population pass the
+same 0.416 s, and it cost the pass with no populations, which is the one
+that misses its target. So the finding is applied at one site of two.
+
+It cost one exception to a lint, the one that asks for the eager form
+wherever the value is cheap to build and which is what put the code in
+that shape in the first place.
+
+### Closed with no gain at the sizes that matter: the prefix of the counters
+
+L1. Built, measured and not kept; the patch is kept in the session's
+scratch and the branch is as it was. Clearing, merging and scanning only
+up to the largest allele seen costs four instructions ending in a store
+on every counted allele, to keep the record of that largest allele. At
+one population the pass rose from 0.180 to 0.183 s and at four it fell
+from 0.325 to 0.309 s: neither bar was met. Solving the two together
+gives a saving of 0.0073 s per population and a penalty of 0.013 s per
+pass, so even a free record would give only 0.007 s at one population.
+
+At the 50 populations of 20 individuals that `docs/objectives.md` calls
+ordinary, the same change takes the benchmark from 0.706 s to 0.448 s, a
+gain of 37 in 100. That is where it belongs, and it is the owner's to
+ask for. To be worth having there the penalty has to go, which means
+taking the largest allele from a separate pass over the row rather than
+from the counting loop; that was not built.
+
+### Closed with no gain: linking across crates and one code generation unit
+
+The release profile sets neither. Neither paid. Both binaries and all
+three built modules were kept and the three settings were run
+interleaved, back to back, which removes the drift of the machine
+entirely: on the benchmark the five statistics with one population read
+0.182 and 0.183 s at the default, 0.183 and 0.184 s with one code
+generation unit, and 0.183 and 0.184 s with thin linking; over
+`big.vars` 0.290, 0.293 and 0.290 s. The read alone read 0.102 s in all
+six runs, so linking across crates gives the lz4 decompression nothing,
+although it lives in another crate and is exactly what that setting
+should help. Fat linking was not run, because thin gave nothing.
+
+One code generation unit does inline two of the five counting calls,
+including one the review had singled out, and the pass does not get
+faster, which closes that observation as a cause. It costs 2.5 times a
+rebuild: 3.2 s against 1.3 s for the core crate and 5.7 s against 2.0 s
+for the binding crate.
+
+Two things for whoever runs the next one of these. `cargo asm` appends
+its own single code generation unit to every invocation, so its listing
+is the same whatever the release profile says and it cannot be used to
+gate an experiment on linking or on code generation units; disassembling
+the built binary is what sees them. And interleaving the builds back to
+back is better than matching load averages: the drift of this machine
+between two clean measurements is larger than any effect this experiment
+was looking for.
+
+## What is left, and what is the owner's
+
+The target is not met and this review cannot meet it by itself. What
+remains, in the order of what it would buy.
+
+The read is 0.102 s of the 0.285 s and is serial. On 18 cores it is the
+whole floor, under H3 above. `docs/architecture.md` already prescribes
+the read ahead thread that would hide it and says it waits for a spec of
+its own. It would not help the one thread number at all, and it would
+change what that number means, since a native run would then own two
+operating system threads. This is a decision and a spec, not an
+experiment.
+
+Of the 0.183 s that is not the read, the spec's own derivation assumed
+about 0.112 to 0.120 s, being the pass plus twice what the missing data
+filter adds. That derivation rested on the two walks of a row costing
+the same, which this review disproved: they did not, by a factor of
+three, and after the change they are much closer. Whether 0.25 s is
+still the right number to ask for, now that the assumption behind it is
+known to be wrong, is the owner's to say.
+
+The prefix of the counters is worth 37 in 100 at 50 populations and
+nothing at one, and needs its penalty removed first.
+
+Every pass still decompresses 25 MB of an all ones mask and drops it,
+11 in 100 of the bytes it decompresses, under L3. The sentence of
+`docs/specs/io_vars.md` that says popnei does not pay for that mask is
+wrong and should be corrected whatever is decided about the cost.
+
+The chunk size is stated in rows, so a dataset of 10000 individuals uses
+at most 8 of 18 cores, under L2. Nobody has run that dataset.
