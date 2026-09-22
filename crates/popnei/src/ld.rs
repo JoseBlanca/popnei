@@ -674,13 +674,16 @@ fn the_dosage_of(value: f64) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::{
         LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheSumsOfThePairs,
         r2_between, the_values_of,
     };
-    use crate::block::Block;
+    use crate::block::{Block, BlockReader};
     use crate::error::Error;
-    use crate::variant::MISSING_ALLELE;
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::{MISSING_ALLELE, Needs};
 
     /// The allele that was not called, which shortens the tables of
     /// genotypes below.
@@ -1402,6 +1405,281 @@ mod tests {
                 assert_eq!((of_a, of_b), (6, 2));
             }
             other => panic!("dosages of six individuals against two were taken: {other:?}"),
+        }
+    }
+
+    /// How many variants each of the two reference datasets holds:
+    /// `tests/reference/ld/ld.vcf.gz`, 500 variants of 100 diploid
+    /// individuals, and `tests/reference/vcf/many.vcf`, 500 of 50. Each is
+    /// read as one block, since the dosages of a set of variants are those
+    /// of one block.
+    const NUM_VARS_OF_A_REFERENCE: usize = 500;
+
+    /// How many pairs of two different variants 500 variants have, and how
+    /// many of those of `ld.vcf.gz` plink2 gives an r² for and how many it
+    /// gives NaN, from "How it is verified" of `docs/specs/ld.md`.
+    const THE_PAIRS_OF_THE_LD_DATASET: (usize, usize, usize) = (124_750, 93_096, 31_654);
+
+    /// The path of one of the files of `tests/reference/ld/`, the dataset
+    /// of "How it is verified" of `docs/specs/ld.md` with what plink2 and
+    /// pyNei give for it.
+    ///
+    /// The reference files live at the root of the repository, beside the
+    /// script that writes them again, and not inside this crate. The path
+    /// is built from the directory of the manifest, so it holds whether
+    /// the tests are run with `cargo test --workspace` or with `cargo test
+    /// -p popnei`.
+    fn the_reference_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/ld")
+            .join(name)
+    }
+
+    /// `tests/reference/vcf/many.vcf`, the 500 variants of 50 diploid
+    /// individuals of `docs/specs/io_vcf.md`.
+    fn many_vcf() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/vcf/many.vcf")
+    }
+
+    /// One block with the 500 variants of the VCF at `path`, read as
+    /// diploid and with the variants that failed their FILTER among them,
+    /// which is what plink2 and pyNei were given.
+    fn the_whole_of(path: &Path, needs: Needs) -> Block {
+        let named = || path.display().to_string();
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block: Some(NUM_VARS_OF_A_REFERENCE),
+        };
+        let mut reader = VcfReader::from_path(path, options)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = named()));
+        reader.set_needs(needs);
+        let block = reader
+            .next_block()
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = named()))
+            .unwrap_or_else(|| panic!("{path}: it has no variant", path = named()));
+        assert_eq!(
+            block.num_vars,
+            NUM_VARS_OF_A_REFERENCE,
+            "{path}: the first block is not the whole file",
+            path = named()
+        );
+        assert!(
+            matches!(reader.next_block(), Ok(None)),
+            "{path}: it has more variants than the block took",
+            path = named()
+        );
+        block
+    }
+
+    /// The square matrix of r² that plink2 wrote for the dataset `name`
+    /// and the identifiers of its rows in the order the matrix has them.
+    ///
+    /// `<name>.unphased.vcor2.bin` holds one float64 for each pair, row
+    /// after row, in the byte order of the machine that wrote it, which is
+    /// the little endian of every machine popnei is built on, and
+    /// `<name>.unphased.vcor2.bin.vars` the identifier of each row, one
+    /// per line. `tests/reference/ld/run_plink2.sh` writes both again.
+    fn the_matrix_of_plink2(name: &str) -> (Vec<String>, Vec<f64>) {
+        let path = the_reference_path(&format!("{name}.unphased.vcor2.bin"));
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        let values = bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|value| f64::from_le_bytes(*value))
+            .collect();
+        let path = the_reference_path(&format!("{name}.unphased.vcor2.bin.vars"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        let rows = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(String::from)
+            .collect();
+        (rows, values)
+    }
+
+    /// The dosages pyNei's `to_012` gave for `many.vcf`, which
+    /// `tests/reference/ld/make_reference.py` stored: one line for each
+    /// variant, the dosage of each individual separated by tabs, and -1
+    /// for a genotype with an allele missing, which has no dosage.
+    fn the_dosages_of_pynei(name: &str) -> Vec<Vec<Option<u8>>> {
+        let path = the_reference_path(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                line.split('\t')
+                    .map(|value| match value.trim() {
+                        "-1" => None,
+                        dosage => Some(dosage.parse().unwrap_or_else(|error| {
+                            panic!("{name}: `{dosage}` is not a dosage: {error}")
+                        })),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Every pair of two different variants of
+    /// `tests/reference/ld/ld.vcf.gz` read with the VCF reader, against
+    /// the matrix plink2 v2.0.0-a.7.7 wrote for the same file: of its
+    /// 124750 pairs the 93096 that have an r² agree within the 1e-12
+    /// relative of "How it is verified" of `docs/specs/ld.md`, and the
+    /// other 31654 are NaN on both sides.
+    ///
+    /// The tolerance is there for a version of plink2 that works the
+    /// expression out in another order. On 22 September 2026 every one of
+    /// the 93096 came out of the six whole numbers with the bits plink2
+    /// has, so a difference of 1e-13 here is something to look at and not
+    /// the noise the tolerance allows for.
+    #[test]
+    fn every_pair_of_the_ld_dataset_is_the_r2_plink2_gives() {
+        let block = the_whole_of(&the_reference_path("ld.vcf.gz"), Needs::GTS | Needs::ID);
+        let ids = block.id.clone().expect("the identifiers of the variants");
+        let (rows, of_plink2) = the_matrix_of_plink2("ld");
+        // plink2 writes the rows of its matrix in an order of its own,
+        // which the .vars file beside it carries, and the r² of a pair is
+        // read at the row and the column its two variants have there.
+        assert_eq!(
+            ids, rows,
+            "the variants of the VCF are not the rows of the matrix of plink2"
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        assert_eq!(
+            (dosages.num_vars(), dosages.num_individuals()),
+            (NUM_VARS_OF_A_REFERENCE, 100)
+        );
+        let matrix = the_r2_of(&dosages, &dosages);
+        assert_eq!(
+            matrix.len(),
+            of_plink2.len(),
+            "the two matrices are not as large"
+        );
+        // The pairs of two different variants, each one once: the two
+        // variants, popnei's r² and plink2's. The diagonal, where a
+        // variant is against itself, is left out.
+        let pairs: Vec<(usize, usize, f64, f64)> = matrix
+            .as_chunks::<NUM_VARS_OF_A_REFERENCE>()
+            .0
+            .iter()
+            .zip(of_plink2.as_chunks::<NUM_VARS_OF_A_REFERENCE>().0)
+            .enumerate()
+            .flat_map(|(of_a, (row, row_of_plink2))| {
+                row.iter()
+                    .zip(row_of_plink2)
+                    .enumerate()
+                    .filter(move |(of_b, _)| *of_b > of_a)
+                    .map(move |(of_b, (found, expected))| (of_a, of_b, *found, *expected))
+            })
+            .collect();
+        let (num_pairs, with_an_r2, with_none) = THE_PAIRS_OF_THE_LD_DATASET;
+        assert_eq!(pairs.len(), num_pairs, "the pairs of two variants");
+        // The two counts below add up to every pair, so a pair that one of
+        // the two libraries gave an r² for and the other did not falls in
+        // neither of them and fails here.
+        assert_eq!(
+            pairs
+                .iter()
+                .filter(|(_, _, found, expected)| !found.is_nan() && !expected.is_nan())
+                .count(),
+            with_an_r2,
+            "the pairs that have an r² in both matrices"
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .filter(|(_, _, found, expected)| found.is_nan() && expected.is_nan())
+                .count(),
+            with_none,
+            "the pairs that are NaN in both matrices"
+        );
+        for (of_a, of_b, found, expected) in &pairs {
+            if expected.is_nan() {
+                continue;
+            }
+            assert_the_r2_is(
+                *found,
+                *expected,
+                &format!("the pair of the variants {of_a} and {of_b}"),
+            );
+        }
+    }
+
+    /// The dosages popnei reads from `tests/reference/vcf/many.vcf`
+    /// against the ones pyNei's `to_012` gave for it, which
+    /// `tests/reference/ld/make_reference.py` stored: every one of the
+    /// 25000 genotypes of its 500 variants of 50 individuals.
+    ///
+    /// It is the check of "How it is verified" of `docs/specs/ld.md` for
+    /// the variants of more than two alleles and the half called
+    /// genotypes, which plink2 cannot make: plink2 counts no allele of a
+    /// half called genotype and popnei counts the called one, as
+    /// `docs/specs/pca.md` and pyNei do, so the two pick a different major
+    /// allele in some variants of more than two alleles and read other
+    /// dosages there.
+    #[test]
+    fn the_dosages_of_many_vcf_are_the_ones_pynei_gives() {
+        let block = the_whole_of(&many_vcf(), Needs::GTS);
+        // The file is the one the spec describes, so the comparison runs
+        // over the genotypes that the rule for the major allele is about:
+        // 54 of its 500 variants hold more than two alleles, and 257 of
+        // its 25000 genotypes have one allele called and one missing.
+        let alleles_per_var = block.alleles_per_var().expect("the alleles of a variant");
+        let of_more_than_two_alleles = block
+            .gts
+            .chunks_exact(alleles_per_var)
+            .filter(|variant| {
+                let mut alleles: Vec<i8> = variant
+                    .iter()
+                    .copied()
+                    .filter(|allele| *allele != MISSING_ALLELE)
+                    .collect();
+                alleles.sort_unstable();
+                alleles.dedup();
+                alleles.len() > 2
+            })
+            .count();
+        assert_eq!(
+            of_more_than_two_alleles, 54,
+            "the variants of more than two alleles"
+        );
+        let half_called = block
+            .gts
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|genotype| {
+                genotype
+                    .iter()
+                    .filter(|allele| **allele == MISSING_ALLELE)
+                    .count()
+                    == 1
+            })
+            .count();
+        assert_eq!(half_called, 257, "the half called genotypes");
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        assert_eq!(
+            (dosages.num_vars(), dosages.num_individuals()),
+            (NUM_VARS_OF_A_REFERENCE, 50)
+        );
+        let of_pynei = the_dosages_of_pynei("many.pynei.dosages.tsv");
+        assert_eq!(
+            of_pynei.len(),
+            NUM_VARS_OF_A_REFERENCE,
+            "the variants pyNei read"
+        );
+        assert_eq!(
+            of_pynei.iter().flatten().count(),
+            25_000,
+            "the genotypes pyNei read"
+        );
+        for (var, expected) in of_pynei.iter().enumerate() {
+            assert_eq!(dosages_of(&dosages, var), *expected, "the variant {var}");
         }
     }
 }
