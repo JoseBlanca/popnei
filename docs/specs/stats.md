@@ -100,8 +100,9 @@ individual, a name twice in one population, an empty population and no
 population are each the error that names what is wrong; an individual in
 two populations is taken. The pytest tests are those of `test_pops.py` of
 pyNei, `test_every_stat_takes_the_same_pops` among them, which asserts
-that each of the four statistics keys its result by the two population
-names and refuses an unknown individual, and one test that the refusal of
+that each of its four statistics keys its result by the two population
+names and refuses an unknown individual, which popnei asserts for its
+five, and one test that the refusal of
 a duplicated name is a `ValueError`.
 
 ## The counts of one variant over a population
@@ -140,19 +141,20 @@ of the row is an error.
 
 ### What they give
 
-One pass over the variants that calculates up to four statistics for
+One pass over the variants that calculates up to five statistics for
 every variant and every population, and gives back, for each statistic
 and population, the mean over the variants that have a value and a
 histogram of them. The per variant values are not kept, because a million
 of them for each population do not fit a browser tab, and a user who
-wants them takes the genotypes with `iter_blocks`. The four statistics
+wants them takes the genotypes with `iter_blocks`. The five statistics
 are the observed heterozygosity, the major allele frequency, the expected
-heterozygosity and the polymorphism ratio, each its own item below; the
-last is a count and not a distribution.
+heterozygosity, plain and unbiased, and the polymorphism ratio, each its
+own item below; the last is a count and not a distribution.
 
 A variant has no value of a statistic in a population when the population
-has too little data at it: none at all, or, for three of the four, fewer
-called genotypes than `min_num_individuals`. A variant with no value is out of
+has too little data at it: none at all, or, for all but the observed
+heterozygosity, fewer called genotypes than `min_num_individuals`. A
+variant with no value is out of
 the mean and in no bin of the histogram, so the mean of a population is
 over the variants that had enough data, and the histograms of two
 populations can count different numbers of variants.
@@ -162,11 +164,10 @@ populations can count different numbers of variants.
 ```python
 def calc_per_var_distribs(
     variants: Variants,
-    stats: Iterable[PerVarStat | str] = tuple(PerVarStat),
+    stats: Iterable[PerVarStat] = tuple(PerVarStat),
     pops: dict[str, Sequence[str]] | None = None,
     min_num_individuals: int = 20,
     hist_kwargs: dict | None = None,
-    unbiased_exp_het: bool = True,
     ploidy: int | None = None,
     poly_threshold: float = 0.95,
 ) -> PerVarDistribs
@@ -176,12 +177,18 @@ It is a consumer of the `Variants`, as `docs/specs/variant.md` has them:
 it makes one pass over the source through the steps the `Variants` has
 when it is called, and the `Variants` is as it was afterwards.
 
-`stats` says which of the four to calculate: the members of the `StrEnum`
-`PerVarStat`, `obs_het`, `maf`, `exp_het` and `poly_vars_ratio`, or their
-names, or one name as a string, which is one statistic and not its
-letters. All four by default. A name that is none of them, and no
-statistic at all, are a `ValueError`. Asking for fewer is a saving of
-work and changes no value.
+`stats` says which of the five to calculate: members of the `StrEnum`
+`PerVarStat`, `OBS_HET`, `MAF`, `EXP_HET`, `UNBIASED_EXP_HET` and
+`POLY_VARS_RATIO`, whose values are the names of the fields of the
+result. All five by default. Anything that is not a member, a string
+among them, is a `TypeError` that says so, and no statistic at all is a
+`ValueError`. Asking for fewer is a saving of work and changes no value.
+The owner decided both on 22 September 2026: the unbiased expected
+heterozygosity is a statistic of its own and not a switch on the
+expected heterozygosity, so that a user asks for the two like any two,
+and the members alone are what a user can write without a typo that
+passes. The options not taken were pyNei's `unbiased_exp_het` argument
+and its `stats` of members, names and one name as a string.
 
 `min_num_individuals` is how many called genotypes a population needs at a
 variant for the variant to have a value there, 20 by default, inherited
@@ -196,7 +203,7 @@ the observed heterozygosity is held to this threshold is **Open 5**,
 below; the other three are.
 
 `hist_kwargs` is the histogram: `range`, the two ends, `(0, 1)` by
-default, which is where the four statistics live; `num_bins`, 40 by
+default, which is where the statistics live; `num_bins`, 40 by
 default; and `bin_type`, `"lineal"` for bins of equal width or
 `"logarithmic"` for bins of equal ratio, whose `range` has to start above
 0. The dict is read and not changed. The edges are `num_bins + 1`
@@ -210,13 +217,13 @@ too, as `numpy.histogram` does, so an observed heterozygosity of exactly 1
 is in the last bin. A value outside the range is in no bin and in the
 mean. The name of the first bin type is **Open 7**, below.
 
-`unbiased_exp_het` and `ploidy` are the expected heterozygosity's alone,
-and `poly_threshold` the polymorphism ratio's; their items say what they
-do.
+`ploidy` is the two expected heterozygosities' alone, and
+`poly_threshold` the polymorphism ratio's; their items say what they do.
 
-`PerVarDistribs` is pyNei's frozen dataclass with one field more: `obs_het`,
-`maf` and `exp_het`, each a `StatsDistrib` or `None` when it was not asked
-for; `poly_vars_ratio`, a `PolyVarsStats` or `None`; and `pass_stats`, the
+`PerVarDistribs` is pyNei's frozen dataclass with two fields more:
+`obs_het`, `maf`, `exp_het` and `unbiased_exp_het`, each a `StatsDistrib`
+or `None` when it was not asked for; `poly_vars_ratio`, a `PolyVarsStats`
+or `None`; and `pass_stats`, the
 `PassStats` of `docs/specs/variant.md` that every result of a consumer
 has, with how many variants the pass gave, after the steps, and how many
 each filter was given and kept. `StatsDistrib` is pyNei's: `mean`, a
@@ -229,6 +236,11 @@ item.
 It mirrors `calc_per_var_distribs` of `pynei/per_var_stats.py`. The
 differences:
 
+- `exp_het` of the result is the plain expected heterozygosity, and the
+  unbiased one is `unbiased_exp_het`, where in pyNei `exp_het` holds
+  whichever `unbiased_exp_het=True` chose, the unbiased one by default.
+  A user who reads `exp_het` of both libraries reads two numbers.
+- `stats` takes members of `PerVarStat` alone, as said above.
 - `min_num_individuals` is pyNei's `min_num_samples` under the word of
   `docs/glossary.md`, as `individuals` of `Variants.from_gt_array` is
   pyNei's `samples`.
@@ -253,11 +265,13 @@ differences:
   points among them are in the list at the end.
 
 In TypeScript it is `calcPerVarDistribs(variants, {stats, pops,
-minNumIndividuals, histKwargs, unbiasedExpHet, ploidy, polyThreshold})`,
-with `stats` an array of the four names, `histKwargs` an object with
-`range`, `numBins` and `binType`, and the same defaults. The result has
-`pops`, the population names in their order; `obsHet`, `maf` and
-`expHet`, each `null` or a `StatsDistrib` with `mean`, a `Float64Array`
+minNumIndividuals, histKwargs, ploidy, polyThreshold})`, with `stats` an
+array of the five names as a union type of string literals,
+`"obs_het" | "maf" | ...`, which is what an enum is in TypeScript,
+`histKwargs` an object with `range`, `numBins` and `binType`, and the
+same defaults. The result has `pops`, the population names in their
+order; `obsHet`, `maf`, `expHet` and `unbiasedExpHet`, each `null` or a
+`StatsDistrib` with `mean`, a `Float64Array`
 with one value per population and NaN for none, `histBinEdges`, a
 `Float64Array`, and `histCounts`, a `Uint32Array` of populations x bins,
 population after population; `polyVarsRatio`, `null` or an object with
@@ -268,11 +282,13 @@ the five arrays of its item; and `passStats`.
 `test_per_var_stats.py` of pyNei asserts, on 100 random biallelic
 variants of 30 individuals in two populations of 15, that all four
 statistics are calculated by default and only the ones asked for
-otherwise; that `stats` takes members, names and one name; that an
-unknown name and no name are a `ValueError`; that the means and the
-histogram counts of one pass over the four are those of four passes of one
-each; that the arguments of one statistic change no other; and that a
-`Variants` whose filter kept no variant is an error. `test_hist.py`
+otherwise; that `stats` takes members, names and one name, where popnei's
+test asserts that a name is a `TypeError`; that an unknown name and no
+name are a `ValueError`; that the means and the histogram counts of one
+pass over the four are those of four passes of one each, which popnei
+asserts over its five; that the arguments of one statistic change no
+other; and that a `Variants` whose filter kept no variant is an error.
+`test_hist.py`
 asserts that `hist_kwargs` is not changed, that `range` and `num_bins`
 give the edges of the example above, that a logarithmic range from 0.01
 to 100 in 4 bins has the edges 0.01, 0.1, 1, 10 and 100, and that a bin
@@ -317,7 +333,7 @@ The calculation asks its reader for the genotypes alone.
 
 ### How it is verified
 
-What is common to the four: against pyNei, and a worked example. Each
+What is common to the five: against pyNei, and a worked example. Each
 statistic has, under its item, the reference program that checks its
 values and the literals of the first cargo tests.
 
@@ -339,10 +355,10 @@ them. The second dataset is
 50 diploid individuals, `ind00` to `ind49`, one in ten with three alleles,
 257 half called genotypes among its 25000, read with every variant given,
 with two populations, `popA` of the first 20 individuals and `popB` of
-the other 30. Both libraries are run with the four statistics,
-`min_num_individuals` of 20 on the panel and of 5 on `many.vcf`, both
-values of `unbiased_exp_het`, and the default histogram; and once more
-with no `pops`. The histogram counts and the counts of the polymorphism
+the other 30. Both libraries are run with every statistic, pyNei twice
+for its two values of `unbiased_exp_het`, `min_num_individuals` of 20 on
+the panel and of 5 on `many.vcf`, and the default histogram; and once
+more with no `pops`. The histogram counts and the counts of the polymorphism
 ratio have to be equal, and the means and the ratios equal within 1e-12
 relative, with NaN in the same places, because numpy and the Rust loop
 add the variants of a population in different orders. The default of
@@ -618,10 +634,11 @@ calculations of pyNei.
 
 ### In Python
 
-Asked for as `stats="exp_het"`, and given back as the field `exp_het` of
-the result. Two arguments are this statistic's own: `unbiased_exp_het=True`,
-which chooses between the two formulas, and `ploidy=None`, which takes
-the ploidy of the variants when it is not given. It mirrors
+Two statistics: the plain one, `PerVarStat.EXP_HET`, given back as the
+field `exp_het` of the result, and the unbiased one,
+`PerVarStat.UNBIASED_EXP_HET`, as `unbiased_exp_het`. One argument is
+theirs: `ploidy=None`, which takes the ploidy of the variants when it is
+not given. It mirrors
 `_calc_exp_het_per_var` and `_calc_unbiased_exp_het_per_var` in
 `pynei/diversity.py`, which get their frequencies from
 `_count_alleles_per_var` in `pynei/gt_counts.py`. The order of the
@@ -1049,17 +1066,18 @@ pub struct ExpHet {
     pub ploidy: usize,
     /// How many called genotypes a pop needs at a variant to get a value.
     pub min_num_individuals: u32,
-    pub unbiased: bool,
 }
 impl ExpHet {
-    /// The expected heterozygosity of one variant in one pop. `counts[a]` is
-    /// how often allele a was called in the pop at this variant, and
+    /// The expected heterozygosity of one variant in one pop, the plain
+    /// one or, with `unbiased`, the unbiased one. `counts[a]` is how often
+    /// allele a was called in the pop at this variant, and
     /// `called_alleles` is their sum; a missing allele is in neither. None in
     /// three cases: the pop has called fewer than `min_num_individuals`
     /// genotypes; it has called nothing at all at this variant; or the
     /// unbiased one was asked for and the pop has called so little that
     /// 2n - 1 is 0, which for a diploid pop is one allele.
-    pub fn of_var(&self, counts: &AlleleCounts, called_alleles: u32) -> Option<f64>;
+    pub fn of_var(&self, counts: &AlleleCounts, called_alleles: u32,
+                  unbiased: bool) -> Option<f64>;
 }
 ```
 
@@ -1086,7 +1104,7 @@ had none or the steps kept none, with the counts of each filter.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PerVarStat { ObsHet, Maf, ExpHet, PolyVarsRatio }
+pub enum PerVarStat { ObsHet, Maf, ExpHet, UnbiasedExpHet, PolyVarsRatio }
 
 pub struct PerVarDistribsConfig {
     pub stats: Vec<PerVarStat>,
@@ -1129,6 +1147,7 @@ pub struct PerVarDistribs {
     pub obs_het: Option<StatsDistrib>,
     pub maf: Option<StatsDistrib>,
     pub exp_het: Option<StatsDistrib>,
+    pub unbiased_exp_het: Option<StatsDistrib>,
     pub poly_vars_ratio: Option<PolyVarsStats>,
     /// The variants the pass gave.
     pub num_vars: u64,
@@ -1191,8 +1210,10 @@ use:
 | the same, the four, 4 populations of 250 | 2.67 s | |
 | `calc_per_sample_stats` | 1.02 s | 0.255 s |
 
-The numbers to reach, for the four statistics with no `pops` and for the
-per individual statistics, each a whole pass over `big.vars`: 0.25 s on
+The numbers to reach, for the five statistics with no `pops`, which is
+what pyNei's four cost it and one more value from the same counts, and
+for the per individual statistics, each a whole pass over `big.vars`:
+0.25 s on
 one thread and 0.15 s on 18 cores. Each is the pass plus twice what the
 filter adds to it, rounded up, because the statistics read each row
 twice, once for the genotype counts and once for the allele counts,
@@ -1231,7 +1252,8 @@ histogram drops. The options are to reproduce pyNei, which keeps every
 current result and leaves values above 1; to multiply by c/(c-1), which
 is the right correction for a pair of copies but not for the k copies
 that 1 - sum p^k is about; or to refuse the unbiased one above ploidy 2,
-which makes the default argument raise for every tetraploid user.
+which makes the default `stats`, which has it, raise for every tetraploid
+user.
 Recommendation: reproduce pyNei and say in the doc comment that the
 factor is the diploid one, since no tetraploid result of pyNei is
 verified against anything and nothing is built on this yet. Meanwhile the
@@ -1276,11 +1298,11 @@ histogram of the observed heterozygosity, at 0 or 1, and in no other. On
 two variants of five individuals with one and with two called genotypes,
 run at commit ef0ca6e with the default threshold, the mean observed
 heterozygosity is 0.75 over both variants and the other two means are
-NaN. The options are to reproduce pyNei, or to hold the four statistics
+NaN. The options are to reproduce pyNei, or to hold every statistic
 to the one threshold, which takes out of the observed heterozygosity the
-variants that the other three already drop, and changes its mean and its
+variants that the others already drop, and changes its mean and its
 histogram for every dataset with variants below the threshold.
-Recommendation: hold the four to the one threshold, since the argument
+Recommendation: hold every statistic to the one threshold, since the argument
 reads as one rule for the pass and the values it drops are of one or two
 genotypes. The observed heterozygosity would compare its called
 genotypes, whole ones, where the other three compare called alleles over

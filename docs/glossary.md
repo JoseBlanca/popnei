@@ -77,8 +77,8 @@ missing, the denominator of its allele frequencies.
 sum over the alleles of the frequency of each to the power of the ploidy:
 the chance that as many gene copies as a genotype holds, taken at random
 from the population, are not all alike. The unbiased one multiplies it by
-2n/(2n - 1), with n the called genotypes, and is the default.
-`exp_het` in identifiers. `docs/specs/stats.md`.
+2n/(2n - 1), with n the called genotypes, and is a statistic of its own.
+`exp_het` and `unbiased_exp_het` in identifiers. `docs/specs/stats.md`.
 
 **polymorphic variant.** In a population, a variant whose major allele
 frequency is below the polymorphism threshold, 0.95 by default, strictly;
