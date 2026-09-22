@@ -364,7 +364,7 @@ polymorphism ratio, with `pass_stats`; in TypeScript,
   item, and the error of a pass with no variant. From "How it runs" and
   "How it is verified" of the pass, "The polymorphism ratio" and "The
   Rust interface". Needs 4.1. Serves deliverable 2.
-- [ ] 4.3 The Python side: the function of `crates/popnei-python` that
+- [x] 4.3 The Python side: the function of `crates/popnei-python` that
   builds the chain with `chain_of`, the `Pops` with `Pops::from_names`
   against the individuals of that chain, runs the pass and gives back
   the distributions and the counts of the pass, as the writer of
