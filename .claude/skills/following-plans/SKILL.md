@@ -35,7 +35,14 @@ only then.
    is missing and what would put it in place, and stop. Do not build it
    on the side, because it was somebody's decision that it is not part of
    this plan.
-4. Start the work report, described below, and commit it with the plan's
+4. Read the board, `.claude/board/`, described in the README there: the
+   messages of the sessions working on other branches. One that names a
+   file this plan will also change, or a finding the plan rests on, goes
+   into the report, and a file that two branches will change goes to the
+   owner before the first task touches it. Then post the start message
+   of this plan: the plan, the branch, and the shared files it may
+   change.
+5. Start the work report, described below, and commit it with the plan's
    state changed to under way.
 
 ## One task
@@ -122,6 +129,9 @@ Then tick the task in the plan, note it in the report, and commit both.
    evidence, and the orchestrator weighs that as it weighs a reviewer.
 4. Run the checks and the deliverables again after the fixes.
 5. Write the work package into the report and go on to the next one.
+6. Read the messages on the board that are newer than the last read, and
+   post one for each thing this work package learned that another session
+   would otherwise find again, and for each change to a shared file.
 
 ## Changing the plan
 
@@ -201,7 +211,8 @@ goes to the `first-reader` before the owner is told.
    say, and run the checks on `main` after.
 4. After the merge, clean up: `ExitWorktree` with `keep`, then
    `git worktree remove .claude/worktrees/<plan>` and
-   `git branch -d plan/<plan>`, and the worktrees of the reviewers. When
+   `git branch -d plan/<plan>`, and the worktrees of the reviewers, and
+   remove the plan's messages from the board. When
    something on the branch was not merged and the owner has to judge
    whether to keep it, an experiment, a measurement, a change they turned
    down for now, nothing is removed: say what it is and where, and leave

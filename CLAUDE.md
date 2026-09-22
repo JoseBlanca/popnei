@@ -15,8 +15,13 @@ or code, works in a git worktree and a branch of its own, under
 `.claude/worktrees/`, which it makes before its first edit: two sessions
 that edit the main checkout at once leave their changes mixed in the same
 files, as happened on 21 September 2026. An implementation plan is carried
-out the same way, as the `following-plans` skill says. Nothing is merged
-into `main`, and nothing is pushed to it, without the owner's order.
+out the same way, as the `following-plans` skill says. Before its first
+edit, the session reads the messages that the other sessions left on the
+board, `.claude/board/`, described in the README there, and posts one of
+its own that says what it works on and which shared files it may change;
+it posts again when it learns something another session would otherwise
+find again. Nothing is merged into `main`, and nothing is pushed to it,
+without the owner's order.
 
 ## Replies in chat
 
