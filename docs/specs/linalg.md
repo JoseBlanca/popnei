@@ -166,17 +166,33 @@ verified", is what catches a backend that mixed the two.
 Each of these is an error of the crate before any routine runs, and the
 core crate turns it into its own error and Python into a `RuntimeError`,
 since they are defects of the caller: a dimension that does not match,
-a `g` that is not c x c for the product or a buffer shorter than its rows
-times its columns; a c or an n of 0, and in `product` an `inner` of 0 as
-well, while the rows of either product may be 0; and a value that is not
-finite in a matrix. The last is checked here because the backends do not
-agree on it: `dsyevd` on a matrix with a NaN gives NaN eigenvalues and
-an `info` of 0, measured through numpy 2.5 on 22 September 2026, and
-faer's `self_adjoint_eigen` gives its error of no convergence. A routine
-of LAPACK that stops, `info` other than 0, which for `dsyevd` is an
-eigendecomposition that did not converge, is an error with the routine
-and the `info`, and faer's error for the same case is the same error of
-the crate.
+a `g` that is not c x c for the product nor n x n for the
+eigendecomposition, or an `a`, a `b` or a `c` shorter than its rows times
+its columns, a longer one being taken by its first rows times columns
+values; a c or an n of 0, and in `product` an `inner` of 0 as well, while
+the rows of either product may be 0; a dimension, or a number of values
+of a matrix, above 2147483647, which is what the routines of BLAS and
+LAPACK count in, checked for both backends so that the two refuse the
+same calls; and a value that is not finite in a matrix. The last is
+checked here because the backends do not agree on it: `dsyevd` on a
+matrix with a NaN gives NaN eigenvalues and an `info` of 0, measured
+through numpy 2.5 on 22 September 2026, and faer's `self_adjoint_eigen`
+gives its error of no convergence. A routine of LAPACK that stops,
+`info` other than 0, which for `dsyevd` is an eigendecomposition that
+did not converge when the `info` is positive and an argument the routine
+refused, a defect of popnei, when it is negative, is an error with the
+routine and the `info`, and faer's error for the same case is the same
+error of the crate, with the `info` at 0, since faer gives none.
+
+One error is not a defect of the caller: the workspace of the
+eigendecomposition is 2n² floats and more, 1.6 GB at n = 10000, and a
+machine that has not the memory for it would abort the process where the
+crate asks for it. So it is asked for with `try_reserve_exact`, and a
+machine that refuses gives an error that says what could not be
+allocated and how many values it was. The core crate wraps it, and which
+exception it becomes is for the spec of the module that calls it, since
+it is neither a wrong argument nor a defect of popnei. No test reaches
+it: the case is written and read, not run.
 
 ### How they run
 
@@ -184,10 +200,20 @@ the crate.
 `eigh_lower` takes `g` by value and gives its buffer back as the
 eigenvectors, with no copy; a caller that needs G afterwards copies it
 first. With eigenvectors the routine needs a workspace of 1 + 6n + 2n²
-floats besides, which the crate asks the routine for and allocates at
-each call: 16 MB at n = 1000 and 1.6 GB at n = 10000, twice the matrix.
-faer allocates what it needs inside the call. The crate holds nothing
-between calls.
+floats and 3 + 5n integers besides, which the crate asks the routine for,
+as LAPACK is asked, with the two lengths at -1, and allocates at each
+call: 16 MB at n = 1000 and 1.6 GB at n = 10000, twice the matrix. The
+routine writes the number of floats as an `f64`, so a value that is not a
+count, a NaN, an infinity, a negative number or one above 2147483647, is
+left out and the minimum above stands, and a value that is a count is
+taken as its whole part. faer allocates what it needs inside the call.
+The crate holds nothing between calls.
+
+Both backends give the eigenvalues from the smallest, LAPACK and faer
+alike, and both give each eigenvector where popnei's row major buffer
+reads it as a row. So the turning round, the values and the rows of the
+vectors together, is done once, above the backends, and neither of them
+does it.
 
 ### How it is verified
 
@@ -209,29 +235,43 @@ A'A is
 and the test asserts the lower half exactly, since every entry is a sum
 of at most two products of small integers, and that the upper half of G
 kept the values it was given; and that an A of no rows leaves G as it
-was. At `product`: the same A times B of 3 x 2 with rows (1, 0), (2, 1)
-and (0, 3) is the 2 x 2 matrix with rows (5, 2) and (2, 10), exactly.
+was. At `product`, three cases, exactly, all with the same A. Times B of
+3 x 2 with rows (1, 0), (2, 1) and (0, 3) it is the 2 x 2 matrix with
+rows (5, 2) and (2, 10). That one is symmetric, so a backend that wrote
+the transpose of C would pass it; times B of 3 x 2 with rows (1, 1),
+(2, 0) and (0, 3) it is the 2 x 2 matrix with rows (5, 1) and (2, 9),
+which is not. And times B of 3 x 1 with rows (1), (0) and (2) it is the
+2 x 1 matrix with rows (1) and (6), where the three dimensions are
+different, so a backend that swapped two of them would pass neither this
+nor the self product of the A above. C holds values other than 0 before
+each call, which an operation that added to C instead of overwriting it
+would leave in the result.
 
 At `eigh_lower`: the 3 x 3 matrix with rows (4, 1, 0), (1, 3, 0) and
-(0, 0, 1). Its eigenvalues are (7 + √5)/2 = 4.618033988750,
-(7 - √5)/2 = 2.381966011250 and 1, and the eigenvectors, each with the
-sign that makes its entry of largest absolute value positive, are
-(0.850650808352, 0.525731112119, 0), (-0.525731112119, 0.850650808352,
-0) and (0, 0, 1); the first two are (1, λ - 4) divided by their length.
-The test gives each vector that sign and compares the eigenvalues and the
-vectors within 1e-12, the twelve digits above.
+(0, 0, 1). Its eigenvalues are (7 + √5)/2 = 4.6180339887498949,
+(7 - √5)/2 = 2.3819660112501051 and 1, and the eigenvectors, each with
+the sign that makes its entry of largest absolute value positive, are
+(0.85065080835203988, 0.52573111211913348, 0), (-0.52573111211913348,
+0.85065080835203988, 0) and (0, 0, 1); the first two are (1, λ - 4)
+divided by their length. The digits are numpy's, all of them it prints,
+so that the tolerance of a test is spent on the code and not on the
+rounding of a literal. The test gives each vector that sign and compares
+the eigenvalues and the vectors within 1e-12.
 
 At `eigh_lower`, on a matrix too large to write down, so that the two
 backends are checked on the size they will run at: G = ZZ' for Z of
 1000 rows and 1200 columns, with z(i, c) the (c · 1000 + i)-th number of
 the xorshift generator below, started at 7. G then has full rank and its
 eigenvalues are apart, between 0.79 and 361.9, no two closer than 0.003.
-The literals, from numpy: the trace 99996.3873081677, which is the sum
-of the eigenvalues; the three largest eigenvalues 361.912511901133,
-359.665171786593 and 356.443932994956, and the smallest 0.793328921541;
-and the first three entries of the eigenvector of the largest, with the
-sign of its largest entry positive, 0.0181113018619959,
--0.00457602216910046 and -0.00518748985091827. The test compares the
+The literals, from numpy 2.5.3 on 22 September 2026, all the digits it
+prints: the trace 99996.387308167701, which is the sum of the
+eigenvalues, and which numpy adds up to 99996.387308167687 when it adds
+the eigenvalues instead; the three largest eigenvalues 361.9125119011332,
+359.66517178659313 and 356.4439329949563, and the smallest
+0.79332892154084844; and the first three entries of the eigenvector of
+the largest, with the sign of its largest entry positive,
+0.018111301861995926, -0.0045760221691004549 and
+-0.0051874898509182699. The test compares the
 eigenvalues within 1e-12 relative and the entries within 1e-9, because
 an eigenvector is less well determined than its eigenvalue by the gap to
 its neighbours, and a matrix of a real dataset has closer ones than
@@ -294,9 +334,15 @@ pub enum Error {
     Dimension { argument: &'static str, expected: String },
     /// The name of the argument that holds a value that is not finite.
     NotFinite { argument: &'static str },
-    /// A decomposition that did not converge: the routine of LAPACK with
-    /// its `info`, or faer.
+    /// A routine that stopped: the routine of LAPACK with its `info`,
+    /// which did not converge when the `info` is positive and refused
+    /// that argument of its own, a defect of popnei, when it is
+    /// negative; or faer, with the `info` at 0, since faer gives none.
     NoConvergence { routine: &'static str, info: i32 },
+    /// What could not be allocated and how many values it holds. The
+    /// eigendecomposition asks for a workspace of floats and one of
+    /// integers, so the count is of values and not of bytes.
+    Memory { what: &'static str, values: usize },
 }
 ```
 
@@ -329,10 +375,20 @@ at 2000 and 13.6 s at 3000, section 3.2 of `docs/rust_core.md`, on 19
 September 2026.
 
 The numbers to reach are those of the backends themselves, since the
-crate adds an allocation and a call: the times above for the
-eigendecomposition, and for the product of a block of 5000 x 1000 with
-itself, 10.5 ms with Accelerate on one thread, 95 ms with faer natively
-and 187 ms in wasm with `simd128`.
+crate adds an allocation, a call and the reading of the matrices it
+checks: the times above for the eigendecomposition, and for the product
+of a block of 5000 x 1000 with itself, 10.5 ms with Accelerate on one
+thread, 95 ms with faer natively and 187 ms in wasm with `simd128`.
+
+What the checks cost is the two readings of `add_self_product_lower`,
+every value of A and the lower half of G, 44 MB for that block, which
+nothing of the product needs. Measured on the same machine on 22
+September 2026 with a scratch crate, the best of 10 runs of each, a
+release build with `VECLIB_MAXIMUM_THREADS=1`: 1.68 ms of a call of
+12.05 ms, an eighth of it. They stay because the alternative is a NaN
+that one backend turns into an error and the other into a result, and
+because a block the PCA standardized cannot be checked once for the
+whole pass: each block is a new matrix.
 
 ## Open points
 
