@@ -503,6 +503,8 @@ fn the_components_of_the_product_of_the_traits(
     num_cols: usize,
     num_comps: usize,
 ) -> Result<(Vec<f64>, Vec<f64>)> {
+    // [`pca`] refuses a table with no component before it gets here, and
+    // this keeps `step_by` below off a step of 0, which panics.
     if num_comps == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -558,6 +560,8 @@ fn the_components_of_the_product_of_the_rows(
     num_cols: usize,
     num_comps: usize,
 ) -> Result<(Vec<f64>, Vec<f64>)> {
+    // [`pca`] refuses a table with no component before it gets here, and
+    // this keeps `step_by` below off a step of 0, which panics.
     if num_comps == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
