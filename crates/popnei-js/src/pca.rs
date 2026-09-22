@@ -99,12 +99,13 @@ impl From<Pca> for PcaOfATable {
 ///
 /// # Errors
 ///
-/// When a value of the table is an infinity or a NaN, when the table is to
-/// be standardized and not centered, when it has fewer than 2 rows or no
-/// traits, when it is standardized and a trait has no variance, when no
-/// trait of it has any, when the mean or the standard deviation of a trait
-/// is not a number the analysis can use, and when the linear algebra of the
-/// analysis could not be done.
+/// When the analysis of a table of these two sides does not fit in the
+/// memory of a page, when a value of the table is an infinity or a NaN, when
+/// the table is to be standardized and not centered, when it has fewer than
+/// 2 rows or no traits, when it is standardized and a trait has no variance,
+/// when no trait of it has any, when the mean or the standard deviation of a
+/// trait is not a number the analysis can use, and when the linear algebra
+/// of the analysis could not be done.
 #[wasm_bindgen]
 pub fn pca(
     data: Vec<f64>,
@@ -113,6 +114,7 @@ pub fn pca(
     center_data: bool,
     standardize_data: bool,
 ) -> Result<PcaOfATable, JsPopneiError> {
+    room_for_the_analysis_of_a_table(num_rows, num_cols)?;
     let options = PcaOptions {
         center: center_data,
         standardize: standardize_data,
@@ -246,7 +248,7 @@ pub(crate) fn pca_of_the_variants(
     num_prin_comps: usize,
     steps: Steps,
 ) -> Result<PcaOfVariants, JsPopneiError> {
-    room_for_the_analysis(num_individuals)?;
+    room_for_the_analysis_of_the_variants(num_individuals)?;
     let options = VariantPcaOptions {
         transform_to_biallelic,
         num_prin_comps,
@@ -289,10 +291,10 @@ pub(crate) fn pca_of_the_variants(
 /// everything popnei has open in it at once.
 const MEMORY_OF_A_WASM_MODULE: u64 = 4 * 1024 * 1024 * 1024;
 
-/// How much memory the principal components of the variants hold at their
-/// peak, in tenths of the individuals x individuals matrix, which is 8 bytes
-/// per pair of individuals: that matrix, its eigenvectors, and the workspace
-/// the eigendecomposition of faer allocates for itself.
+/// How much memory a principal component analysis holds at its peak, in
+/// tenths of the square matrix it decomposes, which is 8 bytes per pair of
+/// the smaller side of the data: that matrix, its eigenvectors, and the
+/// workspace the eigendecomposition of faer allocates for itself.
 ///
 /// The workspace is faer's own allocation and not one popnei asks for, and
 /// an allocation that fails in wasm aborts, which is a trap that ends the
@@ -305,34 +307,57 @@ const MEMORY_OF_A_WASM_MODULE: u64 = 4 * 1024 * 1024 * 1024;
 /// individuals ran, 9415 ended the module with `RuntimeError: unreachable`
 /// after 173 ms, and 9415 individuals have a matrix of 709137800 bytes, of
 /// which 4 GiB is 6.05. So the analysis holds about 6 times its matrix, and
-/// popnei counts 6.1 of them, which takes 9381 individuals at most, 29 below
-/// the smallest number that trapped.
+/// popnei counts 6.1 of them, which takes 9381 of a side at most, 29 below
+/// the smallest number that trapped. A table is decomposed by the same code
+/// of the same library over the same matrix, so the same count holds for the
+/// smaller of its two sides.
 const TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS: u64 = 61;
 
-/// That the memory of wasm takes the principal components of the variants of
-/// `num_individuals` individuals.
+/// Which side of the data the matrix that is decomposed is of, for the
+/// message of an analysis that does not fit.
+#[derive(Clone, Copy)]
+enum TheSquareOf {
+    /// The individuals of a dataset of variants.
+    Individuals,
+    /// The rows of a table that has fewer rows than traits.
+    Rows,
+    /// The traits of a table that has fewer traits than rows.
+    Traits,
+}
+
+impl TheSquareOf {
+    /// What the side is called in the message.
+    fn named(self) -> &'static str {
+        match self {
+            Self::Individuals => "individuals",
+            Self::Rows => "rows",
+            Self::Traits => "traits",
+        }
+    }
+}
+
+/// That the memory of wasm takes the principal components of a dataset whose
+/// smaller side is `side` of `what`.
 ///
 /// What the analysis holds is
-/// [`TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS`] tenths of the individuals x
-/// individuals matrix, and a page holds 4 GiB of everything at once. What
-/// this does not know is what the tab already holds, the bytes of the file
-/// among them, so a page with little left can still run out; what it stops
-/// is the dataset that cannot fit however empty the tab is, which is the one
-/// that ends the module with no message.
+/// [`TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS`] tenths of the square matrix of
+/// that side, and a page holds 4 GiB of everything at once. What this does
+/// not know is what the tab already holds, the bytes of the file among them,
+/// so a page with little left can still run out; what it stops is the
+/// dataset that cannot fit however empty the tab is, which is the one that
+/// ends the module with no message.
 ///
 /// # Errors
 ///
-/// When the analysis of that many individuals does not fit in the memory of
-/// a page.
-#[wasm_bindgen]
-pub fn room_for_the_analysis(num_individuals: usize) -> Result<(), JsPopneiError> {
+/// When the analysis of that many does not fit in the memory of a page.
+fn room_for_the_square_of(side: usize, what: TheSquareOf) -> Result<(), JsPopneiError> {
     // A count that is beyond what these multiplications hold is a dataset
     // that is far beyond the memory of a page, so every one of them
     // saturates instead of being checked: what the number then says is the
     // largest the arithmetic holds, and the analysis is refused either way.
-    let individuals = u64::try_from(num_individuals).unwrap_or(u64::MAX);
-    let wanted = individuals
-        .saturating_mul(individuals)
+    let pairs = u64::try_from(side).unwrap_or(u64::MAX);
+    let wanted = pairs
+        .saturating_mul(pairs)
         .saturating_mul(8)
         .saturating_mul(TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS)
         / 10;
@@ -340,13 +365,49 @@ pub fn room_for_the_analysis(num_individuals: usize) -> Result<(), JsPopneiError
         return Ok(());
     }
     Err(JsPopneiError::NoMemory(format!(
-        "the principal components of {num_individuals} individuals hold about \
-         {gigabytes} GB, the individuals x individuals matrix of the analysis, its \
-         eigenvectors and the workspace of the eigendecomposition, and a page holds \
-         at most 4 GB of everything at a time. A dataset of this many individuals is \
-         analysed by a program outside the browser, popnei in Python among them.",
+        "the principal components of {side} {named} hold about {gigabytes} GB, the \
+         {named} x {named} matrix of the analysis, its eigenvectors and the workspace \
+         of the eigendecomposition, and a page holds at most 4 GB of everything at a \
+         time. Data this large is analysed by a program outside the browser, popnei in \
+         Python among them.",
+        named = what.named(),
         gigabytes = wanted.div_ceil(1000 * 1000 * 1000)
     )))
+}
+
+/// That the memory of wasm takes the principal components of the variants of
+/// `num_individuals` individuals, which are decomposed over the individuals
+/// x individuals matrix.
+///
+/// # Errors
+///
+/// When the analysis of that many individuals does not fit in the memory of
+/// a page.
+#[wasm_bindgen]
+pub fn room_for_the_analysis_of_the_variants(num_individuals: usize) -> Result<(), JsPopneiError> {
+    room_for_the_square_of(num_individuals, TheSquareOf::Individuals)
+}
+
+/// That the memory of wasm takes the principal components of a table of
+/// `num_rows` rows and `num_cols` traits.
+///
+/// The matrix that is decomposed is the square of the smaller of the two
+/// sides, so a table of 150 rows and 4 traits is decomposed over 4 x 4 and
+/// one of 4 rows and 150 traits over 4 x 4 as well.
+///
+/// # Errors
+///
+/// When the analysis of that table does not fit in the memory of a page.
+#[wasm_bindgen]
+pub fn room_for_the_analysis_of_a_table(
+    num_rows: usize,
+    num_cols: usize,
+) -> Result<(), JsPopneiError> {
+    if num_rows <= num_cols {
+        room_for_the_square_of(num_rows, TheSquareOf::Rows)
+    } else {
+        room_for_the_square_of(num_cols, TheSquareOf::Traits)
+    }
 }
 
 /// The positions of the variants that were used as the `Uint32Array` they

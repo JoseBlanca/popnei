@@ -117,15 +117,24 @@ export interface DoPcaOptions {
  * on the result; here the two sides of the table are given as numbers and
  * the names stay with the application.
  *
+ * A table whose smaller side is more than 9381 is an `Error` here, and in
+ * Python the same table is analysed. What is decomposed is the square of
+ * that side, and it, its eigenvectors and the workspace of the
+ * eigendecomposition are about 6 times 8 bytes per pair of it, which at 9382
+ * is more than the 4 GB a page holds at a time. It is a limit of the browser
+ * and not of popnei: WebAssembly addresses 4 GB in one page, and an
+ * allocation that does not fit ends the module where an `Error` belongs.
+ *
  * @throws {Error} When `data` is not a `Float64Array` of `numRows` times
  * `numCols` values, when a side of the table is not a whole number of 1 or
- * more, when an option is not a boolean, when a value of the table is not
- * finite, when the table is to be standardized and not centered, when it has
- * fewer than 2 rows or no traits, when it is standardized and a trait has no
- * variance, when no trait of it has any, when the values of a trait are so
- * large or so small that its mean or its standard deviation is not a number
- * the analysis can use, when the linear algebra of the analysis could not be
- * done, and when `init` has not been awaited.
+ * more, when an option is not a boolean, when the smaller side of the table
+ * is more than 9381, when a value of the table is not finite, when the table
+ * is to be standardized and not centered, when it has fewer than 2 rows or
+ * no traits, when it is standardized and a trait has no variance, when no
+ * trait of it has any, when the values of a trait are so large or so small
+ * that its mean or its standard deviation is not a number the analysis can
+ * use, when the linear algebra of the analysis could not be done, and when
+ * `init` has not been awaited.
  */
 export function doPca(
   data: Float64Array,

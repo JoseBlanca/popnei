@@ -32,7 +32,11 @@ import { test } from "node:test";
 
 import { doPca, doPcaFromVariants, init, openVcf } from "popnei";
 
-import { room_for_the_analysis as roomForTheAnalysis } from "../wasm/popnei.js";
+import {
+  pca as pcaOfTheCore,
+  room_for_the_analysis_of_a_table as roomForATable,
+  room_for_the_analysis_of_the_variants as roomForTheVariants,
+} from "../wasm/popnei.js";
 import { theValuesOf } from "../dist/pca.js";
 import { referencePcaVcf, referenceTable } from "./reference.ts";
 
@@ -470,12 +474,44 @@ test("the individuals a page holds are the ones measured under node", () => {
   // largest dataset popnei takes is under both. Neither of the two is run
   // here: the one that works takes five minutes, since the time of the
   // eigendecomposition goes with the cube of the individuals.
-  roomForTheAnalysis(9381);
+  roomForTheVariants(9381);
   assert.throws(
-    () => roomForTheAnalysis(9382),
+    () => roomForTheVariants(9382),
     /the principal components of 9382 individuals hold about 5 GB/,
   );
   // The worked example, and every dataset a page really holds, passes.
-  roomForTheAnalysis(5);
-  roomForTheAnalysis(0);
+  roomForTheVariants(5);
+  roomForTheVariants(0);
+});
+
+test("a table is measured by the smaller of its two sides", () => {
+  // The matrix that is decomposed is the square of the smaller side, so a
+  // table of 9382 rows and 200000 traits is refused for its rows and one of
+  // 200000 rows and 9382 traits for its traits, while 9381 of either passes.
+  // A `doPca` of such a table cannot be run here: its values alone are 15 GB,
+  // and the smallest table that reaches the limit, 9382 x 9382, is 704 MB.
+  roomForATable(9381, 200000);
+  roomForATable(200000, 9381);
+  assert.throws(
+    () => roomForATable(9382, 200000),
+    /the principal components of 9382 rows hold about 5 GB, the rows x rows matrix/,
+  );
+  assert.throws(
+    () => roomForATable(200000, 9382),
+    /the principal components of 9382 traits hold about 5 GB, the traits x traits matrix/,
+  );
+  // Iris, and every table a page really holds, passes.
+  roomForATable(150, 4);
+});
+
+test("a table too large for a page is refused before it is read", () => {
+  // The analysis of the binding crate, which `doPca` calls once it has
+  // checked that the array holds the table: here it is given the two sides
+  // and an empty array, so what it answers is what it looked at first. The
+  // core would say that the buffer holds 0 of the 1877200000 values of that
+  // table, and the memory of the page comes before it.
+  assert.throws(
+    () => pcaOfTheCore(new Float64Array(0), 9382, 200000, true, true),
+    /the principal components of 9382 rows hold about 5 GB/,
+  );
 });
