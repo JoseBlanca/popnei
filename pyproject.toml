@@ -23,7 +23,15 @@ requires-python = ">=3.14"
 # binding crate hands it the arrays of the core, so a user gets them without
 # a copy. It is the version pyNei asks for, so that the two libraries share
 # one numpy in the environment where they are compared.
-dependencies = ["numpy>=2.4.6"]
+#
+# pandas holds the square matrix of a `Distances`, indexed by the names of
+# the individuals, which is what a user gives to a tree or a principal
+# coordinate analysis. It is imported by `popnei.dists` and so by `import
+# popnei`. It is the pandas of the pyodide the wheel is built for, 3.0.2 in
+# pyodide 314.0.7, as numpy's floor is its numpy: micropip refuses a wheel
+# that asks for more than what pyodide ships, and nothing here needs a
+# newer pandas.
+dependencies = ["numpy>=2.4.6", "pandas>=3.0.2"]
 
 [project.urls]
 repository = "https://github.com/JoseBlanca/popnei"

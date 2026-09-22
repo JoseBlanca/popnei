@@ -53,6 +53,35 @@ export function wholeNumberOfOneOrMore(
 }
 
 /**
+ * `value` when it is a whole number of 0 or more that the core holds, and an
+ * `Error` that names `argument` and what was given otherwise.
+ *
+ * It is `minNumSnps`, how many variants a pair of individuals needs before
+ * it gets a distance, that comes through here: 0 is every pair that was
+ * called at all, and a negative number is refused, where pyNei takes one and
+ * does with it what it does with 0.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function wholeNumberOfZeroOrMore(
+  argument: string,
+  value: unknown,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > LARGEST_WHOLE_NUMBER
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
+        `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a number, and an `Error` that names `argument` and what
  * was given otherwise.
  *

@@ -9,6 +9,7 @@
 
 use pyo3::prelude::*;
 
+mod dists;
 mod errors;
 mod source;
 mod steps;
@@ -34,6 +35,8 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_ONLY_PASSED: bool = popnei::io::vcf::DEFAULT_ONLY_PASSED;
 
+    #[pymodule_export]
+    use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

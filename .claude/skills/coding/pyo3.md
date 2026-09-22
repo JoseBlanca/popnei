@@ -117,10 +117,13 @@ builds the frozen dataclasses.
 `impl From<popnei::Error> for PyErr` cannot be written in this crate,
 because neither type is ours. So the crate has an error type of its own,
 `enum PyPopneiError`, with a `From<popnei::Error>`, a `From<PyErr>` and one
-`From<PyPopneiError> for PyErr`. Its eight cases are the error of the core;
+`From<PyPopneiError> for PyErr`. Its nine cases are the error of the core;
 that same error with the file it happened in, which the core was not given;
 an argument that says how many of something there are and counts nothing,
-which this crate refuses before the core sees it; the threshold of a filter
+which this crate refuses before the core sees it; a pass that gave a
+calculation no variant, with what each filter of it was given and kept,
+which this crate reads from the chain it holds and the core does not have;
+the threshold of a filter
 that is not a number from 0 to 1, under the name of the argument the user
 wrote it in, which the core does not know, since it names a filter by its
 kind, `maf`, and a user wrote `max_allowed_maf`; a path that a file is

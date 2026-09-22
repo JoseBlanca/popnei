@@ -108,8 +108,8 @@ pub(crate) fn source_of<'a>(
     // The type is named and no article is put before it: `a int` and `a
     // NoneType` are what one written here would give.
     Err(PyTypeError::new_err(format!(
-        "`source` is of the type `{what}`, and the variants to write come from a source \
-         that popnei opened: give what `open_vcf` or `open_vars` gives",
+        "`source` is of the type `{what}`, and the variants a pass reads come from a \
+         source that popnei opened: give what `open_vcf` or `open_vars` gives",
         what = object.get_type().name()?
     ))
     .into())
@@ -511,9 +511,10 @@ fn written_as(value: &Bound<'_, PyAny>) -> String {
     }
 }
 
-/// The array, which nothing writes into any more: a block is frozen, and
-/// its arrays hold the memory the core filled.
-fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
+/// The array, which nothing writes into any more: a block is frozen and so
+/// is the result of a calculation, and their arrays hold the memory the core
+/// filled.
+pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
         .getattr("flags")?
