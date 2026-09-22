@@ -62,8 +62,14 @@ mod _core {
         )
     }
 
+    // The two of `do_pca_from_variants`, from the core as well.
     #[pymodule_export]
-    use super::pca::pca;
+    const DEFAULT_TRANSFORM_TO_BIALLELIC: bool = popnei::pca::DEFAULT_TRANSFORM_TO_BIALLELIC;
+    #[pymodule_export]
+    const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
+
+    #[pymodule_export]
+    use super::pca::{pca, pca_of_variants};
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

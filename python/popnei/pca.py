@@ -4,7 +4,9 @@ A principal component analysis places the individuals of a dataset on a few
 axes that hold as much of the variation between them as that many axes can,
 which is how a user sees whether their individuals fall into populations
 before they name any. :func:`do_pca` does it on a table of numbers that the
-user brings, individuals x traits.
+user brings, individuals x traits, and :func:`do_pca_from_variants` on the
+variants of a :class:`popnei.Variants`, where each variant is a trait and
+the number of an individual at it is its dosage.
 
 `docs/specs/pca.md` has what is computed. Each trait is centered, its mean
 taken from it, and standardized, divided by its standard deviation, which
@@ -21,7 +23,7 @@ import numpy
 import pandas
 
 from popnei import _core
-from popnei.variant import PassStats
+from popnei.variant import PassStats, Variants, _pass_stats_of
 
 # What is wrong with a trait whose mean or whose standard deviation the
 # analysis cannot use, under the name the binding crate gives each of the
@@ -66,8 +68,8 @@ class PCAResult:
 
     projections: pandas.DataFrame
     """Where each individual falls along each component, one row per
-    individual, named as the index of the table was, and one column per
-    component."""
+    individual and one column per component. The index is the index of the
+    table, or the names of the individuals of the ``Variants``."""
 
     explained_variance_percent: pandas.Series
     """How much of the variance each component holds, as a percentage of the
@@ -75,7 +77,11 @@ class PCAResult:
 
     princomps: pandas.DataFrame
     """The weight of each trait in each component, one row per component and
-    one column per trait, named as the columns of the table were."""
+    one column per trait. The columns are the columns of the table, or the
+    position of each variant that was used among the variants the pass gave,
+    from 0. Of a table there is one row per component; of the variants there
+    are ``num_prin_comps``, which can be fewer, and they are the first
+    components."""
 
     pass_stats: PassStats | None
     """The counts of the pass over the source of variants, and ``None`` for
@@ -153,6 +159,100 @@ def do_pca(
         explained_variance_percent=pandas.Series(percent, index=names),
         princomps=pandas.DataFrame(princomps, index=names, columns=data.columns),
         pass_stats=None,
+    )
+
+
+def do_pca_from_variants(
+    variants: Variants,
+    transform_to_biallelic: bool = _core.DEFAULT_TRANSFORM_TO_BIALLELIC,
+    num_prin_comps: int = _core.DEFAULT_NUM_PRIN_COMPS,
+) -> PCAResult:
+    """The principal components of the variants of `variants`.
+
+    Each variant becomes one number per individual, its dosage: how many
+    alleles of the genotype are not the major allele of the variant, which
+    is the most frequent among its called alleles and the lowest numbered of
+    two that are equally frequent. A genotype with an allele missing takes
+    the mean of the dosages of its variant, so that after centering it pulls
+    its individual nowhere, and the standard deviation each variant is
+    divided by has all the individuals in it and not the called ones alone.
+
+    A variant whose called genotypes all have one dosage has no variance and
+    is left out, a variant with one allele and one where every individual is
+    heterozygous among them, and so is a variant with no called genotype.
+    The ones that were used are the columns of the weights, by their
+    position among the variants the pass gave, from 0.
+
+    The names of the individuals are the index of the projections, and the
+    counts of the pass are in ``pass_stats``: ``num_vars`` is how many
+    variants the steps of the `Variants` let through, used or not, and
+    ``filtering`` what each filter of the pass was given and kept.
+
+    `transform_to_biallelic` makes every allele that is not the major one
+    count the same, which is what a variant of more than two different
+    alleles among its called genotypes needs: the dosage of a genotype has a
+    meaning for two alleles, and without this such a variant is a
+    ``ValueError`` that says which one it is. The alleles are those the
+    genotypes hold and not those the source lists.
+
+    `num_prin_comps` is how many components the weights are given for, 10 by
+    default, and it is new here: pyNei gives the weight of every variant in
+    every component, which is 0.8 GB for 100000 variants of 1000
+    individuals. They come from a second pass over the variants, because a
+    weight needs the eigenvectors, which are known when the first pass ends,
+    so with 0 there is no second pass, ``princomps`` has no rows and it
+    still has the variants that were used as its columns. More components
+    than there are gives those there are, and a negative number is a
+    ``ValueError``. The projections and the percentages are of every
+    component that has variance whatever it is.
+
+    A dataset with no variant, and one where no variant has variance, which
+    one individual gives, are a ``ValueError``. So is a dataset of a size
+    this analysis cannot count in: a ploidy above 254, more than 46340
+    individuals, or more variants than the machine counts, which in the
+    browser is 4295 million.
+
+    It is pyNei's ``do_pca_from_variants``, with `num_prin_comps` added,
+    without `num_threads`, which no calculation of popnei takes, and with
+    the filters of the ``Variants`` as steps of it and not as functions
+    around it. pyNei counts the alleles of a whole chunk of variants and
+    popnei those of each variant; pyNei gives the components with no
+    variance as well; and a variant with no called genotype is an error in
+    pyNei and is left out here.
+    """
+    if not isinstance(variants, Variants):
+        # What a user gives instead is usually the path of the VCF, and
+        # what that gave was the `AttributeError` of an object with no
+        # source inside it.
+        raise TypeError(
+            f"`variants` is {variants!r}, a {type(variants).__name__}, and "
+            f"`do_pca_from_variants` reads the variants of a source: give it "
+            f"what `open_vcf` or `open_vars` gives, "
+            f"do_pca_from_variants(open_vcf(vcf_path))"
+        )
+    if num_prin_comps < 0:
+        raise ValueError(
+            f"`num_prin_comps` is {num_prin_comps}, and it says how many "
+            f"components the weights of the variants are given for: a whole "
+            f"number of 0 or more, and 0 for no weights"
+        )
+    projections, percent, princomps, used_vars, counts = _core.pca_of_variants(
+        variants._source, transform_to_biallelic, num_prin_comps, variants._steps
+    )
+    # The components of the projections are every one that has variance, and
+    # the weights are those of the first `num_prin_comps` of them, so the
+    # names are made for the projections and the weights take the first of
+    # them: one component has one name in both frames.
+    names = _component_names(projections.shape[1])
+    return PCAResult(
+        projections=pandas.DataFrame(
+            projections, index=list(variants.individuals), columns=names
+        ),
+        explained_variance_percent=pandas.Series(percent, index=names),
+        princomps=pandas.DataFrame(
+            princomps, index=names[: princomps.shape[0]], columns=used_vars
+        ),
+        pass_stats=_pass_stats_of(counts),
     )
 
 

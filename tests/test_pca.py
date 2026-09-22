@@ -1,15 +1,20 @@
 """The principal component analysis from Python, against pyNei.
 
-`docs/specs/pca.md` has the two analyses. What is here is the one of a
-table, `do_pca`, which takes a pandas frame of individuals x traits and
-gives the projections of the individuals on the components, the percentage
-of the variance each component holds and the weight of each trait in each
-component.
+`docs/specs/pca.md` has the two analyses, and both are here. `do_pca` takes
+a pandas frame of individuals x traits. `do_pca_from_variants` takes a
+`Variants` and makes one number of each variant for each individual, its
+dosage, how many alleles of the genotype are not the major allele of the
+variant. Each gives the projections of the individuals on the components,
+the percentage of the variance each component holds and the weight of each
+trait, or of each variant that was used, in each component.
 
-The comparison it asks for is with pyNei at commit ef0ca6e, which
-`pyproject.toml` names: both libraries run on `tests/reference/pca/iris.tsv`,
+The comparison both ask for is with pyNei at commit ef0ca6e, which
+`pyproject.toml` names. For `do_pca` it is on `tests/reference/pca/iris.tsv`,
 the 150 flowers x 4 measurements of pyNei's `test/datasets.py`, standardized
-and not, and the four components of each are compared within 1e-9. A
+and not, and the four components of each are compared within 1e-9. For
+`do_pca_from_variants` it is on `sim_missing.vcf`, the panel of 200
+individuals and 1200 variants, and on `worked.vcf`, 5 individuals and 5
+variants, the first 10 components of the one and the 3 of the other. A
 component multiplied by -1 is the same component, and pyNei gives whichever
 its decomposition gave, so the sign rule of "What both analyses compute" of
 the spec is applied to pyNei's numbers here before they are compared: in
@@ -27,18 +32,44 @@ from pathlib import Path
 import numpy
 import pandas
 import pytest
-from popnei import PCAResult, _core, do_pca
+from popnei import PCAResult, _core, do_pca, do_pca_from_variants, open_vcf
+from pynei import vars_from_vcf
 from pynei.pca import do_pca as pynei_do_pca
+from pynei.pca import do_pca_from_variants as pynei_do_pca_from_variants
+from pynei.var_filters import filter_by_maf
 
 REFERENCE_PCA_DIR = Path(__file__).parent / "reference" / "pca"
 
+# The two datasets of "How it is verified" of `docs/specs/pca.md` that both
+# libraries are run on. The panel is pyNei's `test/gwas_reference/
+# sim_missing.vars` written as a VCF: 200 individuals, 1200 variants of two
+# alleles, three subpopulations, 7128 genotypes missing whole, every variant
+# with variance. The worked example has 5 individuals and 5 variants, of
+# which the ones at 0, 1 and 4 have variance; the variant at 4 has three
+# alleles in the file and two among its called genotypes.
+PANEL_VCF = REFERENCE_PCA_DIR / "sim_missing.vcf"
+WORKED_VCF = REFERENCE_PCA_DIR / "worked.vcf"
+# The worked example with a sixth variant of three alleles among its called
+# genotypes, which needs `transform_to_biallelic`.
+WORKED3_VCF = REFERENCE_PCA_DIR / "worked3.vcf"
+
+PANEL_NUM_INDIVIDUALS = 200
+PANEL_NUM_VARS = 1200
+# What pyNei's `filter_by_maf` keeps of the panel at that threshold, from
+# its `gather_filtering_stats` at ef0ca6e.
+PANEL_MAF_THRESHOLD = 0.95
+PANEL_VARS_KEPT_BY_THE_MAF_FILTER = 1175
+
 # The tolerance of "How it is verified" of `docs/specs/pca.md`, read as an
-# absolute difference. The largest number the comparisons here hold is the
-# 96.53 of a percentage of the run that centers nothing, whose projections
-# reach 11.03; the standardized run reaches 72.96 and 3.31, and the one that
-# centers without standardizing 92.46 and 3.80. At 96.53 a difference of
-# 1e-9 is the eleventh significant digit, and the reference files carry
-# twelve.
+# absolute difference. The largest number any comparison here holds is the
+# 96.53 of a percentage of the iris run that centers nothing, whose
+# projections reach 11.03; the standardized iris run reaches 72.96 and 3.31,
+# and the one that centers without standardizing 92.46 and 3.80. Of the
+# variants, the projections of the panel reach 17.10 and its percentages
+# 7.61, and the worked example 3.03 and 76.74. At 96.53 a difference of 1e-9
+# is the eleventh significant digit, and the reference files carry twelve.
+# The two libraries differ by 1.0e-12 at most over the panel, where each
+# takes another route to the same components.
 TOLERANCE = 1e-9
 
 # The table of `test_pca_refuses_traits_with_no_variance` of pyNei, whose
@@ -333,3 +364,176 @@ def test_a_table_whose_products_are_not_finite_is_a_defect_of_popnei():
         do_pca(data, center_data=False, standardize_data=False)
 
     assert "principal component analysis" in str(refusal.value)
+
+
+def assert_the_first_components_are_pyneis(result, of_pynei, num_comps) -> None:
+    """The first `num_comps` components of both libraries, within 1e-9.
+
+    popnei gives the projections of every component that has variance and
+    the weights of the first `num_prin_comps`, and pyNei gives both for the
+    `min(individuals, variants)` components it has, so the comparison is of
+    the first `num_comps` of each. The sign rule is applied to pyNei's
+    numbers, each component's projections and weights together.
+    """
+    projections, princomps = the_signs_fixed(
+        of_pynei.projections.to_numpy()[:, :num_comps],
+        of_pynei.princomps.to_numpy()[:num_comps, :],
+    )
+    numpy.testing.assert_allclose(
+        result.projections.to_numpy()[:, :num_comps],
+        projections,
+        rtol=0,
+        atol=TOLERANCE,
+    )
+    numpy.testing.assert_allclose(
+        result.explained_variance_percent.to_numpy()[:num_comps],
+        of_pynei.explained_variance_percent.to_numpy()[:num_comps],
+        rtol=0,
+        atol=TOLERANCE,
+    )
+    numpy.testing.assert_allclose(
+        result.princomps.to_numpy()[:num_comps, :], princomps, rtol=0, atol=TOLERANCE
+    )
+
+
+def test_the_first_ten_components_of_the_panel_are_pyneis():
+    """The panel of 200 individuals and 1200 variants, with missing data.
+
+    popnei gives 199 components, one fewer than pyNei's 200: centering takes
+    one dimension out of the data and the last component has no variance.
+    The weights are those of the first 10, the default, and every variant of
+    the panel has variance, so all 1200 are the columns of `princomps`.
+    """
+    variants = open_vcf(PANEL_VCF)
+
+    result = do_pca_from_variants(variants)
+
+    of_pynei = pynei_do_pca_from_variants(vars_from_vcf(PANEL_VCF))
+    assert result.projections.shape == (PANEL_NUM_INDIVIDUALS, 199)
+    assert result.princomps.shape == (10, PANEL_NUM_VARS)
+    assert_the_first_components_are_pyneis(result, of_pynei, 10)
+    assert list(result.projections.index) == list(variants.individuals)
+    assert list(result.projections.index) == list(of_pynei.projections.index)
+    assert list(result.princomps.columns) == list(range(PANEL_NUM_VARS))
+    # One component has one name in both frames: the width of the number is
+    # that of the 199 components the projections have and not that of the 10
+    # the weights are given for.
+    assert list(result.princomps.index) == [f"PC00{number}" for number in range(10)]
+    assert list(result.princomps.index) == list(result.projections.columns[:10])
+
+
+def test_the_three_components_of_the_worked_example_are_pyneis():
+    """5 individuals and 5 variants, of which 3 have variance.
+
+    pyNei is given `transform_to_biallelic`, which it needs because it counts
+    the alleles of the whole chunk and this file holds a variant with the
+    alleles 0 and 1 and another with 0 and 2. It changes no dosage of a
+    variant of two alleles, so the numbers are those of the run without it,
+    which is what popnei does here.
+    """
+    variants = open_vcf(WORKED_VCF)
+
+    result = do_pca_from_variants(variants, num_prin_comps=3)
+
+    of_pynei = pynei_do_pca_from_variants(
+        vars_from_vcf(WORKED_VCF), transform_to_biallelic=True
+    )
+    assert result.projections.shape == (5, 3)
+    assert_the_first_components_are_pyneis(result, of_pynei, 3)
+    assert list(result.princomps.columns) == [0, 1, 4]
+    assert list(result.projections.columns) == ["PC0", "PC1", "PC2"]
+
+
+def test_the_counts_of_the_pass_are_of_the_variants_the_steps_let_through():
+    """`num_vars` counts the variants of the pass, used or not.
+
+    The panel has no filter on it, so its count is every variant of the
+    file, and `filtering` is empty.
+    """
+    result = do_pca_from_variants(open_vcf(PANEL_VCF), num_prin_comps=0)
+
+    assert result.pass_stats.num_vars == PANEL_NUM_VARS
+    assert result.pass_stats.filtering == {}
+
+
+def test_a_filter_on_the_variants_is_counted_in_the_pass_stats():
+    """The steps of the `Variants` run in the passes of the analysis.
+
+    What the filter keeps is what pyNei's `filter_by_maf` keeps of the same
+    file at the same threshold, and the variants of the pass are those.
+    """
+    variants = open_vcf(PANEL_VCF)
+    variants.filter_by_maf(PANEL_MAF_THRESHOLD)
+
+    result = do_pca_from_variants(variants, num_prin_comps=0)
+
+    of_pynei = pynei_do_pca_from_variants(
+        filter_by_maf(vars_from_vcf(PANEL_VCF), max_allowed_maf=PANEL_MAF_THRESHOLD)
+    )
+    counts = result.pass_stats.filtering["maf"]
+    assert counts.vars_processed == PANEL_NUM_VARS
+    assert counts.vars_kept == PANEL_VARS_KEPT_BY_THE_MAF_FILTER
+    assert result.pass_stats.num_vars == PANEL_VARS_KEPT_BY_THE_MAF_FILTER
+    assert list(result.princomps.columns) == list(of_pynei.princomps.columns)
+
+
+def test_no_weights_are_given_with_a_num_prin_comps_of_zero():
+    """There is no second pass then, and the used variants are still there.
+
+    `princomps` has no rows and its columns are the variants that were used,
+    which is what says which variants the projections come from.
+    """
+    result = do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=0)
+
+    assert result.princomps.shape == (0, 3)
+    assert list(result.princomps.columns) == [0, 1, 4]
+    assert result.projections.shape == (5, 3)
+
+
+def test_more_components_than_there_are_gives_those_there_are():
+    """The weights of 10 components of a table that has 3."""
+    result = do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=10)
+
+    assert result.princomps.shape == (3, 3)
+    assert list(result.princomps.index) == list(result.projections.columns)
+
+
+def test_a_negative_num_prin_comps_is_refused():
+    """It says how many components the weights are given for."""
+    with pytest.raises(ValueError, match="num_prin_comps") as refusal:
+        do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=-1)
+
+    assert "-1" in str(refusal.value)
+
+
+def test_a_variant_of_more_than_two_alleles_is_refused_by_its_position():
+    """The dosage of a genotype has a meaning for a variant of two alleles.
+
+    `worked3.vcf` is the worked example with a sixth variant whose called
+    genotypes hold three alleles. The message says which variant it is and
+    which argument reads it.
+    """
+    with pytest.raises(ValueError, match="transform_to_biallelic") as refusal:
+        do_pca_from_variants(open_vcf(WORKED3_VCF))
+
+    assert "the variant at the position 5" in str(refusal.value)
+
+
+def test_transform_to_biallelic_reads_the_variant_of_three_alleles():
+    """Every allele that is not the major one counts the same.
+
+    popnei gives 3 components of `worked3.vcf` and pyNei 4, the last of
+    which has a percentage below 1e-31 and is a component with no variance;
+    the first 3 are the same in both.
+    """
+    variants = open_vcf(WORKED3_VCF)
+
+    result = do_pca_from_variants(variants, transform_to_biallelic=True)
+
+    of_pynei = pynei_do_pca_from_variants(
+        vars_from_vcf(WORKED3_VCF), transform_to_biallelic=True
+    )
+    assert result.projections.shape == (5, 3)
+    assert of_pynei.projections.shape == (5, 4)
+    assert_the_first_components_are_pyneis(result, of_pynei, 3)
+    assert list(result.princomps.columns) == [0, 1, 4, 5]

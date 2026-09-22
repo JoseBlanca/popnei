@@ -351,7 +351,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // products are not finite and a machine with too little memory for
         // the workspace of the eigendecomposition.
         | popnei::Error::PcaTableOfAnotherSize { .. }
-        | popnei::Error::PcaLinalg { .. } => {
+        | popnei::Error::PcaLinalg { .. }
+        // The two of the principal components of the variants that no
+        // argument of `do_pca_from_variants` gives: a second pass over the
+        // variants that was not made, which this crate opens a reader for
+        // whenever the weights are asked for, and a second pass that read
+        // other variants than the first, which is what a source that
+        // changed between the two gives.
+        | popnei::Error::PcaSecondPassMissing { .. }
+        | popnei::Error::PcaSecondPassDiffers { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -392,6 +400,21 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaStandardizeWithoutCentering
         | popnei::Error::PcaTableTooSmall { .. }
         | popnei::Error::PcaNoTraitWithVariance => PyValueError::new_err(message),
+        // The four of the principal components of the variants that the
+        // dataset a user gave is wrong for: no variants, which the steps of
+        // a `Variants` can leave; no variant with variance, which one
+        // individual gives; a variant of more than two different alleles
+        // among its called genotypes with `transform_to_biallelic` false;
+        // and a dataset of a size the analysis cannot count in, which
+        // "Errors and the cases pyNei asserts" of `docs/specs/pca.md`
+        // lists. Each names the file the variants were read from, as every
+        // error of a file does.
+        popnei::Error::PcaNoVariants
+        | popnei::Error::PcaNoVariantWithVariance
+        | popnei::Error::PcaVariantWithMoreThanTwoAlleles { .. }
+        | popnei::Error::PcaVariantsTooLarge { .. } => {
+            PyValueError::new_err(of_the_file(message, path))
+        }
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF

@@ -12,7 +12,7 @@ from popnei.block import Block
 from popnei.filters import FilteringStats, Step
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
-from popnei.pca import PCAResult, do_pca
+from popnei.pca import PCAResult, do_pca, do_pca_from_variants
 from popnei.variant import Blocks, PassStats, Variants
 
 __version__: str = _core.version()
@@ -33,6 +33,7 @@ __all__ = [
     "VarsWritten",
     "__version__",
     "do_pca",
+    "do_pca_from_variants",
     "open_vars",
     "open_vcf",
     "write_vars",
