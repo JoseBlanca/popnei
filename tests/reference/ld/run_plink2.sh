@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Writes again the five files of tests/reference/ld/ that a program made,
+# Writes again the six files of tests/reference/ld/ that a program made,
 # and compares each with the copy stored there: ld.vcf.gz, the linkage
-# disequilibrium dataset, and the r2 matrix plink2 gives for it and for the
+# disequilibrium dataset; the r2 matrix plink2 gives for it and for the
 # worked example, with the identifiers of the rows of each matrix beside
-# it.
+# it; and the dosages pyNei gives for tests/reference/vcf/many.vcf.
 #
 # Run it from the root of the repository with one argument, a directory it
 # works in, which it creates and which has to be empty or not exist:
@@ -13,7 +13,8 @@
 # It needs plink2 v2.0.0-a.7.7, the version the numbers of docs/specs/ld.md
 # and of the item "The filter by linkage disequilibrium" of
 # docs/specs/filters.md were taken with on 22 September 2026, and uv for the
-# Python that make_reference.py runs under.
+# Python that make_reference.py runs under, which imports the pyNei of
+# pyproject.toml.
 #
 # It writes nothing into the repository. plink2 says what it is doing as it
 # goes; after that the script prints the name of every file it made that
@@ -86,7 +87,8 @@ if ! gzip -dc "$here/ld.vcf.gz" | diff - "$work/ld.vcf" > /dev/null; then
     differed=1
 fi
 for name in ld.unphased.vcor2.bin ld.unphased.vcor2.bin.vars \
-            example.unphased.vcor2.bin example.unphased.vcor2.bin.vars; do
+            example.unphased.vcor2.bin example.unphased.vcor2.bin.vars \
+            many.pynei.dosages.tsv; do
     if ! cmp -s "$here/$name" "$work/$name"; then
         echo "$name"
         differed=1
