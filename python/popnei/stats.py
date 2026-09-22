@@ -382,7 +382,7 @@ def _the_histogram(hist_kwargs: dict | None) -> tuple[tuple[float, float], int, 
     return hist_range, num_bins, bin_type
 
 
-def _the_range(hist_range) -> tuple[float, float]:
+def _the_range(hist_range: Sequence[float]) -> tuple[float, float]:
     """The two ends of the histogram, as the Rust core takes them.
 
     What is not two of something is refused here: pyo3 says of it "expected
@@ -402,7 +402,11 @@ def _the_range(hist_range) -> tuple[float, float]:
     )
 
 
-def _distrib_of(pop_names, hist_bin_edges, distrib) -> StatsDistrib | None:
+def _distrib_of(
+    pop_names: Sequence[str],
+    hist_bin_edges: numpy.ndarray,
+    distrib: tuple[numpy.ndarray, numpy.ndarray] | None,
+) -> StatsDistrib | None:
     """The distribution of one statistic, or ``None`` when nobody asked for
     it: the mean and the histogram counts the core gave, under the names of
     the populations."""
@@ -416,7 +420,13 @@ def _distrib_of(pop_names, hist_bin_edges, distrib) -> StatsDistrib | None:
     )
 
 
-def _poly_vars_stats_of(pop_names, poly_vars_ratio) -> PolyVarsStats | None:
+def _poly_vars_stats_of(
+    pop_names: Sequence[str],
+    poly_vars_ratio: tuple[
+        numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray
+    ]
+    | None,
+) -> PolyVarsStats | None:
     """The counts of the polymorphism ratio, or ``None`` when nobody asked
     for them."""
     if poly_vars_ratio is None:

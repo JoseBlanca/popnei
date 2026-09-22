@@ -452,9 +452,10 @@ pub(crate) fn count_of(
     }
 }
 
-/// The `value` that was given for the argument `name`, as the threshold of
-/// a filter: the one place where the number a user compares their variants
-/// with crosses from Python.
+/// The `value` that was given for the argument `name`, as a threshold: the
+/// one place where a number that a count of a variant is compared with
+/// crosses from Python, the threshold of a filter and the major allele
+/// frequency below which a variant counts as polymorphic in a population.
 ///
 /// The object is taken as it is and converted here, and not by the
 /// signature, because the conversion of pyo3 answers before any rule of

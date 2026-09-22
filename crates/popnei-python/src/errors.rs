@@ -327,14 +327,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // a histogram of no bin, a range that does not run from a number up
         // to a larger one, and a range of bins of equal ratio that starts at
         // 0 or below. So is the ploidy or the exponent of a statistic of one
-        // variant that is 0 or above 255, which a user writes in the
-        // `ploidy` argument of the calculation. What
-        // The threshold below which a variant counts as polymorphic in a
-        // population is one more: `poly_threshold` is a number from 0 to
-        // 1, which is where a major allele frequency lies. What
-        // is wrong with them is wrong whatever file is read, so they name
-        // no file although some of them are refused while one is being
-        // opened.
+        // variant that is 0 or above 255, which the pass of the statistics
+        // names its `ploidy` argument before it comes here. The threshold
+        // below which a variant counts as polymorphic in a population is one
+        // more: `poly_threshold` is a number from 0 to 1, which is where a
+        // major allele frequency lies. What is wrong with them is wrong
+        // whatever file is read, so they name no file although some of them
+        // are refused while one is being opened.
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. }
