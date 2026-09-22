@@ -204,11 +204,28 @@ impl KosmanBits {
                     // The copies of this allele up to this place of the
                     // genotype: the m-th time the allele is met is the set
                     // of the genotypes that hold m copies of it or more.
-                    let copies = genotype
-                        .iter()
-                        .take(at + 1)
-                        .filter(|&&other| other == allele)
-                        .count();
+                    //
+                    // A genotype of two alleles answers that with one
+                    // compare: the first allele of the genotype has one
+                    // copy of itself so far, and the second has two when it
+                    // equals the first and one otherwise. The general count
+                    // below is a loop of an unknown length, which the
+                    // compiler lowers to a 32 byte vector loop, an 8 byte
+                    // one and a scalar tail, for the one or two alleles a
+                    // diploid genotype gives it.
+                    let copies = if block.ploidy == 2 {
+                        if at == 1 && genotype.first().is_some_and(|&first| first == allele) {
+                            2
+                        } else {
+                            1
+                        }
+                    } else {
+                        genotype
+                            .iter()
+                            .take(at + 1)
+                            .filter(|&&other| other == allele)
+                            .count()
+                    };
                     // The allele is 0 or more and at most `MAX_ALLELE`: a
                     // genotype with an allele that was not called was left
                     // above, and an allele below the missing one was
