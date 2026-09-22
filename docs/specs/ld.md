@@ -850,11 +850,19 @@ pairs for each tile of variants:
 
 pyNei has no comparable number: `calc_ld_and_dist_per_pop` over a dataset
 of that size would hold every chunk in memory and build the whole square
-matrix of each chunk pair. Neither was measured in WebAssembly, where the
-products run on faer and where `docs/specs/linalg.md` measured the
-product of a 5000 x 1000 block with itself at 187 ms against 10.5 ms with
-Accelerate on one thread, so the numbers above are to be read as roughly
-eighteen times larger there; the implementation plan measures it.
+matrix of each chunk pair.
+
+Neither was measured in WebAssembly, where the products run on faer.
+`docs/specs/linalg.md` measured the product of a 5000 x 1000 block with
+itself there at 187 ms, against 10.5 ms with Accelerate on one thread
+natively, so the numbers above are to be read as roughly eighteen times
+larger in a browser; the implementation plan measures them. That 187 ms
+is with the vector instructions of WebAssembly, the ones that work on
+sixteen bytes at a time, which `.cargo/config.toml` now passes to both
+wasm targets and which `docs/objectives.md` made the floor of the
+browsers popnei runs in on 22 September 2026, after the performance
+review of the Kosman distances asked for them. Without them the same
+product took 306 ms.
 
 ## Open points
 
