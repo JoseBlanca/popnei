@@ -353,6 +353,67 @@ pub enum Error {
         source: popnei_linalg::Error,
     },
 
+    /// The reader of a principal component analysis of the variants gave
+    /// no variant. There is nothing to place the individuals by. It is
+    /// pyNei's "There are no variants in the 012 matrix", and in Python it
+    /// is a `ValueError`: the steps of the `Variants` let no variant
+    /// through, or the source has none.
+    #[error("there are no variants to do a PCA with")]
+    PcaNoVariants,
+
+    /// No variant of a principal component analysis of the variants has
+    /// variance: every one of them has one dosage among its called
+    /// genotypes, or no called genotype at all. There is no direction to
+    /// give. One individual gives it, since every variant of one
+    /// individual has one dosage. In Python it is a `ValueError`.
+    #[error(
+        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+    )]
+    PcaNoVariantWithVariance,
+
+    /// A variant of a principal component analysis of the variants has
+    /// more than two different alleles among its called genotypes, and
+    /// `transform_to_biallelic` is false. The dosage of a genotype is how
+    /// many of its alleles are not the major one, which has a meaning for
+    /// two alleles; with the argument true every allele that is not the
+    /// major one counts the same. The alleles are those the genotypes
+    /// hold and not those the source lists. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
+    )]
+    PcaVariantWithMoreThanTwoAlleles {
+        /// Which variant of those the reader gave it is, from 0.
+        position: usize,
+        /// How many different alleles it has among its called genotypes.
+        num_alleles: usize,
+    },
+
+    /// The weights of a principal component analysis of the variants were
+    /// asked for and no second pass over the variants was made. The weight
+    /// of a variant needs the eigenvectors, which are known when the first
+    /// pass ends, so a second reader over the same variants gives them.
+    /// Only a caller of the function of the core crate reaches it, since
+    /// each binding crate opens both readers, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the weights of {num_prin_comps} components were asked for and no second pass over the variants was made: the weight of a variant needs the eigenvectors, which are known when the first pass ends, so a second reader over the same variants is given whenever `num_prin_comps` is above 0"
+    )]
+    PcaSecondPassMissing {
+        /// How many components the weights were asked for.
+        num_prin_comps: usize,
+    },
+
+    /// A dataset the principal components of its variants cannot be taken
+    /// on, because one of its sizes is beyond what the analysis counts in.
+    /// [`crate::pca::VariantsTooLarge`] says which of the three it is. In
+    /// Python it is a `ValueError`.
+    #[error("the principal components of the variants cannot be taken on this dataset: {problem}")]
+    PcaVariantsTooLarge {
+        /// Which of the three sizes it is, with the number the dataset has.
+        problem: crate::pca::VariantsTooLarge,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
