@@ -266,6 +266,10 @@ enum HowTheSetsAreBuilt {
 /// fewer than about 1000 individuals gets fewer items than the machine has
 /// threads, and 500 individuals of 5000 variants is the second shape
 /// `docs/reports/perf-dists-kosman-2026-09-22.md` asks the benchmark for.
+///
+/// wasm has no threads and builds the sets one individual after another,
+/// so nothing there reads this.
+#[cfg(not(target_family = "wasm"))]
 const INDIVIDUALS_PER_ITEM: usize = 64;
 
 /// What the writing of a row needs to know besides the row itself and the
