@@ -698,9 +698,13 @@ impl LdDosages {
     /// # Errors
     ///
     /// A block that does not pass `check`, one with variants and no
-    /// genotypes, an index that is not an individual of the block, and a
+    /// genotypes, an index that is not an individual of the block, a
     /// block whose variants times its individuals is more than the
-    /// linear algebra counts in.
+    /// linear algebra counts in, and a block whose genotypes hold more
+    /// than 255 alleles each, since `dosages` counts a dosage in a
+    /// `u8` and a dosage is at most the ploidy. No reader of popnei
+    /// gives such a block: the VCF reader takes 255 alleles in a
+    /// genotype at most.
     pub fn of_block(block: &Block, individuals: &[usize]) -> Result<LdDosages>;
     pub fn num_vars(&self) -> usize;
     pub fn num_individuals(&self) -> usize;
