@@ -60,12 +60,10 @@ const PANEL_LITERALS: { first: string; second: string; dist: number }[] = [
  * that the allele 2 of the second and the third variants is one the file
  * names.
  */
-const WORKED_EXAMPLE = workedExampleVcf([
-  "0/0\t0/1\t1/1",
-  "0/1\t0/1\t1/2",
-  "0/0\t0/.\t2/2",
-  "./.\t1/1\t1/1",
-]);
+const WORKED_EXAMPLE = vcfOfThreeIndividuals(
+  ["s0", "s1", "s2"],
+  ["0/0\t0/1\t1/1", "0/1\t0/1\t1/2", "0/0\t0/.\t2/2", "./.\t1/1\t1/1"],
+);
 
 /**
  * The three distances of the worked example, the sums of d 1, 5 and 2 over
@@ -74,15 +72,51 @@ const WORKED_EXAMPLE = workedExampleVcf([
  */
 const WORKED_EXAMPLE_DISTS = [1 / 4, 5 / 6, 2 / 6];
 
-/** A VCF of the individuals `s0`, `s1` and `s2` with `genotypes` a variant. */
-function workedExampleVcf(genotypes: readonly string[]): Uint8Array {
+/**
+ * The haploid worked example of the spec: 4 variants of 3 haploid
+ * individuals, the third of them called in `h1` and `h2` alone. Its
+ * distances are 1/3, 2/3 and 1/2, the sums of d 1, 2 and 2 over the numbers
+ * of variants 3, 3 and 4.
+ */
+const HAPLOID_WORKED_EXAMPLE = vcfOfThreeIndividuals(
+  ["h0", "h1", "h2"],
+  ["0\t0\t1", "0\t1\t2", ".\t1\t1", "0\t0\t0"],
+);
+
+/** The tetraploid dataset of the spec, 12 individuals and 200 variants. */
+const TETRAPLOID_VCF = await referenceDists("tetraploid.vcf.gz");
+const TETRAPLOID_NUM_INDIVIDUALS = 12;
+const TETRAPLOID_NUM_VARS = 200;
+
+/**
+ * Three pairs of that dataset with the distance `gd.kosman` gives for each,
+ * the tetraploid rows of the table of "How it is verified" of the spec.
+ */
+const TETRAPLOID_LITERALS: { first: string; second: string; dist: number }[] = [
+  { first: "t00", second: "t01", dist: 0.375 },
+  { first: "t00", second: "t02", dist: 0.38797814207650272 },
+  { first: "t00", second: "t03", dist: 0.40163934426229508 },
+];
+
+/**
+ * A VCF of the three individuals `names`, one line for each text of
+ * `genotypes`, which holds the genotype of each of them.
+ *
+ * Every variant declares the three alleles `A`, `C` and `G`, so that the
+ * allele 2 of a genotype is one the file names, and no genotype is written
+ * with a ploidy of its own: the ploidy is what `openVcf` is told.
+ */
+function vcfOfThreeIndividuals(
+  names: readonly string[],
+  genotypes: readonly string[],
+): Uint8Array {
   const lines = genotypes.map(
     (variant, index) =>
       `chr1\t${(index + 1) * 100}\t.\tA\tC,G\t.\tPASS\t.\tGT\t${variant}`,
   );
   const header = [
     "##fileformat=VCFv4.4",
-    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts0\ts1\ts2",
+    `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
   ];
   return new TextEncoder().encode([...header, ...lines, ""].join("\n"));
 }
@@ -293,6 +327,108 @@ test("squareDists has the pair with no distance in both of its cells", () => {
   ]);
 });
 
+test("the three tetraploid distances that the spec gives", () => {
+  // Every pair of a tetraploid dataset: the sums of d are divided by 4
+  // times the variants of the pair, so a layer that took the ploidy for 2
+  // would give twice these distances.
+  const variants = openVcf(TETRAPLOID_VCF, { ploidy: 4, onlyPassed: false });
+  let distances: Distances;
+  try {
+    distances = calcPairwiseKosmanDists(variants);
+  } finally {
+    variants.free();
+  }
+
+  assert.equal(distances.names.length, TETRAPLOID_NUM_INDIVIDUALS);
+  const expected: PassStats = {
+    numVars: TETRAPLOID_NUM_VARS,
+    filtering: {},
+  };
+  assert.deepEqual(distances.passStats, expected);
+  for (const { first, second, dist } of TETRAPLOID_LITERALS) {
+    const pair = indexOfThePair(
+      distances.names.indexOf(first),
+      distances.names.indexOf(second),
+      TETRAPLOID_NUM_INDIVIDUALS,
+    );
+    assert.ok(
+      Math.abs((distances.distVector[pair] as number) - dist) < TOLERANCE,
+      `${first}, ${second}: ${String(distances.distVector[pair])} and not ${dist}`,
+    );
+  }
+});
+
+test("the three distances of the haploid worked example", () => {
+  // One allele in each genotype, so d is 0 for the same allele and 1 for
+  // two different ones, and the third variant is called in h1 and h2 alone.
+  const variants = openVcf(HAPLOID_WORKED_EXAMPLE, {
+    ploidy: 1,
+    onlyPassed: false,
+  });
+  let distances: Distances;
+  try {
+    distances = calcPairwiseKosmanDists(variants);
+  } finally {
+    variants.free();
+  }
+
+  assert.deepEqual(distances.names, ["h0", "h1", "h2"]);
+  assert.deepEqual(Array.from(distances.distVector), [1 / 3, 2 / 3, 1 / 2]);
+});
+
+test("a pair that was never called in both has no distance", () => {
+  // s0 and s1 are called at no variant in common, so their n is 0 and they
+  // have no distance whatever minNumSnps is. The other two pairs keep
+  // theirs: 0/0 against 0/1 is a d of 0.5 over one variant, and 1/1 against
+  // 0/0 a d of 1 over one variant.
+  const variants = openVcf(
+    vcfOfThreeIndividuals(["s0", "s1", "s2"], ["0/0\t./.\t0/1", "./.\t1/1\t0/0"]),
+    { onlyPassed: false },
+  );
+  let distances: Distances;
+  try {
+    distances = calcPairwiseKosmanDists(variants);
+  } finally {
+    variants.free();
+  }
+
+  assert.deepEqual(Array.from(distances.distVector), [Number.NaN, 0.5, 1]);
+  assert.deepEqual(Array.from(distances.squareDists()), [
+    0,
+    Number.NaN,
+    0.5,
+    Number.NaN,
+    0,
+    1,
+    0.5,
+    1,
+    0,
+  ]);
+});
+
+test("the variants are as they were after the calculation", () => {
+  // The call is a consumer: it makes one pass over the source and puts
+  // nothing on the `Variants`, so the steps are the one that was there and
+  // a second call reads the source again and gives the same vector.
+  const variants = openVcf(WORKED_EXAMPLE, { onlyPassed: false });
+  try {
+    variants.filterByMissingData(1);
+    const stepsBefore = variants.steps;
+
+    const first = calcPairwiseKosmanDists(variants);
+    assert.deepEqual(variants.steps, stepsBefore);
+    const second = calcPairwiseKosmanDists(variants);
+
+    assert.deepEqual(
+      Array.from(second.distVector),
+      Array.from(first.distVector),
+    );
+    assert.deepEqual(second.passStats, first.passStats);
+  } finally {
+    variants.free();
+  }
+});
+
 test("distances of a vector that is not one value for each pair are refused", () => {
   // The vector of three individuals holds three values. Four is the length
   // that pyNei takes and puts the fourth value in no cell of the square
@@ -310,10 +446,31 @@ test("distances of a vector that is not one value for each pair are refused", ()
 
 test("a source with no variant is refused and says that the source has none", () => {
   // A VCF whose header names three individuals and that has no data line.
+  // The whole message is asserted, because it is the one the Python
+  // function gives for the same source: the two languages say the same
+  // thing, and Python writes the path of the file before it, which the bytes
+  // a TypeScript user gives have not.
   const variants = openVcf(vcfOf([]));
   try {
     assert.throws(() => calcPairwiseKosmanDists(variants), {
-      message: /the source has no variant/,
+      message:
+        "the source has no variant, and a calculation needs 1 variant at least",
+    });
+  } finally {
+    variants.free();
+  }
+});
+
+test("a source with no variant names the counts of the filters that were on it", () => {
+  // Every filter of the pass ran over the nothing the source gave, and the
+  // counts say so: they are what a failed pass otherwise loses.
+  const variants = openVcf(vcfOf([]));
+  try {
+    variants.filterByMaf(0.95);
+    assert.throws(() => calcPairwiseKosmanDists(variants), {
+      message:
+        "the source has no variant, and a calculation needs 1 variant at " +
+        "least: the filter `maf` was given 0 variants and kept 0",
     });
   } finally {
     variants.free();
@@ -322,12 +479,19 @@ test("a source with no variant is refused and says that the source has none", ()
 
 test("steps that keep no variant are refused with the counts of each filter", () => {
   // The major allele frequency of a variant is at least one over its
-  // alleles, so a threshold of 0 keeps none of the 4 variants.
+  // alleles, so a threshold of 0 keeps none of the 4 variants, and a missing
+  // rate of at most 1 keeps every one of them: the two filters are named in
+  // the order of the steps.
   const variants = openVcf(WORKED_EXAMPLE, { onlyPassed: false });
   try {
+    variants.filterByMissingData(1);
     variants.filterByMaf(0);
     assert.throws(() => calcPairwiseKosmanDists(variants), {
-      message: /kept no variant of the 4[\s\S]*`maf` was given 4 variants and kept 0/,
+      message:
+        "the steps kept no variant of the 4 the source gave, and a " +
+        "calculation needs 1 variant at least: the filter `missing_data` was " +
+        "given 4 variants and kept 4, the filter `maf` was given 4 variants " +
+        "and kept 0",
     });
   } finally {
     variants.free();

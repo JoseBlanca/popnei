@@ -137,8 +137,8 @@ export class Distances {
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
  * `minNumSnps` is not a whole number of 0 or more, when the pass gives no
  * variant, whose message says whether the source held none or the steps
- * kept none and, for the steps, how many variants each filter was given and
- * kept, when the source cannot be read, a wrong line of a VCF among the
+ * kept none and how many variants each filter was given and kept, when the
+ * source cannot be read, a wrong line of a VCF among the
  * causes, when the memory of the tab does not take the two counts popnei
  * keeps for every pair, 8 bytes a pair, and when `init` has not been
  * awaited.
@@ -161,9 +161,11 @@ export function calcPairwiseKosmanDists(
     steps.of_a_pass(),
   );
   try {
-    // The vector and the names leave the memory of wasm as they are read,
-    // so what is held twice while they cross is nothing: at 10000
-    // individuals the vector is 400 MB.
+    // The vector and the names are moved out of the result as they are
+    // read, and not cloned. The generated code still copies the values into
+    // an array of the JavaScript heap and frees the memory of wasm after
+    // it, so the vector is held twice while that copy is made, 800 MB at
+    // 10000 individuals, and once afterwards.
     const distVector = calculated.dist_vector();
     const names = calculated.names();
     if (distVector === undefined || names === undefined) {

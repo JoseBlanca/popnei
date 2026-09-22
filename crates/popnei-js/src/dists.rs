@@ -13,9 +13,13 @@
 //!
 //! [`KosmanDistances`] is the result on its way out. It lives in the memory
 //! of wasm, which the garbage collector of JavaScript does not see, so the
-//! package frees it as soon as its three parts are read; the vector leaves
-//! that memory as it is read, because at 10000 individuals it is 400 MB and
-//! a copy beside it would be 400 MB more.
+//! package frees it as soon as its three parts are read. The vector is moved
+//! out of it as it is read, and not cloned: the code wasm-bindgen generates
+//! copies the values into a `Float64Array` of the JavaScript heap and then
+//! frees the `Vec`, so the two live side by side while that copy is made,
+//! 800 MB at 10000 individuals, and what is left afterwards is the 400 MB of
+//! the array the user holds. A clone before the crossing would be 400 MB
+//! more, and the memory of wasm never gives back what it grew by.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -119,8 +123,8 @@ pub(crate) fn kosman_dists_of(
 }
 
 /// `error`, and a pass that gave no variant under what the chain counted:
-/// whether the source held no variant or the filters kept none, and, in the
-/// second case, how many variants each of them was given and kept.
+/// whether the source held no variant or the filters kept none, and how many
+/// variants each filter was given and kept.
 ///
 /// The core says that the reader gave no variant and nothing more, because
 /// it is given a reader and not the chain it is the end of. The counts are
@@ -128,6 +132,11 @@ pub(crate) fn kosman_dists_of(
 /// finished" of `docs/specs/filters.md` says: the calculation read the
 /// source to its end before it found that there was no variant, so every
 /// filter has counted everything it was given.
+///
+/// The words are those of the Python function of `docs/specs/dists.md`, so
+/// that a user who reads one message reads the other. Python writes the path
+/// of the file and `: ` before them, which a TypeScript user has not: this
+/// crate is given the bytes of a file and no name for it.
 fn of_the_pass(
     error: popnei::Error,
     filtering: &[(&'static str, FilteringStats)],
@@ -142,29 +151,35 @@ fn of_the_pass(
         Some((_kind, stats)) => stats.vars_processed,
         None => 0,
     };
-    if from_the_source == 0 {
-        return JsPopneiError::NoVariant(
-            "the source has no variant, and the Kosman distances are over 1 variant \
-             at least"
-                .to_owned(),
-        );
-    }
     // The filters are named in the order of the steps, which is the order a
-    // user wrote them in and the reverse of the chain's.
+    // user wrote them in and the reverse of the chain's. A filter that was
+    // given nothing is named too: what a user is looking for is which of
+    // their steps is the one that emptied the pass, and a filter missing
+    // from the list would read as a step that did not run.
     let counts: Vec<String> = filtering
         .iter()
         .rev()
         .map(|(kind, stats)| {
             format!(
-                "`{kind}` was given {vars_processed} variants and kept {vars_kept}",
+                "the filter `{kind}` was given {vars_processed} variants and kept \
+                 {vars_kept}",
                 vars_processed = stats.vars_processed,
                 vars_kept = stats.vars_kept
             )
         })
         .collect();
+    let counts = counts.join(", ");
+    if from_the_source == 0 {
+        let message = "the source has no variant, and a calculation needs 1 variant \
+                       at least";
+        return JsPopneiError::NoVariant(if counts.is_empty() {
+            message.to_owned()
+        } else {
+            format!("{message}: {counts}")
+        });
+    }
     JsPopneiError::NoVariant(format!(
-        "the steps of these variants kept no variant of the {from_the_source} the \
-         source gave, and the Kosman distances are over 1 variant at least: {counts}",
-        counts = counts.join("; ")
+        "the steps kept no variant of the {from_the_source} the source gave, and a \
+         calculation needs 1 variant at least: {counts}"
     ))
 }
