@@ -12,6 +12,13 @@ from popnei.block import Block
 from popnei.filters import FilteringStats, Step
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
+from popnei.stats import (
+    PerVarDistribs,
+    PerVarStat,
+    PolyVarsStats,
+    StatsDistrib,
+    calc_per_var_distribs,
+)
 from popnei.variant import Blocks, PassStats, Variants
 
 __version__: str = _core.version()
@@ -26,10 +33,15 @@ __all__ = [
     "Blocks",
     "FilteringStats",
     "PassStats",
+    "PerVarDistribs",
+    "PerVarStat",
+    "PolyVarsStats",
+    "StatsDistrib",
     "Step",
     "Variants",
     "VarsWritten",
     "__version__",
+    "calc_per_var_distribs",
     "open_vars",
     "open_vcf",
     "write_vars",

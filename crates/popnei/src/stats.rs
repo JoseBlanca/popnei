@@ -23,6 +23,42 @@ use crate::variant::{
 /// populations, inherited from pyNei's `DEF_POP_NAME`.
 pub const DEFAULT_POP_NAME: &str = "pop";
 
+/// How many called genotypes a population needs at a variant for the
+/// variant to have a value there when the caller asks for no other number,
+/// 20, inherited from pyNei's `MIN_NUM_SAMPLES_FOR_POP_STAT`. Nobody has
+/// measured whether 20 is the right threshold.
+pub const DEFAULT_MIN_NUM_INDIVIDUALS: u32 = 20;
+
+/// The major allele frequency below which a variant is polymorphic in a
+/// population when the caller asks for no other number, 0.95, inherited
+/// from pyNei's `DEF_POLY_THRESHOLD`. Nobody has measured whether 0.95 is
+/// the right threshold.
+pub const DEFAULT_POLY_THRESHOLD: f64 = 0.95;
+
+/// The two ends of the range a histogram of a statistic covers when the
+/// caller asks for no other, 0 and 1, which is where the five statistics
+/// of a variant lie. It is pyNei's `default_range` of `_prepare_bins`.
+pub const DEFAULT_HIST_RANGE: (f64, f64) = (0.0, 1.0);
+
+/// How many bins a histogram of a statistic has when the caller asks for no
+/// other number, 40, inherited from pyNei's `_prepare_bins`.
+pub const DEFAULT_NUM_BINS: usize = 40;
+
+/// The name a Python and a TypeScript user writes for bins of equal width,
+/// which [`HistBins::linear`] builds. pyNei spells it `lineal`, the Spanish
+/// word, and popnei refuses that name as any other unknown one, which the
+/// owner decided on 22 September 2026.
+pub const LINEAR_BINS: &str = "linear";
+
+/// The name a Python and a TypeScript user writes for bins of equal ratio,
+/// which [`HistBins::logarithmic`] builds.
+pub const LOGARITHMIC_BINS: &str = "logarithmic";
+
+/// The bins a histogram of a statistic has when the caller names no kind,
+/// those of equal width, which cover their range evenly where the values of
+/// a statistic lie.
+pub const DEFAULT_BIN_TYPE: &str = LINEAR_BINS;
+
 /// One population: its name and the indices of its individuals.
 #[derive(Debug)]
 struct Pop {

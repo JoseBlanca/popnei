@@ -71,6 +71,11 @@ pub(crate) trait OpenSource: Sync {
     /// The file the source reads, which the errors of a pass over it name.
     fn path(&self) -> &Path;
 
+    /// How many alleles the genotype of one individual holds in the blocks
+    /// of every pass over the source, which a calculation that counts
+    /// genotypes out of called alleles is built with.
+    fn ploidy(&self) -> usize;
+
     /// The reader of one pass over the source, which opens the file again.
     ///
     /// `num_vars_per_block` is the size the caller will ask the blocks for,
