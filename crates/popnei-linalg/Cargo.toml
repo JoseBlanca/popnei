@@ -1,0 +1,18 @@
+[package]
+name = "popnei-linalg"
+description = "Population genetics: the linear algebra of popnei, on BLAS and LAPACK"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+blas.workspace = true
+blas-src.workspace = true
+lapack.workspace = true
+lapack-src.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

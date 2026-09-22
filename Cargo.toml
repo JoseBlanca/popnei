@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/popnei", "crates/popnei-python", "crates/popnei-js"]
+members = [
+  "crates/popnei",
+  "crates/popnei-linalg",
+  "crates/popnei-python",
+  "crates/popnei-js",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,6 +25,34 @@ license = "MIT"
 
 [workspace.dependencies]
 popnei = { path = "crates/popnei", version = "0.1.0" }
+# The three routines of BLAS and LAPACK that crates/popnei-linalg calls
+# natively, dsyrk, dsyevd and dgemm: the product of a matrix with itself,
+# the eigendecomposition of a symmetric matrix and the product of two
+# matrices, which docs/specs/linalg.md names one by one. `blas` and
+# `lapack` hold the declaration of each routine and nothing else, one
+# `unsafe fn` over slices whose lengths nothing checks against the
+# dimensions, which is why those calls live in a crate of their own and
+# the core crate keeps its `forbid(unsafe_code)`. What they give is not a
+# few lines of our own: dsyevd is a reduction to tridiagonal form, a
+# divide and conquer solver and the back transformation of the
+# eigenvectors, tuned for the caches and the vector instructions of the
+# machine, and it is the routine numpy's `eigh` calls, so popnei and numpy
+# compute the same eigendecomposition by the same path. Decision 5 of
+# docs/rust_core.md chose the library of the system for this, and
+# docs/specs/linalg.md states what the crate gives over it.
+blas = "0.23"
+lapack = "0.20"
+# The two crates that say which library holds those routines. Neither
+# ships an implementation: with the feature `accelerate` each emits the
+# linker argument `-framework Accelerate`, the library of the system that
+# numpy also calls on macOS, which ships nothing to build. The Linux and
+# Windows wheels link OpenBLAS through these same two crates, and the plan
+# that first builds them settles what that needs. Both are native only:
+# the wasm targets have no BLAS and run on faer, which the crate takes in
+# task 1.2 of docs/plans/pca.md, and which moves these two into the
+# optional dependencies of the targets that are not wasm.
+blas-src = { version = "0.14", features = ["accelerate"] }
+lapack-src = { version = "0.13", features = ["accelerate"] }
 # The gzip of the VCF reader, with its default backend, miniz_oxide, which
 # is written in Rust and so builds for the two wasm targets.
 flate2 = "1"
