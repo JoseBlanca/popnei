@@ -506,7 +506,7 @@ fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
 
 /// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
 /// or `True`, and the name of its type where its own `repr` raised.
-fn written_as(value: &Bound<'_, PyAny>) -> String {
+pub(crate) fn written_as(value: &Bound<'_, PyAny>) -> String {
     if let Ok(printed) = value.repr() {
         return printed.to_string();
     }

@@ -23,8 +23,9 @@
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2};
-use pyo3::exceptions::{PyOverflowError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBool;
 
 use popnei::block::BlockReader;
 use popnei::stats::{
@@ -33,7 +34,7 @@ use popnei::stats::{
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{PassCounts, count_of, source_of, threshold_of};
+use crate::source::{PassCounts, count_of, source_of, threshold_of, written_as};
 use crate::steps::{Steps, chain_of};
 
 /// The name a Python user writes each of the five statistics under, which
@@ -273,28 +274,41 @@ fn the_bins(
 ///
 /// It is taken as the object it is and converted here, and not by the
 /// signature, because the conversion of pyo3 answers before any rule of
-/// popnei: its `OverflowError` names neither the argument nor what the
-/// number has to be.
+/// popnei: it takes `True` as the number 1 with no word, and its
+/// `OverflowError` and its `TypeError` name neither the argument nor what
+/// the number has to be.
 ///
 /// # Errors
 ///
 /// A number that counts no genotype, a negative one or one above what this
 /// machine counts, which is a `ValueError`. What is no whole number at all,
-/// `3.1` or `"twenty"`, keeps the `TypeError` of pyo3, which says what it
-/// was given.
+/// `3.1`, `"twenty"` or a truth value, which is a `TypeError`: `True` and
+/// `False` say nothing about how much data a population needs, and asking
+/// for one called genotype is not what whoever wrote one meant.
 fn the_min_num_individuals(value: &Bound<'_, PyAny>) -> Result<u32, PyPopneiError> {
+    // A truth value is a whole number in Python, so it converts to 1 or 0
+    // and has to be refused before the conversion is asked for.
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(no_count_of_genotypes(value)).into());
+    }
     match value.extract::<u32>() {
         Ok(count) => Ok(count),
         Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
-            Err(PyValueError::new_err(format!(
-                "`{MIN_NUM_INDIVIDUALS}` is {value}, and it is how many called genotypes \
-                 a population needs at a variant to have a value there: a whole number \
-                 of 0 or more"
-            ))
-            .into())
+            Err(PyValueError::new_err(no_count_of_genotypes(value)).into())
         }
-        Err(error) => Err(error.into()),
+        Err(_) => Err(PyTypeError::new_err(no_count_of_genotypes(value)).into()),
     }
+}
+
+/// What a `min_num_individuals` that is no count of called genotypes is
+/// told, which names the argument and what the user wrote.
+fn no_count_of_genotypes(value: &Bound<'_, PyAny>) -> String {
+    format!(
+        "`{MIN_NUM_INDIVIDUALS}` is {given}, and it is how many called genotypes a \
+         population needs at a variant to have a value there: a whole number of 0 or \
+         more",
+        given = written_as(value)
+    )
 }
 
 /// The mean of each population and the histogram counts as bins x

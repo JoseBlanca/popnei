@@ -615,11 +615,41 @@ def test_per_var_distribs_refuse_a_min_num_individuals_that_is_no_whole_number()
     None
 ):
     """It is how many called genotypes a population needs at a variant, so
-    it is a whole number and 0 or more."""
-    with pytest.raises(TypeError):
+    it is a whole number and 0 or more, and what is none says so under the
+    name of the argument, where pyo3 says only that a float cannot be
+    interpreted as an integer.
+
+    A truth value is a whole number in Python, so `True` would ask for one
+    called genotype without a word, which is not what whoever wrote it
+    meant.
+    """
+    with pytest.raises(TypeError, match="`min_num_individuals` is 3.1"):
         calc_per_var_distribs(_many(), min_num_individuals=3.1)
+    with pytest.raises(TypeError, match="`min_num_individuals` is True"):
+        calc_per_var_distribs(_many(), min_num_individuals=True)
     with pytest.raises(ValueError, match="min_num_individuals"):
         calc_per_var_distribs(_many(), min_num_individuals=-1)
+
+
+def test_per_var_distribs_refuse_a_hist_kwargs_that_is_no_dict() -> None:
+    """The histogram is a dict of `range`, `num_bins` and `bin_type`, and
+    the message of what is none names the argument and what was given, where
+    a list is read key by key and asked for a `get` it has not got and a
+    number cannot be iterated over at all."""
+    with pytest.raises(TypeError, match="`hist_kwargs` is 5, a int"):
+        calc_per_var_distribs(_many(), hist_kwargs=5)
+    with pytest.raises(TypeError, match=r"`hist_kwargs` is \['range'\], a list"):
+        calc_per_var_distribs(_many(), hist_kwargs=["range"])
+
+
+def test_per_var_distribs_refuse_a_range_that_is_not_two_ends() -> None:
+    """`range` is the two ends of the histogram, and the message of what is
+    not two of something names the argument, where pyo3 says only that it
+    expected a tuple of length 2."""
+    with pytest.raises(TypeError, match=r"`hist_kwargs\['range'\]` is the two ends"):
+        calc_per_var_distribs(_many(), hist_kwargs={"range": (0, 1, 2)})
+    with pytest.raises(TypeError, match=r"`hist_kwargs\['range'\]` is the two ends"):
+        calc_per_var_distribs(_many(), hist_kwargs={"range": 1})
 
 
 def test_per_var_distribs_refuse_a_poly_threshold_that_is_no_frequency() -> None:

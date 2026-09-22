@@ -357,16 +357,45 @@ def _the_histogram(hist_kwargs: dict | None) -> tuple[tuple[float, float], int, 
     out of the dict a user gave, which is read and not changed."""
     if hist_kwargs is None:
         hist_kwargs = {}
+    if not isinstance(hist_kwargs, Mapping):
+        # A list of the keys is read key by key and asked for a `get` it has
+        # not got, and a number cannot be iterated over at all: what Python
+        # says of either names neither the argument nor the histogram.
+        raise TypeError(
+            f"`hist_kwargs` is {hist_kwargs!r}, a {type(hist_kwargs).__name__}, "
+            f"and the histogram is a dict of `range`, the two ends, `num_bins` "
+            f'and `bin_type`, {{"num_bins": 10}}'
+        )
     unknown = [key for key in hist_kwargs if key not in _HIST_KEYS]
     if unknown:
         raise ValueError(
             f"{unknown[0]!r} is not a key of `hist_kwargs`, whose keys are "
             f"`range`, the two ends of the histogram, `num_bins` and `bin_type`"
         )
-    hist_range = hist_kwargs.get("range", _core.DEFAULT_HIST_RANGE)
+    hist_range = _the_range(hist_kwargs.get("range", _core.DEFAULT_HIST_RANGE))
     num_bins = hist_kwargs.get("num_bins", _core.DEFAULT_NUM_BINS)
     bin_type = hist_kwargs.get("bin_type", _core.DEFAULT_BIN_TYPE)
     return hist_range, num_bins, bin_type
+
+
+def _the_range(hist_range) -> tuple[float, float]:
+    """The two ends of the histogram, as the Rust core takes them.
+
+    What is not two of something is refused here: pyo3 says of it "expected
+    tuple of length 2, but got tuple of length 3", which names neither the
+    argument nor what the two numbers are.
+    """
+    if not isinstance(hist_range, str | bytes):
+        try:
+            start, end = hist_range
+        except TypeError, ValueError:
+            pass
+        else:
+            return start, end
+    raise TypeError(
+        f"`hist_kwargs['range']` is the two ends of the histogram, (0, 1), and "
+        f"{hist_range!r}, a {type(hist_range).__name__}, was given"
+    )
 
 
 def _distrib_of(pop_names, hist_bin_edges, distrib) -> StatsDistrib | None:
