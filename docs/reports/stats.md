@@ -796,3 +796,64 @@ pytest.
 
 The subagents used: task 6.1 163477 tokens in 97 tool calls; task 6.2
 153762 in 72. Neither had to be sent back.
+
+## The merge
+
+The owner ordered the merge on 22 September 2026, after reading this
+report and the performance review that followed it. `main` had moved
+four times since this branch left it: it had gained the Kosman distances
+between individuals and their performance review, the principal
+components with the crate `crates/popnei-linalg` and their performance
+review, and the spec and the plan of the filter by linkage
+disequilibrium.
+
+So the merge was made the other way round first, `main` into the branch,
+at 8f01b8b, where it could be built and tested before anything reached
+`main`. Twenty-one files conflicted. Most were lists that both sides had
+appended to, the modules of the core, the cases of its error enum, the
+exports of both packages, the members of the workspace, and both sides
+were kept. Two needed a decision.
+
+The first was the error of a pass that gave no variant, which this
+report put to the owner as a decision and which the merge took the way
+this report recommended: the case of this branch stays, the one that
+carries the counts of the filters in the core so that its message says
+whether the source held no variant or the steps kept none, and the case
+`main` had goes, with the code in both binding crates that used to
+assemble that message. It was ten sites and not the five this report
+estimated, `docs/specs/dists.md` among them. One thing a user sees
+changed: where the source holds no variant the message no longer lists
+the counts of the filters, which were all zeros.
+
+The second was that the performance review of the principal components
+had changed the same function this module's own performance review had:
+how the alleles of a variant are counted. The two changes are different
+and the merge kept both, `main`'s fast path first, which counts a
+variant of two alleles without the table of 128 counters at all, and
+this branch's four arrays as the loop it falls back to, which is what
+still carries a variant of more alleles and the counting over one
+population. On the benchmark of this module the merged counting is as
+fast as the faster of the two, and the reason the numbers moved so far
+is in `docs/reports/perf-stats-2026-09-22.md`.
+
+The Kosman functions of the two binding crates needed no repair after
+all. This report expected them to, because they call the function that
+builds the readers of a pass and this branch changed what it takes; they
+call their own crate's wrapper, which merged without conflict.
+
+The four numbers of "Speed" of `docs/specs/stats.md` are met after the
+merge, where one was missed before it. Over `big.vars`, best of five at
+a load average of 3.8: the five per variant statistics with no
+populations 0.222 s on one thread against the 0.25 s asked and 0.125 s
+on 18 cores against 0.15 s, and the per individual statistics 0.206 s on
+one thread. The pass was 0.479 s when the plan reported it.
+
+`perf/stats`, which contained this branch, was merged into `main` as a
+fast forward at 4179132. The checks on `main` afterwards: `cargo fmt
+--all --check` exit 0; `cargo clippy --workspace --all-targets -- -D
+warnings` no warning; `cargo test --workspace` `520 passed`, 2 ignored,
+and `35 passed` of the linear algebra crate; `cargo wasm-check`
+finished; ruff `25 files already formatted` and `All checks passed!`;
+`uv run maturin develop && uv run pytest` `312 passed`; `npm run build
+&& npm test` in `js/popnei` `tests 208`, `fail 0`; the wheel of pyodide
+built and `node tests/pyodide/smoke.mjs` exited with 0.
