@@ -36,19 +36,40 @@ What is asked of the owner.
 
 1. The merge of `plan/stats`, which is the orchestrator's only ask and
    which it does not do. The branch is from `spec/stats`, which is from
-   `main` at 7d8366f, and `main` has moved since: the Kosman plan was
-   merged into it at 3aa9484. Three places will meet at the merge. The
-   two functions the Kosman plan added to the binding crates call
-   `chain_of` with the signature `main` has, and this branch changed it
-   to take a list of `PassStep`; they will not build until they take
-   steps. The error of a calculation whose pass gave no variant exists
-   twice, as `ReaderGaveNoVariants` in `main`, which the binding crate
-   fills with the counts of the filters, and as `PassGaveNoVariant`
-   here, which carries them in the core; each follows its own spec, and
-   which one stays is a decision. And the list of modules of the core
-   and the end of the error enum are where this branch, the Kosman plan
-   and `plan/pca`, which is not merged either, all add lines; keeping
-   both sides is the resolution, as the board says.
+   `main` at 7d8366f, and `main` has moved since: the plan of the
+   Kosman distances between individuals, `docs/plans/dists-kosman.md`,
+   was merged into it at 3aa9484. Three places will meet at the merge.
+
+   The first is the function that builds the readers of one pass, one
+   over another, from what a user asked for, `chain_of` of the core.
+   This branch changed what it takes: a list of the steps of the pass,
+   a type named `PassStep`, where it used to take a list of the three
+   threshold filters' criteria, because a step is now either one of
+   those filters or the filter of individuals. The two functions the
+   Kosman plan added to the binding crates call it with the old
+   signature and will not build until they pass steps. That is a repair
+   and not a choice, and it is two call sites.
+
+   The second is a decision. A calculation whose pass gave no variant
+   has an error case in each branch, and they differ in what a user
+   reads. `main` has `ReaderGaveNoVariants`, whose message says only
+   that the reader gave none, and the binding crate adds the counts of
+   the filters to it afterwards. This branch has `PassGaveNoVariant`,
+   which carries those counts itself, so its message says whether the
+   source held no variant or the steps kept none, and how many variants
+   each filter was given and kept. Each follows its own spec. Keeping
+   this branch's case means the Kosman distances gain that message and
+   the code that assembled it in the binding crate goes; keeping
+   `main`'s means this plan's two calculations lose it and the specs
+   disagree with the code.
+
+   The third is where three branches add lines to the same two files,
+   the list of the modules of the core and the end of its error enum:
+   this branch, the Kosman plan and `plan/pca`, which is not merged
+   either. Each adds its own module and its own cases and none removes
+   another's, so the resolution is to keep every line of both sides of
+   each conflict rather than choose between them. The messages the
+   sessions left each other, in `.claude/board/`, say the same.
 2. The one number of "Speed" that is not met: the per variant pass with
    the five statistics takes 0.479 to 0.483 s on one thread where the
    spec asks 0.25 s. The plan says that is a finding and not a task, so
@@ -72,8 +93,9 @@ What is asked of the owner.
    the genotypes not being in a block reaches Python as a wrong input of
    a user where the code calls it a defect of a reader; it has behaved
    so since before this plan. Neither pass honours Ctrl-C while it runs,
-   which is the choice the writer of the vars file made and which the
-   report of the filters already put before the owner; a pass over the
+   which is the choice `write_vars`, the function that writes a vars
+   file, made before them and which the report of the filters already
+   put before the owner; a pass over the
    400 MB file is about 2.4 s of a dead Ctrl-C. And `docs/glossary.md`
    ends a sentence in the middle at its line 154, from a commit long
    before this branch, in a file other branches also change, so it was
@@ -116,15 +138,22 @@ the positions 1000, 1037, 1074, 1111 and 1148 first, and 26 with the
 filter over the 50 individuals. `/Users/jose/devel/popnei-bench/big.vars`
 is there, 81356714 bytes, and `big.vcf` beside it, 403572954 bytes.
 
-The start message of the branch is on the board,
-`.claude/board/2026-09-22T1020-plan-stats.md`.
+The start message of the branch is in `.claude/board/`, the directory
+outside every branch where the sessions working on popnei at the same
+time leave each other messages about the files they will both change:
+`2026-09-22T1020-plan-stats.md`.
 
 ## Work package 1: the steps of a pass as one enum
 
-Task 1.1, commit c902c09: `PassStep` in `crates/popnei/src/filters.rs`,
-`#[non_exhaustive]` as the spec has it, with `VarFilter` and
-`KeepIndividuals`, and `chain_of` and `refuse_a_second_filter_of_a_kind`
-over a list of it; the `Step` of each binding crate is a struct that
+Task 1.1, commit c902c09. A pass over the variants is a stack of
+readers, one over another, each doing one thing a user asked for; the
+core builds that stack with `chain_of` from a list of the steps the
+user added. The steps used to be the criteria of the three threshold
+filters, and nothing else could be one. `PassStep`, in
+`crates/popnei/src/filters.rs`, is the type of a step now: either a
+threshold filter or the filter of individuals, with room for the ones
+the later specs add. `chain_of` and the function that refuses a second
+filter of one kind take a list of it; the `Step` of each binding crate is a struct that
 holds one `PassStep` and the names and values of its arguments as the
 user sees them, and the two crates' own loops over criteria are gone.
 The error enum of the core gets one case, `PassStepNotBuilt`, a
@@ -251,11 +280,16 @@ when a bound is broken, in the tests and in the texts:
   and the block as it was. The reader of the filter dropped in silence
   an index beyond the individuals of its source when it built its
   names, unreachable for the same reason; it gives the error now.
-- The buffer of the gather was allocated once per rayon job, about one
-  per three rows, and not once per thread as its comment said: 1861 to
-  2245 jobs for a block of 5000 variants of 1000 individuals, 500 kept,
-  on 18 threads, measured by the fixer on the M5 Pro; with a floor of 64
-  rows per job, 63. What the gather costs with either was not measured.
+- The buffer that the compaction gathers a row through was allocated
+  once for each piece of work rayon split the block into, and not once
+  per thread as its comment said. rayon splits until the pieces are
+  small, so the count grew with the rows: a block of 5000 variants of
+  1000 individuals, 500 kept, on 18 threads, was split into 1861 to
+  2245 pieces in three runs, each with its own allocation. The
+  compaction now asks rayon for pieces of 64 rows at least, which makes
+  63 of them for that block, so the allocations no longer grow with the
+  variants. What the gather costs with either was not measured, and the
+  change was made for the allocations and not for a time.
 - Two tests could not fail: the one thread against several test had 300
   identical rows, since its 20 alleles per row cycled 5 values, and a
   mutation that copies row 0 into every row passed it; and no test
@@ -276,13 +310,19 @@ when a bound is broken, in the tests and in the texts:
   the names are. A docstring that counted three filter methods, and a
   cut sentence in the comment of the exception table, are mended.
 
-Not taken, with the reason: that the `reblock` at the end of
-`iter_blocks` sizes the blocks after the filter for the kept individuals
-and not the source's, above 500 individuals, because `docs/specs/block.md`
-says its default is for the individuals of the reader it is given, and
-the sentence of the filter spec is about the filter's own reader; the
-spec of the filter says so now, in 15281d2, which also says that the 500,
-423 and 26 of `many.vcf` come out with `only_passed` false. That a chain
+Not taken, with the reason. A reviewer read "How it runs" of the filter
+of individuals, which says the blocks are the size of its source's,
+worked out from the individuals of the source and not from the kept
+ones, and found that a user of `iter_blocks` gets larger blocks after
+the filter than before it, from about 500 individuals up. That is not
+what the sentence is about: it is about the blocks the filter's own
+reader gives, which do keep the source's size, and `iter_blocks` puts
+one more reader after the whole chain, whose size `docs/specs/block.md`
+says is worked out from the individuals of the reader it is given,
+which after the filter is the kept ones. Both specs say what their code
+does, so nothing was changed; the spec of the filter says this in
+15281d2, which also says that the 500, 423 and 26 of `many.vcf` come
+out with `only_passed` false. That a chain
 built over a reader that already holds a filter of individuals is not
 refused, because the spec limits that refusal to the threshold filters,
 whose `FilteredReader::new` asks the reader. That `filter_individuals`
@@ -491,9 +531,13 @@ arithmetics differ by at most 2.84e-16, not by a bit or two: two
 reviewers recomputed that independently, over every biallelic split up
 to 500 called alleles. The sums of a pass are bit-identical across
 thread counts, where the spec said they agree to about 1e-15 and not to
-the bit, so the test now compares the bits. The lookup of the
-individuals of a population is one hash map per population, where one
-sentence said once per pass and the interface prescribed per population.
+the bit, so the test now compares the bits. The names of the individuals of
+a population are looked up through a map built once for each population,
+which is what "The Rust interface" prescribes, since it has the function
+that resolves one population's names called once per population, and a
+second sentence of the spec said one map for the whole pass; the second
+sentence was the one corrected, at a measured cost of 30 ms for 300
+populations of 10000 individuals, once per pass.
 The test of the block sizes compares them against each other now, and
 not each against a printed literal. At ploidy 1 the plain expected
 heterozygosity is not 0 but -2.2e-16 at a variant with a called allele,
@@ -523,9 +567,10 @@ which is more than a fix; the comment that said the pass allocates
 nothing per variant now says what it does allocate. That the pass
 should honour Ctrl-C while it runs, which is the choice the writer of
 the vars file made before it and which the report of the filters already
-put before the owner. That `IndividualBeyondTheVariant` reaches Python
-as a `ValueError`: it is in the arm that gives a `RuntimeError`, as it
-should be, and the reviewer had misread the arm.
+put before the owner. That the error of a count asked for an
+individual the variant does not hold reaches Python as a wrong input of
+a user: it is already in the arm that gives a `RuntimeError`, a defect
+of popnei, as it should be, and the reviewer had misread the arm.
 
 One finding is for work package 6 and not for a fix. The architecture
 reviewer measured the pass on `big.vars`, 100000 variants of 1000
@@ -648,17 +693,17 @@ the one the populations already had. In Python both statistics functions
 reached inside the `Variants` they were given without checking it, so a
 wrong argument gave `AttributeError: 'str' object has no attribute
 '_source'`, which names popnei's insides; they now give the `TypeError`
-that names the argument, as the writer of the vars file already did, and
-which its own comment records as the defect it had fixed there. The
+that names the argument, as `write_vars` already did, and which the
+comment beside that guard records as the defect it had fixed there. The
 error of a pass that gave no variant ended with "a statistic per variant
 is calculated over the variants the pass gives", which a user of the per
 individual pass read for a statistic that is per individual.
 
 Not taken, with the reason: that neither pass honours Ctrl-C while it
 runs, because the loop over the blocks is the core's and the binding
-crate cannot look at the signals inside it, which is the same choice the
-writer of the vars file made and which the report of the filters already
-put before the owner; a pass over the 400 MB file is about 2.4 s of a
+crate cannot look at the signals inside it, which is the same choice
+`write_vars`, the function that writes a vars file, made before them and
+which the report of the filters already put before the owner; a pass over the 400 MB file is about 2.4 s of a
 dead Ctrl-C, measured. That the case of the genotypes not being in a
 block reaches Python as a wrong input where the code calls it a defect
 of a reader, because it has behaved so since before this plan and is not
