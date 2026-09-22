@@ -406,6 +406,10 @@ fn num_individuals_of(gts: &[i8], ploidy: usize) -> Result<usize> {
 /// It counts one genotype into `counts`: the genotype of one individual at
 /// one variant, the ploidy alleles of it.
 ///
+/// The `stats` module counts it for one individual over the variants of a
+/// pass, as [`count_gts`] counts it for one variant over the individuals,
+/// so what a missing and a heterozygous genotype are is written here alone.
+///
 /// # Errors
 ///
 /// An allele below [`MISSING_ALLELE`], which no reader of popnei gives.
@@ -415,7 +419,7 @@ fn num_individuals_of(gts: &[i8], ploidy: usize) -> Result<usize> {
               each caller checks first that the genotypes it counts are a number a u32 \
               holds"
 )]
-fn count_the_genotype(genotype: &[i8], counts: &mut GtCounts) -> Result<()> {
+pub(crate) fn count_the_genotype(genotype: &[i8], counts: &mut GtCounts) -> Result<()> {
     let mut alleles = genotype.iter().copied();
     // A genotype holds the ploidy, which is 1 at least, so it has a first
     // allele.

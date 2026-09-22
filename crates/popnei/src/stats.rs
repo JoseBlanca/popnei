@@ -17,6 +17,7 @@ use crate::filters::resolve_individuals;
 use crate::io::vcf::MAX_PLOIDY;
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_of, count_gts, count_gts_of,
+    count_the_genotype,
 };
 
 /// The name of the one population of a calculation that was given no
@@ -1552,6 +1553,374 @@ fn the_distribs(
     }
 }
 
+/// What a pass has counted of one individual: the variants at which its
+/// genotype is missing and the ones at which it is heterozygous.
+#[derive(Debug, Clone, Copy)]
+struct OfAnIndividual {
+    num_missing: u64,
+    num_het: u64,
+}
+
+impl OfAnIndividual {
+    /// The counts of an individual before any variant is read.
+    fn none() -> OfAnIndividual {
+        OfAnIndividual {
+            num_missing: 0,
+            num_het: 0,
+        }
+    }
+
+    /// It counts one genotype of the individual, which
+    /// [`count_the_genotype`] has read into `of_the_genotype`: a missing
+    /// genotype, a heterozygous one, or neither.
+    fn add_the_genotype(&mut self, of_the_genotype: GtCounts) {
+        // One genotype of the pass, and a pass of more than
+        // 18446744073709551615 variants reads more rows than any source
+        // holds.
+        self.num_missing = self
+            .num_missing
+            .saturating_add(u64::from(of_the_genotype.missing));
+        self.num_het = self.num_het.saturating_add(u64::from(of_the_genotype.het));
+    }
+
+    /// It adds what one chunk of rows counted to what the pass has.
+    fn add_the_chunk(&mut self, of_the_chunk: OfAnIndividual) {
+        self.num_missing = self.num_missing.saturating_add(of_the_chunk.num_missing);
+        self.num_het = self.num_het.saturating_add(of_the_chunk.num_het);
+    }
+}
+
+/// What one pass of [`calc_per_individual_stats`] gives back: how many
+/// variants it gave, and of each individual how many of them its genotype
+/// is missing at and how many it is heterozygous at.
+///
+/// The individuals are in the order of the rows of the blocks, which is the
+/// order of `individuals()` of the reader of the pass, and the binding
+/// crates take their names from there.
+#[derive(Debug, Clone)]
+pub struct PerIndividualStats {
+    /// The two counts of each individual, in the order of the rows.
+    individuals: Vec<OfAnIndividual>,
+    /// The variants the pass gave.
+    num_vars: u64,
+}
+
+impl PerIndividualStats {
+    /// How many individuals it holds the counts of, those of the pass.
+    #[must_use]
+    pub fn num_individuals(&self) -> usize {
+        self.individuals.len()
+    }
+
+    /// The variants the pass gave, which the missing rate of an individual
+    /// is over.
+    #[must_use]
+    pub fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    /// The variants at which the genotype of one individual is missing, a
+    /// half called genotype among them.
+    ///
+    /// `individual` is one of `0..num_individuals()`; a number at or beyond
+    /// `num_individuals()` is no individual of this and has no count here.
+    #[must_use]
+    pub fn num_missing(&self, individual: usize) -> u64 {
+        self.individuals
+            .get(individual)
+            .map_or(0, |counts| counts.num_missing)
+    }
+
+    /// The variants at which the genotype of one individual is called and
+    /// its alleles are not all the same.
+    ///
+    /// `individual` is one of `0..num_individuals()`; a number at or beyond
+    /// `num_individuals()` is no individual of this and has no count here.
+    #[must_use]
+    pub fn num_het(&self, individual: usize) -> u64 {
+        self.individuals
+            .get(individual)
+            .map_or(0, |counts| counts.num_het)
+    }
+
+    /// The missing genotypes of one individual over the variants of the
+    /// pass, the share of them at which it has no genotype.
+    ///
+    /// `individual` is one of `0..num_individuals()`; a number at or beyond
+    /// `num_individuals()` is no individual of this and has no missing
+    /// genotype here, a rate of 0.
+    #[must_use]
+    pub fn missing_rate(&self, individual: usize) -> f64 {
+        // A pass that gave no variant is an error, so a result of
+        // `calc_per_individual_stats` holds one variant at least and this
+        // never happens; what it keeps out is the NaN of 0 over 0.
+        if self.num_vars == 0 {
+            return 0.0;
+        }
+        // Every count of popnei is below 2^53, where a `f64` holds the
+        // whole numbers exactly.
+        self.num_missing(individual) as f64 / self.num_vars as f64
+    }
+
+    /// The heterozygous genotypes of one individual over its called ones,
+    /// the variants of the pass less the ones its genotype is missing at,
+    /// and `None` when it has called none of them.
+    ///
+    /// pyNei's `calc_per_sample_stats` divides by every variant instead, so
+    /// an individual with more missing data looks less heterozygous there;
+    /// the owner decided on 22 September 2026 that popnei divides by the
+    /// called genotypes, which is what plink2's `--het` gives.
+    ///
+    /// `individual` is one of `0..num_individuals()`; a number at or beyond
+    /// `num_individuals()` is no individual of this and has no rate here.
+    #[must_use]
+    pub fn obs_het_rate(&self, individual: usize) -> Option<f64> {
+        let counts = self.individuals.get(individual)?;
+        // The missing genotypes of an individual are counted among the
+        // variants of the pass, so the called ones are not below 0.
+        let called = self.num_vars.checked_sub(counts.num_missing)?;
+        if called == 0 {
+            return None;
+        }
+        // Every count of popnei is below 2^53, where a `f64` holds the
+        // whole numbers exactly.
+        Some(counts.num_het as f64 / called as f64)
+    }
+}
+
+/// The missing rate and the heterozygosity rate of every individual over
+/// the variants `reader` gives, which is one pass over the source through
+/// the steps the variants carry.
+///
+/// `reader` is the outermost reader of the chain of the pass, lent and not
+/// taken, so that whoever built the chain reads the counts of its filters
+/// from it when this returns: those counts and
+/// [`PerIndividualStats::num_vars`] are the `pass_stats` of a result in
+/// Python and in TypeScript. The pass asks the reader for the genotypes
+/// alone.
+///
+/// The individuals are those of `individuals()` of the reader, in that
+/// order, which is the order of the genotypes in the rows of its blocks.
+///
+/// # Errors
+///
+/// What the reader fails with; a block that holds no genotypes, which is a
+/// reader that was asked for them and gave none, a block of no variants and
+/// a block whose individuals or ploidy are not the ones the reader says its
+/// source has, each a defect of a reader; a genotype with an allele below
+/// the missing one; and a pass that gave no variant, whether its source
+/// holds none or its steps kept none of them.
+pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(
+    reader: &mut R,
+) -> Result<PerIndividualStats> {
+    // The two counts of an individual follow from its genotype at each
+    // variant, so no column of a block is read and the reader is asked to
+    // fill none of them.
+    reader.set_needs(Needs::GTS);
+    let num_individuals = reader.individuals().len();
+    let ploidy = reader.ploidy();
+    // The two counts of every individual, which every chunk of rows of
+    // every block is added into: what is kept from one block to the next
+    // grows with the individuals and not with the variants.
+    let mut counted = vec![OfAnIndividual::none(); num_individuals];
+    let mut num_vars: u64 = 0;
+    while let Some(block) = reader.next_block()? {
+        // The rows are cut out of the genotypes by the sizes the block
+        // states, so those sizes are checked before anything is read.
+        block.check()?;
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
+        // The counts of an individual are of the genotype at its place in
+        // every row of the pass, so a block of other individuals, or of
+        // another ploidy, would count one individual at the place of
+        // another.
+        if block.num_individuals != num_individuals || block.ploidy != ploidy {
+            return Err(Error::BlocksDoNotFitTogether {
+                num_individuals,
+                ploidy,
+                found_num_individuals: block.num_individuals,
+                found_ploidy: block.ploidy,
+            });
+        }
+        // A block of no individual, or of the ploidy 0, has no genotype of
+        // a variant and empty `gts` for that reason, which has nothing to
+        // do with genotypes that nobody asked the reader for: each is a
+        // defect of a reader, and the message names the one that happened.
+        let alleles_per_var = block.alleles_per_var()?;
+        if alleles_per_var == 0 {
+            return Err(Error::BlockWithNoGenotypeOfAVariant {
+                num_individuals: block.num_individuals,
+                ploidy: block.ploidy,
+            });
+        }
+        if block.gts.is_empty() {
+            return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+        }
+        count_the_block(&block, alleles_per_var, &mut counted)?;
+        // A `usize` is 64 bits on the targets popnei builds natively for
+        // and 32 in wasm, so every one of them is a `u64`; and a pass of
+        // more than 18446744073709551615 variants reads more rows than any
+        // source holds.
+        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+    }
+    if num_vars == 0 {
+        let filters = reader.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            // The filter nearest the source was given what the source
+            // gave; with no filter the pass gave what the source gave,
+            // which is nothing.
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
+    }
+    Ok(PerIndividualStats {
+        individuals: counted,
+        num_vars,
+    })
+}
+
+/// It counts the genotypes of every row of a block into `counted`, one
+/// entry for each individual of the block.
+///
+/// Natively the chunks of rows are read on the threads of rayon, as section
+/// 3 of `docs/architecture.md` asks: no row reads another, each chunk
+/// counts its own rows, and the chunks are added into `counted` in the
+/// order of the block. The counts are integers and add up to the same
+/// number in any order; the order is kept all the same, so that a chunk is
+/// added once and once only wherever it was read. The threads are those of
+/// the pool the caller is running in, and rayon's global pool only when the
+/// caller is in none.
+///
+/// # Errors
+///
+/// A genotype with an allele below the missing one, which no reader of
+/// popnei gives. The error is the one of the first row that has one,
+/// wherever the threads found it: which of two bad rows a thread reaches
+/// first depends on how the chunks were shared out, and a user who reports
+/// a damaged file has to get the same message every time, so the rows are
+/// read again, one after another, to find the first.
+#[cfg(not(target_family = "wasm"))]
+fn count_the_block(
+    block: &Block,
+    alleles_per_var: usize,
+    counted: &mut [OfAnIndividual],
+) -> Result<()> {
+    use rayon::iter::ParallelIterator;
+    use rayon::slice::ParallelSlice;
+
+    let num_individuals = counted.len();
+    let of_the_chunks: Result<Vec<Vec<OfAnIndividual>>> = block
+        .gts
+        .par_chunks(alleles_of_a_chunk(alleles_per_var))
+        .map(|chunk| {
+            // The one allocation of a chunk: two counts for each
+            // individual, which grow neither with the rows of the chunk nor
+            // with the variants of the pass.
+            let mut of_the_chunk = vec![OfAnIndividual::none(); num_individuals];
+            count_the_rows(chunk, alleles_per_var, block.ploidy, &mut of_the_chunk)?;
+            Ok(of_the_chunk)
+        })
+        .collect();
+    match of_the_chunks {
+        Ok(of_the_chunks) => {
+            for of_the_chunk in &of_the_chunks {
+                add_the_chunk(counted, of_the_chunk);
+            }
+            Ok(())
+        }
+        // The second pass costs a read of the block, and it is made only
+        // where the block is refused and nothing of it is given.
+        Err(of_a_thread) => {
+            let mut read_again = vec![OfAnIndividual::none(); num_individuals];
+            match count_the_chunks_one_by_one(block, alleles_per_var, &mut read_again) {
+                Err(of_the_first_row) => Err(of_the_first_row),
+                // The rows are the same rows, so the second pass finds an
+                // error too; the error of the threads is what is left if it
+                // ever did not.
+                Ok(()) => Err(of_a_thread),
+            }
+        }
+    }
+}
+
+/// The same counts, with the chunks read one after another, which is what
+/// wasm does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn count_the_block(
+    block: &Block,
+    alleles_per_var: usize,
+    counted: &mut [OfAnIndividual],
+) -> Result<()> {
+    count_the_chunks_one_by_one(block, alleles_per_var, counted)
+}
+
+/// The chunks of the block read one after another, each into counts of its
+/// own that are added into `counted` before the next is read: what wasm
+/// runs, and what the threads fall back on to find the first row that is an
+/// error.
+///
+/// The chunks are the same chunks the threads read, and they are added in
+/// the same order.
+///
+/// # Errors
+///
+/// Those of [`count_the_block`], at the first row that has one.
+fn count_the_chunks_one_by_one(
+    block: &Block,
+    alleles_per_var: usize,
+    counted: &mut [OfAnIndividual],
+) -> Result<()> {
+    let mut of_the_chunk = vec![OfAnIndividual::none(); counted.len()];
+    for chunk in block.gts.chunks(alleles_of_a_chunk(alleles_per_var)) {
+        of_the_chunk.fill(OfAnIndividual::none());
+        count_the_rows(chunk, alleles_per_var, block.ploidy, &mut of_the_chunk)?;
+        add_the_chunk(counted, &of_the_chunk);
+    }
+    Ok(())
+}
+
+/// It adds what one chunk of rows counted to what the pass has, one
+/// individual at a time.
+fn add_the_chunk(counted: &mut [OfAnIndividual], of_the_chunk: &[OfAnIndividual]) {
+    for (of_the_pass, of_the_chunk) in counted.iter_mut().zip(of_the_chunk) {
+        of_the_pass.add_the_chunk(*of_the_chunk);
+    }
+}
+
+/// It counts the genotypes of every row of one chunk into `of_the_chunk`,
+/// one entry for each individual.
+///
+/// `gts` holds whole rows of `alleles_per_var` alleles each, and
+/// `alleles_per_var` is the individuals of the block times its ploidy,
+/// which the pass checked is not 0, so neither cut of the rows is of 0
+/// alleles. The genotypes of a row are in the order of the individuals, so
+/// the genotype at a place in the row and the counts at that place in
+/// `of_the_chunk` are of the same individual.
+///
+/// # Errors
+///
+/// A genotype with an allele below the missing one, at the first row of the
+/// chunk that has one.
+fn count_the_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    ploidy: usize,
+    of_the_chunk: &mut [OfAnIndividual],
+) -> Result<()> {
+    for row in gts.chunks_exact(alleles_per_var) {
+        for (genotype, of_the_individual) in row.chunks_exact(ploidy).zip(of_the_chunk.iter_mut()) {
+            // What a missing and a heterozygous genotype are is written
+            // once, in the `variant` module, and the counts of one variant
+            // read it there too.
+            let mut of_the_genotype = GtCounts::default();
+            count_the_genotype(genotype, &mut of_the_genotype)?;
+            of_the_individual.add_the_genotype(of_the_genotype);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod pops {
     use super::{DEFAULT_POP_NAME, Pops};
@@ -1802,9 +2171,11 @@ mod fixtures {
     use std::path::{Path, PathBuf};
 
     use crate::block::{Block, BlockReader};
+    use crate::error::Result;
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{
-        AlleleCounts, GtCounts, Needs, count_alleles_of, count_gts, count_gts_of,
+        AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts, count_gts_of,
     };
 
     /// The individuals of pop1 of the worked example of "How it is
@@ -1877,10 +2248,33 @@ mod fixtures {
         (20..50).collect()
     }
 
-    /// The reference VCFs live at the root of the repository, beside the
+    /// The reference files live at the root of the repository, beside the
     /// Python tests that read the same files, and not inside this crate.
-    fn many_vcf() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/vcf/many.vcf")
+    pub(super) fn reference(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference")
+            .join(name)
+    }
+
+    /// The reader over a VCF of the reference files, with every variant
+    /// given and the blocks of the size popnei chose for its individuals.
+    pub(super) fn vcf_reader(name: &str) -> VcfReader<BufReader<File>> {
+        vcf_reader_of(name, None)
+    }
+
+    /// The same reader, with blocks of `num_vars_per_block` variants when
+    /// the test asks for a size of its own.
+    pub(super) fn vcf_reader_of(
+        name: &str,
+        num_vars_per_block: Option<usize>,
+    ) -> VcfReader<BufReader<File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        VcfReader::<BufReader<File>>::from_path(&reference(name), options)
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
     }
 
     /// The first three variants of `many.vcf`, the 500 variants of 50
@@ -1893,7 +2287,8 @@ mod fixtures {
             num_vars_per_block: Some(3),
         };
         let mut reader =
-            VcfReader::<BufReader<File>>::from_path(&many_vcf(), options).expect("many.vcf");
+            VcfReader::<BufReader<File>>::from_path(&reference("vcf/many.vcf"), options)
+                .expect("many.vcf");
         reader.set_needs(Needs::GTS | Needs::CHROM_POS);
         let block = reader
             .next_block()
@@ -1925,6 +2320,87 @@ mod fixtures {
             (found - expected).abs() <= tolerance,
             "{what} is {found}, and it is {expected} within {tolerance}"
         );
+    }
+
+    /// A reader of the tests that gives the blocks it was built with, which
+    /// is how the worked examples of the spec reach the pass: five diploid
+    /// individuals named `i1` to `i5`, the individuals of both worked
+    /// examples.
+    #[derive(Debug)]
+    pub(super) struct GivenBlocks {
+        individuals: Vec<String>,
+        chroms: ChromTable,
+        /// The blocks it has not given yet, the next one last.
+        left: Vec<Block>,
+        /// What it was last asked to fill, which the test reads to see that
+        /// the pass asks for the genotypes alone.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// The fields the pass last asked it to fill.
+        pub(super) fn needs(&self) -> Needs {
+            self.needs
+        }
+
+        /// The reader over `blocks`, which it gives in their order.
+        pub(super) fn of(blocks: Vec<Block>) -> GivenBlocks {
+            let mut chroms = ChromTable::new();
+            chroms.intern("chr1");
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (1..=5).map(|number| format!("i{number}")).collect(),
+                chroms,
+                left,
+                needs: Needs::ALL,
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            2
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The blocks of `num_vars_per_block` variants that hold `variants`, the
+    /// rows of a worked example, one after another.
+    pub(super) fn blocks_of(variants: &[[i8; 10]], num_vars_per_block: usize) -> Vec<Block> {
+        variants
+            .chunks(num_vars_per_block)
+            .map(|of_the_block| Block {
+                num_vars: of_the_block.len(),
+                num_individuals: 5,
+                ploidy: 2,
+                gts: of_the_block.iter().flatten().copied().collect(),
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+            })
+            .collect()
     }
 }
 
@@ -2934,18 +3410,20 @@ mod exp_het {
 mod distribs {
     use std::fs::File;
     use std::io::BufReader;
-    use std::path::{Path, PathBuf};
 
-    use super::fixtures::{THE_SIX_VARIANTS, THE_THREE_VARIANTS};
+    use super::fixtures::{
+        GivenBlocks, THE_SIX_VARIANTS, THE_THREE_VARIANTS, blocks_of, reference, vcf_reader,
+        vcf_reader_of,
+    };
     use super::{
         ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat,
         PolyVarsStats, Pops, StatsDistrib, calc_per_var_distribs,
     };
     use crate::block::{Block, BlockReader};
-    use crate::error::{Error, Result};
-    use crate::filters::{FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion};
-    use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::{ChromTable, Needs};
+    use crate::error::Error;
+    use crate::filters::{FilteredReader, VarFilter, VarFilteringCriterion};
+    use crate::io::vcf::VcfReader;
+    use crate::variant::Needs;
 
     /// One unit of the last of the six digits the spec prints of a mean of
     /// the worked examples.
@@ -2960,87 +3438,6 @@ mod distribs {
     /// of the spec gives: where the blocks were cut decides which rows are
     /// added up together, and the addition of floats is not associative.
     const OF_TWO_BLOCK_SIZES: f64 = 1e-12;
-
-    /// A reader of the tests that gives the blocks it was built with, which
-    /// is how the worked examples of the spec reach the pass: five diploid
-    /// individuals named `i1` to `i5`, the individuals of both worked
-    /// examples.
-    #[derive(Debug)]
-    struct GivenBlocks {
-        individuals: Vec<String>,
-        chroms: ChromTable,
-        /// The blocks it has not given yet, the next one last.
-        left: Vec<Block>,
-        /// What it was last asked to fill, which the test reads to see that
-        /// the pass asks for the genotypes alone.
-        needs: Needs,
-    }
-
-    impl GivenBlocks {
-        /// The fields the pass last asked it to fill.
-        fn needs(&self) -> Needs {
-            self.needs
-        }
-
-        /// The reader over `blocks`, which it gives in their order.
-        fn of(blocks: Vec<Block>) -> GivenBlocks {
-            let mut chroms = ChromTable::new();
-            chroms.intern("chr1");
-            let mut left = blocks;
-            left.reverse();
-            GivenBlocks {
-                individuals: (1..=5).map(|number| format!("i{number}")).collect(),
-                chroms,
-                left,
-                needs: Needs::ALL,
-            }
-        }
-    }
-
-    impl BlockReader for GivenBlocks {
-        fn next_block(&mut self) -> Result<Option<Block>> {
-            Ok(self.left.pop())
-        }
-
-        fn individuals(&self) -> &[String] {
-            &self.individuals
-        }
-
-        fn ploidy(&self) -> usize {
-            2
-        }
-
-        fn chroms(&self) -> &ChromTable {
-            &self.chroms
-        }
-
-        fn set_needs(&mut self, needs: Needs) {
-            self.needs = needs;
-        }
-
-        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
-            Vec::new()
-        }
-    }
-
-    /// The blocks of `num_vars_per_block` variants that hold `variants`, the
-    /// rows of a worked example, one after another.
-    fn blocks_of(variants: &[[i8; 10]], num_vars_per_block: usize) -> Vec<Block> {
-        variants
-            .chunks(num_vars_per_block)
-            .map(|of_the_block| Block {
-                num_vars: of_the_block.len(),
-                num_individuals: 5,
-                ploidy: 2,
-                gts: of_the_block.iter().flatten().copied().collect(),
-                chrom: None,
-                pos: None,
-                id: None,
-                alleles: None,
-                qual: None,
-            })
-            .collect()
-    }
 
     /// The reader over the six variants of the worked example of the pass,
     /// in blocks of `num_vars_per_block`.
@@ -3326,32 +3723,6 @@ mod distribs {
             0.333_333,
             "the unbiased one of pop2",
         );
-    }
-
-    /// The reference files of this module live at the root of the
-    /// repository, beside the Python tests that read the same files.
-    fn reference(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/reference")
-            .join(name)
-    }
-
-    /// The reader over a VCF of the reference files, with every variant
-    /// given and the blocks of the size popnei chose for its individuals.
-    fn vcf_reader(name: &str) -> VcfReader<BufReader<File>> {
-        vcf_reader_of(name, None)
-    }
-
-    /// The same reader, with blocks of `num_vars_per_block` variants when
-    /// the test asks for a size of its own.
-    fn vcf_reader_of(name: &str, num_vars_per_block: Option<usize>) -> VcfReader<BufReader<File>> {
-        let options = VcfOptions {
-            ploidy: 2,
-            only_passed: false,
-            num_vars_per_block,
-        };
-        VcfReader::<BufReader<File>>::from_path(&reference(name), options)
-            .unwrap_or_else(|error| panic!("{name}: {error}"))
     }
 
     /// The populations of `many.vcf` that the tests over it use, `popA` of
@@ -3727,14 +4098,7 @@ mod distribs {
                 .build()
                 .expect("the pool");
             pool.install(|| {
-                let options = VcfOptions {
-                    ploidy: 2,
-                    only_passed: false,
-                    num_vars_per_block: Some(150),
-                };
-                let mut reader =
-                    VcfReader::<BufReader<File>>::from_path(&reference("vcf/many.vcf"), options)
-                        .expect("many.vcf");
+                let mut reader = vcf_reader_of("vcf/many.vcf", Some(150));
                 let pops = pops_of_the_file(
                     "stats/many_pops.txt",
                     false,
@@ -3933,6 +4297,315 @@ mod distribs {
                     of_left.num_vars_with_data(pop),
                 ],
                 &format!("the population {pop}, {what}"),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod per_individual {
+    use super::fixtures::{GivenBlocks, THE_SIX_VARIANTS, blocks_of, vcf_reader};
+    use super::{PerIndividualStats, calc_per_individual_stats};
+    use crate::error::Error;
+    use crate::variant::Needs;
+
+    /// One unit of the last of the six digits the spec prints of a missing
+    /// rate and of a heterozygosity rate.
+    const OF_A_PRINTED_RATE: f64 = 1e-6;
+
+    /// That one individual has the two counts and the two rates the spec
+    /// gives it: the counts to the number, and the rates within the digits
+    /// the spec prints of them.
+    fn assert_the_numbers_of(
+        found: &PerIndividualStats,
+        individual: usize,
+        counts: (u64, u64),
+        rates: (f64, f64),
+        what: &str,
+    ) {
+        let (num_missing, num_het) = counts;
+        let (missing_rate, obs_het_rate) = rates;
+        assert_eq!(
+            found.num_missing(individual),
+            num_missing,
+            "the missing genotypes of {what}"
+        );
+        assert_eq!(
+            found.num_het(individual),
+            num_het,
+            "the heterozygous genotypes of {what}"
+        );
+        let found_missing_rate = found.missing_rate(individual);
+        assert!(
+            (found_missing_rate - missing_rate).abs() <= OF_A_PRINTED_RATE,
+            "the missing rate of {what} is {found_missing_rate}, and it is {missing_rate}"
+        );
+        let Some(found_obs_het_rate) = found.obs_het_rate(individual) else {
+            panic!("{what} has no heterozygosity rate, and it is {obs_het_rate}");
+        };
+        assert!(
+            (found_obs_het_rate - obs_het_rate).abs() <= OF_A_PRINTED_RATE,
+            "the heterozygosity rate of {what} is {found_obs_het_rate}, and it is {obs_het_rate}"
+        );
+    }
+
+    /// The name of one individual of the worked example, i1 to i5.
+    fn individual_of_the_worked_example(individual: usize) -> String {
+        format!("i{number}", number = individual.saturating_add(1))
+    }
+
+    /// The counts and the rates of the five individuals of the worked
+    /// example, which "How it is verified" of the per individual statistics
+    /// gives: the missing rates 2/6, 2/6, 2/6, 3/6 and 5/6 and the
+    /// heterozygosity rates 1/4, 3/4, 1/4, 1/3 and 0/1. i5 has two half
+    /// called genotypes, at the variants 1 and 2, and a half called
+    /// genotype is missing and not heterozygous.
+    ///
+    /// The blocks of 6 and of 2 variants are the two the spec asks for, and
+    /// blocks of 1 are a block for every row: the counts of each block are
+    /// added into the same two counts of every individual, and the two
+    /// divisions are made once at the end, so no rate depends on where the
+    /// blocks were cut.
+    #[test]
+    fn the_counts_and_the_rates_of_the_five_individuals_of_the_worked_example() {
+        for num_vars_per_block in [6, 2, 1] {
+            let mut reader = GivenBlocks::of(blocks_of(&THE_SIX_VARIANTS, num_vars_per_block));
+            let found = calc_per_individual_stats(&mut reader)
+                .expect("the statistics of the worked example");
+
+            assert_eq!(found.num_individuals(), 5);
+            assert_eq!(found.num_vars(), 6);
+            for (individual, counts, rates) in [
+                (0, (2, 1), (0.333_333, 0.25)),
+                (1, (2, 3), (0.333_333, 0.75)),
+                (2, (2, 1), (0.333_333, 0.25)),
+                (3, (3, 1), (0.5, 0.333_333)),
+                (4, (5, 0), (0.833_333, 0.0)),
+            ] {
+                let what = format!(
+                    "{name}, blocks of {num_vars_per_block}",
+                    name = individual_of_the_worked_example(individual)
+                );
+                assert_the_numbers_of(&found, individual, counts, rates, &what);
+            }
+        }
+    }
+
+    /// The counts and the rates of `s000` and `s001` of the panel, the 1200
+    /// biallelic diploid variants of 200 individuals of "How it is
+    /// verified", read with the VCF reader: `s000` has 34 missing genotypes
+    /// of 1200, 0.0283333, and 426 heterozygous of 1166 called, 0.365352;
+    /// `s001` 44, 0.0366667, and 397 of 1156, 0.343426. They are the
+    /// `MISSING_CT` of plink2's `--missing` and the `HET_CT` of its
+    /// `--sample-counts`, over the `OBS_CT` of its `--het`.
+    #[test]
+    fn the_counts_and_the_rates_of_s000_and_s001_of_the_panel() {
+        let mut reader = vcf_reader("stats/panel.vcf.gz");
+        let found = calc_per_individual_stats(&mut reader).expect("the statistics of the panel");
+
+        assert_eq!(found.num_individuals(), 200);
+        assert_eq!(found.num_vars(), 1200);
+        assert_the_numbers_of(&found, 0, (34, 426), (0.028_333, 0.365_352), "s000");
+        assert_the_numbers_of(&found, 1, (44, 397), (0.036_667, 0.343_426), "s001");
+    }
+
+    /// The counts and the rates of `ind00` and `ind01` of `many.vcf`, the
+    /// 500 variants of 50 diploid individuals with 257 half called
+    /// genotypes and one variant in ten of three alleles: `ind00` has 29
+    /// missing genotypes of 500, 0.058, and 201 heterozygous of 471 called,
+    /// 0.426752; `ind01` 25, 0.05, and 195 of 475, 0.410526. They are the
+    /// numbers of the same plink2 commands with `--vcf-half-call m`, and
+    /// the `nMissing` and `nHets` of the `PSC` lines of `bcftools stats`.
+    ///
+    /// A heterozygous genotype of a third allele is heterozygous like any
+    /// other, and a half called one is missing, as it is for pyNei.
+    #[test]
+    fn the_counts_and_the_rates_of_ind00_and_ind01_of_many_vcf() {
+        let mut reader = vcf_reader("vcf/many.vcf");
+        let found = calc_per_individual_stats(&mut reader).expect("the statistics of many.vcf");
+
+        assert_eq!(found.num_individuals(), 50);
+        assert_eq!(found.num_vars(), 500);
+        assert_the_numbers_of(&found, 0, (29, 201), (0.058, 0.426_752), "ind00");
+        assert_the_numbers_of(&found, 1, (25, 195), (0.05, 0.410_526), "ind01");
+    }
+
+    /// An individual with no called genotype has a missing rate of 1 and no
+    /// heterozygosity rate, which is the NaN of the Python and the
+    /// TypeScript results: 0 heterozygous genotypes of 0 called ones is no
+    /// number.
+    ///
+    /// The two variants are the 3rd and the 6th of the worked example,
+    /// `0/1 2/3 0/1 2/3 ./.` and `0/. ./. ./. ./. ./.`, so i1 to i4 are
+    /// heterozygous at the first and missing at the second, a missing rate
+    /// of 1/2 and a heterozygosity rate of 1/1, and i5 is missing at both.
+    #[test]
+    fn an_individual_with_no_called_genotype_has_a_missing_rate_of_1_and_no_het_rate() {
+        let of_the_two = [
+            *THE_SIX_VARIANTS.get(2).expect("the variant 3"),
+            *THE_SIX_VARIANTS.get(5).expect("the variant 6"),
+        ];
+        let mut reader = GivenBlocks::of(blocks_of(&of_the_two, 2));
+        let found =
+            calc_per_individual_stats(&mut reader).expect("the statistics of the two variants");
+
+        assert_eq!(found.num_vars(), 2);
+        for individual in 0..4 {
+            let what = individual_of_the_worked_example(individual);
+            assert_the_numbers_of(&found, individual, (1, 1), (0.5, 1.0), &what);
+        }
+        assert_eq!(found.num_missing(4), 2);
+        assert_eq!(found.num_het(4), 0);
+        let missing_rate = found.missing_rate(4);
+        assert!(
+            (missing_rate - 1.0).abs() <= OF_A_PRINTED_RATE,
+            "the missing rate of i5 is {missing_rate}, and it is 1"
+        );
+        assert_eq!(found.obs_het_rate(4), None, "the heterozygosity rate of i5");
+    }
+
+    /// A pass over a source that holds no variant is refused, with the
+    /// error of the pass of the per variant distributions: a rate over no
+    /// variant says nothing about a dataset, and the message says whether
+    /// the source held no variant or the steps kept none.
+    #[test]
+    fn a_pass_over_a_source_with_no_variant_is_refused() {
+        let mut reader = GivenBlocks::of(Vec::new());
+        let error = calc_per_individual_stats(&mut reader).expect_err("a pass with no variant");
+
+        assert!(
+            matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
+                if *num_vars_of_the_source == 0 && filters.is_empty()),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("its source holds none"), "{message}");
+    }
+
+    /// The pass reads the genotypes of a block and no other field, so it
+    /// asks its reader for the genotypes alone: a reader that filled the
+    /// chromosome, the position, the id, the alleles and the quality would
+    /// read and hold what nothing reads.
+    #[test]
+    fn the_pass_asks_its_reader_for_the_genotypes_alone() {
+        let mut reader = GivenBlocks::of(blocks_of(&THE_SIX_VARIANTS, 6));
+        calc_per_individual_stats(&mut reader).expect("the statistics of the worked example");
+
+        assert_eq!(reader.needs(), Needs::GTS);
+    }
+
+    /// The rows of a block are read on the threads of the pool the caller
+    /// is in, and the chunks are of a fixed number of rows and are added in
+    /// the order of the block, so any number of threads counts the same
+    /// genotypes into the same counts: the counts agree to the number and
+    /// the rates to the bit.
+    ///
+    /// `many.vcf` in blocks of 150 variants spans four blocks of three
+    /// chunks or fewer, so the rows of one block are read on several
+    /// threads and the blocks follow one another.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_numbers_are_the_same_to_the_bit_in_pools_of_one_and_of_four_threads() {
+        use super::fixtures::vcf_reader_of;
+
+        let of_the_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                let mut reader = vcf_reader_of("vcf/many.vcf", Some(150));
+                calc_per_individual_stats(&mut reader).expect("the statistics of many.vcf")
+            })
+        };
+        let on_one = of_the_pool(1);
+        assert_eq!(on_one.num_individuals(), 50);
+        assert_eq!(on_one.num_vars(), 500);
+
+        assert_the_same_numbers(&on_one, &of_the_pool(4), "four threads against one");
+    }
+
+    /// The chunks of a block read one after another, which is what wasm
+    /// runs, count what the same chunks count on the threads of rayon, to
+    /// the bit: they are the same chunks of the same rows and they are
+    /// added in the same order. Nothing else compares the two paths, so
+    /// without this the one a browser runs is only compiled.
+    ///
+    /// The block is the 500 variants of `many.vcf`, which are seven chunks
+    /// of 64 rows and one of 52.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_chunks_of_a_block_read_one_by_one_give_what_the_threads_give() {
+        use super::fixtures::vcf_reader_of;
+        use super::{OfAnIndividual, count_the_block, count_the_chunks_one_by_one};
+        use crate::block::BlockReader;
+
+        let mut reader = vcf_reader_of("vcf/many.vcf", Some(500));
+        reader.set_needs(Needs::GTS);
+        let block = reader
+            .next_block()
+            .expect("the block of many.vcf")
+            .expect("many.vcf has variants");
+        assert_eq!(block.num_vars, 500);
+        let alleles_per_var = block.alleles_per_var().expect("the alleles of one variant");
+        let of_the_path = |on_the_threads: bool| {
+            let mut counted = vec![OfAnIndividual::none(); 50];
+            if on_the_threads {
+                count_the_block(&block, alleles_per_var, &mut counted)
+                    .expect("the rows of the block on the threads");
+            } else {
+                count_the_chunks_one_by_one(&block, alleles_per_var, &mut counted)
+                    .expect("the chunks of the block one by one");
+            }
+            PerIndividualStats {
+                individuals: counted,
+                num_vars: 500,
+            }
+        };
+
+        assert_the_same_numbers(
+            &of_the_path(true),
+            &of_the_path(false),
+            "the chunks read one by one against the chunks read on the threads",
+        );
+    }
+
+    /// That two results hold the same counts, to the number, and the same
+    /// rates, to the bit, for every individual.
+    ///
+    /// The counts are integers and add up to the same number in any order;
+    /// the two divisions are made once at the end, over those counts, so
+    /// the rates are the same bits and not merely the same number within a
+    /// tolerance.
+    #[cfg(not(target_family = "wasm"))]
+    fn assert_the_same_numbers(left: &PerIndividualStats, right: &PerIndividualStats, what: &str) {
+        assert_eq!(left.num_individuals(), right.num_individuals(), "{what}");
+        assert_eq!(left.num_vars(), right.num_vars(), "{what}");
+        for individual in 0..left.num_individuals() {
+            let of_them = format!("the individual {individual}, {what}");
+            assert_eq!(
+                left.num_missing(individual),
+                right.num_missing(individual),
+                "the missing genotypes of {of_them}"
+            );
+            assert_eq!(
+                left.num_het(individual),
+                right.num_het(individual),
+                "the heterozygous genotypes of {of_them}"
+            );
+            assert_eq!(
+                left.missing_rate(individual).to_bits(),
+                right.missing_rate(individual).to_bits(),
+                "the missing rate of {of_them}"
+            );
+            assert_eq!(
+                left.obs_het_rate(individual).map(f64::to_bits),
+                right.obs_het_rate(individual).map(f64::to_bits),
+                "the heterozygosity rate of {of_them}"
             );
         }
     }
