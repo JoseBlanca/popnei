@@ -500,9 +500,7 @@ block, 0.88 s for the 20 blocks, on one thread, 0.017 s a block, 0.34 s,
 on 18 cores, and 0.065 s a block, 1.3 s, in wasm. The numbers to reach
 are the trial's with a tenth over them: 0.97 s on one thread, 0.38 s on
 18 cores and 1.43 s in wasm. That is 1.3 times pyNei's time on this
-machine, which the decision for the bits accepted. Whether fewer sets for
-a block with two alleles and a parallel building of the sets bring popnei
-under pyNei's 0.76 s is for a performance review, and was not measured.
+machine, which the decision for the bits accepted.
 pyNei under pyodide was not measured. No other ploidy was timed: a
 biallelic tetraploid block has the 9 sets of the 4 allele diploid block
 of the table, 0.067 s, and a haploid one has 3.
@@ -510,6 +508,22 @@ of the table, 0.067 s, and a haploid one has 3.
 At the largest dataset of the objectives, a million variants x 10000
 individuals, the trial's 0.090 s a block on 18 cores is 3 minutes for the
 2000 blocks, and its 0.349 s on one thread 12 minutes.
+
+What the code reaches. The three numbers were missed when the plan
+`docs/plans/dists-kosman.md` finished, 1.154 s, 0.625 s and 2.130 s, and
+the performance review of 22 September 2026,
+`docs/reports/perf-dists-kosman-2026-09-22.md`, met them all: 0.767 s on
+one thread, 0.102 s on 18 cores and 1.106 s in wasm, on the dataset
+above with the reading taken out, on the owner's M5 Pro. So popnei is 6
+in 100 slower than pyNei on one thread and 2.7 times faster than
+pyNei's best. Of the two things this section left to that review, the
+building of the sets of a block on the threads was measured and is in
+the code, a run of 64 individuals to a work item; fewer sets for a block
+with two alleles was not tried, and the review's finding H4 says what it
+would take and what it would give. The review also gave the browsers
+popnei runs in a floor, goal 3 of `docs/objectives.md`, because the
+count of the bits of a pair in wasm uses the vector instructions of
+WebAssembly, which is what took that build under its number.
 
 ## Open points
 
