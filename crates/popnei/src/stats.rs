@@ -3253,10 +3253,11 @@ mod distribs {
     }
 
     /// The rows of a block are read on the threads of the pool the caller
-    /// is in, and the sums are added chunk by chunk in the order of the
-    /// block, so one thread and four give the same counts to the number and
-    /// the same means within 1e-12 relative, which is what "What could go
-    /// wrong" of the plan asks.
+    /// is in, and the chunks are of a fixed number of rows and are added in
+    /// the order of the block, so any number of threads adds the same
+    /// values in the same order: the counts are the same to the number and
+    /// the means to the bit. "What could go wrong" of the plan asks for
+    /// 1e-12 relative, and the bits are what the code gives.
     ///
     /// `many.vcf` in blocks of 150 variants spans four blocks of three
     /// chunks or fewer, so the rows of one block are read on several
@@ -3267,7 +3268,7 @@ mod distribs {
     /// targets that are not wasm, so this test is compiled for those alone.
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn the_numbers_are_the_same_in_pools_of_one_and_of_four_threads() {
+    fn the_numbers_are_the_same_to_the_bit_in_pools_of_one_and_of_more_threads() {
         let of_the_pool = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -3293,50 +3294,64 @@ mod distribs {
             })
         };
         let on_one = of_the_pool(1);
-        let on_four = of_the_pool(4);
-
         assert_eq!(on_one.num_vars, 500);
-        assert_eq!(on_one.num_vars, on_four.num_vars);
-        for ((of_one, what), (of_four, _)) in the_four_distribs(&on_one)
-            .into_iter()
-            .zip(the_four_distribs(&on_four))
-        {
-            let of_one = of_one.expect("the distribution on one thread");
-            let of_four = of_four.expect("the distribution on four threads");
+        for threads in [2, 3, 4, 8, 16] {
+            let on_more = of_the_pool(threads);
+            assert_eq!(on_one.num_vars, on_more.num_vars);
+            for ((of_one, what), (of_more, _)) in the_four_distribs(&on_one)
+                .into_iter()
+                .zip(the_four_distribs(&on_more))
+            {
+                let of_one = of_one.expect("the distribution on one thread");
+                let of_more = of_more.expect("the distribution on more threads");
+                for pop in 0..of_one.num_pops() {
+                    assert_eq!(
+                        of_one.hist_counts(pop),
+                        of_more.hist_counts(pop),
+                        "the histogram of {what} of the population {pop}, on {threads} threads"
+                    );
+                    assert_eq!(
+                        of_one.num_vars_with_value(pop),
+                        of_more.num_vars_with_value(pop)
+                    );
+                    let (Some(mean_of_one), Some(mean_of_more)) =
+                        (of_one.mean(pop), of_more.mean(pop))
+                    else {
+                        panic!("{what} of the population {pop} has no mean");
+                    };
+                    // The bits and not a tolerance: the chunks are of a
+                    // fixed number of rows and are added in the order of the
+                    // block, so the threads add the same values in the same
+                    // order, and a mean that differed in its last bit would
+                    // say that the order had changed.
+                    assert_eq!(
+                        mean_of_one.to_bits(),
+                        mean_of_more.to_bits(),
+                        "the mean of {what} of the population {pop} is {mean_of_one} on one \
+                         thread and {mean_of_more} on {threads}"
+                    );
+                }
+            }
+            let of_one = on_one
+                .poly_vars_ratio
+                .as_ref()
+                .expect("the counts on one thread");
+            let of_more = on_more
+                .poly_vars_ratio
+                .as_ref()
+                .expect("the counts on more threads");
             for pop in 0..of_one.num_pops() {
-                assert_eq!(
-                    of_one.hist_counts(pop),
-                    of_four.hist_counts(pop),
-                    "the histogram of {what} of the population {pop}"
-                );
-                assert_eq!(
-                    of_one.num_vars_with_value(pop),
-                    of_four.num_vars_with_value(pop)
-                );
-                let (Some(mean_of_one), Some(mean_of_four)) = (of_one.mean(pop), of_four.mean(pop))
-                else {
-                    panic!("{what} of the population {pop} has no mean");
-                };
-                assert!(
-                    (mean_of_one - mean_of_four).abs() <= 1e-12 * mean_of_one.abs(),
-                    "the mean of {what} of the population {pop} is {mean_of_one} on one thread \
-                     and {mean_of_four} on four"
+                assert_counts(
+                    of_more,
+                    pop,
+                    [
+                        of_one.num_poly(pop),
+                        of_one.num_variable(pop),
+                        of_one.num_vars_with_data(pop),
+                    ],
+                    &format!("the population on {threads} threads"),
                 );
             }
-        }
-        let of_one = on_one.poly_vars_ratio.expect("the counts on one thread");
-        let of_four = on_four.poly_vars_ratio.expect("the counts on four threads");
-        for pop in 0..of_one.num_pops() {
-            assert_counts(
-                &of_four,
-                pop,
-                [
-                    of_one.num_poly(pop),
-                    of_one.num_variable(pop),
-                    of_one.num_vars_with_data(pop),
-                ],
-                "the population on four threads",
-            );
         }
     }
 }
