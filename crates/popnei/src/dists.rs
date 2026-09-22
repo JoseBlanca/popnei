@@ -183,7 +183,15 @@ impl KosmanBits {
                 .chunks_exact_mut(words_per_set.get())
                 .zip(holds.chunks_exact_mut(holds_per_individual.get()));
             for ((called, holds), genotype) in individuals.zip(row.chunks_exact(block.ploidy)) {
-                if genotype.contains(&MISSING_ALLELE) {
+                #[expect(
+                    clippy::manual_contains,
+                    reason = "`contains` on a slice of `i8` goes to `memchr`, which searches \
+                              a word at a time and pays its setup for a genotype of the \
+                              ploidy, 2 bytes here; a profile of 100000 variants of 1000 \
+                              diploid individuals had it at 9.4 in 100 of the CPU on one \
+                              thread, and `any` inlines to one compare per allele"
+                )]
+                if genotype.iter().any(|&allele| allele == MISSING_ALLELE) {
                     continue;
                 }
                 // The word of the variant is below the words of a set, and
