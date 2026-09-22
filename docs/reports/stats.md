@@ -85,3 +85,69 @@ tasks of the Python and TypeScript sides of a new step have to add it by
 hand.
 
 The subagent of task 1.1 used 179631 tokens in 55 tool calls.
+
+## Work package 2: the filter of individuals
+
+Tasks 2.1 and 2.2 went to one subagent, in that order, with a commit
+each, since the reader of 2.2 is written over the method of 2.1.
+
+Task 2.1, commit fe237ec: `Block::retain_individuals` in
+`crates/popnei/src/block.rs`, the gather of each row on rayon off wasm
+through a buffer per thread and the pack on one thread, as "How it
+runs" of the filter has it. Before it, commit e8efa81 adds a paragraph
+to `docs/specs/filters.md`, a choice the spec left to the code: which
+error each of its three refusals is. They are three new cases of the
+error of the crate, defects of popnei and a `RuntimeError` in Python,
+as the `keep` of `retain_vars` with the wrong number of values is,
+because `resolve_individuals` refuses the name behind each of them
+before a call of a user reaches them.
+
+Task 2.2, commit ef17cc5: `resolve_individuals`, `IndividualsReader`,
+the `KeepIndividuals` arm of `chain_of` and of
+`refuse_a_second_filter_of_a_kind`, and the four cases of the spec in
+the error, each a `ValueError` in Python; the temporary case of work
+package 1 is gone with its arm and its test. The JavaScript crate
+needed no arm, since it turns every error of the core into one `Error`.
+
+Task 2.3, commit 91b74fc: `filter_individuals` in
+`crates/popnei-python/src/steps.rs`, which resolves the names against
+the individuals of the source at the call and refuses a second filter
+of the kind there; `Variants.filter_individuals` with its docstring,
+`individuals` and `num_individuals` read through the steps, and the
+`repr`; and `tests/test_filter_individuals.py`, 13 tests. Three things
+the spec does not say, decided by the subagent: the `Steps` of the
+binding crate takes the individuals of the source when it is built, so
+the refusal cannot be given another list; `filter_individuals("ind05")`,
+a bare string, is a `TypeError` that says to write `("ind05",)`, as
+`iter_blocks(fields="pos")` already is, where otherwise the user would
+read that `i` is not an individual; and the `repr` prints every kept
+name, `individuals(individuals=('ind05', 'ind00', 'ind49'))`, so a
+filter of 500 individuals prints 500 names. The last two are the
+owner's to reverse.
+
+Task 2.4, commit 4c5e5ae: the same in `crates/popnei-js/src/steps.rs`
+and `js/popnei/src/variant.ts`, `filterIndividuals`, with
+`js/popnei/test/filter_individuals.test.ts`, 13 tests. The arguments of
+a step used to cross to JavaScript as one number each; now a threshold
+crosses in one flat array and the names of the kept individuals in
+another, with a count of names per argument that says which is which,
+0 names meaning a threshold, which is unambiguous because a filter of
+no individual is refused. The `Default` of the `Steps` of both crates
+is gone, since `new` takes the individuals.
+
+The five deliverables are met, run by the orchestrator at 4c5e5ae.
+`cargo test -p popnei --lib -- retain_individuals --list` prints `8
+tests`, where the plan asks 4 or more; `cargo test -p popnei --lib --
+resolve_individuals IndividualsReader --list` `15 tests`, where it asks
+8 or more; `uv run pytest tests/test_filter_individuals.py` `13 passed`
+and `uv run pytest` `187 passed`, from 174; `npm test` `tests 139`, `fail
+0`, from 126; `bash scripts/build_pyodide_wheel.sh` built the wheel and
+`node tests/pyodide/smoke.mjs` exited with 0. `cargo test --workspace`
+`331 passed`, 2 ignored, from 309. `cargo fmt`, `cargo clippy`, `cargo
+wasm-check` and ruff clean.
+
+Nothing was changed in the plan.
+
+The subagents used: tasks 2.1 and 2.2 together 203867 tokens in 84 tool
+calls; task 2.3 147130 in 63; task 2.4 182877 in 60. None had to be
+sent back.
