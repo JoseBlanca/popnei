@@ -35,19 +35,30 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_ONLY_PASSED: bool = popnei::io::vcf::DEFAULT_ONLY_PASSED;
 
-    // The exception that carries the positions of the traits with no
-    // variance to `popnei.do_pca`, which names them and raises the
-    // `ValueError` its user reads. A class made with `create_exception!` is
-    // not a `#[pyclass]`, so it is added to the module here.
+    // The two of `do_pca`, which are the constants of the core crate for
+    // the same reason.
+    #[pymodule_export]
+    const DEFAULT_CENTER_DATA: bool = popnei::pca::DEFAULT_CENTER_DATA;
+    #[pymodule_export]
+    const DEFAULT_STANDARDIZE_DATA: bool = popnei::pca::DEFAULT_STANDARDIZE_DATA;
+
+    // The two exceptions that carry the positions of the traits a
+    // principal component analysis refused to `popnei.do_pca`, which names
+    // those traits and raises the `ValueError` its user reads. A class made
+    // with `create_exception!` is not a `#[pyclass]`, so it is added to the
+    // module here.
     #[pymodule_init]
     fn add_the_exceptions(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
         use pyo3::prelude::PyModuleMethods as _;
 
+        let py = module.py();
         module.add(
             "TraitsWithNoVariance",
-            module
-                .py()
-                .get_type::<super::errors::TraitsWithNoVariance>(),
+            py.get_type::<super::errors::TraitsWithNoVariance>(),
+        )?;
+        module.add(
+            "TraitOutOfRange",
+            py.get_type::<super::errors::TraitOutOfRange>(),
         )
     }
 

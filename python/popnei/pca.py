@@ -23,6 +23,28 @@ import pandas
 from popnei import _core
 from popnei.variant import PassStats
 
+# What is wrong with a trait whose mean or whose standard deviation the
+# analysis cannot use, under the name the binding crate gives each of the
+# three. The values of such a trait are too large or too small for the
+# arithmetic of a float64, and what the user does about it is to scale that
+# trait or take it out.
+_WHAT_IS_WRONG_WITH_THE_TRAIT = {
+    "mean_not_finite": (
+        "its values sum above the largest float64, 1.8e308, so its mean is not "
+        "finite and every value of it would become a NaN"
+    ),
+    "deviation_not_finite": (
+        "the squares of its deviations sum above the largest float64, so its "
+        "standard deviation is not finite and the trait would become a column "
+        "of zeros"
+    ),
+    "deviation_of_zero": (
+        "the squares of its deviations all fall below the smallest float64 "
+        "above 0, 5e-324, so its standard deviation is 0 although its values "
+        "differ, and dividing by it would give infinities"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class PCAResult:
@@ -62,44 +84,68 @@ class PCAResult:
 
 def do_pca(
     data: pandas.DataFrame,
-    center_data: bool = True,
-    standardize_data: bool = True,
+    center_data: bool = _core.DEFAULT_CENTER_DATA,
+    standardize_data: bool = _core.DEFAULT_STANDARDIZE_DATA,
 ) -> PCAResult:
     """The principal components of `data`, a table of individuals x traits.
 
-    The index of `data` names the rows of the projections and its columns
-    name those of the weights. Every component that has variance is given,
-    with its weights: the table is in memory already, so there is nothing to
-    ask for fewer of.
+    The index of `data` names the rows of the projections of the result and
+    its columns name the columns of the weights. Every component that has
+    variance is given, with its weights: the table is in memory already, so
+    there is nothing to ask for fewer of. The result reads no variants, so
+    its ``pass_stats`` is ``None``.
 
-    :param data: The values, one row per individual and one column per
-        trait. No value may be missing.
-    :param center_data: Whether the mean of each trait is taken from it.
-        Without it the first component mostly points at the mean of the
-        data.
-    :param standardize_data: Whether each trait is then divided by its
-        standard deviation, the one with the number of individuals in it and
-        not the number less one, which is pyNei's. Without it the traits
-        with the largest numbers dominate.
-    :raises ValueError: When a value is not finite; when `standardize_data`
-        is asked for and `center_data` is not; when the table has fewer than
-        2 rows or no traits; and, when it is standardized, when a trait has
-        no variance, the message naming how many they are and the first ten
-        of them. Such a trait is no error without standardizing and gets a
-        weight of 0.
+    `center_data` takes the mean of each trait from it. Without it the first
+    component mostly points at the mean of the data.
+
+    `standardize_data` then divides each trait by its standard deviation,
+    which puts traits measured in different units on one scale; without it
+    the traits with the largest numbers dominate. The divisor of that
+    deviation is the number of individuals and not the number less one,
+    which is pyNei's and makes every projection of a standardized table
+    0.9975 of what R's ``prcomp`` gives at 200 individuals. Standardizing
+    divides by the deviation the trait has once it is centered, so asking
+    for it with `center_data` false is a ``ValueError``.
+
+    No value may be missing: a table comes whole. A value that is not
+    finite, an infinity or a NaN, and one that pandas holds as missing in a
+    nullable dtype, are a ``ValueError`` that says which row and which trait
+    it is at. So are a table of fewer than 2 rows or of no traits, and one
+    in which no trait has variance once it is centered.
+
+    Two more ``ValueError`` name the trait they are about, as the frame
+    names it. One is a trait with no variance, every value of it equal to
+    the others, when the table is standardized: there is nothing to divide
+    it by, and the message says how many such traits there are and names the
+    first ten of them, so that the user can take them out. Without
+    standardizing such a trait is no error and gets a weight of 0. The other
+    is a trait whose values are too large or too small for the arithmetic of
+    a float64, whose message says which of those two it is.
+
+    It is pyNei's ``do_pca``, which spells `standardize_data`
+    ``standarize_data``, gives the components that have no variance as well,
+    and leaves the sign of each component to the library that decomposed the
+    table.
     """
-    values = numpy.ascontiguousarray(data.to_numpy(), dtype=numpy.float64)
+    values = numpy.ascontiguousarray(
+        # A frame of a nullable dtype holds its missing values as pandas's
+        # own NA, which numpy cannot turn into a float64 on its own. It
+        # arrives as a NaN, and the core says which row and which trait it
+        # is at, instead of numpy raising a TypeError about a dtype.
+        data.to_numpy(dtype=numpy.float64, na_value=numpy.nan),
+        dtype=numpy.float64,
+    )
     try:
         projections, percent, princomps = _core.pca(
             values, center_data, standardize_data
         )
     except _core.TraitsWithNoVariance as error:
-        # The core gives the positions of those traits, since it has no
-        # names, and the message the user reads names them as the frame
-        # does. The exception of the core is not chained under it: it says
-        # the same thing with numbers in the place of the names.
         raise ValueError(
-            _the_traits_with_no_variance(error.args[0], data.columns)
+            _the_traits_with_no_variance(error.args[1], data.columns)
+        ) from None
+    except _core.TraitOutOfRange as error:
+        raise ValueError(
+            _the_trait_out_of_range(error.args[1], error.args[2], data.columns, error)
         ) from None
     names = _component_names(projections.shape[1])
     return PCAResult(
@@ -128,7 +174,8 @@ def _the_traits_with_no_variance(
 
     They are named as the columns of their frame, the first ten of them and
     how many more there are, so that a user of a table of hundreds of traits
-    reads a message of one line and knows how many to take out.
+    reads a message of one line and knows how many to take out. The core has
+    said the same with the position of each trait in the place of its name.
     """
     shown = ", ".join(f"`{trait_names[position]}`" for position in positions[:10])
     left_out = len(positions) - len(positions[:10])
@@ -137,4 +184,27 @@ def _the_traits_with_no_variance(
         f"{len(positions)} of the {len(trait_names)} traits have no variance and "
         f"cannot be standardized: take them out of the table or do not standardize; "
         f"they are the traits {shown}{more}"
+    )
+
+
+def _the_trait_out_of_range(
+    position: int,
+    problem: str,
+    trait_names: pandas.Index,
+    of_the_core: BaseException,
+) -> str:
+    """What a user is told of a trait the analysis cannot scale.
+
+    The trait is named as its column of the frame is, and the message says
+    which of the three things happened to it, so that the user knows whether
+    to scale it or to take it out. A problem this package has no words for,
+    which a core newer than it can give, is passed on as the core said it,
+    with the position of the trait in the place of its name.
+    """
+    said = _WHAT_IS_WRONG_WITH_THE_TRAIT.get(problem)
+    if said is None:
+        return str(of_the_core.args[0])
+    return (
+        f"the trait `{trait_names[position]}` cannot be centered or standardized: "
+        f"{said}; scale that trait or take it out of the table"
     )

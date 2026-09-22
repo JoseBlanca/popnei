@@ -19,12 +19,28 @@ create_exception!(
     TraitsWithNoVariance,
     PyValueError,
     "The traits of a table that is to be standardized and that have no \
-     variance, by their position among the traits, which is `args[0]`.\n\n\
+     variance. `args[0]` is what the core says, which names them by their \
+     position, and `args[1]` their positions among the traits, from 0.\n\n\
      `popnei.do_pca` catches it and raises the `ValueError` its user reads, \
      whose message names those traits as the frame names them. The core has \
      the positions and not the names, and this class is how they reach the \
      layer that has the frame. It derives from `ValueError`, so a user who \
      catches that one catches this one as well."
+);
+
+create_exception!(
+    popnei._core,
+    TraitOutOfRange,
+    PyValueError,
+    "A trait whose mean or whose standard deviation is not a number a \
+     principal component analysis can use, its values being too large or \
+     too small for the arithmetic of an f64. `args[0]` is what the core \
+     says, `args[1]` the position of the trait among the traits, from 0, \
+     and `args[2]` which of the three it is: `mean_not_finite`, \
+     `deviation_not_finite` or `deviation_of_zero`.\n\n\
+     `popnei.do_pca` catches it and raises the `ValueError` its user reads, \
+     with the name the frame gives that trait, as it does for the traits \
+     with no variance. It derives from `ValueError` as well."
 );
 
 /// What a function of this crate fails with.
@@ -338,13 +354,18 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaLinalg { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
-        // The traits of a table that has no variance, which the layer that
-        // holds the frame names: this crate has their positions and not
-        // their names, and `popnei.do_pca` catches this exception and
-        // raises the `ValueError` a user reads. It is a `ValueError`
-        // itself, so nothing of a user's changes when it reaches them.
+        // The two errors of a trait that the layer holding the frame names:
+        // this crate has the positions of those traits and not their names,
+        // and `popnei.do_pca` catches these exceptions and raises the
+        // `ValueError` a user reads. Each of them carries what the core
+        // says as well, so that a caller of `popnei._core` reads a message
+        // and not a list of numbers. Both derive from `ValueError`, so
+        // nothing of a user's changes when one reaches them.
         popnei::Error::PcaTraitsWithNoVariance { positions, .. } => {
-            TraitsWithNoVariance::new_err(positions)
+            TraitsWithNoVariance::new_err((message, positions))
+        }
+        popnei::Error::PcaTraitOutOfRange { position, problem } => {
+            TraitOutOfRange::new_err((message, position, name_of(problem)))
         }
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
@@ -361,14 +382,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VcfPloidyOutOfRange { .. }
         | popnei::Error::VarFilterThresholdOutOfRange { .. }
         | popnei::Error::VarFilterOfAKindThatIsSet { .. }
-        // The three of the table of a principal component analysis that a
+        // The four of the table of a principal component analysis that a
         // user writes: a value of it that is not finite, a table to be
-        // standardized and not centered, and one of fewer than 2 rows or of
-        // no traits. The table comes from the user and not from a file, so
-        // they name none.
+        // standardized and not centered, one of fewer than 2 rows or of no
+        // traits, and one in which no trait has variance once it is
+        // centered, which has no direction to give. The table comes from
+        // the user and not from a file, so they name none.
         | popnei::Error::PcaValueNotFinite { .. }
         | popnei::Error::PcaStandardizeWithoutCentering
-        | popnei::Error::PcaTableTooSmall { .. } => PyValueError::new_err(message),
+        | popnei::Error::PcaTableTooSmall { .. }
+        | popnei::Error::PcaNoTraitWithVariance => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
@@ -382,6 +405,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives.
         _ => PyValueError::new_err(of_the_file(message, path)),
+    }
+}
+
+/// The name Python reads one of the three scales of a trait under, as the
+/// kind of a filter travels under its name: the layer that has the frame
+/// writes the message, and it chooses the words by this.
+fn name_of(problem: popnei::pca::TraitScale) -> &'static str {
+    match problem {
+        popnei::pca::TraitScale::MeanNotFinite => "mean_not_finite",
+        popnei::pca::TraitScale::DeviationNotFinite => "deviation_not_finite",
+        popnei::pca::TraitScale::DeviationOfZero => "deviation_of_zero",
     }
 }
 
