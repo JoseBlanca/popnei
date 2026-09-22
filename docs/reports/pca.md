@@ -60,14 +60,17 @@ What is asked of the owner.
    fold it into the plan that comes next. Recommendation: a performance
    review, because the 0.413 s is one loop and the measurement already
    says which instructions it lacks.
-3. **Open 1 of `docs/specs/linalg.md`, the `simd128` flag, is smaller
-   than it looked and is still yours.** Task 4.2 found that the flag
-   changes no byte of what is built: what gives the vector instructions
-   is the cargo feature `wasm-simd128-enable` of `gemm`, which the
-   workspace already turns on, and a build without that feature takes
-   7.066 s where the one popnei ships takes 4.500 s. So the module
-   popnei ships today already holds those instructions, and a browser
-   without them refuses it whatever is answered. The options are to
+3. **Open 1 of `docs/specs/linalg.md`, whether to set the `simd128`
+   flag, is still yours, and it decides less than the spec thought.**
+   Task 4.2 built the wasm package with the flag and without it and got
+   the same bytes, three times from empty target directories. What
+   turns the vector instructions on is not the flag but a cargo feature,
+   `wasm-simd128-enable`, of `gemm`, the crate that does faer's matrix
+   products, and the workspace already has that feature on. So the
+   module popnei ships today holds those instructions, and a browser too
+   old for them refuses it whatever is answered; a build with the
+   feature off, which popnei does not ship, takes 7.066 s where the one
+   it ships takes 4.500 s. The options are to
    leave it as it is, which is fast and needs Chrome 91, Firefox 89 or
    Safari 16.4; or to turn the feature off for a build that old browsers
    load, which costs 2.6 s per analysis. Recommendation: leave it as it
@@ -325,9 +328,9 @@ copy and runs the core with the interpreter released; `do_pca` and
 `PCAResult` in `python/popnei/pca.py`; the error of the traits with no
 variance crosses as a subclass of `ValueError` that carries the
 positions, and the Python layer names the traits as pyNei's message
-does; 8 tests in `tests/test_pca.py` against pyNei at ef0ca6e; pandas
-3.0.2 became a dependency of the package, which returns frames and
-declared only numpy. One trap found: `as_slice()` of the numpy crate
+does; 8 tests in `tests/test_pca.py` against pyNei at ef0ca6e; the Python package declared only numpy as its
+dependency although it returns pandas frames, so pandas 3.0.2, pyNei's
+version, was added. One trap found: `as_slice()` of the numpy crate
 accepts a Fortran contiguous array and hands its values column after
 column, where `.claude/skills/coding/pyo3.md` says it fails, so the
 binding asks the array for its layout; the skill is corrected with the
@@ -451,9 +454,12 @@ the spec three sizes the analysis refuses: a ploidy above 254, since a
 genotype's code is one byte; more than 46340 individuals, since the
 linalg crate counts a matrix in the 32 bit integer of BLAS and 46341²
 is above it; and more variants than a `usize` counts. `cargo test -p
-popnei --lib pca` `35 passed`, 16 of them of the variants. Three things to know. `reblock` inside `pca_of_variants`
-takes the size popnei chooses, 10000 variants at 5 or at 200
-individuals, so the reader's block size never reaches the product
+popnei --lib pca` `35 passed`, 16 of them of the variants. Three things to know. `pca_of_variants` puts `reblock`, which cuts
+and joins the blocks of a reader to one size, in front of each reader
+and asks it for the size popnei chooses, which for a dataset of 5 or of
+200 individuals is its largest, 10000 variants. Every fixture of the
+tests is smaller than that, so it arrives as one block whatever size its
+reader gave, and the reader's block size never reaches the product
 through the public function: the test of the block size is at the
 first pass, with blocks of 1, 2 and 3, comparing G within 1e-10, and the
 test through `pca_of_variants` with blocks of 1, 2 and 5 of the reader
@@ -549,8 +555,8 @@ b876a21. What was found and is fixed:
   Measured under node, 9410 individuals ran and 9415 trapped, and the
   analysis holds about six times its matrix, so both functions now
   refuse above 9381 individuals, or above that on the smaller side of a
-  table, with an error that says the limit is the browser's, which
-  addresses 4 GB in one page. The same dataset is analysed natively and
+  table, with an error that says it is the browser's limit and not
+  popnei's: one WebAssembly module reaches 4 GB of memory and no more. The same dataset is analysed natively and
   in Python.
 - No fixture of the variants had a ploidy other than 2, so fixing the
   dosages of a genotype at three values, or reading only its first two
@@ -649,7 +655,8 @@ s and 0.26 s, are confirmed.
 Where the 0.801 s goes, from `sample`: 0.413 s standardizing the 20
 blocks, 0.254 s their product, 0.107 s reading the vars file, 0.024 s
 the eigendecomposition. The standardizing is 20.6 ms per block where the
-trial measured 1.5 ms, 13.7 times more, and the machine code says why:
+trial crate that "Speed" of the spec reports, written before this code
+to try the options out, measured 1.5 ms, 13.7 times more, and the machine code says why:
 of the four passes over a row, only the counting of the codes is
 vectorized, 64 codes at a time; the writing of the codes is vectorized
 over the alleles of one genotype behind a test on the ploidy that at
