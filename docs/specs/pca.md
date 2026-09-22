@@ -448,9 +448,9 @@ and the fourth has a genotype with every allele missing. The result has
 | i2 | -0.647570806465 | 0.0576947878489 | 0.143573693133 |
 | i3 | -2.25919182316 | -0.295464914192 | -0.0727295482544 |
 | explained_variance_percent | 93.2778538477 | 6.47960866887 | 0.242537483385 |
-| weight of variant 0 | 0.590326503368 | -0.556614390531 | 0.584546866962 |
-| weight of variant 1 | -0.327593824194 | -0.827089115324 | -0.45673392874 |
-| weight of variant 3 | -0.737697028442 | -0.0781281995539 | 0.670596062218 |
+| weight of variant 0 | 0.590326503368 | -0.327593824194 | -0.737697028442 |
+| weight of variant 1 | -0.556614390531 | -0.827089115324 | -0.0781281995539 |
+| weight of variant 3 | 0.584546866962 | -0.45673392874 | 0.670596062218 |
 
 The literals of the three tables and of `worked3` are checked at
 `pca_of_variants` of "The Rust interface", on a reader over blocks that
