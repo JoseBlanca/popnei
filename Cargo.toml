@@ -253,3 +253,16 @@ opt-level = 2 # numerical tests; overflow checks stay on
 
 [profile.release]
 overflow-checks = false # the code does not rely on them: see the coding skill
+
+# The release build with the debug information kept, for a sampling
+# profiler. `sample` and the profilers of Instruments read it to name the
+# frames that the compiler inlined, which in the principal component
+# analysis is the whole of what standardizes a row. It changes no code
+# generation: cargo passes `-C debuginfo=2` and nothing else, and the
+# machine code of the closure that standardizes a row, 1664 instructions,
+# is the same under this profile as under `release`, checked with `cargo
+# asm -p popnei --lib` on 22 September 2026. A build under it is made with
+# `cargo build --profile profiling` and lands in `target/profiling/`.
+[profile.profiling]
+inherits = "release"
+debug = true
