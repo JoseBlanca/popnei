@@ -329,6 +329,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // 0 or below. So is the ploidy or the exponent of a statistic of one
         // variant that is 0 or above 255, which a user writes in the
         // `ploidy` argument of the calculation. What
+        // The threshold below which a variant counts as polymorphic in a
+        // population is one more: `poly_threshold` is a number from 0 to
+        // 1, which is where a major allele frequency lies. What
         // is wrong with them is wrong whatever file is read, so they name
         // no file although some of them are refused while one is being
         // opened.
@@ -348,7 +351,8 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::HistWithNoBin
         | popnei::Error::HistRangeNotGoingUp { .. }
         | popnei::Error::HistLogRangeNotAboveZero { .. }
-        | popnei::Error::StatPloidyOutOfRange { .. } => PyValueError::new_err(message),
+        | popnei::Error::StatPloidyOutOfRange { .. }
+        | popnei::Error::PolyThresholdOutOfRange { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
@@ -360,7 +364,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // no individual. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
-        // alleles in one block is more memory than a machine gives.
+        // alleles in one block is more memory than a machine gives. A pass
+        // that gave no variant is here too: which file was read is what a
+        // user needs in order to see whether it is the file that holds
+        // none or the steps that kept none of what it holds, and the
+        // message says which of the two it was.
         _ => PyValueError::new_err(of_the_file(message, path)),
     }
 }

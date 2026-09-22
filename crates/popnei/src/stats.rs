@@ -11,10 +11,13 @@
 //! `docs/specs/stats.md` has the design, and the row `stats` of section 9
 //! of `docs/architecture.md` where the module sits.
 
+use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
 use crate::filters::resolve_individuals;
 use crate::io::vcf::MAX_PLOIDY;
-use crate::variant::{AlleleCounts, GtCounts};
+use crate::variant::{
+    AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_of, count_gts, count_gts_of,
+};
 
 /// The name of the one population of a calculation that was given no
 /// populations, inherited from pyNei's `DEF_POP_NAME`.
@@ -599,6 +602,788 @@ fn min_called_alleles(min_num_individuals: u32, ploidy: u32) -> u64 {
     // saturated would be one no population ever meets, which is what a
     // number that large asks for.
     u64::from(min_num_individuals).saturating_mul(u64::from(ploidy))
+}
+
+/// One of the five statistics that [`calc_per_var_distribs`] calculates for
+/// every variant and every population.
+///
+/// The names are the ones a Python and a TypeScript user writes, and each
+/// is the field of the result that holds its distribution or its counts.
+/// The expected heterozygosity, plain, and the unbiased one are two
+/// statistics and not one with a switch, which the owner decided on 22
+/// September 2026, so that a user asks for the two like any two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerVarStat {
+    /// The heterozygous genotypes of a population over its called ones.
+    ObsHet,
+    /// The commonest allele of a population over its called alleles.
+    Maf,
+    /// The chance that gene copies taken at random from a population are
+    /// not all of the same allele, from the frequencies as they are.
+    ExpHet,
+    /// The same corrected for the frequencies being estimated from the
+    /// copies the statistic is computed over.
+    UnbiasedExpHet,
+    /// How many of the variants vary in a population, in three counts and
+    /// two ratios, which is a count and not a distribution.
+    PolyVarsRatio,
+}
+
+/// What one pass of [`calc_per_var_distribs`] calculates: which statistics,
+/// for which populations, in which bins and with the thresholds of each.
+#[derive(Debug)]
+pub struct PerVarDistribsConfig {
+    /// The statistics to calculate. A statistic that is named twice is
+    /// calculated once, and one that is named by nobody is `None` in the
+    /// result; asking for fewer is a saving of work and changes no value.
+    pub stats: Vec<PerVarStat>,
+    /// The populations, each of which gets its own value of every
+    /// statistic, in the order they were given.
+    pub pops: Pops,
+    /// The bins the values of every distribution are counted in.
+    pub bins: HistBins,
+    /// The observed heterozygosity of one variant in one population.
+    pub obs_het: ObsHet,
+    /// The major allele frequency, which the polymorphism ratio counts
+    /// too.
+    pub maf: Maf,
+    /// The expected heterozygosity, which gives the plain value and the
+    /// unbiased one.
+    pub exp_het: ExpHet,
+    /// Below this major allele frequency a variant is polymorphic in a
+    /// population. A number from 0 to 1, both included; anything else is
+    /// an error of [`calc_per_var_distribs`].
+    pub poly_threshold: f64,
+}
+
+/// The distribution of one statistic over the variants of a pass, for each
+/// population: the mean of the variants that had a value and how many of
+/// them fell in each bin.
+///
+/// A variant that has no value in a population, because the population has
+/// too little data at it, is out of the mean and in no bin, so the
+/// histograms of two populations can count different numbers of variants. A
+/// value outside the range of the bins is in the mean and in no bin, which
+/// is what `numpy.histogram` leaves out too.
+#[derive(Debug, Clone)]
+pub struct StatsDistrib {
+    /// The bins the values were counted in, the same for every population.
+    bins: HistBins,
+    /// What the pass added up for each population, in the order of
+    /// [`Pops`].
+    pops: Vec<Accumulated>,
+}
+
+impl StatsDistrib {
+    /// How many populations the distribution holds a value for, which is
+    /// the populations of the pass.
+    #[must_use]
+    pub fn num_pops(&self) -> usize {
+        self.pops.len()
+    }
+
+    /// The mean of the variants of one population that had a value, and
+    /// `None` when none of them had one.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no mean here.
+    #[must_use]
+    pub fn mean(&self, pop: usize) -> Option<f64> {
+        let of_the_pop = self.pops.get(pop)?;
+        if of_the_pop.num_vars_with_value == 0 {
+            return None;
+        }
+        // Every count of popnei is below 2^53, where a `f64` holds the
+        // whole numbers exactly, so the division is the sum over the count.
+        Some(of_the_pop.sum / of_the_pop.num_vars_with_value as f64)
+    }
+
+    /// How many variants of one population had a value: those the mean is
+    /// over.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and had no variant here.
+    #[must_use]
+    pub fn num_vars_with_value(&self, pop: usize) -> u64 {
+        self.pops
+            .get(pop)
+            .map_or(0, |of_the_pop| of_the_pop.num_vars_with_value)
+    }
+
+    /// How many variants of one population fell in each bin, one count for
+    /// each bin of [`StatsDistrib::bins`].
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no counts here.
+    #[must_use]
+    pub fn hist_counts(&self, pop: usize) -> &[u64] {
+        self.pops
+            .get(pop)
+            .map_or(&[][..], |of_the_pop| of_the_pop.hist.as_slice())
+    }
+
+    /// The bins the values were counted in, whose edges every result of a
+    /// pass gives back.
+    #[must_use]
+    pub fn bins(&self) -> &HistBins {
+        &self.bins
+    }
+}
+
+/// How many of the variants of a pass vary in each population: the three
+/// counts of the polymorphism ratio and the two ratios that follow from
+/// them.
+///
+/// A variant is polymorphic in a population when its major allele frequency
+/// there is below the threshold of the pass, strictly, and variable when
+/// that frequency is below 1. Both are counted among the variants that have
+/// a major allele frequency in the population, those at which it called
+/// `min_num_individuals` genotypes or more.
+#[derive(Debug, Clone)]
+pub struct PolyVarsStats {
+    /// The three counts of each population, in the order of [`Pops`].
+    pops: Vec<PolyCounts>,
+}
+
+impl PolyVarsStats {
+    /// How many populations it holds the counts of.
+    #[must_use]
+    pub fn num_pops(&self) -> usize {
+        self.pops.len()
+    }
+
+    /// The variants that are polymorphic in one population.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no count here.
+    #[must_use]
+    pub fn num_poly(&self, pop: usize) -> u64 {
+        self.pops.get(pop).map_or(0, |counts| counts.num_poly)
+    }
+
+    /// The variants that are variable in one population.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no count here.
+    #[must_use]
+    pub fn num_variable(&self, pop: usize) -> u64 {
+        self.pops.get(pop).map_or(0, |counts| counts.num_variable)
+    }
+
+    /// The variants that have a major allele frequency in one population,
+    /// which the other two counts are among.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no count here.
+    #[must_use]
+    pub fn num_vars_with_data(&self, pop: usize) -> u64 {
+        self.pops
+            .get(pop)
+            .map_or(0, |counts| counts.num_vars_with_data)
+    }
+
+    /// The polymorphic variants over the ones with data, and `None` when
+    /// the population has none with data.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no ratio here.
+    #[must_use]
+    pub fn poly_ratio(&self, pop: usize) -> Option<f64> {
+        let counts = self.pops.get(pop)?;
+        ratio_of(counts.num_poly, counts.num_vars_with_data)
+    }
+
+    /// The polymorphic variants over the variable ones, and `None` when the
+    /// population has no variable one.
+    ///
+    /// `pop` is a population of `0..num_pops()`; a number at or beyond
+    /// `num_pops()` is no population of this and has no ratio here.
+    #[must_use]
+    pub fn poly_ratio_over_variables(&self, pop: usize) -> Option<f64> {
+        let counts = self.pops.get(pop)?;
+        ratio_of(counts.num_poly, counts.num_variable)
+    }
+}
+
+/// `of_them` over `of_all`, and `None` when `of_all` is 0, which every
+/// ratio of the polymorphism counts is then.
+fn ratio_of(of_them: u64, of_all: u64) -> Option<f64> {
+    if of_all == 0 {
+        return None;
+    }
+    // Every count of popnei is below 2^53, where a `f64` holds the whole
+    // numbers exactly.
+    Some(of_them as f64 / of_all as f64)
+}
+
+/// What one pass of [`calc_per_var_distribs`] gives back: the distribution
+/// of each statistic that was asked for, per population, and how many
+/// variants the pass gave.
+///
+/// A statistic that was not asked for is `None`. The populations of every
+/// field are in the order of the [`Pops`] of the pass, which is the order
+/// the user named them in.
+#[derive(Debug)]
+pub struct PerVarDistribs {
+    /// The observed heterozygosity.
+    pub obs_het: Option<StatsDistrib>,
+    /// The major allele frequency.
+    pub maf: Option<StatsDistrib>,
+    /// The plain expected heterozygosity.
+    pub exp_het: Option<StatsDistrib>,
+    /// The unbiased expected heterozygosity.
+    pub unbiased_exp_het: Option<StatsDistrib>,
+    /// The counts of the polymorphism ratio.
+    pub poly_vars_ratio: Option<PolyVarsStats>,
+    /// The variants the pass gave, after the steps the variants carried.
+    pub num_vars: u64,
+}
+
+/// How many rows of a block one chunk of the pass reads.
+///
+/// The rows of a block are added up chunk by chunk and the chunks are added
+/// together in the order of the block, so the sum of a statistic does not
+/// depend on how many threads read the block, which rayon's own `sum` would
+/// make it: it joins the parts in an order it chooses at run time. The
+/// number is fixed for the same reason, and 64 rows of 1000 diploid
+/// individuals are 128000 genotypes, enough work for one task of rayon.
+const ROWS_PER_CHUNK: usize = 64;
+
+/// Which of the five statistics a pass was asked for, and what has to be
+/// counted for them.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    obs_het: bool,
+    maf: bool,
+    exp_het: bool,
+    unbiased_exp_het: bool,
+    poly_vars_ratio: bool,
+}
+
+impl Asked {
+    /// The statistics of a configuration, with a statistic named twice
+    /// taken once.
+    fn of(stats: &[PerVarStat]) -> Asked {
+        let mut asked = Asked {
+            obs_het: false,
+            maf: false,
+            exp_het: false,
+            unbiased_exp_het: false,
+            poly_vars_ratio: false,
+        };
+        for stat in stats {
+            match *stat {
+                PerVarStat::ObsHet => asked.obs_het = true,
+                PerVarStat::Maf => asked.maf = true,
+                PerVarStat::ExpHet => asked.exp_het = true,
+                PerVarStat::UnbiasedExpHet => asked.unbiased_exp_het = true,
+                PerVarStat::PolyVarsRatio => asked.poly_vars_ratio = true,
+            }
+        }
+        asked
+    }
+
+    /// Whether the alleles of a row have to be counted for a population:
+    /// three of the five statistics follow from those counts, and the
+    /// fourth, the polymorphism ratio, from the major allele frequency they
+    /// give.
+    fn the_allele_counts(self) -> bool {
+        self.maf || self.exp_het || self.unbiased_exp_het || self.poly_vars_ratio
+    }
+
+    /// Whether the major allele frequency of a row has to be worked out for
+    /// a population: for itself, and for the polymorphism ratio, which
+    /// counts the variants whose frequency is below a threshold.
+    fn the_maf(self) -> bool {
+        self.maf || self.poly_vars_ratio
+    }
+}
+
+/// What a pass has added up of one statistic over one population: the sum
+/// of the values, how many variants had one, and how many of them fell in
+/// each bin.
+#[derive(Debug, Clone)]
+struct Accumulated {
+    sum: f64,
+    num_vars_with_value: u64,
+    /// One count for each bin, and no count at all for a statistic that
+    /// was not asked for, which nothing is added to.
+    hist: Vec<u64>,
+}
+
+impl Accumulated {
+    /// The accumulator of a statistic before any variant is read, with the
+    /// bins of a statistic that was asked for and none of one that was not.
+    fn of(num_bins: usize, asked_for: bool) -> Accumulated {
+        Accumulated {
+            sum: 0.0,
+            num_vars_with_value: 0,
+            hist: vec![0; if asked_for { num_bins } else { 0 }],
+        }
+    }
+
+    /// It adds the value one variant had in this population.
+    fn add(&mut self, value: f64, bins: &HistBins) {
+        self.sum += value;
+        // One variant of the pass, and a pass of more than
+        // 18446744073709551615 variants reads more rows than any source
+        // holds.
+        self.num_vars_with_value = self.num_vars_with_value.saturating_add(1);
+        if let Some(bin) = bins.bin_of(value)
+            && let Some(count) = self.hist.get_mut(bin)
+        {
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// It empties the accumulator, so that one chunk of rows after another
+    /// is added up in it without its bins being allocated again.
+    fn forget_what_it_holds(&mut self) {
+        self.sum = 0.0;
+        self.num_vars_with_value = 0;
+        self.hist.fill(0);
+    }
+
+    /// It adds what one chunk of rows found to what the pass has.
+    ///
+    /// The chunks are added in the order of the block, so the sum does not
+    /// depend on how many threads read them.
+    fn add_the_chunk(&mut self, of_the_chunk: &Accumulated) {
+        self.sum += of_the_chunk.sum;
+        self.num_vars_with_value = self
+            .num_vars_with_value
+            .saturating_add(of_the_chunk.num_vars_with_value);
+        for (count, of_the_chunk) in self.hist.iter_mut().zip(&of_the_chunk.hist) {
+            *count = count.saturating_add(*of_the_chunk);
+        }
+    }
+}
+
+/// The three counts of the polymorphism ratio of one population.
+#[derive(Debug, Clone, Copy)]
+struct PolyCounts {
+    num_poly: u64,
+    num_variable: u64,
+    num_vars_with_data: u64,
+}
+
+impl PolyCounts {
+    /// The counts before any variant is read.
+    fn none() -> PolyCounts {
+        PolyCounts {
+            num_poly: 0,
+            num_variable: 0,
+            num_vars_with_data: 0,
+        }
+    }
+
+    /// It counts one variant that has a major allele frequency in this
+    /// population, polymorphic when that frequency is below `threshold` and
+    /// variable when it is below 1.
+    fn add(&mut self, maf: f64, threshold: f64) {
+        // One variant of the pass each, which no source holds
+        // 18446744073709551615 of.
+        self.num_vars_with_data = self.num_vars_with_data.saturating_add(1);
+        if maf < 1.0 {
+            self.num_variable = self.num_variable.saturating_add(1);
+        }
+        if maf < threshold {
+            self.num_poly = self.num_poly.saturating_add(1);
+        }
+    }
+
+    /// It adds what one chunk of rows found to what the pass has.
+    fn add_the_chunk(&mut self, of_the_chunk: PolyCounts) {
+        self.num_poly = self.num_poly.saturating_add(of_the_chunk.num_poly);
+        self.num_variable = self.num_variable.saturating_add(of_the_chunk.num_variable);
+        self.num_vars_with_data = self
+            .num_vars_with_data
+            .saturating_add(of_the_chunk.num_vars_with_data);
+    }
+}
+
+/// What a pass, or one chunk of the rows of a block, has added up of every
+/// statistic over one population.
+#[derive(Debug, Clone)]
+struct OfAPop {
+    obs_het: Accumulated,
+    maf: Accumulated,
+    exp_het: Accumulated,
+    unbiased_exp_het: Accumulated,
+    poly: PolyCounts,
+}
+
+/// What a pass, or one chunk of the rows of a block, has added up over
+/// every population.
+///
+/// Its size is the populations times the bins of each statistic, and grows
+/// neither with the variants of the pass nor with the individuals: it is
+/// what is kept from one block to the next.
+#[derive(Debug, Clone)]
+struct Totals {
+    pops: Vec<OfAPop>,
+}
+
+impl Totals {
+    /// The accumulators of `num_pops` populations before any variant is
+    /// read, with the bins of the statistics that were asked for.
+    fn of(num_pops: usize, num_bins: usize, asked: Asked) -> Totals {
+        Totals {
+            pops: (0..num_pops)
+                .map(|_| OfAPop {
+                    obs_het: Accumulated::of(num_bins, asked.obs_het),
+                    maf: Accumulated::of(num_bins, asked.maf),
+                    exp_het: Accumulated::of(num_bins, asked.exp_het),
+                    unbiased_exp_het: Accumulated::of(num_bins, asked.unbiased_exp_het),
+                    poly: PolyCounts::none(),
+                })
+                .collect(),
+        }
+    }
+
+    /// It adds what one chunk of rows found to what the pass has, one
+    /// population at a time.
+    fn add_the_chunk(&mut self, of_the_chunk: &Totals) {
+        for (of_the_pass, of_the_chunk) in self.pops.iter_mut().zip(&of_the_chunk.pops) {
+            of_the_pass.obs_het.add_the_chunk(&of_the_chunk.obs_het);
+            of_the_pass.maf.add_the_chunk(&of_the_chunk.maf);
+            of_the_pass.exp_het.add_the_chunk(&of_the_chunk.exp_het);
+            of_the_pass
+                .unbiased_exp_het
+                .add_the_chunk(&of_the_chunk.unbiased_exp_het);
+            of_the_pass.poly.add_the_chunk(of_the_chunk.poly);
+        }
+    }
+
+    /// It empties every accumulator, so that one chunk of rows after
+    /// another is added up in the same `Totals`.
+    fn forget_what_it_holds(&mut self) {
+        for of_the_pop in &mut self.pops {
+            of_the_pop.obs_het.forget_what_it_holds();
+            of_the_pop.maf.forget_what_it_holds();
+            of_the_pop.exp_het.forget_what_it_holds();
+            of_the_pop.unbiased_exp_het.forget_what_it_holds();
+            of_the_pop.poly = PolyCounts::none();
+        }
+    }
+
+    /// The distribution of one statistic, with the accumulator of each
+    /// population that `of` picks out of it.
+    fn distrib_of(&self, bins: &HistBins, of: impl Fn(&OfAPop) -> &Accumulated) -> StatsDistrib {
+        StatsDistrib {
+            bins: bins.clone(),
+            pops: self.pops.iter().map(|pop| of(pop).clone()).collect(),
+        }
+    }
+
+    /// The counts of the polymorphism ratio of every population.
+    fn poly_vars_stats(&self) -> PolyVarsStats {
+        PolyVarsStats {
+            pops: self.pops.iter().map(|pop| pop.poly).collect(),
+        }
+    }
+}
+
+/// The distributions of the statistics of `config` over the variants
+/// `reader` gives, which is one pass over the source through the steps the
+/// variants carry.
+///
+/// `reader` is the outermost reader of the chain of the pass, lent and not
+/// taken, so that whoever built the chain reads the counts of its filters
+/// from it when this returns: those counts and
+/// [`PerVarDistribs::num_vars`] are the `pass_stats` of a result in Python
+/// and in TypeScript. The pass asks the reader for the genotypes alone.
+///
+/// Every statistic is calculated for each population over its individuals
+/// alone, and a variant with too little data in a population is out of that
+/// population's mean and in no bin of its histogram. A `config` that names
+/// no statistic is a pass that reads the rows and gives a result of `None`
+/// for each of the five, which the binding crates refuse before they get
+/// here.
+///
+/// # Errors
+///
+/// A `poly_threshold` that is not a number from 0 to 1; what the reader
+/// fails with; a block that holds no genotypes, which is a reader that was
+/// asked for them and gave none, and a block of no variants, which is a
+/// defect of a reader too; and a pass that gave no variant, whether its
+/// source holds none or its steps kept none of them.
+pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    config: &PerVarDistribsConfig,
+) -> Result<PerVarDistribs> {
+    // A NaN is outside every range, so the comparison refuses it too.
+    if !(0.0..=1.0).contains(&config.poly_threshold) {
+        return Err(Error::PolyThresholdOutOfRange {
+            value: config.poly_threshold,
+        });
+    }
+    let asked = Asked::of(&config.stats);
+    // The five statistics follow from the genotypes of a row, so no column
+    // of a block is read and the reader is asked to fill none of them.
+    reader.set_needs(Needs::GTS);
+    let mut totals = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
+    let mut num_vars: u64 = 0;
+    while let Some(block) = reader.next_block()? {
+        // The rows are cut out of the genotypes by the sizes the block
+        // states, so those sizes are checked before anything is read.
+        block.check()?;
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
+        if block.gts.is_empty() {
+            return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+        }
+        // `check` passed and the genotypes are not empty, so they are the
+        // variants of the block times this number and it is one allele at
+        // least: the rows are cut by it, and a cut of 0 is what the
+        // standard library refuses with a panic.
+        let alleles_per_var = block.alleles_per_var()?.max(1);
+        add_the_block(&block, alleles_per_var, config, asked, &mut totals)?;
+        // A `usize` is 64 bits on the targets popnei builds natively for
+        // and 32 in wasm, so every one of them is a `u64`; and a pass of
+        // more than 18446744073709551615 variants reads more rows than any
+        // source holds.
+        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+    }
+    if num_vars == 0 {
+        let filters = reader.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            // The filter nearest the source was given what the source
+            // gave; with no filter the pass gave what the source gave,
+            // which is nothing.
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
+    }
+    Ok(the_distribs(&totals, config, asked, num_vars))
+}
+
+/// How many alleles one chunk of the pass holds: [`ROWS_PER_CHUNK`] rows of
+/// `alleles_per_var` alleles, and one allele at least, because a cut of 0
+/// is what the standard library refuses with a panic.
+fn alleles_of_a_chunk(alleles_per_var: usize) -> usize {
+    // A block of more alleles than a `usize` counts is refused before this,
+    // and a chunk that saturated would be the whole block, which is a
+    // chunking that gives the right numbers and no threads.
+    ROWS_PER_CHUNK.saturating_mul(alleles_per_var).max(1)
+}
+
+/// It adds the statistics of every row of a block into `totals`.
+///
+/// Natively the chunks of rows are read on the threads of rayon, as section
+/// 3 of `docs/architecture.md` asks: no row reads another, each chunk adds
+/// up what its own rows give, and the chunks are added into `totals` in the
+/// order of the block, so neither a count nor a sum depends on how many
+/// threads there are. The threads are those of the pool the caller is
+/// running in, and rayon's global pool only when the caller is in none.
+///
+/// # Errors
+///
+/// What the counts of one variant refuse: genotypes that are not a whole
+/// number of genotypes of the ploidy, a variant of more alleles than a
+/// count of them holds, an allele below the missing one, and an individual
+/// of a population beyond the row. The error is the one of the first row
+/// that has one, wherever the threads found it: which of two bad rows a
+/// thread reaches first depends on how the chunks were shared out, and a
+/// user who reports a damaged file has to get the same message every time,
+/// so the rows are read again, one after another, to find the first.
+#[cfg(not(target_family = "wasm"))]
+fn add_the_block(
+    block: &Block,
+    alleles_per_var: usize,
+    config: &PerVarDistribsConfig,
+    asked: Asked,
+    totals: &mut Totals,
+) -> Result<()> {
+    use rayon::iter::ParallelIterator;
+    use rayon::slice::ParallelSlice;
+
+    let num_pops = config.pops.len();
+    let num_bins = config.bins.num_bins();
+    let of_the_chunks: Result<Vec<Totals>> = block
+        .gts
+        .par_chunks(alleles_of_a_chunk(alleles_per_var))
+        .map(|chunk| {
+            let mut of_the_chunk = Totals::of(num_pops, num_bins, asked);
+            add_the_rows(
+                chunk,
+                alleles_per_var,
+                block.ploidy,
+                config,
+                asked,
+                &mut of_the_chunk,
+            )?;
+            Ok(of_the_chunk)
+        })
+        .collect();
+    match of_the_chunks {
+        Ok(of_the_chunks) => {
+            for of_the_chunk in &of_the_chunks {
+                totals.add_the_chunk(of_the_chunk);
+            }
+            Ok(())
+        }
+        // The second pass costs a read of the block, and it is made only
+        // where the block is refused and nothing of it is given.
+        Err(of_a_thread) => {
+            let mut read_again = Totals::of(num_pops, num_bins, asked);
+            match add_the_chunks_one_by_one(block, alleles_per_var, config, asked, &mut read_again)
+            {
+                Err(of_the_first_row) => Err(of_the_first_row),
+                // The rows are the same rows, so the second pass finds an
+                // error too; the error of the threads is what is left if it
+                // ever did not.
+                Ok(()) => Err(of_a_thread),
+            }
+        }
+    }
+}
+
+/// The same numbers, with the chunks read one after another, which is what
+/// wasm does: it has no threads.
+#[cfg(target_family = "wasm")]
+fn add_the_block(
+    block: &Block,
+    alleles_per_var: usize,
+    config: &PerVarDistribsConfig,
+    asked: Asked,
+    totals: &mut Totals,
+) -> Result<()> {
+    add_the_chunks_one_by_one(block, alleles_per_var, config, asked, totals)
+}
+
+/// The chunks of the block read one after another, each into accumulators
+/// of its own that are added into `totals` before the next is read: what
+/// wasm runs, and what the threads fall back on to find the first row that
+/// is an error.
+///
+/// The chunks are the same chunks the threads read, and they are added in
+/// the same order, so wasm and a native build add the values of a block up
+/// in the same order and the addition of two floats is exact on every
+/// machine popnei runs on.
+///
+/// # Errors
+///
+/// Those of [`add_the_block`], at the first row that has one.
+fn add_the_chunks_one_by_one(
+    block: &Block,
+    alleles_per_var: usize,
+    config: &PerVarDistribsConfig,
+    asked: Asked,
+    totals: &mut Totals,
+) -> Result<()> {
+    let mut of_the_chunk = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
+    for chunk in block.gts.chunks(alleles_of_a_chunk(alleles_per_var)) {
+        of_the_chunk.forget_what_it_holds();
+        add_the_rows(
+            chunk,
+            alleles_per_var,
+            block.ploidy,
+            config,
+            asked,
+            &mut of_the_chunk,
+        )?;
+        totals.add_the_chunk(&of_the_chunk);
+    }
+    Ok(())
+}
+
+/// It adds the statistics of every row of one chunk into `totals`, one
+/// population after another.
+///
+/// `gts` holds whole rows of `alleles_per_var` alleles each. The counts of
+/// one row over one population are taken once and the statistics that were
+/// asked for follow from them: the observed heterozygosity from the counts
+/// of the genotypes, the other four from the counts of the alleles.
+///
+/// # Errors
+///
+/// Those of [`add_the_block`], at the first row of the chunk that has one.
+fn add_the_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    ploidy: usize,
+    config: &PerVarDistribsConfig,
+    asked: Asked,
+    totals: &mut Totals,
+) -> Result<()> {
+    // One array of counts for every row and every population, which
+    // `count_alleles_of` clears before it counts: a pass over a block
+    // allocates nothing for a variant.
+    let mut counts: AlleleCounts = [0; 128];
+    for row in gts.chunks_exact(alleles_per_var) {
+        for (pop, of_the_pop) in totals.pops.iter_mut().enumerate() {
+            let individuals = config.pops.individuals(pop);
+            // A population of every individual of the reader in its order
+            // is counted by reading the row as it is, and the width of the
+            // row says that it is the row of that reader: a `Pops` built
+            // against another one would otherwise count individuals the
+            // population does not hold.
+            let of_the_whole_row = config.pops.is_all(pop)
+                && individuals.len().saturating_mul(ploidy) == alleles_per_var;
+            if asked.obs_het {
+                let of_the_gts = if of_the_whole_row {
+                    count_gts(row, ploidy)?
+                } else {
+                    count_gts_of(row, ploidy, individuals)?
+                };
+                if let Some(value) = config.obs_het.of_var(of_the_gts) {
+                    of_the_pop.obs_het.add(value, &config.bins);
+                }
+            }
+            if !asked.the_allele_counts() {
+                continue;
+            }
+            let called_alleles = if of_the_whole_row {
+                count_alleles(row, &mut counts)?
+            } else {
+                count_alleles_of(row, ploidy, individuals, &mut counts)?
+            };
+            if asked.the_maf()
+                && let Some(value) = config.maf.of_var(&counts, called_alleles)
+            {
+                if asked.maf {
+                    of_the_pop.maf.add(value, &config.bins);
+                }
+                if asked.poly_vars_ratio {
+                    of_the_pop.poly.add(value, config.poly_threshold);
+                }
+            }
+            if asked.exp_het
+                && let Some(value) = config.exp_het.of_var(&counts, called_alleles, false)
+            {
+                of_the_pop.exp_het.add(value, &config.bins);
+            }
+            if asked.unbiased_exp_het
+                && let Some(value) = config.exp_het.of_var(&counts, called_alleles, true)
+            {
+                of_the_pop.unbiased_exp_het.add(value, &config.bins);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The result of a pass, with the statistics that were asked for and
+/// `None` for the ones that were not.
+fn the_distribs(
+    totals: &Totals,
+    config: &PerVarDistribsConfig,
+    asked: Asked,
+    num_vars: u64,
+) -> PerVarDistribs {
+    let distrib = |asked_for: bool, of: fn(&OfAPop) -> &Accumulated| {
+        asked_for.then(|| totals.distrib_of(&config.bins, of))
+    };
+    PerVarDistribs {
+        obs_het: distrib(asked.obs_het, |pop| &pop.obs_het),
+        maf: distrib(asked.maf, |pop| &pop.maf),
+        exp_het: distrib(asked.exp_het, |pop| &pop.exp_het),
+        unbiased_exp_het: distrib(asked.unbiased_exp_het, |pop| &pop.unbiased_exp_het),
+        poly_vars_ratio: asked.poly_vars_ratio.then(|| totals.poly_vars_stats()),
+        num_vars,
+    }
 }
 
 #[cfg(test)]
@@ -1710,5 +2495,729 @@ mod exp_het {
         }
         assert!(ExpHet::new(1, 1, 20).is_ok());
         assert!(ExpHet::new(255, 255, 20).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod distribs {
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::{Path, PathBuf};
+
+    use super::fixtures::{THE_SIX_VARIANTS, THE_THREE_VARIANTS};
+    use super::{
+        ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat,
+        PolyVarsStats, Pops, StatsDistrib, calc_per_var_distribs,
+    };
+    use crate::block::{Block, BlockReader};
+    use crate::error::{Error, Result};
+    use crate::filters::{FilteredReader, FilteringStats, VarFilter, VarFilteringCriterion};
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::{ChromTable, Needs};
+
+    /// One unit of the last of the six digits the spec prints of a mean of
+    /// the worked examples.
+    const OF_A_PRINTED_MEAN: f64 = 1e-6;
+
+    /// One unit of the last of the twelve digits the spec prints of the
+    /// ratios of the polymorphism counts of the panel and of `many.vcf`.
+    const OF_A_PRINTED_RATIO: f64 = 1e-12;
+
+    /// A reader of the tests that gives the blocks it was built with, which
+    /// is how the worked examples of the spec reach the pass: five diploid
+    /// individuals named `i1` to `i5`, the individuals of both worked
+    /// examples.
+    #[derive(Debug)]
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        chroms: ChromTable,
+        /// The blocks it has not given yet, the next one last.
+        left: Vec<Block>,
+        /// What it was last asked to fill, which the test reads to see that
+        /// the pass asks for the genotypes alone.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// The reader over `blocks`, which it gives in their order.
+        fn of(blocks: Vec<Block>) -> GivenBlocks {
+            let mut chroms = ChromTable::new();
+            chroms.intern("chr1");
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (1..=5).map(|number| format!("i{number}")).collect(),
+                chroms,
+                left,
+                needs: Needs::ALL,
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            2
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The blocks of `num_vars_per_block` variants that hold `variants`, the
+    /// rows of a worked example, one after another.
+    fn blocks_of(variants: &[[i8; 10]], num_vars_per_block: usize) -> Vec<Block> {
+        variants
+            .chunks(num_vars_per_block)
+            .map(|of_the_block| Block {
+                num_vars: of_the_block.len(),
+                num_individuals: 5,
+                ploidy: 2,
+                gts: of_the_block.iter().flatten().copied().collect(),
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+            })
+            .collect()
+    }
+
+    /// The reader over the six variants of the worked example of the pass,
+    /// in blocks of `num_vars_per_block`.
+    fn the_worked_example(num_vars_per_block: usize) -> GivenBlocks {
+        GivenBlocks::of(blocks_of(&THE_SIX_VARIANTS, num_vars_per_block))
+    }
+
+    /// One population as `Pops::from_names` takes it.
+    fn pop_of(name: &str, individuals: &[&str]) -> (String, Vec<String>) {
+        (
+            name.to_owned(),
+            individuals
+                .iter()
+                .map(|individual| (*individual).to_owned())
+                .collect(),
+        )
+    }
+
+    /// The two populations of the worked examples, pop1 of i1 and i2 and
+    /// pop2 of i3, i4 and i5, in that order.
+    fn the_two_pops() -> Pops {
+        let individuals: Vec<String> = (1..=5).map(|number| format!("i{number}")).collect();
+        Pops::from_names(
+            &[
+                pop_of("pop1", &["i1", "i2"]),
+                pop_of("pop2", &["i3", "i4", "i5"]),
+            ],
+            &individuals,
+        )
+        .expect("the two populations of the worked example")
+    }
+
+    /// The five statistics over `pops`, with `min_num_individuals`, the
+    /// four bins of the worked examples and the default threshold of the
+    /// polymorphism ratio.
+    fn config_of(pops: Pops, min_num_individuals: u32) -> PerVarDistribsConfig {
+        PerVarDistribsConfig {
+            stats: vec![
+                PerVarStat::ObsHet,
+                PerVarStat::Maf,
+                PerVarStat::ExpHet,
+                PerVarStat::UnbiasedExpHet,
+                PerVarStat::PolyVarsRatio,
+            ],
+            pops,
+            bins: HistBins::linear(0.0, 1.0, 4).expect("the four bins of the worked example"),
+            obs_het: ObsHet::new(min_num_individuals),
+            maf: Maf::new(2, min_num_individuals).expect("the maf of diploid variants"),
+            exp_het: ExpHet::new(2, 2, min_num_individuals)
+                .expect("the expected heterozygosity of diploid variants"),
+            poly_threshold: 0.95,
+        }
+    }
+
+    /// That the mean of one population is the one the spec gives, within
+    /// `tolerance`.
+    fn assert_mean(distrib: Option<&StatsDistrib>, pop: usize, expected: f64, what: &str) {
+        let distrib = distrib.unwrap_or_else(|| panic!("{what} was not calculated"));
+        let Some(found) = distrib.mean(pop) else {
+            panic!("{what} has no mean, and it is {expected}");
+        };
+        assert!(
+            (found - expected).abs() <= OF_A_PRINTED_MEAN,
+            "{what} is {found}, and it is {expected} within {OF_A_PRINTED_MEAN}"
+        );
+    }
+
+    /// That the histogram of one population is the counts the spec gives,
+    /// bin by bin.
+    fn assert_hist(distrib: Option<&StatsDistrib>, pop: usize, expected: &[u64], what: &str) {
+        let distrib = distrib.unwrap_or_else(|| panic!("{what} was not calculated"));
+        assert_eq!(
+            distrib.hist_counts(pop),
+            expected,
+            "the histogram of {what}"
+        );
+        let in_the_bins: u64 = expected.iter().copied().sum();
+        assert!(
+            in_the_bins <= distrib.num_vars_with_value(pop),
+            "the histogram of {what} counts more variants than had a value"
+        );
+    }
+
+    /// The means and the histograms of the worked example of the pass over
+    /// its two populations, with `min_num_individuals` 1 and the four bins
+    /// 0, 0.25, 0.5, 0.75 and 1, as the tables of "How it is verified" of
+    /// the per variant distributions give them.
+    ///
+    /// The blocks of 6 and of 2 variants are the two the spec asks for: the
+    /// pass adds the rows of every block into the same accumulators, so
+    /// neither a count nor a mean depends on where the blocks were cut.
+    #[test]
+    fn the_means_and_the_histograms_of_the_worked_example_over_the_two_populations() {
+        for num_vars_per_block in [6, 2] {
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+                .expect("the distributions of the worked example");
+
+            assert_eq!(found.num_vars, 6);
+            for (pop, means, hists) in [
+                (
+                    0,
+                    [0.5, 0.6875, 0.375, 0.5],
+                    [[1_u64, 0, 2, 1], [0, 1, 0, 3], [1, 2, 0, 1], [1, 0, 2, 1]],
+                ),
+                (
+                    1,
+                    [0.25, 0.729_167, 0.298_611, 0.383_333],
+                    [[3, 0, 0, 1], [0, 1, 1, 2], [2, 1, 0, 1], [2, 0, 1, 1]],
+                ),
+            ] {
+                for (index, (distrib, what)) in the_four_distribs(&found).iter().enumerate() {
+                    let expected_mean = means.get(index).copied().expect("the mean of the table");
+                    let expected_hist = hists.get(index).expect("the histogram of the table");
+                    let what =
+                        &format!("{what} of the population {pop}, blocks of {num_vars_per_block}");
+                    assert_mean(*distrib, pop, expected_mean, what);
+                    assert_hist(*distrib, pop, expected_hist, what);
+                }
+            }
+        }
+    }
+
+    /// The four distributions of a result in the order of the tables of the
+    /// spec: the observed heterozygosity, the maf, the plain expected
+    /// heterozygosity and the unbiased one.
+    fn the_four_distribs(found: &PerVarDistribs) -> [(Option<&StatsDistrib>, &'static str); 4] {
+        [
+            (found.obs_het.as_ref(), "the observed heterozygosity"),
+            (found.maf.as_ref(), "the maf"),
+            (found.exp_het.as_ref(), "the plain expected heterozygosity"),
+            (
+                found.unbiased_exp_het.as_ref(),
+                "the unbiased expected heterozygosity",
+            ),
+        ]
+    }
+
+    /// The same example with no `pops`, which is the one population of the
+    /// five individuals in the order of the source: the means and the
+    /// histograms of the paragraph after the tables, over the variants 1,
+    /// 2, 3 and 5.
+    #[test]
+    fn the_means_and_the_histograms_of_the_worked_example_with_no_pops() {
+        for num_vars_per_block in [6, 2] {
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
+                .expect("the distributions of the five individuals");
+
+            let means = [0.395_833, 0.699_008, 0.378_107, 0.430_159];
+            let hists = [[1_u64, 2, 0, 1], [0, 1, 0, 3], [2, 1, 0, 1], [1, 2, 0, 1]];
+            for (index, (distrib, what)) in the_four_distribs(&found).iter().enumerate() {
+                let what =
+                    &format!("{what} of the five individuals, blocks of {num_vars_per_block}");
+                assert_mean(
+                    *distrib,
+                    0,
+                    means.get(index).copied().expect("the mean"),
+                    what,
+                );
+                assert_hist(*distrib, 0, hists.get(index).expect("the histogram"), what);
+                assert_eq!(
+                    distrib.expect("the distribution").num_vars_with_value(0),
+                    4,
+                    "{what} is over the variants 1, 2, 3 and 5"
+                );
+            }
+        }
+    }
+
+    /// The polymorphism counts and ratios of the worked example, from "How
+    /// it is verified" of the polymorphism ratio: pop1 has the mafs 0.75,
+    /// 0.75, 0.25 and 1, pop2 has 1, 1, 0.25 and 0.666667, and the five
+    /// individuals together have 0.888889, 0.857143, 0.25 and 0.8.
+    #[test]
+    fn the_polymorphism_counts_and_ratios_of_the_worked_example() {
+        for num_vars_per_block in [6, 2] {
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+                .expect("the distributions of the worked example");
+            let poly = found
+                .poly_vars_ratio
+                .as_ref()
+                .expect("the polymorphism counts");
+            assert_counts(poly, 0, [3, 3, 4], "pop1");
+            assert_ratios(poly, 0, 0.75, 1.0, "pop1");
+            assert_counts(poly, 1, [2, 2, 4], "pop2");
+            assert_ratios(poly, 1, 0.5, 1.0, "pop2");
+
+            let mut reader = the_worked_example(num_vars_per_block);
+            let found = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
+                .expect("the distributions of the five individuals");
+            let poly = found
+                .poly_vars_ratio
+                .as_ref()
+                .expect("the polymorphism counts");
+            assert_counts(poly, 0, [4, 4, 4], "the five individuals");
+            assert_ratios(poly, 0, 1.0, 1.0, "the five individuals");
+        }
+    }
+
+    /// The threshold is read at every variant: at 0.5 the only variant
+    /// below it is the third, of maf 0.25 in both populations, so each has
+    /// 1 polymorphic variant where the default 0.95 leaves 3 and 2, and
+    /// neither the variable ones nor those with data change.
+    #[test]
+    fn a_poly_threshold_of_0_5_counts_the_variants_below_it_alone() {
+        let mut reader = the_worked_example(6);
+        let mut config = config_of(the_two_pops(), 1);
+        config.poly_threshold = 0.5;
+        let found = calc_per_var_distribs(&mut reader, &config)
+            .expect("the distributions of the worked example");
+        let poly = found
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the polymorphism counts");
+        assert_counts(poly, 0, [1, 3, 4], "pop1");
+        assert_ratios(poly, 0, 0.25, 0.333_333, "pop1");
+        assert_counts(poly, 1, [1, 2, 4], "pop2");
+        assert_ratios(poly, 1, 0.25, 0.5, "pop2");
+    }
+
+    /// That the three counts of one population are the ones the spec gives:
+    /// the polymorphic variants, the variable ones and those with data.
+    fn assert_counts(poly: &PolyVarsStats, pop: usize, expected: [u64; 3], what: &str) {
+        assert_eq!(
+            [
+                poly.num_poly(pop),
+                poly.num_variable(pop),
+                poly.num_vars_with_data(pop)
+            ],
+            expected,
+            "the polymorphic, the variable and the variants with data of {what}"
+        );
+    }
+
+    /// That the two ratios of one population are the ones the spec gives,
+    /// within one unit of the last digit it prints of them.
+    fn assert_ratios(
+        poly: &PolyVarsStats,
+        pop: usize,
+        over_the_data: f64,
+        over_the_variables: f64,
+        what: &str,
+    ) {
+        let found = poly.poly_ratio(pop).expect("the ratio over the data");
+        assert!(
+            (found - over_the_data).abs() <= OF_A_PRINTED_MEAN,
+            "the ratio over the variants with data of {what} is {found}, and it is {over_the_data}"
+        );
+        let found = poly
+            .poly_ratio_over_variables(pop)
+            .expect("the ratio over the variable ones");
+        assert!(
+            (found - over_the_variables).abs() <= OF_A_PRINTED_MEAN,
+            "the ratio over the variable variants of {what} is {found}, and it is \
+             {over_the_variables}"
+        );
+    }
+
+    /// The means of the worked example of the expected heterozygosity, its
+    /// three variants over the same two populations with
+    /// `min_num_individuals` 1: 0.3125 and 0.25 plain, 0.416667 and
+    /// 0.333333 unbiased, each over the two variants that have a value.
+    #[test]
+    fn the_means_of_the_worked_example_of_the_expected_heterozygosity() {
+        let mut reader = GivenBlocks::of(blocks_of(&THE_THREE_VARIANTS, 3));
+        let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+            .expect("the distributions of the three variants");
+
+        assert_eq!(found.num_vars, 3);
+        assert_mean(found.exp_het.as_ref(), 0, 0.3125, "the plain one of pop1");
+        assert_mean(found.exp_het.as_ref(), 1, 0.25, "the plain one of pop2");
+        assert_mean(
+            found.unbiased_exp_het.as_ref(),
+            0,
+            0.416_667,
+            "the unbiased one of pop1",
+        );
+        assert_mean(
+            found.unbiased_exp_het.as_ref(),
+            1,
+            0.333_333,
+            "the unbiased one of pop2",
+        );
+    }
+
+    /// The reference files of this module live at the root of the
+    /// repository, beside the Python tests that read the same files.
+    fn reference(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference")
+            .join(name)
+    }
+
+    /// The reader over a VCF of the reference files, with every variant
+    /// given and the blocks of the size popnei chose for its individuals.
+    fn vcf_reader(name: &str) -> VcfReader<BufReader<File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block: None,
+        };
+        VcfReader::<BufReader<File>>::from_path(&reference(name), options)
+            .unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
+
+    /// The populations `wanted` of a file of the reference, one line of an
+    /// individual and its population, in the order `wanted` names them.
+    ///
+    /// The individuals of a population are not together in the file: the
+    /// panel names its three in the order p0, p2, p1, and the population of
+    /// a result is the one the caller asked for and not the one that
+    /// happened to be named first.
+    fn pops_of_the_file(name: &str, header: bool, individuals: &[String], wanted: &[&str]) -> Pops {
+        let text = std::fs::read_to_string(reference(name)).expect("the populations of the file");
+        let mut named: Vec<(String, Vec<String>)> = wanted
+            .iter()
+            .map(|pop| ((*pop).to_owned(), Vec::new()))
+            .collect();
+        for line in text.lines().skip(usize::from(header)) {
+            let mut columns = line.split('\t');
+            let (Some(individual), Some(pop)) = (columns.next(), columns.next()) else {
+                panic!("the line `{line}` of {name} is not an individual and a population");
+            };
+            if let Some((_, of_the_pop)) = named.iter_mut().find(|(name, _)| name == pop) {
+                of_the_pop.push(individual.to_owned());
+            }
+        }
+        Pops::from_names(&named, individuals).expect("the populations of the file")
+    }
+
+    /// The nine polymorphism counts of the panel, from "How it is verified"
+    /// of the polymorphism ratio: in `p0`, `p1` and `p2`, the variants
+    /// whose maf is below 0.95, below 1, and that have one, with
+    /// `min_num_individuals` 20. They come from the `--freq` reports of
+    /// plink2 v2.0.0-a.7.7 and pyNei's `_calc_num_poly_vars` gives the
+    /// same, and the two ratios of `p0` are those the spec prints to twelve
+    /// digits.
+    #[test]
+    fn the_nine_polymorphism_counts_of_the_panel() {
+        let mut reader = vcf_reader("stats/panel.vcf.gz");
+        let pops = pops_of_the_file(
+            "stats/panel_pops.txt",
+            true,
+            reader.individuals(),
+            &["p0", "p1", "p2"],
+        );
+        let found = calc_per_var_distribs(&mut reader, &config_of(pops, 20))
+            .expect("the distributions of the panel");
+
+        assert_eq!(found.num_vars, 1200);
+        let poly = found
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the polymorphism counts");
+        assert_counts(poly, 0, [1112, 1173, 1200], "p0");
+        assert_counts(poly, 1, [1101, 1177, 1200], "p1");
+        assert_counts(poly, 2, [1093, 1184, 1200], "p2");
+        assert_printed_ratio(poly.poly_ratio(0), 0.926_666_666_667, "p0 over the data");
+        assert_printed_ratio(
+            poly.poly_ratio_over_variables(0),
+            0.947_996_589_940,
+            "p0 over the variable ones",
+        );
+    }
+
+    /// The six polymorphism counts of `many.vcf`, from the same part of the
+    /// spec: `popA` of the first 20 individuals and `popB` of the other 30,
+    /// with `min_num_individuals` 5, counted from bcftools 1.24, and the
+    /// two ratios of `popA`.
+    #[test]
+    fn the_six_polymorphism_counts_of_many_vcf() {
+        let mut reader = vcf_reader("vcf/many.vcf");
+        let pops = pops_of_the_file(
+            "stats/many_pops.txt",
+            false,
+            reader.individuals(),
+            &["popA", "popB"],
+        );
+        let found = calc_per_var_distribs(&mut reader, &config_of(pops, 5))
+            .expect("the distributions of many.vcf");
+
+        assert_eq!(found.num_vars, 500);
+        let poly = found
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the polymorphism counts");
+        assert_counts(poly, 0, [477, 492, 500], "popA");
+        assert_counts(poly, 1, [478, 493, 500], "popB");
+        assert_printed_ratio(poly.poly_ratio(0), 0.954, "popA over the data");
+        assert_printed_ratio(
+            poly.poly_ratio_over_variables(0),
+            0.969_512_195_122,
+            "popA over the variable ones",
+        );
+    }
+
+    /// That a ratio is the number the spec prints to twelve digits.
+    fn assert_printed_ratio(found: Option<f64>, expected: f64, what: &str) {
+        let found = found.unwrap_or_else(|| panic!("the ratio of {what} has no value"));
+        assert!(
+            (found - expected).abs() <= OF_A_PRINTED_RATIO,
+            "the ratio of {what} is {found}, and it is {expected} within {OF_A_PRINTED_RATIO}"
+        );
+    }
+
+    /// A population of 15 individuals at a `min_num_individuals` of 20 has
+    /// no value of any statistic at any variant, whatever the data: every
+    /// mean is none, every histogram counts nothing and the three
+    /// polymorphism counts are 0, with both ratios none. It is the default
+    /// threshold on the panel, which the pytest test of the spec asserts
+    /// through Python.
+    #[test]
+    fn a_population_of_15_has_no_value_at_a_min_num_individuals_of_20() {
+        let mut reader = vcf_reader("stats/panel.vcf.gz");
+        let of_the_first_15: Vec<&str> = reader
+            .individuals()
+            .iter()
+            .take(15)
+            .map(String::as_str)
+            .collect();
+        let pops = Pops::from_names(&[pop_of("fifteen", &of_the_first_15)], reader.individuals())
+            .expect("the population of 15 individuals");
+        let found = calc_per_var_distribs(&mut reader, &config_of(pops, 20))
+            .expect("the distributions of the panel");
+
+        assert_eq!(found.num_vars, 1200);
+        for (distrib, what) in the_four_distribs(&found) {
+            let distrib = distrib.unwrap_or_else(|| panic!("{what} was not calculated"));
+            assert_eq!(distrib.mean(0), None, "{what} has a mean");
+            assert_eq!(distrib.num_vars_with_value(0), 0, "{what} has a variant");
+            assert_eq!(distrib.hist_counts(0), [0, 0, 0, 0], "{what} counts a bin");
+        }
+        let poly = found
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the polymorphism counts");
+        assert_counts(poly, 0, [0, 0, 0], "the population of 15");
+        assert_eq!(poly.poly_ratio(0), None);
+        assert_eq!(poly.poly_ratio_over_variables(0), None);
+    }
+
+    /// A pass over a source that holds no variant is refused, and the
+    /// message says that the source holds none: a mean over no variant says
+    /// nothing about a dataset, and the user has to know which of the two
+    /// happened.
+    #[test]
+    fn a_pass_over_a_source_with_no_variant_is_refused() {
+        let mut reader = GivenBlocks::of(Vec::new());
+        let error = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+            .expect_err("a pass with no variant");
+        assert!(
+            matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
+                if *num_vars_of_the_source == 0 && filters.is_empty()),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("its source holds none"), "{message}");
+    }
+
+    /// A pass whose steps kept no variant is refused with the counts of
+    /// each filter, which say where the variants went: the two variants of
+    /// the block are the ones of the worked example with every genotype
+    /// missing, and a missing data filter at 0 keeps neither.
+    #[test]
+    fn a_pass_whose_filter_kept_no_variant_is_refused_with_the_counts_of_the_filter() {
+        let of_the_two = [
+            *THE_SIX_VARIANTS.get(3).expect("the variant 4"),
+            *THE_SIX_VARIANTS.get(5).expect("the variant 6"),
+        ];
+        let source = GivenBlocks::of(blocks_of(&of_the_two, 2));
+        let filter = VarFilter::new(VarFilteringCriterion::MaxMissingRate(0.0))
+            .expect("the missing data filter");
+        let mut reader = FilteredReader::new(source, filter).expect("the chain of the pass");
+        let error = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+            .expect_err("a pass with no variant");
+
+        assert!(
+            matches!(&error, Error::PassGaveNoVariant { num_vars_of_the_source, filters }
+                if *num_vars_of_the_source == 2 && filters.len() == 1),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("its source gave 2"), "{message}");
+        assert!(
+            message.contains("`missing_data` filter was given 2 and kept 0"),
+            "{message}"
+        );
+    }
+
+    /// The threshold of the polymorphism ratio is a number from 0 to 1,
+    /// both included, because a major allele frequency is one: the pass
+    /// refuses anything else before it reads a variant.
+    #[test]
+    fn a_poly_threshold_that_is_not_a_number_from_0_to_1_is_refused() {
+        for value in [-0.5, 1.5, f64::NAN] {
+            let mut reader = the_worked_example(6);
+            let mut config = config_of(the_two_pops(), 1);
+            config.poly_threshold = value;
+            let error = calc_per_var_distribs(&mut reader, &config)
+                .expect_err("a threshold outside 0 to 1");
+            assert!(
+                matches!(error, Error::PolyThresholdOutOfRange { value: found }
+                    if found.to_bits() == value.to_bits()),
+                "{error:?}"
+            );
+        }
+        // Both ends are taken.
+        for value in [0.0, 1.0] {
+            let mut reader = the_worked_example(6);
+            let mut config = config_of(the_two_pops(), 1);
+            config.poly_threshold = value;
+            calc_per_var_distribs(&mut reader, &config).expect("a threshold at an end");
+        }
+    }
+
+    /// A statistic that was not asked for is `None` in the result and
+    /// changes none of the others: asking for fewer is a saving of work.
+    #[test]
+    fn a_statistic_that_was_not_asked_for_is_none_and_changes_no_other() {
+        let mut reader = the_worked_example(6);
+        let mut config = config_of(the_two_pops(), 1);
+        config.stats = vec![PerVarStat::Maf];
+        let found =
+            calc_per_var_distribs(&mut reader, &config).expect("the maf of the worked example");
+
+        assert!(found.obs_het.is_none());
+        assert!(found.exp_het.is_none());
+        assert!(found.unbiased_exp_het.is_none());
+        assert!(found.poly_vars_ratio.is_none());
+        assert_mean(found.maf.as_ref(), 0, 0.6875, "the maf of pop1");
+        assert_hist(found.maf.as_ref(), 0, &[0, 1, 0, 3], "the maf of pop1");
+    }
+
+    /// The rows of a block are read on the threads of the pool the caller
+    /// is in, and the sums are added chunk by chunk in the order of the
+    /// block, so one thread and four give the same counts to the number and
+    /// the same means within 1e-12 relative, which is what "What could go
+    /// wrong" of the plan asks.
+    ///
+    /// `many.vcf` in blocks of 150 variants spans four blocks of three
+    /// chunks or fewer, so the rows of one block are read on several
+    /// threads and the blocks follow one another.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_numbers_are_the_same_in_pools_of_one_and_of_four_threads() {
+        let of_the_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                let options = VcfOptions {
+                    ploidy: 2,
+                    only_passed: false,
+                    num_vars_per_block: Some(150),
+                };
+                let mut reader =
+                    VcfReader::<BufReader<File>>::from_path(&reference("vcf/many.vcf"), options)
+                        .expect("many.vcf");
+                let pops = pops_of_the_file(
+                    "stats/many_pops.txt",
+                    false,
+                    reader.individuals(),
+                    &["popA", "popB"],
+                );
+                calc_per_var_distribs(&mut reader, &config_of(pops, 5))
+                    .expect("the distributions of many.vcf")
+            })
+        };
+        let on_one = of_the_pool(1);
+        let on_four = of_the_pool(4);
+
+        assert_eq!(on_one.num_vars, 500);
+        assert_eq!(on_one.num_vars, on_four.num_vars);
+        for ((of_one, what), (of_four, _)) in the_four_distribs(&on_one)
+            .into_iter()
+            .zip(the_four_distribs(&on_four))
+        {
+            let of_one = of_one.expect("the distribution on one thread");
+            let of_four = of_four.expect("the distribution on four threads");
+            for pop in 0..of_one.num_pops() {
+                assert_eq!(
+                    of_one.hist_counts(pop),
+                    of_four.hist_counts(pop),
+                    "the histogram of {what} of the population {pop}"
+                );
+                assert_eq!(
+                    of_one.num_vars_with_value(pop),
+                    of_four.num_vars_with_value(pop)
+                );
+                let (Some(mean_of_one), Some(mean_of_four)) = (of_one.mean(pop), of_four.mean(pop))
+                else {
+                    panic!("{what} of the population {pop} has no mean");
+                };
+                assert!(
+                    (mean_of_one - mean_of_four).abs() <= 1e-12 * mean_of_one.abs(),
+                    "the mean of {what} of the population {pop} is {mean_of_one} on one thread \
+                     and {mean_of_four} on four"
+                );
+            }
+        }
+        let of_one = on_one.poly_vars_ratio.expect("the counts on one thread");
+        let of_four = on_four.poly_vars_ratio.expect("the counts on four threads");
+        for pop in 0..of_one.num_pops() {
+            assert_counts(
+                &of_four,
+                pop,
+                [
+                    of_one.num_poly(pop),
+                    of_one.num_variable(pop),
+                    of_one.num_vars_with_data(pop),
+                ],
+                "the population on four threads",
+            );
+        }
     }
 }

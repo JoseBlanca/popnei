@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
+use crate::filters::FilteringStats;
 use crate::io::vcf::VcfPlace;
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -438,6 +439,41 @@ pub enum Error {
         value: usize,
         /// The largest one, `io::vcf::MAX_PLOIDY`.
         largest: usize,
+    },
+
+    /// The threshold below which a variant counts as polymorphic in a
+    /// population is not a number from 0 to 1. A major allele frequency is
+    /// a count of one allele divided by the called alleles, so every value
+    /// it takes lies between 0 and 1, and a threshold outside that range
+    /// makes every variant polymorphic or none. pyNei compares with
+    /// whatever it is given.
+    #[error(
+        "`poly_threshold` is {value:?}, and it is a number from 0 to 1, both included: a variant is polymorphic in a population when its major allele frequency there is below the threshold, and a frequency lies between 0 and 1"
+    )]
+    PolyThresholdOutOfRange {
+        /// The number that was given for it.
+        value: f64,
+    },
+
+    /// A pass that calculates a statistic gave no variant, either because
+    /// its source holds none or because the steps of the pass kept none of
+    /// the variants they were given. A mean over no variant and a histogram
+    /// that counts nothing say nothing about a dataset, and a user who gets
+    /// them has to know which of the two happened, so the message says it
+    /// with the variants each filter was given and kept.
+    #[error(
+        "{said}",
+        said = a_pass_that_gave_no_variant(*num_vars_of_the_source, filters)
+    )]
+    PassGaveNoVariant {
+        /// How many variants the source of the pass gave: what the filter
+        /// nearest the source was given, and 0 when the pass has no filter,
+        /// since the pass then gave what the source gave.
+        num_vars_of_the_source: u64,
+        /// Each filter of the chain of the pass with the variants it was
+        /// given and the ones it kept, the outermost first, as
+        /// `filtering_stats` of a reader gives them.
+        filters: Vec<(&'static str, FilteringStats)>,
     },
 
     /// A name that was given for a column of a block is not one of the
@@ -882,6 +918,42 @@ pub enum Error {
     /// The bytes of a source could not be read.
     #[error("the source could not be read: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// What [`Error::PassGaveNoVariant`] says: whether the source of the pass
+/// held no variant or its steps kept none of the ones they were given, and
+/// in the second case what each filter was given and kept.
+///
+/// `num_vars_of_the_source` is the variants the source gave, and `filters`
+/// the counts of the filters of the pass, the outermost first. The counts
+/// are said the other way round, the filter nearest the source first, which
+/// is the order the variants went through them in.
+fn a_pass_that_gave_no_variant(
+    num_vars_of_the_source: u64,
+    filters: &[(&'static str, FilteringStats)],
+) -> String {
+    if num_vars_of_the_source == 0 {
+        return "the pass gave no variant and its source holds none: a statistic per \
+                variant is calculated over the variants the pass gives"
+            .to_owned();
+    }
+    let of_each_filter: Vec<String> = filters
+        .iter()
+        .rev()
+        .map(|(kind, stats)| {
+            format!(
+                "the `{kind}` filter was given {given} and kept {kept}",
+                given = stats.vars_processed,
+                kept = stats.vars_kept,
+            )
+        })
+        .collect();
+    format!(
+        "the pass gave no variant: its source gave {num_vars_of_the_source} and the steps \
+         kept none of them, {counts}; a statistic per variant is calculated over the \
+         variants the pass gives",
+        counts = of_each_filter.join(", "),
+    )
 }
 
 /// What every operation of popnei that can fail returns.
