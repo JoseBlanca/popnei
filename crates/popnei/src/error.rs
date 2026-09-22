@@ -608,6 +608,26 @@ pub enum Error {
         problem: crate::ld::TheIndividualsThatDiffer,
     },
 
+    /// One of the matrices the r² of a set of variants is worked out
+    /// through, and that this machine did not give the memory for: one of
+    /// the three matrices of the dosages, one of the six sums of the pairs
+    /// of two sets, or a transpose of one of them. The memory is asked for
+    /// with `try_reserve_exact`, which gives it back as this error where
+    /// `vec![0.0; n]` would end the process, and which also refuses a
+    /// matrix whose bytes a `usize` does not count, as one of more than
+    /// 2^29 values is in WebAssembly, where a `usize` is 32 bits. In
+    /// Python it is a `ValueError` that names no file, since what it
+    /// refuses is the size of the calculation and not what any file holds:
+    /// calculate over fewer variants or over fewer individuals.
+    #[error("this machine has not the memory for {what} of the r², {values} values of 8 bytes")]
+    LdNoMemory {
+        /// Which matrix could not be allocated, as "How it runs" of
+        /// `docs/specs/ld.md` names them.
+        what: &'static str,
+        /// How many values it holds.
+        values: usize,
+    },
+
     /// An individual was asked for more than once when a set of dosages
     /// was built over some of the individuals of a block. A population is
     /// a set of individuals, and one given twice would be counted twice in

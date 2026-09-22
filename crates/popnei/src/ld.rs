@@ -160,7 +160,11 @@ impl LdDosages {
                 ploidy: block.ploidy,
             });
         }
-        let mut asked_for_already = vec![false; block.num_individuals];
+        let mut asked_for_already =
+            a_vector_of(false, block.num_individuals, &|| Error::LdNoMemory {
+                what: "the individuals asked for",
+                values: block.num_individuals,
+            })?;
         for individual in individuals {
             let Some(asked_for) = asked_for_already.get_mut(*individual) else {
                 return Err(Error::LdIndividualNotInTheDataset {
@@ -190,9 +194,13 @@ impl LdDosages {
                 true => (0..block.num_individuals).collect(),
                 false => individuals.to_vec(),
             },
-            dosages: vec![0.0; values],
-            called: vec![0.0; values],
-            squares: vec![0.0; values],
+            dosages: a_vector_of(0.0, values, &the_memory_for("the dosages", values))?,
+            called: a_vector_of(0.0, values, &the_memory_for("the called genotypes", values))?,
+            squares: a_vector_of(
+                0.0,
+                values,
+                &the_memory_for("the squares of the dosages", values),
+            )?,
             has_variance: vec![false; block.num_vars],
             maf: vec![None; block.num_vars],
         };
@@ -498,15 +506,23 @@ impl TheSumsOfThePairs {
     ///
     /// # Errors
     ///
-    /// [`Error::LdLinalg`] when a product could not be worked out.
+    /// [`Error::LdLinalg`] when a product could not be worked out, and
+    /// [`Error::LdNoMemory`] when this machine did not give the memory of
+    /// one of the six sums or of a transpose.
     fn of(a: &LdDosages, b: &LdDosages, num_values: usize) -> Result<TheSumsOfThePairs> {
         let (rows, inner, cols) = (a.num_vars, a.num_individuals(), b.num_vars);
-        let called_of_b = the_transpose_of(&b.called, cols, inner);
-        let dosages_of_b = the_transpose_of(&b.dosages, cols, inner);
-        let mut num_individuals = vec![0.0; num_values];
-        let mut products = vec![0.0; num_values];
-        let mut of_a = vec![0.0; num_values];
-        let mut squares_of_a = vec![0.0; num_values];
+        let called_of_b = the_transpose_of(
+            &b.called,
+            cols,
+            inner,
+            "the transpose of the called genotypes of b",
+        )?;
+        let dosages_of_b =
+            the_transpose_of(&b.dosages, cols, inner, "the transpose of the dosages of b")?;
+        let mut num_individuals = a_vector_of(0.0, num_values, &the_memory_for("n", num_values))?;
+        let mut products = a_vector_of(0.0, num_values, &the_memory_for("Σxy", num_values))?;
+        let mut of_a = a_vector_of(0.0, num_values, &the_memory_for("Σx", num_values))?;
+        let mut squares_of_a = a_vector_of(0.0, num_values, &the_memory_for("Σxx", num_values))?;
         let sum_of = |of_the_variants: &[f64], by_individual: &[f64], into: &mut [f64], sum| {
             product(of_the_variants, rows, inner, by_individual, cols, into).map_err(|source| {
                 Error::LdLinalg {
@@ -525,13 +541,19 @@ impl TheSumsOfThePairs {
             // other way round, so Σy and Σyy are the transposes of Σx and
             // Σxx and two of the six products are not taken.
             (
-                the_transpose_of(&of_a, rows, cols),
-                the_transpose_of(&squares_of_a, rows, cols),
+                the_transpose_of(&of_a, rows, cols, "the transpose of Σx")?,
+                the_transpose_of(&squares_of_a, rows, cols, "the transpose of Σxx")?,
             )
         } else {
-            let squares_of_b_by_individual = the_transpose_of(&b.squares, cols, inner);
-            let mut of_b = vec![0.0; num_values];
-            let mut squares_of_b = vec![0.0; num_values];
+            let squares_of_b_by_individual = the_transpose_of(
+                &b.squares,
+                cols,
+                inner,
+                "the transpose of the squares of the dosages of b",
+            )?;
+            let mut of_b = a_vector_of(0.0, num_values, &the_memory_for("Σy", num_values))?;
+            let mut squares_of_b =
+                a_vector_of(0.0, num_values, &the_memory_for("Σyy", num_values))?;
             sum_of(&a.called, &dosages_of_b, &mut of_b, "Σy")?;
             sum_of(
                 &a.called,
@@ -597,12 +619,25 @@ fn the_r2_of_a_pair(
 /// held more values than its rows times its columns would be transposed
 /// up to that many, and one that held fewer would leave the rest of the
 /// transpose at 0.
-fn the_transpose_of(matrix: &[f64], num_rows: usize, num_cols: usize) -> Vec<f64> {
-    let mut transposed = vec![0.0; matrix.len()];
+///
+/// `what` names the transpose in the error of the memory.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when this machine did not give the memory of the
+/// transpose.
+fn the_transpose_of(
+    matrix: &[f64],
+    num_rows: usize,
+    num_cols: usize,
+    what: &'static str,
+) -> Result<Vec<f64>> {
+    let values = matrix.len();
+    let mut transposed = a_vector_of(0.0, values, &the_memory_for(what, values))?;
     if num_rows == 0 || num_cols == 0 {
         // A matrix with no row or no column has no value to transpose, and
         // neither of the two runs below is over a chunk of nothing.
-        return transposed;
+        return Ok(transposed);
     }
     for (col, row_of_the_transpose) in transposed.chunks_exact_mut(num_rows).enumerate() {
         let values = row_of_the_transpose
@@ -614,7 +649,32 @@ fn the_transpose_of(matrix: &[f64], num_rows: usize, num_cols: usize) -> Vec<f64
             }
         }
     }
-    transposed
+    Ok(transposed)
+}
+
+/// `values` copies of `value`, or the error that `not_given` builds when
+/// this machine did not give the memory for them.
+///
+/// The memory is asked for with `try_reserve_exact`, which gives it back
+/// as an error where `vec![value; values]` would end the process. It is
+/// also what refuses a number of values whose bytes this machine does not
+/// count: a `usize` is 32 bits in WebAssembly, where 2^29 values of 8
+/// bytes are already more than one holds.
+fn a_vector_of<T: Clone>(
+    value: T,
+    values: usize,
+    not_given: &impl Fn() -> Error,
+) -> Result<Vec<T>> {
+    let mut vector: Vec<T> = Vec::new();
+    vector.try_reserve_exact(values).map_err(|_| not_given())?;
+    vector.resize(values, value);
+    Ok(vector)
+}
+
+/// The error of `values` values of one of the matrices of the r² that this
+/// machine did not give the memory for, which `what` names.
+fn the_memory_for(what: &'static str, values: usize) -> impl Fn() -> Error {
+    move || Error::LdNoMemory { what, values }
 }
 
 /// How many values a matrix of `num_vars` variants of `num_individuals`
@@ -754,7 +814,7 @@ mod tests {
 
     use super::{
         LdDosages, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES, TheIndividualsThatDiffer,
-        TheSumsOfThePairs, r2_between, the_values_of,
+        TheSumsOfThePairs, a_vector_of, r2_between, the_memory_for, the_values_of,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
@@ -1120,6 +1180,33 @@ mod tests {
         .to_string();
         assert!(message.contains("46341 variants"), "{message}");
         assert!(message.contains("2147483647"), "{message}");
+    }
+
+    #[test]
+    fn a_matrix_this_machine_has_not_the_memory_for_is_an_error_and_not_the_end_of_the_process() {
+        // The memory of every matrix of the r² is asked for with
+        // `try_reserve_exact`, which gives it back as an error where
+        // `vec![0.0; n]` would end the process, and which refuses a number
+        // of values whose bytes this machine does not count before it asks
+        // the allocator for anything.
+        let values = usize::MAX;
+        match a_vector_of(0.0_f64, values, &the_memory_for("the dosages", values)) {
+            Err(Error::LdNoMemory {
+                what,
+                values: found,
+            }) => {
+                assert_eq!((what, found), ("the dosages", values));
+            }
+            Ok(given) => panic!("{} values of 8 bytes were given", given.len()),
+            Err(other) => panic!("the memory failed with another error: {other:?}"),
+        }
+        let message = Error::LdNoMemory {
+            what: "Σxy",
+            values: 25,
+        }
+        .to_string();
+        assert!(message.contains("Σxy"), "{message}");
+        assert!(message.contains("25 values"), "{message}");
     }
 
     #[test]
