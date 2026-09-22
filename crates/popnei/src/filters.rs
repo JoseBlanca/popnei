@@ -434,7 +434,10 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
                 chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
             }
             PassStep::KeepIndividuals(names) => {
-                refuse_a_second_filter_of_a_kind(steps.get(..index).unwrap_or(&[]), step)?;
+                // The steps before this one: `index` is the place of `step`
+                // in `steps`, so it is below their number and the split is
+                // the prefix that ends where this step begins.
+                refuse_a_second_filter_of_a_kind(steps.split_at(index).0, step)?;
                 chain = Box::new(IndividualsReader::new(chain, names)?);
             }
         }
@@ -573,12 +576,23 @@ impl<R: BlockReader> IndividualsReader<R> {
     /// `reader`: a name that is not one of them, a name that is there twice
     /// and no name at all.
     pub fn new(reader: R, individuals: &[String]) -> Result<IndividualsReader<R>> {
-        let keep = resolve_individuals(individuals, reader.individuals())?;
+        let of_the_source = reader.individuals();
+        let keep = resolve_individuals(individuals, of_the_source)?;
+        // An index of `resolve_individuals` is the place of a name among
+        // the individuals of the source, so each of these is there; one
+        // that is not would leave the reader with fewer names than the
+        // blocks it gives hold individuals.
         let names = keep
             .iter()
-            .filter_map(|individual| reader.individuals().get(*individual))
-            .cloned()
-            .collect();
+            .map(|individual| {
+                of_the_source.get(*individual).cloned().ok_or(
+                    Error::IndividualToKeepNotInTheBlock {
+                        individual: *individual,
+                        num_individuals: of_the_source.len(),
+                    },
+                )
+            })
+            .collect::<Result<Vec<String>>>()?;
         Ok(IndividualsReader {
             reader,
             keep,
@@ -2201,7 +2215,16 @@ mod tests {
         #[test]
         fn the_genotypes_of_the_three_are_the_columns_of_the_source() {
             let mut whole = many_vcf_reader(Some(7), Needs::GTS);
-            let of_the_source = rows_of(&blocks_of(&mut whole).expect("the blocks of the source"));
+            let blocks_of_the_source = blocks_of(&mut whole).expect("the blocks of the source");
+            // The width of a genotype is read from the block and not
+            // written here as well: a ploidy of the reader that is not the
+            // one of the file would cut the columns of the source at the
+            // same wrong place as the compaction under test.
+            let ploidy = blocks_of_the_source
+                .first()
+                .expect("a block of the source")
+                .ploidy;
+            let of_the_source = rows_of(&blocks_of_the_source);
             let mut reader = of_the_three_names(Some(7), Needs::GTS);
 
             let kept = rows_of(&blocks_of(&mut reader).expect("the blocks"));
@@ -2212,9 +2235,9 @@ mod tests {
                 let gathered: Vec<i8> = [5_usize, 0, 49]
                     .iter()
                     .flat_map(|individual| {
-                        let start = individual.saturating_mul(2);
+                        let start = individual.saturating_mul(ploidy);
                         of_the_source
-                            .get(start..start.saturating_add(2))
+                            .get(start..start.saturating_add(ploidy))
                             .unwrap_or_default()
                             .to_vec()
                     })
@@ -2343,6 +2366,38 @@ mod tests {
                     .is_none()
             );
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        }
+
+        /// A block the compaction refuses is the reader's own error, and
+        /// after it the reader gives `None` and does not ask its source
+        /// again: a source of two blocks with no genotypes is asked once.
+        #[test]
+        fn a_block_the_compaction_refuses_is_the_error_and_the_source_is_not_asked_again() {
+            let with_no_genotypes = || {
+                let mut block = block_of_the_worked_example(&[0, 1]);
+                block.gts = Vec::new();
+                block
+            };
+            let source = GivenBlocks::of(vec![with_no_genotypes(), with_no_genotypes()]);
+            let calls = source.calls();
+            let mut reader = IndividualsReader::new(source, &["ind5".to_owned()])
+                .expect("the reader of one individual");
+
+            let error = reader
+                .next_block()
+                .expect_err("the block with no genotypes");
+
+            let Error::FieldsNotInTheBlock { fields } = error else {
+                panic!("the error is {error}");
+            };
+            assert_eq!(fields, Needs::GTS);
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
 
         /// A source that gives a block of no variants has a defect, and the
