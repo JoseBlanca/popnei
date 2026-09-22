@@ -30,7 +30,7 @@ use pyo3::types::{PyFloat, PyTuple};
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    PassStep, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+    PassStep, VarFilter, VarFilteringCriterion, individuals_of, refuse_a_second_filter_of_a_kind,
     resolve_individuals,
 };
 
@@ -134,6 +134,15 @@ impl Steps {
             .into_iter()
             .map(|step| (step.pass_step.kind(), step.args))
             .collect())
+    }
+
+    // The names of the individuals the next pass gives, in its order: the
+    // ones a filter of individuals among the steps keeps, and those of the
+    // source when no step is that filter. Which step says it is the core's
+    // rule, `individuals_of`, which the TypeScript crate reads as well.
+    fn individuals(&self) -> Result<Vec<String>, PyPopneiError> {
+        let steps = pass_steps_of(&self.locked()?);
+        Ok(individuals_of(&steps, &self.of_the_source))
     }
 
     // The three filters, each with the argument its method of the package

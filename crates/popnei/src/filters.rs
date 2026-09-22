@@ -398,6 +398,30 @@ impl PassStep {
     }
 }
 
+/// The names of the individuals the next pass gives, in the order it gives
+/// them: the names the last [`PassStep::KeepIndividuals`] of `steps` keeps,
+/// and `of_the_source` when no step of `steps` is one.
+///
+/// A `Variants` holds no genotype and answers what its next pass would give,
+/// so this is what a user reads of it as its individuals, and what the `pops`
+/// of `docs/specs/stats.md` name individuals among. Both binding crates read
+/// it, and neither walks the steps itself: which step says who the next pass
+/// holds is of the filters and not of Python or of TypeScript. A second
+/// filter of individuals is refused, by [`refuse_a_second_filter_of_a_kind`]
+/// at the call that adds it and by [`chain_of`] when the pass is built, so
+/// the last one is the only one.
+#[must_use]
+pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<String> {
+    steps
+        .iter()
+        .rev()
+        .find_map(|step| match step {
+            PassStep::KeepIndividuals(names) => Some(names.clone()),
+            PassStep::VarFilter(_) => None,
+        })
+        .unwrap_or_else(|| of_the_source.to_vec())
+}
+
 /// One reader over `reader` for each step, in their order, so that each
 /// step sees what the one before it gave: the chain of one pass. A
 /// [`PassStep::VarFilter`] becomes a [`FilteredReader`], and no step gives
@@ -843,8 +867,8 @@ mod tests {
 
     use super::{
         FilteredReader, FilteringStats, PassStep, VarFilter, VarFilteringCriterion, chain_of,
-        keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
-        resolve_individuals,
+        individuals_of, keep_of_the_rows, keep_of_the_rows_one_by_one,
+        refuse_a_second_filter_of_a_kind, resolve_individuals,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2529,7 +2553,7 @@ mod tests {
     mod PassSteps {
         use super::{
             GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, PassStep, block_of_the_worked_example,
-            blocks_of, chain_of, pair, positions_of_blocks, steps_of,
+            blocks_of, chain_of, individuals_of, pair, positions_of_blocks, steps_of,
         };
 
         /// The kind of each step is the name a Python and a TypeScript user
@@ -2547,6 +2571,36 @@ mod tests {
             assert_eq!(
                 PassStep::KeepIndividuals(vec!["ind05".to_owned()]).kind(),
                 "individuals"
+            );
+        }
+
+        /// The individuals the next pass gives are the ones the filter of
+        /// individuals keeps, in the order they were named, and those of the
+        /// source when no step is that filter. Both binding crates read
+        /// this, so it is the one place the rule is written.
+        #[test]
+        fn the_individuals_of_the_next_pass_are_the_kept_ones_or_the_source_s() {
+            let of_the_source: Vec<String> = (0..3).map(|number| format!("ind0{number}")).collect();
+            let kept = vec!["ind02".to_owned(), "ind00".to_owned()];
+
+            assert_eq!(
+                individuals_of(&steps_of(&[MaxMaf(0.8)]), &of_the_source),
+                of_the_source
+            );
+            assert_eq!(individuals_of(&[], &of_the_source), of_the_source);
+            // The names come in the order they were given, which is not the
+            // order of the source, and a threshold filter on either side of
+            // the step changes none of them.
+            assert_eq!(
+                individuals_of(
+                    &[
+                        PassStep::VarFilter(MaxMissingRate(0.1)),
+                        PassStep::KeepIndividuals(kept.clone()),
+                        PassStep::VarFilter(MaxObsHet(0.5)),
+                    ],
+                    &of_the_source
+                ),
+                kept
             );
         }
 

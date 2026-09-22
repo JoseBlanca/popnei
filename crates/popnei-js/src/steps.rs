@@ -30,7 +30,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::filters::{
-    PassStep, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+    PassStep, VarFilter, VarFilteringCriterion, individuals_of, refuse_a_second_filter_of_a_kind,
     resolve_individuals,
 };
 
@@ -75,6 +75,15 @@ const MAX_ALLOWED_MAF: &str = "maxAllowedMaf";
 const MAX_ALLOWED_OBS_HET: &str = "maxAllowedObsHet";
 const INDIVIDUALS: &str = "individuals";
 
+/// What the value of one argument is, which crosses beside every argument in
+/// [`Steps::arg_kinds`]: the package reads the value of an argument of
+/// `ARG_KIND_THRESHOLD` from [`Steps::arg_thresholds`] and the value of one
+/// of `ARG_KIND_INDIVIDUALS` from [`Steps::arg_individuals`], and refuses a
+/// number that is neither. A kind of its own for each is what keeps an
+/// argument that is added later from being read as a threshold.
+const ARG_KIND_THRESHOLD: u8 = 0;
+const ARG_KIND_INDIVIDUALS: u8 = 1;
+
 /// The steps of one `Variants`, in the order in which they were put on it,
 /// or the copy of that list that one pass runs.
 ///
@@ -90,8 +99,8 @@ const INDIVIDUALS: &str = "individuals";
 /// step cross flat, as the alleles of a block do, with how many of them each
 /// step has beside them. The value of an argument crosses in the array of
 /// its kind, a threshold in [`Steps::arg_thresholds`] and the names of the
-/// individuals in [`Steps::arg_individuals`], and
-/// [`Steps::num_names_per_arg`] says which argument is which.
+/// individuals in [`Steps::arg_individuals`], and [`Steps::arg_kinds`] says
+/// which array each argument is to be read from.
 #[wasm_bindgen]
 pub struct Steps {
     steps: Vec<Step>,
@@ -174,14 +183,27 @@ impl Steps {
             .collect()
     }
 
+    /// What the value of each argument of `arg_names` is: 0 for the
+    /// threshold of a filter, which is in `arg_thresholds`, and 1 for the
+    /// names of the individuals to keep, which are in `arg_individuals`.
+    ///
+    /// The package switches on it and throws for a number it does not know,
+    /// so an argument of a kind added later is never read as a threshold.
+    #[must_use]
+    pub fn arg_kinds(&self) -> Vec<u8> {
+        self.args()
+            .into_iter()
+            .map(|(_name, value)| match value {
+                Argument::Threshold(_) => ARG_KIND_THRESHOLD,
+                Argument::Individuals(_) => ARG_KIND_INDIVIDUALS,
+            })
+            .collect()
+    }
+
     /// How many names of individuals each argument of `arg_names` holds,
     /// which cuts `arg_individuals` into the names of each of them, and 0
     /// for an argument whose value is a threshold, whose one number is in
     /// `arg_thresholds`.
-    ///
-    /// The 0 tells the two apart: a filter of individuals holds one name at
-    /// least, since a filter of no individual is refused at the call that
-    /// adds it.
     ///
     /// # Errors
     ///
@@ -273,6 +295,17 @@ impl Steps {
         refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
         self.steps.push(step);
         Ok(())
+    }
+
+    /// The names of the individuals the next pass gives, in its order: the
+    /// ones a filter of individuals among the steps keeps, and those of the
+    /// source when no step is that filter.
+    ///
+    /// Which step says it is the core's rule, `individuals_of`, which the
+    /// Python crate reads as well.
+    #[must_use]
+    pub fn individuals(&self) -> Vec<String> {
+        individuals_of(&pass_steps_of(&self.steps), &self.of_the_source)
     }
 
     /// How many arguments each step has, which is what cuts `arg_names` and
