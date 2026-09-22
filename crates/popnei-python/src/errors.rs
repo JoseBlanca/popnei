@@ -296,6 +296,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GtsNotWholeGenotypes { .. }
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
+        | popnei::Error::IndividualBeyondTheVariant { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
@@ -316,7 +317,12 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // four of the filter of individuals are of it too: a name that is
         // not an individual of the variants, a name that is there twice, a
         // call that names none, and a second filter of individuals, all of
-        // them what a user wrote in the call that adds the step. What
+        // them what a user wrote in the call that adds the step. The four
+        // of `pops`, the populations a statistic is calculated for, are the
+        // same kind of thing in the argument of the call that calculates
+        // it: a name that is not an individual of the variants, a name
+        // twice in one population, a population that names no individual,
+        // and `pops` with no population at all. What
         // is wrong with them is wrong whatever file is read, so they name
         // no file although some of them are refused while one is being
         // opened.
@@ -328,7 +334,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::IndividualNotInTheSource { .. }
         | popnei::Error::IndividualNamedTwice { .. }
         | popnei::Error::NoIndividualNamed
-        | popnei::Error::FilterOfIndividualsThatIsSet { .. } => PyValueError::new_err(message),
+        | popnei::Error::FilterOfIndividualsThatIsSet { .. }
+        | popnei::Error::IndividualOfAPopNotInThePass { .. }
+        | popnei::Error::IndividualNamedTwiceInAPop { .. }
+        | popnei::Error::PopWithNoIndividual { .. }
+        | popnei::Error::NoPop => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF

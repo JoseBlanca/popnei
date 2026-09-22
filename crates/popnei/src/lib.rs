@@ -16,10 +16,11 @@
 //! `io` the VCF reader, which parses the lines of a file into the rows of a
 //! block; `variant` what the other modules say about one variant: which
 //! fields a consumer wants, the table of the chromosome names and the view
-//! of one variant of a block; and `filters` the variants that a user keeps
-//! by a threshold, with the counts of what each filter was given and kept.
-//! The modules that calculate over blocks are being written, and
-//! `docs/architecture.md` has their order.
+//! of one variant of a block; `filters` the variants that a user keeps
+//! by a threshold, with the counts of what each filter was given and kept;
+//! and `stats` the populations a statistic is calculated for, each a named
+//! set of individuals. The modules that calculate over blocks are being
+//! written, and `docs/architecture.md` has their order.
 
 #![forbid(unsafe_code)]
 
@@ -27,6 +28,7 @@ pub mod block;
 pub mod error;
 pub mod filters;
 pub mod io;
+pub mod stats;
 pub mod variant;
 
 pub use error::{Error, Result};

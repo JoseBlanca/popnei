@@ -82,6 +82,24 @@ pub enum Error {
         allele: i8,
     },
 
+    /// The counts of one variant over a population were given the index of
+    /// an individual that the variant has no genotype for: the variant
+    /// holds one genotype for each individual of the reader, and the index
+    /// is at or beyond them.
+    ///
+    /// The indices of a population are resolved from the names a user wrote
+    /// against the individuals the pass gives, before any variant is read,
+    /// so a user reaches this only through a defect of popnei.
+    #[error(
+        "the counts of one variant over a population were given the individual {individual}, and the variant holds the genotypes of {num_individuals} individuals"
+    )]
+    IndividualBeyondTheVariant {
+        /// The index the counts were given.
+        individual: usize,
+        /// How many individuals the variant holds the genotypes of.
+        num_individuals: usize,
+    },
+
     /// A reader that takes a size was asked for blocks of 0 variants. A
     /// block holds one variant at least, and the caller that wants the
     /// size popnei chooses asks for none instead of asking for 0.
@@ -318,6 +336,56 @@ pub enum Error {
         /// and a TypeScript user reads for it.
         kind: &'static str,
     },
+
+    /// A name in one of the populations of `pops` is not an individual of
+    /// the variants the statistic is calculated over, which are those of
+    /// the source after the filter of individuals when there is one. It is
+    /// the name a user wrote, so the message names it and the population it
+    /// is in. pyNei refuses it too, in `_calc_pops_idxs`, naming the
+    /// population and every name of it that is missing.
+    #[error(
+        "`{name}` is named in the population `{pop}` and is not an individual of the variants; `individuals` gives the names the variants have, which are the ones the filter of individuals keeps when there is one"
+    )]
+    IndividualOfAPopNotInThePass {
+        /// The population the name was given in.
+        pop: String,
+        /// The name that is not an individual of the variants.
+        name: String,
+    },
+
+    /// A name is twice in one population. Every count over the population
+    /// would hold that individual twice: pyNei counts it twice, and
+    /// `{"x": ["a", "b", "b"]}` over the genotypes `0/0 0/1 1/1` gives it
+    /// an observed heterozygosity of 2/3 at commit ef0ca6e. An individual
+    /// that is in two populations is taken, as in pyNei.
+    #[error(
+        "the individual `{name}` is named twice in the population `{pop}`, and a population holds each of its individuals once"
+    )]
+    IndividualNamedTwiceInAPop {
+        /// The population the name is twice in.
+        pop: String,
+        /// The name that is there twice.
+        name: String,
+    },
+
+    /// A population of `pops` names no individual. Every statistic of a
+    /// population is calculated over its individuals, so a population with
+    /// none has no value for any of them; pyNei gives NaN for each.
+    #[error(
+        "the population `{pop}` names no individual, and every statistic of a population is calculated over the individuals of that population"
+    )]
+    PopWithNoIndividual {
+        /// The population that names no individual.
+        pop: String,
+    },
+
+    /// `pops` holds no population at all, which would leave a result with
+    /// nothing in it: pyNei gives one with no column. A user who wants one
+    /// population of every individual gives no `pops`.
+    #[error(
+        "`pops` names no population, and a result holds one value for each population: leave `pops` out for one population of every individual"
+    )]
+    NoPop,
 
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
