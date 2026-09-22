@@ -206,7 +206,11 @@ exempts, under its item.
 default, which is where the statistics live; `num_bins`, 40 by
 default; and `bin_type`, `"linear"` for bins of equal width or
 `"logarithmic"` for bins of equal ratio, whose `range` has to start above
-0. The dict is read and not changed. The edges are `num_bins + 1`
+0. The dict is read and not changed, and a key that is none of the three
+is a `ValueError` that names them: pyNei ignores such a key, and a user
+who writes `nbins` gets the 40 bins of the default with nothing said,
+which is a result that is not the one they asked for and that says so
+nowhere. The edges are `num_bins + 1`
 numbers, computed as numpy's `linspace` computes them, the start plus i
 times the width for the i-th and the end for the last, so that a value
 that falls on an edge falls on the same side in popnei and in pyNei;
