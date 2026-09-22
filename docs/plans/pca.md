@@ -137,7 +137,7 @@ Tasks:
       change touches what wasm builds differently. From "The wasm builds
       and the vector instructions" and "Threads". Needs 1.2. Serves
       deliverable 3.
-- [ ] 1.4 The four documents: section 8 and the `linalg` row of section 9
+- [x] 1.4 The four documents: section 8 and the `linalg` row of section 9
       of `docs/architecture.md`, the line of `docs/objectives.md`, the
       two lines of the `coding` skill, each as the opening of
       `docs/specs/linalg.md` lists them and as the `writing` skill asks;
