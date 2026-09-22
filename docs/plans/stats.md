@@ -357,7 +357,7 @@ polymorphism ratio, with `pass_stats`; in TypeScript,
   `_calc_unbiased_exp_het_per_var` of `pynei/diversity.py`. Serves
   deliverable 1. A wrong value is silent: its own commit, guarded by the
   literals of deliverable 1 and the comparison of deliverable 3.
-- [ ] 4.2 `calc_per_var_distribs`, `PerVarDistribsConfig`, `StatsDistrib`,
+- [x] 4.2 `calc_per_var_distribs`, `PerVarDistribsConfig`, `StatsDistrib`,
   `PolyVarsStats` and `PerVarDistribs`, in the same file: the loop over
   the blocks with rayon over the rows and the accumulators of "How it
   runs" of the pass, the polymorphism counts of "What it gives" of its
