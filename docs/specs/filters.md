@@ -562,12 +562,21 @@ always needs the genotypes, and passes on what its consumer asks for with
 them added. It sits in the chain where its step is among the steps, so a
 threshold filter before it counts over every individual and one after it
 over the kept ones. The blocks are the size of its source's, worked out
-from the individuals of the source and not from the kept ones.
+from the individuals of the source and not from the kept ones. The
+`reblock` that `iter_blocks` puts at the end of the chain sizes its blocks
+for the individuals of the reader it is given, which are the kept ones, as
+`docs/specs/block.md` says of `Reblock::new`, so above 500 individuals,
+where the default size falls below the largest it takes, the blocks a user
+reads after the filter hold more variants than the source's.
 
 ### How it is verified
 
 Against bcftools 1.24 on `many.vcf` of the threshold filters, read with
-every variant given. `bcftools view -s ind05,ind00,ind49 many.vcf` keeps
+every variant given, which is `only_passed` false in the tests of the
+three layers: the default of `open_vcf` keeps the variants that passed
+their filters alone, and 50 of the 500 variants of `many.vcf` did not
+pass, so the 500, the 423 and the 26 below are the counts of that reading
+and of no other. `bcftools view -s ind05,ind00,ind49 many.vcf` keeps
 the three individuals, in that order, which `bcftools query -l` prints of
 its output, and the missing data filter at 0 after it,
 
