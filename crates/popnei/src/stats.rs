@@ -3852,6 +3852,16 @@ mod distribs {
         /// To the bit, which two runs that add the same values in the same
         /// order give: the threads of a pool, and the chunks of one block
         /// read one by one or on those threads.
+        #[cfg_attr(
+            target_family = "wasm",
+            expect(
+                dead_code,
+                reason = "the two tests that compare runs adding the same values in the \
+                          same order are the ones of the thread pools and of the chunks \
+                          read one by one against the threads, and rayon is a dependency \
+                          of the targets that are not wasm"
+            )
+        )]
         ToTheBit,
         /// Within 1e-12 relative, which is what the spec asks of two sizes
         /// of block, since where the blocks were cut decides which rows are
