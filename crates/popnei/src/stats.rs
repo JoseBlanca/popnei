@@ -4375,6 +4375,23 @@ mod per_individual {
         format!("i{number}", number = individual.saturating_add(1))
     }
 
+    /// A block as a reader gives one: `num_vars` variants of
+    /// `num_individuals` individuals of the ploidy `ploidy`, whose
+    /// genotypes are `gts`, and no column, which the pass asks for none of.
+    fn block_of(num_vars: usize, num_individuals: usize, ploidy: usize, gts: Vec<i8>) -> Block {
+        Block {
+            num_vars,
+            num_individuals,
+            ploidy,
+            gts,
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        }
+    }
+
     /// The counts and the rates of the five individuals of the worked
     /// example, which "How it is verified" of the per individual statistics
     /// gives: the missing rates 2/6, 2/6, 2/6, 3/6 and 5/6 and the
@@ -4498,19 +4515,14 @@ mod per_individual {
     /// genotype and i3 one, and no missing genotype at all.
     #[test]
     fn the_rows_of_a_tetraploid_block_are_cut_by_the_ploidy_of_its_reader() {
-        let of_three_tetraploid_individuals = Block {
-            num_vars: 2,
-            num_individuals: 3,
-            ploidy: 4,
-            gts: vec![
+        let of_three_tetraploid_individuals = block_of(
+            2,
+            3,
+            4,
+            vec![
                 0, 0, 0, 0, 0, 0, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, -1,
             ],
-            chrom: None,
-            pos: None,
-            id: None,
-            alleles: None,
-            qual: None,
-        };
+        );
         let mut reader = GivenBlocks::of_a_source_of(3, 4, vec![of_three_tetraploid_individuals]);
         let found =
             calc_per_individual_stats(&mut reader).expect("the statistics of a tetraploid block");
@@ -4547,6 +4559,114 @@ mod per_individual {
         assert!(message.contains("its source holds none"), "{message}");
     }
 
+    /// A block of no variant is refused: every block a reader of popnei
+    /// gives holds one variant at least, and a reader with no more variants
+    /// gives no block, so a block of none says that the reader has a
+    /// defect. Without the refusal the pass would read no row of it and go
+    /// on to the next block with nothing said.
+    #[test]
+    fn a_block_of_no_variant_is_refused() {
+        let mut reader = GivenBlocks::of(vec![block_of(0, 5, 2, Vec::new())]);
+        let error = calc_per_individual_stats(&mut reader).expect_err("a block of no variant");
+
+        assert!(
+            matches!(&error, Error::ReaderGaveABlockOfNoVariants),
+            "{error:?}"
+        );
+    }
+
+    /// A block of other individuals than the reader says its source has is
+    /// refused. The two counts of an individual are of the genotype at its
+    /// place in every row of the pass, so a block of three individuals
+    /// after one of five would count the individual 0 of the second block
+    /// into the counts of the individual 0 of the first and leave the
+    /// individuals 3 and 4 of the pass with the variants of the first block
+    /// alone: three rates over one number of variants and two over
+    /// another, with nothing to show it.
+    #[test]
+    fn a_block_of_other_individuals_than_the_reader_says_is_refused() {
+        let of_three_individuals = block_of(2, 3, 2, vec![0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1]);
+        let mut reader =
+            GivenBlocks::of(vec![block_of(1, 5, 2, vec![0; 10]), of_three_individuals]);
+        let error =
+            calc_per_individual_stats(&mut reader).expect_err("a block of other individuals");
+
+        assert!(
+            matches!(
+                &error,
+                Error::BlocksDoNotFitTogether {
+                    num_individuals: 5,
+                    ploidy: 2,
+                    found_num_individuals: 3,
+                    found_ploidy: 2
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A block of another ploidy than the reader says its source has is
+    /// refused for the same reason: the rows of a tetraploid block of five
+    /// individuals are twice as wide, and cut by the ploidy of the reader
+    /// they would give the genotype of one individual to another.
+    #[test]
+    fn a_block_of_another_ploidy_than_the_reader_says_is_refused() {
+        let mut reader = GivenBlocks::of(vec![block_of(1, 5, 4, vec![0; 20])]);
+        let error = calc_per_individual_stats(&mut reader).expect_err("a block of another ploidy");
+
+        assert!(
+            matches!(
+                &error,
+                Error::BlocksDoNotFitTogether {
+                    num_individuals: 5,
+                    ploidy: 2,
+                    found_num_individuals: 5,
+                    found_ploidy: 4
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A block that holds the genotypes of no individual is refused for
+    /// what it is and not as genotypes nobody asked the reader for: its
+    /// `gts` are empty either way, and the two have nothing to do with each
+    /// other. The reader here says its source has no individual too, so
+    /// what is wrong with the block is that a variant of it has no
+    /// genotype.
+    #[test]
+    fn a_block_that_holds_the_genotypes_of_no_individual_is_refused_for_that() {
+        let mut reader = GivenBlocks::of_a_source_of(0, 2, vec![block_of(2, 0, 2, Vec::new())]);
+        let error = calc_per_individual_stats(&mut reader).expect_err("a block of no individual");
+
+        assert!(
+            matches!(
+                &error,
+                Error::BlockWithNoGenotypeOfAVariant {
+                    num_individuals: 0,
+                    ploidy: 2
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// A block of variants whose genotypes are not there is refused: the
+    /// pass asks its reader for the genotypes and reads nothing else, so a
+    /// reader that gives a block without them has a defect. Without the
+    /// refusal the pass would count no genotype of that block and divide by
+    /// its variants all the same, which is a missing rate too low for every
+    /// individual.
+    #[test]
+    fn a_block_whose_genotypes_are_not_there_is_refused() {
+        let mut reader = GivenBlocks::of(vec![block_of(2, 5, 2, Vec::new())]);
+        let error = calc_per_individual_stats(&mut reader).expect_err("a block with no genotypes");
+
+        assert!(
+            matches!(&error, Error::FieldsNotInTheBlock { fields } if *fields == Needs::GTS),
+            "{error:?}"
+        );
+    }
     /// The pass reads the genotypes of a block and no other field, so it
     /// asks its reader for the genotypes alone: a reader that filled the
     /// chromosome, the position, the id, the alleles and the quality would
