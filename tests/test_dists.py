@@ -610,7 +610,8 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
         calc_pairwise_kosman_dists(open_vcf(path))
 
     assert _what_it_said_of(refusal, path) == (
-        "the source has no variant, and a calculation needs 1 variant at least"
+        "the pass gave no variant and its source holds none: a statistic of "
+        "a pass is calculated over the variants it gives"
     )
 
 
@@ -620,7 +621,10 @@ def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
     """The same VCF with no data line, with a filter on it.
 
     The filter was given no variant, which is what says that the source is
-    the one that had none: the counts come after the sentence that says it.
+    the one that had none, so the message is the one of a source with no
+    variant and carries no count: a filter of a source that holds nothing
+    was given nothing and kept nothing, and those zeros say no more than the
+    sentence does.
     """
     path = write_vcf([])
     variants = open_vcf(path)
@@ -630,8 +634,8 @@ def test_a_source_with_no_variant_is_told_apart_from_steps_that_kept_none(
         calc_pairwise_kosman_dists(variants)
 
     assert _what_it_said_of(refusal, path) == (
-        "the source has no variant, and a calculation needs 1 variant at "
-        "least: the filter `missing_data` was given 0 variants and kept 0"
+        "the pass gave no variant and its source holds none: a statistic of "
+        "a pass is calculated over the variants it gives"
     )
 
 
@@ -663,9 +667,9 @@ def test_steps_that_kept_no_variant_are_refused_with_what_each_filter_counted(
     with pytest.raises(ValueError) as refusal:
         calc_pairwise_kosman_dists(variants)
     assert _what_it_said_of(refusal, path) == (
-        "the steps kept no variant of the 4 the source gave, and a "
-        "calculation needs 1 variant at least: the filter `missing_data` was "
-        "given 4 variants and kept 0"
+        "the pass gave no variant: its source gave 4 and the steps kept none "
+        "of them, the `missing_data` filter was given 4 and kept 0; a "
+        "statistic of a pass is calculated over the variants it gives"
     )
 
     with_two = open_vcf(path)
@@ -675,10 +679,10 @@ def test_steps_that_kept_no_variant_are_refused_with_what_each_filter_counted(
     with pytest.raises(ValueError) as refusal:
         calc_pairwise_kosman_dists(with_two)
     assert _what_it_said_of(refusal, path) == (
-        "the steps kept no variant of the 4 the source gave, and a "
-        "calculation needs 1 variant at least: the filter `missing_data` was "
-        "given 4 variants and kept 0, the filter `maf` was given 0 variants "
-        "and kept 0"
+        "the pass gave no variant: its source gave 4 and the steps kept none "
+        "of them, the `missing_data` filter was given 4 and kept 0, the "
+        "`maf` filter was given 0 and kept 0; a statistic of a pass is "
+        "calculated over the variants it gives"
     )
 
 

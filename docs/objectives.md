@@ -101,10 +101,11 @@ They are in `docs/rust_core.md`, with the measurements that led to each of
 them: a core crate in pure Rust and a binding crate with pyo3 in one cargo
 workspace, built by maturin into one wheel with the Python package; a
 second binding crate, with wasm-bindgen, built into the wasm package for
-TypeScript; the parser first; a stream of blocks; one small linear algebra module with
-BLAS and LAPACK natively and faer in wasm; rayon for the records and BLAS
-for the products, never nested; 2 bit packed genotypes as an option to
-measure; the pyodide wheel pinned to the pyodide version.
+TypeScript; the parser first; a stream of blocks; one small linear
+algebra crate with BLAS and LAPACK natively and faer in wasm and
+natively behind a cargo feature; rayon for the records and BLAS for the
+products, never nested; 2 bit packed genotypes as an option to measure;
+the pyodide wheel pinned to the pyodide version.
 
 ## How the work is done
 

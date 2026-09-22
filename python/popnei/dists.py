@@ -261,8 +261,8 @@ def calc_pairwise_kosman_dists(
     ``pass_stats``.
 
     A pass that gives no variant is a ``ValueError``, whether the source has
-    none or the steps kept none: the message says which of the two, and what
-    each filter was given and kept when there are steps.
+    none or the steps kept none: the message says which of the two, and,
+    when it was the steps, what each filter was given and kept.
 
     It is pyNei's ``calc_pairwise_kosman_dists``, with these differences:
     there is no `use_approx_embedding_algorithm`, which gives distances that

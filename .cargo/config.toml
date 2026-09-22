@@ -19,20 +19,24 @@
 PYO3_BUILD_EXTENSION_MODULE = "1"
 
 [alias]
-# The core crate has to build for the two targets of WebAssembly popnei
-# ships, `wasm32-unknown-unknown` for the wasm package and
-# `wasm32-unknown-emscripten` for the wheel of pyodide. The five commands
-# of .claude/skills/coding/SKILL.md are native, so a dependency or a line
-# that does not build for wasm would otherwise be found when the wasm
-# package or the wheel is next built, work packages later. This checks both
-# in one command.
+# The core crate and the linear algebra crate have to build for the two
+# targets of WebAssembly popnei ships, `wasm32-unknown-unknown` for the
+# wasm package and `wasm32-unknown-emscripten` for the wheel of pyodide.
+# The five commands of .claude/skills/coding/SKILL.md are native, so a
+# dependency or a line that does not build for wasm would otherwise be
+# found when the wasm package or the wheel is next built, work packages
+# later. This checks both crates for both targets in one command. The
+# linear algebra crate is named as well as the core, although the core
+# depends on it, because a crate that is only a dependency is checked as
+# its library alone and its tests are not.
 #
-# It checks every target of the crate and not the library alone: the tests
-# and the benchmarks use rayon, which is a dependency of the targets that
-# are not wasm, and a use of it that nothing gates would be found by the
-# next person to run `cargo check --all-targets` for wasm and not here. The
-# tests are not run for wasm, and nothing here runs them; they are compiled
-# so that what they call is compiled too.
+# It checks every target of each crate and not the library alone: the tests
+# and the benchmarks of the core use rayon, which is a dependency of the
+# targets that are not wasm, and a use of it that nothing gates would be
+# found by the next person to run `cargo check --all-targets` for wasm and
+# not here; and the tests of the linear algebra crate run its faer backend,
+# which is the one wasm has. The tests are not run for wasm, and nothing
+# here runs them; they are compiled so that what they call is compiled too.
 #
 # It denies warnings, as `cargo clippy` does in the commands of the skill: a
 # warning of a wasm build is one nobody sees, since nothing but this command
@@ -49,7 +53,7 @@ PYO3_BUILD_EXTENSION_MODULE = "1"
 # command went on printing warnings and exiting 0. So each `--config` here
 # carries `+simd128` as well, and a flag added to a target below is added
 # here too.
-wasm-check = "check -p popnei --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets --config target.wasm32-unknown-unknown.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"] --config target.wasm32-unknown-emscripten.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"]"
+wasm-check = "check -p popnei -p popnei-linalg --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets --config target.wasm32-unknown-unknown.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"] --config target.wasm32-unknown-emscripten.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"]"
 
 # popnei runs in the browsers that have the vector instructions of
 # WebAssembly, which goal 3 of docs/objectives.md sets as its floor: Chrome

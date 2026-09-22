@@ -14,21 +14,39 @@ of every pair of individuals of a `Variants` in a `Distances`.
 A vars file is one arrow IPC file, also called feather v2,
 which pandas, R and polars open as a table with no popnei installed: it is
 where a user keeps their variants once the VCF has been read. Each of the
-three consumers, `iterBlocks`, `writeVars` and `calcPairwiseKosmanDists`,
-gives back the counts of the
-pass it made over the source, in a `passStats`: how many variants it took,
+five consumers, `iterBlocks`, `writeVars`, `calcPairwiseKosmanDists`,
+`calcPerVarDistribs` and `calcPerIndividualStats`, gives back the counts of
+the pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
-a step, a method of the `Variants` that `steps` then lists, and there are
-three of them: `filterByMissingData`, which keeps the variants whose missing
-genotypes divided by all the individuals are at most the threshold it is
-given, `filterByMaf`, over the count of the commonest allele of a variant
-divided by its called alleles, and `filterByObsHet`, over its heterozygous
-genotypes divided by its called ones.
+a step, a method of the `Variants` that `steps` then lists. Three of them
+keep the variants whose number is at most a threshold: `filterByMissingData`,
+over the missing genotypes of a variant divided by all the individuals,
+`filterByMaf`, over the count of the commonest allele of a variant divided by
+its called alleles, and `filterByObsHet`, over its heterozygous genotypes
+divided by its called ones. The fourth, `filterIndividuals`, keeps
+individuals and not variants: it takes the genotypes of the individuals a
+user names, at every variant, in the order they named them, and after it
+`individuals` and `numIndividuals` are the kept ones.
+`calcPerVarDistribs` is another calculation the package exports, and a
+consumer like the others: one pass over the variants that gives, for each
+population a user names in `pops` and each of five statistics of a variant,
+the mean over the variants that had a value and a histogram of them. The
+five are the observed heterozygosity, the major allele frequency, the
+expected heterozygosity, plain and unbiased, and the polymorphism ratio,
+which is three counts and two ratios per population and not a distribution.
+`calcPerIndividualStats` is a pass of its own that gives two
+numbers for each individual instead of one for each population: the share of
+the variants at which its genotype is missing, `missingGtRate`, and the
+share of its called genotypes at which it is heterozygous, `obsHetRate`. The
+second says which individuals are more heterozygous than the rest, a sign of
+a mixed sample or of an outcrossed individual among inbred ones, and it is
+NaN for an individual that called no genotype.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
 `docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
-`docs/specs/filters.md` and `docs/specs/dists.md` say what they give.
+`docs/specs/filters.md`, `docs/specs/dists.md` and `docs/specs/stats.md`
+say what they give.
 
 ## Building it
 
@@ -102,8 +120,9 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
 - `#[wasm_bindgen]` on a `pub const` does not compile: "will not work on
   constants unless you are defining a
   `#[wasm_bindgen(typescript_custom_section)]`". So the defaults of the
-  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md`, cross as
-  two functions that return the constants of the core.
+  API, the ploidy of 2 and the filter of `docs/specs/io_vcf.md` and the
+  five of `calcPerVarDistribs` among them, cross as functions that return
+  the constants of the core.
 - A number of JavaScript that goes in as a `usize` is a float64 turned
   into an integer of 32 bits with no error: the fraction is thrown away
   and what is left is kept modulo 2^32. A ploidy of 2.5 and one of
@@ -168,6 +187,16 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   counts its pass inside the generator for the first, and throws what the
   free says only when nothing else is being thrown, for the second.
 
+## The timing
+
+`bench/time_pca.mjs` is not a test and `npm test` does not run it: it times
+`doPcaFromVariants` under node over the bytes of a vars file, on the `wasm/`
+that is there, and it is what task 4.2 of `docs/plans/pca.md` measured this
+package with. `docs/reports/pca-measurement.md` has its numbers and the
+files it read them on.
+
+    node bench/time_pca.mjs <path to a vars file> [--runs n] [--num-prin-comps n]
+
 ## The tests
 
     npm test
@@ -203,8 +232,36 @@ are bcftools 1.24's and pyNei's: 26 variants kept by the missing data filter
 at 0, 35 by the maf filter at 0.5 and 22 by the observed heterozygosity one
 at 0.1, each with the first five positions it keeps, and 106 by the three of
 them chained at 0.04, 0.8 and 0.5, which count 500 and 215, 215 and 163, and
-163 and 106. The comparison with pyNei itself is the one of the Python
-tests; node runs neither library. Several of the tests
+163 and 106. `test/filter_individuals.test.ts` keeps `ind05`, `ind00` and
+`ind49` of that file, in that order, which is what `bcftools view -s
+ind05,ind00,ind49` gives, and asserts the 500 variants that come out with
+their genotypes, the 423 that the missing data filter at 0 after the step
+keeps where the same filter over the 50 individuals keeps 26, and the
+`Error` of a name the file does not have, of a name given twice, of no name
+and of a second filter of individuals. `test/stats.test.ts` reads the panel of
+`tests/reference/stats/`, 1200 variants of 200 individuals in the three
+populations of `panel_pops_bcftools.txt`, and asserts through
+`calcPerVarDistribs` the literals of `p0`, the population of `s000`, that
+`docs/specs/stats.md` gives. Over the whole file: 1112 of its 1200 variants
+are polymorphic in `p0`, 1173 are variable and 1200 have a major allele
+frequency there, and the two ratios are 0.926666666667 and
+0.947996589940. Over its first variant alone, `var0000`, which the test
+writes as a VCF of its own so that the mean of the pass is the value of
+that variant: an observed heterozygosity of 0.166667, a major allele
+frequency of 0.895833 and a plain expected heterozygosity of 0.186632, each
+within 1e-6 of what plink2 prints, and the unbiased expected heterozygosity
+of `p1`, 0.502750, which is the only population a number is known for. A
+name that is not an individual of the pass and a key of `histKwargs` that
+popnei does not know are each an `Error` there. Through
+`calcPerIndividualStats` the same file asserts the two rates of `s000`, 34
+missing genotypes of 1200 variants and 426 heterozygous of 1166 called, and
+of `s001`, 44 and 397 of 1156, and those of `ind00` and `ind01` of
+`many.vcf`, 29 of 500 and 201 of 471 and 25 and 195 of 475, which the same
+plink2 reports give with `--vcf-half-call m`; the NaN of an individual that
+called no genotype; the names coming in the order a `filterIndividuals`
+named them in; and the `Error` of a source with no variant and of steps that
+kept none. The comparison with pyNei itself is
+the one of the Python tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
 kept while enough more is read for that memory to grow still hold what
@@ -394,8 +451,66 @@ try {
 It reads the source once, through the filters that are on the `Variants`,
 and leaves it as it was, so the same handle goes to the next calculation.
 A pass that gives no variant is an `Error` that says whether the source
-held none or the steps kept none, with how many variants each filter was
-given and kept.
+held none or the steps kept none, and for the steps how many variants each
+filter was given and kept.
+
+One pass gives the five statistics of every variant and every population:
+
+```ts
+import { calcPerVarDistribs, init, openVcf } from "popnei";
+
+await init();
+const panel = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
+const distribs = calcPerVarDistribs(panel, {
+  // The five when `stats` is left out. The populations are looked up among
+  // the individuals the pass gives, which are the ones a
+  // `filterIndividuals` kept when the variants carry one, and with no
+  // `pops` there is one population, `pop`, of every individual.
+  stats: ["maf", "poly_vars_ratio"],
+  pops: { p0: ["s000", "s001"], p1: ["s002", "s003"] },
+  // How many called genotypes a population needs at a variant to have a
+  // value there, 20 when it is left out.
+  minNumIndividuals: 2,
+  histKwargs: { range: [0, 1], numBins: 40, binType: "linear" },
+});
+// ["p0", "p1"], the order the keys of `pops` iterate in, which is the
+// order of every array below, and NaN for a population in which no variant
+// had a value.
+console.log(distribs.pops, distribs.maf?.mean);
+// The 41 edges of the bins, and the counts of `p0` and then those of `p1`:
+// the count of the bin b of the population p is at p * numBins + b.
+console.log(distribs.maf?.histBinEdges, distribs.maf?.histCounts);
+// The polymorphic variants of each population, those that vary at all, and
+// the ones that have a major allele frequency there.
+console.log(distribs.polyVarsRatio?.numPoly, distribs.passStats.numVars);
+panel.free();
+```
+
+A statistic that was not asked for is `null`, and asking for fewer is a
+saving of work that changes no value. A variant has no value of a statistic
+in a population when the population has too little data at it, and such a
+variant is out of the mean and in no bin, so the histograms of two
+populations can count different numbers of variants.
+
+Another pass gives the two rates of every individual:
+
+```ts
+import { calcPerIndividualStats } from "popnei";
+
+const stats = calcPerIndividualStats(panel);
+// The names of the individuals the pass gave, in its order, which is the
+// order of the two arrays: the rate of `individuals[i]` is at `i` in each.
+console.log(stats.individuals, stats.missingGtRate, stats.obsHetRate);
+```
+
+The heterozygosity rate divides by the called genotypes of the individual,
+where pyNei's `calc_per_sample_stats` divides by every variant, so an
+individual with more missing data looks less heterozygous there: `s000` of
+the panel is heterozygous at 426 of its 1166 called genotypes, 0.365352,
+and at 426 of the 1200 variants, 0.355. popnei's number is what plink2's
+`--het` gives, and the missing rate beside it says what pyNei's one number
+said. An individual that called no genotype has a missing rate of 1 and a
+heterozygosity rate of NaN.
 
 A file written here is larger than the same one written by popnei outside
 the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
@@ -412,14 +527,28 @@ of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
 of the five columns, a `variants` that is not what `openVcf` or `openVars`
 gave, a `minNumSnps` that is not a whole number of 0 or more and at most
-4294967295, which a negative one is, and a threshold of a filter that is
-not a number, which a call with no threshold gives. Whether that number is one a filter takes, from 0 to 1,
+4294967295, which a negative one is, a threshold of a filter that is not a
+number, which a call with no threshold gives, and, of
+`calcPerVarDistribs`, a `stats` that is not an
+array of names or that names no statistic, a `pops` that is not an object
+of population name to an array of names, a `minNumIndividuals`, a `ploidy`
+or a `numBins` that is not a whole number of 0 or more, a `range` that is
+not two numbers, a `binType` that is not a name, a `polyThreshold` that is
+not a number, and a key of `histKwargs` that is none of the three, which
+pyNei ignores. Whether that number is one a filter takes, from 0 to 1,
 is a rule of the core, which holds for the threshold of every pass and not
 of that call alone; an `Error` of it names the argument the user wrote and
 the value as they wrote it, `95` and not `95.0`. A second filter of a kind
-the variants carry already is an `Error` too, which names that kind, the
-threshold it is set with and the one that was refused. In TypeScript
-`fields` takes the five names and nothing
+the variants carry already is an `Error` too, which names that kind and, for
+a threshold filter, the threshold it is set with and the one that was
+refused. The names given to `filterIndividuals` are read against the
+individuals of the source at the call, so a name that is not one of them, a
+name that is there twice and a call with no name are each an `Error` there
+and not when a pass runs. Which names the core knows is the core's to
+refuse: a statistic that is none of the five and a kind of bins that is
+neither `linear` nor `logarithmic` are an `Error` of the binding crate,
+whose message writes the names there are. In TypeScript
+`fields` and `stats` take their names and nothing
 else, so a typo does not compile.
 
 ## What has to be freed
@@ -447,6 +576,11 @@ hand:
   JavaScript: the file is read out of the memory of wasm in pieces, each
   of them freed there as it is copied, so nothing of it is left to free by
   hand.
+- What `calcPerVarDistribs` gives holds nothing of the memory of wasm: the
+  means, the edges of the bins and the counts are copies, in the heap of
+  JavaScript, and the object of the core they were read out of is freed
+  before the call returns. What `calcPerIndividualStats` gives is the same:
+  the names of the individuals and the two rates are copies.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and

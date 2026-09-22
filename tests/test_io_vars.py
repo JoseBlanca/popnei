@@ -628,7 +628,7 @@ def test_write_vars_of_the_private_module_names_the_type_it_was_given(
     path = tmp_path / "nothing.vars"
 
     with pytest.raises(TypeError, match="open_vars") as refusal:
-        _core.write_vars(123, path, None, _core.Steps())
+        _core.write_vars(123, path, None, _core.Steps([]))
 
     assert "`int`" in str(refusal.value)
     assert not path.exists()

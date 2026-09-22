@@ -801,7 +801,14 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     // first block is there: at 10000 individuals they are 400 MB, which a
     // reader with no variant would have asked for and given back.
     let Some(block) = reader.next_block()? else {
-        return Err(Error::ReaderGaveNoVariants);
+        let filters = reader.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            // The filter nearest the source was given what the source
+            // gave; with no filter the pass gave what the source gave,
+            // which is nothing.
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
     };
     let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
     let mut next = Some(block);
@@ -2199,14 +2206,26 @@ mod tests {
     }
 
     /// A reader with no variant is an error: there is nothing to calculate
-    /// over, and the memory of the pairs is never asked for.
+    /// over, and the memory of the pairs is never asked for. It is the one
+    /// case every calculation over a pass raises, which carries the counts
+    /// of the filters of the reader; this reader has none, so the error
+    /// says that the source of the pass gave no variant.
     #[test]
     fn a_reader_with_no_variant_is_an_error() {
         let mut reader = GivenBlocks::of(Vec::new(), 3, 2);
 
         let error = calc_kosman_sums(&mut reader).expect_err("the error");
 
-        assert!(matches!(error, Error::ReaderGaveNoVariants), "{error}");
+        assert!(
+            matches!(
+                &error,
+                Error::PassGaveNoVariant {
+                    num_vars_of_the_source: 0,
+                    filters,
+                } if filters.is_empty()
+            ),
+            "{error}"
+        );
     }
 
     /// popnei keeps two `u32` for each pair, and a sum that would go above

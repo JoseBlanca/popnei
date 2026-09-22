@@ -77,6 +77,10 @@ impl OpenSource for VarsSource {
         &self.path
     }
 
+    fn ploidy(&self) -> usize {
+        self.ploidy
+    }
+
     /// The size the caller asks for is not passed on: the reader gives each
     /// batch of the file as a block, at the size the file was written with,
     /// and the `Reblock` that every pass ends with cuts them where the

@@ -73,6 +73,20 @@ is heterozygous when it is called and its alleles are not all the same.
 **called alleles.** How many alleles of a population at a variant are not
 missing, the denominator of its allele frequencies.
 
+**expected heterozygosity.** Of a variant in a population, one minus the
+sum over the alleles of the frequency of each to the power of the ploidy:
+the chance that as many gene copies as a genotype holds, taken at random
+from the population, are not all alike. The unbiased one corrects it for
+the frequencies being estimated from the copies it is computed over, Nei's
+c/(c - 1) at ploidy 2 with c the called alleles, and is a statistic of its
+own.
+`exp_het` and `unbiased_exp_het` in identifiers. `docs/specs/stats.md`.
+
+**polymorphic variant.** In a population, a variant whose major allele
+frequency is below the polymorphism threshold, 0.95 by default, strictly;
+a variable one has it below 1. `poly` in identifiers, as in pyNei's
+`poly_threshold` and `num_poly`.
+
 **major allele.** The allele of a variant with the highest frequency among
 the called alleles of the individuals considered. How a tie is broken is for
 the spec of the calculation to say.
@@ -86,6 +100,21 @@ text writes "the major allele frequency" in full where it first uses it.
 allele of the variant, from 0 to the ploidy, every allele other than the
 major one counting the same. The dosage matrix is the variants x
 individuals array of them. pyNei: `to_012` and "the 012 matrix".
+
+**component.** A principal component: one of the directions, at right
+angles to each other, along which the individuals of a standardized table
+vary most, the first the one with the largest variance. "PC" in the names
+of a result, `PC0`, and `comps` in identifiers. Not used: axis, eigenvector,
+which is how a component is computed and not what it is.
+
+**projection.** Where an individual falls along a component, the
+coordinate a user plots. pyNei: `projections`. Not used: score, which is
+R's word, coordinate.
+
+**princomps.** The weights of each variant, or of each trait, in each
+component, components x variants, a field of the result of a PCA under
+the name pyNei gives it. "Weight" in prose. Not used: loading, rotation,
+which is R's word.
 
 **Kosman distance.** The distance between two individuals of Kosman and
 Leonard (2005): at a variant, the alleles of the two genotypes that do
@@ -113,8 +142,21 @@ pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
 the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
 used: batch, which is written for two other things, arrow's unit of the
 vars file, and the lines that the VCF reader reads and parses together,
-several to a block; and window. A vars file is written
-with one batch for each block, and read back in blocks of any size.
+several to a block; and window, which has a meaning of its own below. A
+vars file is written with one batch for each block, and read back in
+blocks of any size.
+
+**window.** The variants that a calculation or a filter compares one
+variant with: those on its chromosome whose position is no more than a
+stated distance from it. It is never a run of blocks nor a number of
+variants: a window is a stretch of a chromosome in base pairs, and how
+many variants fall in it is whatever the dataset has there. The filter by
+linkage disequilibrium of `docs/specs/filters.md` holds the variants it
+has kept inside the window of the variant it is looking at, and the curve
+of linkage disequilibrium against distance of `docs/specs/ld.md` compares
+each variant with the ones inside its own. Not used: window for a block
+or for a run of blocks, which is what a reader holds and not what a
+calculation compares.
 
 **member.** One gzip stream of a gzipped file. A file that bgzip wrote is
 many of them one after another, each with 64 KiB of text at most and each
@@ -152,7 +194,8 @@ JavaScript in it, where every calculation is.
 **binding crate.** A crate that translates between another language and
 the core crate and holds no calculation. There are two, and a text that
 **step.** One entry of the list that a `Variants` holds besides its
-source, a filter with its threshold. A step is added with a method of the
+source, a filter with its threshold or the filter of individuals with
+its names. A step is added with a method of the
 `Variants`, which returns nothing, it is run in every pass that starts
 after it was added, and `variants.steps` lists them.
 
@@ -177,6 +220,15 @@ holds for both.
 
 **Python binding crate.** `crates/popnei-python`, written with pyo3. Its
 Python module is `popnei._core`.
+
+**linalg crate.** `crates/popnei-linalg`, the linear algebra of popnei,
+its products and decompositions, with two backends behind one interface:
+BLAS and LAPACK natively, and faer, a library written in Rust, in wasm,
+where there is no BLAS, and natively too when the cargo feature `blas`
+of the crate is off. It is the one crate of popnei with `unsafe` in it,
+the calls to BLAS and LAPACK. The core crate calls it.
+`docs/specs/linalg.md`. Not used: backend for the crate itself, which is
+the word for each of its two libraries.
 
 **JavaScript binding crate.** `crates/popnei-js`, written with
 wasm-bindgen, the Rust tool that generates the JavaScript that calls the

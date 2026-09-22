@@ -248,9 +248,11 @@ compiler drop the bounds checks.
   literal -1.
 - Every `pub` item has a doc comment as the `writing` skill describes it,
   with `# Errors` when it returns a `Result`.
-- No `unsafe` in the core crate, `#![forbid(unsafe_code)]`. In the binding
-  crate an `unsafe` block carries a `// SAFETY:` comment that names each
-  condition and why it holds there.
+- No `unsafe` in the core crate, `#![forbid(unsafe_code)]`. The linalg
+  crate is the one place where `unsafe` is, the calls to BLAS and LAPACK,
+  each block with a `// SAFETY:` comment. In the binding crate an
+  `unsafe` block carries a `// SAFETY:` comment that names each condition
+  and why it holds there.
 - A lint is silenced with `#[expect(lint, reason = "...")]` on the
   smallest item, never with a bare `#[allow]`.
 - A new dependency of the core crate is pure Rust, builds for
@@ -271,10 +273,14 @@ compiler drop the bounds checks.
   from outside rayon. The library never builds the global pool of rayon.
 - Everything builds and runs with one thread, because wasm has no
   threads. Code that needs threads is behind
-  `#[cfg(not(target_family = "wasm"))]` with a serial version beside it,
-  and the choice of the linear algebra backend is a `cfg` on the target,
-  not a pair of cargo features that exclude each other.
-- Linear algebra goes through the `linalg` module and nowhere else.
+  `#[cfg(not(target_family = "wasm"))]` with a serial version beside it.
+  The linear algebra backend is faer on the two wasm targets, by a `cfg`
+  on the target family, and natively it is BLAS and LAPACK with the cargo
+  feature `blas`, which is on by default, and faer with it off. The
+  feature only adds: it turns on the crates that link BLAS, so it is one
+  feature and not a pair that exclude each other.
+- Linear algebra goes through the linalg crate, `crates/popnei-linalg`,
+  and nowhere else: no code of the core crate does its own.
 - Readers take `impl Read` or `impl BufRead`, so that a test feeds them
   bytes from memory.
 

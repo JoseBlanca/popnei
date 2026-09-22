@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
+use crate::filters::FilteringStats;
 use crate::io::vcf::VcfPlace;
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
@@ -82,6 +83,24 @@ pub enum Error {
         allele: i8,
     },
 
+    /// The counts of one variant over a population were given the index of
+    /// an individual that the variant has no genotype for: the variant
+    /// holds one genotype for each individual of the reader, and the index
+    /// is at or beyond them.
+    ///
+    /// The indices of a population are resolved from the names a user wrote
+    /// against the individuals the pass gives, before any variant is read,
+    /// so a user reaches this only through a defect of popnei.
+    #[error(
+        "the counts of one variant over a population were given the individual {individual}, and the variant holds the genotypes of {num_individuals} individuals"
+    )]
+    IndividualBeyondTheVariant {
+        /// The index the counts were given.
+        individual: usize,
+        /// How many individuals the variant holds the genotypes of.
+        num_individuals: usize,
+    },
+
     /// A reader that takes a size was asked for blocks of 0 variants. A
     /// block holds one variant at least, and the caller that wants the
     /// size popnei chooses asks for none instead of asking for 0.
@@ -146,6 +165,24 @@ pub enum Error {
     )]
     ReaderGaveABlockOfNoVariants,
 
+    /// A reader gave a block that holds the genotypes of no individual,
+    /// either because it has no individual or because its ploidy is 0, and
+    /// a calculation over the variants reads the genotype of one individual
+    /// at least. The VCF reader refuses a header with no individual and a
+    /// ploidy of 0, so a user reaches this only through a reader with a
+    /// defect. It is told apart from the genotypes that nobody asked the
+    /// reader for, which are missing from a block for another reason and
+    /// leave it empty in the same way.
+    #[error(
+        "a reader gave a block of {num_individuals} individuals of the ploidy {ploidy}, which holds no genotype for a variant, and a calculation over the variants reads the genotype of 1 individual at least; the reader that gave it has a defect"
+    )]
+    BlockWithNoGenotypeOfAVariant {
+        /// How many individuals the block says it holds the genotypes of.
+        num_individuals: usize,
+        /// How many alleles the genotype of one individual holds in it.
+        ploidy: usize,
+    },
+
     /// An array of a block is not of the size the block says: its
     /// genotypes are not its variants times its individuals times its
     /// ploidy, or a column has not one entry for each variant. The fields
@@ -177,6 +214,48 @@ pub enum Error {
         /// How many variants the block holds.
         num_vars: usize,
     },
+
+    /// The individuals given to `Block::retain_individuals` hold an index
+    /// at or beyond the individuals of the block. They are indices among
+    /// the individuals of the block, and the filter of individuals of
+    /// `docs/specs/filters.md` gets them from `resolve_individuals`, which
+    /// refuses the name that would give one of these, so a user reaches
+    /// this only through a reader with a defect. The block is left as it
+    /// was.
+    #[error(
+        "the individuals to keep hold the index {individual}, of a block of {num_individuals} individuals; an individual of a block is an index below how many it holds"
+    )]
+    IndividualToKeepNotInTheBlock {
+        /// The index that is at or beyond the individuals of the block.
+        individual: usize,
+        /// How many individuals the block holds.
+        num_individuals: usize,
+    },
+
+    /// The individuals given to `Block::retain_individuals` hold one index
+    /// twice, which would leave two columns of the genotypes of one
+    /// individual, telling the consumer that there are two individuals
+    /// where there is one. `resolve_individuals` refuses the name behind
+    /// it, so a user reaches this only through a reader with a defect. The
+    /// block is left as it was.
+    #[error(
+        "the individuals to keep hold the index {individual} twice, and each individual of a block is kept once: two columns of the genotypes of one individual are one individual"
+    )]
+    IndividualToKeepTwice {
+        /// The index that is there twice.
+        individual: usize,
+    },
+
+    /// `Block::retain_individuals` was given no individual at all, which
+    /// would leave a block of nobody's genotypes. Every source of popnei
+    /// holds one individual at least, as `docs/specs/block.md` says, and
+    /// `resolve_individuals` refuses a filter of individuals that names
+    /// none, so a user reaches this only through a reader with a defect.
+    /// The block is left as it was.
+    #[error(
+        "no individual was given to keep of a block, and a block holds the genotypes of one individual at least"
+    )]
+    NoIndividualToKeep,
 
     /// The threshold of a filter of variants is not a number from 0 to 1,
     /// both included: it is NaN, it is below 0 or it is above 1. The number
@@ -228,18 +307,495 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
-    /// The reader a calculation was given had no variant, and there is
-    /// nothing to calculate over: its source holds none, or the filters of
-    /// the pass kept none. `calc_kosman_sums` of `docs/specs/dists.md`
-    /// gives it when the first block it asks for is not there.
+    /// A name given to the filter of individuals of
+    /// `docs/specs/filters.md` is not an individual of the variants it is
+    /// put on. It is the name a user wrote, so the message names it. pyNei
+    /// drops it in silence, and `filter_samples(v, ["ind05", "nope"])`
+    /// gives variants of one individual.
+    #[error(
+        "`{name}` is not an individual of the variants; `individuals` gives the names the source has, written as the source writes them"
+    )]
+    IndividualNotInTheSource {
+        /// The name that is not an individual of the variants.
+        name: String,
+    },
+
+    /// A name given to the filter of individuals is there twice. Two
+    /// columns of the genotypes of one individual are one individual for
+    /// everything that reads them, and every count over them would hold it
+    /// twice. pyNei keeps the individual once.
+    #[error(
+        "the individual `{name}` is named twice among the individuals to keep, and each of them is kept once"
+    )]
+    IndividualNamedTwice {
+        /// The name that is there twice.
+        name: String,
+    },
+
+    /// The filter of individuals was given no name at all, which would
+    /// leave variants of nobody: every source of popnei holds one
+    /// individual at least, as `docs/specs/block.md` says.
+    #[error(
+        "no individual was named to keep, and the variants hold the genotypes of one individual at least"
+    )]
+    NoIndividualNamed,
+
+    /// A second filter of individuals on variants that hold one. Two lists
+    /// of individuals keep the ones that are in both, which is one list, so
+    /// the second says that the user has lost track of the individuals
+    /// their variants carry, which running the cell of a notebook twice
+    /// gives. pyNei takes it. The case of a second threshold filter is the
+    /// one above, which carries the two thresholds that this one has no
+    /// counterpart of.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of individuals keeps the individuals that are in both lists, which is one list"
+    )]
+    FilterOfIndividualsThatIsSet {
+        /// The kind of the step, which is `individuals`: the name a Python
+        /// and a TypeScript user reads for it.
+        kind: &'static str,
+    },
+
+    /// A name in one of the populations of `pops` is not an individual of
+    /// the variants the statistic is calculated over, which are those of
+    /// the source after the filter of individuals when there is one. It is
+    /// the name a user wrote, so the message names it and the population it
+    /// is in. pyNei refuses it too, in `_calc_pops_idxs`, naming the
+    /// population and every name of it that is missing.
+    #[error(
+        "`{name}` is named in the population `{pop}` and is not an individual of the variants; `individuals` gives the names the variants have, which are the ones the filter of individuals keeps when there is one"
+    )]
+    IndividualOfAPopNotInThePass {
+        /// The population the name was given in.
+        pop: String,
+        /// The name that is not an individual of the variants.
+        name: String,
+    },
+
+    /// A name is twice in one population. Every count over the population
+    /// would hold that individual twice: pyNei counts it twice, and
+    /// `{"x": ["a", "b", "b"]}` over the genotypes `0/0 0/1 1/1` gives it
+    /// an observed heterozygosity of 2/3 at commit ef0ca6e. An individual
+    /// that is in two populations is taken, as in pyNei.
+    #[error(
+        "the individual `{name}` is named twice in the population `{pop}`, and a population holds each of its individuals once"
+    )]
+    IndividualNamedTwiceInAPop {
+        /// The population the name is twice in.
+        pop: String,
+        /// The name that is there twice.
+        name: String,
+    },
+
+    /// A population of `pops` names no individual. Every statistic of a
+    /// population is calculated over its individuals, so a population with
+    /// none has no value for any of them; pyNei gives NaN for each.
+    #[error(
+        "the population `{pop}` names no individual, and every statistic of a population is calculated over the individuals of that population"
+    )]
+    PopWithNoIndividual {
+        /// The population that names no individual.
+        pop: String,
+    },
+
+    /// `pops` holds no population at all, which would leave a result with
+    /// nothing in it: pyNei gives one with no column. A user who wants one
+    /// population of every individual gives no `pops`.
+    #[error(
+        "`pops` names no population, and a result holds one value for each population: leave `pops` out for one population of every individual"
+    )]
+    NoPop,
+
+    /// The histogram of a statistic was asked for no bin. A histogram
+    /// counts the variants that fall in each of its bins, so one with no bin
+    /// counts nothing: pyNei hands `num_bins` to `numpy.linspace`, which
+    /// gives one edge for 0 bins and a histogram that no value falls in.
+    #[error(
+        "the histogram was asked for 0 bins, and a histogram has 1 bin at least: `num_bins` is how many bins the values of the statistic are counted in"
+    )]
+    HistWithNoBin,
+
+    /// The range of the histogram of a statistic does not run from a number
+    /// up to a larger one: its two ends are equal, they are the wrong way
+    /// round, or one of them is NaN or infinite, which leaves every edge
+    /// between them NaN.
+    #[error(
+        "the range of the histogram is {start:?} to {end:?}, and a range runs from a number up to a larger one: the bins divide that range, and the statistics of one variant lie between 0 and 1"
+    )]
+    HistRangeNotGoingUp {
+        /// The start of the range that was given.
+        start: f64,
+        /// The end of the range that was given.
+        end: f64,
+    },
+
+    /// The two ends of the range of a histogram are each a number, and the
+    /// distance between them is above the largest float64. The width of a
+    /// bin is that distance over the bins, so it is infinite, and the edges
+    /// of 4 bins from -1e308 to 1e308 are NaN, infinite, infinite, infinite
+    /// and 1e308: they do not go up, and the search for the bin of a value
+    /// over edges that do not go up puts every value in the first bin.
+    /// numpy refuses the same range, with "Too many bins for data range",
+    /// and pyNei's `numpy.histogram` with "'bins' must increase
+    /// monotonically".
+    #[error(
+        "the range of the histogram is {start:?} to {end:?}, and the distance between its two ends is above the largest float64: the width of a bin is that distance over the bins, and the edges of the bins have to go up"
+    )]
+    HistRangeTooWide {
+        /// The start of the range that was given.
+        start: f64,
+        /// The end of the range that was given.
+        end: f64,
+    },
+
+    /// The histogram of a statistic was asked for more bins than
+    /// `stats::MAX_NUM_BINS`. Every bin is a count of 8 bytes for each
+    /// population and each statistic, once in the pass and once more in
+    /// every chunk of rows a thread is reading, and a histogram a person
+    /// reads has tens of bins.
+    #[error(
+        "the histogram was asked for {num_bins} bins, and it has {largest} at most: a histogram a person reads has tens of bins, and the counts of more than {largest} of them for each population and each statistic are more memory than a machine gives"
+    )]
+    HistTooManyBins {
+        /// How many bins the histogram was asked for.
+        num_bins: usize,
+        /// The most it has, `stats::MAX_NUM_BINS`.
+        largest: usize,
+    },
+
+    /// The range of a histogram whose bins are of equal ratio starts at 0 or
+    /// below. Each edge is the one before it times a fixed factor, and no
+    /// factor takes 0 anywhere. pyNei refuses it too, in `_prepare_bins`.
+    #[error(
+        "the range of the histogram starts at {start:?} and its bins are of equal ratio, which start above 0: each edge is the one before it times a fixed factor, and no factor takes 0 anywhere"
+    )]
+    HistLogRangeNotAboveZero {
+        /// The start of the range that was given.
+        start: f64,
+    },
+
+    /// The ploidy or the exponent a statistic of one variant was built with
+    /// is 0, or above the largest ploidy a reader of popnei gives. A trial
+    /// implementation of the expected heterozygosity in September 2026 gave,
+    /// with an exponent of 0, a plain -2.0 and an unbiased NaN for the
+    /// allele counts 2, 1 and 1; a ploidy of 0 turns the
+    /// `min_num_individuals` test off, since it asks for 0 called alleles;
+    /// and an exponent of 1e8 took 0.2 s for one variant.
+    #[error(
+        "the {kind} of a statistic of one variant is {value}, and it is 1 at least and {largest} at most, the largest ploidy a reader of popnei gives; the exponent is the number the allele frequencies are raised to, which is the ploidy of the variants unless the caller asks for another one"
+    )]
+    StatPloidyOutOfRange {
+        /// Which of the two it is, `ploidy` or `exponent`.
+        kind: &'static str,
+        /// The number that was given for it.
+        value: usize,
+        /// The largest one, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// A user asked for a statistic of a variant under a name that is of
+    /// none of the five. The names are those of the fields of the result,
+    /// and they are `stats::PerVarStat::NAMES`, which the message lists.
+    #[error(
+        "`{name}` is not one of the statistics of a variant, which are {the_five}",
+        the_five = the_five_statistics()
+    )]
+    StatOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// A user asked for bins of a kind that is neither of the two: bins of
+    /// equal width, `stats::LINEAR_BINS`, and bins of equal ratio,
+    /// `stats::LOGARITHMIC_BINS`. pyNei spells the first one `lineal`, the
+    /// Spanish word, and popnei refuses that name as any other unknown one,
+    /// which the owner decided on 22 September 2026.
+    #[error(
+        "`bin_type` is `{kind}`, and the bins of a histogram are `{linear}`, of equal width, or `{logarithmic}`, of equal ratio; pyNei spells the first one `lineal`, the Spanish word",
+        linear = crate::stats::LINEAR_BINS,
+        logarithmic = crate::stats::LOGARITHMIC_BINS
+    )]
+    HistBinsOfAnUnknownKind {
+        /// The name the user wrote.
+        kind: String,
+    },
+
+    /// The threshold below which a variant counts as polymorphic in a
+    /// population is not a number from 0 to 1. A major allele frequency is
+    /// a count of one allele divided by the called alleles, so every value
+    /// it takes lies between 0 and 1, and a threshold outside that range
+    /// makes every variant polymorphic or none. pyNei compares with
+    /// whatever it is given.
+    #[error(
+        "`poly_threshold` is {value:?}, and it is a number from 0 to 1, both included: a variant is polymorphic in a population when its major allele frequency there is below the threshold, and a frequency lies between 0 and 1"
+    )]
+    PolyThresholdOutOfRange {
+        /// The number that was given for it.
+        value: f64,
+    },
+
+    /// A pass that calculates a statistic gave no variant, either because
+    /// its source holds none or because the steps of the pass kept none of
+    /// the variants they were given. A mean over no variant, a histogram
+    /// that counts nothing, a rate of an individual over no variant and a
+    /// distance between two individuals over no variant say
+    /// nothing about a dataset, and a user who gets them has to know which
+    /// of the two happened, so the message says it with the variants each
+    /// filter was given and kept.
     ///
-    /// Which of the two it was, and how many variants each filter of the
-    /// pass was given and kept, is what the binding crate adds: it holds
-    /// the chain of readers and reads the counts from it, as "A pass that
-    /// was not finished" of `docs/specs/filters.md` says, and the core does
-    /// not have them.
-    #[error("the reader gave no variant, and a calculation needs 1 variant at least")]
-    ReaderGaveNoVariants,
+    /// It is the one case of a pass that gave no variant: every
+    /// calculation over a pass raises it, the two of `stats` and
+    /// `calc_kosman_sums` of `dists`, and each reads the counts from the
+    /// reader it was lent, so that neither binding crate writes the
+    /// message again in its own language.
+    #[error(
+        "{said}",
+        said = a_pass_that_gave_no_variant(*num_vars_of_the_source, filters)
+    )]
+    PassGaveNoVariant {
+        /// How many variants the source of the pass gave: what the filter
+        /// nearest the source was given, and 0 when the pass has no filter,
+        /// since the pass then gave what the source gave.
+        num_vars_of_the_source: u64,
+        /// Each filter of the chain of the pass with the variants it was
+        /// given and the ones it kept, the outermost first, as
+        /// `filtering_stats` of a reader gives them.
+        filters: Vec<(&'static str, FilteringStats)>,
+    },
+
+    /// A value of the table of a principal component analysis is not
+    /// finite, an infinity or a NaN, with the place where it is. There is
+    /// nothing to give for such a table: the mean of that trait, and with
+    /// it every projection, would be a NaN. pyNei refuses a NaN and lets
+    /// an infinity through to numpy's decomposition, which raises
+    /// `LinAlgError`. In Python it is a `ValueError`.
+    #[error(
+        "the value at row {row}, trait {col} of the table is {value}, and a principal component analysis needs every value finite"
+    )]
+    PcaValueNotFinite {
+        /// Which row of the table holds it, from 0.
+        row: usize,
+        /// Which trait of the table holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// The table of a principal component analysis is to be standardized
+    /// and not centered. Standardizing divides each trait by the standard
+    /// deviation it has once it is centered, so the two go together, which
+    /// is what pyNei's `do_pca` says as well. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the table is to be standardized and not centered, and standardizing divides each trait by the standard deviation it has once it is centered: center the table or do not standardize it"
+    )]
+    PcaStandardizeWithoutCentering,
+
+    /// The table of a principal component analysis has fewer than 2 rows
+    /// or no traits. One row has no variation for the components to hold:
+    /// pyNei raises the error of the traits with no variance for it when
+    /// it standardizes, and without standardizing divides by n - 1 = 0 and
+    /// gives percentages that are NaN. In Python it is a `ValueError`.
+    #[error(
+        "the table is {num_rows} x {num_cols}, and a principal component analysis needs 2 rows at least and 1 trait at least"
+    )]
+    PcaTableTooSmall {
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// The traits of a table that is to be standardized and that have no
+    /// variance, every value of each one being equal to the others. There
+    /// is nothing to divide them by, so the user takes them out or does
+    /// not standardize; without standardizing they are no error and get a
+    /// weight of 0. In Python it is a `ValueError` whose message names the
+    /// traits, since the layer that has the frame puts the name of each
+    /// column in the place of its position.
+    #[error(
+        "{count} of the {num_cols} traits have no variance and cannot be standardized: take them out of the table or do not standardize; they are the traits at {shown}, counting from 0",
+        count = positions.len(),
+        shown = crate::pca::the_positions_listed(positions)
+    )]
+    PcaTraitsWithNoVariance {
+        /// The position of each trait with no variance among the traits of
+        /// the table, from 0 and in order.
+        positions: Vec<usize>,
+        /// How many traits the table has.
+        num_cols: usize,
+    },
+
+    /// A trait whose mean or whose standard deviation is not a number the
+    /// principal component analysis can use, because the values of that
+    /// trait are too large or too small for the arithmetic of an `f64`.
+    /// [`crate::pca::TraitScale`] says which of the three it is, and each
+    /// of them would otherwise give a result with no meaning: NaN
+    /// projections, a trait that quietly becomes a column of zeros, or a
+    /// division by 0. The user scales that trait or takes it out. In
+    /// Python it is a `ValueError` whose message names the trait, as the
+    /// error of the traits with no variance does.
+    #[error(
+        "the trait at the position {position} cannot be centered or standardized: {problem}; scale that trait or take it out of the table"
+    )]
+    PcaTraitOutOfRange {
+        /// The position of the trait among the traits of the table, from
+        /// 0.
+        position: usize,
+        /// Which of the three it is.
+        problem: crate::pca::TraitScale,
+    },
+
+    /// No trait of the table of a principal component analysis has
+    /// variance once it is centered: every value of every trait is equal
+    /// to the others, or the table is all zeros. There is no direction to
+    /// give. pyNei gives 0 for every projection and a percentage of NaN
+    /// for every component. In Python it is a `ValueError`.
+    #[error("no trait has variance, there is nothing to do a PCA with")]
+    PcaNoTraitWithVariance,
+
+    /// The buffer of the table of a principal component analysis does not
+    /// hold exactly its rows times its traits. Only a caller of the function
+    /// of the core crate reaches it, since each binding crate takes the
+    /// two numbers from the array it was given, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the table was given as {num_rows} x {num_cols} and its buffer holds {num_values} values"
+    )]
+    PcaTableOfAnotherSize {
+        /// How many values the buffer holds.
+        num_values: usize,
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a principal
+    /// component analysis asked for did not run, with what was being
+    /// computed. The dimensions and the values that crate refuses are
+    /// checked before it is called, so what is left is a table whose
+    /// products are not finite and a machine with too little memory for
+    /// the workspace of the eigendecomposition. In Python it is a
+    /// `RuntimeError`.
+    #[error("the {operation} of the principal component analysis could not be done: {source}")]
+    PcaLinalg {
+        /// What was being computed: the product of the table with itself,
+        /// the product of a block of variants with itself, the
+        /// eigendecomposition, or one of the three products that give the
+        /// projections of a table, the weights of a table and the weights
+        /// of a block of variants.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
+    /// The reader of a principal component analysis of the variants gave
+    /// no variant. There is nothing to place the individuals by. It is
+    /// pyNei's "There are no variants in the 012 matrix", and in Python it
+    /// is a `ValueError`: the steps of the `Variants` let no variant
+    /// through, or the source has none.
+    #[error("there are no variants to do a PCA with")]
+    PcaNoVariants,
+
+    /// No variant of a principal component analysis of the variants has
+    /// variance: every one of them has one dosage among its called
+    /// genotypes, or no called genotype at all. There is no direction to
+    /// give. One individual gives it, since every variant of one
+    /// individual has one dosage. In Python it is a `ValueError`.
+    #[error(
+        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+    )]
+    PcaNoVariantWithVariance,
+
+    /// A variant of a principal component analysis of the variants has
+    /// more than two different alleles among its called genotypes, and
+    /// `transform_to_biallelic` is false. The dosage of a genotype is how
+    /// many of its alleles are not the major one, which has a meaning for
+    /// two alleles; with the argument true every allele that is not the
+    /// major one counts the same. The alleles are those the genotypes
+    /// hold and not those the source lists. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
+    )]
+    PcaVariantWithMoreThanTwoAlleles {
+        /// Which variant of those the reader gave it is, from 0.
+        position: usize,
+        /// How many different alleles it has among its called genotypes.
+        num_alleles: usize,
+    },
+
+    /// The weights of a principal component analysis of the variants were
+    /// asked for and no second pass over the variants was made. The weight
+    /// of a variant needs the eigenvectors, which are known when the first
+    /// pass ends, so a second reader over the same variants gives them.
+    /// Only a caller of the function of the core crate reaches it, since
+    /// each binding crate opens both readers, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the weights of {num_prin_comps} components were asked for and no second pass over the variants was made: the weight of a variant needs the eigenvectors, which are known when the first pass ends, so a second reader over the same variants is given whenever `num_prin_comps` is above 0"
+    )]
+    PcaSecondPassMissing {
+        /// How many components the weights were asked for.
+        num_prin_comps: usize,
+    },
+
+    /// The second pass of a principal component analysis of the variants
+    /// read other variants than the first. The weights it works out belong
+    /// to the variants of the first pass, which the eigenvectors come
+    /// from, so there is nothing to give. It is what a source that changed
+    /// between the two passes gives.
+    /// [`crate::pca::VariantsOfTheSecondPass`] says what differed. In
+    /// Python it is a `RuntimeError`: no argument is wrong, and the core
+    /// has no name of a source to give.
+    #[error(
+        "the second pass over the variants read other variants than the first: {problem}; the source changed between the two passes"
+    )]
+    PcaSecondPassDiffers {
+        /// What the second pass found that the first did not, or the other
+        /// way round.
+        problem: crate::pca::VariantsOfTheSecondPass,
+    },
+
+    /// The source of a principal component analysis of the variants has no
+    /// individual. The components are the axes the individuals of a
+    /// dataset are placed on, so there is nobody to place, and the
+    /// standardizing of a block would read its rows in chunks of no
+    /// allele. Every source of popnei has one individual at least, as
+    /// `docs/specs/block.md` says, so it is a caller of the function of the
+    /// core crate with a reader of its own that reaches it. In Python it is
+    /// a `ValueError`.
+    #[error(
+        "the source has no individual, and the principal components of the variants are the axes the individuals of a dataset are placed on"
+    )]
+    PcaNoIndividual,
+
+    /// The second pass of a principal component analysis of the variants
+    /// worked out the weight of a variant whose column of the weights is
+    /// not there. The variants of that pass are the variants of the first,
+    /// which it checks as it goes, so each of them has a column: this is a
+    /// defect of popnei, and in Python it is a `RuntimeError`.
+    #[error(
+        "the weights of the variant at the column {column} of the {num_used} that were used have no column to go in, which is a defect of popnei: the second pass over the variants counts them against the variants of the first and each of them has one"
+    )]
+    PcaWeightOutOfPlace {
+        /// The column the weights were to go in.
+        column: usize,
+        /// How many variants the first pass used, which is how many
+        /// columns the weights have.
+        num_used: usize,
+    },
+
+    /// A dataset the principal components of its variants cannot be taken
+    /// on, because one of its sizes is beyond what the analysis counts in.
+    /// [`crate::pca::VariantsTooLarge`] says which of the four it is. In
+    /// Python it is a `ValueError`.
+    #[error("the principal components of the variants cannot be taken on this dataset: {problem}")]
+    PcaVariantsTooLarge {
+        /// Which of the four sizes it is, with the number the dataset has.
+        problem: crate::pca::VariantsTooLarge,
+    },
 
     /// The distances of that many individuals need more memory than the
     /// machine gives: popnei keeps two `u32` for every pair of them, which
@@ -738,6 +1294,57 @@ pub enum Error {
     /// The bytes of a source could not be read.
     #[error("the source could not be read: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// What [`Error::PassGaveNoVariant`] says: whether the source of the pass
+/// held no variant or its steps kept none of the ones they were given, and
+/// in the second case what each filter was given and kept.
+///
+/// `num_vars_of_the_source` is the variants the source gave, and `filters`
+/// the counts of the filters of the pass, the outermost first. The counts
+/// are said the other way round, the filter nearest the source first, which
+/// is the order the variants went through them in.
+fn a_pass_that_gave_no_variant(
+    num_vars_of_the_source: u64,
+    filters: &[(&'static str, FilteringStats)],
+) -> String {
+    if num_vars_of_the_source == 0 {
+        return "the pass gave no variant and its source holds none: a statistic of a \
+                pass is calculated over the variants it gives"
+            .to_owned();
+    }
+    let of_each_filter: Vec<String> = filters
+        .iter()
+        .rev()
+        .map(|(kind, stats)| {
+            format!(
+                "the `{kind}` filter was given {given} and kept {kept}",
+                given = stats.vars_processed,
+                kept = stats.vars_kept,
+            )
+        })
+        .collect();
+    format!(
+        "the pass gave no variant: its source gave {num_vars_of_the_source} and the steps \
+         kept none of them, {counts}; a statistic of a pass is calculated over the \
+         variants it gives",
+        counts = of_each_filter.join(", "),
+    )
+}
+
+/// The five statistics of a variant under the names a user writes them, for
+/// the message that refuses a name that is of none of them: "`obs_het`,
+/// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
+fn the_five_statistics() -> String {
+    let named: Vec<String> = crate::stats::PerVarStat::NAMES
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect();
+    match named.split_last() {
+        Some((last, before)) => format!("{} and {last}", before.join(", ")),
+        // `NAMES` holds five names, so it has a last one.
+        None => String::new(),
+    }
 }
 
 /// What every operation of popnei that can fail returns.

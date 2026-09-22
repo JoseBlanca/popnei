@@ -11,68 +11,78 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The three methods that add a filter are here as well, one for each of the
-//! three numbers of a variant a filter compares, and each of them refuses at
-//! the call what a user cannot filter by: a threshold that is not a number
-//! from 0 to 1, under the name of the argument they wrote it in, and a
-//! second filter of a kind the list holds, with the threshold of the one
-//! that is set. No reader exists at that call, so neither refusal can come
-//! from the chain. What is not a number at all, the `undefined` of a call
-//! with no threshold among it, is refused by the package before the call, in
-//! `js/popnei/src/arguments.ts`: everything arrives here as a float64, and
-//! `null` would arrive as a threshold of 0.
+//! The four methods that add a filter are here as well, one for each of the
+//! three numbers of a variant a filter compares and one for the individuals
+//! to keep, and each of them refuses at the call what a user cannot filter
+//! by: a threshold that is not a number from 0 to 1, under the name of the
+//! argument they wrote it in; a name that is not an individual of the
+//! source, a name that is there twice and no name at all; and a second
+//! filter of a kind the list holds, with the threshold of the one that is
+//! set when both are threshold filters. No reader exists at that call, so
+//! none of those refusals can come from the chain, and the individuals of
+//! the source, which the names are resolved against, are held here from the
+//! moment the `Variants` is built. What is not a number at all, the
+//! `undefined` of a call with no threshold among it, is refused by the
+//! package before the call, in `js/popnei/src/arguments.ts`: everything
+//! arrives here as a float64, and `null` would arrive as a threshold of 0.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::filters::{VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind};
+use popnei::filters::{
+    PassStep, VarFilter, VarFilteringCriterion, individuals_of, refuse_a_second_filter_of_a_kind,
+    resolve_individuals,
+};
 
 use crate::errors::JsPopneiError;
 
-/// One step of a `Variants`.
+/// One step of a `Variants`: what the core does with it, and the arguments
+/// a TypeScript user wrote it with.
 ///
-/// A filter of `docs/specs/filters.md` is the only kind of step there is: it
-/// holds which number of a variant is compared and the threshold it is
-/// compared with, which is what the core needs to build the filter of a
-/// pass.
-#[derive(Clone, Copy)]
-pub(crate) enum Step {
-    /// The variants whose number is at most the threshold of the criterion
-    /// are kept, and the others are left out of every block of the pass.
-    Filter(VarFilteringCriterion),
+/// What the pass does is the core's `PassStep`, which is what builds the
+/// readers of the pass. Beside it this crate keeps the name each argument of
+/// the step has in TypeScript, `maxAllowedMaf`, and the value under it: the
+/// core names a filter by its kind, `maf`, and knows nothing of the
+/// arguments of TypeScript, and a user who reads their steps reads the names
+/// they wrote.
+#[derive(Clone)]
+pub(crate) struct Step {
+    /// What every pass does to its variants at this step.
+    pass_step: PassStep,
+    /// The arguments of the step, each under the name a TypeScript user
+    /// writes it in.
+    args: Vec<(&'static str, Argument)>,
 }
 
-impl Step {
-    /// The kind of the step, which is the name its counts have for a
-    /// TypeScript user, `"missing_data"`, `"maf"` or `"obs_het"`.
-    fn kind(self) -> &'static str {
-        match self {
-            Step::Filter(criterion) => criterion.kind(),
-        }
-    }
-
-    /// The arguments of the step, each with the name a TypeScript user
-    /// writes for it, `maxAllowedMaf`.
-    fn args(self) -> Vec<(&'static str, f64)> {
-        match self {
-            Step::Filter(criterion) => vec![(argument_of(criterion), criterion.threshold())],
-        }
-    }
-}
-
-/// The name a TypeScript user writes the threshold of `criterion` under,
-/// which is the argument of the method that adds the filter.
+/// What a user gave one argument of a step: the threshold of a filter, a
+/// number from 0 to 1, or the names of the individuals to keep, in the
+/// order they named them.
 ///
-/// The core names a filter by its kind, `maf`, and knows nothing of the
-/// arguments of TypeScript, so the two names meet here: a user who is told
-/// that `maxAllowedMaf` is 1.5 reads the name they wrote.
-fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
-    match criterion {
-        VarFilteringCriterion::MaxMissingRate(_) => "maxAllowedMissingRate",
-        VarFilteringCriterion::MaxMaf(_) => "maxAllowedMaf",
-        VarFilteringCriterion::MaxObsHet(_) => "maxAllowedObsHet",
-    }
+/// It is the value that argument has in the `args` of the step a user
+/// reads, a number for a threshold and an array of strings for the
+/// individuals, which is what "In Python and in TypeScript" of
+/// `docs/specs/filters.md` gives them.
+#[derive(Clone)]
+enum Argument {
+    Threshold(f64),
+    Individuals(Vec<String>),
 }
+
+/// The names a TypeScript user writes the argument of each filter under,
+/// which are the arguments of the four methods that add one.
+const MAX_ALLOWED_MISSING_RATE: &str = "maxAllowedMissingRate";
+const MAX_ALLOWED_MAF: &str = "maxAllowedMaf";
+const MAX_ALLOWED_OBS_HET: &str = "maxAllowedObsHet";
+const INDIVIDUALS: &str = "individuals";
+
+/// What the value of one argument is, which crosses beside every argument in
+/// [`Steps::arg_kinds`]: the package reads the value of an argument of
+/// `ARG_KIND_THRESHOLD` from [`Steps::arg_thresholds`] and the value of one
+/// of `ARG_KIND_INDIVIDUALS` from [`Steps::arg_individuals`], and refuses a
+/// number that is neither. A kind of its own for each is what keeps an
+/// argument that is added later from being read as a threshold.
+const ARG_KIND_THRESHOLD: u8 = 0;
+const ARG_KIND_INDIVIDUALS: u8 = 1;
 
 /// The steps of one `Variants`, in the order in which they were put on it,
 /// or the copy of that list that one pass runs.
@@ -83,24 +93,34 @@ fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
 /// as `docs/specs/filters.md` says, and a copy is what wasm-bindgen carries,
 /// which takes an argument of this type by value and not by reference.
 ///
-/// What a user reads of it are the four arrays below, which the package puts
+/// What a user reads of it are the arrays below, which the package puts
 /// together into the steps of `docs/specs/filters.md`: an array of objects
 /// is not one of the types wasm-bindgen carries, so the arguments of every
 /// step cross flat, as the alleles of a block do, with how many of them each
-/// step has beside them.
+/// step has beside them. The value of an argument crosses in the array of
+/// its kind, a threshold in [`Steps::arg_thresholds`] and the names of the
+/// individuals in [`Steps::arg_individuals`], and [`Steps::arg_kinds`] says
+/// which array each argument is to be read from.
 #[wasm_bindgen]
 pub struct Steps {
     steps: Vec<Step>,
+    /// The individuals of the source, in its order, which the names given
+    /// to the filter of individuals are resolved against at the call.
+    of_the_source: Vec<String>,
 }
 
 #[wasm_bindgen]
 impl Steps {
-    /// The steps of a `Variants` that nothing has been put on yet, which is
-    /// what `openVcf` and `openVars` give.
+    /// The steps of a `Variants` over a source of `individuals` that
+    /// nothing has been put on yet, which is what `openVcf` and `openVars`
+    /// give.
     #[wasm_bindgen(constructor)]
     #[must_use]
-    pub fn new() -> Steps {
-        Steps { steps: Vec::new() }
+    pub fn new(individuals: Vec<String>) -> Steps {
+        Steps {
+            steps: Vec::new(),
+            of_the_source: individuals,
+        }
     }
 
     /// The steps as they are now, which is what one pass runs.
@@ -113,6 +133,7 @@ impl Steps {
     pub fn of_a_pass(&self) -> Steps {
         Steps {
             steps: self.steps.clone(),
+            of_the_source: self.of_the_source.clone(),
         }
     }
 
@@ -121,7 +142,7 @@ impl Steps {
     pub fn kinds(&self) -> Vec<String> {
         self.steps
             .iter()
-            .map(|step| step.kind().to_owned())
+            .map(|step| step.pass_step.kind().to_owned())
             .collect()
     }
 
@@ -134,12 +155,77 @@ impl Steps {
             .collect()
     }
 
-    /// The value of every argument, each beside its name in `arg_names`.
+    /// The threshold of every argument that is one, in the order of
+    /// `arg_names`, and nothing for an argument that is not.
     #[must_use]
-    pub fn arg_values(&self) -> Vec<f64> {
+    pub fn arg_thresholds(&self) -> Vec<f64> {
         self.args()
             .into_iter()
-            .map(|(_name, value)| value)
+            .filter_map(|(_name, value)| match value {
+                Argument::Threshold(threshold) => Some(threshold),
+                Argument::Individuals(_) => None,
+            })
+            .collect()
+    }
+
+    /// The names of the individuals of every argument that holds names, one
+    /// argument after another in the order of `arg_names`, and nothing for
+    /// an argument that holds none.
+    #[must_use]
+    pub fn arg_individuals(&self) -> Vec<String> {
+        self.args()
+            .into_iter()
+            .filter_map(|(_name, value)| match value {
+                Argument::Threshold(_) => None,
+                Argument::Individuals(names) => Some(names),
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// What the value of each argument of `arg_names` is: 0 for the
+    /// threshold of a filter, which is in `arg_thresholds`, and 1 for the
+    /// names of the individuals to keep, which are in `arg_individuals`.
+    ///
+    /// The package switches on it and throws for a number it does not know,
+    /// so an argument of a kind added later is never read as a threshold.
+    #[must_use]
+    pub fn arg_kinds(&self) -> Vec<u8> {
+        self.args()
+            .into_iter()
+            .map(|(_name, value)| match value {
+                Argument::Threshold(_) => ARG_KIND_THRESHOLD,
+                Argument::Individuals(_) => ARG_KIND_INDIVIDUALS,
+            })
+            .collect()
+    }
+
+    /// How many names of individuals each argument of `arg_names` holds,
+    /// which cuts `arg_individuals` into the names of each of them, and 0
+    /// for an argument whose value is a threshold, whose one number is in
+    /// `arg_thresholds`.
+    ///
+    /// # Errors
+    ///
+    /// When an argument holds more names than a JavaScript array of counts
+    /// does, which is more individuals than the memory of wasm takes the
+    /// names of.
+    pub fn num_names_per_arg(&self) -> Result<Vec<u32>, JsPopneiError> {
+        self.args()
+            .into_iter()
+            .map(|(name, value)| match value {
+                Argument::Threshold(_) => Ok(0),
+                Argument::Individuals(names) => {
+                    let num_names = names.len();
+                    u32::try_from(num_names).map_err(|_| {
+                        JsPopneiError::Broken(format!(
+                            "the argument `{name}` of a step of these variants holds \
+                             {num_names} names, more than a JavaScript array of counts \
+                             holds"
+                        ))
+                    })
+                }
+            })
             .collect()
     }
 
@@ -154,9 +240,10 @@ impl Steps {
         &mut self,
         max_allowed_missing_rate: f64,
     ) -> Result<(), JsPopneiError> {
-        self.add(VarFilteringCriterion::MaxMissingRate(
-            max_allowed_missing_rate,
-        ))
+        self.add_a_threshold_filter(
+            MAX_ALLOWED_MISSING_RATE,
+            VarFilteringCriterion::MaxMissingRate(max_allowed_missing_rate),
+        )
     }
 
     /// The variants whose commonest allele divided by their called alleles
@@ -166,7 +253,10 @@ impl Steps {
     ///
     /// The two of [`Steps::filter_by_missing_data`].
     pub fn filter_by_maf(&mut self, max_allowed_maf: f64) -> Result<(), JsPopneiError> {
-        self.add(VarFilteringCriterion::MaxMaf(max_allowed_maf))
+        self.add_a_threshold_filter(
+            MAX_ALLOWED_MAF,
+            VarFilteringCriterion::MaxMaf(max_allowed_maf),
+        )
     }
 
     /// The variants whose heterozygous genotypes divided by their called
@@ -176,11 +266,50 @@ impl Steps {
     ///
     /// The two of [`Steps::filter_by_missing_data`].
     pub fn filter_by_obs_het(&mut self, max_allowed_obs_het: f64) -> Result<(), JsPopneiError> {
-        self.add(VarFilteringCriterion::MaxObsHet(max_allowed_obs_het))
+        self.add_a_threshold_filter(
+            MAX_ALLOWED_OBS_HET,
+            VarFilteringCriterion::MaxObsHet(max_allowed_obs_het),
+        )
+    }
+
+    /// The genotypes of `individuals` kept at every variant, in the order
+    /// they are named here, and those of no other individual.
+    ///
+    /// The names are resolved against the individuals of the source, so a
+    /// name that is not one of them, a name that is there twice and no name
+    /// at all are refused at this call and not when a pass runs.
+    ///
+    /// # Errors
+    ///
+    /// Those three, and a filter of individuals that is set already.
+    pub fn filter_individuals(&mut self, individuals: Vec<String>) -> Result<(), JsPopneiError> {
+        // What the names give is dropped: every pass resolves them again
+        // when it builds its chain, so the rule lives in the core alone.
+        // They are refused before the list is looked at, since a name that
+        // is of no individual is wrong whatever the list holds.
+        resolve_individuals(&individuals, &self.of_the_source)?;
+        let step = Step {
+            pass_step: PassStep::KeepIndividuals(individuals.clone()),
+            args: vec![(INDIVIDUALS, Argument::Individuals(individuals))],
+        };
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
+        self.steps.push(step);
+        Ok(())
+    }
+
+    /// The names of the individuals the next pass gives, in its order: the
+    /// ones a filter of individuals among the steps keeps, and those of the
+    /// source when no step is that filter.
+    ///
+    /// Which step says it is the core's rule, `individuals_of`, which the
+    /// Python crate reads as well.
+    #[must_use]
+    pub fn individuals(&self) -> Vec<String> {
+        individuals_of(&pass_steps_of(&self.steps), &self.of_the_source)
     }
 
     /// How many arguments each step has, which is what cuts `arg_names` and
-    /// `arg_values` into the arguments of each step.
+    /// the values of the arguments into the arguments of each step.
     ///
     /// # Errors
     ///
@@ -190,22 +319,16 @@ impl Steps {
         self.steps
             .iter()
             .map(|step| {
-                let num_args = step.args().len();
+                let num_args = step.args.len();
                 u32::try_from(num_args).map_err(|_| {
                     JsPopneiError::Broken(format!(
                         "the step `{kind}` of these variants has {num_args} arguments, \
                          more than a JavaScript array of counts holds",
-                        kind = step.kind()
+                        kind = step.pass_step.kind()
                     ))
                 })
             })
             .collect()
-    }
-}
-
-impl Default for Steps {
-    fn default() -> Steps {
-        Steps::new()
     }
 }
 
@@ -216,8 +339,9 @@ impl Steps {
         &self.steps
     }
 
-    /// The filter of `criterion` added at the end of the list, where the
-    /// next pass takes it.
+    /// The step of the filter of `criterion` added at the end of the list,
+    /// where the next pass takes it, with its threshold under `argument`,
+    /// the name the user wrote it in.
     ///
     /// # Errors
     ///
@@ -228,29 +352,40 @@ impl Steps {
     /// and which filters can stand together are written in one place. The
     /// threshold is refused first, since it is wrong whatever the list
     /// holds. After either, the list is as it was.
-    fn add(&mut self, criterion: VarFilteringCriterion) -> Result<(), JsPopneiError> {
-        VarFilter::new(criterion).map_err(|error| under_the_argument(error, criterion))?;
-        refuse_a_second_filter_of_a_kind(&criteria_of(&self.steps), criterion)?;
-        self.steps.push(Step::Filter(criterion));
+    fn add_a_threshold_filter(
+        &mut self,
+        argument: &'static str,
+        criterion: VarFilteringCriterion,
+    ) -> Result<(), JsPopneiError> {
+        VarFilter::new(criterion).map_err(|error| under_the_argument(error, argument))?;
+        let step = Step {
+            pass_step: PassStep::VarFilter(criterion),
+            args: vec![(argument, Argument::Threshold(criterion.threshold()))],
+        };
+        refuse_a_second_filter_of_a_kind(&pass_steps_of(&self.steps), &step.pass_step)?;
+        self.steps.push(step);
         Ok(())
     }
 
     /// Every argument of every step, the arguments of the first step first.
-    fn args(&self) -> Vec<(&'static str, f64)> {
-        self.steps.iter().flat_map(|step| step.args()).collect()
+    fn args(&self) -> Vec<(&'static str, Argument)> {
+        self.steps
+            .iter()
+            .flat_map(|step| step.args.iter().cloned())
+            .collect()
     }
 }
 
-/// `error`, and a threshold the core refused under the name of the argument
-/// a TypeScript user wrote it in.
+/// `error`, and a threshold the core refused under `argument`, the name a
+/// TypeScript user wrote it in.
 ///
 /// The core names the filter by its kind, `maf`, and the message a user
 /// reads names `maxAllowedMaf`, which only this crate knows: what they have
 /// to look at is the call they wrote.
-fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) -> JsPopneiError {
+fn under_the_argument(error: popnei::Error, argument: &'static str) -> JsPopneiError {
     if let popnei::Error::VarFilterThresholdOutOfRange { threshold, .. } = error {
         return JsPopneiError::Threshold {
-            name: argument_of(criterion),
+            name: argument,
             threshold,
         };
     }
@@ -262,11 +397,11 @@ fn under_the_argument(error: popnei::Error, criterion: VarFilteringCriterion) ->
 /// sees only what the one before it kept.
 ///
 /// The chain itself is the core's, `popnei::filters::chain_of`, which both
-/// binding crates call: what this one does is read the criterion of each
-/// step, which is what the steps of this crate hold and the core does not
-/// know. The filters belong to the pass this chain is built for, so no
-/// count is shared with another pass, and the chain is asked for the fields
-/// the consumer wants once it is built.
+/// binding crates call: what this one does is hand it the steps of the core
+/// out of the steps of this crate, which carry the names of their arguments
+/// in TypeScript beside them. The readers belong to the pass this chain is
+/// built for, so no count is shared with another pass, and the chain is
+/// asked for the fields the consumer wants once it is built.
 ///
 /// # Errors
 ///
@@ -277,19 +412,11 @@ pub(crate) fn chain_of(
     reader: Box<dyn BlockReader>,
     steps: &[Step],
 ) -> Result<Box<dyn BlockReader>, popnei::Error> {
-    popnei::filters::chain_of(reader, &criteria_of(steps))
+    popnei::filters::chain_of(reader, &pass_steps_of(steps))
 }
 
-/// What each step filters by, in the order of the steps: what the core is
-/// given, out of what the steps of this crate hold.
-///
-/// The match is what stops this crate from building when a step of another
-/// kind is added and nothing here is told what to filter by for it.
-fn criteria_of(steps: &[Step]) -> Vec<VarFilteringCriterion> {
-    steps
-        .iter()
-        .map(|step| match *step {
-            Step::Filter(criterion) => criterion,
-        })
-        .collect()
+/// What the pass does at each step, in the order of the steps: what the core
+/// is given, out of what the steps of this crate hold.
+fn pass_steps_of(steps: &[Step]) -> Vec<PassStep> {
+    steps.iter().map(|step| step.pass_step.clone()).collect()
 }

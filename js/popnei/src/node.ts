@@ -21,6 +21,24 @@ export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";
+export { doPca, doPcaFromVariants } from "./pca.js";
+export type {
+  DoPcaFromVariantsOptions,
+  DoPcaOptions,
+  PcaResult,
+  VariantsPcaResult,
+} from "./pca.js";
+export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
+export type {
+  BinType,
+  HistKwargs,
+  PerIndividualStats,
+  PerVarDistribs,
+  PerVarDistribsOptions,
+  PerVarStat,
+  PolyVarsStats,
+  StatsDistrib,
+} from "./stats.js";
 export { Variants } from "./variant.js";
 export type { Blocks, IterBlocksOptions, PassStats } from "./variant.js";
 

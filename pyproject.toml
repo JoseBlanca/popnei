@@ -24,13 +24,20 @@ requires-python = ">=3.14"
 # a copy. It is the version pyNei asks for, so that the two libraries share
 # one numpy in the environment where they are compared.
 #
-# pandas holds the square matrix of a `Distances`, indexed by the names of
-# the individuals, which is what a user gives to a tree or a principal
-# coordinate analysis. It is imported by `popnei.dists` and so by `import
-# popnei`. It is the pandas of the pyodide the wheel is built for, 3.0.2 in
-# pyodide 314.0.7, as numpy's floor is its numpy: micropip refuses a wheel
-# that asks for more than what pyodide ships, and nothing here needs a
-# newer pandas.
+# pandas holds the results that a user reads by name: the square matrix of a
+# `Distances`, indexed by the names of the individuals, the projections of a
+# principal component analysis, a frame of the individuals by the components,
+# whose names come from the frame the user gave, and the results per
+# population of `docs/specs/stats.md`, the mean of a statistic and the counts
+# of its histogram, which come out of the core as one value per population and
+# go back as the series and the frames pyNei's own results are, keyed by
+# population name. It is imported by `popnei.dists`, by `popnei.pca` and by
+# `popnei.stats`, and so by `import popnei`. The version is
+# the pandas of the pyodide the wheel is built for, 3.0.2 in pyodide 314.0.7,
+# as numpy's floor is its numpy: micropip refuses a wheel that asks for more
+# than what pyodide ships, and nothing here needs a newer pandas. It is also
+# the version pyNei asks for, so that the two libraries share one pandas in the
+# environment where they are compared.
 dependencies = ["numpy>=2.4.6", "pandas>=3.0.2"]
 
 [project.urls]

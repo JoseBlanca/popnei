@@ -145,8 +145,15 @@ It mirrors `calc_pairwise_kosman_dists` and `Distances` of
   none or the steps kept none. Its message says which of the two, and
   for the steps how many variants each filter was given and kept, the
   counts that a failed pass otherwise loses, as "A pass that was not
-  finished" of `docs/specs/filters.md` says; the binding crate reads
-  them from the chain before it raises. pyNei raises a `RuntimeError`,
+  finished" of `docs/specs/filters.md` says. It is the one case that
+  every calculation over a pass raises, `PassGaveNoVariant` of
+  `docs/specs/stats.md`, and the core builds the message: the
+  calculation is lent the outermost reader of the chain, so it reads the
+  counts from it and puts them in the error, and neither binding crate
+  has anything to add. The owner decided that on 22 September 2026, when
+  this module and the statistics per population met: the case of this
+  module carried no counts and each binding crate wrote the message
+  again. pyNei raises a `RuntimeError`,
   which in popnei is the exception of a defect of popnei, and this is an
   input that cannot be calculated on.
 - The result does not carry n(i, j), as pyNei's does not. The core result
@@ -435,11 +442,15 @@ functions, with the numbers that `gd.kosman` gives for them:
 ## The Rust interface
 
 The calculation over a reader. It asks the reader for the genotypes alone
-and reads it to its end. Its errors: no variant in the reader; a sum
+and reads it to its end. Its errors: a pass that gave no variant, with
+the counts of the filters of the reader; a sum
 above `u32::MAX`; the two `u32` of every pair, asked of the machine at
 the first block, that the machine has not the memory for, 400 MB at
-10000 individuals; and those of the reader. The first three are new
-cases of the error of the crate, and each is a `ValueError` in Python, an
+10000 individuals; and those of the reader. The first is
+`PassGaveNoVariant`, the case of `docs/specs/stats.md` that every
+calculation over a pass raises; the second and the third are new
+cases of the error of the crate. Each of the three is a `ValueError` in
+Python, an
 input that popnei cannot calculate on. The third was added by the plan
 on 22 September 2026, as the block that the machine has not the memory
 for is refused in `docs/specs/block.md`, so that a panel too large for
