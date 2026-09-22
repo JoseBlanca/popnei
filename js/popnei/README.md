@@ -15,12 +15,15 @@ where a user keeps their variants once the VCF has been read. Each of the
 two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
 pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
-a step, a method of the `Variants` that `steps` then lists, and there are
-three of them: `filterByMissingData`, which keeps the variants whose missing
-genotypes divided by all the individuals are at most the threshold it is
-given, `filterByMaf`, over the count of the commonest allele of a variant
-divided by its called alleles, and `filterByObsHet`, over its heterozygous
-genotypes divided by its called ones.
+a step, a method of the `Variants` that `steps` then lists. Three of them
+keep the variants whose number is at most a threshold: `filterByMissingData`,
+over the missing genotypes of a variant divided by all the individuals,
+`filterByMaf`, over the count of the commonest allele of a variant divided by
+its called alleles, and `filterByObsHet`, over its heterozygous genotypes
+divided by its called ones. The fourth, `filterIndividuals`, keeps
+individuals and not variants: it takes the genotypes of the individuals a
+user names, at every variant, in the order they named them, and after it
+`individuals` and `numIndividuals` are the kept ones.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
@@ -200,8 +203,14 @@ are bcftools 1.24's and pyNei's: 26 variants kept by the missing data filter
 at 0, 35 by the maf filter at 0.5 and 22 by the observed heterozygosity one
 at 0.1, each with the first five positions it keeps, and 106 by the three of
 them chained at 0.04, 0.8 and 0.5, which count 500 and 215, 215 and 163, and
-163 and 106. The comparison with pyNei itself is the one of the Python
-tests; node runs neither library. Several of the tests
+163 and 106. `test/filter_individuals.test.ts` keeps `ind05`, `ind00` and
+`ind49` of that file, in that order, which is what `bcftools view -s
+ind05,ind00,ind49` gives, and asserts the 500 variants that come out with
+their genotypes, the 423 that the missing data filter at 0 after the step
+keeps where the same filter over the 50 individuals keeps 26, and the
+`Error` of a name the file does not have, of a name given twice, of no name
+and of a second filter of individuals. The comparison with pyNei itself is
+the one of the Python tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
 kept while enough more is read for that memory to grow still hold what
@@ -369,8 +378,12 @@ no threshold gives. Whether that number is one a filter takes, from 0 to 1,
 is a rule of the core, which holds for the threshold of every pass and not
 of that call alone; an `Error` of it names the argument the user wrote and
 the value as they wrote it, `95` and not `95.0`. A second filter of a kind
-the variants carry already is an `Error` too, which names that kind, the
-threshold it is set with and the one that was refused. In TypeScript
+the variants carry already is an `Error` too, which names that kind and, for
+a threshold filter, the threshold it is set with and the one that was
+refused. The names given to `filterIndividuals` are read against the
+individuals of the source at the call, so a name that is not one of them, a
+name that is there twice and a call with no name are each an `Error` there
+and not when a pass runs. In TypeScript
 `fields` takes the five names and nothing
 else, so a typo does not compile.
 
