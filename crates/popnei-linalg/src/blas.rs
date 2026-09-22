@@ -100,11 +100,16 @@ pub(crate) fn product(
 /// The eigendecomposition of the symmetric `g`, of exactly `n` x `n`
 /// values row after row with its lower half filled and `n` 1 at least.
 ///
+/// The eigenvalues come back from the smallest, which is the order the
+/// routine gives them in, and each eigenvector is a row of the buffer:
+/// `lib.rs` turns both round together.
+///
 /// # Errors
 ///
-/// [`Error::Dimension`] when `n`, or the workspace the routine asks for,
-/// is larger than the `i32` the routine takes.
+/// [`Error::Dimension`] when the workspace the routine asks for is larger
+/// than the `i32` the routine takes its length as.
 /// [`Error::NoConvergence`] when the routine gave an `info` other than 0.
+/// [`Error::Memory`] when a workspace could not be allocated.
 pub(crate) fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
     let order = the_i32_of(n, "n")?;
     let mut values = vec![0.0_f64; n];
@@ -152,10 +157,26 @@ pub(crate) fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
         floats_asked.first().copied().unwrap_or(0.0),
         integers_asked.first().copied().unwrap_or(0),
     )?;
-    let lwork = the_i32_of(floats, "the workspace of dsyevd")?;
-    let liwork = the_i32_of(integers, "the workspace of dsyevd")?;
-    let mut work = vec![0.0_f64; floats];
-    let mut iwork = vec![0_i32; integers];
+    let lwork = the_length_of_a_workspace(floats)?;
+    let liwork = the_length_of_a_workspace(integers)?;
+    // The workspace of an n of 10000 is 1.6 GB, so it is asked for and not
+    // taken: `vec!` on a machine that has not the memory ends the process,
+    // and the core crate gives an error instead, as its reader of blocks
+    // does for the columns it allocates.
+    let mut work: Vec<f64> = Vec::new();
+    work.try_reserve_exact(floats).map_err(|_| Error::Memory {
+        what: "the workspace of floats of dsyevd",
+        values: floats,
+    })?;
+    work.resize(floats, 0.0);
+    let mut iwork: Vec<i32> = Vec::new();
+    iwork
+        .try_reserve_exact(integers)
+        .map_err(|_| Error::Memory {
+            what: "the workspace of integers of dsyevd",
+            values: integers,
+        })?;
+    iwork.resize(integers, 0);
     // SAFETY: with `jobz` V and `uplo` U the routine reads the upper
     // triangle of `a` as a column major matrix of n x n with `lda` = n,
     // which is the lower half of `g` in popnei's layout, and overwrites
@@ -192,28 +213,12 @@ pub(crate) fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
         });
     }
 
-    // The routine gives the eigenvalues from the smallest, and each
+    // The routine gives the eigenvalues from the smallest and each
     // eigenvector as a column of the matrix it read column after column,
-    // which in popnei's buffer is a row. So the values are turned round
-    // and the rows with them.
-    values.reverse();
-    reverse_the_rows(&mut g, n);
+    // which in popnei's buffer is a row, so the buffer is already the
+    // eigenvectors a row each. `lib.rs` turns the values and the rows
+    // round together.
     Ok(Eigen { values, vectors: g })
-}
-
-/// Swaps row 0 of the n x n matrix with row n - 1, row 1 with row n - 2,
-/// and so on, in the buffer it was given.
-fn reverse_the_rows(values: &mut [f64], n: usize) {
-    let Some(the_top_half) = (n / 2).checked_mul(n) else {
-        return;
-    };
-    let Some((front, back)) = values.split_at_mut_checked(the_top_half) else {
-        return;
-    };
-    for (from_the_top, from_the_bottom) in front.chunks_exact_mut(n).zip(back.rchunks_exact_mut(n))
-    {
-        from_the_top.swap_with_slice(from_the_bottom);
-    }
 }
 
 /// How many floats and how many integers `dsyevd` works in for a matrix of
@@ -221,9 +226,11 @@ fn reverse_the_rows(values: &mut [f64], n: usize) {
 /// for and the minimum the routine documents, 1 + 6n + 2n² floats and
 /// 3 + 5n integers.
 ///
-/// The query writes the number of floats as an `f64`, and a value that is
-/// not a whole count, an infinity, a NaN, a negative number or one above
-/// the `i32` the length is passed as, is left out and the minimum stands.
+/// The query writes the number of floats as an `f64`. An infinity, a NaN,
+/// a negative number and one above the `i32` the length is passed as are
+/// left out, and the minimum stands; a value that is a count is taken by
+/// its whole part, the fraction that the routine cannot have meant being
+/// dropped. The same for the integers, whose query is an `i32` already.
 ///
 /// # Errors
 ///
@@ -255,7 +262,7 @@ fn the_workspace_of(n: usize, floats_asked: f64, integers_asked: i32) -> Result<
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "the line above has checked that the value is finite, is not negative and is at most i32::MAX, so it is a count this machine holds; the fraction the routine cannot have written is dropped, and the minimum below stands when that leaves too little"
+            reason = "the line above has checked that the value is finite, is not negative and is at most i32::MAX, so it is a count this machine holds; what the cast drops is the fraction, which the routine cannot have meant, and the minimum below stands when what is left is smaller than it"
         )]
         let asked = floats_asked as usize;
         asked
@@ -268,6 +275,10 @@ fn the_workspace_of(n: usize, floats_asked: f64, integers_asked: i32) -> Result<
 
 /// The dimension as the `i32` the routines of BLAS and LAPACK take.
 ///
+/// `lib.rs` has already refused every dimension and every number of values
+/// of a matrix above that, for both backends, so this fails for no call it
+/// lets through.
+///
 /// # Errors
 ///
 /// [`Error::Dimension`] when it is larger than that.
@@ -279,4 +290,67 @@ fn the_i32_of(value: usize, argument: &'static str) -> Result<i32> {
             largest = i32::MAX
         ),
     })
+}
+
+/// The length of a workspace of `dsyevd` as the `i32` the routine takes
+/// it as. It is the one number of a call that `lib.rs` cannot check,
+/// because the routine says how large it is.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when it is larger than that, which for the 2n²
+/// floats of the workspace happens at an `n` of about 32768.
+fn the_length_of_a_workspace(values: usize) -> Result<i32> {
+    i32::try_from(values).map_err(|_| Error::Dimension {
+        argument: "n",
+        expected: format!(
+            "small enough that the workspace dsyevd asks for, {values} values here, is at most the {largest} its length is passed as",
+            largest = i32::MAX
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::the_workspace_of;
+
+    /// The minimum `dsyevd` documents for an n of 3: 1 + 6n + 2n² = 37
+    /// floats and 3 + 5n = 18 integers.
+    const THE_MINIMUM_FOR_3: (usize, usize) = (37, 18);
+
+    #[test]
+    fn a_workspace_the_query_did_not_give_a_number_for_is_the_minimum() {
+        assert_eq!(
+            the_workspace_of(3, f64::NAN, -1).unwrap(),
+            THE_MINIMUM_FOR_3
+        );
+        assert_eq!(
+            the_workspace_of(3, f64::INFINITY, 0).unwrap(),
+            THE_MINIMUM_FOR_3
+        );
+    }
+
+    #[test]
+    fn a_workspace_the_query_gave_a_negative_number_for_is_the_minimum() {
+        assert_eq!(the_workspace_of(3, -5.0, -7).unwrap(), THE_MINIMUM_FOR_3);
+    }
+
+    #[test]
+    fn a_workspace_the_query_asked_more_for_is_what_it_asked() {
+        assert_eq!(the_workspace_of(3, 100.0, 40).unwrap(), (100, 40));
+    }
+
+    #[test]
+    fn a_workspace_the_query_gave_a_fraction_for_is_its_whole_part() {
+        assert_eq!(the_workspace_of(3, 100.9, 40).unwrap(), (100, 40));
+    }
+
+    #[test]
+    fn a_workspace_the_query_asked_more_than_a_length_holds_for_is_the_minimum() {
+        let above_the_largest_length = f64::from(i32::MAX) * 2.0;
+        assert_eq!(
+            the_workspace_of(3, above_the_largest_length, 40).unwrap(),
+            (37, 40)
+        );
+    }
 }

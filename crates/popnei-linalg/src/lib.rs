@@ -47,7 +47,18 @@ mod backend;
 #[path = "faer.rs"]
 mod backend;
 
+use std::fmt;
+
 use thiserror::Error as ThisError;
+
+/// The largest number of values a matrix of this crate holds, and so the
+/// largest any of its dimensions may be.
+///
+/// The routines of BLAS and LAPACK take every dimension as an `i32` and
+/// index their matrices in it, and faer is held to the same limit so that
+/// the two backends refuse the same calls. A square matrix of this many
+/// values is 46340 x 46340, which is 17 GB of `f64`.
+const THE_MOST_VALUES_OF_A_MATRIX: usize = 2_147_483_647;
 
 /// Anything that went wrong in the linear algebra.
 ///
@@ -58,8 +69,8 @@ pub enum Error {
     /// A matrix whose buffer does not hold the values of the dimensions it
     /// was given, or a dimension that the operation does not have: a
     /// number of columns of 0, an `n` of 0, a `g` that is not `cols` x
-    /// `cols`, or a matrix larger than the routines of BLAS and LAPACK
-    /// take.
+    /// `cols`, or a matrix of more than 2147483647 values, which is what
+    /// the routines of BLAS and LAPACK count in.
     #[error("the argument {argument} does not have the dimensions of the call: {expected}")]
     Dimension {
         /// The name of the argument, as "The Rust interface" of
@@ -82,21 +93,64 @@ pub enum Error {
         argument: &'static str,
     },
 
-    /// A decomposition that did not converge.
-    #[error("{routine} did not converge: it gave the info {info}")]
+    /// A routine that stopped: it did not converge, or it refused an
+    /// argument it was given, which is a defect of popnei.
+    #[error(fmt = the_message_of_a_routine_that_stopped)]
     NoConvergence {
         /// The routine of LAPACK that stopped, or `faer`.
         routine: &'static str,
-        /// The `info` the routine gave, which is not 0.
+        /// The `info` the routine of LAPACK gave: above 0 when it did not
+        /// converge, and below 0 when it refused the argument of that
+        /// number, counting from 1. It is 0 when the routine is faer,
+        /// which says only that it did not converge.
         info: i32,
     },
+
+    /// A workspace that a routine needs and that this machine has not the
+    /// memory for.
+    ///
+    /// The eigendecomposition of an n x n matrix needs 1 + 6n + 2n² floats
+    /// besides the matrix, which is 16 MB at n = 1000 and 1.6 GB at
+    /// n = 10000, so the crate asks for that memory instead of taking it,
+    /// and a machine that has not got it gets this error where it would
+    /// otherwise see the process end. No test of popnei reaches this case.
+    #[error("this machine has not the memory for {what}, {values} values")]
+    Memory {
+        /// What could not be allocated.
+        what: &'static str,
+        /// How many values it holds.
+        values: usize,
+    },
+}
+
+/// The message of [`Error::NoConvergence`], which says three different
+/// things by the sign of the `info` the routine gave.
+fn the_message_of_a_routine_that_stopped(
+    routine: &&'static str,
+    info: &i32,
+    formatter: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    if *info > 0 {
+        write!(
+            formatter,
+            "{routine} did not converge: it gave the info {info}"
+        )
+    } else if *info < 0 {
+        write!(
+            formatter,
+            "{routine} refused its argument {argument}, a defect of popnei",
+            argument = info.unsigned_abs()
+        )
+    } else {
+        write!(formatter, "{routine} did not converge")
+    }
 }
 
 /// What every operation of this crate gives back.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The eigenvalues and the eigenvectors of a symmetric matrix.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Eigen {
     /// The `n` eigenvalues, from the largest.
     pub values: Vec<f64>,
@@ -116,13 +170,17 @@ pub struct Eigen {
 /// whole matrix mirrors it.
 ///
 /// `rows` may be 0, and then `g` is left as it was: a block of variants
-/// whose rows all had no variance gives such an `a` and adds nothing.
+/// whose rows all had no variance gives such an `a` and adds nothing. `a`
+/// may hold more values than `rows` times `cols`, and then its first
+/// `rows` times `cols` are the matrix; `g` holds exactly `cols` times
+/// `cols`.
 ///
 /// # Errors
 ///
 /// [`Error::Dimension`] when `cols` is 0, when `a` holds fewer than `rows`
-/// times `cols` values or `g` fewer than `cols` times `cols`, or when a
-/// dimension is larger than the routines of BLAS and LAPACK take.
+/// times `cols` values, when `g` does not hold exactly `cols` times
+/// `cols`, or when a matrix would hold more than 2147483647 values, which
+/// is what the routines of BLAS and LAPACK count in.
 /// [`Error::NotFinite`] when `a`, or the lower half of `g`, holds a value
 /// that is not finite.
 pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]) -> Result<()> {
@@ -133,7 +191,7 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
         });
     }
     let a = the_matrix_of(a, rows, cols, "a")?;
-    let g = the_matrix_of_mut(g, cols, cols, "g")?;
+    refuse_a_g_that_is_not_square(g.len(), cols)?;
     refuse_a_value_that_is_not_finite(a, "a")?;
     refuse_a_value_that_is_not_finite_in_the_lower_half(g, cols, "g")?;
     if rows == 0 {
@@ -149,14 +207,17 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
 /// `rows` may be 0, and then `c` holds no rows and nothing is written.
 /// `inner` and `cols` are 1 at least: a product with no inner dimension or
 /// no column is a defect of the caller, as `docs/specs/linalg.md` has a
-/// `cols` of 0 among its errors.
+/// `cols` of 0 among its errors. A buffer may hold more values than its
+/// rows times its columns, and then its first rows times columns are the
+/// matrix.
 ///
 /// # Errors
 ///
 /// [`Error::Dimension`] when `inner` or `cols` is 0, when a buffer holds
-/// fewer values than its rows times its columns, or when a dimension is
-/// larger than the routines of BLAS and LAPACK take. [`Error::NotFinite`]
-/// when `a` or `b` holds a value that is not finite.
+/// fewer values than its rows times its columns, or when a matrix would
+/// hold more than 2147483647 values, which is what the routines of BLAS
+/// and LAPACK count in. [`Error::NotFinite`] when `a` or `b` holds a value
+/// that is not finite.
 pub fn product(
     a: &[f64],
     rows: usize,
@@ -197,51 +258,89 @@ pub fn product(
 /// `g` is read, the entries of column `j` at most `i` of row `i`; what the
 /// upper half holds does not reach the result.
 ///
-/// The buffer of `g` comes back as the eigenvectors, with no copy, which
-/// is why `g` is taken by value: a caller that needs `g` afterwards copies
-/// it first.
+/// The buffer of `g` comes back as the eigenvectors, which is why `g` is
+/// taken by value: a caller that needs `g` afterwards copies it first. It
+/// holds exactly `n` times `n` values.
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when `n` is 0, when `g` holds fewer than `n` times
-/// `n` values, or when `n` is larger than the routines of LAPACK take.
+/// [`Error::Dimension`] when `n` is 0, when `g` does not hold exactly `n`
+/// times `n` values, or when `n` times `n` is more than 2147483647, which
+/// is what the routines of BLAS and LAPACK count in.
 /// [`Error::NotFinite`] when the lower half of `g` holds a value that is
-/// not finite. [`Error::NoConvergence`] when the routine stopped.
-pub fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
+/// not finite.
+/// [`Error::NoConvergence`] when the routine stopped. [`Error::Memory`]
+/// when the workspace the routine needs could not be allocated.
+pub fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
     if n == 0 {
         return Err(Error::Dimension {
             argument: "n",
             expected: "1 at least, since g is the n x n matrix to decompose".to_owned(),
         });
     }
-    let values = how_many(n, n, "g")?;
-    if g.len() < values {
-        return Err(Error::Dimension {
-            argument: "g",
-            expected: format!(
-                "{values} values, {n} rows times {n} columns, and it holds {held}",
-                held = g.len()
-            ),
-        });
-    }
-    g.truncate(values);
+    refuse_a_g_that_is_not_square(g.len(), n)?;
     refuse_a_value_that_is_not_finite_in_the_lower_half(&g, n, "g")?;
-    backend::eigh_lower(g, n)
+    // Both backends give the eigenvalues from the smallest, LAPACK and
+    // faer alike, and both give each eigenvector where popnei's row major
+    // buffer reads it as a row. So the turning round is done here, once,
+    // and neither backend does it.
+    let mut eigen = backend::eigh_lower(g, n)?;
+    eigen.values.reverse();
+    reverse_the_rows(&mut eigen.vectors, n);
+    Ok(eigen)
 }
 
-/// The values of a matrix of `rows` x `cols`.
+/// Swaps the first row of the matrix with the last, the second with the
+/// one before the last, and so on, in the buffer it was given. A matrix of
+/// an odd number of rows keeps its middle row where it is. `n` is 1 at
+/// least, and a buffer that is not a whole number of rows of `n` keeps
+/// what is left over at its end.
+fn reverse_the_rows(values: &mut [f64], n: usize) {
+    let mut rows = values.chunks_exact_mut(n);
+    while let (Some(from_the_top), Some(from_the_bottom)) = (rows.next(), rows.next_back()) {
+        from_the_top.swap_with_slice(from_the_bottom);
+    }
+}
+
+/// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when they are more values than this machine can
-/// hold.
-fn how_many(rows: usize, cols: usize, argument: &'static str) -> Result<usize> {
-    rows.checked_mul(cols).ok_or_else(|| Error::Dimension {
+/// [`Error::Dimension`] when they are more than
+/// [`THE_MOST_VALUES_OF_A_MATRIX`], or more than a `usize` of this machine
+/// counts.
+fn the_values_of(rows: usize, cols: usize, argument: &'static str) -> Result<usize> {
+    let too_many = || Error::Dimension {
         argument,
         expected: format!(
-            "{rows} rows times {cols} columns, which is more values than this machine can hold"
+            "{rows} rows times {cols} columns, and a matrix holds at most {THE_MOST_VALUES_OF_A_MATRIX} values, which is what the routines of BLAS and LAPACK count in"
         ),
-    })
+    };
+    let wanted = rows.checked_mul(cols).ok_or_else(too_many)?;
+    if wanted > THE_MOST_VALUES_OF_A_MATRIX {
+        return Err(too_many());
+    }
+    Ok(wanted)
+}
+
+/// Refuses a `g` that does not hold exactly `n` times `n` values, which is
+/// what both operations that take a `g` ask for: the buffer is the whole
+/// matrix and not one with room to spare.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when it holds another number of values, and what
+/// [`the_values_of`] gives.
+fn refuse_a_g_that_is_not_square(held: usize, n: usize) -> Result<()> {
+    let wanted = the_values_of(n, n, "g")?;
+    if held == wanted {
+        Ok(())
+    } else {
+        Err(Error::Dimension {
+            argument: "g",
+            expected: format!("{wanted} values, {n} rows times {n} columns, and it holds {held}"),
+        })
+    }
 }
 
 /// The first `rows` times `cols` values of the buffer, which are the
@@ -249,18 +348,19 @@ fn how_many(rows: usize, cols: usize, argument: &'static str) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when the buffer holds fewer.
+/// [`Error::Dimension`] when the buffer holds fewer, and what
+/// [`the_values_of`] gives.
 fn the_matrix_of<'a>(
     values: &'a [f64],
     rows: usize,
     cols: usize,
     argument: &'static str,
 ) -> Result<&'a [f64]> {
-    let wanted = how_many(rows, cols, argument)?;
+    let wanted = the_values_of(rows, cols, argument)?;
     values.get(..wanted).ok_or_else(|| Error::Dimension {
         argument,
         expected: format!(
-            "{wanted} values, {rows} rows times {cols} columns, and it holds {held}",
+            "{wanted} values at least, {rows} rows times {cols} columns, and it holds {held}",
             held = values.len()
         ),
     })
@@ -270,24 +370,31 @@ fn the_matrix_of<'a>(
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when the buffer holds fewer.
+/// [`Error::Dimension`] when the buffer holds fewer, and what
+/// [`the_values_of`] gives.
 fn the_matrix_of_mut<'a>(
     values: &'a mut [f64],
     rows: usize,
     cols: usize,
     argument: &'static str,
 ) -> Result<&'a mut [f64]> {
-    let wanted = how_many(rows, cols, argument)?;
+    let wanted = the_values_of(rows, cols, argument)?;
     let held = values.len();
     values.get_mut(..wanted).ok_or_else(|| Error::Dimension {
         argument,
-        expected: format!("{wanted} values, {rows} rows times {cols} columns, and it holds {held}"),
+        expected: format!(
+            "{wanted} values at least, {rows} rows times {cols} columns, and it holds {held}"
+        ),
     })
 }
 
+/// Refuses a matrix that holds an infinity or a NaN, which the backends do
+/// not treat the same way and which a routine turns into a result that
+/// says nothing of where it came from.
+///
 /// # Errors
 ///
-/// [`Error::NotFinite`] when one of the values is an infinity or a NaN.
+/// [`Error::NotFinite`] when one of the values is one of those.
 fn refuse_a_value_that_is_not_finite(values: &[f64], argument: &'static str) -> Result<()> {
     if values.iter().all(|value| value.is_finite()) {
         Ok(())
@@ -322,14 +429,24 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 
 #[cfg(test)]
 mod tests {
-    use super::{Eigen, Error, add_self_product_lower, eigh_lower, product};
+    use super::{Eigen, Error, add_self_product_lower, eigh_lower, product, reverse_the_rows};
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
     /// rows (1, 2, 0) and (0, 1, 3), row after row.
     const A_OF_2_BY_3: [f64; 6] = [1.0, 2.0, 0.0, 0.0, 1.0, 3.0];
 
-    /// The B of 3 x 2 of the same place, rows (1, 0), (2, 1) and (0, 3).
+    /// The first B of the same place, 3 x 2, rows (1, 0), (2, 1) and
+    /// (0, 3). A times it is symmetric.
     const B_OF_3_BY_2: [f64; 6] = [1.0, 0.0, 2.0, 1.0, 0.0, 3.0];
+
+    /// The second B, 3 x 2, rows (1, 1), (2, 0) and (0, 3). A times it is
+    /// not symmetric, so a backend that wrote the transpose of C would
+    /// give another answer.
+    const B_THAT_IS_NOT_SYMMETRIC: [f64; 6] = [1.0, 1.0, 2.0, 0.0, 0.0, 3.0];
+
+    /// The third B, 3 x 1, rows (1), (0) and (2). With it the three
+    /// dimensions of the product are all different.
+    const B_OF_3_BY_1: [f64; 3] = [1.0, 0.0, 2.0];
 
     /// The 3 x 3 symmetric matrix of "How it is verified", rows (4, 1, 0),
     /// (1, 3, 0) and (0, 0, 1), with only its lower half given and the
@@ -359,21 +476,25 @@ mod tests {
     }
 
     /// The entries of the two differ by more than `tolerance`, or the two
-    /// do not hold the same number of entries.
+    /// do not hold the same number of entries. A value that is not a
+    /// number differs from every value, so that a result of NaN fails the
+    /// test that compares it instead of passing every comparison.
     fn differ(got: &[f64], expected: &[f64], tolerance: f64) -> bool {
         got.len() != expected.len()
-            || got
-                .iter()
-                .zip(expected)
-                .any(|(one, other)| (one - other).abs() > tolerance)
+            || got.iter().zip(expected).any(|(one, other)| {
+                let difference = (one - other).abs();
+                !difference.is_finite() || difference > tolerance
+            })
     }
 
     /// The two differ by more than `tolerance` times the size of the value
     /// that was expected, which is how the spec compares an eigenvalue: an
     /// eigenvalue of 361 and one of 0.79 are asked for the same number of
-    /// digits and not for the same absolute error.
+    /// digits and not for the same absolute error. A value that is not a
+    /// number differs, as above.
     fn differ_in_their_digits(got: f64, expected: f64, tolerance: f64) -> bool {
-        (got - expected).abs() > tolerance * expected.abs()
+        let difference = (got - expected).abs();
+        !difference.is_finite() || difference > tolerance * expected.abs()
     }
 
     /// The first `how_many` numbers of the generator of "How it is
@@ -390,7 +511,7 @@ mod tests {
                 state ^= state.wrapping_shr(7);
                 state ^= state.wrapping_shl(17);
                 // 2^53, below which a count is an exact f64.
-                state.wrapping_shr(11) as f64 / 9_007_199_254_740_992.0 - 0.5
+                state.wrapping_shr(11) as f64 / 9007199254740992.0 - 0.5
             })
             .collect()
     }
@@ -434,31 +555,70 @@ mod tests {
     }
 
     #[test]
+    fn the_self_product_reads_the_first_rows_of_an_a_that_holds_more() {
+        // The same A with a seventh value, which is no row of a 2 x 3.
+        let a = [1.0, 2.0, 0.0, 0.0, 1.0, 3.0, 1000.0];
+        let mut g = vec![0.0; 9];
+        add_self_product_lower(&a, 2, 3, &mut g).unwrap();
+        assert_eq!(
+            g,
+            vec![
+                1.0, 0.0, 0.0, //
+                2.0, 5.0, 0.0, //
+                0.0, 3.0, 9.0,
+            ]
+        );
+    }
+
+    #[test]
     fn the_product_of_two_matrices_that_are_not_square() {
-        // The 2 x 2 matrix with rows (5, 2) and (2, 10), exactly.
-        let mut c = vec![0.0; 4];
+        // C holds other values first, so a product that added to C instead
+        // of overwriting it would leave them in the result.
+        let mut c = vec![7.0; 4];
         product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 2, &mut c).unwrap();
         assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0]);
     }
 
     #[test]
+    fn the_product_of_a_b_whose_result_is_not_symmetric() {
+        let mut c = vec![7.0; 4];
+        product(&A_OF_2_BY_3, 2, 3, &B_THAT_IS_NOT_SYMMETRIC, 2, &mut c).unwrap();
+        assert_eq!(c, vec![5.0, 1.0, 2.0, 9.0]);
+    }
+
+    #[test]
+    fn the_product_of_matrices_whose_three_dimensions_are_all_different() {
+        let mut c = vec![7.0; 2];
+        product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_1, 1, &mut c).unwrap();
+        assert_eq!(c, vec![1.0, 6.0]);
+    }
+
+    #[test]
+    fn the_product_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
+        let b = [1.0, 0.0, 2.0, 1.0, 0.0, 3.0, 1000.0];
+        let mut c = vec![7.0; 5];
+        product(&A_OF_2_BY_3, 2, 3, &b, 2, &mut c).unwrap();
+        assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0, 7.0]);
+    }
+
+    #[test]
     fn the_product_of_an_a_of_no_rows_writes_nothing() {
-        let mut c: Vec<f64> = Vec::new();
+        let mut c = vec![7.0, 7.0];
         product(&[], 0, 3, &B_OF_3_BY_2, 2, &mut c).unwrap();
-        assert!(c.is_empty());
+        assert_eq!(c, vec![7.0, 7.0]);
     }
 
     #[test]
     fn the_eigendecomposition_gives_the_values_from_the_largest_and_the_vectors_as_rows() {
         let Eigen { values, vectors } = eigh_lower(the_matrix_of_3_by_3(), 3).unwrap();
-        // (7 + √5) / 2, (7 - √5) / 2 and 1, the twelve digits of the spec.
+        // (7 + √5) / 2, (7 - √5) / 2 and 1, all the digits numpy prints.
         assert!(
-            !differ(&values, &[4.618_033_988_750, 2.381_966_011_250, 1.0], 1e-12),
+            !differ(&values, &[4.618033988749895, 2.381966011250105, 1.0], 1e-12),
             "the eigenvalues are {values:?}"
         );
         let expected = [
-            [0.850_650_808_352, 0.525_731_112_119, 0.0],
-            [-0.525_731_112_119, 0.850_650_808_352, 0.0],
+            [0.8506508083520399, 0.5257311121191335, 0.0],
+            [-0.5257311121191335, 0.8506508083520399, 0.0],
             [0.0, 0.0, 1.0],
         ];
         for (row, expected_vector) in vectors.as_chunks::<3>().0.iter().zip(&expected) {
@@ -495,7 +655,7 @@ mod tests {
             .map(|(row, entries)| entries[row])
             .sum();
         assert!(
-            !differ_in_their_digits(trace, 99_996.387_308_167_7, 1e-12),
+            !differ_in_their_digits(trace, 99996.3873081677, 1e-12),
             "the trace of the product is {trace}"
         );
 
@@ -503,14 +663,14 @@ mod tests {
         assert_eq!(values.len(), INDIVIDUALS);
         let sum: f64 = values.iter().sum();
         assert!(
-            !differ_in_their_digits(sum, 99_996.387_308_167_7, 1e-12),
+            !differ_in_their_digits(sum, 99996.38730816769, 1e-12),
             "the eigenvalues add up to {sum}"
         );
-        for (got, expected) in values.iter().zip([
-            361.912_511_901_133,
-            359.665_171_786_593,
-            356.443_932_994_956,
-        ]) {
+        for (got, expected) in
+            values
+                .iter()
+                .zip([361.9125119011332, 359.66517178659313, 356.4439329949563])
+        {
             assert!(
                 !differ_in_their_digits(*got, expected, 1e-12),
                 "an eigenvalue among the three largest is {got} and not {expected}"
@@ -518,7 +678,7 @@ mod tests {
         }
         let smallest = values[INDIVIDUALS - 1];
         assert!(
-            !differ_in_their_digits(smallest, 0.793_328_921_541, 1e-12),
+            !differ_in_their_digits(smallest, 0.7933289215408484, 1e-12),
             "the smallest eigenvalue is {smallest}"
         );
 
@@ -529,9 +689,9 @@ mod tests {
             !differ(
                 &first[..3],
                 &[
-                    0.018_111_301_861_995_9,
-                    -0.004_576_022_169_100_46,
-                    -0.005_187_489_850_918_27
+                    0.018111301861995926,
+                    -0.004576022169100455,
+                    -0.00518748985091827
                 ],
                 1e-9
             ),
@@ -541,13 +701,26 @@ mod tests {
     }
 
     #[test]
+    fn the_rows_of_an_odd_number_are_turned_round_about_the_middle_one() {
+        let mut values = vec![
+            1.0, 2.0, //
+            3.0, 4.0, //
+            5.0, 6.0,
+        ];
+        reverse_the_rows(&mut values, 2);
+        assert_eq!(values, vec![5.0, 6.0, 3.0, 4.0, 1.0, 2.0]);
+    }
+
+    #[test]
     fn the_self_product_refuses_a_g_that_is_not_cols_by_cols() {
-        let mut g = vec![0.0; 8];
-        let error = add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap_err();
-        assert!(
-            matches!(error, Error::Dimension { argument: "g", .. }),
-            "the error is {error}"
-        );
+        for held in [8_usize, 10] {
+            let mut g = vec![0.0; held];
+            let error = add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "g", .. }),
+                "the error for a g of {held} values is {error}"
+            );
+        }
     }
 
     #[test]
@@ -589,16 +762,18 @@ mod tests {
 
     #[test]
     fn the_self_product_refuses_a_g_whose_lower_half_holds_a_value_that_is_not_finite() {
-        // The value that is not finite is at row 1, column 0, which the
-        // product reads; the same value in the upper half is not read and
-        // is not an error, which the next lines check.
-        let mut g = vec![0.0; 9];
-        *g.get_mut(3).unwrap() = f64::INFINITY;
-        let error = add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap_err();
-        assert!(
-            matches!(error, Error::NotFinite { argument: "g" }),
-            "the error is {error}"
-        );
+        // Row 1, column 0, below the diagonal, and row 1, column 1, on it:
+        // the product reads both. The same value in the upper half is not
+        // read and is not an error, which the last lines check.
+        for entry in [3_usize, 4] {
+            let mut g = vec![0.0; 9];
+            *g.get_mut(entry).unwrap() = f64::INFINITY;
+            let error = add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "g" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
         let mut g = vec![0.0; 9];
         *g.get_mut(1).unwrap() = f64::INFINITY;
         add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap();
@@ -663,6 +838,45 @@ mod tests {
     }
 
     #[test]
+    fn a_dimension_above_what_the_routines_count_in_is_refused() {
+        // 2^31, one more than the largest an i32 holds. The check comes
+        // before the one of the length of the buffer, so an empty slice
+        // reaches it, and it is made whichever backend would run.
+        let mut c: Vec<f64> = Vec::new();
+        let error = product(&[], 1 << 31, 1, &[], 1, &mut c).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+        // With no rows the a of the self product holds no values whatever
+        // its number of columns is, and what the columns are too many for
+        // is the cols x cols g.
+        let mut g: Vec<f64> = Vec::new();
+        let error = add_self_product_lower(&[], 0, 1 << 31, &mut g).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "g", .. }),
+            "the error is {error}"
+        );
+        let error = eigh_lower(Vec::new(), 1 << 31).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "g", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn a_number_of_values_that_no_usize_counts_is_refused() {
+        // 2^40 times 2^40 is 2^80, which no usize of any machine holds, so
+        // this is the arm where the two dimensions do not multiply.
+        let mut g: Vec<f64> = Vec::new();
+        let error = add_self_product_lower(&[], 1 << 40, 1 << 40, &mut g).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
     fn the_eigendecomposition_refuses_an_n_of_zero() {
         let error = eigh_lower(Vec::new(), 0).unwrap_err();
         assert!(
@@ -672,34 +886,66 @@ mod tests {
     }
 
     #[test]
-    fn the_eigendecomposition_refuses_a_g_shorter_than_n_times_n() {
-        let error = eigh_lower(vec![0.0; 8], 3).unwrap_err();
-        assert!(
-            matches!(error, Error::Dimension { argument: "g", .. }),
-            "the error is {error}"
-        );
+    fn the_eigendecomposition_refuses_a_g_that_is_not_n_by_n() {
+        for held in [8_usize, 10] {
+            let error = eigh_lower(vec![0.0; held], 3).unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "g", .. }),
+                "the error for a g of {held} values is {error}"
+            );
+        }
     }
 
     #[test]
     fn the_eigendecomposition_refuses_a_value_that_is_not_finite_in_the_lower_half() {
-        let mut g = the_matrix_of_3_by_3();
-        *g.get_mut(3).unwrap() = f64::NAN;
-        let error = eigh_lower(g, 3).unwrap_err();
-        assert!(
-            matches!(error, Error::NotFinite { argument: "g" }),
-            "the error is {error}"
-        );
+        // Below the diagonal and on it.
+        for entry in [3_usize, 4] {
+            let mut g = the_matrix_of_3_by_3();
+            *g.get_mut(entry).unwrap() = f64::NAN;
+            let error = eigh_lower(g, 3).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "g" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
     }
 
     #[test]
-    fn a_decomposition_that_did_not_converge_names_the_routine_and_the_info() {
-        let error = Error::NoConvergence {
+    fn a_routine_that_stopped_says_which_of_the_three_things_happened() {
+        let did_not_converge = Error::NoConvergence {
             routine: "dsyevd",
             info: 7,
         };
         assert_eq!(
-            error.to_string(),
+            did_not_converge.to_string(),
             "dsyevd did not converge: it gave the info 7"
+        );
+        let refused_an_argument = Error::NoConvergence {
+            routine: "dsyevd",
+            info: -2,
+        };
+        assert_eq!(
+            refused_an_argument.to_string(),
+            "dsyevd refused its argument 2, a defect of popnei"
+        );
+        let faer = Error::NoConvergence {
+            routine: "faer",
+            info: 0,
+        };
+        assert_eq!(faer.to_string(), "faer did not converge");
+    }
+
+    #[test]
+    fn a_workspace_that_could_not_be_allocated_says_what_it_was() {
+        // No call of the crate reaches this case on a machine that has the
+        // memory, so the message is checked on an error built by hand.
+        let error = Error::Memory {
+            what: "the workspace of floats of dsyevd",
+            values: 200060001,
+        };
+        assert_eq!(
+            error.to_string(),
+            "this machine has not the memory for the workspace of floats of dsyevd, 200060001 values"
         );
     }
 }
