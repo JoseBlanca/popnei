@@ -76,8 +76,10 @@ missing, the denominator of its allele frequencies.
 **expected heterozygosity.** Of a variant in a population, one minus the
 sum over the alleles of the frequency of each to the power of the ploidy:
 the chance that as many gene copies as a genotype holds, taken at random
-from the population, are not all alike. The unbiased one multiplies it by
-2n/(2n - 1), with n the called genotypes, and is a statistic of its own.
+from the population, are not all alike. The unbiased one corrects it for
+the frequencies being estimated from the copies it is computed over, Nei's
+c/(c - 1) at ploidy 2 with c the called alleles, and is a statistic of its
+own.
 `exp_het` and `unbiased_exp_het` in identifiers. `docs/specs/stats.md`.
 
 **polymorphic variant.** In a population, a variant whose major allele

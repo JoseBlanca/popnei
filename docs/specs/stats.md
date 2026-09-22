@@ -198,13 +198,13 @@ genotypes, the called alleles of the population divided by the ploidy,
 which can be a half when a genotype is half called, and the variant has
 no value when that number is strictly less than the threshold: five
 diploid individuals with four genotypes called and one half called have
-4.5, and keep their value at a threshold of 4 and lose it at 5. Whether
-the observed heterozygosity is held to this threshold is **Open 5**,
-below; the other three are.
+4.5, and keep their value at a threshold of 4 and lose it at 5. Every
+statistic is held to it, the observed heterozygosity too, which pyNei
+exempts, under its item.
 
 `hist_kwargs` is the histogram: `range`, the two ends, `(0, 1)` by
 default, which is where the statistics live; `num_bins`, 40 by
-default; and `bin_type`, `"lineal"` for bins of equal width or
+default; and `bin_type`, `"linear"` for bins of equal width or
 `"logarithmic"` for bins of equal ratio, whose `range` has to start above
 0. The dict is read and not changed. The edges are `num_bins + 1`
 numbers, computed as numpy's `linspace` computes them, the start plus i
@@ -215,7 +215,10 @@ of the ends. A value falls in the bin whose left edge is at most the value
 and whose right edge is above it, and the last bin takes its right edge
 too, as `numpy.histogram` does, so an observed heterozygosity of exactly 1
 is in the last bin. A value outside the range is in no bin and in the
-mean. The name of the first bin type is **Open 7**, below.
+mean. pyNei spells the first bin type `"lineal"`, the Spanish word; the
+owner decided on 22 September 2026 that popnei spells it `"linear"` and
+refuses `"lineal"` as any other unknown name, as `docs/specs/pca.md`
+spells `standardize_data` where pyNei has `standarize_data`.
 
 `ploidy` is the two expected heterozygosities' alone, and
 `poly_threshold` the polymorphism ratio's; their items say what they do.
@@ -301,7 +304,7 @@ No test of pyNei varies the size of its chunks for these statistics, and
 one case below, a chunk with nothing called, is where the expected
 heterozygosity of pyNei depends on them. popnei adds a cargo test that
 the size of the blocks changes no histogram count and no mean beyond
-1e-12 relative, which holds once Open 1 is answered as recommended.
+1e-12 relative, which holds because popnei gives such a block no value.
 
 ### How it runs
 
@@ -363,10 +366,8 @@ ratio have to be equal, and the means and the ratios equal within 1e-12
 relative, with NaN in the same places, because numpy and the Rust loop
 add the variants of a population in different orders. The default of
 `min_num_individuals` is asserted by a call without it on the panel, with
-`pops` of one population of 15 individuals: the mean maf and the mean
-expected heterozygosity are NaN with empty histograms, the counts of the
-polymorphism ratio are 0, and the observed heterozygosity has its values,
-while Open 5 stands. The edges of the histogram are compared exactly for
+`pops` of one population of 15 individuals: every mean is NaN with an
+empty histogram and the counts of the polymorphism ratio are 0. The edges of the histogram are compared exactly for
 bins of equal width and within 1e-12 for logarithmic ones, whose powers
 of 10 two libraries need not round alike.
 
@@ -431,7 +432,8 @@ and its alleles are not all the same, at any ploidy:
 
 over the individuals of the population. A half called genotype is missing
 and counts in neither. A population with no called genotype at a variant
-has no value. At ploidy 1 no genotype is heterozygous and every variant
+has no value, and neither has one with fewer called genotypes than
+`min_num_individuals`. At ploidy 1 no genotype is heterozygous and every variant
 with a called genotype has 0. It is the number the filter of
 `docs/specs/filters.md` compares with its threshold, there over every
 individual.
@@ -440,12 +442,25 @@ individual.
 
 Asked for as `stats="obs_het"`, and given back as the field `obs_het` of
 the result. It mirrors `_calc_obs_het_per_var` of `pynei/gt_counts.py`,
-which takes no `min_num_samples`: a population with one called genotype,
-heterozygous, has an observed heterozygosity of 1 at that variant, and it
-counts in the mean and the histogram, where the other three statistics
-give the variant no value. Whether popnei holds it to
-`min_num_individuals` like the other three is **Open 5**, below; meanwhile
-it reproduces pyNei.
+which takes no `min_num_samples`: in pyNei a population with one called
+genotype, heterozygous, has an observed heterozygosity of 1 at that
+variant, and it counts in the mean and the histogram, where the other
+statistics give the variant no value; on two variants of five individuals
+with one and with two called genotypes, run at commit ef0ca6e with the
+default threshold, its mean observed heterozygosity is 0.75 over both and
+the other means are NaN. The owner decided on 22 September 2026 that
+popnei holds it to `min_num_individuals` like the others, since the
+argument reads as one rule for the pass and the values it drops are of
+one or two genotypes; the option not taken was to reproduce pyNei, which
+changes the mean and the histogram of every dataset with variants below
+the threshold. It compares its called genotypes, whole ones, where the
+other statistics compare called alleles over the ploidy, so at a variant
+with half called genotypes the two can part: four called genotypes and
+two half called ones are 5 for the maf and 4 here, kept and dropped at a
+threshold of 5. The comparisons against pyNei hold: on the panel every
+population has 40 called genotypes or more at every variant, and on
+`many.vcf` no population has fewer than 15 at any, above the 5 those
+tests use.
 
 ### What pyNei asserts
 
@@ -611,22 +626,30 @@ the chance that two copies differ. For any other ploidy it is the chance
 that k copies are not all alike, and not the chance that two of them
 differ.
 
-Two more counts are needed for the unbiased one. c is how many alleles
-of the population were called at that variant, the denominator of every
-p_a. n is c / k, how much called data there is counted in genotypes, and
-it can be a half when a genotype is half called. The unbiased one is
+The unbiased one corrects for the frequencies p_a being estimated from
+the same copies the statistic is computed over, which makes H too small
+on average, in the way that dividing a sum of squares by c rather than
+by c - 1 makes a variance too small. With c the alleles of the population
+that were called at the variant, the denominator of every p_a, and c_a
+the count of allele a among them, it is
 
-    H_u = (2n / (2n - 1)) * H
+    H_u = 1 - sum over a of (c_a (c_a - 1) ... (c_a - k + 1)) / (c (c - 1) ... (c - k + 1))
 
-At k = 2, where 2n = c, that factor is c / (c - 1). The frequencies p_a
-are estimated from the same c copies the statistic is computed over, and
-that makes H too small on average, in the way that dividing a sum of
-squares by c rather than by c - 1 makes a variance too small; multiplying
-by c / (c - 1) takes the bias out. It is Nei's 1978 correction. GenAlEx,
-the population genetics add-in for Excel, prints it as the unbiased
-heterozygosity for codominant data, the name pyNei's docstring gives it.
-popnei keeps it as the default, as pyNei does, so that a user comparing
-against GenAlEx or against pyNei sees the same number.
+with k factors in each product: the chance that k copies drawn from the
+called ones without replacement are all alike, taken from 1. Its
+expected value is the population's H at any k, which is what unbiased
+means, and it is never above 1. At k = 2 it is (c / (c - 1)) H, Nei's
+1978 correction, which GenAlEx, the population genetics add-in for Excel,
+prints as the unbiased heterozygosity for codominant data, the name
+pyNei's docstring gives it, and which pyNei computes at every ploidy.
+The owner decided on 22 September 2026 that popnei applies the
+correction of the ploidy in hand; the option not taken was pyNei's factor
+2n/(2n - 1) with n = c / k at every ploidy, which on the tetraploid
+variant under "What pyNei does that is odd" gives 1.1685 where this
+gives 0.995960. There is no value when c is below k.
+
+n, below, is c / k, how much called data there is counted in genotypes,
+which can be a half when a genotype is half called.
 
 Every allele of the variant counts. A multiallelic variant is not
 collapsed to the major allele against the rest here, as it is in other
@@ -662,12 +685,13 @@ histogram bin. A test on a small dataset has to lower
 `min_num_individuals` or every value is missing; pyNei's own tests pass 1
 or 5.
 
-A population with no called allele at a variant has no value, except in a
-chunk where no individual is called at any variant (**Open 1**, below).
+A population with no called allele at a variant has no value, also in a
+block where no individual is called at any variant, where pyNei gives
+one, under "What pyNei does that is odd".
 
 A diploid population with one called allele, which needs
-`min_num_individuals` at 0 to get this far, has n = 0.5 and 2n - 1 = 0:
-pyNei gives 0 for the plain one and NaN for the unbiased one. popnei gives
+`min_num_individuals` at 0 to get this far, has c = 1, below k: pyNei
+gives 0 for the plain one and NaN for the unbiased one, and popnei
 `Some(0.0)` and `None`.
 
 At ploidy 1 the plain one is 1 minus the sum of the frequencies, 0 at
@@ -682,8 +706,8 @@ asserts that the mean and the histogram counts do not change with 2 or 4
 threads. No test of pyNei varies the size of the chunks for this
 statistic, and the chunk with nothing called below is a case where its
 mean would change with them. popnei adds a test that the size of the
-block does not change the result, which holds once Open 1 is answered as
-recommended.
+block does not change the result, which holds because popnei gives such
+a block no value.
 
 ### What pyNei does that is odd
 
@@ -702,15 +726,24 @@ and an unbiased one of -0.0. Measured on two variants of three
 individuals with every genotype `./.`: plain 1.0 and 1.0, unbiased -0.0
 and -0.0, and through `calc_per_var_distribs` a mean of 0.0 with both
 variants counted in the first histogram bin. The same variant in a chunk
-where any individual is called anywhere gives no value (**Open 1**,
-below).
+where any individual is called anywhere gives no value. The owner decided
+on 22 September 2026 that popnei gives no value, which is what a
+calculation that works row by row does by itself; the option not taken,
+to reproduce pyNei, needs the alleles of a whole block, which nothing
+else here needs, and makes the value of a variant depend on where the
+block boundaries fell. The comparison against pyNei is safe: the panel
+drops 3 in 100 genotypes of 200 individuals and no block of it is
+without called genotypes.
 
 The unbiased factor is 2n/(2n-1) whatever the ploidy, in
 `_calc_unbiased_exp_het_per_var`, although at ploidy k the population
 holds c = kn copies and not 2n. Measured with `min_num_samples=1` on three
 tetraploid individuals, genotypes 0/1/2/3, 0/0/1/1 and 0/1/2/3: the
 unbiased value is 1.1685, above 1, so it is in no bin of the default
-histogram while the mean counts it (**Open 2**, below).
+histogram while the mean counts it. popnei applies the correction of the
+ploidy in hand, decided under "What it gives", and gives 0.995960 for
+that variant, which is 1 - 48/11880: allele counts 4, 4, 2 and 2 of 12,
+and the products of four factors 24, 24, 0 and 0 over 12 · 11 · 10 · 9.
 
 The `ploidy` argument, when it differs from the ploidy of the data, is
 used as the exponent k and as the number of alleles the individuals are
@@ -724,7 +757,14 @@ same n and the same 0.9459. The two part when an allele is missing: with
 counts 4 and 3, pyNei, counting the alleles the individuals are expected
 to hold, 16 less the missing one, gives an unbiased 0.9919 from n = 15/4;
 the 7 alleles that were called, as 3.5 genotypes of the data's ploidy,
-give 1.0029 (**Open 3**, below).
+give 1.0029. The owner decided on 22 September 2026 that popnei keeps the
+argument as the exponent k alone, of the frequencies and of the products
+of the unbiased one, and takes the called alleles from the data, which is
+the same as pyNei whenever the argument matches the data and is what the
+code that works row by row gives for free. The options not taken were to
+reproduce the three uses, which takes deliberate work because the count
+of called alleles comes from the row, and to drop the argument. The
+comparison against pyNei is made at the data's own ploidy.
 
 ### How it runs
 
@@ -851,16 +891,23 @@ For each individual, the share of the variants at which its genotype is
 missing, and the share at which it is heterozygous:
 
     missing rate = missing genotypes of the individual / variants
-    obs het rate = heterozygous genotypes of the individual / variants
+    obs het rate = heterozygous genotypes of the individual / called genotypes of the individual
 
 over the variants the pass gives, after the steps. A half called genotype
 is missing and not heterozygous. The first tells a user which individuals
 were badly genotyped, and the second which ones are more heterozygous
 than the rest, a sign of a mixed sample or of an outcrossed individual
-among inbred ones. The denominator of the second is every variant, also
-those at which the individual has no genotype, as pyNei has it; whether
-it should be the called genotypes of the individual, as plink2 divides,
-is **Open 6**, below.
+among inbred ones. An individual with no called genotype has a missing
+rate of 1 and no heterozygosity rate, NaN. pyNei divides the second by
+every variant, those at which the individual has no genotype among them,
+so an individual with more missing data looks less heterozygous: on the
+panel, `s000` has 426 heterozygous genotypes of 1200 variants, 0.355, and
+of 1166 called ones, 0.365352, and over the 200 individuals the two
+differ by up to 0.0163. The owner decided on 22 September 2026 that
+popnei divides by the called genotypes, which is what a user reads the
+number as and what plink2's `--het` gives; the option not taken was
+pyNei's denominator, and the missing rate beside the number says what
+pyNei's one number said.
 
 ### In Python and in TypeScript
 
@@ -881,6 +928,8 @@ indexed by the names of the individuals, in the order of the pass, and
   columns, because every result of a consumer carries its `pass_stats`,
   which a frame has no place for. The two series are the frame's columns
   under their names.
+- The heterozygosity rate divides by the called genotypes of the
+  individual, under "What they give"; pyNei divides by all the variants.
 - There is no `num_threads`, as in every calculation of popnei.
 - A pass that gives no variant is a `ValueError` with the message of the
   pass of `calc_per_var_distribs`. pyNei fails with a `TypeError` from
@@ -896,7 +945,9 @@ In TypeScript it is `calcPerIndividualStats(variants)`, which gives
 `test_filter_missing` of `test/test_sample_stats.py` asserts, on three
 variants of five individuals with chunks of 2, the missing rates 1/3,
 1/3, 1/3, 1/3 and 2/3 and the heterozygosity rates 0, 1/3, 1/3, 1/3 and 0;
-the third variant has every genotype missing.
+the third variant has every genotype missing. popnei's test asserts the
+same missing rates and, over the called genotypes, the heterozygosity
+rates 0, 1/2, 1/2, 1/2 and 0.
 `test_per_sample_stats_with_threads` asserts that 2 or 4 threads change
 nothing.
 
@@ -923,36 +974,41 @@ Against plink2 v2.0.0-a.7.7 on the panel:
 `F_MISS` per individual, the missing genotypes, the variants and their
 quotient, which is the missing rate; `--sample-counts` writes
 `panel.scount`, with `HET_CT`, the heterozygous genotypes, which over
-`OBS_CT` of the first is the heterozygosity rate; `--het` writes
-`panel.het`, whose `OBS_CT` is the called genotypes of the individual,
-the denominator of Open 6. Over the 200
-individuals, the largest absolute difference from pyNei's
-`calc_per_sample_stats` is 3.3e-8 in the missing rate, which plink2
-prints with six digits, and 0 in the heterozygosity rate, whose quotient
-is exact on both sides, so the tests compare the first within 1e-6 and
-the second within 1e-12. The literals: `s000` has 34 missing genotypes
-of 1200, 0.0283333, and 426 heterozygous, 0.355; `s001` 44, 0.0366667,
-and 397, 0.330833.
+the called ones, `OBS_CT` less `MISSING_CT` of the first, is the
+heterozygosity rate; `--het` writes `panel.het`, whose `OBS_CT` is that
+same count of called genotypes. Over the 200 individuals, the largest
+absolute difference from pyNei's `calc_per_sample_stats` is 3.3e-8 in the
+missing rate, which plink2 prints with six digits, so the tests compare
+it within 1e-6; pyNei's heterozygosity rate over all the variants is
+`HET_CT` over 1200 exactly, and popnei's over the called ones is the
+quotient of two counts of plink2, compared within 1e-12. The literals:
+`s000` has 34 missing genotypes of 1200, 0.0283333, and 426 heterozygous
+of 1166 called, 0.365352; `s001` 44, 0.0366667, and 397 of 1156,
+0.343426.
 
 The half called genotype and the third allele are checked against the
 same command on `many.vcf` with `--vcf-half-call m`, which reads a half
 called genotype as missing, as pyNei does, and writes `many.smiss` and
 `many.scount`; the third allele of a heterozygous genotype changes
-nothing in `HET_CT`. Over the 50
-individuals the two rates are pyNei's exactly. The literals: `ind00` has
-29 missing genotypes of 500, 0.058, and 201 heterozygous, 0.402; `ind01`
-25, 0.05, and 195, 0.39. These are the numbers bcftools 1.24 prints too,
-as `nMissing` and `nHets` of the `PSC` lines of `bcftools stats -s -
+nothing in `HET_CT`. Over the 50 individuals the missing rate is pyNei's
+exactly, and the heterozygous counts are pyNei's rate times 500. The
+literals: `ind00` has 29 missing genotypes of 500, 0.058, and 201
+heterozygous of 471 called, 0.426752; `ind01` 25, 0.05, and 195 of 475,
+0.410526. The counts are the numbers bcftools 1.24 prints too, as
+`nMissing` and `nHets` of the `PSC` lines of `bcftools stats -s -
 many.vcf`.
 
 Against pyNei: both libraries run the function on the panel and on
-`many.vcf`, and the two series have to be equal within 1e-12 relative,
-with the same names in the same order.
+`many.vcf`; the missing rates have to be equal within 1e-12 relative,
+with the same names in the same order, and popnei's heterozygosity rate
+has to be pyNei's times the variants over the called genotypes of the
+individual, within 1e-12, the called genotypes being the variants less
+pyNei's missing rate times them.
 
 The worked example, at `calc_per_individual_stats` of "The Rust
 interface", on the six variants of the pass with blocks of 6 and of 2:
 the missing rates 2/6, 2/6, 2/6, 3/6 and 5/6, and the heterozygosity
-rates 1/6, 3/6, 1/6, 1/6 and 0. Individual i5 has two half called
+rates 1/4, 3/4, 1/4, 1/3 and 0/1 = 0. Individual i5 has two half called
 genotypes, at variants 1 and 2, which are missing.
 
 ## The Rust interface
@@ -1011,7 +1067,7 @@ impl HistBins {
     /// `num_bins` equal widths from `start` to `end`. An error when
     /// `num_bins` is 0, `start` is not below `end`, or either is not a
     /// number.
-    pub fn lineal(start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
+    pub fn linear(start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
     /// `num_bins` equal ratios. As above, and an error when `start` is
     /// 0 or below.
     pub fn logarithmic(start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
@@ -1026,28 +1082,31 @@ impl HistBins {
 How each statistic of a variant is worked out for one population, from
 the counts of that population, and whether the variant has a value there.
 `None` counts for nothing: the variant is out of the mean and in no bin.
-The ploidies are `usize`, as they are in the architecture, and the two
-fields of `ExpHet` are two because that is what Open 3 recommends; if
-the `ploidy` argument goes, they become one.
+The ploidies are `usize`, as they are in the architecture. The fields are
+private behind a constructor that refuses a ploidy or an exponent of 0 or
+above 255, the largest ploidy `open_vcf` takes, with an error that is a
+`ValueError` in Python. The owner decided it on 22 September 2026, after
+a trial implementation of the expected heterozygosity in which an
+exponent of 0 gave a plain -2.0 and an unbiased NaN for counts 2, 1, 1, a
+ploidy of 0 turned the `min_num_individuals` test off, and an exponent
+of 1e8 took 0.2 s for one variant; the options not taken were public
+fields that the caller guarantees, and `NonZeroUsize` fields.
 
 ```rust
-pub struct ObsHet {
-    /// How many called genotypes a population needs at a variant to get
-    /// a value: 0 while Open 5 stands, and min_num_individuals after it
-    /// if it is answered as recommended.
-    pub min_num_individuals: u32,
-}
+pub struct ObsHet { /* private */ }
 impl ObsHet {
+    /// `min_num_individuals` is how many called genotypes a population
+    /// needs at a variant to get a value.
+    pub fn new(min_num_individuals: u32) -> ObsHet;
     /// het over called, from the genotype counts of the population. None
     /// when called is 0 or below `min_num_individuals`.
     pub fn of_var(&self, counts: GtCounts) -> Option<f64>;
 }
 
-pub struct Maf {
-    pub ploidy: usize,
-    pub min_num_individuals: u32,
-}
+pub struct Maf { /* private */ }
 impl Maf {
+    /// An error for a ploidy of 0 or above 255.
+    pub fn new(ploidy: usize, min_num_individuals: u32) -> Result<Maf>;
     /// The largest of `counts` over `called_alleles`, which is their sum.
     /// None when the population has called fewer than
     /// `min_num_individuals` genotypes, `called_alleles` below
@@ -1056,26 +1115,24 @@ impl Maf {
     pub fn of_var(&self, counts: &AlleleCounts, called_alleles: u32) -> Option<f64>;
 }
 
-pub struct ExpHet {
-    /// k, the exponent of the frequencies: the ploidy of the variants unless
-    /// the caller asks for another one.
-    pub exponent: usize,
-    /// The ploidy of the variants, which turns the alleles a pop has called
-    /// into called genotypes, n, for the min_num_individuals test and for
-    /// the unbiased factor. The exponent is never used for n.
-    pub ploidy: usize,
-    /// How many called genotypes a pop needs at a variant to get a value.
-    pub min_num_individuals: u32,
-}
+pub struct ExpHet { /* private */ }
 impl ExpHet {
+    /// `exponent` is k, the exponent of the frequencies and the number of
+    /// factors of the products of the unbiased one: the ploidy of the
+    /// variants unless the caller asks for another one. `ploidy` is the
+    /// ploidy of the variants, which turns the alleles a pop has called
+    /// into called genotypes, n, for the min_num_individuals test; the
+    /// exponent is never used for n. An error for either of 0 or above
+    /// 255.
+    pub fn new(exponent: usize, ploidy: usize, min_num_individuals: u32) -> Result<ExpHet>;
     /// The expected heterozygosity of one variant in one pop, the plain
     /// one or, with `unbiased`, the unbiased one. `counts[a]` is how often
     /// allele a was called in the pop at this variant, and
     /// `called_alleles` is their sum; a missing allele is in neither. None in
     /// three cases: the pop has called fewer than `min_num_individuals`
     /// genotypes; it has called nothing at all at this variant; or the
-    /// unbiased one was asked for and the pop has called so little that
-    /// 2n - 1 is 0, which for a diploid pop is one allele.
+    /// unbiased one was asked for and `called_alleles` is below the
+    /// exponent, which for a diploid pop is one allele.
     pub fn of_var(&self, counts: &AlleleCounts, called_alleles: u32,
                   unbiased: bool) -> Option<f64>;
 }
@@ -1170,8 +1227,9 @@ impl PerIndividualStats {
     pub fn num_het(&self, individual: usize) -> u64;
     /// num_missing over num_vars.
     pub fn missing_rate(&self, individual: usize) -> f64;
-    /// num_het over num_vars while Open 6 stands.
-    pub fn obs_het_rate(&self, individual: usize) -> f64;
+    /// num_het over the called genotypes, num_vars less num_missing.
+    /// None when the individual has no called genotype.
+    pub fn obs_het_rate(&self, individual: usize) -> Option<f64>;
 }
 
 pub fn calc_per_individual_stats<R: BlockReader + ?Sized>(reader: &mut R)
@@ -1227,120 +1285,18 @@ its.
 
 ## Open points
 
-The owner decides these seven. Until then the implementer follows the
-"meanwhile" of each.
-
-**Open 1: a chunk in which no genotype is called.** pyNei gives every
-variant of it a plain expected heterozygosity of 1 and an unbiased one of
--0.0, and the histogram counts them, where the same variant among called
-ones gets no value. The options are to reproduce it, which costs popnei a
-notion of the alleles of a whole block that this calculation does not
-otherwise need and makes the value of a variant depend on where the block
-boundaries fell, or to give no value whenever the population has no
-called allele, which is what an implementation that works row by row
-does by itself and changes what a user sees only for a block with nothing
-called in any individual. Recommendation: give no value. Meanwhile the
-implementer writes it that way; the comparison against pyNei is safe,
-since the reference panel drops 3 in 100 genotypes of 200 individuals and
-no block of it is without called genotypes.
-
-**Open 2: the unbiased factor when the ploidy is not 2.** pyNei
-multiplies by 2n/(2n-1) at every ploidy. At ploidy 2 that is c/(c-1) and
-the estimator is Nei's. At ploidy 4 it is neither: 1.1685 for the variant
-of three individuals above, a value over 1 that the mean counts and the
-histogram drops. The options are to reproduce pyNei, which keeps every
-current result and leaves values above 1; to multiply by c/(c-1), which
-is the right correction for a pair of copies but not for the k copies
-that 1 - sum p^k is about; or to refuse the unbiased one above ploidy 2,
-which makes the default `stats`, which has it, raise for every tetraploid
-user.
-Recommendation: reproduce pyNei and say in the doc comment that the
-factor is the diploid one, since no tetraploid result of pyNei is
-verified against anything and nothing is built on this yet. Meanwhile the
-implementer reproduces pyNei.
-
-**Open 3: the `ploidy` argument.** When it differs from the data's
-ploidy, pyNei uses it as the exponent and as the count of alleles the
-individuals are expected to hold, and not in the `min_num_samples` test.
-The options are to reproduce all three uses, which in popnei takes
-deliberate work because the count of called alleles comes from the row;
-to keep the argument as the exponent alone and take the called alleles
-from the data, which is the `ExpHet` above; or to drop the argument and
-always use the ploidy of the variants, which loses nothing if nobody
-passes it. Recommendation: keep it as the exponent alone. It is the same
-as pyNei whenever the argument matches the data, and it is what the code
-that works row by row gives for free. Meanwhile the implementer writes
-that and compares against pyNei only at the data's own ploidy.
-
-**Open 4: what an `ExpHet` accepts.** Its fields are public and nothing
-checks them. Measured on a trial implementation of the expected
-heterozygosity: an `exponent` of 0 gives a plain -2.0 and an unbiased NaN
-for counts 2, 1, 1, a NaN born inside the core; a `ploidy` of 0 turns the
-`min_num_individuals` test off, and a population with one called allele
-passes a threshold of 20; and an `exponent` of 1e8 takes 0.2 s for one
-variant of one population. The row helper of the `variant` module already
-refuses a ploidy of 0 with an error. The options are to leave the fields
-public and say that the caller guarantees both are 1 or more; to make
-them `NonZeroUsize`; or to make them private behind
-`ExpHet::new(...) -> Result<ExpHet>`, which refuses a 0 and an exponent
-above a bound, and gives the Python user a `ValueError` for `ploidy=0`.
-Recommendation: the constructor, because it is the one place where the
-argument of the user arrives, and the same for `Maf` and `ObsHet`, whose
-`ploidy` of 0 has the same effect. Meanwhile the implementer keeps the
-public fields and documents that both are 1 or more.
-
-**Open 5: whether `min_num_individuals` holds the observed
-heterozygosity.** pyNei applies the threshold to the maf, the expected
-heterozygosity and the polymorphism ratio, and not to the observed
-heterozygosity, whose function has no such argument: at the default of
-20, a variant with one called genotype in a population is in the
-histogram of the observed heterozygosity, at 0 or 1, and in no other. On
-two variants of five individuals with one and with two called genotypes,
-run at commit ef0ca6e with the default threshold, the mean observed
-heterozygosity is 0.75 over both variants and the other two means are
-NaN. The options are to reproduce pyNei, or to hold every statistic
-to the one threshold, which takes out of the observed heterozygosity the
-variants that the others already drop, and changes its mean and its
-histogram for every dataset with variants below the threshold.
-Recommendation: hold every statistic to the one threshold, since the argument
-reads as one rule for the pass and the values it drops are of one or two
-genotypes. The observed heterozygosity would compare its called
-genotypes, whole ones, where the other three compare called alleles over
-the ploidy, so at a variant with half called genotypes the two can part:
-four called genotypes and two half called ones are 5 for the maf and 4
-for the observed heterozygosity, kept and dropped at a threshold of 5.
-Meanwhile the implementer reproduces pyNei, with the
-`min_num_individuals` of `ObsHet` at 0, and the comparison against pyNei
-holds either way on the panel, where every population has 40 called
-genotypes or more at every variant.
-
-**Open 6: the denominator of the heterozygosity rate of an individual.**
-pyNei divides the heterozygous genotypes of an individual by every
-variant, those at which the individual has no genotype among them, so an
-individual with more missing data looks less heterozygous: on the panel,
-`s000` has 426 heterozygous genotypes of 1200 variants, 0.355, and of
-1166 called ones, 0.365352, and over the 200 individuals the two differ
-by up to 0.0163. plink2's `--het` gives the heterozygosity of an
-individual over its called genotypes, its `OBS_CT`. The options are to
-reproduce pyNei, or to divide by the
-called genotypes of the individual, which is what a user reads the number
-as and what the reference programs give, and which changes every value
-of a dataset with missing genotypes. Recommendation: divide by the called
-genotypes, with the doc comment saying so, since the missing rate is
-given beside it and the two together say what pyNei's one number said.
-Meanwhile the implementer reproduces pyNei, which the literals above are
-of; the ones over called genotypes are `HET_CT` of `panel.scount` over
-`OBS_CT` of `panel.het`, 426 over 1166 for `s000`.
-
-**Open 7: the name of the bin type of equal widths.** pyNei's is
-`"lineal"`, the Spanish word, where English has `"linear"`, and it is the
-same question as Open 4 of `docs/specs/pca.md`, whether an argument
-keeps pyNei's misspelt name, `standarize_data`, or gets the right
-spelling, `standardize_data`, where the recommendation is the right
-spelling because pyNei will not be used once popnei exists. The options
-are pyNei's name, or `"linear"`, with `"lineal"` refused as any other
-unknown name is. Recommendation: `"linear"`, with the same answer as the
-PCA's. Meanwhile the implementer takes both names.
+None. The owner decided the seven this spec had on 22 September 2026,
+and each is written where it applies, with the option that was not
+taken: a block with nothing called gives no value, under "What pyNei does
+that is odd" of the expected heterozygosity; the unbiased correction is
+the one of the ploidy in hand, under "What it gives" of the same; the
+`ploidy` argument is the exponent alone, under "What pyNei does that is
+odd"; the three statistics of a variant are built by constructors that
+refuse a 0, under "The Rust interface"; `min_num_individuals` holds the
+observed heterozygosity too, under its item; the heterozygosity rate of
+an individual is over its called genotypes, under "What they give" of the
+per individual statistics; and the bin type of equal widths is spelt
+`"linear"`, under "In Python and in TypeScript" of the pass.
 
 ## Not in this spec
 
