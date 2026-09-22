@@ -36,8 +36,10 @@ use crate::variant::{AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_maj
 /// It is what the routines of BLAS and LAPACK count the values of a matrix
 /// in, and `crates/popnei-linalg` refuses a matrix above it on both of its
 /// backends, so dosages that no product could be taken over are refused
-/// where they are built and not at the first product.
-pub const MAX_VALUES_OF_THE_DOSAGES: usize = 2_147_483_647;
+/// where they are built and not at the first product. It is that crate's
+/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX)
+/// under the name this module reads it by.
+pub const MAX_VALUES_OF_THE_DOSAGES: usize = popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX;
 
 /// The most alleles a genotype of [`LdDosages`] holds.
 ///

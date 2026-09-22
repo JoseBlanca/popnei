@@ -58,7 +58,7 @@ use thiserror::Error as ThisError;
 /// index their matrices in it, and faer is held to the same limit so that
 /// the two backends refuse the same calls. A square matrix of this many
 /// values is 46340 x 46340, which is 17 GB of `f64`.
-const THE_MOST_VALUES_OF_A_MATRIX: usize = 2_147_483_647;
+pub const THE_MOST_VALUES_OF_A_MATRIX: usize = 2_147_483_647;
 
 /// Anything that went wrong in the linear algebra.
 ///
