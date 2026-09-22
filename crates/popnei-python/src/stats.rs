@@ -268,14 +268,14 @@ pub(crate) fn calc_per_individual_stats<'py>(
     // rate that are not of the same individual are a wrong number that says
     // nothing about itself.
     if individuals.len() != num_individuals {
-        return Err(PyPopneiError::Broken {
-            message: format!(
+        return Err(PyPopneiError::broken_of_the_file(
+            format!(
                 "the pass gave the names of {given} individuals and the rates of \
                  {num_individuals}",
                 given = individuals.len()
             ),
-            path: None,
-        });
+            path,
+        ));
     }
     let missing_gt_rate: Vec<f64> = (0..num_individuals)
         .map(|individual| stats.missing_rate(individual))
