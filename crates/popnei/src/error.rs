@@ -178,6 +178,48 @@ pub enum Error {
         num_vars: usize,
     },
 
+    /// The individuals given to `Block::retain_individuals` hold an index
+    /// at or beyond the individuals of the block. They are indices among
+    /// the individuals of the block, and the filter of individuals of
+    /// `docs/specs/filters.md` gets them from `resolve_individuals`, which
+    /// refuses the name that would give one of these, so a user reaches
+    /// this only through a reader with a defect. The block is left as it
+    /// was.
+    #[error(
+        "the individuals to keep hold the index {individual}, of a block of {num_individuals} individuals; an individual of a block is an index below how many it holds"
+    )]
+    IndividualToKeepNotInTheBlock {
+        /// The index that is at or beyond the individuals of the block.
+        individual: usize,
+        /// How many individuals the block holds.
+        num_individuals: usize,
+    },
+
+    /// The individuals given to `Block::retain_individuals` hold one index
+    /// twice, which would leave two columns of the genotypes of one
+    /// individual, telling the consumer that there are two individuals
+    /// where there is one. `resolve_individuals` refuses the name behind
+    /// it, so a user reaches this only through a reader with a defect. The
+    /// block is left as it was.
+    #[error(
+        "the individuals to keep hold the index {individual} twice, and each individual of a block is kept once: two columns of the genotypes of one individual are one individual"
+    )]
+    IndividualToKeepTwice {
+        /// The index that is there twice.
+        individual: usize,
+    },
+
+    /// `Block::retain_individuals` was given no individual at all, which
+    /// would leave a block of nobody's genotypes. Every source of popnei
+    /// holds one individual at least, as `docs/specs/block.md` says, and
+    /// `resolve_individuals` refuses a filter of individuals that names
+    /// none, so a user reaches this only through a reader with a defect.
+    /// The block is left as it was.
+    #[error(
+        "no individual was given to keep of a block, and a block holds the genotypes of one individual at least"
+    )]
+    NoIndividualToKeep,
+
     /// The threshold of a filter of variants is not a number from 0 to 1,
     /// both included: it is NaN, it is below 0 or it is above 1. The number
     /// of the variant that the threshold is compared with is one count of

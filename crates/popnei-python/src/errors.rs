@@ -285,8 +285,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // than a count of them holds are a reader's and not a user's. A step
         // of a pass that popnei declares and does not build yet is of that
         // kind as well: no method of this crate adds one, so a user cannot
-        // put one among the steps of their variants.
+        // put one among the steps of their variants. And so are the three
+        // of `Block::retain_individuals`, the indices of the individuals a
+        // filter of individuals keeps: they come from
+        // `resolve_individuals`, which refuses the name behind an index at
+        // or beyond the individuals of the block, behind one that is there
+        // twice, and a call that names no individual at all, and a user who
+        // gets one of them has read what a reader with a defect built.
         popnei::Error::PassStepNotBuilt { .. }
+        | popnei::Error::IndividualToKeepNotInTheBlock { .. }
+        | popnei::Error::IndividualToKeepTwice { .. }
+        | popnei::Error::NoIndividualToKeep
         | popnei::Error::GtsNotWholeGenotypes { .. }
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
