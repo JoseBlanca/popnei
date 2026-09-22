@@ -1,9 +1,11 @@
 /**
- * The per variant distributions from TypeScript: the five statistics of one
- * pass, per population, and what the call refuses.
+ * The two passes of the stats module from TypeScript: the five statistics of
+ * every variant, per population, the missing rate and the heterozygosity
+ * rate of every individual, and what each call refuses.
  *
- * `docs/specs/stats.md` has them under "The per variant distributions", and
- * the file they are run on is the panel of `tests/reference/stats/`, 1200
+ * `docs/specs/stats.md` has them under "The per variant distributions" and
+ * "The per individual statistics", and the file they are run on is the panel
+ * of `tests/reference/stats/`, 1200
  * biallelic diploid variants of 200 individuals named `s000` to `s199`, 3 in
  * 100 genotypes missing whole, in the three populations `p0`, `p1` and `p2`
  * of 48, 68 and 84 individuals that `panel_pops_bcftools.txt` beside it
@@ -18,16 +20,34 @@
  * dataset and not the value of a variant, and the mean over one variant is
  * its value. That pass reads a VCF of the header of the panel and its first
  * data line, `var0000`, which `oneVariantOfThePanel` writes.
+ *
+ * The two rates of an individual are read as they come, one number for each
+ * individual of the pass: the literals are those of `s000` and `s001` of the
+ * panel, from the `--missing`, `--sample-counts` and `--het` reports of the
+ * same plink2, and those of `ind00` and `ind01` of `many.vcf` of
+ * `tests/reference/vcf/`, 500 variants of 50 diploid individuals with 257
+ * half called genotypes, which the same commands read with `--vcf-half-call
+ * m`.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
 
-import type { PerVarDistribs, StatsDistrib, Variants } from "popnei";
-import { calcPerVarDistribs, init, openVcf } from "popnei";
+import type {
+  PerIndividualStats,
+  PerVarDistribs,
+  StatsDistrib,
+  Variants,
+} from "popnei";
+import {
+  calcPerIndividualStats,
+  calcPerVarDistribs,
+  init,
+  openVcf,
+} from "popnei";
 
-import { referenceStats } from "./reference.ts";
+import { referenceStats, referenceVcf, vcfOf } from "./reference.ts";
 
 await init();
 
@@ -98,6 +118,43 @@ const POLY_RATIO_OVER_VARIABLES_OF_P0 = 0.94799658994;
 
 /** The default histogram: 40 bins of equal width from 0 to 1, 41 edges. */
 const DEFAULT_NUM_BINS = 40;
+
+/** The bytes of `many.vcf`, read once for the whole file. */
+const MANY = await referenceVcf("many.vcf");
+
+/** The 500 variants of `many.vcf`, of 50 individuals named `ind00` to
+ * `ind49`. */
+const MANY_NUM_VARS = 500;
+
+/**
+ * The two rates of `s000` and of `s001` of the panel, and of `ind00` and of
+ * `ind01` of `many.vcf`, each as the missing rate and the heterozygosity
+ * rate.
+ *
+ * Each of the four is the quotient of two counts plink2 prints whole:
+ * `s000` has 34 missing genotypes of 1200 variants and 426 heterozygous of
+ * 1166 called, `s001` 44 and 397 of 1156, `ind00` 29 of 500 and 201 of 471,
+ * and `ind01` 25 and 195 of 475. The missing genotypes are the `MISSING_CT`
+ * of `--missing` and the variants its `OBS_CT`, the heterozygous ones the
+ * `HET_CT` of `--sample-counts`, and the called ones the first two
+ * subtracted, which the `OBS_CT` of `--het` gives again on the panel. The
+ * counts of `many.vcf` are read with `--vcf-half-call m`, which makes a half
+ * called genotype missing as popnei and pyNei do. The heterozygosity rate is over the
+ * called genotypes, which the owner decided on 22 September 2026, and not
+ * over every variant as pyNei has it.
+ */
+const RATES_OF_S000 = [0.028333333333333332, 0.3653516295025729] as const;
+const RATES_OF_S001 = [0.03666666666666667, 0.34342560553633217] as const;
+const RATES_OF_IND00 = [0.058, 0.4267515923566879] as const;
+const RATES_OF_IND01 = [0.05, 0.4105263157894737] as const;
+
+/**
+ * How far a rate of an individual may be from its literal, which is the
+ * quotient of two whole counts: that quotient is one division, rounded to
+ * the nearest float64 on every platform, so what is left to allow for is
+ * the last bits of it.
+ */
+const OF_A_QUOTIENT_OF_COUNTS = 1e-12;
 
 /** The individuals of each population of a file of two columns, the name of
  * an individual and the name of its population, in the order of the file. */
@@ -640,6 +697,167 @@ test("a statistic that is not one of the five is refused", () => {
       error instanceof Error &&
       error.message.includes("obs_hets") &&
       error.message.includes("poly_vars_ratio"),
+  );
+
+  variants.free();
+});
+
+/** The 500 variants of `many.vcf`, over its 50 individuals.
+ *
+ * It is read with every variant given, those that failed their FILTER among
+ * them, which is what pyNei reads and what the counts of the spec were made
+ * on: `--vcf-filter` is not among the arguments plink2 was run with there.
+ */
+function many(): Variants {
+  return openVcf(MANY, { onlyPassed: false });
+}
+
+/** The missing rate and the heterozygosity rate of the individual `name` of
+ * a result, in that order. */
+function ratesOf(stats: PerIndividualStats, name: string): [number, number] {
+  const individual = stats.individuals.indexOf(name);
+  if (individual === -1) {
+    throw new Error(`the pass gave no individual \`${name}\``);
+  }
+  const missingGtRate = stats.missingGtRate[individual];
+  const obsHetRate = stats.obsHetRate[individual];
+  if (missingGtRate === undefined || obsHetRate === undefined) {
+    throw new Error(`the result holds no rates for the individual \`${name}\``);
+  }
+  return [missingGtRate, obsHetRate];
+}
+
+/** That the individual `name` has the two rates `expected`, the missing one
+ * and the heterozygosity one, within `OF_A_QUOTIENT_OF_COUNTS`. */
+function assertTheRatesOf(
+  stats: PerIndividualStats,
+  name: string,
+  expected: readonly [number, number],
+): void {
+  const [missingGtRate, obsHetRate] = ratesOf(stats, name);
+  const [expectedMissing, expectedHet] = expected;
+  assertValue(
+    missingGtRate,
+    expectedMissing,
+    OF_A_QUOTIENT_OF_COUNTS,
+    `the missing rate of ${name}`,
+  );
+  assertValue(
+    obsHetRate,
+    expectedHet,
+    OF_A_QUOTIENT_OF_COUNTS,
+    `the heterozygosity rate of ${name}`,
+  );
+}
+
+test("the two rates of s000 and s001 of the panel are the literals of plink2", () => {
+  // The names come in the order of the columns of the VCF, and the two
+  // arrays are read at the place of the name: `s000` is the first of the
+  // 200 individuals and `s001` the second.
+  const variants = panel();
+
+  const stats = calcPerIndividualStats(variants);
+
+  assert.equal(stats.individuals.length, 200);
+  assert.equal(stats.individuals[0], "s000");
+  assert.equal(stats.missingGtRate.length, 200);
+  assert.equal(stats.obsHetRate.length, 200);
+  assertTheRatesOf(stats, "s000", RATES_OF_S000);
+  assertTheRatesOf(stats, "s001", RATES_OF_S001);
+  assert.deepEqual(stats.passStats, {
+    numVars: PANEL_NUM_VARS,
+    filtering: {},
+  });
+  variants.free();
+});
+
+test("the two rates of ind00 and ind01 of many.vcf are the literals of plink2", () => {
+  // `many.vcf` has what the panel has none of: 257 half called genotypes,
+  // which are missing and not heterozygous, and one variant in ten of three
+  // alleles, whose heterozygous genotypes are heterozygous like any other.
+  const variants = many();
+
+  const stats = calcPerIndividualStats(variants);
+
+  assert.equal(stats.individuals.length, 50);
+  assertTheRatesOf(stats, "ind00", RATES_OF_IND00);
+  assertTheRatesOf(stats, "ind01", RATES_OF_IND01);
+  assert.equal(stats.passStats.numVars, MANY_NUM_VARS);
+  variants.free();
+});
+
+test("an individual with no called genotype has a missing rate of 1 and no heterozygosity rate", () => {
+  // The heterozygosity rate is over the called genotypes of the individual,
+  // and an individual that called none has no rate: NaN is what the package
+  // gives its user for a value the core does not have. `ind1` is called at
+  // both variants and heterozygous at one of them.
+  const variants = openVcf(
+    vcfOf([
+      "chr1\t1\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t0/0\t./.",
+      "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
+    ]),
+  );
+
+  const stats = calcPerIndividualStats(variants);
+
+  assert.deepEqual(stats.individuals, ["ind1", "ind2", "ind3"]);
+  assertTheRatesOf(stats, "ind1", [0, 0.5]);
+  const [missingGtRate, obsHetRate] = ratesOf(stats, "ind3");
+  assert.equal(missingGtRate, 1);
+  assert.ok(
+    Number.isNaN(obsHetRate),
+    `the heterozygosity rate of ind3 is ${obsHetRate} and not NaN`,
+  );
+  variants.free();
+});
+
+test("the individuals come in the order a filter of individuals named them in", () => {
+  // The names are those of the pass, which a `filterIndividuals` gives in
+  // the order the user named them. That filter takes no variant away, so
+  // the rates of `ind00` are the ones of the pass over the 50 individuals.
+  const named = ["ind05", "ind00", "ind49"];
+  const variants = many();
+  variants.filterIndividuals(named);
+
+  const stats = calcPerIndividualStats(variants);
+
+  assert.deepEqual(stats.individuals, named);
+  assert.equal(stats.missingGtRate.length, 3);
+  assertTheRatesOf(stats, "ind00", RATES_OF_IND00);
+  assert.equal(stats.passStats.numVars, MANY_NUM_VARS);
+  variants.free();
+});
+
+test("a pass over a source with no variant is refused", () => {
+  // A rate over no variant is no number, and the message says whether the
+  // source held none or the steps kept none of them: this VCF has a header
+  // and no data line.
+  const variants = openVcf(vcfOf([]));
+
+  assert.throws(
+    () => calcPerIndividualStats(variants),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("the pass gave no variant") &&
+      error.message.includes("its source holds none"),
+  );
+
+  variants.free();
+});
+
+test("a pass whose filter kept no variant is refused with the counts of that filter", () => {
+  // The other half of that refusal: no variant of `many.vcf` has a major
+  // allele frequency below 0, and one with no called allele is not kept
+  // either, so the filter is given the 500 and keeps none.
+  const variants = many();
+  variants.filterByMaf(0);
+
+  assert.throws(
+    () => calcPerIndividualStats(variants),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("the pass gave no variant") &&
+      error.message.includes("the `maf` filter was given 500 and kept 0"),
   );
 
   variants.free();

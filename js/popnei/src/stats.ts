@@ -1,5 +1,5 @@
 /**
- * The statistics of the variants, per population.
+ * The statistics of the variants, per population, and of the individuals.
  *
  * A population is a named set of individuals that a calculation treats as a
  * group, and `pops` is how a user names them: an object of population name
@@ -13,6 +13,12 @@
  * a histogram of them. The per variant values are not kept: a million of
  * them for each population do not fit a browser tab, and a user who wants
  * them takes the genotypes with `iterBlocks`.
+ *
+ * `calcPerIndividualStats` makes a pass of its own and gives two numbers for
+ * each individual instead: the share of the variants at which its genotype
+ * is missing and the share of its called genotypes at which it is
+ * heterozygous. It takes no `pops`, since each of its values is of one
+ * individual.
  */
 
 import {
@@ -555,4 +561,88 @@ function polyVarsStatsOf(
     numVariable,
     totNumVariantsWithData,
   };
+}
+
+/** What `calcPerIndividualStats` gives back. */
+export interface PerIndividualStats {
+  /**
+   * The name of each individual the pass gave, in its order, which is the
+   * order of the source unless a `filterIndividuals` named them in another
+   * one, and the order of the two arrays below.
+   */
+  individuals: readonly string[];
+
+  /**
+   * The variants at which the genotype of the individual is missing, a half
+   * called genotype among them, over the variants of the pass.
+   */
+  missingGtRate: Float64Array;
+
+  /**
+   * The variants at which the genotype of the individual is called and its
+   * alleles are not all the same, over its called genotypes, and NaN for an
+   * individual that called none of them.
+   */
+  obsHetRate: Float64Array;
+
+  /**
+   * How many variants the pass gave, after the steps of the `Variants`, and
+   * what each filter of it was given and kept.
+   */
+  passStats: PassStats;
+}
+
+/**
+ * The missing rate and the heterozygosity rate of every individual of
+ * `variants`, in one pass over them.
+ *
+ * The missing rate is the share of the variants at which the individual has
+ * no genotype, and a half called genotype is missing and not heterozygous.
+ * The heterozygosity rate is the share of its called genotypes at which its
+ * alleles are not all the same. The first tells a user which individuals
+ * were badly genotyped, and the second which ones are more heterozygous than
+ * the rest, a sign of a mixed sample or of an outcrossed individual among
+ * inbred ones. An individual that called no genotype has a missing rate of 1
+ * and no heterozygosity rate, NaN.
+ *
+ * It is a consumer of the `variants`: it makes one pass over the source
+ * through the steps the `Variants` has when it is called, and the `Variants`
+ * is as it was afterwards. The individuals are the ones that pass gives,
+ * which a `filterIndividuals` kept, in the order the user named them there.
+ *
+ * It is pyNei's `calc_per_sample_stats` under the names of this package,
+ * with these differences: the heterozygosity rate divides by the called
+ * genotypes of the individual, where pyNei divides by every variant, so an
+ * individual with more missing data looks less heterozygous there, and
+ * popnei's number is what plink2's `--het` gives, with the missing rate
+ * beside it saying what pyNei's one number said; pyNei's sample is popnei's
+ * individual; there is no `num_threads`, since wasm has one thread; and the
+ * result has `passStats`.
+ *
+ * @throws {Error} When `variants` is not a `Variants` or was freed; when the
+ * source cannot be read, a wrong line of a VCF among the causes; when the
+ * pass gives no variant, whether the source holds none or the steps kept
+ * none; and when `init` has not been awaited.
+ */
+export function calcPerIndividualStats(
+  variants: Variants,
+): PerIndividualStats {
+  theWasmHasToBeLoaded();
+  const { source, steps } = sourceOfTheVariants("variants", variants);
+  // The steps of the pass are a copy of the list: the call takes it over and
+  // frees it.
+  const stats = source.calc_per_individual_stats(steps.of_a_pass());
+  // Every array is copied out of the memory of wasm as it is read, and the
+  // result holds that memory until it is freed, which is here: what the user
+  // gets are the copies.
+  try {
+    return {
+      individuals: Object.freeze(stats.individuals()),
+      missingGtRate: stats.missing_gt_rate(),
+      obsHetRate: stats.obs_het_rate(),
+      passStats: passStatsOf(stats.pass_stats()),
+    };
+  } finally {
+    stats.free();
+  }
 }

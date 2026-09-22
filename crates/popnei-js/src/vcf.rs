@@ -17,7 +17,10 @@ use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::errors::JsPopneiError;
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
-use crate::stats::{ArgumentsOfThePass, PerVarDistribs, per_var_distribs_of};
+use crate::stats::{
+    ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
+    per_var_distribs_of,
+};
 use crate::steps::Steps;
 
 /// A VCF that was opened: its bytes, the options it is read with, and the
@@ -145,6 +148,20 @@ impl VcfSource {
                 poly_threshold,
             },
         )
+    }
+
+    /// The missing rate and the heterozygosity rate of every individual of
+    /// one pass over the VCF, through the steps of `steps`.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`per_individual_stats_of`]: a source that cannot be read,
+    /// and a pass that gives no variant.
+    pub fn calc_per_individual_stats(
+        &self,
+        steps: Steps,
+    ) -> Result<PerIndividualStats, JsPopneiError> {
+        per_individual_stats_of(self, &steps)
     }
 }
 

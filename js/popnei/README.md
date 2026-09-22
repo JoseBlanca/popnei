@@ -31,6 +31,13 @@ the mean over the variants that had a value and a histogram of them. The
 five are the observed heterozygosity, the major allele frequency, the
 expected heterozygosity, plain and unbiased, and the polymorphism ratio,
 which is three counts and two ratios per population and not a distribution.
+`calcPerIndividualStats` is the second, a pass of its own that gives two
+numbers for each individual instead of one for each population: the share of
+the variants at which its genotype is missing, `missingGtRate`, and the
+share of its called genotypes at which it is heterozygous, `obsHetRate`. The
+second says which individuals are more heterozygous than the rest, a sign of
+a mixed sample or of an outcrossed individual among inbred ones, and it is
+NaN for an individual that called no genotype.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
@@ -231,7 +238,15 @@ frequency of 0.895833 and a plain expected heterozygosity of 0.186632, each
 within 1e-6 of what plink2 prints, and the unbiased expected heterozygosity
 of `p1`, 0.502750, which is the only population a number is known for. A
 name that is not an individual of the pass and a key of `histKwargs` that
-popnei does not know are each an `Error` there. The comparison with pyNei itself is
+popnei does not know are each an `Error` there. Through
+`calcPerIndividualStats` the same file asserts the two rates of `s000`, 34
+missing genotypes of 1200 variants and 426 heterozygous of 1166 called, and
+of `s001`, 44 and 397 of 1156, and those of `ind00` and `ind01` of
+`many.vcf`, 29 of 500 and 201 of 471 and 25 and 195 of 475, which the same
+plink2 reports give with `--vcf-half-call m`; the NaN of an individual that
+called no genotype; the names coming in the order a `filterIndividuals`
+named them in; and the `Error` of a source with no variant and of steps that
+kept none. The comparison with pyNei itself is
 the one of the Python tests; node runs neither library. Several of the tests
 watch the memory of the WebAssembly, which they reach through the loader
 `wasm/popnei.js` generates: that a block, and the bytes of a vars file,
@@ -419,6 +434,26 @@ in a population when the population has too little data at it, and such a
 variant is out of the mean and in no bin, so the histograms of two
 populations can count different numbers of variants.
 
+Another pass gives the two rates of every individual:
+
+```ts
+import { calcPerIndividualStats } from "popnei";
+
+const stats = calcPerIndividualStats(panel);
+// The names of the individuals the pass gave, in its order, which is the
+// order of the two arrays: the rate of `individuals[i]` is at `i` in each.
+console.log(stats.individuals, stats.missingGtRate, stats.obsHetRate);
+```
+
+The heterozygosity rate divides by the called genotypes of the individual,
+where pyNei's `calc_per_sample_stats` divides by every variant, so an
+individual with more missing data looks less heterozygous there: `s000` of
+the panel is heterozygous at 426 of its 1166 called genotypes, 0.365352,
+and at 426 of the 1200 variants, 0.355. popnei's number is what plink2's
+`--het` gives, and the missing rate beside it says what pyNei's one number
+said. An individual that called no genotype has a missing rate of 1 and a
+heterozygosity rate of NaN.
+
 A file written here is larger than the same one written by popnei outside
 the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
 batches of 100, is 53650 bytes written in wasm and 49426 bytes written
@@ -484,7 +519,8 @@ hand:
 - What `calcPerVarDistribs` gives holds nothing of the memory of wasm: the
   means, the edges of the bins and the counts are copies, in the heap of
   JavaScript, and the object of the core they were read out of is freed
-  before the call returns.
+  before the call returns. What `calcPerIndividualStats` gives is the same:
+  the names of the individuals and the two rates are copies.
 - Each block is freed as soon as its columns are copied out, which is
   before it reaches the loop of the user. What the user holds are the
   copies: an `Int8Array` of genotypes, a `Float64Array` of positions and

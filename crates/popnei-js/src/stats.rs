@@ -1,24 +1,30 @@
-//! The statistics of the variants, per population, on their way between
-//! TypeScript and the core.
+//! The statistics of the variants and of the individuals, per population,
+//! on their way between TypeScript and the core.
 //!
-//! One pass calculates up to five statistics for every variant and every
-//! population and gives back, for each of them, the mean over the variants
-//! that had a value and a histogram of them. This module builds that pass:
-//! it turns the arguments a TypeScript user wrote into what the core takes,
-//! the statistics they asked for, the bins of the histogram and the
-//! thresholds of each statistic; it builds the chain of readers of the pass
-//! from the steps of the `Variants`, as the writer of the vars file does,
-//! and the populations against the individuals that chain gives, which are
-//! those of the source after a filter of individuals when the variants carry
-//! one; and it reads the counts of the filters from that chain when the pass
-//! is over, which are the counts of the pass beside the variants the result
-//! counted.
+//! It builds the two passes of the module. One calculates up to five
+//! statistics for every variant and every population and gives back, for
+//! each of them, the mean over the variants that had a value and a histogram
+//! of them; the other gives the share of the variants at which every
+//! individual has no genotype and the share of its called genotypes at which
+//! it is heterozygous.
 //!
-//! What goes out is the arrays of [`PerVarDistribs`], which the package puts
-//! together into the result object of `docs/specs/stats.md`: the means of
-//! one statistic are one number per population, its histogram counts are the
-//! bins of one population after the bins of the one before it, and a
-//! population the core has no value for is NaN.
+//! Each of the two turns the arguments a TypeScript user wrote into what the
+//! core takes, which for the first pass are the statistics they asked for,
+//! the bins of the histogram and the thresholds of each statistic and for
+//! the second are none; builds the chain of readers of the pass from the
+//! steps of the `Variants`, as the writer of the vars file does, and takes
+//! from that chain the individuals the pass gives, which are those of the
+//! source after a filter of individuals when the variants carry one, under
+//! their names for the second pass and as the populations of the first; and
+//! reads the counts of the filters from that chain when the pass is over,
+//! which are the counts of the pass beside the variants the result counted.
+//!
+//! What goes out is the arrays of [`PerVarDistribs`] and of
+//! [`PerIndividualStats`], which the package puts together into the result
+//! objects of `docs/specs/stats.md`: the means of one statistic are one
+//! number per population, its histogram counts are the bins of one
+//! population after the bins of the one before it, the two rates are one
+//! number per individual, and a value the core does not have is NaN.
 //!
 //! The populations cross flat, as the arguments of the steps do: an array of
 //! arrays is not one of the types wasm-bindgen carries, so the names of the
@@ -545,6 +551,104 @@ impl PerVarDistribs {
         self.poly_vars_ratio
             .as_ref()
             .map(|poly| poly.poly_ratio_over_variables.clone())
+    }
+
+    /// How many variants the pass gave, and what each filter of it was given
+    /// and kept, the outermost filter first.
+    #[must_use]
+    pub fn pass_stats(&self) -> PassCounts {
+        self.counts.clone()
+    }
+}
+
+/// The missing rate and the heterozygosity rate of every individual over one
+/// pass over `source`, through the steps of `steps`.
+///
+/// The chain of readers of the pass is built here and stays here, lent to
+/// the core, so that the counts of its filters are read when the pass is
+/// over: the loop over the blocks is the core's.
+///
+/// # Errors
+///
+/// When the source cannot be read, a wrong line of a VCF among the causes;
+/// when the pass gives no variant; and when the chain gave the names of a
+/// different number of individuals than the pass gave rates, which is a
+/// defect of popnei.
+pub(crate) fn per_individual_stats_of(
+    source: &dyn OpenSource,
+    steps: &Steps,
+) -> Result<PerIndividualStats, JsPopneiError> {
+    let reader = source.reader(None)?;
+    let mut chain = chain_of(reader, steps.steps())?;
+    // The rates come out in the order of the rows of the blocks, which is
+    // the order of these names: a filter of individuals gives them in the
+    // order the user named them.
+    let individuals = chain.individuals().to_vec();
+    let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
+    let counts = PassCounts::of(stats.num_vars(), &chain.filtering_stats());
+    let num_individuals = stats.num_individuals();
+    // The package reads the name of an individual and its two rates at the
+    // same place of three arrays, and a name and a rate that are not of the
+    // same individual are a wrong number that says nothing about itself.
+    if individuals.len() != num_individuals {
+        return Err(JsPopneiError::Broken(format!(
+            "the pass gave the names of {given} individuals and the rates of \
+             {num_individuals}",
+            given = individuals.len()
+        )));
+    }
+    let missing_gt_rate = (0..num_individuals)
+        .map(|individual| stats.missing_rate(individual))
+        .collect();
+    // An individual with no called genotype has no heterozygosity rate, and
+    // NaN is what the package gives its user for a value the core does not
+    // have, as it does for the mean of a population in which no variant had
+    // one.
+    let obs_het_rate = (0..num_individuals)
+        .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
+        .collect();
+    Ok(PerIndividualStats {
+        individuals,
+        missing_gt_rate,
+        obs_het_rate,
+        counts,
+    })
+}
+
+/// What one pass of the per individual statistics gives JavaScript.
+///
+/// Every array is copied out of the memory of wasm as it is read, and the
+/// object itself holds that memory until its `free()` is called, which the
+/// package does as soon as it has read every array of it.
+#[wasm_bindgen]
+pub struct PerIndividualStats {
+    individuals: Vec<String>,
+    missing_gt_rate: Vec<f64>,
+    obs_het_rate: Vec<f64>,
+    counts: PassCounts,
+}
+
+#[wasm_bindgen]
+impl PerIndividualStats {
+    /// The name of each individual the pass gave, in its order, which is the
+    /// order of the two arrays of rates.
+    #[must_use]
+    pub fn individuals(&self) -> Vec<String> {
+        self.individuals.clone()
+    }
+
+    /// The variants at which each individual has no genotype, a half called
+    /// one among them, over the variants of the pass.
+    #[must_use]
+    pub fn missing_gt_rate(&self) -> Vec<f64> {
+        self.missing_gt_rate.clone()
+    }
+
+    /// The heterozygous genotypes of each individual over its called ones,
+    /// and NaN for an individual that called none of them.
+    #[must_use]
+    pub fn obs_het_rate(&self) -> Vec<f64> {
+        self.obs_het_rate.clone()
     }
 
     /// How many variants the pass gave, and what each filter of it was given

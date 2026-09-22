@@ -21,10 +21,11 @@ export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";
-export { calcPerVarDistribs } from "./stats.js";
+export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
 export type {
   BinType,
   HistKwargs,
+  PerIndividualStats,
   PerVarDistribs,
   PerVarDistribsOptions,
   PerVarStat,
