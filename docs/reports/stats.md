@@ -263,3 +263,98 @@ made together with work package 4, which calls its two counts from the
 statistics and compares them with pyNei through them.
 
 The subagent of task 3.1 used 156366 tokens in 63 tool calls.
+
+## Work package 4: the per variant distributions, through the three layers
+
+Task 4.1, commit 6a0dbdc: `HistBins` with the bins of equal width and of
+equal ratio, and `ObsHet`, `Maf` and `ExpHet` with the value of one
+variant in one population, in `crates/popnei/src/stats.rs`; four cases
+of the error, each a `ValueError` in Python. Two choices of arithmetic
+the spec leaves open, both made so that the value is the one numpy
+computes or does not become NaN: a frequency is raised to the exponent
+by that many multiplications and not with `powf`, so at ploidy 2 it is
+numpy's `p * p` on every platform; and the unbiased value multiplies
+the k factors of each term one over another, because the product
+`c (c - 1) ... (c - k + 1)` for a million called alleles and an
+exponent of 255 is above the largest float64 and the value would be NaN
+with nothing to say so. The writer checked two readings against numpy
+before choosing: `linspace` writes the end of the range into the last
+edge instead of `start + num_bins * step`, and `logspace` raises 10 to
+the logarithm of the end; popnei does the same.
+
+Task 4.2, commits 1232779 and 1fbbdd1: `calc_per_var_distribs` with
+`PerVarStat`, `PerVarDistribsConfig`, `StatsDistrib`, `PolyVarsStats`
+and `PerVarDistribs`, rayon over chunks of 64 rows merged in the order
+of the block, with the serial version beside it for wasm, and two cases
+of the error, a pass that gave no variant and a `poly_threshold` out of
+range. Before the code, 1232779 put into the spec the numbers the
+worked example lacked: the plain expected heterozygosity and the
+polymorphism counts of the case with no populations, and the counts
+under a `poly_threshold` of 0.5, all from pyNei at ef0ca6e, so that a
+test can tell whether the threshold is read at all. Every number the
+spec already had came out of the same run unchanged.
+
+Task 4.3, commits 923b36b, 0fa1c74 and a108621: the Python side. The
+function of the binding crate builds the chain with `chain_of`, the
+populations with `Pops::from_names` against the individuals of that
+chain, runs the pass with the interpreter released and reads the counts
+of the filters from the chain afterwards; `python/popnei/stats.py` holds
+`calc_per_var_distribs` and the four result types with their pandas
+series and frames; `tests/test_stats.py` has 34 tests. Two spec
+commits came first. 923b36b makes a key of `hist_kwargs` that popnei
+does not know a `ValueError` that names the three it takes, where pyNei
+ignores it: a user who writes `nbins` gets the 40 bins of the default
+with nothing said, which is not the result they asked for. This
+follows the owner's rule that an error never passes silently, and it is
+his to reverse. 0fa1c74 writes down what the comparison with pyNei can
+and cannot assert, which is the finding of this work package worth the
+owner's attention.
+
+Task 4.4, commit 631e281: the TypeScript side, `calcPerVarDistribs` as
+a method of each source class, as `write_vars` and `blocks` are, with
+the populations crossing flat and the result as a `Float64Array` of
+means with NaN and a `Uint32Array` of histogram counts; 14 tests in
+`js/popnei/test/stats.test.ts`.
+
+The four deliverables are met, run by the orchestrator at 631e281.
+`cargo test -p popnei --lib -- stats::hist stats::obs_het stats::maf
+stats::exp_het --list` prints `31 tests`, where the plan asks 16 or
+more; `cargo test -p popnei --lib -- stats::distribs --list` `13
+tests`, where it asks 8 or more; `uv run pytest tests/test_stats.py -k
+per_var` `34 passed`; `npm test` `tests 154`, `fail 0`, from 140.
+`cargo test --workspace` `396 passed`, 2 ignored, from 352; `uv run
+pytest` `223 passed`, from 189. `cargo fmt`, `cargo clippy`, `cargo
+wasm-check` and ruff clean.
+
+What the owner should know from this work package.
+
+The unbiased expected heterozygosity does not agree with pyNei to the
+last bit, and cannot: popnei multiplies the factors of each term one
+over another and pyNei multiplies the plain value by `c / (c - 1)`. The
+two agree to the last bit or the one before it, so the means agree
+within 1e-12, but a variant whose value falls on an edge of the
+histogram is counted on either side of it. Two of them do, both
+measured on 22 September 2026 with the default histogram of 40 bins
+from 0 to 1: the variant at position 9695 of `many.vcf` has the allele
+counts 55 and 45 of 100, whose value is exactly 0.5, and popnei gives
+0.5 where pyNei gives 0.4999999999999999; the variant `var0978` of the
+panel in the population p2 has 106 and 54 of 160, value exactly 0.45,
+and popnei gives 0.45000000000000007 where pyNei gives
+0.44999999999999996. So the test compares the counts of that one
+statistic allowing a variant within 1e-9 of an edge to fall on either
+side, and the counts of the other four exactly. It is in the spec, in
+commit 0fa1c74.
+
+The Python package now depends on pandas 3.0.2, pyNei's version,
+because the spec says the results are its series and frames; `uv.lock`
+moved with it. In TypeScript the populations of a result come in the
+iteration order of the keys of the object the user gave, and JavaScript
+puts keys that are whole numbers first, in numeric order, so
+populations named "1" and "2" would come before one named "north"
+whatever the user wrote. It is documented on the argument. A `Map`
+would keep the insertion order of every name, and the spec does not
+say which of the two it wants.
+
+The subagents used: task 4.1 213303 tokens in 68 tool calls; task 4.2
+221213 in 98; task 4.3 282844 in 135; task 4.4 302305 in 81. None had
+to be sent back.
