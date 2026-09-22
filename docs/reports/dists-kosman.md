@@ -146,3 +146,51 @@ For the owner, from task 2.2, his to reverse:
   its source has is refused with the error the readers already have for
   blocks that do not fit together, so that a reader with a defect cannot
   line the pairs up wrongly in silence.
+
+Tasks 2.3 and 2.4 ran side by side, on different files of the one tree.
+
+Task 2.3, commit b9ced15: `calc_pairwise_kosman_dists` and `Distances`
+in `python/popnei/dists.py`, exported from `popnei`, over one function
+of the binding crate that builds the chain with `chain_of`, runs the
+calculation with the interpreter released and hands the vector over as
+a read only float64 array without a copy; and `tests/test_dists.py`, 29
+tests. Run by the orchestrator: `uv run pytest` `203 passed`, from 174;
+`uv run pytest tests/test_dists.py` `29 passed`; fmt, clippy, `cargo
+test --workspace` `339 passed`, `cargo wasm-check`, ruff `20 files
+already formatted` clean. popnei and pyNei agree bit for bit over the
+19900 pairs of the panel and the 780 of the 4 allele dataset, with
+`min_num_snps` of `None` and of 1125, NaN in the same places. 243988
+tokens.
+
+Task 2.4, commit 49e99c6: `calcPairwiseKosmanDists` and `Distances` in
+`js/popnei/src/dists.ts`, exported from the node and the web entry
+points, over a function of the wasm binding crate that does what the
+Python one does, and `js/popnei/test/dists.test.ts`, 13 tests. Run by the
+orchestrator: `npm run build && npm test` in `js/popnei` `tests 139`,
+`fail 0`, from 126. 197836 tokens.
+
+For the owner, from tasks 2.3 and 2.4, his to reverse:
+
+- `Distances(vector)` with no names gives the names 0 to N-1 as
+  integers, as pyNei does, so `names` is a tuple of `int` there and of
+  `str` for a calculation. The spec says "the names 0 to N-1" and not
+  which; the subagent followed pyNei.
+- `min_num_snps` is refused by the Python package and not by the binding
+  crate, so that a negative value, 2.5, `True` and a value above
+  4294967295 are refused with the name the user wrote and not pyo3's
+  `OverflowError` on the Rust argument. The last bound is the largest n
+  a pair can have, since the core refuses sums above a `u32`.
+- The array a user gives `Distances` is held and not copied, where
+  pyNei copies: writing into it changes the result. Copying would have
+  made the 400 MB of 10000 individuals 800 MB. It is in the docstring.
+- The binding crates got one error case each for a pass with no
+  variant, which carries the path and the filters' counts, since no
+  case of theirs did; the subagent of 2.3 changed one sentence of
+  `.claude/skills/coding/pyo3.md`, which counted the cases of the Python
+  one.
+- Two errors of the calculation, a sum above `u32::MAX` and an
+  accumulator the machine has no memory for, reach Python and
+  TypeScript through the arm that turns any other error of the core into
+  a `ValueError` or an `Error`, and no test outside the core reaches
+  them: one needs thousands of millions of variants and the other a
+  machine that refuses hundreds of megabytes.

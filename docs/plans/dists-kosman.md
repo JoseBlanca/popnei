@@ -197,7 +197,7 @@ TypeScript,
   `cfg(not(target_family = "wasm"))` as the VCF reader does it, and the
   cargo tests of deliverable 2. From "How it runs" and "The Rust
   interface". Serves deliverable 2. Needs 2.1 and work package 1.
-- [ ] 2.3 The Python side: the function of `crates/popnei-python` that
+- [x] 2.3 The Python side: the function of `crates/popnei-python` that
   builds the chain with `chain_of`, runs the calculation and gives back
   the distances, the names and the counts of the pass, as `write_vars`
   of `vars.rs` does; `Distances` and `calc_pairwise_kosman_dists` in
@@ -205,7 +205,7 @@ TypeScript,
   deliverable 3 in `tests/test_dists.py`. From "Its Python function",
   "Missing genotypes, pairs with no distance, and what pyNei asserts"
   and "What pyNei does that is odd". Serves deliverable 3. Needs 2.2.
-- [ ] 2.4 The TypeScript side: the same in `crates/popnei-js`,
+- [x] 2.4 The TypeScript side: the same in `crates/popnei-js`,
   `calcPairwiseKosmanDists` and `Distances` in `js/popnei/src/dists.ts`,
   and `test/dists.test.ts`. From the TypeScript paragraph of "Its
   Python function". Serves deliverable 4. Needs 2.2; can run side by
