@@ -411,6 +411,40 @@ pub enum Error {
         end: f64,
     },
 
+    /// The two ends of the range of a histogram are each a number, and the
+    /// distance between them is above the largest float64. The width of a
+    /// bin is that distance over the bins, so it is infinite, and the edges
+    /// of 4 bins from -1e308 to 1e308 are NaN, infinite, infinite, infinite
+    /// and 1e308: they do not go up, and the search for the bin of a value
+    /// over edges that do not go up puts every value in the first bin.
+    /// numpy refuses the same range, with "Too many bins for data range",
+    /// and pyNei's `numpy.histogram` with "'bins' must increase
+    /// monotonically".
+    #[error(
+        "the range of the histogram is {start:?} to {end:?}, and the distance between its two ends is above the largest float64: the width of a bin is that distance over the bins, and the edges of the bins have to go up"
+    )]
+    HistRangeTooWide {
+        /// The start of the range that was given.
+        start: f64,
+        /// The end of the range that was given.
+        end: f64,
+    },
+
+    /// The histogram of a statistic was asked for more bins than
+    /// `stats::MAX_NUM_BINS`. Every bin is a count of 8 bytes for each
+    /// population and each statistic, once in the pass and once more in
+    /// every chunk of rows a thread is reading, and a histogram a person
+    /// reads has tens of bins.
+    #[error(
+        "the histogram was asked for {num_bins} bins, and it has {largest} at most: a histogram a person reads has tens of bins, and the counts of more than {largest} of them for each population and each statistic are more memory than a machine gives"
+    )]
+    HistTooManyBins {
+        /// How many bins the histogram was asked for.
+        num_bins: usize,
+        /// The most it has, `stats::MAX_NUM_BINS`.
+        largest: usize,
+    },
+
     /// The range of a histogram whose bins are of equal ratio starts at 0 or
     /// below. Each edge is the one before it times a fixed factor, and no
     /// factor takes 0 anywhere. pyNei refuses it too, in `_prepare_bins`.

@@ -44,6 +44,19 @@ pub const DEFAULT_HIST_RANGE: (f64, f64) = (0.0, 1.0);
 /// other number, 40, inherited from pyNei's `_prepare_bins`.
 pub const DEFAULT_NUM_BINS: usize = 40;
 
+/// The most bins a histogram of a statistic is built with, 100000.
+///
+/// A histogram a person reads has tens of bins, and [`DEFAULT_NUM_BINS`],
+/// pyNei's, is 40. Every bin is a count of 8 bytes for each population and
+/// each statistic, held once by a pass and once more by every chunk of rows
+/// a thread is reading, so 100000 bins of the four statistics that have
+/// them, over one population, are 3.2 MB in a chunk. More bins than this
+/// are refused, because their counts are a vector no machine gives: the
+/// allocation of 2^60 of them panics, and a panic in the core is a
+/// `PanicException` in Python, which derives from `BaseException` and ends
+/// a notebook, and the trap that ends the module in wasm.
+pub const MAX_NUM_BINS: usize = 100_000;
+
 /// The name a Python and a TypeScript user writes for bins of equal width,
 /// which [`HistBins::linear`] builds. pyNei spells it `lineal`, the Spanish
 /// word, and popnei refuses that name as any other unknown one, which the
@@ -246,9 +259,10 @@ impl HistBins {
     ///
     /// # Errors
     ///
-    /// When `num_bins` is 0, when `start` is not below `end`, and when
-    /// either of the two is NaN or infinite, which leaves every edge
-    /// between them NaN.
+    /// When `num_bins` is 0 or above [`MAX_NUM_BINS`], when `start` is not
+    /// below `end`, when either of the two is NaN or infinite, which leaves
+    /// every edge between them NaN, and when the two are further apart than
+    /// a float64 goes, which leaves the width of a bin infinite.
     pub fn linear(start: f64, end: f64, num_bins: usize) -> Result<HistBins> {
         check_the_range(start, end, num_bins)?;
         let width_of_a_bin = (end - start) / num_bins as f64;
@@ -344,14 +358,29 @@ fn edges_of(start: f64, width_of_a_bin: f64, num_bins: usize, end: f64) -> Vec<f
 ///
 /// # Errors
 ///
-/// A `num_bins` of 0, a `start` that is not below `end`, and a `start` or
-/// an `end` that is NaN or infinite.
+/// A `num_bins` of 0 or above [`MAX_NUM_BINS`], a `start` that is not below
+/// `end`, a `start` or an `end` that is NaN or infinite, and two ends
+/// further apart than a float64 goes.
 fn check_the_range(start: f64, end: f64, num_bins: usize) -> Result<()> {
     if num_bins == 0 {
         return Err(Error::HistWithNoBin);
     }
+    if num_bins > MAX_NUM_BINS {
+        return Err(Error::HistTooManyBins {
+            num_bins,
+            largest: MAX_NUM_BINS,
+        });
+    }
     if !start.is_finite() || !end.is_finite() || start >= end {
         return Err(Error::HistRangeNotGoingUp { start, end });
+    }
+    // The width of a bin is the distance between the two ends over the
+    // bins, and two finite ends can be further apart than a float64 goes:
+    // -1e308 to 1e308 leaves the width infinite and the edges NaN,
+    // infinite, infinite, infinite and 1e308, which do not go up, so the
+    // search for the bin of a value puts every value in the first bin.
+    if !(end - start).is_finite() {
+        return Err(Error::HistRangeTooWide { start, end });
     }
     Ok(())
 }
@@ -1725,7 +1754,7 @@ mod fixtures {
 
 #[cfg(test)]
 mod hist {
-    use super::HistBins;
+    use super::{HistBins, MAX_NUM_BINS};
     use crate::error::Error;
 
     /// One unit of the last digit that numpy and pyNei print of a
@@ -1908,6 +1937,60 @@ mod hist {
                 "{start} to {end}: {error:?}"
             );
         }
+    }
+
+    /// The distance between the two ends of the range is a number too: the
+    /// width of a bin is that distance over the bins, and 4 bins from
+    /// -1e308 to 1e308 have the width infinity and the edges NaN,
+    /// infinity, infinity, infinity and 1e308, which do not go up, so the
+    /// search for the bin of a value puts every value in the first bin.
+    /// numpy refuses the same range with "Too many bins for data range.
+    /// Cannot create 4 finite-sized bins."
+    #[test]
+    fn a_range_whose_two_ends_are_further_apart_than_a_float64_goes_is_refused() {
+        for (start, end) in [(-1e308, 1e308), (f64::MIN, f64::MAX)] {
+            let error = HistBins::linear(start, end, 4).unwrap_err();
+            assert!(
+                matches!(&error, Error::HistRangeTooWide { .. }),
+                "{start} to {end}: {error:?}"
+            );
+        }
+        // No range of bins of equal ratio has an infinite width: its two
+        // ends are above 0, so the distance between them is the end at
+        // most, and the widths are taken over the base 10 logarithms of the
+        // ends, which lie between -324 and 309.
+        let of_equal_ratio =
+            HistBins::logarithmic(1e-300, 1e300, 4).expect("the widest range of equal ratios");
+        assert!(of_equal_ratio.edges().iter().all(|edge| edge.is_finite()));
+    }
+
+    /// A histogram has [`MAX_NUM_BINS`] bins at most, whatever a user
+    /// writes for `num_bins`: the counts of one of 2^60 bins are a vector
+    /// no machine gives, which is a panic of the allocation and, in Python,
+    /// a `PanicException` that derives from `BaseException` and ends a
+    /// notebook.
+    #[test]
+    fn a_histogram_of_more_bins_than_a_person_reads_is_refused() {
+        for num_bins in [MAX_NUM_BINS.saturating_add(1), 1 << 40, usize::MAX] {
+            for built in [
+                HistBins::linear(0.0, 1.0, num_bins),
+                HistBins::logarithmic(0.01, 100.0, num_bins),
+            ] {
+                let error = built.unwrap_err();
+                assert!(
+                    matches!(&error, Error::HistTooManyBins { num_bins: found, largest }
+                        if *found == num_bins && *largest == MAX_NUM_BINS),
+                    "{num_bins}: {error:?}"
+                );
+            }
+        }
+        // The bound itself is built, and its bins are counted.
+        assert_eq!(
+            HistBins::linear(0.0, 1.0, MAX_NUM_BINS)
+                .expect("the largest histogram")
+                .num_bins(),
+            MAX_NUM_BINS
+        );
     }
 
     /// Bins of equal ratio start above 0, since each edge is the one before
