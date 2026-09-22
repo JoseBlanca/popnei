@@ -128,8 +128,21 @@ pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
 the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
 used: batch, which is written for two other things, arrow's unit of the
 vars file, and the lines that the VCF reader reads and parses together,
-several to a block; and window. A vars file is written
-with one batch for each block, and read back in blocks of any size.
+several to a block; and window, which has a meaning of its own below. A
+vars file is written with one batch for each block, and read back in
+blocks of any size.
+
+**window.** The variants that a calculation or a filter compares one
+variant with: those on its chromosome whose position is no more than a
+stated distance from it. It is never a run of blocks nor a number of
+variants: a window is a stretch of a chromosome in base pairs, and how
+many variants fall in it is whatever the dataset has there. The filter by
+linkage disequilibrium of `docs/specs/filters.md` holds the variants it
+has kept inside the window of the variant it is looking at, and the curve
+of linkage disequilibrium against distance of `docs/specs/ld.md` compares
+each variant with the ones inside its own. Not used: window for a block
+or for a run of blocks, which is what a reader holds and not what a
+calculation compares.
 
 **member.** One gzip stream of a gzipped file. A file that bgzip wrote is
 many of them one after another, each with 64 KiB of text at most and each

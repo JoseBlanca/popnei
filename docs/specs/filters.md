@@ -22,6 +22,16 @@ which the counts reach them; and, for the filter by linkage
 disequilibrium alone, on `docs/specs/ld.md`, which has the r² that filter
 compares and the dosages it reads the genotypes as.
 
+That last dependency puts the `filters` module on the `ld` module and so
+on the linear algebra, while `docs/specs/ld.md` is on this one for the
+chain of filters of a pass: two modules that use each other, as `variant`
+and `block` do. It also splits this spec in two for whoever builds it.
+The three threshold filters and the counts are part of the walking
+skeleton of section 10 of `docs/architecture.md` and are built. The
+filter by linkage disequilibrium comes after `linalg` and `ld`, where
+section 9 of that document puts what sits on the linear algebra, and
+nothing that is built waits for it.
+
 ## The three threshold filters
 
 ### What they give
@@ -139,7 +149,7 @@ holds in `variants.steps`, a tuple with a `Step` for each step, in order:
 ```python
 @dataclass(frozen=True)
 class Step:
-    kind: str                  # "missing_data", "maf" or "obs_het"
+    kind: str                  # "missing_data", "maf", "obs_het" or "ld"
     args: dict[str, object]    # {"max_allowed_maf": 0.95}
 ```
 
@@ -345,8 +355,8 @@ The counts are in what a pass produces, and not in the `Variants`: every
 result of a consumer has a `pass_stats`, the `PassStats` of
 `docs/specs/variant.md`, and so has the iterator that `iter_blocks`
 returns. Its `filtering` is a dict of the kind of each filter,
-`"missing_data"`, `"maf"` or `"obs_het"`, to its `FilteringStats`, in the
-order of the steps, and it is empty when the `Variants` had no filter.
+`"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`, to its
+`FilteringStats`, in the order of the steps, and it is empty when the `Variants` had no filter.
 
 ```python
 variants.filter_by_missing_data(0.04)
@@ -503,6 +513,10 @@ under that kind in the `filtering` of a `PassStats`.
 Neither argument has a default, as `max_allowed_missing_rate` has none. A
 `max_allowed_r2` that is not a number from 0 to 1, and a `max_dist` below
 1, are a `ValueError` at the call that names the argument and the value.
+The binding crate takes `max_dist` as a signed integer and checks it
+itself, so that a negative one is that `ValueError` and not the
+`OverflowError` that pyo3 raises when a negative number is asked of a
+`u64`.
 
 It carries what `filter_by_ld_and_maf` of `pynei/var_filters.py` does,
 and differs from it in five ways.
@@ -535,6 +549,13 @@ and differs from it in five ways.
 - **A missing genotype takes its individual out of the pair it is in**,
   where pyNei gives it a dosage of -1. `docs/specs/ld.md` has the
   measurement.
+- **A pair whose r² is not defined does not drop the candidate.** pyNei
+  keeps the variants whose r against the reference passes
+  `numpy.abs(r) < min_allowed_r2`, and a NaN passes no comparison, so a
+  candidate whose r cannot be computed is dropped. Two variants that both
+  have variance get no r² when the individuals called at both hold one
+  dosage, which is a pair that says nothing about either variant, not a
+  pair that says they are the same. Decided here.
 
 In TypeScript it is `variants.filterByLd(maxAllowedR2, maxDist)`, which
 returns nothing, with the two refusals above as an `Error` at the call.
@@ -562,6 +583,20 @@ genotypes is for the other filters: this filter asks its source for the
 chromosome and the position besides the genotypes, whatever its consumer
 asked for, and the blocks it gives hold all three.
 
+The window of a variant is the variants kept *behind* it, so this filter
+is the one part of popnei that needs the variants of each chromosome to
+come together and in order of position. Two variants at one position are
+allowed and are 0 apart, so each is in the other's window. A variant
+whose position is below the one before it on the same chromosome, and a
+variant on a chromosome that had already ended, are an error that names
+the variant, its position and the one before it. The rest of popnei reads
+a source in any order, and `docs/specs/io_vars.md` has a test that writes
+a block of four variants that are not sorted, so this is the one reader
+that refuses what the others take. Decided here: the alternative is to
+subtract two positions that can run backwards, which on a `u64` wraps to
+a distance of 18 million million million and puts the pair outside every
+window without a word.
+
 ### What pyNei does that is odd
 
 Read and run in pyNei at commit ef0ca6e.
@@ -578,13 +613,19 @@ compared with one a whole chromosome arm away as readily as with its
 neighbour.
 
 The first variant of the first chunk is kept whatever it is, `if ref_gt
-is None: selected_vars.append(0)`, and it becomes the reference. When its
-called genotypes all hold one dosage, every r against it is NaN, no NaN
-is below the threshold, and nothing else is ever kept: the whole dataset
-comes out as that one variant. Run on 22 September 2026 on six variants
+is None: selected_vars.append(0)`, and it becomes the reference. When
+every one of its genotypes holds the same value, every r against it is
+NaN, no NaN is below the threshold, and nothing else is ever kept: the
+whole dataset comes out as that one variant. The value counted is the one
+`to_012` writes, so a missing genotype is a -1 that differs from every
+dosage and gives the reference variance: the collapse needs a variant
+with no missing genotype at all. Run on 22 September 2026 on six variants
 of five individuals with `min_allowed_r2=0.9` and `max_allowed_maf=1`,
-pyNei keeps 1 of the 6 when the first variant has one dosage and 5 of the
-6 when the same six are given with a variant that has two dosages first.
+pyNei keeps 1 of the 6 when every genotype of the first variant is `0/0`,
+6 of the 6 when one of those five is `./.` instead, and 5 of the 6 when
+the same six variants are given with a variant of two dosages first.
+popnei drops a variant of one dosage wherever it is, so it has neither
+the collapse nor the rescue by a missing genotype.
 
 The name `min_allowed_r2` is the r below which a variant counts as
 unlinked and is kept, so raising it keeps more variants: on
@@ -628,18 +669,24 @@ and never block boundaries.
 
 The r² is verified against plink2 v2.0.0-a.7.7 in `docs/specs/ld.md`,
 which agrees with the formula there to 5.6e-16. The rule on top of it is
-verified against the r² that plink2 itself gives, with the two properties
-that hold of the set the rule keeps and of no other:
+verified against the r² that plink2 itself gives, with three properties
+of the set it keeps:
 
+- every kept variant has two dosages at least among its called genotypes;
 - no two kept variants on one chromosome and within `max_dist` of each
-  other have an r² above `max_allowed_r2`, and
+  other have an r² above `max_allowed_r2`; and
 - every dropped variant whose called genotypes hold two dosages has an r²
   above `max_allowed_r2` against some variant that was kept before it and
   is within `max_dist` on its chromosome.
 
-Both are checked in the reference script against the float64 matrix that
-`plink2 --r2-unphased square bin` writes, so every decision of the filter
-is pinned to plink2's numbers and not to popnei's own. On
+All three are checked in the reference script against the float64 matrix
+that `plink2 --r2-unphased square bin` writes, so every decision of the
+filter is pinned to plink2's numbers and not to popnei's own. They do not
+pin the set by themselves, which the counts of the table below do: the
+first property is what a set that also kept the 68 variants of one dosage
+would fail, since the other two say nothing about those variants, and a
+set that dropped a variant it could have kept would pass all three and
+come out with a count that is too low. On
 `tests/reference/ld/ld.vcf.gz` of `docs/specs/ld.md`, 500 variants of 100
 individuals on two chromosomes 250000 bp long with 68 variants of one
 dosage, run on 22 September 2026, both properties hold at every setting
@@ -657,17 +704,23 @@ The cargo tests, made at `next_block` of an `LdFilteredReader` over a
 positions where the table has them, with blocks of 7, of 64 and of the
 default size, which have to keep the same variants.
 
-plink2's own `--indep-pairwise <max_dist>kb <max_allowed_r2>` keeps 65,
-84, 41 and 32 variants in those four rows, none of them a variant of one
-dosage, and at 50000 and 0.3 its 41 share 12 variants with popnei's 85.
-Its set also has no linked pair inside the window, so both rules give a
-set of unlinked variants and plink2's is the smaller: it removes
-variants from windows it has already passed, which a filter that gives
-its blocks on cannot do, and its first kept variant of chr1 is
-chr1:11000 where popnei's is chr1:1000. Reproducing its set would need
-its stepping of the window and its order of removal, which its `--help`
-does not state. So `--indep-pairwise` is not what popnei's set is
-compared with; the two properties above are.
+plink2's own `--indep-pairwise` keeps 65, 84, 41 and 32 variants in those
+four rows, none of them a variant of one dosage. Its window is in
+kilobases where `max_dist` is in base pairs, so the four commands are
+`--indep-pairwise 10kb 0.1`, `10kb 0.3`, `50kb 0.3` and `250kb 0.3`; with
+the base pairs written into them instead, `10000kb 0.1` keeps 18 and
+`50000kb 0.3` keeps 32, both of which put each whole chromosome in one
+window.
+
+Its sets too have no linked pair inside the window, so both rules give
+sets of unlinked variants and plink2's are the smaller: at 50000 and 0.3
+its 41 share 12 variants with popnei's 85, and its first kept variant of
+chr1 is chr1:11000 where popnei's is chr1:1000. It removes variants from
+windows it has already passed, which a filter that gives its blocks on
+cannot do, and reproducing its set would need its stepping of the window
+and its order of removal, which its `--help` does not state. So
+`--indep-pairwise` is not what popnei's set is compared with; the three
+properties above are.
 
 The worked example, the first cargo test, made at `LdFilter::filter_block`
 on the five variants of 6 individuals of "How it is verified" of
@@ -683,6 +736,22 @@ by plink2, with v4 the variant of one dosage:
 The counts of that first row are 5 variants given and 2 kept, and a
 missing data filter at 1 before it and an observed heterozygosity filter
 at 1 after it give 5 and 5, 5 and 2, 2 and 2.
+
+Against the Python API, a pytest test made at `Variants.filter_by_ld`:
+`ld.vcf.gz` filtered at the four settings of the table gives the four
+counts and the five positions, and the blocks a whole `iter_blocks`
+yields hold those variants and no others; the `Step` it adds has the kind
+`"ld"` and both arguments under the names of the arguments, and comes
+after a maf filter added before it; the `filtering` of the `pass_stats`
+has an `"ld"` with 500 given and 84 kept in the first row of the table,
+after the `"maf"` of a maf filter put before it, which is what a user
+writes in place of pyNei's one call; a `max_allowed_r2` of -0.1, of 1.5
+and of NaN, a `max_dist` of 0 and of -1, and a call with either argument
+missing are a `ValueError` and a `TypeError` as "In Python and in
+TypeScript" says; a second `filter_by_ld` is a `ValueError`, also with
+another filter between the two; and a source whose positions go backwards
+within a chromosome is the `ValueError` of "Which variant of a linked
+pair is kept, and the cases", on a VCF written for it.
 
 There is no test against pyNei for which variants are kept: pyNei's rule
 compares a candidate with the last kept variant alone and reads no
@@ -728,8 +797,6 @@ impl VarFilteringCriterion {
 }
 ```
 
-`MaxLdR2` is the one criterion with two values, so it is a struct variant
-where the others carry their threshold alone.
 
 How many variants a filter was given and how many it kept. It is declared
 here, and the `block` module, whose trait gives it, uses it: two modules of

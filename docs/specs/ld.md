@@ -130,7 +130,11 @@ differences:
   0.95, since the r of a variant that hardly varies rests on one or two
   individuals. In popnei that is what `variants.filter_by_maf(0.95)`
   does, a step of the `Variants` that takes those variants out instead of
-  refusing the dataset. Decided here.
+  refusing the dataset, and whose frequency is the one
+  `docs/specs/filters.md` verifies against bcftools at any ploidy, where
+  the guard's own `_calc_maf_from_012_gts` reads the frequency off the
+  dosages in a way that is one only for a diploid biallelic variant.
+  Decided here.
 - **The result has `pass_stats`**, which pyNei's has not.
 
 In TypeScript it is `calcRogersHuffR2Matrix(variants, {maxNumVars})`,
@@ -150,15 +154,25 @@ of the dataset, and each pair of a dataset has an n of its own.
 
 On the panel of `tests/reference/dists/panel.vcf.gz`, 200 individuals and
 1200 biallelic variants with 3 in 100 genotypes missing, the three rules
-give these correlations, measured on 22 September 2026 against plink2
-v2.0.0-a.7.7 over the 1.4 million pairs off the diagonal, in r and not in
-r², which is what pyNei gives. The median |r| of that panel is 0.0845.
+give these r², measured on 22 September 2026 against plink2 v2.0.0-a.7.7
+over the 1.4 million pairs off the diagonal. The median r² of that panel
+is 0.0071.
 
-| the rule | difference from plink2 in r, median | 99th percentile | largest |
+| the rule | difference from plink2 in r², median | 99th percentile | largest |
 |---|---|---|---|
-| the individual is left out of the pair | 1.7e-16 | 1.7e-16 | 1.7e-16 |
-| the genotype takes the mean dosage of its variant | 0.0021 | 0.0147 | 0.634 |
-| pyNei: the genotype is a dosage of -1 | 0.030 | 0.125 | 0.600 |
+| the individual is left out of the pair | 0 | 0 | 0 |
+| the genotype takes the mean dosage of its variant | 0.00035 | 0.0078 | 0.042 |
+| pyNei: the genotype is a dosage of -1 | 0.0037 | 0.047 | 0.194 |
+
+The first row is 0 and not a rounding: every pair of that panel comes out
+of the six whole numbers of "What it gives" with the bits plink2 has. The
+same comparison made on r instead of r² does not reach 0, for a reason
+that has nothing to do with missing genotypes: variant 856 of the panel
+has 197 of its 394 called alleles of one allele and 197 of the other,
+popnei's tie rule makes the lower numbered one major and plink2 makes the
+other, and the r of every pair that variant is in then has the other
+sign. r² is the same whichever allele is called major, so this module
+never sees it.
 
 A variant with no variance, whose called genotypes all have the same
 dosage, has NaN against everything, including against itself, so its row
@@ -180,8 +194,11 @@ does not change when the chunks are cut elsewhere, which popnei takes as
 a test over block sizes; and `test_ld_calc` that a variant with a major
 allele frequency above the guard raises. popnei takes the first, the
 third, and the shape of the second, at its own function; the guard is
-gone, as said above. No test of pyNei has a missing genotype in an LD
-calculation.
+gone, as said above. `test_ld_calc` does put missing genotypes through
+`_calc_rogers_huff_r2`, 963 of its 100000 dosages, since its `geno_freqs`
+gives `(-1, -1)` a weight of 0.01, but it asserts nothing that they could
+move: it compares r with the rate at which its variants were made
+independent, within 0.3.
 
 ### What pyNei does that is odd
 
@@ -190,8 +207,8 @@ Read and run in pyNei at commit ef0ca6e.
 `_calc_rogers_huff_r2` of `pynei/ld_calc.py` returns r and not r². Its
 last line divides the products of the centred dosages by the square root
 of the product of the two sums of squares, which is the correlation, and
-its value is signed: on the panel above the cells off the diagonal run
-from -1 to 1. The name of the function, the `r2` field of `R2Matrix` and
+its value is signed: of the 1.4 million cells off the diagonal of the
+panel above, 725934 are below 0, and they run from -0.5403 to 0.5761. The name of the function, the `r2` field of `R2Matrix` and
 the `r2` field of `LDResult` all say r², and
 `test_the_r_matrix_is_the_one_numpy_cov_gives` compares it with a
 correlation, so the tests hold the value and the names do not.
@@ -204,13 +221,6 @@ missing, and `_center_gts_for_r` of `ld_calc.py` then subtracts the mean
 of the row from that -1 and keeps it among the values, so a missing
 genotype enters the correlation as a dosage below every real one. The
 numbers that rule gives are in the table above.
-
-`_calc_maf_from_012_gts`, which backs the guard that popnei drops, reads
-the major allele frequency off the dosages as (the larger of the counts
-of dosage 0 and dosage 2, plus half the count of dosage 1) over the
-genotypes that have a dosage. That is the frequency of the commonest
-allele only for a diploid biallelic variant, and for any other ploidy it
-is not a frequency at all.
 
 ### How it runs
 
@@ -285,8 +295,16 @@ size. It has two chromosomes of 250 biallelic variants each, 1000 bp
 apart, and 100 diploid individuals, and its haplotypes come from four
 founders recombined along the chromosome at a rate of 2 in 100 between
 one variant and the next, with 3 in 100 genotypes then set to missing.
-The script that writes it is `tests/reference/ld/make_reference.py`, with
-`numpy.random.default_rng(29)`. Its mean r² falls with the distance, from
+The script that writes it is `docs/reports/ld-method/make_ld.py`, which
+the implementation plan moves to `tests/reference/ld/make_reference.py`
+unchanged. Every literal of this spec and of the filter item of
+`docs/specs/filters.md` depends on the order in which that script asks
+`numpy.random.default_rng(29)` for its numbers, the four founders, then
+the recombination of each haplotype along the chromosome, then the mask
+of the missing genotypes, so a script written afresh from this paragraph
+gives another file and fails every literal. The parameters are here so
+that a reader knows what the dataset is, not so that it can be built
+again from them. Its mean r² falls with the distance, from
 0.208 over the pairs up to 25000 bp apart to 0.013 over those between
 225001 and 250000, which is the table of the next item, and is 0.0104
 between the two chromosomes, where nothing links the variants and what is
@@ -338,7 +356,7 @@ two alleles gives to the lower numbered one, and of v2 it is allele 1.
 
 | pair | n | Σx | Σy | Σxy | Σxx | Σyy | r² |
 |---|---|---|---|---|---|---|---|
-| v1, v2 | 6 | 6 | 4 | 4 | 10 | 6 | 27/40 = 0.675 |
+| v1, v2 | 6 | 6 | 4 | 1 | 10 | 6 | 27/40 = 0.675 |
 | v1, v3 | 5 | 4 | 3 | 5 | 6 | 5 | 169/224 = 0.7544642857142857 |
 | v1, v4 | 6 | | | | | | NaN, v4 has no variance |
 | v1, v5 | 6 | 6 | 6 | 5 | 10 | 10 | 36/576 = 0.0625 |
@@ -354,9 +372,10 @@ of 50 diploid individuals with 54 variants of more than two alleles and
 257 half called genotypes among its 25000. There popnei and plink2 are
 not the same calculation, and the measurement that says by how much is
 under **Open 2**. So this file checks the dosages and not the r²: the
-dosages popnei reads from it are compared with pyNei's `to_012`, which
-counts the alleles of a half called genotype as popnei does, and the r²
-of the dosages is what plink2 verifies on the two files above. A pytest
+dosages popnei reads from it, at `LdDosages::dosages` of "The Rust
+interface", are compared with pyNei's `to_012`, which counts the alleles
+of a half called genotype as popnei does, and the r² of those dosages is
+what plink2 verifies on the two files above. A pytest
 test also asserts that a variant with no called genotype gives a row of
 NaN and not an error.
 
@@ -469,11 +488,11 @@ It mirrors `calc_ld_and_dist_per_pop` of `pynei/ld.py`. The differences:
 - **`num_bins` is new**, and so is `sd_r2`, which comes with the bins.
 - **There is no `method`.** pyNei takes `LDCalcMethod.GENERATOR` or
   `MATRIX` and the two do not count the same pairs: the generator gives
-  each pair once, and the matrix gives every ordered pair, so each
-  unordered pair twice, which is why
-  `test_ld_for_pops_with_filtered_vars` asserts `num_vars * (num_vars -
-  1)` measures for the generator. popnei counts each pair once. Decided
-  here.
+  each pair once and the matrix gives every ordered pair, so each
+  unordered pair twice. Run on the 2 chromosomes of 30 variants of
+  `test_ld_for_pops_with_filtered_vars`, the generator gives 870
+  measures, which is 2 times the 435 pairs of 30 variants, and the matrix
+  1740. popnei counts each pair once. Decided here.
 - **There is no `max_num_measures_to_keep`**, which goes with the sample.
 - **The result has `pass_stats`** and `num_vars_per_pop`, which pyNei's
   has not; pyNei gives back a plain dict of lists.
@@ -496,8 +515,12 @@ A dataset of one chromosome whose variants span less than `min_dist`
 gives every bin empty, and so does one whose variants are each on a
 chromosome of their own. Neither is an error.
 
-A population in which every variant fails `max_allowed_maf` gives every
-bin empty and a `num_vars_per_pop` of 0. The other populations are not
+A variant with no called allele among the individuals of a population
+has no major allele frequency there, so it is left out of that population
+as a variant above the threshold is, and it can still be in another
+population that called it. A population in which every variant is left
+out, by its frequency or for having nothing called, gives every bin empty
+and a `num_vars_per_pop` of 0, and the other populations are not
 affected.
 
 A pair of variants on two chromosomes has no distance and is in no bin,
@@ -613,7 +636,7 @@ over those of the population:
 | 100001 to 125000 | 4304 | 0.024750005446480792 | 4473 | 0.02676089802517462 |
 | 125001 to 150000 | 3540 | 0.02220350204444288 | 3567 | 0.02136589829323258 |
 | 150001 to 175000 | 2872 | 0.01770136991605654 | 2823 | 0.02578147369672746 |
-| 175001 to 200000 | 2137 | 0.02022495044871507 | 2117 | 0.02294629377272581 |
+| 175001 to 200000 | 2137 | 0.02022495044871507 | 2086 | 0.02294629377272581 |
 | 200001 to 225000 | 1240 | 0.01792337843122636 | 1275 | 0.022448095913909734 |
 | 225001 to 250000 | 438 | 0.020745833685396994 | 415 | 0.016086351215632733 |
 
@@ -679,6 +702,11 @@ impl LdDosages {
     /// least. One that does not has NaN against every variant, itself
     /// among them.
     pub fn has_variance(&self, var: usize) -> bool;
+    /// The dosage of each individual at the variant, in the order the
+    /// individuals were given, and `None` for a genotype with an allele
+    /// missing. It is what the check of `many.vcf` in "How it is
+    /// verified" compares with pyNei's `to_012`.
+    pub fn dosages(&self, var: usize) -> Option<impl Iterator<Item = Option<u8>> + '_>;
     /// The largest of the counts of the alleles over the called alleles
     /// of the variant, the major allele frequency of
     /// `docs/specs/filters.md`, over the individuals this was built with.
@@ -852,17 +880,19 @@ pyNei has no comparable number: `calc_ld_and_dist_per_pop` over a dataset
 of that size would hold every chunk in memory and build the whole square
 matrix of each chunk pair.
 
-Neither was measured in WebAssembly, where the products run on faer.
-`docs/specs/linalg.md` measured the product of a 5000 x 1000 block with
-itself there at 187 ms, against 10.5 ms with Accelerate on one thread
-natively, so the numbers above are to be read as roughly eighteen times
-larger in a browser; the implementation plan measures them. That 187 ms
-is with the vector instructions of WebAssembly, the ones that work on
-sixteen bytes at a time, which `.cargo/config.toml` now passes to both
-wasm targets and which `docs/objectives.md` made the floor of the
-browsers popnei runs in on 22 September 2026, after the performance
-review of the Kosman distances asked for them. Without them the same
-product took 306 ms.
+Neither was measured in WebAssembly, and no factor is given for it here,
+because the product `docs/specs/linalg.md` timed in both places is not
+one of these: it is `A'A` of a 5000 x 1000 block, whose result is 1000 x
+1000, where the products above have a result of 5000 x 5000 and five
+times the arithmetic. What that spec measured is faer at 187 ms in wasm
+against Accelerate at 7.4 ms natively on the threads it takes by itself,
+and 10.5 ms on one. The implementation plan measures these products in
+both places. The 187 ms is with the vector instructions of WebAssembly,
+the ones that work on sixteen bytes at a time, which `.cargo/config.toml`
+now passes to both wasm targets and which `docs/objectives.md` made the
+floor of the browsers popnei runs in on 22 September 2026, after the
+performance review of the Kosman distances asked for them; without them
+the same product took 306 ms.
 
 ## Open points
 
