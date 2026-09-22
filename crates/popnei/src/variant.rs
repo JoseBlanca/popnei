@@ -597,6 +597,14 @@ pub fn count_alleles_of(
 ///
 /// An individual at or beyond the `num_individuals` the variant holds the
 /// genotypes of.
+#[expect(
+    clippy::unnecessary_lazy_evaluations,
+    reason = "the error is built only when the individual is beyond the variant: with \
+              `ok_or` rustc builds it before it knows whether it is needed, and the \
+              destructor of `Error`, which is out of line because other cases of it own \
+              strings, is then called on every lookup of every individual of every \
+              population"
+)]
 fn genotype_of(
     gts: &[i8],
     ploidy: usize,
@@ -607,7 +615,7 @@ fn genotype_of(
         .checked_mul(ploidy)
         .and_then(|first| Some(first..first.checked_add(ploidy)?))
         .and_then(|of_the_individual| gts.get(of_the_individual))
-        .ok_or(Error::IndividualBeyondTheVariant {
+        .ok_or_else(|| Error::IndividualBeyondTheVariant {
             individual,
             num_individuals,
         })
