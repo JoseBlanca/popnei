@@ -420,6 +420,61 @@ pub fn count_gts(gts: &[i8], ploidy: usize) -> Result<GtCounts> {
 /// [`MAX_ALLELE`], which [`count_alleles`] fills.
 pub type AlleleCounts = [u32; 128];
 
+/// How many alleles [`the_counts_of_a_variant_of_two_alleles`] counts with
+/// counters of one byte before it adds them into its totals. A counter of
+/// a byte counts a run of 255 whole without wrapping.
+const ALLELES_PER_RUN: usize = 255;
+
+/// A run is counted with counters of one byte, and a byte counts to 255.
+const _: () = assert!(ALLELES_PER_RUN <= 255, "a byte counts to 255");
+
+/// How often the allele 0 and the allele 1 were called in `gts`, when
+/// every allele of it is one of those two or [`MISSING_ALLELE`], and
+/// `None` when one of them is not, which is also how an allele below the
+/// missing one leaves here.
+///
+/// `num_alleles` is the length of `gts`, which the caller has checked to
+/// be a number a `u32` holds. A dataset of two alleles is the whole of
+/// `gts` for most variants, and the three counts are a comparison and an
+/// addition for each allele with nothing carried from one to the next,
+/// which is what the compiler turns into vector instructions, as it does
+/// for the counting of the codes of `pca`. The alleles are counted in runs
+/// of [`ALLELES_PER_RUN`] with counters of one byte, which is the form
+/// that adds four bytes at a time.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "a run holds 255 alleles at most, so a counter of one byte counts it without \
+              wrapping, and each total counts alleles of `gts`, whose number the caller \
+              checked to be one a u32 holds"
+)]
+fn the_counts_of_a_variant_of_two_alleles(gts: &[i8], num_alleles: u32) -> Option<(u32, u32)> {
+    let mut zeros = 0_u32;
+    let mut ones = 0_u32;
+    let mut missing = 0_u32;
+    for run in gts.chunks(ALLELES_PER_RUN) {
+        let mut zeros_of_the_run = 0_u8;
+        let mut ones_of_the_run = 0_u8;
+        let mut missing_of_the_run = 0_u8;
+        for &allele in run {
+            zeros_of_the_run += u8::from(allele == 0);
+            ones_of_the_run += u8::from(allele == 1);
+            missing_of_the_run += u8::from(allele == MISSING_ALLELE);
+        }
+        zeros += u32::from(zeros_of_the_run);
+        ones += u32::from(ones_of_the_run);
+        missing += u32::from(missing_of_the_run);
+    }
+    // The three values are different, so an allele is counted in one of
+    // the three counts at most, and the three come to the alleles of `gts`
+    // exactly when every allele is one of them. The sum is below the
+    // alleles of `gts` and does not overflow.
+    if zeros + ones + missing == num_alleles {
+        Some((zeros, ones))
+    } else {
+        None
+    }
+}
+
 /// It writes into `counts[a]` how often the allele a was called in the
 /// genotypes of one variant, and gives how many alleles it counted, the
 /// called alleles.
@@ -442,18 +497,30 @@ pub type AlleleCounts = [u32; 128];
     clippy::arithmetic_side_effects,
     reason = "the called alleles and each entry of `counts` start at 0 and are raised by \
               one at most once for each allele of `gts`, which were checked above to be \
-              a number a u32 holds"
+              a number a u32 holds, and the zeros and the ones of a variant of two alleles \
+              are alleles of `gts` counted once each, so their sum is one too"
 )]
 pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
     // The counts of one variant are u32, so a variant of more alleles
     // than a u32 holds is refused instead of counted into a number that
     // wrapped.
-    if u32::try_from(gts.len()).is_err() {
+    let Ok(num_alleles) = u32::try_from(gts.len()) else {
         return Err(Error::MoreAllelesThanACountHolds {
             num_alleles: gts.len(),
         });
-    }
+    };
     counts.fill(0);
+    // A variant whose alleles are the missing one, 0 and 1 is counted
+    // without the table: the counts of the two alleles are its whole
+    // counts, and the entries above them keep the 0 they were just
+    // cleared to. A variant with any other allele is counted by the loop
+    // below, which is also what refuses an allele below the missing one.
+    if let Some((zeros, ones)) = the_counts_of_a_variant_of_two_alleles(gts, num_alleles) {
+        for (entry, count) in counts.iter_mut().zip([zeros, ones]) {
+            *entry = count;
+        }
+        return Ok(zeros + ones);
+    }
     let mut called_alleles = 0_u32;
     for &allele in gts {
         if allele == MISSING_ALLELE {
@@ -477,7 +544,7 @@ pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles, count_gts};
+    use super::{AlleleCounts, ChromTable, GtCounts, MAX_ALLELE, Needs, count_alleles, count_gts};
     use crate::error::Error;
 
     /// The six variants of five diploid individuals of the worked example
@@ -632,6 +699,43 @@ mod tests {
         assert!(
             matches!(error, Error::AlleleBelowTheMissingOne { allele: i8::MIN }),
             "{error}"
+        );
+    }
+
+    /// A variant whose alleles are the missing one, 0 and 1 is counted
+    /// without the table of 128 counts, and a variant with any other
+    /// allele is counted with it. The two ways give the same counts, and
+    /// the entries of the alleles the variant does not hold are 0, also
+    /// when the variant counted before it held them.
+    #[test]
+    fn count_alleles_of_a_variant_of_two_alleles_and_of_one_of_more() {
+        let mut counts: AlleleCounts = [0; 128];
+        // Four alleles, so the table counts it: it leaves the entries of
+        // the alleles 2 and 3 at 2 each.
+        assert_eq!(count_alleles(&THE_SIX_VARIANTS[2], &mut counts).unwrap(), 8);
+        assert_eq!(counts[2], 2);
+        assert_eq!(counts[3], 2);
+
+        // Two alleles, so the table is not walked: the entries of the
+        // alleles 2 and 3 are the 0 of the clearing and not what the
+        // variant before left.
+        assert_eq!(count_alleles(&THE_SIX_VARIANTS[0], &mut counts).unwrap(), 9);
+        assert_eq!(counts[0], 8);
+        assert_eq!(counts[1], 1);
+        assert_eq!(counts[2], 0);
+        assert_eq!(counts[3], 0);
+
+        // A variant of the allele 1 alone, which has no 0 at all, and one
+        // of the allele 2, which is the first that is not one of the two.
+        assert_eq!(alleles_counted(&[1, 1, -1, 1]), (vec![(1, 3)], 3));
+        assert_eq!(
+            alleles_counted(&[0, 2, -1, 1]),
+            (vec![(0, 1), (1, 1), (2, 1)], 3)
+        );
+        // The largest allele there is, which the table counts.
+        assert_eq!(
+            alleles_counted(&[0, MAX_ALLELE]),
+            (vec![(0, 1), (127, 1)], 2)
         );
     }
 
