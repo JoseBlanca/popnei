@@ -387,6 +387,59 @@ pub enum Error {
     )]
     NoPop,
 
+    /// The histogram of a statistic was asked for no bin. A histogram
+    /// counts the variants that fall in each of its bins, so one with no bin
+    /// counts nothing: pyNei hands `num_bins` to `numpy.linspace`, which
+    /// gives one edge for 0 bins and a histogram that no value falls in.
+    #[error(
+        "the histogram was asked for 0 bins, and a histogram has 1 bin at least: `num_bins` is how many bins the values of the statistic are counted in"
+    )]
+    HistWithNoBin,
+
+    /// The range of the histogram of a statistic does not run from a number
+    /// up to a larger one: its two ends are equal, they are the wrong way
+    /// round, or one of them is NaN or infinite, which leaves every edge
+    /// between them NaN.
+    #[error(
+        "the range of the histogram is {start:?} to {end:?}, and a range runs from a number up to a larger one: the bins divide that range, and the statistics of one variant lie between 0 and 1"
+    )]
+    HistRangeNotGoingUp {
+        /// The start of the range that was given.
+        start: f64,
+        /// The end of the range that was given.
+        end: f64,
+    },
+
+    /// The range of a histogram whose bins are of equal ratio starts at 0 or
+    /// below. Each edge is the one before it times a fixed factor, and no
+    /// factor takes 0 anywhere. pyNei refuses it too, in `_prepare_bins`.
+    #[error(
+        "the range of the histogram starts at {start:?} and its bins are of equal ratio, which start above 0: each edge is the one before it times a fixed factor, and no factor takes 0 anywhere"
+    )]
+    HistLogRangeNotAboveZero {
+        /// The start of the range that was given.
+        start: f64,
+    },
+
+    /// The ploidy or the exponent a statistic of one variant was built with
+    /// is 0, or above the largest ploidy a reader of popnei gives. A trial
+    /// implementation of the expected heterozygosity in September 2026 gave,
+    /// with an exponent of 0, a plain -2.0 and an unbiased NaN for the
+    /// allele counts 2, 1 and 1; a ploidy of 0 turns the
+    /// `min_num_individuals` test off, since it asks for 0 called alleles;
+    /// and an exponent of 1e8 took 0.2 s for one variant.
+    #[error(
+        "the {kind} of a statistic of one variant is {value}, and it is 1 at least and {largest} at most, the largest ploidy a reader of popnei gives; the exponent is the number the allele frequencies are raised to, which is the ploidy of the variants unless the caller asks for another one"
+    )]
+    StatPloidyOutOfRange {
+        /// Which of the two it is, `ploidy` or `exponent`.
+        kind: &'static str,
+        /// The number that was given for it.
+        value: usize,
+        /// The largest one, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

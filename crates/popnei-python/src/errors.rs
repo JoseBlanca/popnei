@@ -322,7 +322,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // same kind of thing in the argument of the call that calculates
         // it: a name that is not an individual of the variants, a name
         // twice in one population, a population that names no individual,
-        // and `pops` with no population at all. What
+        // and `pops` with no population at all. The three of the
+        // histogram of a statistic are of the same kind, in `hist_kwargs`:
+        // a histogram of no bin, a range that does not run from a number up
+        // to a larger one, and a range of bins of equal ratio that starts at
+        // 0 or below. So is the ploidy or the exponent of a statistic of one
+        // variant that is 0 or above 255, which a user writes in the
+        // `ploidy` argument of the calculation. What
         // is wrong with them is wrong whatever file is read, so they name
         // no file although some of them are refused while one is being
         // opened.
@@ -338,7 +344,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::IndividualOfAPopNotInThePass { .. }
         | popnei::Error::IndividualNamedTwiceInAPop { .. }
         | popnei::Error::PopWithNoIndividual { .. }
-        | popnei::Error::NoPop => PyValueError::new_err(message),
+        | popnei::Error::NoPop
+        | popnei::Error::HistWithNoBin
+        | popnei::Error::HistRangeNotGoingUp { .. }
+        | popnei::Error::HistLogRangeNotAboveZero { .. }
+        | popnei::Error::StatPloidyOutOfRange { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF
