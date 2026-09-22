@@ -2055,6 +2055,35 @@ mod obs_het {
         }
     }
 
+    /// The three variants of four individuals of `test_obs_het_stats` of
+    /// pyNei's `test/test_gt_counts.py`, over the one population of the
+    /// four: `0/0 1/1 ./. 0/1`, which is 1 heterozygous genotype of 3
+    /// called, `./1 0/0 0/1 1/0`, 2 of 3, whose first genotype is half
+    /// called and missing, and four missing genotypes, which have no value.
+    /// The values are the 1/3, 2/3 and none that test computes.
+    #[test]
+    fn the_three_values_of_the_test_of_pynei() {
+        let obs_het = ObsHet::new(1);
+        let of_the_three: [[i8; 8]; 3] = [
+            [0, 0, 1, 1, -1, -1, 0, 1],
+            [-1, 1, 0, 0, 0, 1, 1, 0],
+            [-1, -1, -1, -1, -1, -1, -1, -1],
+        ];
+        let expected = [Some(1.0 / 3.0), Some(2.0 / 3.0), None];
+        for (var, gts) in of_the_three.iter().enumerate() {
+            let found = obs_het.of_var(gt_counts(gts));
+            match expected[var] {
+                Some(value) => assert_value(
+                    found,
+                    value,
+                    OF_A_PRINTED_VALUE,
+                    &format!("the observed heterozygosity of the variant {var} of pyNei's test"),
+                ),
+                None => assert_eq!(found, None, "the variant {var} of pyNei's test has a value"),
+            }
+        }
+    }
+
     /// The literals of `var0000` of the panel, which the `--hardy` report
     /// of plink2 v2.0.0-a.7.7 prints per population: the genotypes
     /// homozygous for the reference allele, heterozygous and homozygous for
