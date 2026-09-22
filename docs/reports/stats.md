@@ -37,8 +37,13 @@ What is asked of the owner.
 1. The merge of `plan/stats`, which is the orchestrator's only ask and
    which it does not do. The branch is from `spec/stats`, which is from
    `main` at 7d8366f, and `main` has moved since: the plan of the
-   Kosman distances between individuals, `docs/plans/dists-kosman.md`,
-   was merged into it at 3aa9484. Three places will meet at the merge.
+   Kosman distances between individuals,
+   `docs/plans/dists-kosman.md`, was merged into it at 3aa9484, and the
+   performance review of those distances at 1428fed, with a correction
+   of its spec at d1c03f8, where `main` stood when this report was
+   written. The review touches the module of the distances, its
+   benchmarks and its documents, none of which this branch touches, so
+   it adds nothing to the merge. Three places will meet at it.
 
    The first is the function that builds the readers of one pass, one
    over another, from what a user asked for, `chain_of` of the core.
