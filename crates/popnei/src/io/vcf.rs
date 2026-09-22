@@ -450,9 +450,62 @@ impl<R: BufRead> VcfSource<R> {
     /// its end.
     fn read_line(&mut self, line: &mut Vec<u8>) -> Result<usize> {
         match self {
-            VcfSource::Plain(source) => Ok(source.read_until(b'\n', line)?),
-            VcfSource::Gzipped(source) => Ok(source.read_until(b'\n', line)?),
+            VcfSource::Plain(source) => Ok(read_line_of(source, line)?),
+            VcfSource::Gzipped(source) => Ok(read_line_of(source.as_mut(), line)?),
             VcfSource::Bgzipped(source) => source.read_line(line),
+        }
+    }
+}
+
+/// The bytes of the next line of the source, with its end of line,
+/// appended to `line`, and how many they were: 0 at the end of the source.
+/// A last line that has no end of line is given, without one.
+///
+/// It is what [`BufRead::read_until`] with `b'\n'` does, and it is here
+/// because `read_until` searches for the end of the line with the scalar
+/// scan of the standard library, a machine word at a time, while the
+/// vector routine of `memchr` is already in the binary. That search is a
+/// fifth of the thread that reads the lines, which is what bounds the
+/// reader when the lines are parsed on many threads.
+/// [`BgzfReader::read_line`] has the same loop over the members of a
+/// bgzipped source.
+///
+/// # Errors
+///
+/// The ones of the source. A read that a signal interrupted is tried
+/// again, as `read_until` does.
+fn read_line_of<R: BufRead>(source: &mut R, line: &mut Vec<u8>) -> std::io::Result<usize> {
+    let mut read: usize = 0;
+    loop {
+        let (taken, the_line_ends) = {
+            let text = match source.fill_buf() {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            if text.is_empty() {
+                return Ok(read);
+            }
+            match memchr::memchr(b'\n', text) {
+                Some(at) => {
+                    // The end of the line is at `at`, which is a byte of
+                    // `text`, so `at + 1` is at most its length.
+                    let end = at.saturating_add(1);
+                    line.extend_from_slice(text.get(..end).unwrap_or_default());
+                    (end, true)
+                }
+                None => {
+                    line.extend_from_slice(text);
+                    (text.len(), false)
+                }
+            }
+        };
+        source.consume(taken);
+        // What was read is what is in `line`, which is in memory, so the
+        // count does not reach the largest `usize`.
+        read = read.saturating_add(taken);
+        if the_line_ends {
+            return Ok(read);
         }
     }
 }
@@ -1930,7 +1983,7 @@ mod tests {
     use super::{
         BYTES_PER_BATCH, BatchRow, GZIP_FLAGS, LINES_PER_BATCH, MAX_PLOIDY, MISSING_VALUE,
         ParsedRow, RowRules, VcfOptions, VcfPlace, VcfReader, parse_row, parse_rows,
-        parse_rows_one_by_one, written_by_bgzip,
+        parse_rows_one_by_one, read_line_of, written_by_bgzip,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2253,6 +2306,49 @@ mod tests {
         }
         .to_string();
         assert!(message.contains("no_such_file.vcf"), "{message}");
+    }
+
+    #[test]
+    fn a_line_is_read_with_its_end_of_line_and_the_last_line_that_has_none_is_given() {
+        // Once over a source whose buffer holds one byte, so that every
+        // line spans many fills of it, and once over one that holds the
+        // whole text, so that every line is found in the first fill.
+        for capacity in [1_usize, 4096] {
+            let bytes = b"chr1\t100\n\nchr2\t200".to_vec();
+            let mut source = BufReader::with_capacity(capacity, Cursor::new(bytes));
+            let mut line = b"what was there before".to_vec();
+            assert_eq!(
+                read_line_of(&mut source, &mut line).unwrap(),
+                9,
+                "{capacity}"
+            );
+            assert_eq!(
+                line.as_slice(),
+                b"what was there beforechr1\t100\n".as_slice(),
+                "{capacity}"
+            );
+            line.clear();
+            assert_eq!(
+                read_line_of(&mut source, &mut line).unwrap(),
+                1,
+                "{capacity}"
+            );
+            assert_eq!(line.as_slice(), b"\n".as_slice(), "{capacity}");
+            line.clear();
+            assert_eq!(
+                read_line_of(&mut source, &mut line).unwrap(),
+                8,
+                "{capacity}"
+            );
+            assert_eq!(line.as_slice(), b"chr2\t200".as_slice(), "{capacity}");
+            line.clear();
+            assert_eq!(
+                read_line_of(&mut source, &mut line).unwrap(),
+                0,
+                "{capacity}"
+            );
+            assert!(line.is_empty(), "{capacity}");
+        }
     }
 
     #[test]
