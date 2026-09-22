@@ -7,6 +7,18 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 
+# The feature that crates/popnei-linalg has, passed on so that a build of
+# this crate can turn it off. With it, which is the default, the linear
+# algebra runs on the BLAS and LAPACK of the system natively; without it,
+# on faer, and then nothing of popnei links a library of the system, so a
+# machine with no BLAS and no Fortran compiler builds it and the two
+# backends can be compared on one machine by building the same thing
+# twice, which is what docs/specs/linalg.md asks of the feature. The wasm
+# targets have no BLAS and the feature changes nothing there.
+[features]
+default = ["blas"]
+blas = ["popnei-linalg/blas"]
+
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
