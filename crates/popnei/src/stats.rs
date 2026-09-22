@@ -1501,6 +1501,26 @@ mod pops {
         assert!(!pops.is_all(1));
     }
 
+    /// A number at or beyond the populations is no population of the
+    /// `Pops`: it has no name, no individual, and it is not every
+    /// individual of the reader, which is what the three doc comments say.
+    /// A caller walks `0..len()` and never asks for one, and what those
+    /// three give beyond it is what keeps them out of a panic.
+    #[test]
+    fn a_number_beyond_the_populations_has_no_name_and_no_individual() {
+        let of_every_individual = Pops::all(5);
+        let named = Pops::from_names(
+            &[pop_of("pop1", &["i1", "i2"]), pop_of("pop2", &["i3"])],
+            &the_five_individuals(),
+        )
+        .unwrap();
+        for (pops, beyond) in [(&of_every_individual, 1), (&named, 2), (&named, 9)] {
+            assert_eq!(pops.name(beyond), "");
+            assert_eq!(pops.individuals(beyond), [] as [usize; 0]);
+            assert!(!pops.is_all(beyond));
+        }
+    }
+
     /// The order of the populations is the one they were given in, and the
     /// order of the individuals of each the one the user named them in,
     /// which is not the order of the source here.
@@ -1831,6 +1851,20 @@ mod hist {
                 1.0,
             ]
         );
+    }
+
+    /// The last edge is the end of the range itself and not the start plus
+    /// the bins times the width, which is what `numpy.linspace` gives: the
+    /// width of three bins from 0 to 0.9 is 0.3, and 0 plus three times it
+    /// is 0.8999999999999999, one unit in the last place below the 0.9
+    /// numpy and popnei end at. A value of exactly 0.9 is in the last bin
+    /// with the one and outside the range with the other, so the two count
+    /// the variants at the end of the range differently.
+    #[test]
+    fn the_last_edge_is_the_end_of_the_range_and_not_the_widths_added_up() {
+        let bins = HistBins::linear(0.0, 0.9, 3).unwrap();
+        assert_eq!(bins.edges(), [0.0, 0.3, 0.6, 0.9]);
+        assert_eq!(bins.bin_of(0.9), Some(2));
     }
 
     /// The example of `test_logarithmic_bins_span_the_given_range` of
@@ -2699,6 +2733,12 @@ mod distribs {
     /// ratios of the polymorphism counts of the panel and of `many.vcf`.
     const OF_A_PRINTED_RATIO: f64 = 1e-12;
 
+    /// What two sizes of block are allowed to differ by in a mean, relative
+    /// to the mean, which "What pyNei asserts, and the size of the blocks"
+    /// of the spec gives: where the blocks were cut decides which rows are
+    /// added up together, and the addition of floats is not associative.
+    const OF_TWO_BLOCK_SIZES: f64 = 1e-12;
+
     /// A reader of the tests that gives the blocks it was built with, which
     /// is how the worked examples of the spec reach the pass: five diploid
     /// individuals named `i1` to `i5`, the individuals of both worked
@@ -2715,6 +2755,11 @@ mod distribs {
     }
 
     impl GivenBlocks {
+        /// The fields the pass last asked it to fill.
+        fn needs(&self) -> Needs {
+            self.needs
+        }
+
         /// The reader over `blocks`, which it gives in their order.
         fn of(blocks: Vec<Block>) -> GivenBlocks {
             let mut chroms = ChromTable::new();
@@ -2867,7 +2912,7 @@ mod distribs {
     /// neither a count nor a mean depends on where the blocks were cut.
     #[test]
     fn the_means_and_the_histograms_of_the_worked_example_over_the_two_populations() {
-        for num_vars_per_block in [6, 2] {
+        for num_vars_per_block in [6, 2, 1] {
             let mut reader = the_worked_example(num_vars_per_block);
             let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
                 .expect("the distributions of the worked example");
@@ -2918,7 +2963,7 @@ mod distribs {
     /// 2, 3 and 5.
     #[test]
     fn the_means_and_the_histograms_of_the_worked_example_with_no_pops() {
-        for num_vars_per_block in [6, 2] {
+        for num_vars_per_block in [6, 2, 1] {
             let mut reader = the_worked_example(num_vars_per_block);
             let found = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
                 .expect("the distributions of the five individuals");
@@ -2950,7 +2995,7 @@ mod distribs {
     /// individuals together have 0.888889, 0.857143, 0.25 and 0.8.
     #[test]
     fn the_polymorphism_counts_and_ratios_of_the_worked_example() {
-        for num_vars_per_block in [6, 2] {
+        for num_vars_per_block in [6, 2, 1] {
             let mut reader = the_worked_example(num_vars_per_block);
             let found = calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
                 .expect("the distributions of the worked example");
@@ -3072,13 +3117,30 @@ mod distribs {
     /// The reader over a VCF of the reference files, with every variant
     /// given and the blocks of the size popnei chose for its individuals.
     fn vcf_reader(name: &str) -> VcfReader<BufReader<File>> {
+        vcf_reader_of(name, None)
+    }
+
+    /// The same reader, with blocks of `num_vars_per_block` variants when
+    /// the test asks for a size of its own.
+    fn vcf_reader_of(name: &str, num_vars_per_block: Option<usize>) -> VcfReader<BufReader<File>> {
         let options = VcfOptions {
             ploidy: 2,
             only_passed: false,
-            num_vars_per_block: None,
+            num_vars_per_block,
         };
         VcfReader::<BufReader<File>>::from_path(&reference(name), options)
             .unwrap_or_else(|error| panic!("{name}: {error}"))
+    }
+
+    /// The populations of `many.vcf` that the tests over it use, `popA` of
+    /// the first 20 individuals and `popB` of the other 30.
+    fn the_pops_of_many_vcf(reader: &VcfReader<BufReader<File>>) -> Pops {
+        pops_of_the_file(
+            "stats/many_pops.txt",
+            false,
+            reader.individuals(),
+            &["popA", "popB"],
+        )
     }
 
     /// The populations `wanted` of a file of the reference, one line of an
@@ -3291,6 +3353,83 @@ mod distribs {
         }
     }
 
+    /// A value outside the range of the bins counts in the mean and in no
+    /// bin, which "In Python and in TypeScript" of the pass states. The
+    /// observed heterozygosities of pop1 in the worked example are 0.5,
+    /// 0.5, 1 and 0, so with two bins from 0 to 0.5 the 1 of variant 3 is
+    /// above the range: the mean is the 0.5 of the table of the spec, over
+    /// the four variants that have a value, and the bins count three of
+    /// them. A pass that dropped such a value from the mean too would give
+    /// 1/3 here.
+    #[test]
+    fn a_value_above_the_range_of_the_bins_counts_in_the_mean_and_in_no_bin() {
+        let mut reader = the_worked_example(6);
+        let mut config = config_of(the_two_pops(), 1);
+        config.bins = HistBins::linear(0.0, 0.5, 2).expect("two bins from 0 to 0.5");
+        let found = calc_per_var_distribs(&mut reader, &config)
+            .expect("the distributions of the worked example");
+
+        let what = "the observed heterozygosity of pop1 over two bins from 0 to 0.5";
+        assert_mean(found.obs_het.as_ref(), 0, 0.5, what);
+        assert_hist(found.obs_het.as_ref(), 0, &[1, 2], what);
+        assert_eq!(
+            found
+                .obs_het
+                .as_ref()
+                .expect("the observed heterozygosity")
+                .num_vars_with_value(0),
+            4,
+            "{what} is over four variants and counts three of them in a bin"
+        );
+    }
+
+    /// The pass reads a row of genotypes as it is for a population of every
+    /// individual of the reader, and it checks the width of the row before
+    /// it does: a `Pops` built against another reader would otherwise count
+    /// individuals the population does not hold and give a mean of them. A
+    /// `Pops::all(5)` over a block of three individuals is the error of the
+    /// counts of one variant, which name the individual beyond the row.
+    #[test]
+    fn a_pops_of_more_individuals_than_the_block_holds_is_refused() {
+        let of_three_individuals = Block {
+            num_vars: 2,
+            num_individuals: 3,
+            ploidy: 2,
+            gts: vec![0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1],
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of(vec![of_three_individuals]);
+        let error = calc_per_var_distribs(&mut reader, &config_of(Pops::all(5), 1))
+            .expect_err("a population of five individuals over a block of three");
+        assert!(
+            matches!(
+                &error,
+                Error::IndividualBeyondTheVariant {
+                    individual: 3,
+                    num_individuals: 3
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// The pass asks its reader for the genotypes alone, which "How it
+    /// runs" of the per variant distributions states: the five statistics
+    /// follow from them, and a reader that filled the columns of the
+    /// chromosome, the position, the id, the alleles and the quality would
+    /// read and hold what nothing reads.
+    #[test]
+    fn the_pass_asks_its_reader_for_the_genotypes_alone() {
+        let mut reader = the_worked_example(6);
+        calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+            .expect("the distributions of the worked example");
+        assert_eq!(reader.needs(), Needs::GTS);
+    }
+
     /// A statistic that was not asked for is `None` in the result and
     /// changes none of the others: asking for fewer is a saving of work.
     #[test]
@@ -3353,62 +3492,182 @@ mod distribs {
         let on_one = of_the_pool(1);
         assert_eq!(on_one.num_vars, 500);
         for threads in [2, 3, 4, 8, 16] {
-            let on_more = of_the_pool(threads);
-            assert_eq!(on_one.num_vars, on_more.num_vars);
-            for ((of_one, what), (of_more, _)) in the_four_distribs(&on_one)
-                .into_iter()
-                .zip(the_four_distribs(&on_more))
-            {
-                let of_one = of_one.expect("the distribution on one thread");
-                let of_more = of_more.expect("the distribution on more threads");
-                for pop in 0..of_one.num_pops() {
-                    assert_eq!(
-                        of_one.hist_counts(pop),
-                        of_more.hist_counts(pop),
-                        "the histogram of {what} of the population {pop}, on {threads} threads"
-                    );
-                    assert_eq!(
-                        of_one.num_vars_with_value(pop),
-                        of_more.num_vars_with_value(pop)
-                    );
-                    let (Some(mean_of_one), Some(mean_of_more)) =
-                        (of_one.mean(pop), of_more.mean(pop))
-                    else {
-                        panic!("{what} of the population {pop} has no mean");
-                    };
-                    // The bits and not a tolerance: the chunks are of a
-                    // fixed number of rows and are added in the order of the
-                    // block, so the threads add the same values in the same
-                    // order, and a mean that differed in its last bit would
-                    // say that the order had changed.
-                    assert_eq!(
-                        mean_of_one.to_bits(),
-                        mean_of_more.to_bits(),
-                        "the mean of {what} of the population {pop} is {mean_of_one} on one \
-                         thread and {mean_of_more} on {threads}"
-                    );
+            assert_the_same_numbers(
+                &on_one,
+                &of_the_pool(threads),
+                Agree::ToTheBit,
+                &format!("{threads} threads against one"),
+            );
+        }
+    }
+
+    /// The chunks of a block read one after another, which is what wasm
+    /// runs, give what the same chunks give on the threads of rayon, to the
+    /// bit: they are the same chunks of the same rows and they are added in
+    /// the same order. Nothing else compares the two paths, so without this
+    /// the one a browser runs is only compiled.
+    ///
+    /// The block is the 500 variants of `many.vcf`, which are seven chunks
+    /// of 64 rows and one of 52.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_chunks_of_a_block_read_one_by_one_give_what_the_threads_give() {
+        use super::{Asked, Totals, add_the_block, add_the_chunks_one_by_one, the_distribs};
+
+        let mut reader = vcf_reader_of("vcf/many.vcf", Some(500));
+        reader.set_needs(Needs::GTS);
+        let config = config_of(the_pops_of_many_vcf(&reader), 5);
+        let block = reader
+            .next_block()
+            .expect("the block of many.vcf")
+            .expect("many.vcf has variants");
+        assert_eq!(block.num_vars, 500);
+        let alleles_per_var = block.alleles_per_var().expect("the alleles of one variant");
+        let asked = Asked::of(&config.stats);
+        let of_the_path = |on_the_threads: bool| {
+            let mut totals = Totals::of(config.pops.len(), config.bins.num_bins(), asked);
+            if on_the_threads {
+                add_the_block(&block, alleles_per_var, &config, asked, &mut totals)
+                    .expect("the rows of the block on the threads");
+            } else {
+                add_the_chunks_one_by_one(&block, alleles_per_var, &config, asked, &mut totals)
+                    .expect("the chunks of the block one by one");
+            }
+            the_distribs(&totals, &config, asked, 500)
+        };
+
+        assert_the_same_numbers(
+            &of_the_path(true),
+            &of_the_path(false),
+            Agree::ToTheBit,
+            "the chunks read one by one against the chunks read on the threads",
+        );
+    }
+
+    /// The size of the blocks changes no histogram count and no mean beyond
+    /// 1e-12 relative, which "What pyNei asserts, and the size of the
+    /// blocks" promises. The sizes are compared against each other, and not
+    /// each against the six digits the spec prints, which a drift of 1e-8
+    /// between two sizes would pass.
+    ///
+    /// The worked example is six variants in blocks of 6, of 2 and of 1,
+    /// and `many.vcf` is 500 in blocks of 500, of 150 and of 7, which cut
+    /// the chunks of 64 rows in different places: where the blocks are cut
+    /// decides which rows are added up together, and the addition of floats
+    /// is not associative.
+    #[test]
+    fn the_size_of_the_blocks_changes_no_count_and_no_mean_beyond_1e_12() {
+        let of_the_size = |num_vars_per_block| {
+            let mut reader = the_worked_example(num_vars_per_block);
+            calc_per_var_distribs(&mut reader, &config_of(the_two_pops(), 1))
+                .expect("the distributions of the worked example")
+        };
+        let of_six = of_the_size(6);
+        for num_vars_per_block in [2, 1] {
+            assert_the_same_numbers(
+                &of_six,
+                &of_the_size(num_vars_per_block),
+                Agree::WhereTheBlocksWereCut,
+                &format!("blocks of {num_vars_per_block} variants against blocks of 6"),
+            );
+        }
+
+        let of_the_vcf_size = |num_vars_per_block| {
+            let mut reader = vcf_reader_of("vcf/many.vcf", Some(num_vars_per_block));
+            let pops = the_pops_of_many_vcf(&reader);
+            calc_per_var_distribs(&mut reader, &config_of(pops, 5))
+                .expect("the distributions of many.vcf")
+        };
+        let of_the_whole_file = of_the_vcf_size(500);
+        assert_eq!(of_the_whole_file.num_vars, 500);
+        for num_vars_per_block in [150, 7] {
+            assert_the_same_numbers(
+                &of_the_whole_file,
+                &of_the_vcf_size(num_vars_per_block),
+                Agree::WhereTheBlocksWereCut,
+                &format!("many.vcf in blocks of {num_vars_per_block} against one block"),
+            );
+        }
+    }
+
+    /// How closely two runs of the same pass have to agree.
+    #[derive(Debug, Clone, Copy)]
+    enum Agree {
+        /// To the bit, which two runs that add the same values in the same
+        /// order give: the threads of a pool, and the chunks of one block
+        /// read one by one or on those threads.
+        ToTheBit,
+        /// Within 1e-12 relative, which is what the spec asks of two sizes
+        /// of block, since where the blocks were cut decides which rows are
+        /// added up together.
+        WhereTheBlocksWereCut,
+    }
+
+    /// That two runs of the same pass gave the same counts, to the number,
+    /// and the same means, as closely as `agree` asks.
+    fn assert_the_same_numbers(
+        left: &PerVarDistribs,
+        right: &PerVarDistribs,
+        agree: Agree,
+        what: &str,
+    ) {
+        assert_eq!(left.num_vars, right.num_vars, "the variants of {what}");
+        for ((of_left, statistic), (of_right, _)) in the_four_distribs(left)
+            .into_iter()
+            .zip(the_four_distribs(right))
+        {
+            let of_left = of_left.unwrap_or_else(|| panic!("{statistic} of {what}"));
+            let of_right = of_right.unwrap_or_else(|| panic!("{statistic} of {what}"));
+            for pop in 0..of_left.num_pops() {
+                let of_them = &format!("{statistic} of the population {pop}, {what}");
+                assert_eq!(
+                    of_left.hist_counts(pop),
+                    of_right.hist_counts(pop),
+                    "the histogram of {of_them}"
+                );
+                assert_eq!(
+                    of_left.num_vars_with_value(pop),
+                    of_right.num_vars_with_value(pop),
+                    "the variants with a value of {of_them}"
+                );
+                let (Some(mean_of_left), Some(mean_of_right)) =
+                    (of_left.mean(pop), of_right.mean(pop))
+                else {
+                    panic!("{of_them} has no mean");
+                };
+                match agree {
+                    Agree::ToTheBit => assert_eq!(
+                        mean_of_left.to_bits(),
+                        mean_of_right.to_bits(),
+                        "the mean of {of_them} is {mean_of_left} and {mean_of_right}"
+                    ),
+                    Agree::WhereTheBlocksWereCut => assert!(
+                        (mean_of_left - mean_of_right).abs()
+                            <= OF_TWO_BLOCK_SIZES * mean_of_left.abs(),
+                        "the mean of {of_them} is {mean_of_left} and {mean_of_right}"
+                    ),
                 }
             }
-            let of_one = on_one
-                .poly_vars_ratio
-                .as_ref()
-                .expect("the counts on one thread");
-            let of_more = on_more
-                .poly_vars_ratio
-                .as_ref()
-                .expect("the counts on more threads");
-            for pop in 0..of_one.num_pops() {
-                assert_counts(
-                    of_more,
-                    pop,
-                    [
-                        of_one.num_poly(pop),
-                        of_one.num_variable(pop),
-                        of_one.num_vars_with_data(pop),
-                    ],
-                    &format!("the population on {threads} threads"),
-                );
-            }
+        }
+        let of_left = left
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the counts of the one");
+        let of_right = right
+            .poly_vars_ratio
+            .as_ref()
+            .expect("the counts of the other");
+        for pop in 0..of_left.num_pops() {
+            assert_counts(
+                of_right,
+                pop,
+                [
+                    of_left.num_poly(pop),
+                    of_left.num_variable(pop),
+                    of_left.num_vars_with_data(pop),
+                ],
+                &format!("the population {pop}, {what}"),
+            );
         }
     }
 }
