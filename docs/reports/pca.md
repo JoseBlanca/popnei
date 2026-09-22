@@ -219,3 +219,42 @@ builds give the same numbers does not hold on an exact tie, and the test
 compares magnitudes there, as the spec now says. And the `Memory` error
 of the linalg crate arrives in the wrapped case, so task 2.2 makes it a
 `RuntimeError` and not a `MemoryError`. The subagent used 213330 tokens.
+
+Tasks 2.2 and 2.3 ran side by side in the one tree, each on its own
+files. Task 2.3, `doPca` in TypeScript, is at a07c2ce: the binding in
+`crates/popnei-js/src/pca.rs`, `doPca` and `PcaResult` in
+`js/popnei/src/pca.ts`, exported from the two entry points of the
+package, `node.ts` and `web.ts`, since it has no `index.ts`, and 12
+tests in `test/pca.test.ts`, iris and the 3 x 5 table of the spec. The
+TypeScript layer checks that `data` holds exactly numRows x numCols
+values, because the core reads the first values of a longer buffer; that
+goes to the review. The subagent used 142411 tokens. Task 2.2, `do_pca`
+in Python, is at b3a2575: `_core.pca` reads the float64 array without a
+copy and runs the core with the interpreter released; `do_pca` and
+`PCAResult` in `python/popnei/pca.py`; the error of the traits with no
+variance crosses as a subclass of `ValueError` that carries the
+positions, and the Python layer names the traits as pyNei's message
+does; 8 tests in `tests/test_pca.py` against pyNei at ef0ca6e; pandas
+3.0.2 became a dependency of the package, which returns frames and
+declared only numpy. One trap found: `as_slice()` of the numpy crate
+accepts a Fortran contiguous array and hands its values column after
+column, where `.claude/skills/coding/pyo3.md` says it fails, so the
+binding asks the array for its layout; the skill is corrected with the
+review. The subagent used 168021 tokens.
+
+The deliverables, checked by the orchestrator at b3a2575:
+
+1. `cargo test -p popnei --lib pca` `13 passed`, 6 asked, with iris
+   standardized and not, the sign rule, the tie, the component with no
+   variance on pyNei's 3 x 3 table and the errors.
+2. `uv run pytest tests/test_pca.py` `8 passed`: iris with both values
+   of `standardize_data` and with `center_data` false against pyNei,
+   all 4 components within 1e-9 after the sign rule, the index and the
+   columns of the frame, `pass_stats` `None`, and the error that names
+   the trait.
+3. `npm run build && npm test` `tests 138`, `fail 0`, 12 of them in
+   `test/pca.test.ts`.
+4. `cargo fmt --all --check` exit 0; clippy no warning; `cargo test
+   --workspace` `319 passed`, 2 ignored, and `33 passed`; ruff `20 files
+   already formatted` and `All checks passed!`; `uv run maturin develop
+   && uv run pytest` `182 passed`; `cargo wasm-check` finished.

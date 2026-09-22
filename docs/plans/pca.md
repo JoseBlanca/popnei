@@ -194,14 +194,14 @@ Tasks:
       linalg crate. The tests of deliverable 1 first, with the literals
       of `tests/reference/pca/iris.r.*.tsv` and
       `iris_not_standardized.r.*.tsv`. Serves deliverables 1 and 4.
-- [ ] 2.2 The Python function: the binding of `pca` in
+- [x] 2.2 The Python function: the binding of `pca` in
       `crates/popnei-python`, taking a float64 array; `do_pca` and
       `PCAResult` in `python/popnei/pca.py`, with the names of the frame
       put on the result and on the error of "Errors and the cases pyNei
       asserts"; `tests/test_pca.py` with the comparison with pyNei.
       From "What it is in Python and in TypeScript" of "The PCA of a
       table". Needs 2.1. Serves deliverables 2 and 4.
-- [ ] 2.3 The TypeScript function: the binding in `crates/popnei-js`,
+- [x] 2.3 The TypeScript function: the binding in `crates/popnei-js`,
       `doPca` in `js/popnei/src/pca.ts` with the result of "What it is
       in Python and in TypeScript", and `test/pca.test.ts`. Needs 2.1;
       can run side by side with 2.2. Serves deliverable 3.
