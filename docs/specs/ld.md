@@ -79,8 +79,8 @@ It is a consumer of the `Variants`, as `docs/specs/variant.md` has them:
 it makes one pass over the source through the steps the `Variants` has
 when it is called, and the `Variants` is as it was afterwards.
 
-`R2Matrix` is a frozen dataclass with `r2`, a read only numpy array of
-float64 of the variants the pass gave by the same, row after row, with
+`R2Matrix` is a frozen dataclass with `r2`, a read only square numpy
+array of float64 with as many rows and columns as the pass gave variants,
 NaN where a pair has no r² and 1 on the diagonal of a variant that has
 one; `chroms`, a tuple with the name of the chromosome of each variant;
 `poss`, a read only numpy array of the positions; and `pass_stats`, the
