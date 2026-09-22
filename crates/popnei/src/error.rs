@@ -270,17 +270,52 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
-    /// A step of a pass that `docs/specs/filters.md` describes, that
-    /// [`crate::filters::PassStep`] declares and that popnei does not build
-    /// yet: the filter of individuals, whose reader and whose method in each
-    /// binding crate are still to be written. No user can put such a step
-    /// among the steps of their variants, since no method adds one, so
-    /// whoever gets this has found a defect of popnei.
+    /// A name given to the filter of individuals of
+    /// `docs/specs/filters.md` is not an individual of the variants it is
+    /// put on. It is the name a user wrote, so the message names it. pyNei
+    /// drops it in silence, and `filter_samples(v, ["ind05", "nope"])`
+    /// gives variants of one individual.
     #[error(
-        "the `{kind}` step of a pass is declared and not built yet, and popnei was asked for a pass that holds one"
+        "`{name}` is not an individual of the variants; an individual is named as the source of the variants names it"
     )]
-    PassStepNotBuilt {
-        /// The kind of the step, which is `individuals`.
+    IndividualNotInTheSource {
+        /// The name that is not an individual of the variants.
+        name: String,
+    },
+
+    /// A name given to the filter of individuals is there twice. Two
+    /// columns of the genotypes of one individual are one individual for
+    /// everything that reads them, and every count over them would hold it
+    /// twice. pyNei keeps the individual once.
+    #[error(
+        "the individual `{name}` is named twice among the individuals to keep, and each of them is kept once"
+    )]
+    IndividualNamedTwice {
+        /// The name that is there twice.
+        name: String,
+    },
+
+    /// The filter of individuals was given no name at all, which would
+    /// leave variants of nobody: every source of popnei holds one
+    /// individual at least, as `docs/specs/block.md` says.
+    #[error(
+        "no individual was named to keep, and the variants hold the genotypes of one individual at least"
+    )]
+    NoIndividualNamed,
+
+    /// A second filter of individuals on variants that hold one. Two lists
+    /// of individuals keep the ones that are in both, which is one list, so
+    /// the second says that the user has lost track of the individuals
+    /// their variants carry, which running the cell of a notebook twice
+    /// gives. pyNei takes it. The case of a second threshold filter is the
+    /// one above, which carries the two thresholds that this one has no
+    /// counterpart of.
+    #[error(
+        "the variants are filtered by {kind} already, and a second filter of individuals keeps the individuals that are in both lists, which is one list"
+    )]
+    FilterOfIndividualsThatIsSet {
+        /// The kind of the step, which is `individuals`: the name a Python
+        /// and a TypeScript user reads for it.
         kind: &'static str,
     },
 

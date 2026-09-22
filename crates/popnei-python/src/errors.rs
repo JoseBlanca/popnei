@@ -283,17 +283,14 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // the counts have no function in Python, so the genotypes they
         // refuse, the ploidy they were given and a variant of more alleles
         // than a count of them holds are a reader's and not a user's. A step
-        // of a pass that popnei declares and does not build yet is of that
-        // kind as well: no method of this crate adds one, so a user cannot
-        // put one among the steps of their variants. And so are the three
-        // of `Block::retain_individuals`, the indices of the individuals a
-        // filter of individuals keeps: they come from
-        // `resolve_individuals`, which refuses the name behind an index at
-        // or beyond the individuals of the block, behind one that is there
-        // twice, and a call that names no individual at all, and a user who
-        // gets one of them has read what a reader with a defect built.
-        popnei::Error::PassStepNotBuilt { .. }
-        | popnei::Error::IndividualToKeepNotInTheBlock { .. }
+        // The three of `Block::retain_individuals` are of that kind as
+        // well, the indices of the individuals a filter of individuals
+        // keeps: they come from `resolve_individuals`, which refuses the
+        // name behind an index at or beyond the individuals of the block,
+        // behind one that is there twice, and a call that names no
+        // individual at all, so a user who gets one of them has read what a
+        // reader with a defect built.
+        popnei::Error::IndividualToKeepNotInTheBlock { .. }
         | popnei::Error::IndividualToKeepTwice { .. }
         | popnei::Error::NoIndividualToKeep
         | popnei::Error::GtsNotWholeGenotypes { .. }
@@ -315,7 +312,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // first genotype. The two of `docs/specs/filters.md` are of the
         // same kind: the threshold of a filter that is not a number from 0
         // to 1, and a second filter of a kind the variants are filtered by
-        // already, which a user gets at the call that adds the filter. What
+        // already, which a user gets at the call that adds the filter. The
+        // four of the filter of individuals are of it too: a name that is
+        // not an individual of the variants, a name that is there twice, a
+        // call that names none, and a second filter of individuals, all of
+        // them what a user wrote in the call that adds the step. What
         // is wrong with them is wrong whatever file is read, so they name
         // no file although some of them are refused while one is being
         // opened.
@@ -323,7 +324,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. }
         | popnei::Error::VarFilterThresholdOutOfRange { .. }
-        | popnei::Error::VarFilterOfAKindThatIsSet { .. } => PyValueError::new_err(message),
+        | popnei::Error::VarFilterOfAKindThatIsSet { .. }
+        | popnei::Error::IndividualNotInTheSource { .. }
+        | popnei::Error::IndividualNamedTwice { .. }
+        | popnei::Error::NoIndividualNamed
+        | popnei::Error::FilterOfIndividualsThatIsSet { .. } => PyValueError::new_err(message),
         // Everything else is a wrong input of a function, which a file
         // whose content is not what the format holds is, and it names the
         // file it was found in: the wrong data lines and headers of the VCF

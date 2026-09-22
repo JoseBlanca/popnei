@@ -16,9 +16,19 @@
 //! on is a [`PassStep`], and [`chain_of`] builds the chain from the steps of
 //! one pass: it is what each binding crate calls when a pass starts.
 //!
+//! One step of a pass is not a threshold: the filter of individuals keeps,
+//! of every variant, the genotypes of the individuals a user named, in the
+//! order they named them, and drops those of the rest. It is
+//! [`IndividualsReader`], a reader over another reader as well, with
+//! [`resolve_individuals`] turning the names a user wrote into the indices
+//! among the individuals of the source that it compacts each block by. It
+//! takes no variant out and has no counts, and a threshold filter after it
+//! in the steps counts over the kept individuals alone.
+//!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::block::{Block, BlockReader};
@@ -409,17 +419,24 @@ impl PassStep {
 /// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
 /// above 1, and what [`FilteredReader::new`] refuses, a threshold filter of
 /// the kind of one before it in `steps` or of a filter that `reader` holds
-/// already, which a chain built over a chain has. No block was read then. A
-/// [`PassStep::KeepIndividuals`] is the error of a step that popnei declares
-/// and does not build yet.
+/// already, which a chain built over a chain has. What
+/// [`IndividualsReader::new`] refuses, a name that is not an individual of
+/// what the step is put on, a name that is there twice and no name at all.
+/// And a second [`PassStep::KeepIndividuals`] among `steps`, which the
+/// chain has to find itself: the filter of individuals takes no variant
+/// out, so it has no counts and a reader cannot be asked whether it holds
+/// one. No block was read when any of them comes.
 pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
         match step {
             PassStep::VarFilter(criterion) => {
                 chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
             }
-            PassStep::KeepIndividuals(_) => return Err(not_built_yet(step)),
+            PassStep::KeepIndividuals(names) => {
+                refuse_a_second_filter_of_a_kind(steps.get(..index).unwrap_or(&[]), step)?;
+                chain = Box::new(IndividualsReader::new(chain, names)?);
+            }
         }
     }
     Ok(chain)
@@ -436,16 +453,25 @@ pub fn chain_of(reader: Box<dyn BlockReader>, steps: &[PassStep]) -> Result<Box<
 ///
 /// # Errors
 ///
-/// When a threshold filter of `set` has the kind of `new`. The error carries
-/// both thresholds, the one of `new` and the one that is set, where the same
-/// error from [`FilteredReader::new`] carries the first alone: a chain of
-/// readers says which kinds of filter it holds and not with which
-/// thresholds. A `new` that is a [`PassStep::KeepIndividuals`] is the error
-/// of a step that popnei declares and does not build yet.
+/// When a step of `set` has the kind of `new`. For a threshold filter the
+/// error carries both thresholds, the one of `new` and the one that is set,
+/// where the same error from [`FilteredReader::new`] carries the first
+/// alone: a chain of readers says which kinds of filter it holds and not
+/// with which thresholds. For the filter of individuals it carries the
+/// kind, since a list of individuals has no number to name it by, and two
+/// lists keep the individuals that are in both, which is one list.
 pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Result<()> {
     let criterion = match new {
         PassStep::VarFilter(criterion) => criterion,
-        PassStep::KeepIndividuals(_) => return Err(not_built_yet(new)),
+        PassStep::KeepIndividuals(_) => {
+            return match set
+                .iter()
+                .any(|step| matches!(step, PassStep::KeepIndividuals(_)))
+            {
+                true => Err(Error::FilterOfIndividualsThatIsSet { kind: new.kind() }),
+                false => Ok(()),
+            };
+        }
     };
     let kind = criterion.kind();
     let that_is_set = set
@@ -465,14 +491,173 @@ pub fn refuse_a_second_filter_of_a_kind(set: &[PassStep], new: &PassStep) -> Res
     Ok(())
 }
 
-/// The error of a step that `docs/specs/filters.md` describes, that
-/// [`PassStep`] declares and that popnei does not build yet.
+/// The index of each of `names` among `individuals`, in the order of
+/// `names`: the individuals a filter of individuals keeps, as the indices
+/// into the individuals of the source that [`Block::retain_individuals`]
+/// takes.
 ///
-/// It marks a defect of popnei and not a wrong input of a user: neither
-/// binding crate has a method that adds such a step, so no user can put one
-/// among the steps of their variants.
-fn not_built_yet(step: &PassStep) -> Error {
-    Error::PassStepNotBuilt { kind: step.kind() }
+/// Both binding crates call it when a user adds the step, against the
+/// individuals of the source, so that the three refusals reach the user at
+/// the call they wrote, and [`IndividualsReader::new`] calls it again when
+/// a pass builds its chain.
+///
+/// # Errors
+///
+/// A name that is not one of `individuals`, a name that is there twice, and
+/// no name at all. The first two name the name, which is what the user
+/// wrote.
+pub fn resolve_individuals(names: &[String], individuals: &[String]) -> Result<Vec<usize>> {
+    if names.is_empty() {
+        return Err(Error::NoIndividualNamed);
+    }
+    let of_the_source: HashMap<&str, usize> = individuals
+        .iter()
+        .enumerate()
+        .map(|(individual, name)| (name.as_str(), individual))
+        .collect();
+    let mut keep = Vec::with_capacity(names.len());
+    let mut named = HashSet::with_capacity(names.len());
+    for name in names {
+        let Some(individual) = of_the_source.get(name.as_str()) else {
+            return Err(Error::IndividualNotInTheSource { name: name.clone() });
+        };
+        if !named.insert(*individual) {
+            return Err(Error::IndividualNamedTwice { name: name.clone() });
+        }
+        keep.push(*individual);
+    }
+    Ok(keep)
+}
+
+/// A reader that gives the blocks of its source with the genotypes of the
+/// individuals a user named, in the order they named them, and those of no
+/// other individual.
+///
+/// Every variant of the source comes out, so it takes no variant out and
+/// has no counts of its own: [`BlockReader::filtering_stats`] gives those
+/// of its source alone. It takes a block of its source at whatever size it
+/// comes and compacts it with [`Block::retain_individuals`], so the blocks
+/// it gives are the blocks of its source, whose size was worked out from
+/// the individuals of the source and not from the kept ones. It allocates
+/// no block and keeps nothing from one block to the next.
+///
+/// A threshold filter before it in the steps counts over every individual
+/// of the source and one after it over the kept ones, which is what a
+/// user's numbers turn on: the missing data filter at 0 over `many.vcf`
+/// keeps 26 of its 500 variants, and 423 of them over three of its 50
+/// individuals.
+///
+/// It keeps the contract of a reader of `docs/specs/block.md`: after an
+/// error, of its source or of the compaction, it gives `None` at every call
+/// and does not call its source again, and a source that gives a block of
+/// no variants has a defect and is the error of that.
+pub struct IndividualsReader<R: BlockReader> {
+    reader: R,
+    /// The index of each kept individual among those of the source, in the
+    /// order the user named them.
+    keep: Vec<usize>,
+    /// The names of the kept individuals, in the same order.
+    individuals: Vec<String>,
+    /// Whether the source has no more blocks or one of the two, the source
+    /// or the compaction, gave an error.
+    finished: bool,
+}
+
+impl<R: BlockReader> IndividualsReader<R> {
+    /// The reader that gives the genotypes of `individuals` of every block
+    /// of `reader`.
+    ///
+    /// # Errors
+    ///
+    /// What [`resolve_individuals`] refuses against the individuals of
+    /// `reader`: a name that is not one of them, a name that is there twice
+    /// and no name at all.
+    pub fn new(reader: R, individuals: &[String]) -> Result<IndividualsReader<R>> {
+        let keep = resolve_individuals(individuals, reader.individuals())?;
+        let names = keep
+            .iter()
+            .filter_map(|individual| reader.individuals().get(*individual))
+            .cloned()
+            .collect();
+        Ok(IndividualsReader {
+            reader,
+            keep,
+            individuals: names,
+            finished: false,
+        })
+    }
+}
+
+impl<R: BlockReader> BlockReader for IndividualsReader<R> {
+    /// The next block of the source with the genotypes of the kept
+    /// individuals alone in it, in the order the user named them. Every
+    /// variant of the block stays, with every column it had.
+    ///
+    /// # Errors
+    ///
+    /// When the source fails; when a block of the source holds no variant,
+    /// which no reader of popnei gives; and what
+    /// [`Block::retain_individuals`] refuses, a block whose arrays are not
+    /// of its size and a block that has variants and no genotypes. After
+    /// any of them there is no block and the source is not called again.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        let mut block = match self.reader.next_block() {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                self.finished = true;
+                return Ok(None);
+            }
+            Err(error) => {
+                self.finished = true;
+                return Err(error);
+            }
+        };
+        // A source that gives a block of no variants has a defect, and it
+        // is not asked again: over a source that always gives one, a reader
+        // that asked again would never come back.
+        if block.num_vars == 0 {
+            self.finished = true;
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
+        if let Err(error) = block.retain_individuals(&self.keep) {
+            self.finished = true;
+            return Err(error);
+        }
+        Ok(Some(block))
+    }
+
+    /// The kept individuals, in the order the user named them, which is
+    /// what everything after this reader sees as the individuals of the
+    /// dataset.
+    fn individuals(&self) -> &[String] {
+        &self.individuals
+    }
+
+    fn ploidy(&self) -> usize {
+        self.reader.ploidy()
+    }
+
+    /// The table of the source: a reader over another reader has none of
+    /// its own.
+    fn chroms(&self) -> &ChromTable {
+        self.reader.chroms()
+    }
+
+    /// The fields of the consumer and the genotypes, which this reader
+    /// compacts in every block: so the blocks it gives hold the genotypes
+    /// also when the consumer did not ask for them.
+    fn set_needs(&mut self, needs: Needs) {
+        self.reader.set_needs(needs.union(Needs::GTS));
+    }
+
+    /// The counts of the filters between the source and its own source.
+    /// This reader adds none: it takes no variant out.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        self.reader.filtering_stats()
+    }
 }
 
 impl<R: BlockReader> fmt::Debug for FilteredReader<R> {
@@ -645,6 +830,7 @@ mod tests {
     use super::{
         FilteredReader, FilteringStats, PassStep, VarFilter, VarFilteringCriterion, chain_of,
         keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
+        resolve_individuals,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -1852,6 +2038,431 @@ mod tests {
         );
     }
 
+    /// The three names of "How it is verified" of the filter of individuals
+    /// of `docs/specs/filters.md`, in the order a user writes them, which
+    /// is not the order of the individuals of `many.vcf`.
+    const THE_THREE_NAMES: [&str; 3] = ["ind05", "ind00", "ind49"];
+
+    /// Those names as the filter takes them.
+    fn the_three_names() -> Vec<String> {
+        THE_THREE_NAMES.map(str::to_owned).to_vec()
+    }
+
+    /// The 50 individuals of `many.vcf`, `ind00` to `ind49`.
+    fn the_individuals_of_many_vcf() -> Vec<String> {
+        many_vcf_reader(None, Needs::GTS).individuals().to_vec()
+    }
+
+    /// The three names give the indices 5, 0 and 49, in the order they were
+    /// named: `resolve_individuals` gives the individuals in the order of
+    /// the argument and not in the order of the source, which is what lets
+    /// a user put their populations together.
+    #[test]
+    fn resolve_individuals_gives_the_index_of_each_name_in_the_order_of_the_names() {
+        let individuals = the_individuals_of_many_vcf();
+        assert_eq!(individuals.len(), 50);
+
+        let kept = resolve_individuals(&the_three_names(), &individuals)
+            .expect("the indices of the three names");
+
+        assert_eq!(kept, [5, 0, 49]);
+    }
+
+    /// A name that is not an individual of the source is the error that
+    /// names it. pyNei drops it in silence and gives a `Variants` of the
+    /// names it did find.
+    #[test]
+    fn resolve_individuals_refuses_a_name_that_is_not_an_individual() {
+        let individuals = the_individuals_of_many_vcf();
+
+        let error = resolve_individuals(&["ind05".to_owned(), "nope".to_owned()], &individuals)
+            .expect_err("the name that is not an individual was refused");
+
+        let message = error.to_string();
+        let Error::IndividualNotInTheSource { ref name } = error else {
+            panic!("the error is {message}");
+        };
+        assert_eq!(name, "nope");
+        assert!(message.contains("nope"), "{message}");
+    }
+
+    /// A name that is there twice is the error that names it: the same
+    /// individual kept twice would be two columns of one individual's
+    /// genotypes. pyNei keeps it once.
+    #[test]
+    fn resolve_individuals_refuses_a_name_that_is_there_twice() {
+        let individuals = the_individuals_of_many_vcf();
+        let names = ["ind49".to_owned(), "ind05".to_owned(), "ind49".to_owned()];
+
+        let error =
+            resolve_individuals(&names, &individuals).expect_err("the name twice was refused");
+
+        let message = error.to_string();
+        let Error::IndividualNamedTwice { ref name } = error else {
+            panic!("the error is {message}");
+        };
+        assert_eq!(name, "ind49");
+        assert!(message.contains("ind49"), "{message}");
+    }
+
+    /// No name at all is the error: the variants of nobody are not a
+    /// dataset popnei holds.
+    #[test]
+    fn resolve_individuals_refuses_no_name_at_all() {
+        let individuals = the_individuals_of_many_vcf();
+
+        let error = resolve_individuals(&[], &individuals).expect_err("no name was refused");
+
+        assert!(
+            matches!(error, Error::NoIndividualNamed),
+            "the error is {error}"
+        );
+    }
+
+    /// The tests of the reader of the filter of individuals. The module is
+    /// named after the type, and not `individuals_reader`, so that
+    /// `cargo test -- IndividualsReader` runs them.
+    #[expect(
+        non_snake_case,
+        reason = "the module is named after the type it tests, IndividualsReader, so that \
+                  the tests of the reader of the filter of individuals are the ones \
+                  cargo test -- IndividualsReader runs"
+    )]
+    mod IndividualsReader {
+        use std::fs::File;
+        use std::io::BufReader;
+
+        // The struct is named as the module is, so it is taken from the
+        // crate and not from the parent, where the two names would be one
+        // name of the type namespace.
+        use crate::filters::IndividualsReader;
+        use crate::io::vcf::VcfReader;
+
+        use super::{
+            Block, BlockReader, Error, FilteredReader, GivenBlocks, MaxMaf, MaxMissingRate, Needs,
+            PassStep, VarFilter, block_of_the_worked_example, blocks_of, chain_of, many_vcf_reader,
+            pair, positions_of_blocks, refuse_a_second_filter_of_a_kind, steps_of, the_three_names,
+        };
+
+        /// The reader of the three individuals of "How it is verified" over
+        /// `many.vcf`, with the blocks of the source at `num_vars_per_block`
+        /// variants and asked for `needs`.
+        fn of_the_three_names(
+            num_vars_per_block: Option<usize>,
+            needs: Needs,
+        ) -> IndividualsReader<VcfReader<BufReader<File>>> {
+            let source = many_vcf_reader(num_vars_per_block, needs);
+            IndividualsReader::new(source, &the_three_names()).expect("the reader of the three")
+        }
+
+        /// The genotypes of the blocks, one row per variant.
+        fn rows_of(blocks: &[Block]) -> Vec<Vec<i8>> {
+            blocks
+                .iter()
+                .flat_map(|block| {
+                    let width = block
+                        .num_individuals
+                        .max(1)
+                        .saturating_mul(block.ploidy.max(1));
+                    block
+                        .gts
+                        .chunks(width)
+                        .map(<[i8]>::to_vec)
+                        .collect::<Vec<Vec<i8>>>()
+                })
+                .collect()
+        }
+
+        /// Every variant of `many.vcf` comes out, of the three individuals
+        /// alone, named in the order of the argument, and the reader has no
+        /// counts of its own: it takes no variant out.
+        #[test]
+        fn the_blocks_hold_the_three_individuals_in_the_order_of_the_argument() {
+            let mut reader = of_the_three_names(Some(7), Needs::GTS | Needs::CHROM_POS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            assert_eq!(reader.individuals(), the_three_names().as_slice());
+            assert_eq!(reader.ploidy(), 2);
+            assert!(reader.filtering_stats().is_empty());
+            assert_eq!(positions_of_blocks(&blocks).len(), 500);
+            for block in &blocks {
+                assert_eq!(block.num_individuals, 3);
+                block.check().expect("the block is of its size");
+            }
+        }
+
+        /// The genotypes of each kept individual are the column of the
+        /// source at every variant: the same file read whole gives, at the
+        /// individuals 5, 0 and 49, what the blocks of the reader give at
+        /// the three columns. The two literals are the genotypes "How it is
+        /// verified" gives at the positions 1000 and 1074, `1|1 1/1 1/1`
+        /// and `0/1 2|1 1|2`.
+        #[test]
+        fn the_genotypes_of_the_three_are_the_columns_of_the_source() {
+            let mut whole = many_vcf_reader(Some(7), Needs::GTS);
+            let of_the_source = rows_of(&blocks_of(&mut whole).expect("the blocks of the source"));
+            let mut reader = of_the_three_names(Some(7), Needs::GTS);
+
+            let kept = rows_of(&blocks_of(&mut reader).expect("the blocks"));
+
+            assert_eq!(kept.len(), 500);
+            assert_eq!(of_the_source.len(), 500);
+            for (row, of_the_source) in kept.iter().zip(&of_the_source) {
+                let gathered: Vec<i8> = [5_usize, 0, 49]
+                    .iter()
+                    .flat_map(|individual| {
+                        let start = individual.saturating_mul(2);
+                        of_the_source
+                            .get(start..start.saturating_add(2))
+                            .unwrap_or_default()
+                            .to_vec()
+                    })
+                    .collect();
+                assert_eq!(*row, gathered);
+            }
+            // The first variant, at the position 1000, and the one at 1074.
+            assert_eq!(
+                kept.first().map(Vec::as_slice),
+                Some([1, 1, 1, 1, 1, 1].as_slice())
+            );
+            assert_eq!(
+                kept.get(2).map(Vec::as_slice),
+                Some([0, 1, 2, 1, 1, 2].as_slice())
+            );
+        }
+
+        /// The missing data filter at 0 over the three individuals keeps the
+        /// 423 variants that bcftools 1.24 and pyNei keep, the first five at
+        /// the positions of the spec, with the 500 variants it was given in
+        /// its counts.
+        #[test]
+        fn the_missing_data_filter_over_the_three_keeps_the_423_variants() {
+            let reader = of_the_three_names(Some(7), Needs::GTS | Needs::CHROM_POS);
+            let filter = VarFilter::new(MaxMissingRate(0.0)).expect("the filter");
+            let mut filtered = FilteredReader::new(reader, filter).expect("the filter over it");
+
+            let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+            let positions = positions_of_blocks(&blocks);
+            assert_eq!(positions.len(), 423);
+            assert_eq!(
+                positions.get(..5),
+                Some([1000, 1037, 1074, 1111, 1148].as_slice())
+            );
+            assert_eq!(
+                filtered.filtering_stats(),
+                vec![("missing_data", pair(500, 423))]
+            );
+        }
+
+        /// The same filter under the reader counts over the 50 individuals
+        /// of the file and keeps 26 variants: where the step sits among the
+        /// steps is what a user's numbers turn on.
+        #[test]
+        fn the_missing_data_filter_under_the_three_keeps_the_26_variants() {
+            let source = many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS);
+            let filter = VarFilter::new(MaxMissingRate(0.0)).expect("the filter");
+            let filtered = FilteredReader::new(source, filter).expect("the filter over the file");
+            let mut reader =
+                IndividualsReader::new(filtered, &the_three_names()).expect("the reader");
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let positions = positions_of_blocks(&blocks);
+            assert_eq!(positions.len(), 26);
+            assert_eq!(
+                positions.get(..5),
+                Some([1259, 2110, 2480, 3072, 3257].as_slice())
+            );
+            // The counts of the filter under it come up through the reader,
+            // which has none of its own.
+            assert_eq!(
+                reader.filtering_stats(),
+                vec![("missing_data", pair(500, 26))]
+            );
+        }
+
+        /// The blocks are the size of the source's, worked out from the
+        /// individuals of the source: the reader keeps every variant and
+        /// does not ask its source for bigger blocks now that the rows are
+        /// shorter.
+        #[test]
+        fn the_blocks_are_the_size_of_the_blocks_of_the_source() {
+            let mut reader = of_the_three_names(Some(7), Needs::GTS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let sizes: Vec<usize> = blocks.iter().map(|block| block.num_vars).collect();
+            // 500 variants in blocks of 7: 71 blocks of 7 and one of 3.
+            assert_eq!(sizes.len(), 72);
+            assert_eq!(sizes.first(), Some(&7));
+            assert_eq!(sizes.last(), Some(&3));
+        }
+
+        /// The reader always needs the genotypes: it asks its source for
+        /// them with whatever its consumer asked for, so the blocks it gives
+        /// hold them although the consumer wanted the positions alone.
+        #[test]
+        fn the_reader_asks_its_source_for_the_genotypes_with_the_fields_of_its_consumer() {
+            let source = many_vcf_reader(Some(7), Needs::CHROM_POS);
+            let mut reader =
+                IndividualsReader::new(source, &the_three_names()).expect("the reader");
+            reader.set_needs(Needs::CHROM_POS);
+
+            let blocks = blocks_of(&mut reader).expect("the blocks");
+
+            let first = blocks.first().expect("a block");
+            assert_eq!(first.num_individuals, 3);
+            assert!(!first.gts.is_empty());
+            assert_eq!(first.fields(), Needs::GTS | Needs::CHROM_POS);
+        }
+
+        /// After an error the reader gives `None` at every call and does not
+        /// ask its source again, which is the rule of a reader of
+        /// `docs/specs/block.md`.
+        #[test]
+        fn after_an_error_it_gives_no_block_and_does_not_ask_its_source_again() {
+            let source = GivenBlocks::failing_at(
+                vec![
+                    block_of_the_worked_example(&[0, 1]),
+                    block_of_the_worked_example(&[2, 3]),
+                ],
+                2,
+            );
+            let calls = source.calls();
+            let mut reader = IndividualsReader::new(source, &["ind5".to_owned()])
+                .expect("the reader of one individual");
+
+            assert!(reader.next_block().expect("the first block").is_some());
+            assert!(reader.next_block().is_err());
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        }
+
+        /// A source that gives a block of no variants has a defect, and the
+        /// reader gives the error of it and does not ask the source again.
+        #[test]
+        fn a_source_that_gives_a_block_of_no_variants_is_the_error_of_a_defect() {
+            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[])]);
+            let mut reader = IndividualsReader::new(source, &["ind1".to_owned()])
+                .expect("the reader of one individual");
+
+            let error = reader.next_block().expect_err("the block of no variants");
+
+            assert!(
+                matches!(error, Error::ReaderGaveABlockOfNoVariants),
+                "the error is {error}"
+            );
+            assert!(
+                reader
+                    .next_block()
+                    .expect("no block after the error")
+                    .is_none()
+            );
+        }
+
+        /// The chain of a pass builds the reader from the step of the
+        /// filter of individuals, and a threshold filter after it in the
+        /// steps counts over the kept individuals: the 423 variants again,
+        /// through `chain_of` alone.
+        #[test]
+        fn chain_of_builds_the_reader_from_the_step_of_the_filter() {
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS | Needs::CHROM_POS));
+            let steps = vec![
+                PassStep::KeepIndividuals(the_three_names()),
+                PassStep::VarFilter(MaxMissingRate(0.0)),
+            ];
+
+            let mut chain = chain_of(source, &steps).expect("the chain of the two steps");
+
+            assert_eq!(chain.individuals(), the_three_names().as_slice());
+            let blocks = blocks_of(&mut chain).expect("the blocks");
+            assert_eq!(positions_of_blocks(&blocks).len(), 423);
+            assert_eq!(
+                chain.filtering_stats(),
+                vec![("missing_data", pair(500, 423))]
+            );
+        }
+
+        /// A second filter of individuals is refused, by the chain and by
+        /// the function a binding crate calls when a user adds the step:
+        /// two lists keep the individuals that are in both, which is one
+        /// list. The error names the kind and no threshold, which a list of
+        /// individuals has none of.
+        #[test]
+        fn a_second_filter_of_individuals_is_refused_with_its_kind() {
+            let steps = vec![
+                PassStep::KeepIndividuals(the_three_names()),
+                PassStep::VarFilter(MaxMaf(0.8)),
+                PassStep::KeepIndividuals(vec!["ind05".to_owned()]),
+            ];
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+
+            let of_the_chain = chain_of(source, &steps)
+                .err()
+                .expect("the chain was refused");
+            let of_the_refusal = refuse_a_second_filter_of_a_kind(
+                steps.get(..2).unwrap_or_default(),
+                steps.get(2).expect("the step"),
+            )
+            .expect_err("the second filter of individuals was refused");
+
+            for error in [of_the_chain, of_the_refusal] {
+                let message = error.to_string();
+                assert!(
+                    matches!(
+                        error,
+                        Error::FilterOfIndividualsThatIsSet {
+                            kind: "individuals"
+                        }
+                    ),
+                    "{message}"
+                );
+                assert!(message.contains("individuals"), "{message}");
+            }
+
+            // One filter of individuals among the steps is taken, and the
+            // threshold filters beside it are of other kinds.
+            assert!(
+                refuse_a_second_filter_of_a_kind(
+                    &steps_of(&[MaxMaf(0.8)]),
+                    &PassStep::KeepIndividuals(the_three_names())
+                )
+                .is_ok()
+            );
+        }
+
+        /// What the chain refuses of the names, which is what
+        /// `resolve_individuals` refuses: it is read against the individuals
+        /// of the reader the step is put over, and no block was read when it
+        /// comes.
+        #[test]
+        fn chain_of_refuses_a_name_that_is_not_an_individual_of_the_source() {
+            let source = Box::new(many_vcf_reader(Some(7), Needs::GTS));
+            let steps = vec![PassStep::KeepIndividuals(vec![
+                "ind05".to_owned(),
+                "nope".to_owned(),
+            ])];
+
+            let error = chain_of(source, &steps)
+                .err()
+                .expect("the chain was refused");
+
+            let message = error.to_string();
+            assert!(
+                matches!(error, Error::IndividualNotInTheSource { .. }),
+                "{message}"
+            );
+            assert!(message.contains("nope"), "{message}");
+        }
+    }
+
     /// The tests of [`PassStep`] and of the chain of readers built from a
     /// list of them. The module is named after the type, and not
     /// `pass_steps`, so that `cargo test -- PassStep` runs them.
@@ -1862,9 +2473,8 @@ mod tests {
     )]
     mod PassSteps {
         use super::{
-            Error, GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, PassStep,
-            block_of_the_worked_example, blocks_of, chain_of, pair, positions_of_blocks,
-            refuse_a_second_filter_of_a_kind, steps_of,
+            GivenBlocks, MaxMaf, MaxMissingRate, MaxObsHet, PassStep, block_of_the_worked_example,
+            blocks_of, chain_of, pair, positions_of_blocks, steps_of,
         };
 
         /// The kind of each step is the name a Python and a TypeScript user
@@ -1913,37 +2523,6 @@ mod tests {
                     ("missing_data", pair(6, 4)),
                 ]
             );
-        }
-
-        /// The step of the filter of individuals is declared and not built
-        /// yet, so a chain that holds one is the error that marks a defect of
-        /// popnei, and so is the refusal of a second filter asked about one:
-        /// neither binding crate has a method that adds such a step, and
-        /// whoever gets there wrote it in Rust.
-        #[test]
-        fn a_step_that_is_not_built_yet_is_the_error_of_a_defect_of_popnei() {
-            let source = GivenBlocks::of(vec![block_of_the_worked_example(&[0, 1])]);
-            let keep = PassStep::KeepIndividuals(vec!["i1".to_owned()]);
-
-            let of_the_chain = chain_of(Box::new(source), std::slice::from_ref(&keep))
-                .err()
-                .expect("the chain was refused");
-            let of_the_refusal =
-                refuse_a_second_filter_of_a_kind(&[], &keep).expect_err("the step was refused");
-
-            for error in [of_the_chain, of_the_refusal] {
-                let message = error.to_string();
-                assert!(
-                    matches!(
-                        error,
-                        Error::PassStepNotBuilt {
-                            kind: "individuals"
-                        }
-                    ),
-                    "{message}"
-                );
-                assert!(message.contains("individuals"), "{message}");
-            }
         }
     }
 }
