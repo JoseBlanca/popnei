@@ -230,7 +230,7 @@ after it in the steps counts over the three.
   From "What it gives", "How it runs" and "How it is verified" of the
   filter, and "The Rust interface". It mirrors `filter_samples` of
   `pynei/var_filters.py`. Needs 2.1. Serves deliverable 2.
-- [ ] 2.3 The Python side: `filter_individuals` in
+- [x] 2.3 The Python side: `filter_individuals` in
   `crates/popnei-python/src/steps.rs`, which resolves the names at the
   call against the individuals of the source and refuses a second
   filter of the kind; `individuals` and `num_individuals` of
