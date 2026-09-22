@@ -18,6 +18,14 @@ license.workspace = true
 [features]
 default = ["blas"]
 blas = ["popnei-linalg/blas"]
+# What the benchmark `standardize_row` needs to time the four passes over
+# a row of the principal component analysis one by one: it turns on the
+# module `pca::bench_internals`, which re-exports them, and nothing else.
+# They are private functions and a benchmark is a crate of its own, so
+# without it nothing outside `pca` can call them. It is off by default and
+# no build popnei ships turns it on: `cargo bench --bench standardize_row`
+# does, through the `required-features` of that benchmark.
+bench-internals = []
 
 [dependencies]
 arrow-array.workspace = true
@@ -78,3 +86,16 @@ harness = false
 [[bench]]
 name = "pca_vars"
 harness = false
+
+# How long each of the four passes over a row of the principal component
+# analysis takes, of the performance review of
+# docs/reports/perf-pca-2026-09-22.md, whose first experiment it is. The
+# profile of a whole analysis sees the four as one frame, because the
+# compiler inlines them, so this one calls each over the rows of one real
+# block and prints a time for each. It takes the path of a vars file and
+# the runs on its command line, so it runs without a harness, as the four
+# above do, and it needs the cargo feature that makes the four reachable.
+[[bench]]
+name = "standardize_row"
+harness = false
+required-features = ["bench-internals"]

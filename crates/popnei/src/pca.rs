@@ -1874,6 +1874,124 @@ pub(crate) fn the_positions_listed(positions: &[usize]) -> String {
     }
 }
 
+/// What the benchmark `standardize_row` calls to time each pass over a row
+/// of a block on its own.
+///
+/// The four passes that standardizing a row is made of are private to this
+/// module, and a benchmark is a crate of its own, so nothing outside can
+/// call them; the compiler inlines all four into one closure, so a
+/// sampling profile of the analysis sees them as one frame. This module is
+/// behind the cargo feature `bench-internals`, which is off by default and
+/// which nothing of popnei's own builds turn on, and it holds one wrapper
+/// for each of them, with the arguments the private function takes, so
+/// that what the benchmark times is the code the library runs.
+///
+/// [`the_standardized_values`] is the one thing here that is not a
+/// wrapper. The tail of [`the_standardized_row`] is two loops written
+/// inline in that function and not a function of its own, so timing it
+/// needs those two loops copied here; a change to them there is a change
+/// to them here.
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod bench_internals {
+    use std::num::NonZeroUsize;
+
+    use super::{
+        RowScratch, VariantPcaOptions, the_center_and_the_scale_of_the_dosages,
+        the_codes_of_the_genotypes as codes_of_the_genotypes,
+        the_counts_of_the_codes as counts_of_the_codes, the_major_allele as major_allele,
+        the_standardized_row as standardized_row,
+    };
+    use crate::error::Result;
+    use crate::variant::AlleleCounts;
+
+    /// The buffers one thread keeps while it standardizes the rows of a
+    /// block, so that nothing is allocated for a variant. It is
+    /// `RowScratch`, which is private, and it is opaque here: the
+    /// benchmark builds one and hands it back.
+    pub struct Scratch(RowScratch);
+
+    impl Scratch {
+        /// The buffers for the rows of `num_individuals` individuals.
+        #[must_use]
+        pub fn of(num_individuals: usize) -> Scratch {
+            Scratch(RowScratch::of(num_individuals))
+        }
+    }
+
+    /// One row of a block standardized into `row`, and whether the variant
+    /// was used, which is `the_standardized_row` of this module and all
+    /// four passes over the row together.
+    ///
+    /// # Errors
+    ///
+    /// What `the_standardized_row` gives: a ploidy the analysis refuses,
+    /// genotypes that are not whole, a variant of more than two alleles.
+    pub fn the_standardized_row(
+        gts: &[i8],
+        ploidy: usize,
+        position: usize,
+        options: &VariantPcaOptions,
+        scratch: &mut Scratch,
+        row: &mut [f64],
+    ) -> Result<bool> {
+        standardized_row(gts, ploidy, position, options, &mut scratch.0, row)
+    }
+
+    /// The allele of the variant that was called most often, which is
+    /// `the_major_allele` of this module.
+    #[must_use]
+    pub fn the_major_allele(counts: &AlleleCounts) -> i8 {
+        major_allele(counts)
+    }
+
+    /// The code of the genotype of each individual, its dosage or the code
+    /// of a genotype with an allele missing, which is
+    /// `the_codes_of_the_genotypes` of this module.
+    pub fn the_codes_of_the_genotypes(
+        gts: &[i8],
+        of_a_genotype: NonZeroUsize,
+        major: i8,
+        codes: &mut [u8],
+    ) {
+        codes_of_the_genotypes(gts, of_a_genotype, major, codes);
+    }
+
+    /// How many genotypes have each dosage, which is
+    /// `the_counts_of_the_codes` of this module.
+    pub fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; 255]) {
+        counts_of_the_codes(codes, num_dosages, counts);
+    }
+
+    /// The tail of [`the_standardized_row`]: the value of each dosage
+    /// written into `values`, and then the value of each code of the row
+    /// looked up there and written into `row`. It gives whether the
+    /// variant had variance, and leaves `row` as it was when it had none.
+    ///
+    /// These are the two loops that function ends in, copied, because they
+    /// are written inline there and not called.
+    pub fn the_standardized_values(
+        dosage_counts: &[u32; 255],
+        num_dosages: usize,
+        codes: &[u8],
+        values: &mut [f64; 256],
+        row: &mut [f64],
+    ) -> bool {
+        let Some((mean, deviation)) =
+            the_center_and_the_scale_of_the_dosages(dosage_counts, num_dosages, row.len())
+        else {
+            return false;
+        };
+        for (value, dosage) in values.iter_mut().take(num_dosages).zip(0_u32..) {
+            *value = (f64::from(dosage) - mean) / deviation;
+        }
+        for (target, code) in row.iter_mut().zip(codes.iter()) {
+            *target = values.get(usize::from(*code)).copied().unwrap_or(0.0);
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
