@@ -206,11 +206,16 @@ impl LdDosages {
                 ploidy: block.ploidy,
             });
         }
-        let mut asked_for_already =
-            a_vector_of(false, block.num_individuals, &|| Error::LdNoMemory {
+        // Which individuals have been asked for already, for the call
+        // that names them: a call over every individual of the block names
+        // none, and none can be named twice.
+        let mut asked_for_already = match individuals.is_empty() {
+            true => Vec::new(),
+            false => a_vector_of(false, block.num_individuals, &|| Error::LdNoMemory {
                 what: "the individuals asked for",
                 values: block.num_individuals,
-            })?;
+            })?,
+        };
         for individual in individuals {
             let Some(asked_for) = asked_for_already.get_mut(*individual) else {
                 return Err(Error::LdIndividualNotInTheDataset {
