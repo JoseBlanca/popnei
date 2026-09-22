@@ -165,6 +165,16 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   counts its pass inside the generator for the first, and throws what the
   free says only when nothing else is being thrown, for the second.
 
+## The timing
+
+`bench/time_pca.mjs` is not a test and `npm test` does not run it: it times
+`doPcaFromVariants` under node over the bytes of a vars file, on the `wasm/`
+that is there, and it is what task 4.2 of `docs/plans/pca.md` measured this
+package with. `docs/reports/pca-measurement.md` has its numbers and the
+files it read them on.
+
+    node bench/time_pca.mjs <path to a vars file> [--runs n] [--num-prin-comps n]
+
 ## The tests
 
     npm test

@@ -10,6 +10,13 @@ vector instructions. It changed no code of the library; it added the benchmark
 `crates/popnei/benches/pca_vars.rs`, the script `time_pca.py` beside it that
 times the two libraries from Python, and this report.
 
+"Under WebAssembly, in the browser's two shapes", further down, is task 4.2 of
+the same work package, of the same day: the same analysis timed under node on
+the wasm package and under pyodide on the wheel, against what the spec asks of
+the browser, which is met: 4.500 s against the 5 s it gives the build popnei
+ships. It changed no code of the library either, and added
+`js/popnei/bench/time_pca.mjs` and `tests/pyodide/time_pca.mjs`.
+
 **The target was missed.** The number to reach is 0.3 s for 100000 variants of
 1000 individuals on one thread with no weights, and the analysis takes 0.801 s,
 2.7 times that. With the threads the machine gives it takes 0.352 s. Where the
@@ -265,6 +272,145 @@ takes was not measured: the profiler sees the four passes as one function,
 because the compiler inlined them all into the closure, so the only way to split
 them is to measure each on its own, which no benchmark here does.
 
+## Under WebAssembly, in the browser's two shapes
+
+22 September 2026, task 4.2 of `docs/plans/pca.md`. popnei runs in a page in two
+builds: the **wasm package**, the TypeScript package of `js/popnei` around a
+build for `wasm32-unknown-unknown`, which `npm run build` makes and which node
+runs as a browser would; and the **wheel of pyodide**, a build for
+`wasm32-unknown-emscripten` that `scripts/build_pyodide_wheel.sh` puts into a
+wheel, which a page installs into pyodide and calls in Python. Both were timed
+on the same two vars files, and the analysis was asked for with no weights and
+with the weights of 10 components. Neither build has threads.
+
+**The target of "Speed" of `docs/specs/pca.md` is met.** It asks for 5 s from a
+build that has the 128 bit vector instructions of WebAssembly and 7 s from one
+that has not, for 100000 variants of 1000 individuals. popnei ships one build,
+it has those instructions, and it takes 4.500 s, so it is inside the first of
+the two numbers and inside the second with it. A build without them takes
+7.066 s, and the next section says what that build is and why it is not the
+one popnei ships. Both sizes ran: the memory of node took the whole dataset,
+0.44 GB of resident memory for the 100000, and neither ended the module with a
+trap, which is how WebAssembly stops when it runs out of memory, with no message
+of its own.
+
+| what ran the analysis, and how many variants | no weights | weights for 10 |
+|---|---|---|
+| the wasm package under node, 100000 | 4.500 s | 5.164 s |
+| the wasm package under node, 20000 | 1.058 s | 1.194 s |
+| the wheel under pyodide, 100000 | 4.481 s | not measured |
+| the wheel under pyodide, 20000 | 1.046 s | not measured |
+| natively, one thread, for comparison | 0.801 s | 1.353 s |
+
+The package's times are the best of 5 runs and pyodide's the best of 3, node
+v26.8.2, pyodide 314.0.7. The spread was small: the five runs of the 100000 in
+the package went from 4.500 to 4.579 s and of the 20000 from 1.058 to 1.062 s.
+The bytes of the file are read off the disc before the clock starts in both,
+because that read is node's and not popnei's: a page gets them from a `File` or
+from the network. Everything after that is inside the clock. In the package that
+is the copy of the bytes into the memory of WebAssembly and the analysis; under
+pyodide the bytes are written into the file system of emscripten first, which is
+in memory too, and the clock starts at `open_vars` of that path, so the reading
+of the file is inside it there as it is natively.
+
+**The two builds take the same time**, 4.481 s and 4.500 s for the 100000, which
+is 0.4 in 100 apart. They are of different targets and are built by different
+toolchains, and the analysis is the same code; the wheel crosses into Python for
+the result and the package into TypeScript.
+
+**WebAssembly is 5.6 times slower than the native build on one thread**, 4.500 s
+against 0.801 s. What a block costs is not timed by itself here and
+comes from the two sizes, taking a block to cost the same in both and the rest
+of the analysis, which is the eigendecomposition of the same 1000 individuals
+and the building of the result, to cost the same as well: the 100000 is 20
+blocks and the 20000 is 4, so the difference of the two times over the
+difference of the blocks is 215 ms for a block, and what is left once the blocks
+are paid is 0.197 s. Natively a block costs 33.3 ms, so a block in the
+browser costs 6.5 times what it costs on this machine; and those 0.197 s hold an
+eigendecomposition that Accelerate does in 0.035 s.
+
+### What the vector instructions of WebAssembly give, and which switch gives them
+
+Two things are called `simd128` and only one of them does anything here. One is
+the build flag, `-C target-feature=+simd128`, which tells the compiler it may
+emit those instructions. Whether to set it in the two wasm builds is the
+question the owner has open as Open 1 of `docs/specs/linalg.md`, and until they
+answer it the builds are made without it, which is what popnei ships today. The
+other is the cargo feature `wasm-simd128-enable` of the crate `gemm`, which does
+the matrix products of faer, the linear algebra library popnei uses where there
+is no BLAS; `Cargo.toml` of the workspace turns that feature on, and it sets a
+value that gemm reads at run time to choose the kernels it has written with
+those instructions.
+
+**The flag changes nothing in what popnei builds.** Built into a directory
+outside the repository with `RUSTFLAGS="-C target-feature=+simd128"`, the
+WebAssembly of the package is the same file, byte for byte, as the one built
+without it: both are md5 `b9b0eace0e26b4b774384ca7d04bae68`, and so is the one
+the repository's own build left. That was checked on three builds, each from an
+empty target directory, and the verbose output of the one with the flag shows
+the flag on the rustc command line of 66 of its 119 compilations, `popnei`,
+`popnei-linalg`, `faer`, `gemm-common` and `gemm-f64` among them; the 53 without
+it are build scripts and procedural macros, which are compiled for this machine
+and not for WebAssembly. So task 4.3 of `docs/plans/pca.md`, which sets the flag
+in the two build commands, would change no built file, and the owner's answer to
+Open 1 changes no time.
+
+**The cargo feature is what the targets of the spec are about.** With
+`wasm-simd128-enable` taken off the `gemm` of the workspace manifest, a build
+that popnei does not ship, the same analysis takes 7.066 s for the 100000 and
+1.642 s for the 20000, the best of 3 runs of each, against 4.500 s and 1.058 s
+with it: without the feature the whole analysis takes 1.57 times as long. Per
+block by the same two sizes, 339 ms without the feature against 215 ms with it, which is close to the 306 ms and 187 ms that
+"Speed" of `docs/specs/pca.md` gives for the product of a block alone from the
+trial. So the shipped build is the one the spec calls "with `simd128`" and it
+meets the 5 s of that column; the build with the feature off, which popnei does
+not ship and which nobody would build on purpose, is the one that would miss the
+7 s of the other column, by 0.066 s.
+
+One thing that follows for the browser was not measured, and it is what Open 6
+of `docs/specs/pca.md` turns on: that open point weighs the speed of those
+instructions against a browser too old to have them, which would refuse a module
+that holds any of them. If gemm's kernels put them into the module, as the times
+say they do, then the module popnei ships today is already such a module, and
+that is true whatever the owner answers about the flag. Whether it loads in a
+runtime without them could not be tried here: V8 26, the engine of node and of
+Chrome, has no switch that turns the validation of those instructions off, and
+no older browser was tried.
+
+### What the two builds gave besides their times
+
+The wheel: `scripts/build_pyodide_wheel.sh` exited with 0 and left
+`dist/popnei-0.1.0-cp314-cp314-pyemscripten_2026_0_wasm32.whl`, 666374 bytes.
+`node tests/pyodide/smoke.mjs` exited with 0: the version popnei answers with is
+the one of the core crate, the four variants of `cases.vcf` are read plain and
+gzipped, a vars file is written and read back inside pyodide, and a header of
+170000 individuals is opened.
+
+The wasm package: `npm run build` in `js/popnei` exited with 0 and `npm test`
+gave `tests 154`, `pass 154`, `fail 0`.
+
+### How to get the wasm numbers again
+
+```text
+cd js/popnei && npm run build
+node bench/time_pca.mjs /Users/jose/devel/popnei-bench/big.vars --runs 5
+node bench/time_pca.mjs /Users/jose/devel/popnei-bench/big20000.vars --runs 5
+scripts/build_pyodide_wheel.sh && node tests/pyodide/smoke.mjs
+node tests/pyodide/time_pca.mjs /Users/jose/devel/popnei-bench/big.vars 3
+```
+
+`big20000.vars` is written as `big.vars` is, with `20000` after the path of the
+VCF in the call of `make_big_vcf.py`; it is 16280410 bytes of 20000 variants of
+the same 1000 individuals, and the VCF it comes from is 80692954 bytes. The two
+builds that popnei does not ship were made in directories outside the repository
+with `CARGO_TARGET_DIR` set there, one with `RUSTFLAGS="-C
+target-feature=+simd128"` and one with the feature `wasm-simd128-enable` taken
+off the `gemm` of the workspace manifest. Each was given to `wasm-bindgen`, the
+tool that writes the JavaScript around a build of WebAssembly, and put beside a
+copy of `dist/` and of `package.json` of the package, so that the same benchmark
+ran on it. The manifest was put back as it was in the same
+minute, and nothing of those builds is in the repository.
+
 ## What was not measured, and why
 
 - **How the 20.6 ms per block splits between the four passes over a row.** The
@@ -275,8 +421,16 @@ them is to measure each on its own, which no benchmark here does.
   of 0.21 GB.** The peaks here are what the system tells a process about
   itself, asked for inside the Python process that ran the two libraries, and
   plink2 does not run in it.
-- **The analysis over a VCF with weights**, and the whole of the wasm side, which
-  is task 4.2 of `docs/plans/pca.md`.
+- **The analysis over a VCF with weights**, natively.
+- **The analysis over a VCF under WebAssembly.** The package takes the bytes of
+  the source, so the 403 MB of the VCF would be a `Uint8Array` copied into the
+  memory of WebAssembly; the vars file is what a user keeps their variants in
+  and what the target of the spec is about, and it is what was timed.
+- **Whether the module popnei ships loads in a runtime without the 128 bit
+  vector instructions.** V8 26 has no switch that turns their validation off,
+  and no browser without them was tried.
+- **The weights under pyodide**, which the wasm package was timed with and the
+  wheel was not.
 - **Anything of a machine that is not this one.** Every number is of the owner's
   Apple M5 Pro with Accelerate, and the shares of the profile above all depend on
   Accelerate's `dsyrk`, which another BLAS would not match.

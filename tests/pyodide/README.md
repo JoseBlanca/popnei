@@ -48,6 +48,14 @@ exits with an error naming each one that differs:
 
 Neither `dist/` nor `node_modules/` is in git.
 
+`time_pca.mjs`, beside the smoke test, is not a test: it times
+`do_pca_from_variants` inside pyodide over a vars file, with the wheel that
+`dist/` holds, and it is what task 4.2 of `docs/plans/pca.md` measured the
+wheel with. `docs/reports/pca-measurement.md` has its numbers and the file
+it read them on.
+
+    node tests/pyodide/time_pca.mjs <path to a vars file> [runs]
+
 ## What has to be installed
 
 Outside the repository, on the machine that builds. "What has to be in
