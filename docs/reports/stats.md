@@ -519,3 +519,83 @@ subagent of task 5.1 recomputed the literals of the panel and of
 
 The subagents used: task 5.1 187351 tokens in 97 tool calls; task 5.2
 158161 in 76; task 5.3 207184 in 82. None had to be sent back.
+
+### The review of work package 5
+
+Five reviewers at c93a6e2, the categories that apply to a calculation
+with no populations and no histogram: spec, tests, numbers, errors with
+api, and architecture with binding. No finding was a wrong number a user
+gets. Two reviewers recomputed the two rates of every individual from
+the VCF files themselves and compared them with plink2: the missing
+rates and the heterozygosity rates of all 200 individuals of the panel
+and all 50 of `many.vcf` are equal to plink2's, with a largest
+difference of 0. Against pyNei, after the rescaling the spec describes,
+the largest difference is 5.6e-17 on the panel and 0 on `many.vcf`. The
+bits of the rates are the same in pools of 1, 2, 3 and 7 threads.
+
+What the review found was that the tests could not have caught several
+things, and nine findings were fixed in eleven commits, from b63b928 to
+74689c6.
+
+The sharpest: the ploidy is read by no test. The pass cuts each row into
+genotypes by the ploidy of the block, and every fixture of the work
+package was diploid, so replacing the ploidy with the number 2 left all
+420 cargo tests and all 241 pytest tests passing. On a tetraploid file
+the two differ: the heterozygosity rates are 1.0, 1.0 and 0.0 with the
+ploidy and 0.0, 0.0 and 1.0 with the number. There is a tetraploid test
+now.
+
+The four guards that refuse a reader with a defect were reached by no
+test either, and replacing all four conditions with `false` left every
+test passing. One of them matters: a reader that gives a block of five
+individuals and then one of three returns wrong counts in silence
+without it. They have their tests now, and the guard that catches that
+case was missing from the per variant pass, which had the same block
+prologue written a second time and had drifted from it. The prologue is
+one function now, with the guards in it, and the per variant pass
+refuses such a block too.
+
+The half called genotype was verified in one of its two forms only:
+every one of the 257 half called genotypes of `many.vcf` has the missing
+allele first, so breaking the rule that a half called genotype is
+missing and not heterozygous left the test that reads that file green.
+The fixtures of both packages now hold a genotype with the missing
+allele last, and the spec says which form each holds.
+
+Three smaller ones. An index that is no individual got a hidden default
+the spec did not give: the two counts gave 0, the missing rate gave 0.0,
+which looks like a good rate, and the heterozygosity rate gave nothing.
+The missing rate gives NaN now, the rule is in the spec and the test is
+the one the populations already had. In Python both statistics functions
+reached inside the `Variants` they were given without checking it, so a
+wrong argument gave `AttributeError: 'str' object has no attribute
+'_source'`, which names popnei's insides; they now give the `TypeError`
+that names the argument, as the writer of the vars file already did, and
+which its own comment records as the defect it had fixed there. The
+error of a pass that gave no variant ended with "a statistic per variant
+is calculated over the variants the pass gives", which a user of the per
+individual pass read for a statistic that is per individual.
+
+Not taken, with the reason: that neither pass honours Ctrl-C while it
+runs, because the loop over the blocks is the core's and the binding
+crate cannot look at the signals inside it, which is the same choice the
+writer of the vars file made and which the report of the filters already
+put before the owner; a pass over the 400 MB file is about 2.4 s of a
+dead Ctrl-C, measured. That the case of the genotypes not being in a
+block reaches Python as a wrong input where the code calls it a defect
+of a reader, because it has behaved so since before this plan and is not
+this work package's to settle; it is a question for the owner below.
+That the chunking of the two passes, the rayon loop and its serial twin
+for wasm, is the same code written twice: the part of it that had
+drifted, the prologue, is now one function, and unifying the rest is a
+change larger than a fix.
+
+After the fixes, at 74689c6: `cargo test --workspace` `428 passed`, 2
+ignored, from 420; `stats::per_individual --list` `15 tests`, from 8,
+where the plan asks 5; `uv run pytest` `244 passed`, from 241, of which
+`-k per_individual` 10; `npm test` `tests 162`, `fail 0`; `cargo fmt`,
+`cargo clippy`, `cargo wasm-check` and ruff clean.
+
+The reviewers used, in tokens: spec 140303, tests 140293, numbers
+106724, errors with api 154581, architecture with binding 175360. The
+fixer used 207563 in 134 tool calls.
