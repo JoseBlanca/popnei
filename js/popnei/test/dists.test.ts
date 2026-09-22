@@ -454,23 +454,26 @@ test("a source with no variant is refused and says that the source has none", ()
   try {
     assert.throws(() => calcPairwiseKosmanDists(variants), {
       message:
-        "the source has no variant, and a calculation needs 1 variant at least",
+        "the pass gave no variant and its source holds none: a statistic of " +
+        "a pass is calculated over the variants it gives",
     });
   } finally {
     variants.free();
   }
 });
 
-test("a source with no variant names the counts of the filters that were on it", () => {
-  // Every filter of the pass ran over the nothing the source gave, and the
-  // counts say so: they are what a failed pass otherwise loses.
+test("a source with no variant says so whatever filters were on it", () => {
+  // Every filter of the pass ran over the nothing the source gave, so the
+  // message is the one of a source with no variant and carries no count: a
+  // filter that was given nothing and kept nothing says no more than the
+  // sentence does.
   const variants = openVcf(vcfOf([]));
   try {
     variants.filterByMaf(0.95);
     assert.throws(() => calcPairwiseKosmanDists(variants), {
       message:
-        "the source has no variant, and a calculation needs 1 variant at " +
-        "least: the filter `maf` was given 0 variants and kept 0",
+        "the pass gave no variant and its source holds none: a statistic of " +
+        "a pass is calculated over the variants it gives",
     });
   } finally {
     variants.free();
@@ -488,10 +491,10 @@ test("steps that keep no variant are refused with the counts of each filter", ()
     variants.filterByMaf(0);
     assert.throws(() => calcPairwiseKosmanDists(variants), {
       message:
-        "the steps kept no variant of the 4 the source gave, and a " +
-        "calculation needs 1 variant at least: the filter `missing_data` was " +
-        "given 4 variants and kept 4, the filter `maf` was given 4 variants " +
-        "and kept 0",
+        "the pass gave no variant: its source gave 4 and the steps kept " +
+        "none of them, the `missing_data` filter was given 4 and kept 4, " +
+        "the `maf` filter was given 4 and kept 0; a statistic of a pass is " +
+        "calculated over the variants it gives",
     });
   } finally {
     variants.free();

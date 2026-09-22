@@ -537,10 +537,17 @@ pub enum Error {
     /// A pass that calculates a statistic gave no variant, either because
     /// its source holds none or because the steps of the pass kept none of
     /// the variants they were given. A mean over no variant, a histogram
-    /// that counts nothing and a rate of an individual over no variant say
+    /// that counts nothing, a rate of an individual over no variant and a
+    /// distance between two individuals over no variant say
     /// nothing about a dataset, and a user who gets them has to know which
     /// of the two happened, so the message says it with the variants each
     /// filter was given and kept.
+    ///
+    /// It is the one case of a pass that gave no variant: every
+    /// calculation over a pass raises it, the two of `stats` and
+    /// `calc_kosman_sums` of `dists`, and each reads the counts from the
+    /// reader it was lent, so that neither binding crate writes the
+    /// message again in its own language.
     #[error(
         "{said}",
         said = a_pass_that_gave_no_variant(*num_vars_of_the_source, filters)
@@ -789,19 +796,6 @@ pub enum Error {
         /// Which of the four sizes it is, with the number the dataset has.
         problem: crate::pca::VariantsTooLarge,
     },
-
-    /// The reader a calculation was given had no variant, and there is
-    /// nothing to calculate over: its source holds none, or the filters of
-    /// the pass kept none. `calc_kosman_sums` of `docs/specs/dists.md`
-    /// gives it when the first block it asks for is not there.
-    ///
-    /// Which of the two it was, and how many variants each filter of the
-    /// pass was given and kept, is what the binding crate adds: it holds
-    /// the chain of readers and reads the counts from it, as "A pass that
-    /// was not finished" of `docs/specs/filters.md` says, and the core does
-    /// not have them.
-    #[error("the reader gave no variant, and a calculation needs 1 variant at least")]
-    ReaderGaveNoVariants,
 
     /// The distances of that many individuals need more memory than the
     /// machine gives: popnei keeps two `u32` for every pair of them, which

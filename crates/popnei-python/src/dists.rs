@@ -32,20 +32,6 @@ type KosmanDistances = (Vec<f64>, Vec<String>, PassCounts);
 /// float64 that holds the allocation the core filled.
 type KosmanDistancesForPython<'py> = (Bound<'py, PyArray1<f64>>, Vec<String>, PassCounts);
 
-/// What a pass that could not be finished failed with.
-///
-/// A pass that gave no variant is kept apart from everything else because
-/// the message a user reads is built from the counts of the chain, which
-/// the core does not have: it says whether the source had no variant or the
-/// steps kept none, and what each filter was given and kept.
-enum Refusal {
-    /// What the core refused, which the caller gives the file of the source.
-    Core(popnei::Error),
-    /// The pass gave the calculation no variant, with the counts of each
-    /// filter of its chain, the outermost first.
-    NoVariant(Vec<(&'static str, u64, u64)>),
-}
-
 // The Kosman distance of every pair of individuals of `source`, over the
 // variants that the steps of `steps` keep, with `min_num_vars` the variants
 // a pair needs to get one. What it gives back is the distances in the order
@@ -78,13 +64,8 @@ pub(crate) fn calc_pairwise_kosman_dists<'py>(
     // loses only itself, since it writes no file and the `Variants` is as
     // it was.
     let calculated = py.detach(|| over_the_source(source, &steps, min_num_vars));
-    let (dists, individuals, counts) = match calculated {
-        Ok(calculated) => calculated,
-        Err(Refusal::Core(error)) => return Err(PyPopneiError::of_the_file(error, &path)),
-        Err(Refusal::NoVariant(filtering)) => {
-            return Err(PyPopneiError::NoVariant { path, filtering });
-        }
-    };
+    let (dists, individuals, counts) =
+        calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
     // The vector of 10000 individuals is 400 MB, and `into_pyarray` hands
     // the allocation the core filled to numpy without copying it.
     let dists = read_only(dists.into_pyarray(py))?;
@@ -107,28 +88,16 @@ fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
     min_num_vars: u32,
-) -> Result<KosmanDistances, Refusal> {
+) -> popnei::Result<KosmanDistances> {
     // The source is opened at the size of its own blocks: the calculation
     // adds whole numbers, so the same distances come out whatever the size,
     // and no `Reblock` is put over the chain.
-    let reader = source.reader(None).map_err(Refusal::Core)?;
+    let reader = source.reader(None)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let mut chain = chain_of(reader, steps).map_err(Refusal::Core)?;
-    let sums = match popnei::dists::calc_kosman_sums(&mut chain) {
-        Ok(sums) => sums,
-        Err(error) => {
-            // A pass that gave no variant is told with the counts of its
-            // filters, which say whether the source had none or the steps
-            // kept none and which nothing else would carry out of a pass
-            // that could not be finished.
-            if matches!(error, popnei::Error::ReaderGaveNoVariants) {
-                return Err(Refusal::NoVariant(filtering_of(chain.as_ref())));
-            }
-            return Err(Refusal::Core(error));
-        }
-    };
+    let mut chain = chain_of(reader, steps)?;
+    let sums = popnei::dists::calc_kosman_sums(&mut chain)?;
     let dists = sums
         .dists(min_num_vars)
         .map(|dist| dist.unwrap_or(f64::NAN))

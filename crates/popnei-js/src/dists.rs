@@ -6,10 +6,8 @@
 //! `docs/architecture.md` leaves to a binding crate. It builds the chain of
 //! readers of the pass from the steps of the `Variants`, keeps that chain
 //! while the calculation runs so that the counts of its filters can be read
-//! when it returns, turns the two integers the core keeps for each pair into
-//! the distance vector, writing NaN where a pair has no distance, and, for a
-//! pass that gave no variant, says whether the source had none or the steps
-//! kept none, which only the chain knows.
+//! when it returns, and turns the two integers the core keeps for each pair
+//! into the distance vector, writing NaN where a pair has no distance.
 //!
 //! [`KosmanDistances`] is the result on its way out. It lives in the memory
 //! of wasm, which the garbage collector of JavaScript does not see, so the
@@ -24,7 +22,6 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::dists::calc_kosman_sums;
-use popnei::filters::FilteringStats;
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
@@ -90,8 +87,9 @@ impl KosmanDistances {
 ///
 /// # Errors
 ///
-/// When the pass gives no variant, which says whether the source had none or
-/// the steps kept none; when the sums of a pair go above what a `u32` holds;
+/// When the pass gives no variant, whose message says whether the source had
+/// none or the steps kept none and what each filter was given and kept; when
+/// the sums of a pair go above what a `u32` holds;
 /// when the memory of the tab does not take the two counts of every pair;
 /// and when the source cannot be read, a wrong line of a VCF among the
 /// causes.
@@ -105,11 +103,7 @@ pub(crate) fn kosman_dists_of(
     // The names are the reader's own, taken before the calculation borrows
     // it: the vector and the names then cannot be of two different sources.
     let names = chain.individuals().to_vec();
-    let calculated = calc_kosman_sums(&mut chain);
-    let sums = match calculated {
-        Ok(sums) => sums,
-        Err(error) => return Err(of_the_pass(error, &chain.filtering_stats())),
-    };
+    let sums = calc_kosman_sums(&mut chain)?;
     let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
     let dist_vector = sums
         .dists(min_num_vars)
@@ -120,66 +114,4 @@ pub(crate) fn kosman_dists_of(
         names: Some(names),
         counts,
     })
-}
-
-/// `error`, and a pass that gave no variant under what the chain counted:
-/// whether the source held no variant or the filters kept none, and how many
-/// variants each filter was given and kept.
-///
-/// The core says that the reader gave no variant and nothing more, because
-/// it is given a reader and not the chain it is the end of. The counts are
-/// the ones a failed pass would otherwise lose, as "A pass that was not
-/// finished" of `docs/specs/filters.md` says: the calculation read the
-/// source to its end before it found that there was no variant, so every
-/// filter has counted everything it was given.
-///
-/// The words are those of the Python function of `docs/specs/dists.md`, so
-/// that a user who reads one message reads the other. Python writes the path
-/// of the file and `: ` before them, which a TypeScript user has not: this
-/// crate is given the bytes of a file and no name for it.
-fn of_the_pass(
-    error: popnei::Error,
-    filtering: &[(&'static str, FilteringStats)],
-) -> JsPopneiError {
-    if !matches!(error, popnei::Error::ReaderGaveNoVariants) {
-        return JsPopneiError::Core(error);
-    }
-    // The chain gives its filters the outermost first, and the one the
-    // source feeds is the last of them: what it was given is what the source
-    // gave. A pass with no filter reads the source itself.
-    let from_the_source = match filtering.last() {
-        Some((_kind, stats)) => stats.vars_processed,
-        None => 0,
-    };
-    // The filters are named in the order of the steps, which is the order a
-    // user wrote them in and the reverse of the chain's. A filter that was
-    // given nothing is named too: what a user is looking for is which of
-    // their steps is the one that emptied the pass, and a filter missing
-    // from the list would read as a step that did not run.
-    let counts: Vec<String> = filtering
-        .iter()
-        .rev()
-        .map(|(kind, stats)| {
-            format!(
-                "the filter `{kind}` was given {vars_processed} variants and kept \
-                 {vars_kept}",
-                vars_processed = stats.vars_processed,
-                vars_kept = stats.vars_kept
-            )
-        })
-        .collect();
-    let counts = counts.join(", ");
-    if from_the_source == 0 {
-        let message = "the source has no variant, and a calculation needs 1 variant \
-                       at least";
-        return JsPopneiError::NoVariant(if counts.is_empty() {
-            message.to_owned()
-        } else {
-            format!("{message}: {counts}")
-        });
-    }
-    JsPopneiError::NoVariant(format!(
-        "the steps kept no variant of the {from_the_source} the source gave, and a \
-         calculation needs 1 variant at least: {counts}"
-    ))
 }

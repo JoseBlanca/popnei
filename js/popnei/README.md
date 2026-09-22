@@ -451,8 +451,8 @@ try {
 It reads the source once, through the filters that are on the `Variants`,
 and leaves it as it was, so the same handle goes to the next calculation.
 A pass that gives no variant is an `Error` that says whether the source
-held none or the steps kept none, with how many variants each filter was
-given and kept.
+held none or the steps kept none, and for the steps how many variants each
+filter was given and kept.
 
 One pass gives the five statistics of every variant and every population:
 
