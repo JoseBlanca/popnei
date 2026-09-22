@@ -9,6 +9,7 @@ signatures are those of pyNei, the Python library popnei succeeds.
 
 from popnei import _core
 from popnei.block import Block
+from popnei.dists import Distances, calc_pairwise_kosman_dists
 from popnei.filters import FilteringStats, Step
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
@@ -24,12 +25,14 @@ the version of the Rust that did the work and not one written again here.
 __all__ = [
     "Block",
     "Blocks",
+    "Distances",
     "FilteringStats",
     "PassStats",
     "Step",
     "Variants",
     "VarsWritten",
     "__version__",
+    "calc_pairwise_kosman_dists",
     "open_vars",
     "open_vcf",
     "write_vars",

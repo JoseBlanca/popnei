@@ -58,6 +58,23 @@ pub(crate) enum PyPopneiError {
         /// threshold that was refused does not always fit in one of Rust.
         value: String,
     },
+    /// A pass that gave a calculation no variant, with the file it read and
+    /// what each filter of its chain was given and kept, the outermost
+    /// filter first.
+    ///
+    /// The core says that the reader gave no variant and no more: it is
+    /// given a chain of readers and does not know whether the source held no
+    /// variant or the steps kept none, and the counts of a pass that could
+    /// not be finished reach nobody otherwise, as "A pass that was not
+    /// finished" of `docs/specs/filters.md` says. This crate holds the chain,
+    /// so it reads them from it and builds the message.
+    NoVariant {
+        /// The file the variants were read from.
+        path: PathBuf,
+        /// The kind of each filter of the pass, how many variants it was
+        /// given and how many it kept, the outermost filter first.
+        filtering: Vec<(&'static str, u64, u64)>,
+    },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -156,6 +173,13 @@ impl From<PyPopneiError> for PyErr {
                  included: the number of the variant it is compared with is one count of \
                  the variant divided by another"
             )),
+            // A pass that gave no variant is a wrong input of the
+            // calculation and not a result of NaN, so it is a `ValueError`,
+            // whose message starts with the path as that of every error of a
+            // file does.
+            PyPopneiError::NoVariant { path, filtering } => {
+                PyValueError::new_err(of_the_file(no_variant_message(&filtering), Some(path)))
+            }
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
             // `ValueError`, whose message starts with the path as that of
@@ -177,6 +201,44 @@ impl From<PyPopneiError> for PyErr {
             PyPopneiError::Python(error) => error,
         }
     }
+}
+
+/// What a user reads of a pass that gave a calculation no variant: which of
+/// the two it was, the source having none or the steps keeping none, and
+/// what each filter was given and kept.
+///
+/// The filters come in the order of the chain, the outermost first, and the
+/// message names them in the order of the steps, which is the one the user
+/// wrote them in. The last of the chain is the innermost, the filter the
+/// source feeds, so a pass whose innermost filter was given no variant is a
+/// pass over a source that has none.
+fn no_variant_message(filtering: &[(&'static str, u64, u64)]) -> String {
+    let source_had_none = match filtering.last() {
+        Some(&(_, vars_processed, _)) => vars_processed == 0,
+        None => true,
+    };
+    let what_happened = if source_had_none {
+        "the source has no variant"
+    } else {
+        "the steps kept no variant of the source"
+    };
+    if filtering.is_empty() {
+        return format!("{what_happened}, and a calculation needs 1 variant at least");
+    }
+    let counts: Vec<String> = filtering
+        .iter()
+        .rev()
+        .map(|&(kind, vars_processed, vars_kept)| {
+            format!(
+                "the filter `{kind}` was given {vars_processed} variants and kept \
+                 {vars_kept}"
+            )
+        })
+        .collect();
+    format!(
+        "{what_happened}, and a calculation needs 1 variant at least: {counts}",
+        counts = counts.join(", ")
+    )
 }
 
 /// `raised` with a note that says that the file the call was writing is

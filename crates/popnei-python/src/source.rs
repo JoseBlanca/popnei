@@ -511,9 +511,10 @@ fn written_as(value: &Bound<'_, PyAny>) -> String {
     }
 }
 
-/// The array, which nothing writes into any more: a block is frozen, and
-/// its arrays hold the memory the core filled.
-fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
+/// The array, which nothing writes into any more: a block is frozen and so
+/// is the result of a calculation, and their arrays hold the memory the core
+/// filled.
+pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
         .getattr("flags")?
