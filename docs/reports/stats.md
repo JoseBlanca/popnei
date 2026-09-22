@@ -358,3 +358,116 @@ say which of the two it wants.
 The subagents used: task 4.1 213303 tokens in 68 tool calls; task 4.2
 221213 in 98; task 4.3 282844 in 135; task 4.4 302305 in 81. None had
 to be sent back.
+
+### The review of work packages 3 and 4
+
+Seven reviewers, one per category, at 631e281. This is the review that
+found the most, and two of its findings were wrong results a user would
+have got with nothing said. Twenty-four findings were fixed in
+twenty-five commits, from f23aeef to 27ba61a, by two subagents, the
+first on the core and the spec and the second on the binding crates and
+the packages.
+
+The two wrong results, both in the histogram, both found by three
+reviewers from three sides and confirmed by the orchestrator:
+
+- A range whose two ends are so far apart that their distance overflows,
+  `(-1e308, 1e308)`, gave the edges NaN, inf, inf, inf, 1e308. The bin of
+  a value is found by a binary search, which needs the edges sorted, so
+  every variant fell in the first bin: all 500 of `many.vcf`, with a mean
+  computed over all of them and a NaN printed among the edges. numpy
+  refuses the same input, and so does pyNei through it. popnei now
+  refuses it, and the histogram has a largest number of bins as well,
+  100000.
+- That largest number is the second one. Nothing bounded the number of
+  bins above, and the allocation of the edges is what the user's number
+  reaches: `num_bins` of 2^60 ended a Python session with an exception
+  that derives from `BaseException`, which `except Exception` does not
+  catch, so a notebook dies; 10^12 aborted the interpreter with
+  `memory allocation of 8000000000000008 bytes failed` and no exception
+  at all; in the browser it is the trap that ends the module. A user who
+  writes a number that large has made a mistake, and popnei now says so.
+
+The third was in Python alone: every count a user got was an unsigned
+64-bit integer, where pyNei's are signed, so subtracting two of them
+wrapped. On `many.vcf`, `num_poly - num_variable` gave
+18446744073709551600 where pyNei gives -16. The counts are signed now,
+and a test subtracts two of them.
+
+What the reviewers found in the tests is the other half of the review.
+Six behaviours the code has, and the spec states, were guarded by no
+test at all: a value outside the range of the histogram is in the mean
+and in no bin; the last edge is the end of the range, which is what
+numpy writes there; the pass refuses a `Pops` built against another
+reader; it asks its reader for the genotypes alone; the answers of
+`Pops` for a population that is not there; and the serial path that wasm
+uses, which no test compared with the rayon one. In each case a reviewer
+broke the code and all 396 tests stayed green. They are tests now, each
+confirmed by making the same change and seeing the new test fail.
+
+Six sentences of the spec said something the code does not do, and each
+was measured before it was corrected. The comparison with pyNei of the
+unbiased expected heterozygosity crosses a bin edge at seven variant and
+population pairs and not at the two the spec named, and the two
+arithmetics differ by at most 2.84e-16, not by a bit or two: two
+reviewers recomputed that independently, over every biallelic split up
+to 500 called alleles. The sums of a pass are bit-identical across
+thread counts, where the spec said they agree to about 1e-15 and not to
+the bit, so the test now compares the bits. The lookup of the
+individuals of a population is one hash map per population, where one
+sentence said once per pass and the interface prescribed per population.
+The test of the block sizes compares them against each other now, and
+not each against a printed literal. At ploidy 1 the plain expected
+heterozygosity is not 0 but -2.2e-16 at a variant with a called allele,
+so it falls below the histogram and into the mean; numpy gives the same
+value, so popnei was left as it is and the spec now says what floating
+point does there. That one is the owner's to reverse: rounding it to 0
+would count such a variant in the first bin where pyNei drops it.
+
+The rest were messages a user reads and texts a maintainer reads. A
+`TypeError` said that what it refused "is one of them", the opposite of
+what it meant, in three places. Four refusals in Python named neither
+the argument nor the value, where TypeScript named both. A user who
+wrote `ploidy=0` was told about "the exponent", a word they never
+wrote. A truth value written for `min_num_individuals` was taken as 1,
+where TypeScript refuses it. The four distributions of one result shared
+one array of bin edges that a user could write into although the result
+is frozen; it is read-only now. The five names of the statistics were
+written out in four places and the bin types in two, with the same
+sentence copied into both binding crates; the core turns a name into a
+statistic and into a histogram now, and both crates call it.
+
+Not taken, with the reason: that the per-chunk allocation of the pass
+should be one flat array instead of one per population per statistic,
+which is true of what it allocates, 136 allocations per population, but
+the change touches five types, the loop over the rows and the result,
+which is more than a fix; the comment that said the pass allocates
+nothing per variant now says what it does allocate. That the pass
+should honour Ctrl-C while it runs, which is the choice the writer of
+the vars file made before it and which the report of the filters already
+put before the owner. That `IndividualBeyondTheVariant` reaches Python
+as a `ValueError`: it is in the arm that gives a `RuntimeError`, as it
+should be, and the reviewer had misread the arm.
+
+One finding is for work package 6 and not for a fix. The architecture
+reviewer measured the pass on `big.vars`, 100000 variants of 1000
+individuals, five statistics and no populations: 0.511 s on one thread
+and 0.149 s on 18 cores, where "Speed" of the spec asks 0.25 s and
+0.15 s, with the read alone at 0.109 s against the spec's 0.102 s. Four
+populations of 250 add 0.13 s on one thread. It was measured on a
+machine with a load average of 5.45, which is not the quiet machine work
+package 6 measures on, so the number there is the one that counts.
+
+After the fixes, at 27ba61a: `cargo test --workspace` `412 passed`, 2
+ignored, from 396; `stats::pops --list` `10 tests`, `count_gts_of
+count_alleles_of --list` `12 tests`, `stats::hist stats::obs_het
+stats::maf stats::exp_het --list` `38 tests`, `stats::distribs --list`
+`19 tests`, where the plan asks 5, 4, 16 and 8; `uv run pytest` `233
+passed`, from 223, of `tests/test_stats.py -k per_var` 44; `npm test`
+`tests 156`, `fail 0`; the wheel of pyodide built and its smoke test
+exited with 0; `cargo fmt`, `cargo clippy`, `cargo wasm-check` and ruff
+clean.
+
+The reviewers used, in tokens: spec 208043, tests 242450, numbers
+200040, errors 158749, api 180412, architecture 154966, binding 147875.
+The two fixers used 291812 in 214 tool calls and 282016 in 186.
