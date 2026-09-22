@@ -155,8 +155,8 @@ answered.
 
 pandas has to be loaded before popnei as well: `popnei/dists.py` imports it
 when popnei is imported, to build the square matrix of a `Distances` out of
-the vector of distances. It is not in the `dependencies` of
-`pyproject.toml`, so micropip does not install it with the wheel and the
-test loads it from pyodide itself, 3.0.2 there, as it does numpy. Were it
-declared, micropip would install it with the wheel and loading it in the
-test would only say which pandas answered.
+the vector of distances. The `dependencies` of `pyproject.toml` ask for
+`pandas>=3.0.2`, the pandas that pyodide 314.0.7 ships, because micropip
+refuses a wheel that asks for more than pyodide has, so micropip installs
+it with the wheel. The test loads it from pyodide itself, as it does numpy,
+which is what says which pandas answered.

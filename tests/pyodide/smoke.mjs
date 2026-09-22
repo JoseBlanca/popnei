@@ -200,10 +200,12 @@ const WORKED_EXAMPLE_VCF =
   ].join("\n") + "\n";
 
 // The individuals of that VCF, in the order the source has them, and how many
-// variants it holds, which are the names and the count of the pass that the
-// result carries.
+// variants the calculation takes from it, which are the names and the count
+// of the pass that the result carries. tests/test_dists.py calls the
+// variants at which each pair was called together WORKED_EXAMPLE_NUM_VARS,
+// which is another number, [2, 3, 3].
 const WORKED_EXAMPLE_NAMES = ["ind1", "ind2", "ind3"];
-const WORKED_EXAMPLE_NUM_VARS = 4;
+const WORKED_EXAMPLE_VARS_OF_THE_PASS = 4;
 
 // The distance of each of its three pairs, (ind1, ind2), (ind1, ind3) and
 // (ind2, ind3), which is the ploidy times the sum of d over the ploidy times
@@ -264,13 +266,11 @@ console.log(`pyodide ${pyodide.version}, installing ${wheel.name}`);
 const wheelInPyodide = `/tmp/${wheel.name}`;
 pyodide.FS.writeFile(wheelInPyodide, await readFile(wheel.path));
 // The genotypes of a block are a numpy array and the square matrix of a
-// `Distances` is a pandas frame, and `popnei/dists.py` imports pandas when
-// it is imported, so popnei cannot be imported before the two of them are in
-// pyodide. Both are packages of pyodide itself and are loaded from there;
-// micropip would fetch numpy for the dependency of the wheel anyway, and
-// asking for them here says which numpy and which pandas answer. pandas is
-// not in the `dependencies` of pyproject.toml, so micropip does not install
-// it and this line is what puts it there.
+// `Distances` is a pandas frame, which `popnei/dists.py` imports when popnei
+// is imported, so popnei cannot be imported before the two of them are in
+// pyodide. Both are `dependencies` of pyproject.toml, so micropip installs
+// them with the wheel; both are packages of pyodide itself and are loaded
+// from here, which says which numpy and which pandas answer.
 await pyodide.loadPackage(["micropip", "numpy", "pandas"]);
 const micropip = pyodide.pyimport("micropip");
 await micropip.install(`emfs:${wheelInPyodide}`);
@@ -411,7 +411,7 @@ for (const [askedFor, expected] of [
     );
   } else if (
     JSON.stringify(found.names) !== JSON.stringify(WORKED_EXAMPLE_NAMES) ||
-    found.num_vars !== WORKED_EXAMPLE_NUM_VARS ||
+    found.num_vars !== WORKED_EXAMPLE_VARS_OF_THE_PASS ||
     JSON.stringify(found.filters) !== "[]"
   ) {
     failures.push(
@@ -419,7 +419,7 @@ for (const [askedFor, expected] of [
         ` ${found.num_vars} variants through the filters` +
         ` ${JSON.stringify(found.filters)}, and that VCF has the individuals` +
         ` ${JSON.stringify(WORKED_EXAMPLE_NAMES)},` +
-        ` ${WORKED_EXAMPLE_NUM_VARS} variants and no filter`,
+        ` ${WORKED_EXAMPLE_VARS_OF_THE_PASS} variants and no filter`,
     );
   } else {
     console.log(`${what}: ${JSON.stringify(found.dists)}, as the spec says`);
