@@ -4,10 +4,17 @@ The plan `docs/plans/ld.md` is under way, on the branch `plan/ld`, in the
 worktree `.claude/worktrees/ld`, where it started on 22 September 2026.
 It builds r², the squared correlation between the dosages of two
 variants; `calc_rogers_huff_r2_matrix`, which gives the r² of every pair
-of a set of variants; and `Variants.filter_by_ld`, which takes out the
+of a set of variants and is named for the way Rogers and Huff work it out
+from the dosages alone, without knowing which alleles travel together on
+a chromosome; and `Variants.filter_by_ld`, which takes out the
 variants that repeat what a variant near them on the chromosome already
 said. The two specs behind it are `docs/specs/ld.md` and the item "The
 filter by linkage disequilibrium" of `docs/specs/filters.md`.
+
+Where the plan stands on 22 September 2026: work package 1, the r² of two
+sets of variants inside the core crate, is done, reviewed and fixed. Work
+packages 2, 3 and 4 have not started, and the last section of this report
+says what is waiting on the owner before work package 2 begins.
 
 This report is written as the work goes. Each work package gets a section
 below when it is done, with the command that checked each deliverable and
@@ -31,11 +38,16 @@ Everything the plan asks to be in place is there, checked by running it:
 | nothing of this plan written yet | `ls` of the four paths | `tests/test_ld.py`, `js/popnei/src/ld.ts`, `tests/reference/ld/` and `crates/popnei/src/ld.rs` all absent |
 | the linear algebra it goes through | `ls crates/popnei-linalg/src/` | `blas.rs`, `faer.rs`, `lib.rs`, and `docs/specs/linalg.md` merged |
 
-Open 2 of `docs/specs/ld.md`, the major allele of a variant with half
-called genotypes, has no answer, so task 1.2 follows its "meanwhile", the
-rule `docs/specs/pca.md` already has: the move of `the_major_allele` into
-`variant` changes no number. Open 1 belongs to the curve of r² against
-distance, which this plan does not build.
+`docs/specs/ld.md` ends with two questions it leaves for the owner, which
+it numbers 1 and 2. The second asks how the major allele of a variant is
+chosen when some of its genotypes have one allele called and one missing,
+and it has no answer yet. Each such question carries a rule to follow
+until it is answered, which the spec calls its "meanwhile", and this
+one's is the rule `docs/specs/pca.md` already gives and `pca.rs` already
+computes. So task 1.2, which moved the function that picks the major
+allele out of `pca.rs` and into `variant.rs`, changed no number. The
+first question belongs to the curve of r² against distance, which this
+plan does not build.
 
 ## Work package 1: the r² of two sets of variants
 
@@ -102,8 +114,10 @@ it started from and 15 of this task, and `cargo test -p popnei --lib ld::
 -- --list` prints `15 tests`, which is deliverable 6 moving off `0
 tests`. The tests were each seen to fail with the code broken.
 
-The task found a fifth way `of_block` can refuse a block that the spec's
-list of four did not have: genotypes of more than 255 alleles each. A
+The function that reads a block of variants and builds the three
+matrices from it is called `of_block`, and it is where a dataset popnei
+cannot work with is refused. The task found a fifth way it can refuse a
+block that the spec's list of four did not have: genotypes of more than 255 alleles each. A
 dosage is how many alleles of a genotype are not the major allele of its
 variant, so it is at most the ploidy, and the spec's own `dosages` gives
 a dosage as a `u8`. Such a block would have wrapped the dosage into a
@@ -161,10 +175,12 @@ that are defects of popnei and not wrong input from a user: an `out`
 buffer of the wrong size, two sets built over a different number of
 individuals, and a linear algebra operation that did not run. All three
 fall through the wildcard of `crates/popnei-python/src/errors.rs` and
-would reach Python as `ValueError`, where the matching `PcaLinalg` of the
-principal component analysis is a `RuntimeError` and
-`docs/specs/pca.md` says why: no argument of the function can give them.
-The same holds for `LdRowsNotInTheDosages` of task 1.3. Nothing in Python
+would reach Python as `ValueError`, where the case of the principal
+component analysis that stands for the same thing, a product its linear
+algebra could not work out, is a `RuntimeError`, and `docs/specs/pca.md`
+says why: no argument of the function can give it. The same holds for
+the case of task 1.3 that refuses variants asked of a set of dosages
+that does not hold them. Nothing in Python
 reaches any of them today, since the binding of this module is task 2.2,
 so this is not a wrong exception a user can see yet. The sentence of
 `docs/specs/ld.md` that lists the cases of this module names three, all
@@ -256,10 +272,11 @@ What mattered most, in the order of what it would have cost:
   times the ploidy at most 94906265, which is 47453132 diploid
   individuals or 372181 at a ploidy of 255. Above it the r² loses
   digits with no word: 1.3e-12 relative at a million individuals of
-  ploidy 255, wider than the tolerance the spec compares within. It is
-  seven orders away from the 10000 diploid individuals popnei is built
-  for. `of_block` refuses beyond it and the spec says where the
-  arithmetic stops.
+  ploidy 255, wider than the tolerance the spec compares within. The
+  dataset popnei is built for, 10000 diploid individuals, gives an
+  individuals times ploidy of 20000, so the limit is 4700 times further
+  out than anything popnei expects to be given. `of_block` refuses
+  beyond it and the spec says where the arithmetic stops.
 - **Ten allocations would have ended the process** instead of returning
   an error, where `crates/popnei/src/dists.rs` states the crate's rule
   and its reason, and where the spec asks `try_reserve_exact` of the
@@ -277,8 +294,10 @@ What mattered most, in the order of what it would have cost:
   shortcut fires when the two sets are the same object, and every test
   of the six-product path used sets of different sizes, so replacing the
   condition with one that compares sizes left all 26 tests passing while
-  giving r² values above 1. Task 2.1 of the next work package is a tiler
-  that compares tile sizes on that line. There is a test now, and the
+  giving r² values above 1. Task 2.1 of the next work package works the
+  matrix out in square tiles, so that the six matrices it holds at once
+  stay small, and it will be comparing the sizes of those tiles on that
+  very line. There is a test now, and the
   orchestrator reran the mutation against it and saw it fail.
 - **The major allele frequency was written twice**, in `ld.rs` and in
   `filters.rs`, one commit after the major allele itself was moved into
@@ -294,8 +313,9 @@ triangle, so the diagonal and the lower half of the 500 x 500 matrix were
 unchecked, and the spec asks that the 68 variants of no variance have NaN
 in their row, their column and their diagonal cell; two test helpers said
 their tolerance was zero and used 1e-12 and 1e-15, and the tests pass at
-zero; `MAX_VALUES_OF_THE_DOSAGES` was a third copy of a limit the linalg
-crate kept private; the error list of `of_block` omitted the cases the
+zero; the largest number of values a matrix may hold, 2147483647, which is
+what the routines of BLAS count them in, was written out a third time
+where the linalg crate keeps it private; the error list of `of_block` omitted the cases the
 counting of alleles refuses; a genotype that was not in the row left the
 previous variant's genotype behind rather than a missing one; and a float
 reached a `u8` with no check for NaN or range.
@@ -311,22 +331,56 @@ are reachable from a vars file, and the spec says so now. Whether the
 vars reader should cap the ploidy itself belongs to
 `docs/specs/io_vars.md` and not to this plan.
 
-The question the plan's "What could go wrong" raised has come back with a
-measurement, and it is the one thing waiting on the owner.
-`crates/popnei-linalg` has no product that takes its second matrix
-transposed, and the three matrices are variants x individuals, so
-`r2_between` transposes its second matrix itself. The `coding` skill says
-that linear algebra goes through the linalg crate and nowhere else and
-that no code of the core crate does its own, which the transpose in
-`ld.rs` is. A transpose of a 512-variant by 1000-individual matrix takes
-0.422 ms and an off-diagonal tile pair does three of them, so the matrix
-of 5000 variants of work package 4 would spend about 69 ms of its 0.50 s
-target copying, a seventh of it; transposing each tile once instead of
-once per pair brings that to about 13 ms without touching linalg. Adding
-the product to linalg costs one flag in the `dgemm` call of `blas.rs` and
-a `.transpose()` on the matrix reference of `faer.rs`, both of which
-those libraries do internally, and it changes `docs/specs/linalg.md`, a
-spec this plan does not build.
+One decision is waiting on the owner, and work package 2 should not start
+before it is taken. It is the risk the plan's "What could go wrong"
+named, come back with a measurement.
+
+What is being decided: whether `crates/popnei-linalg` gains a product
+that takes its second matrix transposed, which changes
+`docs/specs/linalg.md`, a spec this plan does not build, or whether the
+r² keeps transposing its matrices itself inside
+`crates/popnei/src/ld.rs`.
+
+The recommendation is to add it to `crates/popnei-linalg`, and to do it
+before work package 2 works the matrix out in tiles. The orchestrator
+decided the other way when the problem appeared, on the grounds that it
+touched no spec outside the plan, and the review showed that reasoning
+incomplete: the `coding` skill says that linear algebra goes through the
+linalg crate and nowhere else, and that no code of the core crate does
+its own. The transpose written in `ld.rs` is code of the core crate
+doing its own linear algebra, so the decision kept a plan boundary at
+the cost of a rule the project holds.
+
+Why the shape came up at all: `crates/popnei-linalg` multiplies two
+matrices that are both stored row after row, and the three matrices of
+the r² hold one row for each variant and one column for each individual.
+The product of one set of variants with another sums over the
+individuals, so the second matrix has to be handed over the other way
+round, one row for each individual, and something has to turn it round.
+
+What each way costs. Turning a matrix of 512 variants and 1000
+individuals round takes 0.422 ms, and a pair of tiles that are not on the
+diagonal needs three of them, so the matrix of 5000 variants that work
+package 4 must bring in under 0.50 s would spend about 69 ms of that
+budget copying, a seventh of it. Turning each tile round once and reusing
+it, rather than once for every pair it appears in, brings that to about
+13 ms and touches no other spec. Giving the product to linalg removes the
+copying altogether, and costs almost nothing to write: one flag in the
+call to `dgemm`, the routine of BLAS that multiplies two matrices, which
+already takes a flag saying that an operand is stored the other way
+round, and one call to `.transpose()` on the faer side, which is the
+other library `crates/popnei-linalg` is built on. What it costs is the
+spec: `docs/specs/linalg.md` gains a function, and this plan grows by a
+task that was not in it.
+
+What happens next in each case. If the product goes into linalg, the
+orchestrator writes that spec change, runs it as a new task of work
+package 1 and has work package 2 build on it. If the transposes stay in
+the core crate, work package 2's first task hoists them out of
+`r2_between` so that each tile is turned round once instead of once per
+pair, and work package 4 reports what they cost against the 0.50 s. If
+work package 4 then misses the target because of them, the question comes
+back with a measurement instead of an estimate.
 
 One finding was left for the owner rather than acted on: `has_variance`
 and `maf` answer `false` and `None` both for a variant that has no data
