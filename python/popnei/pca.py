@@ -202,15 +202,21 @@ def do_pca_from_variants(
     weight needs the eigenvectors, which are known when the first pass ends,
     so with 0 there is no second pass, ``princomps`` has no rows and it
     still has the variants that were used as its columns. More components
-    than there are gives those there are, and a negative number is a
-    ``ValueError``. The projections and the percentages are of every
-    component that has variance whatever it is.
+    than there are gives those there are, and a number below 0 is a
+    ``ValueError``, as is one above what the machine counts; what is no
+    whole number, a float, a string and a truth value among them, is a
+    ``TypeError`` that names the argument and what was given. The
+    projections and the percentages are of every component that has variance
+    whatever `num_prin_comps` is.
 
-    A dataset with no variant, and one where no variant has variance, which
-    one individual gives, are a ``ValueError``. So is a dataset of a size
-    this analysis cannot count in: a ploidy above 254, more than 46340
-    individuals, or more variants than the machine counts, which in the
-    browser is 4295 million.
+    A dataset with no variant, one where no variant has variance, which one
+    individual gives, and one with no individual are a ``ValueError``. So is
+    a dataset of a size this analysis cannot count in, which is one of four:
+    a ploidy above 254, more than 46340 individuals, more variants than the
+    machine counts, which under pyodide is 4295 million, and weights of more
+    values than the machine counts, which is `num_prin_comps` times the
+    variants that were used and which fewer variants reach the more
+    components are asked for.
 
     It is pyNei's ``do_pca_from_variants``, with `num_prin_comps` added,
     without `num_threads`, which no calculation of popnei takes, and with
@@ -230,12 +236,9 @@ def do_pca_from_variants(
             f"what `open_vcf` or `open_vars` gives, "
             f"do_pca_from_variants(open_vcf(vcf_path))"
         )
-    if num_prin_comps < 0:
-        raise ValueError(
-            f"`num_prin_comps` is {num_prin_comps}, and it says how many "
-            f"components the weights of the variants are given for: a whole "
-            f"number of 0 or more, and 0 for no weights"
-        )
+    # `num_prin_comps` is checked in the binding crate, where every count a
+    # user writes is: a whole number of Python is of any size, and what is
+    # none of them is refused there by the name of the argument.
     projections, percent, princomps, used_vars, counts = _core.pca_of_variants(
         variants._source, transform_to_biallelic, num_prin_comps, variants._steps
     )

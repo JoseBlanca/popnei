@@ -457,15 +457,18 @@ def test_the_counts_of_the_pass_are_of_the_variants_the_steps_let_through():
 
 
 def test_a_filter_on_the_variants_is_counted_in_the_pass_stats():
-    """The steps of the `Variants` run in the passes of the analysis.
+    """The steps of the `Variants` run in both passes of the analysis.
 
     What the filter keeps is what pyNei's `filter_by_maf` keeps of the same
-    file at the same threshold, and the variants of the pass are those.
+    file at the same threshold, and the variants of the pass are those. The
+    weights are asked for, so the second pass runs through the steps as
+    well: a second pass over other variants than the first is an error of
+    the core, and one over the unfiltered variants would give other weights.
     """
     variants = open_vcf(PANEL_VCF)
     variants.filter_by_maf(PANEL_MAF_THRESHOLD)
 
-    result = do_pca_from_variants(variants, num_prin_comps=0)
+    result = do_pca_from_variants(variants, num_prin_comps=10)
 
     of_pynei = pynei_do_pca_from_variants(
         filter_by_maf(vars_from_vcf(PANEL_VCF), max_allowed_maf=PANEL_MAF_THRESHOLD)
@@ -474,7 +477,9 @@ def test_a_filter_on_the_variants_is_counted_in_the_pass_stats():
     assert counts.vars_processed == PANEL_NUM_VARS
     assert counts.vars_kept == PANEL_VARS_KEPT_BY_THE_MAF_FILTER
     assert result.pass_stats.num_vars == PANEL_VARS_KEPT_BY_THE_MAF_FILTER
+    assert result.princomps.shape == (10, PANEL_VARS_KEPT_BY_THE_MAF_FILTER)
     assert list(result.princomps.columns) == list(of_pynei.princomps.columns)
+    assert_the_first_components_are_pyneis(result, of_pynei, 10)
 
 
 def test_no_weights_are_given_with_a_num_prin_comps_of_zero():
@@ -498,12 +503,56 @@ def test_more_components_than_there_are_gives_those_there_are():
     assert list(result.princomps.index) == list(result.projections.columns)
 
 
-def test_a_negative_num_prin_comps_is_refused():
-    """It says how many components the weights are given for."""
-    with pytest.raises(ValueError, match="num_prin_comps") as refusal:
-        do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=-1)
+def test_the_positions_of_the_used_variants_are_numbers_with_a_sign():
+    """The columns of the weights are whole numbers a user takes from.
 
-    assert "-1" in str(refusal.value)
+    They are the positions of the variants that were used, and a user who
+    asks what is one before each of them gets -1 for the variant at 0, as
+    they do of pyNei's columns. Held as numbers with no sign, that first one
+    would be 18446744073709551615.
+    """
+    result = do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=3)
+
+    assert list(result.princomps.columns - 1) == [-1, 0, 3]
+
+
+@pytest.mark.parametrize(
+    ("given", "refusal", "said"),
+    [
+        (-1, ValueError, "-1"),
+        (2**70, ValueError, "1180591620717411303424"),
+        (2.5, TypeError, "2.5"),
+        ("ten", TypeError, "'ten'"),
+        (True, TypeError, "True"),
+    ],
+)
+def test_a_num_prin_comps_that_counts_no_components_is_refused(given, refusal, said):
+    """It says how many components the weights are given for.
+
+    A whole number below 0 and one above what the machine counts are a
+    ``ValueError``, and what is no whole number is a ``TypeError``: a truth
+    value is a whole number in Python and would be the count 1 with nothing
+    said. Each of them names the argument and what was given for it.
+    """
+    with pytest.raises(refusal) as refused:
+        do_pca_from_variants(open_vcf(WORKED_VCF), num_prin_comps=given)
+
+    assert "num_prin_comps" in str(refused.value)
+    assert said in str(refused.value)
+
+
+def test_do_pca_from_variants_refuses_what_is_not_a_variants():
+    """A user who gives the path of the VCF, which is the easiest mistake.
+
+    What it gave was the ``AttributeError`` of a `str` with no ``_source``.
+    The refusal names the argument, says what was given and says where the
+    variants come from, as the refusal of `write_vars` does.
+    """
+    with pytest.raises(TypeError, match="open_vcf") as refusal:
+        do_pca_from_variants(str(WORKED_VCF))
+
+    assert "variants" in str(refusal.value)
+    assert repr(str(WORKED_VCF)) in str(refusal.value)
 
 
 def test_a_variant_of_more_than_two_alleles_is_refused_by_its_position():

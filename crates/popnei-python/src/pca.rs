@@ -22,7 +22,7 @@ use popnei::block::BlockReader;
 use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
 use crate::errors::PyPopneiError;
-use crate::source::{PassCounts, source_of};
+use crate::source::{PassCounts, count_of_at_least, source_of};
 use crate::steps::{Steps, chain_of};
 
 /// The three tables of a principal component analysis as they go to Python:
@@ -98,7 +98,7 @@ type VariantPcaTables<'py> = (
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray2<f64>>,
-    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<i64>>,
     PassCounts,
 );
 
@@ -112,10 +112,13 @@ pub(crate) fn pca_of_variants<'py>(
     py: Python<'py>,
     source: &Bound<'_, PyAny>,
     transform_to_biallelic: bool,
-    num_prin_comps: usize,
+    num_prin_comps: &Bound<'_, PyAny>,
     steps: &Bound<'_, Steps>,
 ) -> Result<VariantPcaTables<'py>, PyPopneiError> {
     let source = source_of(source)?;
+    // 0 is no weights and no second pass, so this is the one count of the
+    // crate whose smallest is 0 and not 1.
+    let num_prin_comps = count_of_at_least("num_prin_comps", 0, num_prin_comps)?;
     let steps = steps.get().of_a_pass()?;
     let path = source.path();
     let options = VariantPcaOptions {
@@ -125,6 +128,17 @@ pub(crate) fn pca_of_variants<'py>(
     // The whole source is read inside this one call, twice when the weights
     // are asked for, which is seconds for a VCF of hundreds of megabytes,
     // so the interpreter is released for all of it.
+    //
+    // A Ctrl-C that arrives meanwhile is raised when the call is over and
+    // not between two blocks, as it is in `Blocks::__next__`: the loop over
+    // the blocks is the core's, which `docs/specs/pca.md` has this crate
+    // call instead of writing that loop again, and the core has nothing to
+    // ask a caller between two blocks. It bites harder here than in
+    // `write_vars`: this is minutes of work of the processor on a million
+    // variants, the products of the blocks and the eigendecomposition, and
+    // not the reading of a file that a disc paces, and a user who wants it
+    // stopped waits for it to end. Whether the core takes a callback for
+    // that is the owner's to decide and is not in the plan of this module.
     let (result, filtering) = py
         .detach(|| -> Result<(Pca, FilteringCounts), popnei::Error> {
             // The chain of each pass stays here, lent to the core, so that
@@ -157,12 +171,16 @@ pub(crate) fn pca_of_variants<'py>(
     raise_a_ctrl_c_before_numpy_is_called(py)?;
     // The variants the pass gave, used or not, which is the `num_vars` of
     // its counts.
-    let num_vars = count_of_the_pass(result.num_cols, path)?;
+    let num_vars: u64 = counted_for_python(result.num_cols, path)?;
+    // The positions of the variants that were used go as signed numbers:
+    // they become the columns of a frame, where pandas and pyNei hold them
+    // as int64, and a user who takes one number of them from another gets
+    // -1 for 0 - 1 and not 18446744073709551615.
     let used_vars = result
         .used_cols
         .iter()
-        .map(|position| count_of_the_pass(*position, path))
-        .collect::<Result<Vec<u64>, PyPopneiError>>()?;
+        .map(|position| counted_for_python::<i64>(*position, path))
+        .collect::<Result<Vec<i64>, PyPopneiError>>()?;
     let projections = table_of(py, result.projections, result.num_rows, result.num_comps)?;
     let explained_variance_percent = result.explained_variance_percent.into_pyarray(py);
     let princomps = table_of(
@@ -184,12 +202,19 @@ pub(crate) fn pca_of_variants<'py>(
 /// the same width on every platform: a `usize` is 32 bits in WebAssembly
 /// and 64 natively, and what a user gets does not depend on that.
 ///
+/// The counts of the pass go as `u64`, which is what every count of popnei
+/// is in Python, and the positions of the variants that were used as `i64`,
+/// which is what a frame's columns are in pandas.
+///
 /// # Errors
 ///
-/// [`PyPopneiError::Broken`] when the count is above what a `u64` holds,
-/// which no machine of 64 bits reaches.
-fn count_of_the_pass(count: usize, path: &std::path::Path) -> Result<u64, PyPopneiError> {
-    u64::try_from(count).map_err(|_| {
+/// [`PyPopneiError::Broken`] when the count is above what the number holds,
+/// which for an `i64` is 9.2e18 variants.
+fn counted_for_python<T: TryFrom<usize>>(
+    count: usize,
+    path: &std::path::Path,
+) -> Result<T, PyPopneiError> {
+    T::try_from(count).map_err(|_| {
         PyPopneiError::broken_of_the_file(
             format!("the pass over the variants counted {count}, which is more than a count holds"),
             path,

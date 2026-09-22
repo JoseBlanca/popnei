@@ -424,27 +424,73 @@ impl Pass {
 /// to convert to C long", which names neither the argument nor what is
 /// wrong with it, and it does so before any code of ours runs.
 ///
+/// The smallest this count can be is 1, which is what every argument that
+/// says how many of something there are takes but the components the
+/// weights are given for, and `count_of_at_least` is where that one goes.
+///
 /// # Errors
 ///
 /// When the object is a whole number that counts nothing, a negative one or
 /// one above what this machine counts, which is the error that names the
-/// argument and the value. An object that is not a whole number at all,
-/// `2.5` or `"two"`, keeps the `TypeError` of pyo3, which says what it was
-/// given.
+/// argument and the value. An object that is no whole number at all, `2.5`,
+/// `"two"` or a truth value, is a `TypeError` that names the argument and
+/// what was given, as the threshold of a filter is.
 pub(crate) fn count_of(
     name: &'static str,
     value: &Bound<'_, PyAny>,
 ) -> Result<usize, PyPopneiError> {
+    count_of_at_least(name, 1, value)
+}
+
+/// The `value` that was given for the argument `name`, as a number of
+/// things of which `smallest` is the fewest it can be: what
+/// [`count_of`] does, for the arguments that take 0 as well.
+///
+/// `smallest` is what the messages say and not what they refuse: an
+/// argument that counts something is refused by the core, which says of
+/// each one what is wrong with the number, and a bound written here beside
+/// it would give a user two limits for one argument.
+///
+/// # Errors
+///
+/// Those of [`count_of`].
+pub(crate) fn count_of_at_least(
+    name: &'static str,
+    smallest: usize,
+    value: &Bound<'_, PyAny>,
+) -> Result<usize, PyPopneiError> {
+    // A truth value is a whole number in Python, so `True` would be the
+    // count 1 and `False` the count 0, with nothing said, as `True` would
+    // be the threshold 1. Neither says how many of anything there are.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_count(name, smallest, value));
+    }
     match value.extract::<usize>() {
         Ok(count) => Ok(count),
         Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
             Err(PyPopneiError::Count {
                 name,
+                smallest,
                 value: value.to_string(),
             })
         }
-        Err(error) => Err(error.into()),
+        // The `TypeError` of pyo3 for a `2.5` or a `"two"` says what it was
+        // given and not which argument it was given for, and a user of a
+        // call of five arguments needs that first.
+        Err(_) => Err(no_count(name, smallest, value)),
     }
+}
+
+/// What a user is told when they gave something that is no number of things
+/// for `name`, which names the argument and what was given, as the refusal
+/// of a threshold that is no number does.
+fn no_count(name: &'static str, smallest: usize, value: &Bound<'_, PyAny>) -> PyPopneiError {
+    PyTypeError::new_err(format!(
+        "`{name}` says how many of something there are, and {given} was given: a whole \
+         number of {smallest} or more",
+        given = written_as(value)
+    ))
+    .into()
 }
 
 /// The `value` that was given for the argument `name`, as the threshold of

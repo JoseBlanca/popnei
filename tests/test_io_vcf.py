@@ -296,6 +296,36 @@ def test_a_count_that_is_negative_is_refused_by_its_name(
     assert "-5" in str(refusal.value)
 
 
+def test_a_count_that_is_no_whole_number_is_refused_by_its_name(
+    reference_vcf_dir: Path,
+) -> None:
+    """A truth value, and a number that is not whole.
+
+    `True` is the whole number 1 in Python, so a ploidy of `True` would be a
+    haploid VCF with nothing said, as a threshold of `True` would be 1; it
+    says how many of nothing, and it is refused like the string. Each
+    refusal names the argument and what was given, which the `TypeError` of
+    the conversion does not.
+    """
+    path = reference_vcf_dir / "cases.vcf"
+
+    with pytest.raises(TypeError) as refusal:
+        open_vcf(path, ploidy=True)
+    assert "ploidy" in str(refusal.value)
+    assert "True" in str(refusal.value)
+
+    with pytest.raises(TypeError) as refusal:
+        open_vcf(path, ploidy=2.5)
+    assert "ploidy" in str(refusal.value)
+    assert "2.5" in str(refusal.value)
+
+    variants = open_vcf(path)
+    with pytest.raises(TypeError) as refusal:
+        variants.iter_blocks(num_vars_per_block="many")
+    assert "num_vars_per_block" in str(refusal.value)
+    assert "'many'" in str(refusal.value)
+
+
 def test_a_ploidy_of_zero_is_refused(reference_vcf_dir: Path) -> None:
     """The one thing `open_vcf` refuses that does not come from the file."""
     with pytest.raises(ValueError, match="ploidy"):

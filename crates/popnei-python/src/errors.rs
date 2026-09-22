@@ -70,6 +70,10 @@ pub(crate) enum PyPopneiError {
     Count {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
+        /// The fewest of them the argument takes, which is 1 for every one
+        /// of them but the components the weights of a principal component
+        /// analysis are given for, where 0 is no weights.
+        smallest: usize,
         /// What was given for it, as Python prints it: an integer of Python
         /// is of any size, so the number that was refused does not always
         /// fit in one of Rust.
@@ -182,9 +186,13 @@ impl From<PyPopneiError> for PyErr {
             // each: a bound of this crate beside it would give a user two
             // limits for one argument, and the one they read first would be
             // the one that is not theirs.
-            PyPopneiError::Count { name, value } => PyValueError::new_err(format!(
+            PyPopneiError::Count {
+                name,
+                smallest,
+                value,
+            } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
-                 whole number of 1 or more that this machine can count"
+                 whole number of {smallest} or more that this machine can count"
             )),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and
