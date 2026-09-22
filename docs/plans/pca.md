@@ -188,7 +188,7 @@ Stands on: work package 1.
 
 Tasks:
 
-- [ ] 2.1 In the core: `Pca`, `PcaOptions` and `pca` of "The Rust
+- [x] 2.1 In the core: `Pca`, `PcaOptions` and `pca` of "The Rust
       interface", built from "What both analyses compute" and "The PCA of
       a table" of `docs/specs/pca.md`, over the three functions of the
       linalg crate. The tests of deliverable 1 first, with the literals

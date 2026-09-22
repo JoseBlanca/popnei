@@ -197,3 +197,25 @@ in neither wasm tree, and no BLAS crate under `-p popnei
 How the work went: the four tasks and the fixes went to one subagent,
 371966 tokens at the end; the six reviewers used 93145, 123151, 95743,
 91363, 95193 and 109045 tokens. No task had to be sent twice.
+
+## Work package 2: the PCA of a table
+
+Task 2.1, the PCA of a table in the core, is at 6ca1199, after 1b0cc72,
+which put into the spec two tables with fewer rows than traits and
+their numbers from numpy, so that the side of the product that iris does
+not take has a test. The module `pca` of the core copies the table once,
+transposed when it has fewer rows than traits so that both sides use the
+same product, drops the components under λ₁ · max(n, p) · 2.2e-16 and
+fixes the sign. `cargo test -p popnei --lib pca` `13 passed`, 6 asked;
+broken on purpose, n - 1 in the divisor fails 2 of them, every component
+given fails 2, no sign rule fails 4. Two errors the spec did not list
+were added to it, a buffer that is not rows x columns and the wrap of an
+error of the linalg crate, both a `RuntimeError`. Two things for the
+owner. pyNei's 3 x 3 table of `test_pca_refuses_traits_with_no_variance`
+has a near tie in its second component, two projections of ±0.7071 one
+bit apart, so the sign of that component is decided by rounding and
+differs between the two backends: the spec's promise that the three
+builds give the same numbers does not hold on an exact tie, and the test
+compares magnitudes there, as the spec now says. And the `Memory` error
+of the linalg crate arrives in the wrapped case, so task 2.2 makes it a
+`RuntimeError` and not a `MemoryError`. The subagent used 213330 tokens.
