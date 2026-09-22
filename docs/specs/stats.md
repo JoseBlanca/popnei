@@ -1145,6 +1145,11 @@ impl HistBins {
     /// `num_bins` equal ratios. As above, and an error when `start` is
     /// 0 or below.
     pub fn logarithmic(start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
+    /// The bins of the kind a user named, `LINEAR_BINS` of equal width or
+    /// `LOGARITHMIC_BINS` of equal ratio. An error for any other name,
+    /// which names the two, a `ValueError` in Python, and those of the
+    /// constructor the name picks.
+    pub fn of_kind(kind: &str, start: f64, end: f64, num_bins: usize) -> Result<HistBins>;
     pub fn edges(&self) -> &[f64];
     pub fn num_bins(&self) -> usize;
     /// The bin of `value`, or None outside the range. The last bin takes
@@ -1199,6 +1204,11 @@ impl ExpHet {
     /// exponent is never used for n. An error for either of 0 or above
     /// 255.
     pub fn new(exponent: usize, ploidy: usize, min_num_individuals: u32) -> Result<ExpHet>;
+    /// The same with the exponent a user asked for, or the ploidy of the
+    /// variants when they asked for none, which is what `ploidy=None` of
+    /// the pass means: the default is here and not in a binding crate.
+    pub fn of_the_exponent_asked_for(exponent: Option<usize>, ploidy: usize,
+                                     min_num_individuals: u32) -> Result<ExpHet>;
     /// The expected heterozygosity of one variant in one pop, the plain
     /// one or, with `unbiased`, the unbiased one. `counts[a]` is how often
     /// allele a was called in the pop at this variant, and
@@ -1233,9 +1243,23 @@ reader, or with `Pops::all`. The errors are those of the reader, of
 variant, a `ValueError` in Python whose message says whether the source
 had none or the steps kept none, with the counts of each filter.
 
+A user writes the statistics they want and the kind of bins as names, in
+Python and in TypeScript alike, so the core turns a name into the thing
+and refuses the names of nothing: the five names, the two of the bins and
+the two messages are written once and not once in each binding crate.
+
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerVarStat { ObsHet, Maf, ExpHet, UnbiasedExpHet, PolyVarsRatio }
+impl PerVarStat {
+    /// The name of each of the five, in the order above: what a user
+    /// writes in `stats`, and the field of the result that holds it.
+    pub const NAMES: [&'static str; 5];
+    pub fn name(self) -> &'static str;
+    /// The statistic a user named. An error for a name that is of none of
+    /// the five, which names them, a `ValueError` in Python.
+    pub fn of_name(name: &str) -> Result<PerVarStat>;
+}
 
 pub struct PerVarDistribsConfig {
     pub stats: Vec<PerVarStat>,
