@@ -501,3 +501,38 @@ of the spec, 0.38 s, is the trial's 0.34 s with a tenth over it rounded
 up from 0.374 s, and that a load average per script invocation is what
 the report has where the plan asked one per run; neither changes a
 verdict. Tokens: `spec` 100890, `tests` 95209, the first-reader 22490.
+
+## How the merge into main went
+
+The owner ordered the merge on 22 September 2026, after the reply that
+said the plan was done. `main` had not moved since the branch was made,
+so the merge, 3aa9484, brought the 27 commits of the branch as they
+were, 62 files. The main checkout held uncommitted copies of four things
+the branch also brings, left there by the session that wrote the spec
+before the branch was made: `docs/glossary.md` and
+`docs/reports/kosman-method/`, identical to the branch's; and
+`docs/specs/variant.md` and `docs/specs/dists.md`, older drafts, from
+before the owner took the array of genotypes out of the plan and before
+the plan's own edits. They blocked the merge; the orchestrator saved
+copies of them in its scratch directory, restored the two tracked ones
+to `main` and removed the two untracked ones, and the merge brought the
+newer versions of all four.
+
+On `main` at 3aa9484, in the main checkout: `cargo fmt --all --check`
+exit 0; clippy no warning; `cargo test --workspace` `345 passed`, 2
+ignored; `cargo wasm-check` finished; ruff `20 files already formatted`
+and `All checks passed!`; `npm install`, `npm run build` and `npm test`
+in `js/popnei` `tests 144`, `fail 0`; `bash
+scripts/build_pyodide_wheel.sh` built the wheel. Two checks did not run
+in the main checkout, because the permission classifier of the session
+refused `uv run maturin develop` and `node tests/pyodide/smoke.mjs`
+there, where it had allowed both in the worktree: the pytest suite and
+the smoke test. Both ran in the worktree at 37d82e8, on the same code
+as the merge, since the commits after it change the plan and the report
+alone, with `208 passed` and exit 0; the owner can run the two commands
+in the main checkout to see them there.
+
+After the merge: the worktree `.claude/worktrees/dists-kosman` and the
+branch `plan/dists-kosman` were removed, and so were the four worktrees
+and branches of this plan's reviewers; the two messages of this branch
+on the board were taken out, as the board's README says.
