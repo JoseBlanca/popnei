@@ -360,8 +360,7 @@ the spec three sizes the analysis refuses: a ploidy above 254, since a
 genotype's code is one byte; more than 46340 individuals, since the
 linalg crate counts a matrix in the 32 bit integer of BLAS and 46341²
 is above it; and more variants than a `usize` counts. `cargo test -p
-popnei --lib pca` `35 passed`, 16 of them of the variants, the panel's
-in 12 ms. Three things to know. `reblock` inside `pca_of_variants`
+popnei --lib pca` `35 passed`, 16 of them of the variants. Three things to know. `reblock` inside `pca_of_variants`
 takes the size popnei chooses, 10000 variants at 5 or at 200
 individuals, so the reader's block size never reaches the product
 through the public function: the test of the block size is at the
@@ -386,8 +385,9 @@ the spec named, a variant more, a variant fewer and a variant that lost
 its variance; the four are one error, a `RuntimeError` in Python.
 `num_prin_comps` of the result is what was asked for capped at the
 components with variance, which is what the bindings read for the names
-of the components. `cargo test -p popnei --lib pca` `41 passed`, all in
-30 ms. The subagent, the one of task 3.1, had used 375363 tokens at the
+of the components. `cargo test -p popnei --lib pca` `41 passed`, 10 ms
+for the whole module and 6 ms for the panel's test, each the least of
+five runs of the test binary. The subagent, the one of task 3.1, had used 375363 tokens at the
 end of the two tasks.
 
 Tasks 3.3 and 3.4 ran side by side. Task 3.4, `doPcaFromVariants`, is at
