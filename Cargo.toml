@@ -163,3 +163,4 @@ opt-level = 2 # numerical tests; overflow checks stay on
 
 [profile.release]
 overflow-checks = false # the code does not rely on them: see the coding skill
+debug = "line-tables-only" # so that a sampling profile has function names
