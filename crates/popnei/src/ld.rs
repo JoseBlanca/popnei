@@ -169,8 +169,12 @@ impl LdDosages {
     ///
     /// A block that does not pass [`Block::check`], one with variants and
     /// no genotypes, an index that is not an individual of the block, an
-    /// individual asked for more than once, a block whose genotypes hold
-    /// more than
+    /// individual asked for more than once, what the counts of one variant
+    /// refuse, which are a variant of more alleles than a count of them
+    /// holds and an allele below the missing one, a block whose
+    /// individuals times its ploidy are more than
+    /// [`MAX_ALLELES_OF_A_VARIANT`], a matrix this machine has not the
+    /// memory for, a block whose genotypes hold more than
     /// [`MAX_PLOIDY_OF_THE_DOSAGES`] alleles each, and a block whose
     /// variants times its individuals is more than
     /// [`MAX_VALUES_OF_THE_DOSAGES`], which is what the linear algebra
@@ -936,8 +940,15 @@ mod tests {
             .collect()
     }
 
-    /// That two rows of one of the matrices hold the same values, within
-    /// what the last bit of a whole number below 2^53 allows, which is 0.
+    /// That two rows of one of the matrices hold the same values.
+    ///
+    /// The entries of the three matrices are whole numbers below 2^53,
+    /// which an `f64` holds exactly, so they are compared as they are and
+    /// a value that is not the one expected is not a rounding.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the entries of the three matrices are whole numbers below 2^53, which an f64 holds exactly"
+    )]
     fn assert_the_values_are(found: &[f64], expected: &[f64], what: &str) {
         assert_eq!(
             found.len(),
@@ -946,17 +957,22 @@ mod tests {
         );
         for (at, (found, expected)) in found.iter().zip(expected).enumerate() {
             assert!(
-                (found - expected).abs() < 1e-12,
+                *found == *expected,
                 "{what}: the value {at} is {found} and not {expected}"
             );
         }
     }
 
-    /// That two numbers are the same, within what the last bit of a
-    /// division of two counts below 2^53 allows.
+    /// That a major allele frequency is the one expected, which is the
+    /// division of two counts that the code under test makes, so the two
+    /// sides round the same way and are compared as they are.
+    #[expect(
+        clippy::float_cmp,
+        reason = "both sides are one division of the same two counts, which rounds the same way on both"
+    )]
     fn assert_the_number_is(found: f64, expected: f64, what: &str) {
         assert!(
-            (found - expected).abs() < 1e-15,
+            found == expected,
             "{what}: it is {found} and not {expected}"
         );
     }
