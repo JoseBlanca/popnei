@@ -43,6 +43,13 @@ genotypes then set to missing. Its seed is `numpy.random.default_rng(29)`,
 so it is the same file on every machine. 68 of its 500 variants end up
 with one dosage in every called genotype.
 
+It also writes `$LD_WORK/many.pynei.dosages.tsv`, the 500 x 50 dosages
+pyNei's `to_012` gives for `tests/reference/vcf/many.vcf`, which a cargo
+test compares every one of against what popnei counts.
+`tests/reference/ld/run_plink2.sh` makes those two files and the two
+plink2 matrices again, six files in all, and compares each with the copy
+stored in git.
+
 `tests/reference/ld/example.vcf` is the worked example of both specs: 5
 variants of 6 individuals, one genotype missing and one variant of one
 dosage, whose r² can be worked out by hand.

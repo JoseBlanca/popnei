@@ -61,12 +61,20 @@ have the same dosage, a variant with one allele among them and also one
 where every individual is heterozygous, therefore has NaN against every
 other variant and against itself.
 
-Every one of the six sums is a whole number, and each is held exactly in
-an `f64`: the largest of them is n·Σxx, which is at most N²k² for N
-individuals of ploidy k, 4·10⁸ for 10000 diploid individuals and 6.5·10¹²
-at the ploidy of 255 that the VCF reader takes, against the 9·10¹⁵ up to
-which an `f64` counts whole numbers one by one. So the only rounding in
-an r² is in the division and the square at the end.
+Every one of the six sums is a whole number, and so is every product of
+two of them that the formula takes: n·Σxy, Σx·Σy, n·Σxx and (Σx)². The
+products and not the sums are what has to be held exactly, since each of
+them is the larger, and each is at most N²k² for N individuals of ploidy
+k. An `f64` counts whole numbers one by one up to 2⁵³, 9·10¹⁵, so they
+are exact while N·k is at most its square root, 94906265: 47453132
+diploid individuals, or 372181 at the ploidy of 255 that the VCF reader
+takes. For 10000 diploid individuals the largest product is 4·10⁸, seven
+orders below the limit. Above N·k the r² loses digits without saying so,
+1.3·10⁻¹² relative at a million individuals of ploidy 255, wider than
+the tolerance this spec compares within, so `LdDosages::of_block`
+refuses such a dataset rather than working it out. Below it the only
+rounding in an r² is in the two products of the spreads, the division
+and the square at the end.
 
 ### Its Python function
 
@@ -698,18 +706,23 @@ impl LdDosages {
     /// # Errors
     ///
     /// A block that does not pass `check`, one with variants and no
-    /// genotypes, an index that is not an individual of the block, a
-    /// block whose variants times its individuals is more than the
-    /// linear algebra counts in, and a block whose genotypes hold more
-    /// than 255 alleles each, since `dosages` counts a dosage in a
-    /// `u8` and a dosage is at most the ploidy. No reader of popnei
-    /// gives such a block: the VCF reader takes 255 alleles in a
-    /// genotype at most.
+    /// genotypes, an index that is not an individual of the block, an
+    /// individual asked for more than once, what the counts of one
+    /// variant refuse, which are a variant of more alleles than a count
+    /// of them holds and an allele below the missing one, a block whose
+    /// individuals times its ploidy are more than 94906265, a matrix
+    /// this machine has not the memory for, a block whose genotypes
+    /// hold more than 255 alleles each, and a block whose variants
+    /// times its individuals is more than the linear algebra counts in.
     pub fn of_block(block: &Block, individuals: &[usize]) -> Result<LdDosages>;
     pub fn num_vars(&self) -> usize;
     pub fn num_individuals(&self) -> usize;
     /// The variants `first..first + num_vars` of it, which the tiles of
     /// the products and the window of the filter take.
+    ///
+    /// # Errors
+    ///
+    /// When those are not variants of these dosages.
     pub fn rows(&self, first: usize, num_vars: usize) -> Result<LdDosages>;
     /// Whether the called genotypes of the variant hold two dosages at
     /// least. One that does not has NaN against every variant, itself
@@ -848,11 +861,37 @@ of a variant is worked out in one place in popnei:
     pub fn the_major_allele(counts: &AlleleCounts) -> i8;
 ```
 
-This module adds these cases to the error of the crate, each of which
-both binding crates give their user as the wrong input of a function, a
-`ValueError` in Python: more variants than the matrix was allowed; an
-argument of the bins that is out of range; and a population with no
-individual or an individual that the dataset has not.
+This module adds cases to the error of the crate, which are the ones the
+`# Errors` of "The Rust interface" above name, and the two binding
+crates divide them as `docs/specs/pca.md` divides its own.
+
+Most are the wrong input of a function, and a `ValueError` in Python:
+more variants than the matrix was allowed; an argument of the bins that
+is out of range; a population with no individual, an individual that the
+dataset has not, or an individual asked for more than once; a variant of
+more alleles than a count of them holds, or an allele below the missing
+one; a dataset whose individuals times its ploidy are more than
+94906265, above which the products of the formula stop being whole
+numbers an `f64` holds exactly and the r² loses digits without saying
+so; a block whose genotypes hold more than 255 alleles each, since
+`dosages` counts a dosage in a `u8` and a dosage is at most the ploidy;
+a dataset whose variants times its individuals is more than the linear
+algebra counts the values of a matrix in; and a matrix this machine has
+not the memory for, which is asked for with `try_reserve_exact` and
+refused rather than taken, as `docs/specs/linalg.md` asks for the
+workspace of the eigendecomposition. The last four are reachable from a
+vars file, whose `popnei` key states a ploidy that the reader takes with
+no upper bound, where the VCF reader takes 255 alleles in a genotype at
+most.
+
+Four are a `RuntimeError` instead, for the reason `docs/specs/pca.md`
+gives for its own two: no argument of any function of this module gives
+them, so what a user reads is a defect of popnei and not something they
+wrote. They are the variants of a tile or of a window that are not
+variants of the dosages they were asked of; two sets of dosages built
+over different individuals; a buffer for the r² that does not hold one
+value for each pair; and a product the linear algebra could not work
+out.
 
 ## Speed
 
