@@ -310,6 +310,26 @@ def test_per_var_distribs_calculates_the_five_statistics_by_default() -> None:
     assert list(ours.maf.mean.index) == ["popA", "popB"]
 
 
+def test_per_var_distribs_give_every_count_as_a_signed_number() -> None:
+    """The counts are signed 64 bit integers, as pyNei's are, so that the
+    difference of two of them is a negative number and not 1.8e19.
+
+    Over the one population of `many.vcf`, 16 more variants vary than are
+    polymorphic at the threshold of 0.95, which pyNei gives as -16 and an
+    unsigned subtraction as 18446744073709551600.
+    """
+    ours = calc_per_var_distribs(_many(), min_num_individuals=MANY_MIN_NUM_INDIVIDUALS)
+
+    poly = ours.poly_vars_ratio
+    assert int((poly.num_poly - poly.num_variable)["pop"]) == -16
+    for counts in (poly.num_poly, poly.num_variable, poly.tot_num_variants_with_data):
+        assert counts.dtype == numpy.int64
+    for stat in DISTRIBS:
+        counts = getattr(ours, stat).hist_counts["pop"]
+        assert counts.dtype == numpy.int64, stat
+        assert int((counts - int(counts.max())).min()) < 0, stat
+
+
 def test_per_var_distribs_calculates_only_the_statistics_asked_for() -> None:
     """A statistic nobody asked for is `None` in the result."""
     ours = calc_per_var_distribs(

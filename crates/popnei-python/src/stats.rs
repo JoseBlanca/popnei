@@ -52,15 +52,15 @@ const MIN_NUM_INDIVIDUALS: &str = "min_num_individuals";
 /// The distribution of one statistic on its way to Python: the mean of each
 /// population, NaN where no variant of that population had a value, and the
 /// histogram counts as bins x populations.
-type DistribOfAStat<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<u64>>);
+type DistribOfAStat<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray2<i64>>);
 
 /// The polymorphism ratio on its way to Python: the polymorphic variants of
 /// each population, the variable ones, the ones with data, and the two
 /// ratios, NaN where the denominator of a ratio is 0.
 type PolyCountsOfAPass<'py> = (
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<u64>>,
-    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
 );
@@ -189,7 +189,8 @@ pub(crate) fn calc_per_var_distribs<'py>(
         distrib_of(py, unbiased_exp_het.as_ref())?,
         poly_vars_ratio
             .as_ref()
-            .map(|poly| poly_counts_of(py, poly)),
+            .map(|poly| poly_counts_of(py, poly))
+            .transpose()?,
         (num_vars, filtering),
     ))
 }
@@ -302,7 +303,8 @@ fn the_min_num_individuals(value: &Bound<'_, PyAny>) -> Result<u32, PyPopneiErro
 /// # Errors
 ///
 /// When the counts are not the bins of the distribution times its
-/// populations, which is a defect of popnei.
+/// populations, and when a count is above what a count of a result holds,
+/// which are both a defect of popnei.
 fn distrib_of<'py>(
     py: Python<'py>,
     distrib: Option<&StatsDistrib>,
@@ -318,13 +320,17 @@ fn distrib_of<'py>(
     let means: Vec<f64> = (0..num_pops)
         .map(|pop| distrib.mean(pop).unwrap_or(f64::NAN))
         .collect();
+    // The counts are taken as the core holds them, the bins of one
+    // population after the bins of the one before it, and the array is
+    // turned around at the end: what the package builds the frame of is one
+    // row per bin and one column per population.
     let mut counts = Vec::new();
-    for bin in 0..num_bins {
-        for pop in 0..num_pops {
-            counts.push(distrib.hist_counts(pop).get(bin).copied().unwrap_or(0));
+    for pop in 0..num_pops {
+        for count in distrib.hist_counts(pop) {
+            counts.push(of_a_result(*count)?);
         }
     }
-    let counts = Array2::from_shape_vec((num_bins, num_pops), counts).map_err(|error| {
+    let counts = Array2::from_shape_vec((num_pops, num_bins), counts).map_err(|error| {
         PyPopneiError::Broken {
             message: format!(
                 "the histogram of a statistic of {num_pops} populations does not hold \
@@ -333,19 +339,26 @@ fn distrib_of<'py>(
             path: None,
         }
     })?;
-    Ok(Some((means.into_pyarray(py), counts.into_pyarray(py))))
+    Ok(Some((
+        means.into_pyarray(py),
+        counts.reversed_axes().into_pyarray(py),
+    )))
 }
 
 /// The three counts of the polymorphism ratio and the two ratios, one value
 /// per population.
-fn poly_counts_of<'py>(py: Python<'py>, poly: &PolyVarsStats) -> PolyCountsOfAPass<'py> {
+///
+/// # Errors
+///
+/// When a count is above what a count of a result holds.
+fn poly_counts_of<'py>(
+    py: Python<'py>,
+    poly: &PolyVarsStats,
+) -> Result<PolyCountsOfAPass<'py>, PyPopneiError> {
     let pops = 0..poly.num_pops();
-    let num_poly: Vec<u64> = pops.clone().map(|pop| poly.num_poly(pop)).collect();
-    let num_variable: Vec<u64> = pops.clone().map(|pop| poly.num_variable(pop)).collect();
-    let with_data: Vec<u64> = pops
-        .clone()
-        .map(|pop| poly.num_vars_with_data(pop))
-        .collect();
+    let num_poly = of_a_result_each(pops.clone().map(|pop| poly.num_poly(pop)))?;
+    let num_variable = of_a_result_each(pops.clone().map(|pop| poly.num_variable(pop)))?;
+    let with_data = of_a_result_each(pops.clone().map(|pop| poly.num_vars_with_data(pop)))?;
     // A ratio whose denominator is 0 has no value, and pandas reads a
     // missing value as NaN.
     let poly_ratio: Vec<f64> = pops
@@ -355,11 +368,39 @@ fn poly_counts_of<'py>(py: Python<'py>, poly: &PolyVarsStats) -> PolyCountsOfAPa
     let over_variables: Vec<f64> = pops
         .map(|pop| poly.poly_ratio_over_variables(pop).unwrap_or(f64::NAN))
         .collect();
-    (
+    Ok((
         num_poly.into_pyarray(py),
         num_variable.into_pyarray(py),
         with_data.into_pyarray(py),
         poly_ratio.into_pyarray(py),
         over_variables.into_pyarray(py),
-    )
+    ))
+}
+
+/// `count` as the arrays of a result hold it, which are the signed 64 bit
+/// integers of pyNei's series and frames.
+///
+/// A user subtracts one count from another, the polymorphic variants of a
+/// population from its variable ones or the count of one bin from the count
+/// of another, and of unsigned counts they read 18446744073709551600 where
+/// the answer is -16.
+///
+/// # Errors
+///
+/// When the count is above 9223372036854775807, which is more variants than
+/// a file holds: a variant is a row of a file.
+fn of_a_result(count: u64) -> Result<i64, PyPopneiError> {
+    i64::try_from(count).map_err(|_| PyPopneiError::Broken {
+        message: format!("one count of the pass is {count}, more than a result holds"),
+        path: None,
+    })
+}
+
+/// The same for every count of `counts`, in their order.
+///
+/// # Errors
+///
+/// Those of [`of_a_result`].
+fn of_a_result_each(counts: impl Iterator<Item = u64>) -> Result<Vec<i64>, PyPopneiError> {
+    counts.map(of_a_result).collect()
 }
