@@ -216,6 +216,17 @@ file, and then opens twelve passes over it at once and asks that they
 grow the memory by less than one copy of it, which a reader that copied
 the bytes for each pass would not.
 
+## Where it runs
+
+The package needs the vector instructions of WebAssembly, the ones that
+work on sixteen bytes at a time, which popnei's calculations use, so it
+runs in Chrome and Edge from 91, of May 2021, Firefox from 89, of June
+2021, Safari from 16.4, of March 2023, and node from 16.4, of June 2021.
+On an iPhone or an iPad that means iOS 16.4, since every browser there is
+WebKit whatever its name. An older browser fails when the module is
+loaded, not with a wrong number. Goal 3 of `docs/objectives.md` has the
+decision and the option that was not taken.
+
 ## node and a page, from one build
 
 wasm-bindgen generates its JavaScript for one environment at a time, its

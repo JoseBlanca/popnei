@@ -79,12 +79,18 @@ waits, more than the calculation it feeds, which is where the next work
 on this path is.
 
 What is asked of the owner: whether to merge the branch, which is his
-order as always and which nothing in this report stands in the way of;
-and, if a next round of speed is wanted, whether popnei may require of a
-browser the vector instructions of WebAssembly, which is what L5 of
-section 6 needs and which raises the floor of the browsers popnei runs
-in. Everything else the report leaves open needs no decision, only the
-order to run it.
+order as always and which nothing in this report stands in the way of.
+Everything else the report leaves open needs no decision, only the order
+to run it.
+
+The one decision it did ask for, he made on 22 September 2026: popnei
+may require of a browser the vector instructions of WebAssembly, which
+L5 of section 6 needs, so its floor is Chrome and Edge 91, Firefox 89,
+Safari 16.4 and node 16.4, the oldest of them of March 2023. Goal 3 of
+`docs/objectives.md` carries it with the option not taken, shipping the
+package twice and picking at load, and `js/popnei/README.md` tells a
+user of the package. L5 is runnable now, and section 9 says what it
+gave.
 
 The verdict when the review was written, before the experiments, was
 "run the experiments", on this evidence:
