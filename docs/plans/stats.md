@@ -1,7 +1,9 @@
 # Plan: the per variant and the per individual statistics, and the filter of individuals
 
 22 September 2026. Approved by the owner on 22 September 2026, in chat,
-when he asked for the handoff that runs it. This plan builds the
+when he asked for the handoff that runs it. Under way since 22 September
+2026 on the branch `plan/stats`, with its report in
+`docs/reports/stats.md`. This plan builds the
 `stats` module of popnei, whole: the populations a statistic is
 calculated for, the one pass that gives the distributions of five per
 variant statistics, `calc_per_var_distribs`, and the per individual
