@@ -4635,6 +4635,12 @@ mod per_individual {
         );
         let message = error.to_string();
         assert!(message.contains("its source holds none"), "{message}");
+        // The message is the one of both passes, and a user of this one
+        // reads it for a statistic of an individual and not of a variant.
+        assert!(
+            message.contains("a statistic of a pass is calculated over the variants it gives"),
+            "{message}"
+        );
     }
 
     /// A block of no variant is refused: every block a reader of popnei

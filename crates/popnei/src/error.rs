@@ -536,10 +536,11 @@ pub enum Error {
 
     /// A pass that calculates a statistic gave no variant, either because
     /// its source holds none or because the steps of the pass kept none of
-    /// the variants they were given. A mean over no variant and a histogram
-    /// that counts nothing say nothing about a dataset, and a user who gets
-    /// them has to know which of the two happened, so the message says it
-    /// with the variants each filter was given and kept.
+    /// the variants they were given. A mean over no variant, a histogram
+    /// that counts nothing and a rate of an individual over no variant say
+    /// nothing about a dataset, and a user who gets them has to know which
+    /// of the two happened, so the message says it with the variants each
+    /// filter was given and kept.
     #[error(
         "{said}",
         said = a_pass_that_gave_no_variant(*num_vars_of_the_source, filters)
@@ -1012,8 +1013,8 @@ fn a_pass_that_gave_no_variant(
     filters: &[(&'static str, FilteringStats)],
 ) -> String {
     if num_vars_of_the_source == 0 {
-        return "the pass gave no variant and its source holds none: a statistic per \
-                variant is calculated over the variants the pass gives"
+        return "the pass gave no variant and its source holds none: a statistic of a \
+                pass is calculated over the variants it gives"
             .to_owned();
     }
     let of_each_filter: Vec<String> = filters
@@ -1029,8 +1030,8 @@ fn a_pass_that_gave_no_variant(
         .collect();
     format!(
         "the pass gave no variant: its source gave {num_vars_of_the_source} and the steps \
-         kept none of them, {counts}; a statistic per variant is calculated over the \
-         variants the pass gives",
+         kept none of them, {counts}; a statistic of a pass is calculated over the \
+         variants it gives",
         counts = of_each_filter.join(", "),
     )
 }

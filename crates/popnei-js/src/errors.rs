@@ -55,7 +55,11 @@ pub enum JsPopneiError {
     NoMemory(String),
     /// Something that cannot happen unless this crate has a defect: a
     /// chromosome whose number is not in the table of the reader that gave
-    /// it.
+    /// it, a variant with more alleles than a JavaScript array of counts
+    /// holds, populations the pass was not given the name or the
+    /// individuals of every one of, a histogram that does not hold one
+    /// count for each bin of its distribution, or a pass that gave a
+    /// different number of names of individuals and of rates.
     Broken(String),
 }
 
