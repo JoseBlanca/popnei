@@ -1326,6 +1326,12 @@ pub struct PerIndividualStats { /* private */ }
 impl PerIndividualStats {
     pub fn num_individuals(&self) -> usize;
     pub fn num_vars(&self) -> u64;
+    /// The five below take an `individual` of `0..num_individuals()`. A
+    /// number at or beyond that is no individual of the pass and has no
+    /// counts, 0 and 0, and no rates: `None` for the heterozygosity rate
+    /// and NaN for the missing rate, which is `f64` and has no other way
+    /// to say that there is no number, and where a 0.0 would read as an
+    /// individual whose genotype was called at every variant.
     pub fn num_missing(&self, individual: usize) -> u64;
     pub fn num_het(&self, individual: usize) -> u64;
     /// num_missing over num_vars.
