@@ -22,7 +22,10 @@
 //! principal components of a table of numbers, individuals by traits,
 //! and of the variants of a reader; `dists` holds the Kosman distance of
 //! every pair of individuals over the variants of a reader, counted from
-//! the genotypes of each block as sets of bits.
+//! the genotypes of each block as sets of bits; and `ld` reads the
+//! genotypes as dosages, how many alleles of a genotype are not the major
+//! allele of its variant, which is what r², how much the genotype of one
+//! variant says about the genotype of another, is worked out from.
 //! `docs/architecture.md` has the order of the ones that follow.
 //!
 //! The linear algebra those modules need, the products of matrices and
@@ -38,6 +41,7 @@ pub mod dists;
 pub mod error;
 pub mod filters;
 pub mod io;
+pub mod ld;
 pub mod pca;
 pub mod variant;
 

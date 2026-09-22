@@ -11,6 +11,7 @@ use thiserror::Error as ThisError;
 
 use crate::block::BlockSize;
 use crate::io::vcf::VcfPlace;
+use crate::ld::{MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES};
 use crate::variant::{MAX_ALLELE, MISSING_ALLELE, Needs};
 
 /// Anything that went wrong in popnei.
@@ -526,6 +527,67 @@ pub enum Error {
         /// variants the pass has read so far, that block's among them, when
         /// a block is added to the sums of the pass.
         num_vars: u64,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
+    /// An index that was given for an individual of a population is not an
+    /// individual of the dataset: they are counted from 0, so the last one
+    /// of a dataset of n individuals is n − 1. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual {individual} was asked for and the dataset has {num_individuals} individuals, which are counted from 0"
+    )]
+    LdIndividualNotInTheDataset {
+        /// The index that was given.
+        individual: usize,
+        /// How many individuals the dataset has.
+        num_individuals: usize,
+    },
+
+    /// The dosages of that many variants of that many individuals are more
+    /// values than the linear algebra works a product out over, or than
+    /// this machine holds the genotypes of one variant of. The r² of a set
+    /// of variants is six products over matrices of the variants times the
+    /// individuals, and `crates/popnei-linalg` refuses a matrix of more
+    /// values than the routines of BLAS and LAPACK count in, so such
+    /// dosages are refused where they are built. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the dosages of {num_vars} variants of {num_individuals} individuals are more than this machine works r² out over: a matrix of them holds at most {largest} values, which is what the linear algebra counts them in; calculate over fewer variants or over fewer individuals",
+        largest = MAX_VALUES_OF_THE_DOSAGES
+    )]
+    LdDosagesTooLarge {
+        /// How many variants the dosages are of.
+        num_vars: usize,
+        /// How many individuals they were asked for.
+        num_individuals: usize,
+    },
+
+    /// The variants asked of a set of dosages are not variants of it: a
+    /// tile of the products, or a window of the filter by linkage
+    /// disequilibrium, that runs past the variants there are. It is a
+    /// defect of popnei, and in Python it is a `ValueError`, as every case
+    /// of this module is.
+    #[error("the {asked_for} variants from {first} were asked of dosages of {num_vars} variants")]
+    LdRowsNotInTheDosages {
+        /// The first variant that was asked for.
+        first: usize,
+        /// How many variants were asked for from it.
+        asked_for: usize,
+        /// How many variants the dosages hold.
+        num_vars: usize,
+    },
+
+    /// The genotypes of the block hold more alleles each than a dosage of
+    /// the r² is counted in. No reader of popnei gives such a block: the
+    /// VCF reader takes 255 alleles in a genotype at most, and the largest
+    /// ploidy of an organism is a dozen. In Python it is a `ValueError`.
+    #[error(
+        "the genotypes of the block hold {ploidy} alleles each, and a dosage, how many alleles of a genotype are not the major allele of its variant, is counted in one byte, which takes a ploidy of {largest} at most",
+        largest = MAX_PLOIDY_OF_THE_DOSAGES
+    )]
+    LdPloidyTooLarge {
         /// How many alleles the genotype of one individual holds.
         ploidy: usize,
     },
