@@ -1,9 +1,13 @@
 # Plan: the principal component analysis and the linalg crate
 
-22 September 2026. Approved by the owner in chat on 22 September 2026
-and under way since that day, on the branch `plan/pca` in the worktree
-`.claude/worktrees/pca`, with its work report in `docs/reports/pca.md`.
-It builds from two specs committed there at 5852540:
+22 September 2026. Approved by the owner in chat on 22 September 2026,
+carried out the same day and done, on the branch `plan/pca` in the
+worktree `.claude/worktrees/pca`, with its work report in
+`docs/reports/pca.md` and its measurements in
+`docs/reports/pca-measurement.md`. Every task is done but 4.3, which
+the owner's answer to Open 1 of `docs/specs/linalg.md` decides and which
+task 4.2 found to change nothing. It builds from two specs committed
+there at 5852540:
 
 - `docs/specs/linalg.md`, the crate `crates/popnei-linalg`: the product
   of a matrix with itself, the eigendecomposition of a symmetric matrix

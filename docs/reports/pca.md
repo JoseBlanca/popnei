@@ -1,10 +1,101 @@
 # Work report: the principal component analysis and the linalg crate
 
-The plan `docs/plans/pca.md` is under way, on the branch `plan/pca`, in
-the worktree `.claude/worktrees/pca`, since 22 September 2026. The
-orchestrator, in this report, is the session of the assistant that runs
-the plan: it sends each task to a subagent on Opus, checks what comes
-back and has each work package reviewed.
+The plan `docs/plans/pca.md` is done, on the branch `plan/pca`, in the
+worktree `.claude/worktrees/pca`, where it ran on 22 September 2026. The
+orchestrator, in this report, is the session of the assistant that ran
+the plan: it sent each task to a subagent on Opus, checked what came
+back and had each work package reviewed.
+
+What exists now that did not. A user calls `do_pca` on a pandas frame
+and `do_pca_from_variants` on a `Variants`, natively, under pyodide and
+from TypeScript with `doPca` and `doPcaFromVariants`, and gets pyNei's
+projections, percentages and weights to 1e-9 on iris, on the worked
+example and on the reference panel of 200 individuals and 1200 variants,
+with the weights of the first 10 components and the counts of the pass.
+Under them is `crates/popnei-linalg`, a fourth crate of the workspace
+with the product of a matrix with itself, the eigendecomposition of a
+symmetric matrix and the product of two matrices, on BLAS and LAPACK
+natively and on faer in WebAssembly and natively with the cargo feature
+`blas` off, built for the two wasm targets.
+
+The speed. The analysis of 100000 variants of 1000 individuals takes
+0.801 s natively on one thread against the 0.3 s of "Speed" of
+`docs/specs/pca.md`, 2.7 times the target, and 0.352 s on the 18 threads
+of the machine; pyNei takes 8.106 s and 5.59 GB where popnei holds 0.21
+GB, and plink2 takes 0.248 s. In a browser it takes 4.500 s against the
+5 s the spec asks for. Where the native time goes and why it was missed
+is in `docs/reports/pca-measurement.md` and under work package 4 below.
+
+The final check of the plan, from a clean clone of the branch at
+32c48d0: `cargo fmt --all --check` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` no warning; `cargo test --workspace` `352
+passed`, 2 ignored, and `33 passed`, where the plan started from 306 and
+0; `cargo wasm-check` finished; `cargo bench --no-run` built; ruff `20
+files already formatted` and `All checks passed!`; `uv run maturin
+develop && uv run pytest` `208 passed`, from 174; `npm run build && npm
+test` in `js/popnei` `tests 154`, `fail 0`, from 126; the wheel of
+pyodide built and its smoke test exited with 0.
+
+What is asked of the owner.
+
+1. **The merge.** Nothing of this branch is in `main`. Three other
+   branches changed the same files at the same time and said so on the
+   board: `plan/dists-kosman` and `plan/stats` both add a module to
+   `crates/popnei/src/lib.rs` and cases to the error enum, where this
+   branch adds the module `pca` and sixteen cases, all at the end of
+   each; `plan/stats` also changes the signature of `chain_of`, which
+   the two binding functions of this branch call. Keeping both sides is
+   the resolution in the two files; the `chain_of` call sites of this
+   branch have to follow whatever signature is merged first.
+2. **The analysis is 2.7 times its target natively and the plan did not
+   fix it**, as the plan says it must not. Of the 0.801 s, 0.413 s is
+   standardizing the blocks, which the trial said would take 0.030 s.
+   The loop is four passes over a row and only one of them is
+   vectorized: the writing of the codes falls to a scalar tail at
+   ploidy 2, the lookup gathers from a table of 256 values, which this
+   machine's vector instructions cannot do, and `count_alleles` is a
+   fourth pass the spec did not count. The options are to take it as a
+   performance review of its own, which is where the measurement hands
+   it over; to leave it, since popnei is already 10 times pyNei; or to
+   fold it into the plan that comes next. Recommendation: a performance
+   review, because the 0.413 s is one loop and the measurement already
+   says which instructions it lacks.
+3. **Open 1 of `docs/specs/linalg.md`, the `simd128` flag, is smaller
+   than it looked and is still yours.** Task 4.2 found that the flag
+   changes no byte of what is built: what gives the vector instructions
+   is the cargo feature `wasm-simd128-enable` of `gemm`, which the
+   workspace already turns on, and a build without that feature takes
+   7.066 s where the one popnei ships takes 4.500 s. So the module
+   popnei ships today already holds those instructions, and a browser
+   without them refuses it whatever is answered. The options are to
+   leave it as it is, which is fast and needs Chrome 91, Firefox 89 or
+   Safari 16.4; or to turn the feature off for a build that old browsers
+   load, which costs 2.6 s per analysis. Recommendation: leave it as it
+   is. Task 4.3 was skipped because deliverable 3 asks for the flag only
+   when the answer is on.
+4. **Five open points of `docs/specs/pca.md` are still yours**, and the
+   code follows the "meanwhile" of each: whether `num_prin_comps` cuts
+   the projections as well as the weights; a variant with no called
+   genotype, which popnei leaves out where pyNei errs; the components
+   with no variance, which popnei does not give; the spelling of
+   `standardize_data`; and whether the standard deviation divides by n,
+   as pyNei, or by n - 1, as R.
+5. **Four decisions the reviews forced that you can reverse**, each
+   where it happened below: the sign rule now takes two projections
+   within 64 units in the last place for one absolute value, because
+   without a tolerance the native and the browser builds gave a
+   component opposite signs; a table in which no trait has variance is
+   an error where an empty result was given; the analysis is refused in
+   a browser tab above 9381 individuals, which would otherwise end the
+   page with no message; and a ploidy above 254, more than 46340
+   individuals, more variants than the machine counts and weights of
+   more values than it counts are refused.
+6. **A Ctrl-C does not reach a pass**: `do_pca_from_variants` is one
+   call into the core with the interpreter released, and the core owns
+   the loop over the blocks, so an analysis of minutes cannot be
+   interrupted. Giving the core a callback the binding fills is a change
+   to its public interface, which is yours; the Python binding says the
+   limitation in a comment, as `write_vars` does.
 
 ## Before the first task
 
