@@ -256,7 +256,7 @@ Tasks:
       interface" allows when no weights are asked for. The tests of deliverable 1 that need no weights first: the
       worked example with `num_prin_comps` 0, `worked3`, the cases pyNei
       asserts, the errors. Serves deliverables 1 and 4.
-- [ ] 3.2 The second pass: the weights of the first `num_prin_comps`
+- [x] 3.2 The second pass: the weights of the first `num_prin_comps`
       components as "How it runs" says, the check that the variants of
       the two passes are the same, and the tests of deliverable 1 with
       weights: the worked example with 3, the panel's five literals, the

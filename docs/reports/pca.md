@@ -374,3 +374,18 @@ the codes in runs of 255 with counters of one byte, and one looks each
 code up in a table of 256 values. The used variants are kept as the
 positions the result carries and not as one bit per variant, which
 would be a second copy. The subagent used 323610 tokens.
+
+Task 3.2, the second pass, is at bd3b000, after 9fbcd86, which put into
+the spec that weights of more values than a `usize` counts are refused:
+`num_prin_comps` times the variants used is the one product of this
+analysis whose sides are not both at most the individuals. Each block
+writes its weights into the columns of its own variants, so nothing
+holds them twice. A second pass over another dataset, other individuals
+or another ploidy, is refused before its first block, beside the three
+the spec named, a variant more, a variant fewer and a variant that lost
+its variance; the four are one error, a `RuntimeError` in Python.
+`num_prin_comps` of the result is what was asked for capped at the
+components with variance, which is what the bindings read for the names
+of the components. `cargo test -p popnei --lib pca` `41 passed`, all in
+30 ms. The subagent, the one of task 3.1, had used 375363 tokens at the
+end of the two tasks.
