@@ -151,3 +151,78 @@ Nothing was changed in the plan.
 The subagents used: tasks 2.1 and 2.2 together 203867 tokens in 84 tool
 calls; task 2.3 147130 in 63; task 2.4 182877 in 60. None had to be
 sent back.
+
+### The review of work packages 1 and 2
+
+Seven reviewers, one per category, at 4c5e5ae. None found a wrong
+number: the spec reviewer reproduced every value of the item against
+bcftools 1.24 and pyNei, and the gather of 18 random subsets of
+`many.vcf`, of haploid and triploid files and of the 50 individuals
+reversed against direct indexing; the numbers reviewer compared
+`retain_individuals` with a naive gather over 625 cases of sizes,
+ploidies and kept sets, all equal. What they found, fixed in nine
+commits from 15281d2 to 2d360b6 by one subagent, was in what happens
+when a bound is broken, in the tests and in the texts:
+
+- The compaction of a block skipped, in silence, a genotype it could not
+  reach and a row it could not pack, when the arrays of the block were
+  shorter than it states: unreachable today, since `check` runs first,
+  but a wrong genotype with no error the day a caller reaches it. Three
+  reviewers found it from three sides. Now the two helpers give the
+  error of `check`, and a test pops one allele and asserts the error
+  and the block as it was. The reader of the filter dropped in silence
+  an index beyond the individuals of its source when it built its
+  names, unreachable for the same reason; it gives the error now.
+- The buffer of the gather was allocated once per rayon job, about one
+  per three rows, and not once per thread as its comment said: 1861 to
+  2245 jobs for a block of 5000 variants of 1000 individuals, 500 kept,
+  on 18 threads, measured by the fixer on the M5 Pro; with a floor of 64
+  rows per job, 63. What the gather costs with either was not measured.
+- Two tests could not fail: the one thread against several test had 300
+  identical rows, since its 20 alleles per row cycled 5 values, and a
+  mutation that copies row 0 into every row passed it; and no test
+  covered the reader's own error, so `finished` could be dropped from
+  that branch with every test green. Both have their test now.
+- The kind of an argument of a step crossed to TypeScript as a count of
+  names, 0 meaning a threshold, so a later argument of neither kind
+  would have taken the next threshold in silence; two reviewers found
+  it. A kind per argument crosses now, and an unknown one is an
+  `Error`.
+- The rule that gives the individuals of the next pass was written twice,
+  by two mechanisms, in Python and in TypeScript. It is one function of
+  the core now, `individuals_of`, added to "The Rust interface" of the
+  spec in 2d360b6, and each binding crate answers with it.
+- In Python, a non-string name and a non-iterable argument gave the
+  `TypeError` of Python or of pyo3, naming no argument; both name it now,
+  as the TypeScript does. The message of an unknown name points at where
+  the names are. A docstring that counted three filter methods, and a
+  cut sentence in the comment of the exception table, are mended.
+
+Not taken, with the reason: that the `reblock` at the end of
+`iter_blocks` sizes the blocks after the filter for the kept individuals
+and not the source's, above 500 individuals, because `docs/specs/block.md`
+says its default is for the individuals of the reader it is given, and
+the sentence of the filter spec is about the filter's own reader; the
+spec of the filter says so now, in 15281d2, which also says that the 500,
+423 and 26 of `many.vcf` come out with `only_passed` false. That a chain
+built over a reader that already holds a filter of individuals is not
+refused, because the spec limits that refusal to the threshold filters,
+whose `FilteredReader::new` asks the reader. That `filter_individuals`
+accepts a generator under a `Sequence[str]` hint, which harms nobody.
+
+Seen outside the scope, for the owner: `docs/glossary.md` line 154 ends
+in the middle of a sentence, from before this branch and in a shared
+file, so it is not touched here; the Python package ships no `py.typed`,
+so its type hints never reach a user's type checker; and the `Steps` of
+the JavaScript crate clones the names of the source at every pass.
+
+After the fixes, at 2d360b6: `cargo test --workspace` `334 passed`, 2
+ignored; `retain_individuals --list` `9 tests`; `resolve_individuals
+IndividualsReader --list` `16 tests`; `uv run pytest` `189 passed`, of
+`tests/test_filter_individuals.py` 15; `npm test` `tests 140`, `fail 0`;
+the wheel of pyodide built and its smoke test exited with 0; `cargo
+fmt`, `cargo clippy`, `cargo wasm-check` and ruff clean.
+
+The reviewers used, in tokens: spec 148820, tests 151940, numbers
+134789, errors 127376, api 113582, architecture 115202, binding
+126337. The fixer used 231504 in 129 tool calls.
