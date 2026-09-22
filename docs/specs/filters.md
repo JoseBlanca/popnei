@@ -697,7 +697,10 @@ that is not an individual, with the name; a name twice, with the name;
 and no name. A fourth new case is a second filter of individuals on a
 `Variants` that has one, whose message says so and names the kind; the
 case of a second threshold filter, which carries two thresholds, stays
-as it is.
+as it is. With them also the individuals the next pass gives, which each
+binding crate answers with when a user reads the individuals of their
+`Variants`: which step says who the next pass holds is of the filters and
+not of Python or of TypeScript.
 
 ```rust
 #[non_exhaustive]
@@ -714,6 +717,11 @@ impl PassStep {
 /// The index of each of `names` among `individuals`, in the order of
 /// `names`.
 pub fn resolve_individuals(names: &[String], individuals: &[String]) -> Result<Vec<usize>>;
+
+/// The names of the individuals the next pass gives, in its order: the
+/// names the last `KeepIndividuals` of `steps` keeps, and `of_the_source`
+/// when no step is one.
+pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<String>;
 
 pub struct IndividualsReader<R: BlockReader> { /* private */ }
 impl<R: BlockReader> IndividualsReader<R> {
