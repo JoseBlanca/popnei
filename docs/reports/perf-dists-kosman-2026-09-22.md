@@ -58,7 +58,7 @@ build strips the names of the functions; the plan below says how.
 
 ## 2. The verdict
 
-The three numbers of "Speed" are met, by five changes of
+The three numbers of "Speed" are met, by six changes of
 `crates/popnei/src/dists.rs` that section 9 gives one by one, none of
 which alters a distance. On 100000 variants x 1000 individuals with the
 reading taken out, on the machine below:
@@ -67,16 +67,16 @@ reading taken out, on the machine below:
 |---|---|---|---|---|
 | one thread | 1.147 s | 0.767 s | 0.97 s | 0.719 s |
 | 18 cores | 0.635 s | 0.102 s | 0.38 s | 0.280 s on 6 |
-| wasm under node | 2.158 s | 1.423 s | 1.43 s | not measured |
+| wasm under node | 2.158 s | 1.106 s | 1.43 s | not measured |
 
 popnei is now 6 in 100 slower than pyNei on one thread, where it was 60
 in 100 slower, and 2.7 times faster than pyNei's best; the spec accepted
-being 1.3 times slower. The wasm number sits on its line: two rounds
-gave 1.429 and 1.423 s where the runs of one round spread 1.6 in 100, so
-it is met by less than the noise, and it is the one to watch. Over the
-vars file on 18 threads the reader is now 0.127 s of the 0.229 s a user
-waits, more than the calculation it feeds, which is where the next work
-on this path is.
+being 1.3 times slower. The wasm number was on its line, 1.423 to
+1.435 s over three rounds, until the owner set the floor of the browsers
+and the sixth change, the vector count of the bits, took it to 1.106 s,
+23 in 100 under the target. Over the vars file on 18 threads the reader
+is now 0.127 s of the 0.229 s a user waits, more than the calculation it
+feeds, which is where the next work on this path is.
 
 What is asked of the owner: whether to merge the branch, which is his
 order as always and which nothing in this report stands in the way of.
@@ -666,6 +666,55 @@ agrees with the 2.130 s of the plan's measurement to 1.3 in 100.
     the reading alone: best 0.163 s, median 0.171 s, worst 0.182 s
     the calculation with the reading taken out, on the bests: 1.429 s
 
+**L5, the bits of a pair counted sixteen bytes at a time. Applied,
+7f3b6cc**, after the owner set the floor of the browsers, which is what
+it needed. WebAssembly has an instruction that counts the ones of
+sixteen bytes at once, and the flag that turns those instructions on
+gives none of it by itself, as the review measured: the compiler pulls
+the lanes apart and counts them one word at a time. So the loop is
+written by hand over the intrinsics, behind `cfg(target_feature =
+"simd128")`, with the loop that was there kept for every other target
+and for a wasm build without the flag. It stays safe Rust, as the crate
+demands: each vector is built from two words read out of the slice, and
+no intrinsic that takes a pointer is used. The counts of sixteen bytes
+are added pairwise into eight lanes of 16 bits and those into four of 32
+every 8188 words, and the doc comment carries what bounds each: a 16 bit
+lane reaches 65504 of its 65535 in a round, and a 32 bit lane at most
+the ploidy times the variants of a block, which `of_block` already
+refuses a block for unless it fits in a `u32`.
+
+With the reading taken out, 1.435 s to 1.106 s, 23 in 100, against a
+spread of 1.6 in 100 between the runs of a round; the whole call 1.597
+to 1.219 s. The reading alone fell as well, 0.162 to 0.113 s, because
+the flag vectorizes the decompression of the vars file and its reader
+too, so a user of the browser gains more than the calculation alone.
+Nothing native moved: the flag is set for the two wasm targets only, and
+the native bench gives 0.107 s and 0.770 s against 0.102 and 0.767 on a
+busier machine.
+
+Correctness is the node suite, which is the only place this path runs,
+the cargo tests being native: `npm test` gives 144 passed, the five
+pairs of the panel and every pair of `panel.gdkosman.tsv` against R's
+numbers among them, and the pyodide smoke test exits 0 with the worked
+example of the spec. Both wasm builds were shown to have taken the path
+and not assumed to: the opcode is in the package's wasm 12 times and in
+the wheel's library 9, and a build whose environment replaces the flags
+has it 0 times. The cost is a second kernel of 37 lines beside a scalar
+one of 6, the bounds in its comment, and the floor on the browsers.
+
+**What it uncovered: a check that had stopped checking.** Setting the
+rustflags of a target made `cargo wasm-check` pass warnings in silence,
+because cargo reads the rustflags of a target in place of
+`build.rustflags`, where the alias had put its `-D warnings`, and does
+not join the two. The alias now names the rustflags of each target and
+carries both flags; it was tried against a warning put in on purpose,
+which it failed with exit 101, by the subagent that found it and again
+by the orchestrator. Anyone who adds a flag to a target of
+`.cargo/config.toml` has to add it to the alias too, and the file says
+so where it can be read.
+
+### The browser before the vector count
+
 The first profile ever taken of popnei in wasm, plan item 1: built
 without the `--remove-name-section` of `build:wasm`, which is what left
 the earlier attempts with nothing but `wasm-function[N]`, then `node
@@ -680,12 +729,12 @@ the calculation, from the 7.289 s of the profile:
 | the sets phase | 0.28 s, 17 in 100 | 0.172 s |
 | the reader | 0.17 s, 11 in 100 | 0.107 s |
 
-So in wasm the pairs phase is 1.94 times the native one and the sets
-phase 1.66 times, and the pairs phase is where the headroom of the
-browser is: L3, the popcount reduction, and L5, a vector popcount behind
-`+simd128`, which is the owner's decision because it raises the floor of
-the browsers popnei runs in. `+simd128` was not measured: the target is
-met and the review closes.
+So in wasm the pairs phase was 1.94 times the native one and the sets
+phase 1.66 times, which is what said that the pairs were where the
+headroom of the browser lay, and that is what L5 then took: the table
+above is of the build before it, and the call it measured, 1.61 s, is
+now 1.219 s. No profile was taken after L5, so where the time of the
+browser goes now is not known; a next round takes one first.
 
 ### What was not run, and why
 
@@ -695,11 +744,12 @@ met and the review closes.
   what it could take to H3, whose work items write into 202 KB each. The
   measurement plan of section 4 stands if the owner wants more, and
   item 7, the two shapes the bench does not have, comes first.
-- **L3**, the popcount reduction, and **L5**, the vector popcount of
-  wasm: the pairs phase is 72 in 100 of the wasm call and 78 of the
-  native one thread call, so these are where a next round would start,
-  and they are the two whose cost is a dependency or a floor on the
-  browsers.
+- **L3**, counting the ones with fewer vector instructions natively: the
+  pairs are 78 in 100 of the native one thread call, so it is where a
+  next round starts, and its cost is a dependency, since the standard
+  library's own vectors are not on stable Rust. What L5 gave in wasm,
+  23 in 100 of a call whose pairs were 72 in 100, is the size to expect.
+  L5 itself was run and kept; it is above.
 - **L4**, `alleles_of` on the threads: it is 3 in 100 of a sets phase
   that is now 0.054 s of a 0.103 s call on 18 threads, so at most 2 in
   1000 of the call.

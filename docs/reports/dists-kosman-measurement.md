@@ -1,6 +1,15 @@
 # How fast the Kosman distances of every pair are, task 3.1
 
-22 September 2026. Task 3.1 of `docs/plans/dists-kosman.md`, the first
+22 September 2026. The numbers below are of the calculation as the plan
+left it, and none of the three of "Speed" was met then. The performance
+review that followed the same day,
+`docs/reports/perf-dists-kosman-2026-09-22.md`, made six changes to the
+calculation and meets all three: 0.767 s on one thread, 0.102 s on 18
+cores and 1.106 s in wasm, against 1.154 s, 0.625 s and 2.130 s here.
+Read that report for what popnei costs now; this one is the state it
+started from and the way the measurement is taken.
+
+Task 3.1 of `docs/plans/dists-kosman.md`, the first
 deliverable of its work package 3, measures how long popnei takes to give the
 Kosman distance of every pair of 1000 individuals over 100000 variants:
 natively on one thread and on 18 cores, over a VCF and over a vars file, in
