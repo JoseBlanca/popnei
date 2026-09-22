@@ -169,3 +169,31 @@ reaches any of them today, since the binding of this module is task 2.2,
 so this is not a wrong exception a user can see yet. The sentence of
 `docs/specs/ld.md` that lists the cases of this module names three, all
 of them reachable from an argument, and does not name these four.
+
+Task 1.5, the two checks against the stored numbers, commits 0e4a659 and
+7fb8040. `cargo test --workspace` gives `421 passed` and `ld::` stands at
+26 tests, the same on the system BLAS and on faer.
+
+Deliverable 4 holds and says more than it asks. Of the 124750 pairs of
+`ld.vcf.gz`, 93096 have an r² and 31654 are NaN, the counts the plan
+gives, and the test asserts both so that a pair one library gave a number
+for and the other did not falls in neither count and fails. Of the 93096,
+**none differs from plink2 at all**: the orchestrator set the tolerance
+of the test to exactly 0.0 by hand, reran it, saw it pass and restored
+the file. So the six sums are being held exactly as whole numbers over a
+real dataset of 500 variants of 100 individuals and not only over the
+five variants of the worked example, and the spec's warning that a
+difference of 1e-13 is worth looking at stands with something behind it.
+The test also asserts that the variants of the VCF are the rows of
+plink2's matrix in the same order, rather than assuming it; they are,
+v0000 to v0499. It runs in 0.01 s.
+
+Deliverable 5 holds: every one of the 25000 dosages of
+`tests/reference/vcf/many.vcf` is the one pyNei's `to_012` gives.
+
+The dosages pyNei gives are stored as
+`tests/reference/ld/many.pynei.dosages.tsv`, in the reference directory
+with everything else `make_reference.py` writes rather than beside
+`many.vcf`, and `run_plink2.sh` makes and compares six files now instead
+of five. That the script still exits 0 is what proves the generator
+behind every literal of the two specs was not disturbed by the new work.

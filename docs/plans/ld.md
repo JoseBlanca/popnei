@@ -149,7 +149,7 @@ this plan.
       the six sums, with NaN where "What it gives" says there is none.
       Its cargo tests are the worked example. Serves deliverables 3 and
       6. Needs 1.3.
-- [ ] 1.5 The two checks against the stored numbers: the test over every
+- [x] 1.5 The two checks against the stored numbers: the test over every
       pair of `ld.vcf.gz` against the plink2 matrix, and the test of the
       dosages of `many.vcf` against the ones pyNei gave, which this task
       adds to `make_reference.py` and stores. Serves deliverables 4, 5
