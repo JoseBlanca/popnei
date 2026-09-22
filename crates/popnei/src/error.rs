@@ -346,8 +346,10 @@ pub enum Error {
     #[error("the {operation} of the principal component analysis could not be done: {source}")]
     PcaLinalg {
         /// What was being computed: the product of the table with itself,
-        /// the eigendecomposition, or the product that gives the
-        /// projections or the weights.
+        /// the product of a block of variants with itself, the
+        /// eigendecomposition, or one of the three products that give the
+        /// projections of a table, the weights of a table and the weights
+        /// of a block of variants.
         operation: &'static str,
         /// What the linear algebra said.
         source: popnei_linalg::Error,
@@ -421,13 +423,42 @@ pub enum Error {
         problem: crate::pca::VariantsOfTheSecondPass,
     },
 
+    /// The source of a principal component analysis of the variants has no
+    /// individual. The components are the axes the individuals of a
+    /// dataset are placed on, so there is nobody to place, and the
+    /// standardizing of a block would read its rows in chunks of no
+    /// allele. Every source of popnei has one individual at least, as
+    /// `docs/specs/block.md` says, so it is a caller of the function of the
+    /// core crate with a reader of its own that reaches it. In Python it is
+    /// a `ValueError`.
+    #[error(
+        "the source has no individual, and the principal components of the variants are the axes the individuals of a dataset are placed on"
+    )]
+    PcaNoIndividual,
+
+    /// The second pass of a principal component analysis of the variants
+    /// worked out the weight of a variant whose column of the weights is
+    /// not there. The variants of that pass are the variants of the first,
+    /// which it checks as it goes, so each of them has a column: this is a
+    /// defect of popnei, and in Python it is a `RuntimeError`.
+    #[error(
+        "the weights of the variant at the column {column} of the {num_used} that were used have no column to go in, which is a defect of popnei: the second pass over the variants counts them against the variants of the first and each of them has one"
+    )]
+    PcaWeightOutOfPlace {
+        /// The column the weights were to go in.
+        column: usize,
+        /// How many variants the first pass used, which is how many
+        /// columns the weights have.
+        num_used: usize,
+    },
+
     /// A dataset the principal components of its variants cannot be taken
     /// on, because one of its sizes is beyond what the analysis counts in.
-    /// [`crate::pca::VariantsTooLarge`] says which of the three it is. In
+    /// [`crate::pca::VariantsTooLarge`] says which of the four it is. In
     /// Python it is a `ValueError`.
     #[error("the principal components of the variants cannot be taken on this dataset: {problem}")]
     PcaVariantsTooLarge {
-        /// Which of the three sizes it is, with the number the dataset has.
+        /// Which of the four sizes it is, with the number the dataset has.
         problem: crate::pca::VariantsTooLarge,
     },
 

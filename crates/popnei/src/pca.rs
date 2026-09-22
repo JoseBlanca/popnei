@@ -42,6 +42,21 @@ pub const DEFAULT_CENTER_DATA: bool = true;
 /// well, so turning the centering off turns this off too.
 pub const DEFAULT_STANDARDIZE_DATA: bool = true;
 
+/// How close two projections are when the rule that fixes the sign of a
+/// component takes them for one absolute value: 64 times the difference
+/// between 1 and the next number an `f64` holds, which is 1.4e-14 of the
+/// larger of the two.
+///
+/// Two individuals whose projections are the same number with opposite
+/// signs in exact arithmetic do not come out equal bit for bit, and which
+/// of the two is the larger is not the same in the two libraries popnei
+/// takes its eigendecomposition from: without this tolerance the sign of
+/// the whole component would be decided by the last bit and would differ
+/// between Python natively, Python under pyodide and TypeScript. "The
+/// sign" of `docs/specs/pca.md` has the case it was measured on and why
+/// the tolerance is 64 units in the last place.
+pub const TIED_PROJECTIONS: f64 = 64.0 * f64::EPSILON;
+
 /// The two steps on the columns of a table before its components are
 /// taken.
 ///
@@ -133,7 +148,11 @@ pub struct Pca {
     /// How many components the weights are given for, which for a table is
     /// `num_comps`.
     pub num_prin_comps: usize,
-    /// num_prin_comps x used_cols.len(), row after row.
+    /// The weight of each column that was used in each of the first
+    /// `num_prin_comps` components: `num_prin_comps` x `used_cols.len()`,
+    /// row after row. Its columns are the columns that were used and not
+    /// the `num_cols` the data had, so a variant that was left out is in
+    /// neither.
     pub princomps: Vec<f64>,
 }
 
@@ -263,7 +282,7 @@ pub const DEFAULT_NUM_PRIN_COMPS: usize = 10;
 /// dosage or the missing genotype, which is the loop the compiler
 /// vectorizes. A ploidy of 255 has 256 dosages, and those with the missing
 /// genotype are one value more than a byte holds.
-pub(crate) const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
+pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
 
 /// The most individuals the principal components of the variants are taken
 /// on: the largest number whose square is at most 2147483647, which is
@@ -271,12 +290,12 @@ pub(crate) const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
 ///
 /// The individuals x individuals matrix of that many holds 2147395600
 /// values, 17 GB, which no browser tab gives and few machines do.
-pub(crate) const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize = 46340;
+pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize = 46340;
 
 /// Which size of a dataset is beyond what the principal components of its
 /// variants are taken on.
 ///
-/// Each of the three is a number the analysis counts in, and a dataset
+/// Each of the four is a number the analysis counts in, and a dataset
 /// above it would be read into a number that wrapped. None of them is a
 /// dataset of this world: the largest ploidy of an organism is a dozen,
 /// and the objectives of popnei reach 10000 individuals and a million
@@ -464,6 +483,14 @@ pub fn pca_of_variants<R1: BlockReader, R2: BlockReader>(
         });
     }
     let num_individuals = first_pass.individuals().len();
+    if num_individuals == 0 {
+        // The standardizing reads the rows of a block in chunks of one
+        // genotype for each individual, which would be chunks of no
+        // allele, and there is nobody to place on the components. No
+        // reader of popnei gives such a source, and this function is
+        // public.
+        return Err(Error::PcaNoIndividual);
+    }
     if num_individuals > MAX_INDIVIDUALS_OF_THE_VARIANTS {
         return Err(Error::PcaVariantsTooLarge {
             problem: VariantsTooLarge::Individuals(num_individuals),
@@ -665,11 +692,13 @@ fn the_weights_of_a_second_pass<R: BlockReader>(
                 princomps.chunks_exact_mut(num_used).zip(of_the_variant)
             {
                 // The column is below the variants the first pass used,
-                // which were counted here as the pass went, so every
-                // weight has its place.
-                if let Some(target) = of_the_component.get_mut(column) {
-                    *target = *weight;
-                }
+                // which this pass has been counting against them, so a
+                // column that is not there is a defect of popnei and not
+                // a weight to drop in silence.
+                let Some(target) = of_the_component.get_mut(column) else {
+                    return Err(Error::PcaWeightOutOfPlace { column, num_used });
+                };
+                *target = *weight;
             }
         }
         used_before = used_before
@@ -1444,24 +1473,10 @@ fn the_components_of_the_product_of_the_rows(
         return Ok((Vec::new(), Vec::new()));
     }
     let projections = the_projections_of(eigen, num_rows, num_comps);
-    let mut vectors_by_row = vec![0.0; num_values_of(num_rows, num_comps)];
-    for (component, (vector, value)) in eigen
-        .vectors
-        .chunks_exact(num_rows)
-        .zip(&eigen.values)
-        .take(num_comps)
-        .enumerate()
-    {
-        let size = value.sqrt();
-        for (scaled, coordinate) in vectors_by_row
-            .iter_mut()
-            .skip(component)
-            .step_by(num_comps)
-            .zip(vector)
-        {
-            *scaled = coordinate / size;
-        }
-    }
+    // The same matrix the second pass over the variants multiplies each of
+    // its blocks by: the weights of a table and the weights of the
+    // variants are the one formula, Z' u over sqrt(λ).
+    let vectors_by_row = the_scaled_vectors_of(eigen, num_rows, num_comps);
     let mut weights_by_trait = vec![0.0; num_values_of(num_cols, num_comps)];
     product(
         standardized,
@@ -1503,14 +1518,15 @@ fn fix_the_signs(
 ) {
     for component in 0..num_comps {
         // The projection of the largest absolute value, and the first of
-        // them when two are the same, which the strict comparison keeps.
+        // them when two are of one size, which a value that has to be
+        // above the one kept by more than the tolerance keeps.
         let largest = projections
             .iter()
             .skip(component)
             .step_by(num_comps)
             .copied()
             .fold(0.0_f64, |largest: f64, value| {
-                if value.abs().total_cmp(&largest.abs()) == Ordering::Greater {
+                if of_one_size(value, largest) == Ordering::Greater {
                     value
                 } else {
                     largest
@@ -1520,12 +1536,33 @@ fn fix_the_signs(
             for projection in projections.iter_mut().skip(component).step_by(num_comps) {
                 *projection = -*projection;
             }
+            // The weights are given for the first components alone, so
+            // there are none for a component after them and there is
+            // nothing to turn round: it is not a weight that went missing.
             if let Some(weights) = princomps.chunks_exact_mut(num_cols).nth(component) {
                 for weight in weights {
                     *weight = -*weight;
                 }
             }
         }
+    }
+}
+
+/// How the absolute value of `value` compares with that of `largest` for
+/// the sign rule: `Greater` when it is above it by more than
+/// [`TIED_PROJECTIONS`], and `Equal` when the two are within it, which is
+/// what the rule calls the same absolute value.
+///
+/// `Less` and `Equal` both leave the rule with the projection it had,
+/// which is the first of the two, so the rule does not tell them apart.
+fn of_one_size(value: f64, largest: f64) -> Ordering {
+    let tolerance = largest.abs() * TIED_PROJECTIONS;
+    if value.abs() > largest.abs() + tolerance {
+        Ordering::Greater
+    } else if value.abs() + tolerance < largest.abs() {
+        Ordering::Less
+    } else {
+        Ordering::Equal
     }
 }
 
@@ -1554,6 +1591,12 @@ const MISSING_CODE: u8 = u8::MAX;
 /// counter of a byte holds 255, so a run of 255 genotypes is the longest
 /// one whose codes a byte counts without wrapping.
 const GENOTYPES_PER_RUN: usize = 255;
+
+/// A run longer than what a byte counts would wrap the counters of
+/// [`the_counts_of_the_codes`] with nothing to show it, so the length of a
+/// run is checked against the largest number a `u8` holds when this
+/// compiles.
+const _: () = assert!(GENOTYPES_PER_RUN <= 255, "a byte counts to 255");
 
 impl RowScratch {
     /// The buffers of one thread, for the rows of `num_individuals`
@@ -1842,13 +1885,18 @@ mod tests {
         AfterTheFirstPass, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS, MAX_PLOIDY_OF_THE_VARIANTS,
         Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions, VariantsOfTheSecondPass,
         VariantsTooLarge, fix_the_signs, pca, pca_of_variants, the_components_with_variance,
-        the_first_pass, the_row_of, the_scaled_vectors_of, the_standardized_row,
-        the_standardized_rows, the_standardized_rows_one_by_one, the_weights_of_a_second_pass,
+        the_first_pass, the_scaled_vectors_of, the_standardized_row, the_weights_of_a_second_pass,
     };
-    use crate::block::{BlockReader, Reblock};
+    // The two ways of reading the rows of a block are one function in
+    // WebAssembly, which has no threads, so the test that compares them,
+    // and what only it uses, are of the targets that have them.
+    #[cfg(not(target_family = "wasm"))]
+    use super::{the_row_of, the_standardized_rows, the_standardized_rows_one_by_one};
+    use crate::block::{Block, BlockReader, Reblock};
     use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::Needs;
+    use crate::variant::{ChromTable, Needs};
 
     /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
     /// literal here and in the reference files is written with 12
@@ -2180,30 +2228,28 @@ mod tests {
             TOLERANCE,
             "the weights of the first component",
         );
-        // The second component, up to its sign.
+        // The two largest projections of the second component are the same
+        // number with opposite signs, equal bit for bit on Accelerate's
+        // LAPACK, one bit apart on faer and two apart on numpy, all of
+        // which are inside the tolerance of the sign rule: the first of
+        // the two is the positive one on every backend, so the component
+        // has one sign and not one sign for each.
         let second: Vec<f64> = result
             .projections
             .iter()
             .skip(1)
             .step_by(2)
-            .map(|value| value.abs())
+            .copied()
             .collect();
         assert_close(
             &second,
-            &[0.0, 0.707106781187, 0.707106781187],
+            &[0.0, 0.707106781187, -0.707106781187],
             TOLERANCE,
             "the projections of the second component",
         );
-        let weights: Vec<f64> = result
-            .princomps
-            .get(3..6)
-            .expect("the second component")
-            .iter()
-            .map(|weight| weight.abs())
-            .collect();
         assert_close(
-            &weights,
-            &[0.707106781187, 0.0, 0.707106781187],
+            result.princomps.get(3..6).expect("the second component"),
+            &[-0.707106781187, 0.0, -0.707106781187],
             TOLERANCE,
             "the weights of the second component",
         );
@@ -2225,6 +2271,8 @@ mod tests {
             let result = pca(data, num_rows, num_cols, &options).expect("the analysis");
             assert!(result.num_comps > 0, "{what}: no component");
             for component in 0..result.num_comps {
+                // The first projection of the largest size, where two
+                // within the tolerance of the rule are of one size.
                 let largest = result
                     .projections
                     .iter()
@@ -2232,7 +2280,7 @@ mod tests {
                     .step_by(result.num_comps)
                     .copied()
                     .fold(0.0_f64, |largest: f64, value| {
-                        if value.abs().total_cmp(&largest.abs()) == std::cmp::Ordering::Greater {
+                        if super::of_one_size(value, largest) == std::cmp::Ordering::Greater {
                             value
                         } else {
                             largest
@@ -2240,7 +2288,7 @@ mod tests {
                     });
                 assert!(
                     largest > 0.0,
-                    "{what}: the largest projection of component {component} is {largest}"
+                    "{what}: the first projection of the largest size of component {component} is {largest}"
                 );
             }
         }
@@ -2799,6 +2847,20 @@ mod tests {
             "every variant of the panel has variance"
         );
         assert_eq!(result.num_comps, 199, "the components with variance");
+        // The first ten components of every individual, which is what
+        // `sim_missing.r.projections.tsv` holds, and the two literals of
+        // the table of the spec are the first three of the first two rows.
+        let of_the_first_ten: Vec<f64> = result
+            .projections
+            .chunks_exact(result.num_comps)
+            .flat_map(|of_an_individual| of_an_individual.iter().take(10).copied())
+            .collect();
+        assert_close(
+            &of_the_first_ten,
+            &row_after_row(the_reference("sim_missing.r.projections.tsv", true)),
+            TOLERANCE,
+            "the projections of the panel",
+        );
         let of_s000: Vec<f64> = result.projections.iter().take(3).copied().collect();
         assert_close(
             &of_s000,
@@ -3079,6 +3141,70 @@ mod tests {
         );
     }
 
+    /// Three individuals whose projections are the same absolute value
+    /// decide the sign of their component, and the first of them is the
+    /// one that comes out positive, whatever the last bits of the
+    /// eigendecomposition are.
+    ///
+    /// Six individuals of three variants, where the individuals 2 and 5
+    /// have the same genotype at every variant and the individual 0 has
+    /// the opposite dosage at every one, the mean of each variant being 1:
+    /// the three projections of the first component are 1.98902864125 in
+    /// exact arithmetic, the first of them negative. Accelerate's LAPACK
+    /// gives that of the individual 5 one unit in the last place above the
+    /// other two, so without the tolerance of [`TIED_PROJECTIONS`] the
+    /// largest is positive already and the individual 0 comes out at
+    /// -1.989, while numpy's eigendecomposition makes that of the
+    /// individual 0 the largest and turns the component round. The numbers
+    /// are numpy 2.5.3's, by the route of "What both analyses compute" of
+    /// `docs/specs/pca.md`, on 22 September 2026.
+    #[test]
+    fn the_first_of_the_projections_of_the_largest_size_is_the_positive_one() {
+        let rows: Vec<Vec<String>> = [
+            ["0/0", "0/0", "1/1", "0/0", "1/1", "1/1"],
+            ["0/0", "0/0", "1/1", "0/1", "0/1", "1/1"],
+            ["0/0", "0/1", "1/1", "0/0", "0/1", "1/1"],
+        ]
+        .iter()
+        .map(|row| row.iter().map(ToString::to_string).collect())
+        .collect();
+        let vcf = vcf_of(6, &rows);
+        let mut reader = reader_over(&vcf, None);
+        let result = the_pca_of_the_variants(&mut reader, &NO_WEIGHTS).expect("the analysis");
+        assert_eq!(result.num_comps, 3, "the components with variance");
+        assert_close(
+            &result.projections,
+            &[
+                1.98902864125,
+                0.0,
+                0.209201014086,
+                1.28843624895,
+                0.866025403784,
+                -0.29988669924,
+                -1.98902864125,
+                0.0,
+                -0.209201014086,
+                1.28843624895,
+                -0.866025403784,
+                -0.29988669924,
+                -0.58784385666,
+                0.0,
+                0.808974412566,
+                -1.98902864125,
+                0.0,
+                -0.209201014086,
+            ],
+            TOLERANCE,
+            "the projections of the tied individuals",
+        );
+        assert_close(
+            &result.explained_variance_percent,
+            &[86.3022285676, 8.33333333333, 5.36443809907],
+            TOLERANCE,
+            "the percentages",
+        );
+    }
+
     /// The major allele of a variant whose two alleles were called
     /// equally often is the lower numbered of them, which is the rule
     /// `docs/specs/pca.md` gives so that the result does not turn on the
@@ -3106,6 +3232,227 @@ mod tests {
             &[-1.41421356237, 1.41421356237, 0.0, 0.0],
             TOLERANCE,
             "the dosages 0 2 1 1 of the major allele 0",
+        );
+    }
+
+    /// The dosages of a tetraploid variant, which is the only fixture of
+    /// a ploidy other than 2 in this module: a dosage is how many alleles
+    /// of the genotype are not the major one at any ploidy, so code that
+    /// read two alleles of each genotype, or that counted three dosages,
+    /// would pass every diploid test here.
+    ///
+    /// Four individuals of the genotypes of the variant 0 of the
+    /// tetraploid table of "How it is verified" of `docs/specs/pca.md`:
+    /// the allele 1 was called 9 times and the allele 0 seven, so the
+    /// major allele is 1 and the dosages are 4, 2, 1 and 0. The mean is
+    /// 1.75 over the four called genotypes and the deviation sqrt(2.1875).
+    #[test]
+    fn the_dosages_of_a_tetraploid_variant_count_every_allele_of_the_genotype() {
+        let gts = [0_i8, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1];
+        let mut scratch = RowScratch::of(4);
+        let mut row = vec![0.0; 4];
+        let used = the_standardized_row(&gts, 4, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+            .expect("the standardizing of the row");
+        assert!(used, "the variant has variance");
+        assert_close(
+            &row,
+            &[
+                1.52127765851,
+                0.169030850946,
+                -0.507092552837,
+                -1.18321595662,
+            ],
+            TOLERANCE,
+            "the standardized dosages 4 2 1 0",
+        );
+    }
+
+    /// The whole analysis of the tetraploid dataset of "How it is
+    /// verified", 4 individuals and 4 variants, whose third variant has
+    /// one dosage among its called genotypes and is left out and whose
+    /// fourth has a genotype with every allele missing. The numbers are
+    /// numpy 2.5.3's, by the route of "What both analyses compute".
+    #[test]
+    fn a_tetraploid_dataset_gives_the_numbers_of_numpy() {
+        let rows: Vec<Vec<String>> = [
+            ["0/0/0/0", "0/0/1/1", "0/1/1/1", "1/1/1/1"],
+            ["0/0/0/0", "0/0/0/0", "0/0/0/1", "0/0/1/1"],
+            ["0/0/1/1", "0/0/1/1", "0/0/1/1", "0/0/1/1"],
+            ["0/0/0/1", "./././.", "0/1/1/1", "1/1/1/1"],
+        ]
+        .iter()
+        .map(|row| row.iter().map(ToString::to_string).collect())
+        .collect();
+        let vcf = vcf_of(4, &rows);
+        let tetraploid = VcfOptions {
+            ploidy: 4,
+            ..VcfOptions::default()
+        };
+        let build = |options| match VcfReader::new(Cursor::new(vcf.clone()), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("the reader was not built: {error}"),
+        };
+        let mut first_pass = build(tetraploid);
+        let mut second_pass = build(tetraploid);
+        let result = the_pca_of_two_passes(&mut first_pass, &mut second_pass, &with_weights(3))
+            .expect("the analysis");
+        assert_eq!(result.num_rows, 4, "the individuals");
+        assert_eq!(result.num_cols, 4, "the variants the pass gave");
+        assert_eq!(result.num_comps, 3, "the components with variance");
+        assert_eq!(
+            result.used_cols,
+            vec![0, 1, 3],
+            "the variants that were used"
+        );
+        assert_close(
+            &result.projections,
+            &[
+                2.30350257852,
+                -0.45498666453,
+                -0.0168202039114,
+                0.603260051101,
+                0.692756790873,
+                -0.0540239409669,
+                -0.647570806465,
+                0.0576947878489,
+                0.143573693133,
+                -2.25919182316,
+                -0.295464914192,
+                -0.0727295482544,
+            ],
+            TOLERANCE,
+            "the projections of the tetraploid dataset",
+        );
+        assert_close(
+            &result.explained_variance_percent,
+            &[93.2778538477, 6.47960866887, 0.242537483385],
+            TOLERANCE,
+            "the percentages of the tetraploid dataset",
+        );
+        assert_close(
+            &result.princomps,
+            &[
+                0.590326503368,
+                -0.556614390531,
+                0.584546866962,
+                -0.327593824194,
+                -0.827089115324,
+                -0.45673392874,
+                -0.737697028442,
+                -0.0781281995539,
+                0.670596062218,
+            ],
+            TOLERANCE,
+            "the weights of the tetraploid dataset",
+        );
+    }
+
+    /// A source of no individual has nobody to place on the components,
+    /// and the standardizing would read the rows of its blocks in chunks
+    /// of no allele. No reader of popnei gives one, so the test builds it.
+    #[test]
+    fn a_source_of_no_individual_is_refused() {
+        let mut reader = OneBlock::of_no_individual();
+        let result = the_pca_of_the_variants(&mut reader, &NO_WEIGHTS);
+        assert!(matches!(result, Err(Error::PcaNoIndividual)), "{result:?}");
+        let message = Error::PcaNoIndividual.to_string();
+        assert!(message.contains("no individual"), "{message}");
+    }
+
+    /// A reader over one block that a test builds, for the sources no
+    /// reader of popnei gives.
+    struct OneBlock {
+        individuals: Vec<String>,
+        chroms: ChromTable,
+        block: Option<Block>,
+        needs: Needs,
+    }
+
+    impl OneBlock {
+        /// A source of no individual, whose one block holds one variant of
+        /// nobody.
+        fn of_no_individual() -> OneBlock {
+            OneBlock {
+                individuals: Vec::new(),
+                chroms: ChromTable::new(),
+                block: Some(Block {
+                    num_vars: 1,
+                    num_individuals: 0,
+                    ploidy: 2,
+                    gts: Vec::new(),
+                    chrom: None,
+                    pos: None,
+                    id: None,
+                    alleles: None,
+                    qual: None,
+                }),
+                needs: Needs::ALL,
+            }
+        }
+    }
+
+    impl BlockReader for OneBlock {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.block.take())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            2
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// A run of genotypes that all have one dosage fills the counter of a
+    /// byte: a run holds 255 genotypes, which is the longest run a byte
+    /// counts without wrapping, and 255 genotypes of one dosage is what
+    /// counts to 255.
+    ///
+    /// 260 individuals, the first 255 of the genotype `1/1` and the last
+    /// five of `0/0`: the allele 1 was called 510 times and the allele 0
+    /// ten, so the major allele is 1 and the dosages are 0 for the 255 and
+    /// 2 for the five. The mean is 0.0384615384615 and the deviation
+    /// 0.274670324175, which are python 3.13's of 22 September 2026; a
+    /// counter that wrapped at the 256th genotype of a dosage would give
+    /// another mean.
+    #[test]
+    fn a_run_of_one_dosage_fills_the_counter_of_a_byte() {
+        let mut gts: Vec<i8> = Vec::new();
+        for _ in 0..255 {
+            gts.extend_from_slice(&[1, 1]);
+        }
+        for _ in 0..5 {
+            gts.extend_from_slice(&[0, 0]);
+        }
+        let num_individuals = 260;
+        let mut scratch = RowScratch::of(num_individuals);
+        let mut row = vec![0.0; num_individuals];
+        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+            .expect("the standardizing of the row");
+        assert!(used, "the variant has variance");
+        let of_each_dosage = [
+            row.first().copied().expect("the first individual"),
+            row.get(255).copied().expect("the first of the dosage 2"),
+        ];
+        assert_close(
+            &of_each_dosage,
+            &[-0.140028008403, 7.14142842854],
+            TOLERANCE,
+            "the standardized dosages of a full run",
         );
     }
 
@@ -3153,6 +3500,10 @@ mod tests {
     /// genotype whose alleles are both missing, one with one allele, one
     /// where every individual is heterozygous, and one of the alleles 0
     /// and 2 with a half called genotype.
+    ///
+    /// Only the test of the two ways of reading the rows of a block uses
+    /// it, and that test is of the targets that have threads.
+    #[cfg(not(target_family = "wasm"))]
     const THE_WORKED_GENOTYPES: [i8; 50] = [
         0, 0, 0, 1, 1, 1, 0, 0, 0, 1, //
         1, 1, 1, 1, 0, 1, -1, -1, 1, 1, //
@@ -3165,6 +3516,11 @@ mod tests {
     /// another, which is what WebAssembly does, give the same values and
     /// leave the same variants out: no row reads another and each one
     /// writes its own values.
+    ///
+    /// It is a test of the targets that have threads. In WebAssembly the
+    /// two are one function, and a test there would compare it with
+    /// itself.
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn the_rows_read_on_threads_are_the_rows_read_one_after_another() {
         // Twenty copies of the five variants, so that the threads have
