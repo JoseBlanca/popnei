@@ -89,8 +89,11 @@ names, `{pop1: ["a", "b"]}`, and the errors are an `Error` at the call.
 The binding crate hands the names to the core, which looks each one up
 among `individuals()` of the outermost reader of the chain, once the chain
 of the pass is built, and holds for each population the indices of its
-individuals in the order the user gave them. The lookup is one hash map
-of name to index, built once per pass.
+individuals in the order the user gave them. The lookup builds one hash
+map of name to index for each population, since "The Rust interface" has
+`from_names` resolve each population with `resolve_individuals` of
+`docs/specs/filters.md`, which builds its own: 30 ms for 300 populations
+of 10000 individuals, once per pass.
 
 ### How it is verified
 
@@ -374,17 +377,25 @@ The histogram counts of the unbiased expected heterozygosity are the one
 exception. The two libraries reach that value by different arithmetic:
 popnei multiplies the k factors of each of its terms one over another,
 `(c_a / c) · ((c_a - 1) / (c - 1))` at k = 2, and pyNei multiplies the
-plain value by `c / (c - 1)`. The two agree to the last bit or the one
-before it and not always to the last, so a variant whose value lies on an
-edge of the histogram falls on either side of it. Two of them do, both
-measured on 22 September 2026 with the default histogram of 40 bins from
-0 to 1. `var235` of `many.vcf`, at the position 9695, with no `pops`, has
-the allele counts 55 and 45 of its 100 called alleles, whose unbiased
-value is exactly 0.5; popnei gives 0.5 and pyNei 0.4999999999999999, so
-popnei counts it in the bin that starts at 0.5 and pyNei in the one
-below. `var0978` of the panel in `p2` has 106 and 54 of 160, whose value
-is exactly 0.45; popnei gives 0.45000000000000007 and pyNei
-0.44999999999999996, one on each side of the edge 0.45. So the counts of
+plain value by `c / (c - 1)`. Over every split of a biallelic variant up
+to 500 called alleles, the two differ by 2.84e-16 at most, at the counts
+3 and 476 of 479, and by up to 252 units in the last place, at the counts
+1 and 269 of 270, measured on 22 September 2026 by computing both ways in
+float64; the 1e-9 the comparison below allows rests on the absolute
+bound. A variant whose value lies on an edge of the histogram falls on
+either side of it, and seven variant and population pairs of the two
+datasets do, all measured on 22 September 2026 with the default histogram
+of 40 bins from 0 to 1. `var235` of `many.vcf`, at the position 9695,
+with no `pops`, has the allele counts 55 and 45 of its 100 called
+alleles, whose unbiased value is exactly 0.5; popnei gives 0.5 and pyNei
+0.4999999999999999, so popnei counts it in the bin that starts at 0.5 and
+pyNei in the one below. `var0978` of the panel in `p2` has 106 and 54 of
+160, whose value is exactly 0.45; popnei gives 0.45000000000000007 and
+pyNei 0.44999999999999996, one on each side of the edge 0.45. The other
+five are in `popA` of `many.vcf`, each with the allele counts 21 and 15
+of 36 and the same 0.5 against 0.4999999999999999: `var242`, the variant
+after it, at the position 9991 and with no id, `var422`, `var428` and
+`var466`. So the counts of
 that one statistic are compared allowing the variants whose value lies
 within 1e-9 of an edge to fall on either side of it, which the test
 counts from pyNei's own per variant values, and the counts of the other
