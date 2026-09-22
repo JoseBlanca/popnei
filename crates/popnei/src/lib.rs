@@ -20,6 +20,12 @@
 //! by a threshold, with the counts of what each filter was given and kept.
 //! The modules that calculate over blocks are being written, and
 //! `docs/architecture.md` has their order.
+//!
+//! The linear algebra those modules need, the products of matrices and
+//! the eigendecomposition, is not a module here but a crate beside this
+//! one, `popnei-linalg`, because the calls it makes to BLAS and LAPACK
+//! are `unsafe` and this crate forbids that. `docs/specs/linalg.md` says
+//! what it gives and which backend runs where.
 
 #![forbid(unsafe_code)]
 

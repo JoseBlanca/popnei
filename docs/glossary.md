@@ -182,11 +182,12 @@ Python module is `popnei._core`.
 
 **linalg crate.** `crates/popnei-linalg`, the linear algebra of popnei,
 its products and decompositions, with two backends behind one interface:
-BLAS and LAPACK natively and faer, a library written in Rust, in wasm. It
-is the one crate of popnei with `unsafe` in it, the calls to BLAS and
-LAPACK. The core crate calls it. `docs/specs/linalg.md`. Not used:
-backend for the crate itself, which is the word for each of its two
-libraries.
+BLAS and LAPACK natively, and faer, a library written in Rust, in wasm,
+where there is no BLAS, and natively too when the cargo feature `blas`
+of the crate is off. It is the one crate of popnei with `unsafe` in it,
+the calls to BLAS and LAPACK. The core crate calls it.
+`docs/specs/linalg.md`. Not used: backend for the crate itself, which is
+the word for each of its two libraries.
 
 **JavaScript binding crate.** `crates/popnei-js`, written with
 wasm-bindgen, the Rust tool that generates the JavaScript that calls the
