@@ -570,11 +570,33 @@ pub fn the_major_allele(counts: &AlleleCounts) -> i8 {
         .0
 }
 
+/// The major allele frequency of the variant `counts` were counted for,
+/// over its `called_alleles` called alleles, and `None` when it has none.
+///
+/// It is the largest of the counts of the alleles over the called alleles,
+/// the frequency that `docs/specs/filters.md` defines for `filter_by_maf`
+/// and verifies against bcftools at any ploidy, and it is one division of
+/// the two counts as `f64`. The filter by that frequency and the dosages
+/// of the r² of `docs/specs/ld.md` both read it here, so that popnei
+/// gives one number for the frequency of a variant wherever it is asked
+/// for.
+///
+/// `counts` is what [`count_alleles`] left for one variant and
+/// `called_alleles` what it gave back.
+#[must_use]
+pub fn the_major_allele_frequency(counts: &AlleleCounts, called_alleles: u32) -> Option<f64> {
+    if called_alleles == 0 {
+        return None;
+    }
+    let largest = counts.iter().copied().max().unwrap_or(0);
+    Some(f64::from(largest) / f64::from(called_alleles))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AlleleCounts, ChromTable, GtCounts, MAX_ALLELE, MISSING_ALLELE, Needs, count_alleles,
-        count_gts, the_major_allele,
+        count_gts, the_major_allele, the_major_allele_frequency,
     };
     use crate::error::Error;
 
@@ -901,5 +923,29 @@ mod tests {
         // A variant of which no allele was called has no major allele.
         count_alleles(&[-1, -1], &mut counts).unwrap();
         assert_eq!(the_major_allele(&counts), MISSING_ALLELE);
+    }
+
+    /// The major allele frequency of a variant is the largest of the
+    /// counts of its alleles over its called alleles, the frequency
+    /// `docs/specs/filters.md` defines, and `None` for a variant with no
+    /// called allele.
+    #[test]
+    fn the_major_allele_frequency_is_the_largest_count_over_the_called_alleles() {
+        let mut counts: AlleleCounts = [0; 128];
+        // Four diploid individuals, `0/0`, `0/1`, `1/2` and `./.`: of the
+        // six called alleles three are the 0, two the 1 and one the 2.
+        let called = count_alleles(&[0, 0, 0, 1, 1, 2, -1, -1], &mut counts).unwrap();
+        assert_eq!(called, 6);
+        assert_eq!(the_major_allele_frequency(&counts, called), Some(0.5));
+
+        // A variant every individual was called the same allele at has a
+        // frequency of 1, and one with no called allele has none.
+        let called = count_alleles(&[0, 0, 0, 0], &mut counts).unwrap();
+        assert_eq!(the_major_allele_frequency(&counts, called), Some(1.0));
+        let called = count_alleles(&[-1, -1], &mut counts).unwrap();
+        assert_eq!(
+            (called, the_major_allele_frequency(&counts, called)),
+            (0, None)
+        );
     }
 }

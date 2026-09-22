@@ -23,7 +23,9 @@ use std::fmt;
 
 use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, ChromTable, Needs, count_alleles, count_gts};
+use crate::variant::{
+    AlleleCounts, ChromTable, Needs, count_alleles, count_gts, the_major_allele_frequency,
+};
 
 /// How many variants a filter was given and how many of them it kept, over
 /// every block it has taken since it was built.
@@ -558,11 +560,12 @@ fn keeps(
         }
         VarFilteringCriterion::MaxMaf(_) => {
             let called_alleles = count_alleles(gts, counts)?;
-            if called_alleles == 0 {
+            let Some(frequency) = the_major_allele_frequency(counts, called_alleles) else {
+                // A variant with no called allele has no major allele
+                // frequency, and this filter drops it.
                 return Ok(false);
-            }
-            let largest = counts.iter().copied().max().unwrap_or(0);
-            f64::from(largest) / f64::from(called_alleles)
+            };
+            frequency
         }
         VarFilteringCriterion::MaxObsHet(_) => {
             let gt_counts = count_gts(gts, ploidy)?;

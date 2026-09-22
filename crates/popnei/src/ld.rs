@@ -28,7 +28,10 @@ use popnei_linalg::product;
 
 use crate::block::Block;
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_major_allele};
+use crate::variant::{
+    AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_major_allele,
+    the_major_allele_frequency,
+};
 
 /// The most values one of the matrices of [`LdDosages`] holds, the variants
 /// it was built over times the individuals.
@@ -773,20 +776,6 @@ fn the_genotypes_of(
             None => genotype.fill(MISSING_ALLELE),
         }
     }
-}
-
-/// The major allele frequency of the variant `counts` were counted for,
-/// over its `called_alleles` called alleles, and `None` when it has none.
-///
-/// It is one division of the two counts as `f64`, as
-/// `docs/specs/filters.md` has it, so that popnei gives one number for the
-/// frequency wherever it is read.
-fn the_major_allele_frequency(counts: &AlleleCounts, called_alleles: u32) -> Option<f64> {
-    if called_alleles == 0 {
-        return None;
-    }
-    let largest = counts.iter().copied().max().unwrap_or(0);
-    Some(f64::from(largest) / f64::from(called_alleles))
 }
 
 /// The three values of each individual at one variant, and whether the
