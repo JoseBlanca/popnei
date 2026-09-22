@@ -46,6 +46,13 @@ const POLY_THRESHOLD: &str = "polyThreshold";
 const BIN_TYPE: &str = "binType";
 const BIN_TYPE_IN_THE_CORE: &str = "bin_type";
 
+/// The name of the argument that says what the allele frequencies of the
+/// two expected heterozygosities are raised to, as a TypeScript user writes
+/// it, and the name the core gives that number, which it calls the ploidy
+/// when it is the variants' own.
+const PLOIDY: &str = "ploidy";
+const THE_EXPONENT_IN_THE_CORE: &str = "exponent";
+
 /// The arguments of one pass, as they crossed from TypeScript.
 ///
 /// The package has checked that each of them is of the type the core takes,
@@ -115,11 +122,9 @@ pub(crate) fn per_var_distribs_of(
     let of_the_variants = source.ploidy();
     let obs_het = ObsHet::new(asked.min_num_individuals);
     let maf = Maf::new(of_the_variants, asked.min_num_individuals)?;
-    let exp_het = ExpHet::of_the_exponent_asked_for(
-        asked.ploidy,
-        of_the_variants,
-        asked.min_num_individuals,
-    )?;
+    let exp_het =
+        ExpHet::of_the_exponent_asked_for(asked.ploidy, of_the_variants, asked.min_num_individuals)
+            .map_err(under_its_name)?;
     // Every statistic of the pass counts its values in these bins, so their
     // edges are the result's and are kept here, where the bins themselves go
     // on to the core.
@@ -330,16 +335,36 @@ fn for_javascript(count: u64, statistic: PerVarStat) -> Result<u32, JsPopneiErro
 /// `error`, with what a user wrote under the name they wrote it in.
 ///
 /// The core names the major allele frequency below which a variant is
-/// polymorphic by what it is for, and the kind of the bins of a histogram
-/// `bin_type`, which is what a Python user writes it as. What a TypeScript
-/// user has to look at is the call they wrote, `polyThreshold` and
-/// `binType`, and this crate is what knows those names.
+/// polymorphic by what it is for, the kind of the bins of a histogram
+/// `bin_type`, which is what a Python user writes it as, and what the
+/// allele frequencies are raised to the exponent of a statistic of one
+/// variant. What a TypeScript user has to look at is the call they wrote,
+/// `polyThreshold`, `binType` and `ploidy`, and this crate is what knows
+/// those names.
+///
+/// The other number the core refuses as an exponent is the ploidy of the
+/// variants, which a user never writes: a reader refuses a ploidy of 0 or
+/// above 255 when the file is opened.
 fn under_its_name(error: popnei::Error) -> JsPopneiError {
     if let popnei::Error::PolyThresholdOutOfRange { value } = error {
         return JsPopneiError::Threshold {
             name: POLY_THRESHOLD,
             threshold: value,
         };
+    }
+    if let popnei::Error::StatPloidyOutOfRange {
+        kind: THE_EXPONENT_IN_THE_CORE,
+        value,
+        largest,
+    } = error
+    {
+        return JsPopneiError::Refused(format!(
+            "`{PLOIDY}` is {value}, and it is 1 at least and {largest} at most, the \
+             largest ploidy a reader of popnei gives: it is what the allele frequencies \
+             of the two expected heterozygosities are raised to, and how many copies \
+             the unbiased one draws, which is the ploidy of the variants when it is not \
+             given"
+        ));
     }
     if matches!(error, popnei::Error::HistBinsOfAnUnknownKind { .. }) {
         // The core writes the name of the argument once, at the start of

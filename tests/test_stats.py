@@ -652,6 +652,21 @@ def test_per_var_distribs_refuse_a_range_that_is_not_two_ends() -> None:
         calc_per_var_distribs(_many(), hist_kwargs={"range": 1})
 
 
+def test_per_var_distribs_refuse_a_ploidy_that_no_statistic_is_raised_to() -> None:
+    """`ploidy` is what the allele frequencies of the two expected
+    heterozygosities are raised to, 1 at least and 255 at most, the largest
+    ploidy a reader gives, and the message names the argument the user
+    wrote, where the core names the exponent of a statistic of one
+    variant."""
+    for ploidy in (0, 256):
+        with pytest.raises(ValueError, match=f"`ploidy` is {ploidy}"):
+            calc_per_var_distribs(
+                _many(),
+                min_num_individuals=MANY_MIN_NUM_INDIVIDUALS,
+                ploidy=ploidy,
+            )
+
+
 def test_per_var_distribs_refuse_a_poly_threshold_that_is_no_frequency() -> None:
     """A major allele frequency lies between 0 and 1, so a threshold outside
     that makes every variant polymorphic or none."""

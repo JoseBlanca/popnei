@@ -570,6 +570,25 @@ test("a key of histKwargs that popnei does not know is refused", () => {
   variants.free();
 });
 
+test("a ploidy that no statistic is raised to is refused under its name", () => {
+  // The core calls that number the exponent of a statistic of one variant,
+  // and the argument the user wrote is `ploidy`: a message about an
+  // exponent names nothing they can look at.
+  const variants = theFirstVariant();
+
+  for (const ploidy of [0, 256]) {
+    assert.throws(
+      () => calcPerVarDistribs(variants, { pops: { p0: P0 }, ploidy }),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes(`\`ploidy\` is ${ploidy}`) &&
+        error.message.includes("255"),
+    );
+  }
+
+  variants.free();
+});
+
 test("a kind of bins that is neither of the two is refused under its name", () => {
   // The core knows the two kinds and names the argument `bin_type`, which
   // is what a Python user writes; a TypeScript user wrote `binType`, and

@@ -42,6 +42,14 @@ use crate::steps::{Steps, chain_of};
 /// writes it.
 const MIN_NUM_INDIVIDUALS: &str = "min_num_individuals";
 
+/// The name of the argument that says what the allele frequencies of the
+/// two expected heterozygosities are raised to, as a Python user writes it.
+const PLOIDY: &str = "ploidy";
+
+/// The name the core gives that number, which is the ploidy of the variants
+/// when the user asks for no other and which it calls `ploidy` there.
+const THE_EXPONENT_IN_THE_CORE: &str = "exponent";
+
 /// The distribution of one statistic on its way to Python: the mean of each
 /// population, NaN where no variant of that population had a value, and the
 /// histogram counts as bins x populations.
@@ -115,8 +123,8 @@ pub(crate) fn calc_per_var_distribs<'py>(
         .transpose()?;
     let obs_het = ObsHet::new(min_num_individuals);
     let maf = Maf::new(of_the_variants, min_num_individuals)?;
-    let exp_het =
-        ExpHet::of_the_exponent_asked_for(exponent, of_the_variants, min_num_individuals)?;
+    let exp_het = ExpHet::of_the_exponent_asked_for(exponent, of_the_variants, min_num_individuals)
+        .map_err(under_its_name)?;
     let poly_threshold = threshold_of("poly_threshold", poly_threshold)?;
     // Every statistic of the pass counts its values in these bins, so their
     // edges are the result's and are kept here, where the bins themselves
@@ -252,6 +260,33 @@ fn the_min_num_individuals(value: &Bound<'_, PyAny>) -> Result<u32, PyPopneiErro
         }
         Err(_) => Err(PyTypeError::new_err(no_count_of_genotypes(value)).into()),
     }
+}
+
+/// `error`, with the exponent of the two expected heterozygosities under
+/// the name a Python user wrote it in.
+///
+/// The core calls that number the exponent of a statistic of one variant,
+/// and what a user has to look at is the `ploidy` of the call they wrote.
+/// The other number the core refuses under the same case, the ploidy of the
+/// variants, is one a user never writes: a reader refuses a ploidy of 0 or
+/// above 255 when the file is opened.
+fn under_its_name(error: popnei::Error) -> PyPopneiError {
+    if let popnei::Error::StatPloidyOutOfRange {
+        kind: THE_EXPONENT_IN_THE_CORE,
+        value,
+        largest,
+    } = error
+    {
+        return PyValueError::new_err(format!(
+            "`{PLOIDY}` is {value}, and it is 1 at least and {largest} at most, the \
+             largest ploidy a reader of popnei gives: it is what the allele frequencies \
+             of the two expected heterozygosities are raised to, and how many copies \
+             the unbiased one draws, which is the ploidy of the variants when it is not \
+             given"
+        ))
+        .into();
+    }
+    PyPopneiError::Core(error)
 }
 
 /// What a `min_num_individuals` that is no count of called genotypes is
