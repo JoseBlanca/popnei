@@ -469,7 +469,7 @@ both in it.
 
 **Tasks.**
 
-- [ ] 6.1 The measurement and its report, with the machine and the load
+- [x] 6.1 The measurement and its report, with the machine and the load
   average as `docs/reports/filters-measurement.md` gives them, and the
   paragraph of "Speed". From "Speed" of the stats spec. Serves
   deliverable 1. It changes no code of the library.
