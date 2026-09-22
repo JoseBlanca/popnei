@@ -406,10 +406,47 @@ dosages are 1 2 0 0 2, pyNei and R give 4 components of which the last has
 a percentage of 1e-31 or less, and popnei gives 3, whose numbers are in
 `worked3.r.*.tsv`.
 
-The literals of the two tables and of `worked3` are checked at
+Every fixture above is diploid, and a dosage is how many alleles of a
+genotype are not the major one at any ploidy, so one tetraploid case is
+checked as well: 4 individuals and 4 variants, with the genotypes below.
+Its numbers are numpy 2.5.3's, by the route of "What both analyses
+compute" on the dosages of "What it gives", worked out on 22 September
+2026; pyNei gives no tetraploid reference, since `do_pca_from_variants`
+of a tetraploid `Variants` is not among its tests.
+
+| variant | genotypes | major allele | dosages |
+|---|---|---|---|
+| 0 | 0/0/0/0 0/0/1/1 0/1/1/1 1/1/1/1 | 1 | 4 2 1 0 |
+| 1 | 0/0/0/0 0/0/0/0 0/0/0/1 0/0/1/1 | 0 | 0 0 1 2 |
+| 2 | 0/0/1/1 0/0/1/1 0/0/1/1 0/0/1/1 | 0 | left out |
+| 3 | 0/0/0/1 ./././. 0/1/1/1 1/1/1/1 | 1 | 3 none 1 0 |
+
+The first variant alone, standardized, is 1.52127765851,
+0.169030850946, -0.507092552837 and -1.18321595662: its mean is 1.75 over
+its four called genotypes and its standard deviation sqrt(2.1875). The
+third variant has one dosage among its called genotypes and is left out,
+and the fourth has a genotype with every allele missing. The result has
+3 components and the used variants 0, 1 and 3:
+
+| | PC0 | PC1 | PC2 |
+|---|---|---|---|
+| i0 | 2.30350257852 | -0.45498666453 | -0.0168202039114 |
+| i1 | 0.603260051101 | 0.692756790873 | -0.0540239409669 |
+| i2 | -0.647570806465 | 0.0576947878489 | 0.143573693133 |
+| i3 | -2.25919182316 | -0.295464914192 | -0.0727295482544 |
+| explained_variance_percent | 93.2778538477 | 6.47960866887 | 0.242537483385 |
+| weight of variant 0 | 0.590326503368 | -0.556614390531 | 0.584546866962 |
+| weight of variant 1 | -0.327593824194 | -0.827089115324 | -0.45673392874 |
+| weight of variant 3 | -0.737697028442 | -0.0781281995539 | 0.670596062218 |
+
+The literals of the three tables and of `worked3` are checked at
 `pca_of_variants` of "The Rust interface", on a reader over blocks that
-the test builds, once with `num_prin_comps` 3 and once with 0. No function
-under it is pinned by a test.
+the test builds, once with `num_prin_comps` 3 and once with 0. Two things
+that `pca_of_variants` hides are pinned below it: the standardizing of one
+row, which the dosages of `test_mat012` and of the tetraploid variant
+above are asserted on, and the size of the blocks, which `reblock` puts
+back to the size popnei chooses before the passes see them, so the passes
+are given the sizes to compare directly.
 
 Against pyNei, in pytest, at `do_pca_from_variants`: both libraries on
 `sim_missing.vcf` and on `worked.vcf`, the first 10 components of the
