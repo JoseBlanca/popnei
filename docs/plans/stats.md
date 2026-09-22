@@ -116,6 +116,12 @@ retain_individuals resolve_individuals IndividualsReader --list`;
 Tasks run one after another unless the plan says that two can run side
 by side: every task builds the same workspace in the same worktree.
 
+A task whose failure would be silent, a wrong number and not a crash or
+a failing test, has a commit of its own and names the deliverables that
+guard it: the checks whose literals or comparisons would fail if that
+number were wrong, so that the commit that moved a number can be found
+later.
+
 ## Work package 1: the steps of a pass as one enum
 
 **What it gives.** Nothing a user sees. The chain of a pass is built
@@ -134,7 +140,8 @@ result: every test that exists passes untouched.
    where they call the two functions.
 2. Both binding crates keep their steps as `PassStep`. Check: `grep -rn
    "VarFilteringCriterion" crates/popnei-python/src crates/popnei-js/src`
-   finds it only where a threshold filter is built from its argument;
+   finds the criterion of a threshold filter only where one is built
+   from its argument;
    `uv run pytest` 174 passed and `npm test` 126 passed, untouched.
 
 **What it stands on.** The specs.
@@ -147,10 +154,11 @@ result: every test that exists passes untouched.
   `crates/popnei-python/src/steps.rs` and its counterpart in
   `crates/popnei-js/src/steps.rs` become the core's `PassStep`, or hold
   one. From "The Rust interface" of `docs/specs/filters.md`, the
-  paragraph "The steps of a pass" and the two functions after it, with
-  the `KeepIndividuals` variant declared and refused by `chain_of` as
-  not built yet, in the error of the crate for a defect of popnei, until
-  work package 2. Serves deliverables 1 and 2.
+  paragraph "The steps of a pass" and the two functions after it. The
+  variant `KeepIndividuals`, the step of the filter of individuals, is
+  declared here and built in work package 2; until then `chain_of` gives
+  an error for it, of the kind that marks a defect of popnei, since no
+  user can add that step yet. Serves deliverables 1 and 2.
 
 **What could go wrong.** The error of a second filter of one kind
 carries two thresholds today, `Error::VarFilterOfAKindThatIsSet` of
@@ -182,7 +190,9 @@ after it in the steps counts over the three.
    `resolve_individuals`; at `next_block` over a `VcfReader` on
    `many.vcf`, blocks of 3 individuals with the three names in the order
    of the argument, the genotypes of each being the column of the
-   source, 500 variants and an empty `filtering_stats`; the missing data
+   source, 500 variants and an empty `filtering_stats`, the counts of
+   the filters of the chain that `pass_stats.filtering` is built from;
+   the missing data
    filter at 0 over it giving 423 variants with the five positions
    first and the counts 500 and 423, and under it 26; and `chain_of`
    building the reader from a `KeepIndividuals` step and refusing a
@@ -191,7 +201,9 @@ after it in the steps counts over the three.
    passes, where today the file is not there, with the comparison with
    pyNei of "How it is verified", column by name, the 423 with the
    missing data filter after it and its `pass_stats.filtering` of one
-   entry, and every test of the step the same part names: `steps`,
+   entry, `pass_stats` being the counts of the pass that every result
+   and every `iter_blocks` carries, and every test of the step the same
+   part names: `steps`,
    `individuals` and `num_individuals` after the call, and the four
    `ValueError`s.
 4. TypeScript. Check: `npm test` gives 0 failed and
@@ -353,7 +365,10 @@ polymorphism ratio, with `pass_stats`; in TypeScript,
   builds the chain with `chain_of`, the `Pops` with `Pops::from_names`
   against the individuals of that chain, runs the pass and gives back
   the distributions and the counts of the pass, as the writer of
-  `vars.rs` does; `PerVarStat`, `StatsDistrib`, `PolyVarsStats`,
+  `crates/popnei-python/src/vars.rs` does, which builds the chain, runs
+  its pass inside one call of the core and reads the counts from the
+  chain afterwards; `PerVarStat`, the enum of the five statistics,
+  `StatsDistrib`, `PolyVarsStats`,
   `PerVarDistribs` and `calc_per_var_distribs` in
   `python/popnei/stats.py`, exported from `popnei`; and the tests of
   deliverable 3 in `tests/test_stats.py`. From "In Python and in
@@ -401,8 +416,9 @@ individual, with `pass_stats`; in TypeScript, `calcPerIndividualStats`.
    runs the `s000` and `s001` literals through `calcPerIndividualStats`.
 
 **What it stands on.** Work package 2, for the comparison after a filter
-of individuals, and nothing of work packages 3 and 4: it can run side by
-side with them in a worktree of its own, and after them in the plan's.
+of individuals, and nothing of work packages 3 and 4. In the plan's
+worktree it runs after them; an orchestrator with a second worktree
+could run it beside them, since they touch different files.
 
 **Tasks.**
 
