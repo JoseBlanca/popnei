@@ -45,3 +45,15 @@ module to `lib.rs` of the core, cases to its error enum, an export to
 function to each binding crate, which are the files work packages 2 and
 3 of this plan change too, so the two branches meet there at the merge.
 The subagent of task 1.4 used 91183 tokens.
+
+Task 1.1, the crate with the BLAS backend, is at ad170a2: the crate
+with its `Error`, the three functions, the checks of the arguments in
+`lib.rs` and the four calls of BLAS and LAPACK in `src/blas.rs`, each
+`unsafe` block with its `SAFETY` comment and an `#[expect(unsafe_code)]`
+that the workspace lint table takes without a change. `cargo test -p
+popnei-linalg` `19 passed`, 16 of which failed against the stubs before
+the code. One choice the spec did not state, that `product` takes a
+`rows` of 0 and writes nothing, as the self product does, because the
+second pass of the PCA gives such a matrix for a block whose rows all
+had no variance, goes into the spec with task 1.2. The subagent used
+144815 tokens.

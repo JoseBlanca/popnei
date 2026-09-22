@@ -116,7 +116,7 @@ and `gemm` 0.19, all on crates.io on 22 September 2026.
 
 Tasks:
 
-- [ ] 1.1 The crate with the BLAS backend: `crates/popnei-linalg` in the
+- [x] 1.1 The crate with the BLAS backend: `crates/popnei-linalg` in the
       workspace, its `Error`, the three functions of "The Rust interface"
       and the checks of dimensions and finiteness of "Errors", on the
       routines that "Layout, half and the backends" names, each `unsafe`
