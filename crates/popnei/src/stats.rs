@@ -2325,10 +2325,13 @@ mod fixtures {
     /// A reader of the tests that gives the blocks it was built with, which
     /// is how the worked examples of the spec reach the pass: five diploid
     /// individuals named `i1` to `i5`, the individuals of both worked
-    /// examples.
+    /// examples, unless the test asks for others.
     #[derive(Debug)]
     pub(super) struct GivenBlocks {
         individuals: Vec<String>,
+        /// The ploidy it says its source has, which is the ploidy of the
+        /// blocks it gives.
+        ploidy: usize,
         chroms: ChromTable,
         /// The blocks it has not given yet, the next one last.
         left: Vec<Block>,
@@ -2343,14 +2346,31 @@ mod fixtures {
             self.needs
         }
 
-        /// The reader over `blocks`, which it gives in their order.
+        /// The reader over `blocks`, which it gives in their order, of the
+        /// five diploid individuals of the worked examples.
         pub(super) fn of(blocks: Vec<Block>) -> GivenBlocks {
+            GivenBlocks::of_a_source_of(5, 2, blocks)
+        }
+
+        /// The same reader over a source of `num_individuals` individuals,
+        /// named `i1` to `iN`, of the ploidy `ploidy`, which is what it says
+        /// its source has: a test of a pass over a ploidy that is not 2, and
+        /// a test of what a pass does with a block that is not of the
+        /// individuals or of the ploidy of its reader.
+        pub(super) fn of_a_source_of(
+            num_individuals: usize,
+            ploidy: usize,
+            blocks: Vec<Block>,
+        ) -> GivenBlocks {
             let mut chroms = ChromTable::new();
             chroms.intern("chr1");
             let mut left = blocks;
             left.reverse();
             GivenBlocks {
-                individuals: (1..=5).map(|number| format!("i{number}")).collect(),
+                individuals: (1..=num_individuals)
+                    .map(|number| format!("i{number}"))
+                    .collect(),
+                ploidy,
                 chroms,
                 left,
                 needs: Needs::ALL,
@@ -2368,7 +2388,7 @@ mod fixtures {
         }
 
         fn ploidy(&self) -> usize {
-            2
+            self.ploidy
         }
 
         fn chroms(&self) -> &ChromTable {
@@ -4306,6 +4326,7 @@ mod distribs {
 mod per_individual {
     use super::fixtures::{GivenBlocks, THE_SIX_VARIANTS, blocks_of, vcf_reader};
     use super::{PerIndividualStats, calc_per_individual_stats};
+    use crate::block::Block;
     use crate::error::Error;
     use crate::variant::Needs;
 
@@ -4462,6 +4483,50 @@ mod per_individual {
             "the missing rate of i5 is {missing_rate}, and it is 1"
         );
         assert_eq!(found.obs_het_rate(4), None, "the heterozygosity rate of i5");
+    }
+
+    /// The genotypes of a row are cut by the ploidy the reader says its
+    /// source has, and not by 2: the rows of a tetraploid block hold four
+    /// alleles of each individual.
+    ///
+    /// The two variants of the three tetraploid individuals are
+    /// `0/0/0/0 0/0/1/1 ./././.` and `1/1/1/1 0/1/0/1 0/0/0/.`, so i1 is
+    /// called and homozygous at both, i2 called and heterozygous at both,
+    /// and i3 missing at both, the second of them a half called genotype.
+    /// Cut by 2 the same rows would read the first six alleles as the
+    /// genotypes of the three individuals, which gives i2 no heterozygous
+    /// genotype and i3 one, and no missing genotype at all.
+    #[test]
+    fn the_rows_of_a_tetraploid_block_are_cut_by_the_ploidy_of_its_reader() {
+        let of_three_tetraploid_individuals = Block {
+            num_vars: 2,
+            num_individuals: 3,
+            ploidy: 4,
+            gts: vec![
+                0, 0, 0, 0, 0, 0, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 0, -1,
+            ],
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of_a_source_of(3, 4, vec![of_three_tetraploid_individuals]);
+        let found =
+            calc_per_individual_stats(&mut reader).expect("the statistics of a tetraploid block");
+
+        assert_eq!(found.num_individuals(), 3);
+        assert_eq!(found.num_vars(), 2);
+        assert_the_numbers_of(&found, 0, (0, 0), (0.0, 0.0), "i1 of the tetraploid block");
+        assert_the_numbers_of(&found, 1, (0, 2), (0.0, 1.0), "i2 of the tetraploid block");
+        assert_eq!(found.num_missing(2), 2, "the missing genotypes of i3");
+        assert_eq!(found.num_het(2), 0, "the heterozygous genotypes of i3");
+        let missing_rate = found.missing_rate(2);
+        assert!(
+            (missing_rate - 1.0).abs() <= OF_A_PRINTED_RATE,
+            "the missing rate of i3 is {missing_rate}, and it is 1"
+        );
+        assert_eq!(found.obs_het_rate(2), None, "the heterozygosity rate of i3");
     }
 
     /// A pass over a source that holds no variant is refused, with the
