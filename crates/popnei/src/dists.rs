@@ -208,10 +208,20 @@ impl KosmanBits {
                     // be dropped here while its variant counted as called
                     // for the pair, which is a wrong number and no message,
                     // so it is an error and not a genotype read without it.
+                    #[expect(
+                        clippy::unnecessary_lazy_evaluations,
+                        reason = "building the error eagerly writes it to the stack and \
+                                  calls its out of line drop on the success path of this \
+                                  loop, once for every allele of the block, which a \
+                                  profile of 100000 variants of 1000 diploid individuals \
+                                  had at 10.3 in 100 of the CPU on one thread; the \
+                                  closure moves both into the `None` arm, which no block \
+                                  that got past the check of the smallest allele reaches"
+                    )]
                     let place = usize::try_from(allele)
                         .ok()
                         .and_then(|value| alleles.place.get(value).copied())
-                        .ok_or(Error::AlleleBelowTheMissingOne { allele })?;
+                        .ok_or_else(|| Error::AlleleBelowTheMissingOne { allele })?;
                     // The set of the allele and the count is below k * A,
                     // since the place of the allele among the alleles of
                     // the block is below A and the copies are the ploidy at
