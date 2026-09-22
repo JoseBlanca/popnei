@@ -56,10 +56,14 @@ export function wholeNumberOfOneOrMore(
  * `value` when it is a whole number of 0 or more that the core holds, and an
  * `Error` that names `argument` and what was given otherwise.
  *
- * It is how many components the weights are asked for that comes through
- * here, and 0 is the call that asks for none: a negative number would
- * arrive as a count of about four thousand million, which the generated
- * code makes of it, and be read as more components than any dataset has.
+ * Two arguments come through here. `numPrinComps`, how many components the
+ * weights are asked for, where 0 is the call that asks for none: a negative
+ * number would arrive as a count of about four thousand million, which the
+ * generated code makes of it, and be read as more components than any
+ * dataset has. And `minNumSnps`, how many variants a pair of individuals
+ * needs before it gets a distance, where 0 is every pair that was called at
+ * all, and a negative number is refused, where pyNei takes one and does with
+ * it what it does with 0.
  *
  * @throws {Error} When `value` is not such a number.
  */

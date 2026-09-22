@@ -339,19 +339,29 @@ calculation. `ruff format` and `ruff check` clean.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo wasm-check
 uv run ruff format --check && uv run ruff check
 uv run maturin develop && uv run pytest
 ```
 
-The three cargo commands run for every change. The two Python ones run
+The four cargo commands run for every change. The two Python ones run
 from the moment the binding crate and the package exist, also for a change
 in the core alone, because the pytest tests are the ones that compare with
 pyNei. A layer that does not exist yet is reported as not there, not as
 passed.
 
+`cargo wasm-check` compiles the core for the two wasm targets with the
+lints denied, and it takes seconds. It is in the list because a change
+behind `cfg(not(target_family = "wasm"))` leaves the other side
+uncompiled by the three commands above: on 22 September 2026 the
+parallel building of the sets of bits of the `dists` module left a
+constant that only the native side uses, and the wasm build warned about
+it in a commit whose other checks were green.
+
 When the change touches what wasm builds differently, threads, the linear
 algebra backend, a dependency, the wasm wheel is built as well, with the
-steps the walking skeleton leaves in the repository.
+steps the walking skeleton leaves in the repository, and so is the
+package of TypeScript, `npm run build && npm test` in `js/popnei`.
 
 Report what each command printed when it failed and that it passed when it
 passed. Speed is not claimed without a measurement, with the dataset and

@@ -462,6 +462,74 @@ pub enum Error {
         problem: crate::pca::VariantsTooLarge,
     },
 
+    /// The reader a calculation was given had no variant, and there is
+    /// nothing to calculate over: its source holds none, or the filters of
+    /// the pass kept none. `calc_kosman_sums` of `docs/specs/dists.md`
+    /// gives it when the first block it asks for is not there.
+    ///
+    /// Which of the two it was, and how many variants each filter of the
+    /// pass was given and kept, is what the binding crate adds: it holds
+    /// the chain of readers and reads the counts from it, as "A pass that
+    /// was not finished" of `docs/specs/filters.md` says, and the core does
+    /// not have them.
+    #[error("the reader gave no variant, and a calculation needs 1 variant at least")]
+    ReaderGaveNoVariants,
+
+    /// The distances of that many individuals need more memory than the
+    /// machine gives: popnei keeps two `u32` for every pair of them, which
+    /// is 8 bytes times the pairs, 400 MB for 10000 individuals, and the
+    /// machine did not give them. The individuals are those the reader says
+    /// its source has, so the memory is asked for once, when the first
+    /// block arrives.
+    #[error(
+        "the distances of {num_individuals} individuals are {num_pairs} pairs, and this machine did not give the memory of the two counts popnei keeps for each pair, 8 bytes a pair; calculate over fewer individuals"
+    )]
+    DistancesOfTooManyIndividuals {
+        /// How many individuals the source has.
+        num_individuals: usize,
+        /// How many pairs they make, which a `usize` holds: the
+        /// individuals whose pairs are more than one counts are refused by
+        /// [`Error::MorePairsThanAreCounted`] before the memory is asked
+        /// for.
+        num_pairs: usize,
+    },
+
+    /// The distances of that many individuals are more pairs than this
+    /// machine counts, so popnei cannot give each pair a place, whatever
+    /// memory there is: it holds the two counts of the pairs in one vector,
+    /// in the order of the distance vector, and a place in a vector is a
+    /// `usize`. A `usize` is 64 bits natively and 32 in wasm, where 92682
+    /// individuals make 4294930221 pairs and 92683 make more than one
+    /// counts.
+    #[error(
+        "the distances of {num_individuals} individuals are more pairs than this machine counts: popnei gives each pair a place among the others, and a place is counted in a usize, which holds {largest} here; calculate over fewer individuals",
+        largest = usize::MAX
+    )]
+    MorePairsThanAreCounted {
+        /// How many individuals the source has.
+        num_individuals: usize,
+    },
+
+    /// The sums the Kosman distances are worked out from do not fit in a
+    /// `u32`. popnei keeps, for each pair of individuals, the ploidy times
+    /// the sum of d and how many variants both of them were called at, and
+    /// the first is at most the ploidy times the second. So it takes more
+    /// than 4295 million variants of the ploidy 1, and 2147 million of the
+    /// ploidy 2, in one block or over a whole pass.
+    #[error(
+        "the Kosman distances of {num_vars} variants of the ploidy {ploidy} add up, for a pair of individuals, beyond the {largest} that popnei keeps for a pair: it keeps the ploidy times the sum of the distances of the pair, which is at most the ploidy times the variants; calculate over fewer variants",
+        largest = u32::MAX
+    )]
+    KosmanSumsTooLarge {
+        /// The variants whose distances were being added: the variants of
+        /// the block when the sets of bits of that block are built, and the
+        /// variants the pass has read so far, that block's among them, when
+        /// a block is added to the sums of the pass.
+        num_vars: u64,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

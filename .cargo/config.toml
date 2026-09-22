@@ -45,4 +45,30 @@ PYO3_BUILD_EXTENSION_MODULE = "1"
 # is exactly that. The flag is given to this command alone, with `--config`,
 # so that a warning of a native build stays a warning while the code is being
 # written.
-wasm-check = "check -p popnei -p popnei-linalg --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets --config build.rustflags=[\"-D\",\"warnings\"]"
+#
+# The `--config` names the rustflags of each target and not `build.rustflags`
+# because the sections below set the rustflags of those two targets, and
+# cargo takes the ones of a target in place of `build.rustflags` and does not
+# join them: with `build.rustflags` the deny was read by nothing and this
+# command went on printing warnings and exiting 0. So each `--config` here
+# carries `+simd128` as well, and a flag added to a target below is added
+# here too.
+wasm-check = "check -p popnei -p popnei-linalg --target wasm32-unknown-unknown --target wasm32-unknown-emscripten --all-targets --config target.wasm32-unknown-unknown.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"] --config target.wasm32-unknown-emscripten.rustflags=[\"-C\",\"target-feature=+simd128\",\"-D\",\"warnings\"]"
+
+# popnei runs in the browsers that have the vector instructions of
+# WebAssembly, which goal 3 of docs/objectives.md sets as its floor: Chrome
+# and Edge from 91, Firefox from 89, Safari from 16.4 and node from 16.4.
+# `sums_of_two` of the dists module counts the bits of a pair sixteen bytes
+# at a time with them, behind `cfg(target_feature = "simd128")`, and without
+# this flag that path is not compiled and the scalar loop is.
+#
+# It is set here, and not in the command that builds each wheel, so that the
+# wasm package, the wheel of pyodide and `cargo wasm-check` all get it: a
+# build that had it and a build that had not would differ in the one thing
+# the floor was set for. `RUSTFLAGS` in the environment replaces these, so a
+# build that sets it has to carry the flag itself.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+
+[target.wasm32-unknown-emscripten]
+rustflags = ["-C", "target-feature=+simd128"]

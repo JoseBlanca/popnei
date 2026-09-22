@@ -22,6 +22,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
+use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::errors::JsPopneiError;
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
@@ -114,6 +115,24 @@ impl VarsSource {
             num_prin_comps,
             steps,
         )
+    }
+
+    /// The Kosman distance of every pair of individuals over the variants
+    /// of the file that the steps of `steps` keep, with no distance for a
+    /// pair called at fewer than `min_num_vars` variants, and the counts of
+    /// the pass that gave them.
+    ///
+    /// # Errors
+    ///
+    /// When the pass gives no variant, when the sums of a pair go above
+    /// what a `u32` holds, when the memory of the tab does not take the two
+    /// counts of every pair, and when the file cannot be read.
+    pub fn calc_pairwise_kosman_dists(
+        &self,
+        min_num_vars: u32,
+        steps: Steps,
+    ) -> Result<KosmanDistances, JsPopneiError> {
+        kosman_dists_of(self, min_num_vars, steps)
     }
 }
 

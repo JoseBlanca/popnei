@@ -9,6 +9,7 @@
 
 use pyo3::prelude::*;
 
+mod dists;
 mod errors;
 mod pca;
 mod source;
@@ -68,6 +69,8 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
 
+    #[pymodule_export]
+    use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
     #[pymodule_export]

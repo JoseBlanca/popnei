@@ -11,7 +11,8 @@ variants held as arrays that the variants flow in, and the view here is a
 view into one. It also covers the `Variants` handle that a Python or a
 TypeScript user holds, and the counts of one variant, of its genotypes and
 of its alleles, which the filters of `docs/specs/filters.md` are the first
-to use. The other row helpers of the module, the dosages and the missing
+to use, and the `Variants` that is built from an array of genotypes in
+memory. The other row helpers of the module, the dosages and the missing
 and het masks of one variant, are items that are not written yet.
 
 There is code, built from the first version of this spec, which had a
@@ -231,6 +232,95 @@ called, 1 missing and 1 heterozygous; a ploidy of 0, and genotypes whose
 length is not a multiple of the ploidy, are errors; and an allele of -2 is
 an error in both.
 
+## A `Variants` from an array of genotypes
+
+Added on 22 September 2026 with the first calculation, the Kosman
+distances between individuals of `docs/specs/dists.md`, and left out of
+the plan of that calculation the same day by the owner, whose tests run
+on small VCF files instead. It has no code and no plan; it waits for a
+user who has genotypes in memory.
+
+### What it gives
+
+The variants of an array of genotypes that the user has in memory, as a
+`Variants` that takes steps and is given to consumers like one that came
+from a file. It is for genotypes that were simulated or that came from
+another library, and for the tests, which give the same small array to
+pyNei and to popnei.
+
+### Its Python function
+
+```python
+Variants.from_gt_array(gts: numpy.ndarray,
+                       individuals: Sequence[str]) -> Variants
+```
+
+`gts` is an array of integers of variants x individuals x ploidy, an
+allele in each cell, 0 to 127, and -1 for a missing one. `individuals` has
+one name for each individual, in the order of the second axis. The
+`Variants` has no step when it is built.
+
+It mirrors `Variants.from_gt_array` of `pynei/variants.py`. The
+differences:
+
+- The second argument is `individuals` and not `samples`, the word of the
+  glossary.
+- There is no `vars_info`, the frame with the chromosome, the position and
+  the other fields of each variant. The blocks of these variants have the
+  genotypes and no other column, and a consumer that needs one fails with
+  the error that names the field, as "Fields that were not asked for, and
+  sources that lack one" says; `iter_blocks` depends on none, so its
+  blocks have `None` for the chromosomes and the positions its default
+  `fields` asks for; and `write_vars` writes a file without the columns,
+  as `docs/specs/io_vars.md` says. It comes with the first test that
+  needs positions, those of the LD.
+- A numpy masked array is a `ValueError`. pyNei takes what it masks as
+  missing; nothing in popnei gives or takes masked arrays, and a user who
+  has one writes `gts.filled(-1)`.
+- A value below -1 or above 127 is a `ValueError` that says where it is.
+  pyNei's `Genotypes` keeps any integer.
+- An array of no individuals is a `ValueError`, which pyNei takes: every
+  source of popnei refuses one, as `docs/specs/block.md` says.
+
+As in pyNei, an array that is not of integers or not of three dimensions,
+a name that is there twice, and a number of names that is not the size of
+the second axis are each a `ValueError`. So is a ploidy, the size of the
+third axis, of 0 or above 255, the bounds of `open_vcf`.
+
+The array is copied once, as int8, when the `Variants` is built, so what
+the user does to their array afterwards changes nothing. An array of no
+variants is accepted, and the spec of each calculation says what it does
+with a `Variants` that has none. It is a third source of the binding
+crate, beside the VCF and the vars file, and where those name their path,
+in the `repr` of the `Variants` and in the errors of a pass over it, this
+one says "an array of 7 variants x 3 individuals"; the `repr` has its
+steps after that, as for the other two.
+
+In TypeScript it is `Variants.fromGtArray(gts, individuals, ploidy)`, with
+`gts` an `Int8Array` of the alleles in the same order. An `Int8Array` has
+no shape, so the ploidy is given and the number of variants follows from
+the length, and a length that is not a multiple of individuals x ploidy is
+an error.
+
+### How it runs
+
+Every pass opens a reader over the copy, which gives blocks of the size it
+is asked for, or of `default_num_vars_per_block`, each one a new copy of
+its rows, because a reader gives its blocks away, and the chain of
+`docs/specs/filters.md` is built over it as over any source. The memory
+is the array as int8 and a block.
+
+### How it is verified
+
+A pytest test builds a `Variants` from an array of 7 variants, 3
+individuals and ploidy 2 with a missing allele in it, and `iter_blocks`
+with `fields=()` and `num_vars_per_block=3` gives blocks of 3, 3 and 1
+variants whose genotypes, joined, are the array, with a `pass_stats` of 7
+variants and no filter; the same array through pyNei's `from_gt_array` gives chunks
+with those genotypes. One test for each `ValueError` above. A cargo test,
+at `GtArraySource::reader`: 10 variants asked for in blocks of 4 come in
+blocks of 4, 4 and 2 that pass `Block::check` and hold the rows in order.
+
 ## The Rust interface
 
 The missing allele and the largest allele a genotype can hold.
@@ -346,9 +436,43 @@ pub type AlleleCounts = [u32; 128];
 pub fn count_alleles(gts: &[i8], counts: &mut AlleleCounts) -> Result<u32>;
 ```
 
+The genotypes of an array in memory, and the reader over them. The source
+checks the values and the sizes once, when it is built, and `reader` can
+be called any number of times, once for each pass. Its errors are new
+cases of the error of the crate, each a `ValueError` in Python: a length
+that is not a whole number of variants, with the length and individuals x
+ploidy; an allele below the missing one, with the variant and the
+individual it is at; a ploidy of 0 or above 255; no individuals; and a
+name that is there twice, with the name. The ploidy and the individuals
+are checked before the length is divided by them.
+
+```rust
+pub struct GtArraySource { /* private */ }
+impl GtArraySource {
+    /// `gts` is variants x individuals x ploidy, C order.
+    pub fn new(gts: Vec<i8>, individuals: Vec<String>, ploidy: usize)
+        -> Result<GtArraySource>;
+    pub fn num_vars(&self) -> usize;
+    /// A reader from the first variant. `None` asks for the size of
+    /// `default_num_vars_per_block`.
+    pub fn reader(&self, num_vars_per_block: Option<usize>) -> Result<GtArrayReader>;
+}
+
+/// It implements BlockReader. Its ChromTable is empty and its
+/// filtering_stats are none.
+pub struct GtArrayReader { /* private */ }
+```
+
+The reader shares the array with its source, behind an `Arc`, so that it
+is `Send` as `BlockReader` asks and a `Variants` given to two consumers
+copies the array once and not once per pass. `set_needs` with the
+genotypes not asked for gives blocks with an empty `gts`, as "Fields that
+were not asked for, and sources that lack one" says.
+
 The error of the crate. Each module adds its cases to one enum, marked
 `non_exhaustive`, and `Result<T>` is `std::result::Result<T, Error>`.
-This module adds four cases. Three are of the counts of one variant: a
+Besides the five of the array of genotypes above, this module adds four
+cases. Three are of the counts of one variant: a
 ploidy of 0 or genotypes that are not a whole number of genotypes of that
 ploidy; an allele below the missing one; and a variant of more alleles
 than a count of them holds, which is its own case because the other two
@@ -387,6 +511,5 @@ that a reader fills.
   them: with the first statistic per population, in the `stats` spec.
 - `Block`, the `BlockReader` trait that everything that gives variants
   implements, and `reblock`: `docs/specs/block.md`.
-- A `Variants` built from an array of genotypes, pyNei's
-  `Variants.from_gt_array`: with the first calculation whose tests need
-  it.
+- The `vars_info` of pyNei's `Variants.from_gt_array`, the other fields of
+  the variants of an array: with the first test that needs positions.

@@ -5,7 +5,8 @@ under node. popnei is installed in it as a wheel whose platform tag is
 `pyemscripten`, built from the same core crate and the same binding crate
 as the native wheel, and what this directory checks is that the wheel
 builds, that it installs, and that inside pyodide popnei answers with the
-version of the core and reads a VCF as the specs say it does.
+version of the core, reads a VCF and calculates on it as the specs say it
+does.
 
 From the root of the repository, from a clean checkout:
 
@@ -14,7 +15,7 @@ From the root of the repository, from a clean checkout:
     node tests/pyodide/smoke.mjs
 
 The first command prints the path of the wheel it left in `dist/`. The
-third takes that wheel, installs it in pyodide and checks four things, and
+third takes that wheel, installs it in pyodide and checks five things, and
 exits with an error naming each one that differs:
 
 - `popnei.__version__` is the version in `[workspace.package]` of the
@@ -45,6 +46,16 @@ exits with an error naming each one that differs:
   `ValueError` of a block the machine has not the memory for. The same case
   is in `js/popnei/test/open.test.ts`, under node, where a count of things
   is 64 bits and nothing is refused for its size.
+- `popnei.calc_pairwise_kosman_dists` gives the three distances of the
+  diploid worked example of "How it is verified" of `docs/specs/dists.md`,
+  4 variants of 3 individuals, written as a VCF into the file system of
+  emscripten and opened with `open_vcf`: 1 over 4, 5 over 6 and 2 over 6,
+  compared exactly, since the calculation divides those two whole numbers
+  once and a division is rounded the same in JavaScript as in Rust. It
+  checks with them the names of the three individuals and the 4 variants
+  the pass took, and that with `min_num_snps=3` the pair that was called
+  at 2 variants has no distance and the other two keep theirs. The same
+  example, with the same VCF, is a pytest test of `tests/test_dists.py`.
 
 Neither `dist/` nor `node_modules/` is in git.
 
@@ -134,10 +145,13 @@ asks micropip for a file of that file system instead of a package of an
 index. It writes the two VCFs there as well, under `/vcf`, because
 `open_vcf` takes a path and opens it, as it does natively.
 
-Neither micropip nor numpy is in the npm package of pyodide: the first run
-downloads both from the CDN of pyodide and caches them under
-`node_modules/`, so that first run needs the network and the later ones do
-not. The whole test takes 1.2 s on the owner's Mac once they are cached.
+Neither micropip, nor numpy, nor pandas is in the npm package of pyodide:
+the first run downloads the three of them, and the python-dateutil, the pytz
+and the six that pandas brings with it, from the CDN of pyodide and caches
+them under `node_modules/`, so that first run needs the network and the
+later ones do not. The whole test takes 2.3 s on the owner's Mac once they
+are cached, where it took 1.2 s before pandas was loaded into pyodide and
+the distances were checked.
 
 A block is a run of consecutive variants of a source, held as arrays, and
 it is how the genotypes leave popnei: they arrive in a numpy array of
@@ -146,3 +160,11 @@ is loaded. pyodide 314.0.7 brings numpy 2.4.6, which is what `dependencies`
 of `pyproject.toml` asks for and what the `numpy` crate 0.29 of the binding
 crate was compiled against; the version the test prints is the one that
 answered.
+
+pandas has to be loaded before popnei as well: `popnei/dists.py` imports it
+when popnei is imported, to build the square matrix of a `Distances` out of
+the vector of distances. The `dependencies` of `pyproject.toml` ask for
+`pandas>=3.0.2`, the pandas that pyodide 314.0.7 ships, because micropip
+refuses a wheel that asks for more than pyodide has, so micropip installs
+it with the wheel. The test loads it from pyodide itself, as it does numpy,
+which is what says which pandas answered.

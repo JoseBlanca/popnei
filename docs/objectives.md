@@ -60,6 +60,19 @@ in a browser tab.
    with the memory a tab has. Whether the wasm package gets threads later
    is an open question of `docs/rust_core.md`.
 
+   The browsers popnei runs in are those that have the vector
+   instructions of WebAssembly, the ones that work on sixteen bytes at a
+   time, which its calculations use: Chrome and Edge from 91, of May
+   2021, Firefox from 89, of June 2021, and Safari from 16.4, of March
+   2023, which on an iPhone or an iPad means iOS 16.4, every browser
+   there being WebKit whatever its name; outside the browser, node from
+   16.4, of June 2021. The owner set that floor on 22 September 2026,
+   when the performance review of the Kosman distances asked for those
+   instructions, and it is the first minimum popnei writes down. The
+   option not taken was to ship the wasm package twice, with and without
+   them, and pick at load: that keeps every browser and doubles the
+   bytes of the package.
+
 4. **Fast where it matters.** A VCF parsed at the speed of compiled tools,
    per variant work in fused passes over the genotypes with rayon across
    records, and the linear algebra on the system BLAS natively and on

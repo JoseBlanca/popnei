@@ -102,6 +102,19 @@ component, components x variants, a field of the result of a PCA under
 the name pyNei gives it. "Weight" in prose. Not used: loading, rotation,
 which is R's word.
 
+**Kosman distance.** The distance between two individuals of Kosman and
+Leonard (2005): at a variant, the alleles of the two genotypes that do
+not pair with an equal allele of the other, over the ploidy, which for
+diploids is 0 for the same genotype, 1 for two genotypes with no allele
+in common and 0.5 otherwise, averaged over the variants at which both
+genotypes are called. `docs/specs/dists.md`.
+
+**distance vector.** The distances of every pair of N individuals or
+populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
+(1, 2), ..., the upper triangle of the square matrix row by row.
+`dist_vector` in identifiers, as in pyNei. Not used: condensed matrix,
+the name scipy gives the same order.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`

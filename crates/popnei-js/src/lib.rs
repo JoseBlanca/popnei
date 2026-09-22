@@ -19,6 +19,7 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+pub mod dists;
 pub mod errors;
 pub mod pca;
 pub mod source;

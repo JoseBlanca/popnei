@@ -8,11 +8,14 @@ the result objects an application uses. What the package exports today is
 crate, `openVcf`, which reads the header of a VCF held as bytes and
 gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
 by block, `writeVars`, which gives back the bytes of a vars file with every
-variant of a `Variants`, and `openVars`, which opens such bytes as another
-`Variants`. A vars file is one arrow IPC file, also called feather v2,
+variant of a `Variants`, `openVars`, which opens such bytes as another
+`Variants`, and `calcPairwiseKosmanDists`, which gives the Kosman distance
+of every pair of individuals of a `Variants` in a `Distances`.
+A vars file is one arrow IPC file, also called feather v2,
 which pandas, R and polars open as a table with no popnei installed: it is
 where a user keeps their variants once the VCF has been read. Each of the
-two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
+three consumers, `iterBlocks`, `writeVars` and `calcPairwiseKosmanDists`,
+gives back the counts of the
 pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
 a step, a method of the `Variants` that `steps` then lists, and there are
@@ -24,8 +27,8 @@ genotypes divided by its called ones.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
-`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md` and
-`docs/specs/filters.md` say what they give.
+`docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
+`docs/specs/filters.md` and `docs/specs/dists.md` say what they give.
 
 ## Building it
 
@@ -223,6 +226,17 @@ file, and then opens twelve passes over it at once and asks that they
 grow the memory by less than one copy of it, which a reader that copied
 the bytes for each pass would not.
 
+## Where it runs
+
+The package needs the vector instructions of WebAssembly, the ones that
+work on sixteen bytes at a time, which popnei's calculations use, so it
+runs in Chrome and Edge from 91, of May 2021, Firefox from 89, of June
+2021, Safari from 16.4, of March 2023, and node from 16.4, of June 2021.
+On an iPhone or an iPad that means iOS 16.4, since every browser there is
+WebKit whatever its name. An older browser fails when the module is
+loaded, not with a wrong number. Goal 3 of `docs/objectives.md` has the
+decision and the option that was not taken.
+
 ## node and a page, from one build
 
 wasm-bindgen generates its JavaScript for one environment at a time, its
@@ -360,6 +374,39 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+The first calculation over such a handle is the Kosman distance of every
+pair of individuals, `docs/specs/dists.md`:
+
+```ts
+import { calcPairwiseKosmanDists, init, openVcf } from "popnei";
+
+await init();
+const variants = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
+try {
+  // A pair called at fewer than 100 variants gets no distance, and is NaN
+  // in the vector; without `minNumSnps` every pair called at one variant
+  // at least gets one.
+  const distances = calcPairwiseKosmanDists(variants, { minNumSnps: 100 });
+  // The distance of every pair, in the order (0, 1), (0, 2), ..., (1, 2),
+  // ...: 19900 values for the 200 individuals of that file.
+  console.log(distances.distVector.length, distances.distVector[0]);
+  // The names of the individuals, in the order the source has them, and
+  // the counts of the pass the distances were calculated over.
+  console.log(distances.names[0], distances.passStats.numVars);
+  // The same distances as the 200 x 200 matrix, row by row, with 0 on the
+  // diagonal: the distance of the individuals i and j is at i * 200 + j.
+  console.log(distances.squareDists().length);
+} finally {
+  variants.free();
+}
+```
+
+It reads the source once, through the filters that are on the `Variants`,
+and leaves it as it was, so the same handle goes to the next calculation.
+A pass that gives no variant is an `Error` that says whether the source
+held none or the steps kept none, with how many variants each filter was
+given and kept.
+
 A file written here is larger than the same one written by popnei outside
 the browser: `many.vcf` of `tests/reference/vcf/`, every variant of it in
 batches of 100, is 53650 bytes written in wasm and 49426 bytes written
@@ -374,8 +421,9 @@ an `Error` that says what was given: a `source` that is not a
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
 of the five columns, a `variants` that is not what `openVcf` or `openVars`
-gave, and a threshold of a filter that is not a number, which a call with
-no threshold gives. Whether that number is one a filter takes, from 0 to 1,
+gave, a `minNumSnps` that is not a whole number of 0 or more and at most
+4294967295, which a negative one is, and a threshold of a filter that is
+not a number, which a call with no threshold gives. Whether that number is one a filter takes, from 0 to 1,
 is a rule of the core, which holds for the threshold of every pass and not
 of that call alone; an `Error` of it names the argument the user wrote and
 the value as they wrote it, `95` and not `95.0`. A second filter of a kind

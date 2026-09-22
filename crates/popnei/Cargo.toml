@@ -75,6 +75,15 @@ harness = false
 name = "filter_vars"
 harness = false
 
+# How long the Kosman distance of every pair of individuals takes, of the
+# performance review of docs/specs/dists.md, against the 0.97 s on one
+# thread and the 0.38 s on 18 cores of "Speed" of that spec. It takes the
+# path of a vars file and the runs on its command line and prints one wall
+# time per run, so it runs without a harness, as the three above do.
+[[bench]]
+name = "kosman_dists"
+harness = false
+
 # How long the principal component analysis of the variants of a file
 # takes, of work package 4 of docs/plans/pca.md, against the 0.3 s of
 # "Speed" of docs/specs/pca.md. It takes the path of a VCF or of a vars
