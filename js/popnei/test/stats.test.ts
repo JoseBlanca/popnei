@@ -570,6 +570,29 @@ test("a key of histKwargs that popnei does not know is refused", () => {
   variants.free();
 });
 
+test("a kind of bins that is neither of the two is refused under its name", () => {
+  // The core knows the two kinds and names the argument `bin_type`, which
+  // is what a Python user writes; a TypeScript user wrote `binType`, and
+  // that is the call they have to look at. `lineal` is how pyNei spells the
+  // bins of equal width, and popnei refuses it as any other unknown name.
+  const variants = theFirstVariant();
+
+  assert.throws(
+    () =>
+      calcPerVarDistribs(variants, {
+        pops: { p0: P0 },
+        histKwargs: { binType: "lineal" as unknown as "linear" },
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("`binType` is `lineal`") &&
+      error.message.includes("logarithmic") &&
+      !error.message.includes("bin_type"),
+  );
+
+  variants.free();
+});
+
 test("a pass that calculates no statistic at all is refused", () => {
   // A result holds the statistics that were asked for, and one that holds
   // none is a pass over the whole file for nothing.
