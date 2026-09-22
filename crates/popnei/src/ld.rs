@@ -872,6 +872,8 @@ mod tests {
         TheIndividualsThatDiffer, TheSumsOfThePairs, a_vector_of, r2_between, the_genotypes_of,
         the_memory_for, the_values_of,
     };
+    use popnei_linalg::Error as LinalgError;
+
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -1307,6 +1309,29 @@ mod tests {
         assert_eq!(MAX_ALLELES_OF_A_VARIANT, 94_906_265);
     }
 
+    /// A product of the r² that the linear algebra did not do says which
+    /// of the six sums it was and what the linear algebra said.
+    ///
+    /// Nothing of popnei reaches it: the values of the three matrices are
+    /// whole numbers and every dimension is checked where the dosages are
+    /// built, so what is left is a result of more values than the routines
+    /// of BLAS and LAPACK count in, which is 17 GB of r² that no machine
+    /// gives. So what is checked here is the text a user would read.
+    #[test]
+    fn a_product_the_linear_algebra_refused_says_which_of_the_six_sums_it_was() {
+        let message = Error::LdLinalg {
+            operation: "Σxy",
+            source: LinalgError::Dimension {
+                argument: "c",
+                expected: "2147483647 values at most".to_owned(),
+            },
+        }
+        .to_string();
+        assert!(message.contains("Σxy"), "{message}");
+        assert!(message.contains("2147483647 values at most"), "{message}");
+        assert!(message.contains("the argument c"), "{message}");
+    }
+
     #[test]
     fn a_matrix_this_machine_has_not_the_memory_for_is_an_error_and_not_the_end_of_the_process() {
         // The memory of every matrix of the r² is asked for with
@@ -1405,6 +1430,22 @@ mod tests {
                 "{what}: {sum} is {found} and not {expected}"
             );
         }
+    }
+
+    /// That the two cells of a pair hold the same r².
+    ///
+    /// r² is the same whichever variant of the pair comes first, and the
+    /// two cells come out of the same six sums the other way round, so
+    /// they are the same value and not two values within a tolerance.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the two cells of a pair are the same products of the same six whole numbers, taken in the other order"
+    )]
+    fn assert_the_r2_is_the_same(found: f64, back: f64, what: &str) {
+        assert!(
+            found == back || (found.is_nan() && back.is_nan()),
+            "{what}: it is {found} one way round and {back} the other"
+        );
     }
 
     /// That a matrix of r² holds the values expected, `None` for a pair
@@ -1506,6 +1547,33 @@ mod tests {
                 &format!("the pair of the variants {of_b} and {of_a}"),
             );
         }
+    }
+
+    /// Two sets that hold as many variants and are not the same dosages.
+    ///
+    /// The six products are taken for them, as for any two sets that are
+    /// not one set against itself, and the four of a set against itself
+    /// would give the pairs of v1 and v2 against v3 and v4 as
+    /// 0.413265306122449, 1.2, 2.938775510204082 and 0.64, two of them
+    /// above the 1 that an r² reaches at most: Σy and Σyy are the
+    /// transposes of Σx and Σxx only when both sets hold the same
+    /// variants, and here they hold different variants of the same
+    /// number.
+    #[test]
+    fn the_r2_of_two_sets_of_as_many_variants_that_are_not_the_same_set_is_that_of_their_pairs() {
+        let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        let first_two = dosages.rows(0, 2).expect("v1 and v2");
+        let next_two = dosages.rows(2, 2).expect("v3 and v4");
+        assert_the_matrix_is(
+            &the_r2_of(&first_two, &next_two),
+            &[
+                Some(0.7544642857142857),
+                None,
+                Some(0.6428571428571429),
+                None,
+            ],
+            "v1 and v2 against v3 and v4",
+        );
     }
 
     #[test]
@@ -1776,6 +1844,11 @@ mod tests {
     /// of one block.
     const NUM_VARS_OF_A_REFERENCE: usize = 500;
 
+    /// How many variants `tests/reference/ld/example.vcf` holds, the
+    /// worked example of "How it is verified" of `docs/specs/ld.md`: 5
+    /// variants of 6 diploid individuals.
+    const THE_VARS_OF_THE_EXAMPLE: usize = 5;
+
     /// How many pairs of two different variants 500 variants have, and how
     /// many of those of `ld.vcf.gz` plink2 gives an r² for and how many it
     /// gives NaN, from "How it is verified" of `docs/specs/ld.md`.
@@ -1802,15 +1875,15 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/vcf/many.vcf")
     }
 
-    /// One block with the 500 variants of the VCF at `path`, read as
-    /// diploid and with the variants that failed their FILTER among them,
-    /// which is what plink2 and pyNei were given.
-    fn the_whole_of(path: &Path, needs: Needs) -> Block {
+    /// One block with the `num_vars` variants of the VCF at `path`, read
+    /// as diploid and with the variants that failed their FILTER among
+    /// them, which is what plink2 and pyNei were given.
+    fn the_whole_of(path: &Path, needs: Needs, num_vars: usize) -> Block {
         let named = || path.display().to_string();
         let options = VcfOptions {
             ploidy: 2,
             only_passed: false,
-            num_vars_per_block: Some(NUM_VARS_OF_A_REFERENCE),
+            num_vars_per_block: Some(num_vars),
         };
         let mut reader = VcfReader::from_path(path, options)
             .unwrap_or_else(|error| panic!("{path}: {error}", path = named()));
@@ -1821,7 +1894,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{path}: it has no variant", path = named()));
         assert_eq!(
             block.num_vars,
-            NUM_VARS_OF_A_REFERENCE,
+            num_vars,
             "{path}: the first block is not the whole file",
             path = named()
         );
@@ -1900,7 +1973,11 @@ mod tests {
     /// the noise the tolerance allows for.
     #[test]
     fn every_pair_of_the_ld_dataset_is_the_r2_plink2_gives() {
-        let block = the_whole_of(&the_reference_path("ld.vcf.gz"), Needs::GTS | Needs::ID);
+        let block = the_whole_of(
+            &the_reference_path("ld.vcf.gz"),
+            Needs::GTS | Needs::ID,
+            NUM_VARS_OF_A_REFERENCE,
+        );
         let ids = block.id.clone().expect("the identifiers of the variants");
         let (rows, of_plink2) = the_matrix_of_plink2("ld");
         // plink2 writes the rows of its matrix in an order of its own,
@@ -1968,7 +2045,111 @@ mod tests {
                 *expected,
                 &format!("the pair of the variants {of_a} and {of_b}"),
             );
+            // The pairs above are the upper half of the matrix, so what
+            // ties the lower half to them is that the two cells of a pair
+            // hold the same r².
+            assert_the_r2_is_the_same(
+                *found,
+                of_the_pair(&matrix, NUM_VARS_OF_A_REFERENCE, *of_b, *of_a),
+                &format!("the pair of the variants {of_a} and {of_b}"),
+            );
         }
+        // The 68 variants of the dataset with no variance have NaN in
+        // their row, their column and their diagonal cell, which "Missing
+        // genotypes" of `docs/specs/ld.md` asks of this test, and each of
+        // the other 432 has an r² of exactly 1 against itself.
+        let rows = matrix.as_chunks::<NUM_VARS_OF_A_REFERENCE>().0;
+        let mut with_variance = 0_usize;
+        let mut without_variance = 0_usize;
+        for (var, row) in rows.iter().enumerate() {
+            let diagonal = row.get(var).copied().expect("the diagonal cell");
+            if dosages.has_variance(var) {
+                with_variance = with_variance.checked_add(1).expect("the variants counted");
+                assert_the_r2_is(diagonal, 1.0, &format!("the variant {var} against itself"));
+                continue;
+            }
+            without_variance = without_variance
+                .checked_add(1)
+                .expect("the variants counted");
+            assert!(
+                row.iter().all(|r2| r2.is_nan()),
+                "the variant {var} has no variance and its row is not all NaN"
+            );
+            assert!(
+                rows.iter()
+                    .all(|row| row.get(var).is_some_and(|r2| r2.is_nan())),
+                "the variant {var} has no variance and its column is not all NaN"
+            );
+        }
+        assert_eq!(
+            (with_variance, without_variance),
+            (432, 68),
+            "the variants of the dataset with variance and without it"
+        );
+    }
+
+    /// The worked example read from `tests/reference/ld/example.vcf` with
+    /// the VCF reader, against the matrix plink2 v2.0.0-a.7.7 wrote for
+    /// that same file and against the literals of "How it is verified" of
+    /// `docs/specs/ld.md`.
+    ///
+    /// The other tests of the example build its block by hand from the
+    /// table of the spec. This is what ties that table to the file plink2
+    /// was run on: the dosages of the block the reader gives are the ones
+    /// of the hand built block, and the r² of all 25 cells is plink2's.
+    #[test]
+    fn the_r2_of_the_example_vcf_is_the_one_plink2_gives_and_the_one_of_the_spec() {
+        let block = the_whole_of(
+            &the_reference_path("example.vcf"),
+            Needs::GTS | Needs::ID,
+            THE_VARS_OF_THE_EXAMPLE,
+        );
+        let ids = block.id.clone().expect("the identifiers of the variants");
+        let (rows, of_plink2) = the_matrix_of_plink2("example");
+        assert_eq!(
+            ids, rows,
+            "the variants of the VCF are not the rows of the matrix of plink2"
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        assert_eq!(
+            (dosages.num_vars(), dosages.num_individuals()),
+            (THE_VARS_OF_THE_EXAMPLE, 6)
+        );
+        // The block the other tests build by hand holds the genotypes of
+        // this file.
+        let by_hand = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
+        for var in 0..THE_VARS_OF_THE_EXAMPLE {
+            assert_eq!(
+                dosages_of(&dosages, var),
+                dosages_of(&by_hand, var),
+                "the dosages of the variant {var} of the file and of the block built by hand"
+            );
+        }
+        let matrix = the_r2_of(&dosages, &dosages);
+        assert_eq!(
+            matrix.len(),
+            of_plink2.len(),
+            "the two matrices are not as large"
+        );
+        for (at, (found, expected)) in matrix.iter().zip(&of_plink2).enumerate() {
+            match expected.is_nan() {
+                true => assert!(found.is_nan(), "the cell {at} is {found} and not NaN"),
+                false => assert_the_r2_is(*found, *expected, &format!("the cell {at}")),
+            }
+        }
+        // And the seven pairs of the table of the spec, the six with
+        // numbers and the one that holds the variant of one dosage.
+        for (of_a, of_b, _, expected) in THE_PAIRS_OF_THE_EXAMPLE {
+            assert_the_r2_is(
+                of_the_pair(&matrix, THE_VARS_OF_THE_EXAMPLE, of_a, of_b),
+                expected,
+                &format!("the pair of the variants {of_a} and {of_b} of the file"),
+            );
+        }
+        assert!(
+            of_the_pair(&matrix, THE_VARS_OF_THE_EXAMPLE, 0, 3).is_nan(),
+            "the pair of v1 and v4 of the file"
+        );
     }
 
     /// The dosages popnei reads from `tests/reference/vcf/many.vcf`
@@ -1985,7 +2166,7 @@ mod tests {
     /// dosages there.
     #[test]
     fn the_dosages_of_many_vcf_are_the_ones_pynei_gives() {
-        let block = the_whole_of(&many_vcf(), Needs::GTS);
+        let block = the_whole_of(&many_vcf(), Needs::GTS, NUM_VARS_OF_A_REFERENCE);
         // The file is the one the spec describes, so the comparison runs
         // over the genotypes that the rule for the major allele is about:
         // 54 of its 500 variants hold more than two alleles, and 257 of
