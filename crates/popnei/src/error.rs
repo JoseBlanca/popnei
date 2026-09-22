@@ -253,9 +253,27 @@ pub enum Error {
     DistancesOfTooManyIndividuals {
         /// How many individuals the source has.
         num_individuals: usize,
-        /// How many pairs they make, `num_individuals * (num_individuals -
-        /// 1) / 2`, or `usize::MAX` when that is more than a `usize` holds.
+        /// How many pairs they make, which a `usize` holds: the
+        /// individuals whose pairs are more than one counts are refused by
+        /// [`Error::MorePairsThanAreCounted`] before the memory is asked
+        /// for.
         num_pairs: usize,
+    },
+
+    /// The distances of that many individuals are more pairs than this
+    /// machine counts, so popnei cannot give each pair a place, whatever
+    /// memory there is: it holds the two counts of the pairs in one vector,
+    /// in the order of the distance vector, and a place in a vector is a
+    /// `usize`. A `usize` is 64 bits natively and 32 in wasm, where 92682
+    /// individuals make 4294930221 pairs and 92683 make more than one
+    /// counts.
+    #[error(
+        "the distances of {num_individuals} individuals are more pairs than this machine counts: popnei gives each pair a place among the others, and a place is counted in a usize, which holds {largest} here; calculate over fewer individuals",
+        largest = usize::MAX
+    )]
+    MorePairsThanAreCounted {
+        /// How many individuals the source has.
+        num_individuals: usize,
     },
 
     /// The sums the Kosman distances are worked out from do not fit in a
@@ -269,8 +287,10 @@ pub enum Error {
         largest = u32::MAX
     )]
     KosmanSumsTooLarge {
-        /// The variants whose distances were being added: those of the
-        /// block that was given, or those the pass has read so far.
+        /// The variants whose distances were being added: the variants of
+        /// the block when the sets of bits of that block are built, and the
+        /// variants the pass has read so far, that block's among them, when
+        /// a block is added to the sums of the pass.
         num_vars: u64,
         /// How many alleles the genotype of one individual holds.
         ploidy: usize,

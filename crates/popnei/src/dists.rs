@@ -90,10 +90,12 @@ impl KosmanBits {
         clippy::arithmetic_side_effects,
         reason = "the word of a variant and its bit are a division and a remainder by 64, \
                   which is not 0, and a shift by a remainder of 64, which is below the bits \
-                  of a u64; the place of an allele is below the ploidy, which is below the \
-                  alleles of the block, a number a usize holds; and the set of an allele and \
-                  a count, `allele * ploidy + copies - 1`, is 0 at least, since the copies \
-                  are 1 at least, and below `A * k`, since the allele is below A and the \
+                  of a u64; `at + 1`, how far into a genotype an allele is, is at most the \
+                  ploidy, which `block.check` above made at most the genotypes of the block, \
+                  their number being the variants times the individuals times the ploidy; \
+                  and the set of an allele and a count, `place * ploidy + copies - 1`, is 0 \
+                  at least, since the copies are 1 at least, and below `A * k`, since the \
+                  place of the allele among the A alleles of the block is below A and the \
                   copies are at most the ploidy, so its word is below the words of the \
                   `holds` sets of one individual, which were checked above to be a number a \
                   usize holds"
@@ -147,20 +149,13 @@ impl KosmanBits {
             return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
         }
 
-        let (smallest_allele, largest_allele) = smallest_and_largest_allele(&block.gts);
-        if smallest_allele < MISSING_ALLELE {
+        let alleles = alleles_of(&block.gts);
+        if alleles.smallest < MISSING_ALLELE {
             return Err(Error::AlleleBelowTheMissingOne {
-                allele: smallest_allele,
+                allele: alleles.smallest,
             });
         }
-        // The alleles of the block are one more than its largest allele.
-        // A block whose genotypes are all missing holds none, and it gets
-        // the sets of one allele, which no genotype sets a bit in: what
-        // that keeps is the `holds` sets of an individual from being no
-        // word at all.
-        let num_alleles = usize::try_from(largest_allele)
-            .map_or(0, |allele| allele.saturating_add(1))
-            .max(1);
+        let num_alleles = alleles.num_alleles;
 
         // A block of one variant at least has one word in a set at least.
         let words_per_set = NonZeroUsize::new(block.num_vars.div_ceil(VARS_PER_WORD))
@@ -197,26 +192,32 @@ impl KosmanBits {
                 if let Some(word) = called.get_mut(word_of_the_var) {
                     *word |= bit_of_the_var;
                 }
-                for (place, &allele) in genotype.iter().enumerate() {
+                for (at, &allele) in genotype.iter().enumerate() {
                     // The copies of this allele up to this place of the
                     // genotype: the m-th time the allele is met is the set
                     // of the genotypes that hold m copies of it or more.
                     let copies = genotype
                         .iter()
-                        .take(place + 1)
+                        .take(at + 1)
                         .filter(|&&other| other == allele)
                         .count();
-                    // The allele is 0 or more: a genotype with an allele
-                    // that was not called was left above, and an allele
-                    // below the missing one was refused before the loop.
-                    let Ok(allele) = usize::try_from(allele) else {
-                        continue;
-                    };
+                    // The allele is 0 or more and at most `MAX_ALLELE`: a
+                    // genotype with an allele that was not called was left
+                    // above, and an allele below the missing one was
+                    // refused before the loop. One that got past both would
+                    // be dropped here while its variant counted as called
+                    // for the pair, which is a wrong number and no message,
+                    // so it is an error and not a genotype read without it.
+                    let place = usize::try_from(allele)
+                        .ok()
+                        .and_then(|value| alleles.place.get(value).copied())
+                        .ok_or(Error::AlleleBelowTheMissingOne { allele })?;
                     // The set of the allele and the count is below k * A,
-                    // since the allele is below A and the copies are the
-                    // ploidy at most, so its word is below the words of
-                    // the `holds` sets of one individual.
-                    let set = allele * block.ploidy + copies - 1;
+                    // since the place of the allele among the alleles of
+                    // the block is below A and the copies are the ploidy at
+                    // most, so its word is below the words of the `holds`
+                    // sets of one individual.
+                    let set = place * block.ploidy + copies - 1;
                     if let Some(word) = holds.get_mut(set * words_per_set.get() + word_of_the_var) {
                         *word |= bit_of_the_var;
                     }
@@ -246,16 +247,13 @@ impl KosmanBits {
     /// The two numbers are the same for (i, j) and for (j, i). It gives
     /// `None` when the two are one individual and when either of them is
     /// not an individual of the block.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the calculation over a reader takes the pairs of a block a row of the \
-                      upper triangle at a time, and not one pair at a time; this is what the \
-                      tests that assert the two counts of one named pair call"
-        )
-    )]
-    pub(crate) fn sums_of_the_pair(&self, first: usize, second: usize) -> Option<(u32, u32)> {
+    ///
+    /// The calculation over a reader takes the pairs of a block a row of
+    /// the upper triangle at a time and never one pair at a time, so this
+    /// is compiled for the tests that assert the two counts of one named
+    /// pair and for nothing else.
+    #[cfg(test)]
+    pub(crate) fn sums_of_one_pair(&self, first: usize, second: usize) -> Option<(u32, u32)> {
         if first == second {
             return None;
         }
@@ -327,22 +325,73 @@ fn words_of(
     Ok(words)
 }
 
-/// The smallest and the largest allele of the genotypes, both
-/// [`MISSING_ALLELE`] when they are all missing or there are none.
+/// How many allele values a genotype of popnei can hold: 0 to
+/// [`MAX_ALLELE`](crate::variant::MAX_ALLELE), which is 127.
+const ALLELE_VALUES: usize = 128;
+
+/// The alleles the genotypes of one block hold, each with its place among
+/// them, and the smallest allele those genotypes hold.
+struct AllelesOfTheBlock {
+    /// Where each allele value from 0 to
+    /// [`MAX_ALLELE`](crate::variant::MAX_ALLELE) sits among the
+    /// alleles the block holds, counting from 0 in the order of the values:
+    /// in a block whose genotypes hold the alleles 0 and 127, the 0 is at 0
+    /// and the 127 at 1. A value no genotype holds is at 0, which no
+    /// genotype of the block looks up.
+    place: [usize; ALLELE_VALUES],
+    /// How many allele values the genotypes hold, and so how many sets of
+    /// each count each individual gets. It is 1 at least, also for a block
+    /// whose genotypes are all missing, so that the `holds` sets of an
+    /// individual are one word at least.
+    num_alleles: usize,
+    /// The smallest allele of the genotypes, [`MISSING_ALLELE`] when they
+    /// are all missing or there are none.
+    smallest: i8,
+}
+
+/// The alleles of the genotypes of a block, in one pass over them.
 ///
-/// The largest says how many alleles the block holds, and so how many sets
-/// each individual gets; the smallest is looked for in the same pass,
-/// because an allele below the missing one, which no reader of popnei
-/// gives, has no set of its own and would be counted as an allele that was
-/// called.
-fn smallest_and_largest_allele(gts: &[i8]) -> (i8, i8) {
+/// The sets of an individual cost in proportion to the alleles the block
+/// holds and not to the largest of their values, so the values are ranked:
+/// a block of 3000 variants of 1000 individuals with one variant of the
+/// alleles 0 and 127 would otherwise give every pair 10240 words to walk in
+/// the place of 160, and took 7.74 s where the same block with the allele 1
+/// in the place of the 127 takes 0.75 s.
+///
+/// The smallest allele is looked for in the same pass, because an allele
+/// below the missing one, which no reader of popnei gives, has no place
+/// among the alleles and would be counted as an allele that was called.
+fn alleles_of(gts: &[i8]) -> AllelesOfTheBlock {
+    let mut held = [false; ALLELE_VALUES];
     let mut smallest = MISSING_ALLELE;
-    let mut largest = MISSING_ALLELE;
     for &allele in gts {
         smallest = smallest.min(allele);
-        largest = largest.max(allele);
+        // An allele that was called is 0 to `MAX_ALLELE`, so it is one of
+        // the values of the table; the missing one and anything below it
+        // are not, and the smallest above is what reports them.
+        if let Ok(value) = usize::try_from(allele)
+            && let Some(held) = held.get_mut(value)
+        {
+            *held = true;
+        }
     }
-    (smallest, largest)
+    let mut place = [0; ALLELE_VALUES];
+    let mut num_alleles: usize = 0;
+    for (value, held) in held.iter().enumerate() {
+        if *held {
+            if let Some(place) = place.get_mut(value) {
+                *place = num_alleles;
+            }
+            // The places are as many as the values of the table at most,
+            // which is 128.
+            num_alleles = num_alleles.saturating_add(1);
+        }
+    }
+    AllelesOfTheBlock {
+        place,
+        num_alleles: num_alleles.max(1),
+        smallest,
+    }
 }
 
 /// The ploidy times the sum of d, and n, of the two individuals whose sets
@@ -406,11 +455,12 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
     // The two counts of every pair are asked of the machine once, when the
     // first block is there: at 10000 individuals they are 400 MB, which a
     // reader with no variant would have asked for and given back.
-    let Some(mut block) = reader.next_block()? else {
+    let Some(block) = reader.next_block()? else {
         return Err(Error::ReaderGaveNoVariants);
     };
     let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
-    loop {
+    let mut next = Some(block);
+    while let Some(block) = next.take() {
         // Every variant of the block counts here, called in a pair or not:
         // `num_vars` is what a user reads as the variants of the pass. A
         // `usize` is 64 bits natively and 32 in wasm, so the conversion
@@ -422,10 +472,12 @@ pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<Kosma
             .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
         let bits = KosmanBits::of_block(&block)?;
         add_the_block(&mut sums, &bits)?;
-        let Some(next) = reader.next_block()? else {
-            break;
-        };
-        block = next;
+        // The sets of the block and the block itself are given back before
+        // the reader is asked for the next one, so that the memory of two
+        // blocks and of two sets of bits is never held at once.
+        drop(bits);
+        drop(block);
+        next = reader.next_block()?;
     }
     Ok(sums)
 }
@@ -460,18 +512,19 @@ impl KosmanSums {
     ///
     /// # Errors
     ///
-    /// When the machine does not give the memory of the pairs, 8 bytes
-    /// each. It is asked for with `try_reserve_exact`, which gives it back
-    /// as an error where `vec![(0, 0); n]` would end the process.
+    /// When the individuals make more pairs than a `usize` counts, and when
+    /// the machine does not give the memory of the pairs, 8 bytes each. The
+    /// memory is asked for with `try_reserve_exact`, which gives it back as
+    /// an error where `vec![(0, 0); n]` would end the process.
     fn at_zero(num_individuals: usize, ploidy: usize) -> Result<KosmanSums> {
-        let too_many = |num_pairs| Error::DistancesOfTooManyIndividuals {
-            num_individuals,
-            num_pairs,
-        };
-        let num_pairs = num_pairs_of(num_individuals).ok_or_else(|| too_many(usize::MAX))?;
+        let num_pairs = num_pairs_of(num_individuals)
+            .ok_or(Error::MorePairsThanAreCounted { num_individuals })?;
         let mut sums: Vec<(u32, u32)> = Vec::new();
         sums.try_reserve_exact(num_pairs)
-            .map_err(|_| too_many(num_pairs))?;
+            .map_err(|_| Error::DistancesOfTooManyIndividuals {
+                num_individuals,
+                num_pairs,
+            })?;
         sums.resize(num_pairs, (0, 0));
         Ok(KosmanSums {
             num_individuals,
@@ -530,9 +583,16 @@ impl KosmanSums {
     /// 0 or below `min_num_vars`, and the sum of d over n otherwise.
     ///
     /// The three numbers are whole and far below 2^53, so each is exact in
-    /// a `f64`, and there is one division, so popnei and a program that
-    /// divides the same two integers, as R and pyNei do, give the same
-    /// bits.
+    /// a `f64`, and there is one division. R's `gd.kosman` and pyNei divide
+    /// twice: they add d, which is m over the ploidy, over the variants and
+    /// then divide that sum by n. The two ways give the same bits when the
+    /// ploidy is a power of two, where m over the ploidy is exact, which is
+    /// the case of every dataset the two were compared on, of the ploidies
+    /// 1, 2 and 4. At the ploidy 3 they differ in the last place: dividing
+    /// by the ploidy and then by n, rather than by their product, gives
+    /// another last bit in 4897 of 20000 pairs of an n from 100 to 2000 and
+    /// a sum of d drawn at random, and popnei's, with its one rounding, is
+    /// the nearer of the two to the exact value.
     fn distance_of(&self, k_sum: u32, n: u32, min_num_vars: u32) -> Option<f64> {
         if n == 0 || n < min_num_vars {
             return None;
@@ -571,11 +631,15 @@ fn num_pairs_of(num_individuals: usize) -> Option<usize> {
         // give.
         return Some(0);
     };
-    // One of two consecutive numbers is even, so their product is, and the
-    // division by 2 is exact.
-    num_individuals
-        .checked_mul(others)
-        .map(|in_both_orders| in_both_orders / 2)
+    // One of two consecutive numbers is even, so halving that one is exact,
+    // and it is halved before the product: `n * (n - 1)` goes above what a
+    // `usize` holds for numbers of individuals whose pairs it still counts,
+    // 65537 of them in wasm, where a `usize` is 32 bits.
+    if num_individuals.is_multiple_of(2) {
+        (num_individuals / 2).checked_mul(others)
+    } else {
+        num_individuals.checked_mul(others / 2)
+    }
 }
 
 /// The two counts of every pair of the block whose sets of bits `bits` are,
@@ -629,7 +693,15 @@ fn add_the_pairs_of_the_block(
 ) -> Result<()> {
     use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
+    let num_pairs = sums.len();
     let mut rows: Vec<(usize, &mut [(u32, u32)])> = Vec::new();
+    // One row for each individual, asked of the machine once for the whole
+    // block, as the two counts of the pairs and the sets of bits are.
+    rows.try_reserve_exact(bits.num_individuals())
+        .map_err(|_| Error::DistancesOfTooManyIndividuals {
+            num_individuals: bits.num_individuals(),
+            num_pairs,
+        })?;
     let mut rest = sums;
     for first in 0..bits.num_individuals() {
         // The pairs of the individual `first` are its pairs with each
@@ -828,9 +900,9 @@ mod tests {
     fn the_diploid_worked_example_gives_the_sums_of_the_spec() {
         let bits = KosmanBits::of_block(&the_diploid_worked_example()).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((1, 2)));
-        assert_eq!(bits.sums_of_the_pair(0, 2), Some((5, 3)));
-        assert_eq!(bits.sums_of_the_pair(1, 2), Some((2, 3)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((1, 2)));
+        assert_eq!(bits.sums_of_one_pair(0, 2), Some((5, 3)));
+        assert_eq!(bits.sums_of_one_pair(1, 2), Some((2, 3)));
     }
 
     /// The numbers of the table of the tetraploid worked example, which
@@ -841,9 +913,9 @@ mod tests {
     fn the_tetraploid_worked_example_gives_the_sums_of_the_spec() {
         let bits = KosmanBits::of_block(&the_tetraploid_worked_example()).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((2, 2)));
-        assert_eq!(bits.sums_of_the_pair(0, 2), Some((9, 3)));
-        assert_eq!(bits.sums_of_the_pair(1, 2), Some((3, 2)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((2, 2)));
+        assert_eq!(bits.sums_of_one_pair(0, 2), Some((9, 3)));
+        assert_eq!(bits.sums_of_one_pair(1, 2), Some((3, 2)));
     }
 
     /// The numbers of the table of the haploid worked example, which
@@ -854,9 +926,9 @@ mod tests {
     fn the_haploid_worked_example_gives_the_sums_of_the_spec() {
         let bits = KosmanBits::of_block(&the_haploid_worked_example()).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((1, 3)));
-        assert_eq!(bits.sums_of_the_pair(0, 2), Some((2, 3)));
-        assert_eq!(bits.sums_of_the_pair(1, 2), Some((2, 4)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((1, 3)));
+        assert_eq!(bits.sums_of_one_pair(0, 2), Some((2, 3)));
+        assert_eq!(bits.sums_of_one_pair(1, 2), Some((2, 4)));
     }
 
     /// The pairs come in the order of the distance vector, (0, 1), (0, 2),
@@ -878,8 +950,8 @@ mod tests {
     fn the_sums_of_a_pair_are_the_same_in_either_order() {
         let bits = KosmanBits::of_block(&the_diploid_worked_example()).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(2, 0), bits.sums_of_the_pair(0, 2));
-        assert_eq!(bits.sums_of_the_pair(2, 1), bits.sums_of_the_pair(1, 2));
+        assert_eq!(bits.sums_of_one_pair(2, 0), bits.sums_of_one_pair(0, 2));
+        assert_eq!(bits.sums_of_one_pair(2, 1), bits.sums_of_one_pair(1, 2));
     }
 
     /// A genotype with one allele that was not called is missing, so its
@@ -893,7 +965,7 @@ mod tests {
 
         let bits = KosmanBits::of_block(&block).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((0, 0)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((0, 0)));
     }
 
     /// Every pair of a block whose genotypes are all missing has no
@@ -923,8 +995,8 @@ mod tests {
 
         assert_eq!(bits.num_individuals(), 1);
         assert_eq!(bits.sums_of_the_pairs().count(), 0);
-        assert_eq!(bits.sums_of_the_pair(0, 0), None);
-        assert_eq!(bits.sums_of_the_pair(0, 1), None);
+        assert_eq!(bits.sums_of_one_pair(0, 0), None);
+        assert_eq!(bits.sums_of_one_pair(0, 1), None);
     }
 
     /// A set of more than one word: 100 variants are 64 bits in the first
@@ -947,9 +1019,9 @@ mod tests {
 
         let bits = KosmanBits::of_block(&block_of(&variants, 3, 2)).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((100, 100)));
-        assert_eq!(bits.sums_of_the_pair(0, 2), Some((100, 50)));
-        assert_eq!(bits.sums_of_the_pair(1, 2), Some((50, 50)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((100, 100)));
+        assert_eq!(bits.sums_of_one_pair(0, 2), Some((100, 50)));
+        assert_eq!(bits.sums_of_one_pair(1, 2), Some((50, 50)));
     }
 
     /// Every allele of a multiallelic variant counts as itself, so a
@@ -962,7 +1034,7 @@ mod tests {
 
         let bits = KosmanBits::of_block(&block).unwrap();
 
-        assert_eq!(bits.sums_of_the_pair(0, 1), Some((2, 3)));
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((2, 3)));
     }
 
     /// The genotypes of a block are its variants times its individuals
@@ -1001,6 +1073,98 @@ mod tests {
 
         assert!(
             matches!(error, Error::FieldsNotInTheBlock { fields } if fields == crate::variant::Needs::GTS),
+            "{error}"
+        );
+    }
+
+    /// The sets of an individual are as many as the alleles the block
+    /// holds and not as many as its largest allele value: a block whose
+    /// two alleles are 0 and 127 gives every pair the same counts as the
+    /// same block with the allele 1 in the place of the 127, and its
+    /// `holds` sets are the same 4 words, 2 alleles times the ploidy 2
+    /// times one word, and not 256.
+    #[test]
+    fn a_block_of_two_far_apart_alleles_has_the_sets_of_two_alleles() {
+        let far_apart = block_of(&[&[0, 127, 0, 0], &[0, 0, 127, 127]], 2, 2);
+        let beside_each_other = block_of(&[&[0, 1, 0, 0], &[0, 0, 1, 1]], 2, 2);
+
+        let far_apart = KosmanBits::of_block(&far_apart).unwrap();
+        let beside_each_other = KosmanBits::of_block(&beside_each_other).unwrap();
+
+        assert_eq!(
+            far_apart.sums_of_one_pair(0, 1),
+            beside_each_other.sums_of_one_pair(0, 1)
+        );
+        assert_eq!(far_apart.sums_of_one_pair(0, 1), Some((3, 2)));
+        assert_eq!(far_apart.holds_per_individual.get(), 4);
+        assert_eq!(
+            far_apart.holds_per_individual,
+            beside_each_other.holds_per_individual
+        );
+    }
+
+    /// A block whose genotypes hold the alleles 0, 5 and 9 gets the sets of
+    /// three alleles, one for each value it holds and none for the values
+    /// between them, and every pair keeps the counts of the spec: 5/5 and
+    /// 0/5 share one copy of the 5.
+    #[test]
+    fn the_sets_of_a_block_are_as_many_as_the_allele_values_it_holds() {
+        let block = block_of(&[&[0, 9, 0, 0], &[5, 5, 0, 5], &[0, 9, 9, 0]], 2, 2);
+
+        let bits = KosmanBits::of_block(&block).unwrap();
+
+        // Three alleles times the ploidy 2, one word each.
+        assert_eq!(bits.holds_per_individual.get(), 6);
+        assert_eq!(bits.sums_of_one_pair(0, 1), Some((2, 3)));
+    }
+
+    /// A genotype holds one allele at least, so a block of the ploidy 0 is
+    /// not one whose genotypes can be read. Only a reader with a defect
+    /// gives one.
+    #[test]
+    fn a_block_of_the_ploidy_0_is_an_error() {
+        let block = block_of(&[&[0, 1]], 2, 0);
+
+        let error = KosmanBits::of_block(&block).unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                Error::GtsNotWholeGenotypes {
+                    num_alleles: 2,
+                    ploidy: 0
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// Every block a reader of popnei gives holds one variant at least, and
+    /// a block of none would leave the sets with no word to write a bit in.
+    #[test]
+    fn a_block_of_no_variants_is_an_error() {
+        let block = block_of(&[], 3, 2);
+
+        let error = KosmanBits::of_block(&block).unwrap_err();
+
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "{error}"
+        );
+    }
+
+    /// An allele below the missing one, which no reader of popnei gives, has
+    /// no place among the alleles of the block. Read without the guard it
+    /// would be dropped while its variant counted as called for the pair,
+    /// which is a wrong number and no message, so it is an error.
+    #[test]
+    fn a_genotype_with_an_allele_below_the_missing_one_is_an_error() {
+        let block = block_of(&[&[0, 0, -2, 0]], 2, 2);
+
+        let error = KosmanBits::of_block(&block).unwrap_err();
+
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
             "{error}"
         );
     }
@@ -1698,6 +1862,24 @@ mod tests {
                     ploidy: 2,
                     found_num_individuals: 2,
                     found_ploidy: 2
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// More individuals than the pairs a `usize` counts is an error before
+    /// any memory is asked for: popnei gives each pair a place among the
+    /// others, and a place is counted in a `usize`.
+    #[test]
+    fn more_individuals_than_the_pairs_a_usize_counts_is_an_error() {
+        let error = KosmanSums::at_zero(usize::MAX, 2).expect_err("the error");
+
+        assert!(
+            matches!(
+                error,
+                Error::MorePairsThanAreCounted {
+                    num_individuals: usize::MAX
                 }
             ),
             "{error}"
