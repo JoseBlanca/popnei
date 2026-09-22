@@ -1,5 +1,5 @@
 // Loads pyodide under node, installs into it the wheel that
-// scripts/build_pyodide_wheel.sh left in dist/, and checks six things:
+// scripts/build_pyodide_wheel.sh left in dist/, and checks seven things:
 // that the version popnei answers with is the one of the core crate, which
 // is in [workspace.package] of the Cargo.toml of the repository; that
 // `open_vcf` reads tests/reference/vcf/cases.vcf and cases.vcf.gz there as
@@ -10,10 +10,12 @@
 // that a VCF whose blocks of the size popnei chooses would not fit in what
 // a wasm build counts is opened all the same; and that
 // `calc_per_var_distribs` and `calc_per_individual_stats` give the numbers
-// of the worked example of docs/specs/stats.md, which is what says that the
-// two calculations reach the same values where there is one thread and the
-// build is not the native one. It exits with an error when anything
-// differs.
+// of the worked example of docs/specs/stats.md and that
+// `calc_pairwise_kosman_dists` gives the distances that the diploid worked
+// example of "How it is verified" of docs/specs/dists.md has, which is what
+// says that the three calculations reach the same values where there is one
+// thread and the build is not the native one. It exits with an error when
+// anything differs.
 //
 // README.md, beside this file, says how to run it.
 
@@ -270,6 +272,74 @@ def per_individual_stats_of_the_worked_example(vcf_path):
     )
 `;
 
+// The diploid worked example of "How it is verified" of docs/specs/dists.md,
+// 4 variants of 3 individuals, as the VCF that tests/test_dists.py writes for
+// it: the header of the `write_vcf` fixture of tests/conftest.py, which names
+// the individuals ind1, ind2 and ind3, and the four data lines of its
+// WORKED_EXAMPLE_LINES. The third variant holds the half called genotype
+// `0/.`, which is a missing genotype, and the fourth a missing one.
+const WORKED_EXAMPLE_VCF =
+  [
+    "##fileformat=VCFv4.4",
+    '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tind1\tind2\tind3",
+    "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+    "chr1\t20\t.\tA\tT,C\t.\tPASS\t.\tGT\t0/1\t0/1\t1/2",
+    "chr1\t30\t.\tA\tT,C\t.\tPASS\t.\tGT\t0/0\t0/.\t2/2",
+    "chr1\t40\t.\tA\tT\t.\tPASS\t.\tGT\t./.\t1/1\t1/1",
+  ].join("\n") + "\n";
+
+// The individuals of that VCF, in the order the source has them, and how many
+// variants the calculation takes from it, which are the names and the count
+// of the pass that the result carries. tests/test_dists.py calls the
+// variants at which each pair was called together WORKED_EXAMPLE_NUM_VARS,
+// which is another number, [2, 3, 3].
+const WORKED_EXAMPLE_NAMES = ["ind1", "ind2", "ind3"];
+const WORKED_EXAMPLE_VARS_OF_THE_PASS = 4;
+
+// The distance of each of its three pairs, (ind1, ind2), (ind1, ind3) and
+// (ind2, ind3), which is the ploidy times the sum of d over the ploidy times
+// n of the spec's table: 1 over 2 x 2, 5 over 2 x 3 and 2 over 2 x 3. The
+// calculation divides those two whole numbers once, and the division of two
+// whole numbers is rounded the same in JavaScript as in Rust, so these are
+// compared exactly, as tests/test_dists.py compares them; that file writes
+// the third as 1 / 3, which is the same float64.
+const WORKED_EXAMPLE_DISTS = [1 / 4, 5 / 6, 2 / 6];
+// Its pairs were called together at 2, 3 and 3 variants, so asking for 3
+// leaves the first pair without a distance and leaves the other two theirs.
+// A pair with no distance is NaN, which JSON has not, so it travels as null.
+const A_MIN_NUM_SNPS = 3;
+const WORKED_EXAMPLE_DISTS_AT_THREE = [null, 5 / 6, 2 / 6];
+
+// What `calc_pairwise_kosman_dists` gives inside pyodide for a VCF at a path
+// of the file system of emscripten: the distance of each pair, the names of
+// the individuals, which a result holds as a tuple, and the counts of the
+// pass, how many variants the calculation took and the kind of each filter it
+// went through, of which a source with no filter has none.
+const THE_KOSMAN_DISTANCES = `
+import json
+import math
+
+import popnei
+
+
+def kosman_dists_of(vcf_path, min_num_snps):
+    dists = popnei.calc_pairwise_kosman_dists(
+        popnei.open_vcf(vcf_path), min_num_snps=min_num_snps
+    )
+    return json.dumps(
+        {
+            "dists": [
+                None if math.isnan(dist) else float(dist)
+                for dist in dists.dist_vector
+            ],
+            "names": list(dists.names),
+            "num_vars": dists.pass_stats.num_vars,
+            "filters": list(dists.pass_stats.filtering),
+        }
+    )
+`;
+
 // How many variants the worked example has, which both passes give.
 const THE_WORKED_EXAMPLE_NUM_VARS = 6;
 
@@ -415,11 +485,13 @@ console.log(`pyodide ${pyodide.version}, installing ${wheel.name}`);
 // the `emfs:` prefix that asks micropip for a local file.
 const wheelInPyodide = `/tmp/${wheel.name}`;
 pyodide.FS.writeFile(wheelInPyodide, await readFile(wheel.path));
-// The genotypes of a block are a numpy array and the values of a statistic
-// per population are a pandas series, so popnei cannot be imported before
-// the two are in pyodide. Both are packages of pyodide itself and are
-// loaded from there; micropip would fetch them for the dependencies of the
-// wheel anyway, and asking for them here says which ones answer.
+// The genotypes of a block are a numpy array, the values of a statistic per
+// population are a pandas series and the square matrix of a `Distances` is a
+// pandas frame, which `popnei/dists.py` imports when popnei is imported, so
+// popnei cannot be imported before the two of them are in pyodide. Both are
+// `dependencies` of pyproject.toml, so micropip installs them with the
+// wheel; both are packages of pyodide itself and are loaded from here, which
+// says which numpy and which pandas answer.
 await pyodide.loadPackage(["micropip", "numpy", "pandas"]);
 const micropip = pyodide.pyimport("micropip");
 await micropip.install(`emfs:${wheelInPyodide}`);
@@ -540,7 +612,7 @@ if (
 }
 
 pyodide.runPython(THE_WORKED_EXAMPLE);
-const workedExampleVcf = "/vcf/worked_example.vcf";
+const workedExampleVcf = "/vcf/stats_worked_example.vcf";
 pyodide.runPython(`write_the_worked_example("${workedExampleVcf}")`);
 
 for (const [asked, pops, expected] of [
@@ -635,6 +707,42 @@ if (perIndividualDifferences.length > 0) {
     `${ofTheIndividuals}: the two rates of the` +
       ` ${PER_INDIVIDUAL.individuals.length} individuals, as the spec says`,
   );
+}
+
+pyodide.runPython(THE_KOSMAN_DISTANCES);
+const workedExamplePath = "/vcf/kosman_worked_example.vcf";
+pyodide.FS.writeFile(
+  workedExamplePath,
+  new TextEncoder().encode(WORKED_EXAMPLE_VCF),
+);
+for (const [askedFor, expected] of [
+  ["None", WORKED_EXAMPLE_DISTS],
+  [`${A_MIN_NUM_SNPS}`, WORKED_EXAMPLE_DISTS_AT_THREE],
+]) {
+  const call = `kosman_dists_of("${workedExamplePath}", ${askedFor})`;
+  const found = JSON.parse(pyodide.runPython(call));
+  const what = `the worked example with min_num_snps=${askedFor}`;
+  if (JSON.stringify(found.dists) !== JSON.stringify(expected)) {
+    failures.push(
+      `${what} gives the distances ${JSON.stringify(found.dists)} and the` +
+        ` spec says ${JSON.stringify(expected)}, null being a pair that has` +
+        " no distance",
+    );
+  } else if (
+    JSON.stringify(found.names) !== JSON.stringify(WORKED_EXAMPLE_NAMES) ||
+    found.num_vars !== WORKED_EXAMPLE_VARS_OF_THE_PASS ||
+    JSON.stringify(found.filters) !== "[]"
+  ) {
+    failures.push(
+      `${what} gives the names ${JSON.stringify(found.names)} and a pass of` +
+        ` ${found.num_vars} variants through the filters` +
+        ` ${JSON.stringify(found.filters)}, and that VCF has the individuals` +
+        ` ${JSON.stringify(WORKED_EXAMPLE_NAMES)},` +
+        ` ${WORKED_EXAMPLE_VARS_OF_THE_PASS} variants and no filter`,
+    );
+  } else {
+    console.log(`${what}: ${JSON.stringify(found.dists)}, as the spec says`);
+  }
 }
 
 for (const failure of failures) {

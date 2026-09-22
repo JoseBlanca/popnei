@@ -22,17 +22,28 @@
 //! set of individuals, with the pass over the variants that gives, for each
 //! population, the mean and the histogram of five statistics of a variant:
 //! the observed heterozygosity, the major allele frequency, the expected
-//! heterozygosity, plain and unbiased, and how many variants vary. The
-//! statistics of each individual, the distances between individuals and the
-//! modules that follow them are being written, and
-//! `docs/architecture.md` has their order.
+//! heterozygosity, plain and unbiased, and how many variants vary. `pca`
+//! gives the principal components of a table of numbers, individuals by
+//! traits, and of the variants of a reader; `dists` holds the Kosman
+//! distance of every pair of individuals over the variants of a reader,
+//! counted from the genotypes of each block as sets of bits. The modules
+//! that follow them are being written, and `docs/architecture.md` has
+//! their order.
+//!
+//! The linear algebra those modules need, the products of matrices and
+//! the eigendecomposition, is not a module here but a crate beside this
+//! one, `popnei-linalg`, because the calls it makes to BLAS and LAPACK
+//! are `unsafe` and this crate forbids that. `docs/specs/linalg.md` says
+//! what it gives and which backend runs where.
 
 #![forbid(unsafe_code)]
 
 pub mod block;
+pub mod dists;
 pub mod error;
 pub mod filters;
 pub mod io;
+pub mod pca;
 pub mod stats;
 pub mod variant;
 

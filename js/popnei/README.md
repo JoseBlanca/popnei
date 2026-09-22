@@ -8,12 +8,15 @@ the result objects an application uses. What the package exports today is
 crate, `openVcf`, which reads the header of a VCF held as bytes and
 gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
 by block, `writeVars`, which gives back the bytes of a vars file with every
-variant of a `Variants`, and `openVars`, which opens such bytes as another
-`Variants`. A vars file is one arrow IPC file, also called feather v2,
+variant of a `Variants`, `openVars`, which opens such bytes as another
+`Variants`, and `calcPairwiseKosmanDists`, which gives the Kosman distance
+of every pair of individuals of a `Variants` in a `Distances`.
+A vars file is one arrow IPC file, also called feather v2,
 which pandas, R and polars open as a table with no popnei installed: it is
 where a user keeps their variants once the VCF has been read. Each of the
-two consumers, `iterBlocks` and `writeVars`, gives back the counts of the
-pass it made over the source, in a `passStats`: how many variants it took,
+five consumers, `iterBlocks`, `writeVars`, `calcPairwiseKosmanDists`,
+`calcPerVarDistribs` and `calcPerIndividualStats`, gives back the counts of
+the pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
 a step, a method of the `Variants` that `steps` then lists. Three of them
 keep the variants whose number is at most a threshold: `filterByMissingData`,
@@ -24,14 +27,14 @@ divided by its called ones. The fourth, `filterIndividuals`, keeps
 individuals and not variants: it takes the genotypes of the individuals a
 user names, at every variant, in the order they named them, and after it
 `individuals` and `numIndividuals` are the kept ones.
-`calcPerVarDistribs` is the first calculation the package exports, and a
-consumer like the other two: one pass over the variants that gives, for each
+`calcPerVarDistribs` is another calculation the package exports, and a
+consumer like the others: one pass over the variants that gives, for each
 population a user names in `pops` and each of five statistics of a variant,
 the mean over the variants that had a value and a histogram of them. The
 five are the observed heterozygosity, the major allele frequency, the
 expected heterozygosity, plain and unbiased, and the polymorphism ratio,
 which is three counts and two ratios per population and not a distribution.
-`calcPerIndividualStats` is the second, a pass of its own that gives two
+`calcPerIndividualStats` is a pass of its own that gives two
 numbers for each individual instead of one for each population: the share of
 the variants at which its genotype is missing, `missingGtRate`, and the
 share of its called genotypes at which it is heterozygous, `obsHetRate`. The
@@ -42,7 +45,8 @@ Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
 `docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
-`docs/specs/filters.md` and `docs/specs/stats.md` say what they give.
+`docs/specs/filters.md`, `docs/specs/dists.md` and `docs/specs/stats.md`
+say what they give.
 
 ## Building it
 
@@ -183,6 +187,16 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   counts its pass inside the generator for the first, and throws what the
   free says only when nothing else is being thrown, for the second.
 
+## The timing
+
+`bench/time_pca.mjs` is not a test and `npm test` does not run it: it times
+`doPcaFromVariants` under node over the bytes of a vars file, on the `wasm/`
+that is there, and it is what task 4.2 of `docs/plans/pca.md` measured this
+package with. `docs/reports/pca-measurement.md` has its numbers and the
+files it read them on.
+
+    node bench/time_pca.mjs <path to a vars file> [--runs n] [--num-prin-comps n]
+
 ## The tests
 
     npm test
@@ -258,6 +272,17 @@ writes a vars file of 12 MB and asks that the write stay under twice the
 file, and then opens twelve passes over it at once and asks that they
 grow the memory by less than one copy of it, which a reader that copied
 the bytes for each pass would not.
+
+## Where it runs
+
+The package needs the vector instructions of WebAssembly, the ones that
+work on sixteen bytes at a time, which popnei's calculations use, so it
+runs in Chrome and Edge from 91, of May 2021, Firefox from 89, of June
+2021, Safari from 16.4, of March 2023, and node from 16.4, of June 2021.
+On an iPhone or an iPad that means iOS 16.4, since every browser there is
+WebKit whatever its name. An older browser fails when the module is
+loaded, not with a wrong number. Goal 3 of `docs/objectives.md` has the
+decision and the option that was not taken.
 
 ## node and a page, from one build
 
@@ -396,6 +421,39 @@ A `Variants` of a vars file is a source like the one of a VCF: it goes to
 `iterBlocks` and back to `writeVars`, which writes the file again with
 another size of batch.
 
+The first calculation over such a handle is the Kosman distance of every
+pair of individuals, `docs/specs/dists.md`:
+
+```ts
+import { calcPairwiseKosmanDists, init, openVcf } from "popnei";
+
+await init();
+const variants = openVcf(new Uint8Array(await readFile("panel.vcf.gz")));
+try {
+  // A pair called at fewer than 100 variants gets no distance, and is NaN
+  // in the vector; without `minNumSnps` every pair called at one variant
+  // at least gets one.
+  const distances = calcPairwiseKosmanDists(variants, { minNumSnps: 100 });
+  // The distance of every pair, in the order (0, 1), (0, 2), ..., (1, 2),
+  // ...: 19900 values for the 200 individuals of that file.
+  console.log(distances.distVector.length, distances.distVector[0]);
+  // The names of the individuals, in the order the source has them, and
+  // the counts of the pass the distances were calculated over.
+  console.log(distances.names[0], distances.passStats.numVars);
+  // The same distances as the 200 x 200 matrix, row by row, with 0 on the
+  // diagonal: the distance of the individuals i and j is at i * 200 + j.
+  console.log(distances.squareDists().length);
+} finally {
+  variants.free();
+}
+```
+
+It reads the source once, through the filters that are on the `Variants`,
+and leaves it as it was, so the same handle goes to the next calculation.
+A pass that gives no variant is an `Error` that says whether the source
+held none or the steps kept none, with how many variants each filter was
+given and kept.
+
 One pass gives the five statistics of every variant and every population:
 
 ```ts
@@ -468,8 +526,10 @@ an `Error` that says what was given: a `source` that is not a
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
 of the five columns, a `variants` that is not what `openVcf` or `openVars`
-gave, a threshold of a filter that is not a number, which a call with
-no threshold gives, and, of `calcPerVarDistribs`, a `stats` that is not an
+gave, a `minNumSnps` that is not a whole number of 0 or more and at most
+4294967295, which a negative one is, a threshold of a filter that is not a
+number, which a call with no threshold gives, and, of
+`calcPerVarDistribs`, a `stats` that is not an
 array of names or that names no statistic, a `pops` that is not an object
 of population name to an array of names, a `minNumIndividuals`, a `ploidy`
 or a `numBins` that is not a whole number of 0 or more, a `range` that is

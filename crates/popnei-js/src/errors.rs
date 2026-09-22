@@ -48,6 +48,13 @@ pub enum JsPopneiError {
         /// What was given for it, which is NaN, below 0 or above 1.
         threshold: f64,
     },
+    /// A pass that gave no variant, and a calculation cannot run over none:
+    /// the source holds no variant, or the filters of the pass kept none.
+    /// The core says that its reader gave no variant, and which of the two
+    /// it was, with the counts of each filter when it was the filters, is
+    /// what this crate adds, because it is the one that holds the chain of
+    /// readers of the pass.
+    NoVariant(String),
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -74,7 +81,7 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the six cases are one `Error`, where Python tells a `ValueError`
+    /// the seven cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
@@ -91,6 +98,7 @@ impl From<JsPopneiError> for JsValue {
             ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::Refused(message)
+            | JsPopneiError::NoVariant(message)
             | JsPopneiError::NoMemory(message)
             | JsPopneiError::Broken(message) => message,
         };

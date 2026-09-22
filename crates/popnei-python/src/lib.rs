@@ -9,7 +9,9 @@
 
 use pyo3::prelude::*;
 
+mod dists;
 mod errors;
+mod pca;
 mod source;
 mod stats;
 mod steps;
@@ -51,6 +53,43 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_BIN_TYPE: &str = popnei::stats::DEFAULT_BIN_TYPE;
 
+    // The two of `do_pca`, which are the constants of the core crate for
+    // the same reason.
+    #[pymodule_export]
+    const DEFAULT_CENTER_DATA: bool = popnei::pca::DEFAULT_CENTER_DATA;
+    #[pymodule_export]
+    const DEFAULT_STANDARDIZE_DATA: bool = popnei::pca::DEFAULT_STANDARDIZE_DATA;
+
+    // The two exceptions that carry the positions of the traits a
+    // principal component analysis refused to `popnei.do_pca`, which names
+    // those traits and raises the `ValueError` its user reads. A class made
+    // with `create_exception!` is not a `#[pyclass]`, so it is added to the
+    // module here.
+    #[pymodule_init]
+    fn add_the_exceptions(module: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        use pyo3::prelude::PyModuleMethods as _;
+
+        let py = module.py();
+        module.add(
+            "TraitsWithNoVariance",
+            py.get_type::<super::errors::TraitsWithNoVariance>(),
+        )?;
+        module.add(
+            "TraitOutOfRange",
+            py.get_type::<super::errors::TraitOutOfRange>(),
+        )
+    }
+
+    // The two of `do_pca_from_variants`, from the core as well.
+    #[pymodule_export]
+    const DEFAULT_TRANSFORM_TO_BIALLELIC: bool = popnei::pca::DEFAULT_TRANSFORM_TO_BIALLELIC;
+    #[pymodule_export]
+    const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
+
+    #[pymodule_export]
+    use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::pca::{pca, pca_of_variants};
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

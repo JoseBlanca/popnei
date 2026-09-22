@@ -101,6 +101,34 @@ allele of the variant, from 0 to the ploidy, every allele other than the
 major one counting the same. The dosage matrix is the variants x
 individuals array of them. pyNei: `to_012` and "the 012 matrix".
 
+**component.** A principal component: one of the directions, at right
+angles to each other, along which the individuals of a standardized table
+vary most, the first the one with the largest variance. "PC" in the names
+of a result, `PC0`, and `comps` in identifiers. Not used: axis, eigenvector,
+which is how a component is computed and not what it is.
+
+**projection.** Where an individual falls along a component, the
+coordinate a user plots. pyNei: `projections`. Not used: score, which is
+R's word, coordinate.
+
+**princomps.** The weights of each variant, or of each trait, in each
+component, components x variants, a field of the result of a PCA under
+the name pyNei gives it. "Weight" in prose. Not used: loading, rotation,
+which is R's word.
+
+**Kosman distance.** The distance between two individuals of Kosman and
+Leonard (2005): at a variant, the alleles of the two genotypes that do
+not pair with an equal allele of the other, over the ploidy, which for
+diploids is 0 for the same genotype, 1 for two genotypes with no allele
+in common and 0.5 otherwise, averaged over the variants at which both
+genotypes are called. `docs/specs/dists.md`.
+
+**distance vector.** The distances of every pair of N individuals or
+populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
+(1, 2), ..., the upper triangle of the square matrix row by row.
+`dist_vector` in identifiers, as in pyNei. Not used: condensed matrix,
+the name scipy gives the same order.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`
@@ -114,8 +142,21 @@ pyNei: chunk, `VariantsChunk`. "Chunk" is used only for pyNei's own. What
 the Python `Variants` of popnei gives from `iter_blocks` is a block. Not
 used: batch, which is written for two other things, arrow's unit of the
 vars file, and the lines that the VCF reader reads and parses together,
-several to a block; and window. A vars file is written
-with one batch for each block, and read back in blocks of any size.
+several to a block; and window, which has a meaning of its own below. A
+vars file is written with one batch for each block, and read back in
+blocks of any size.
+
+**window.** The variants that a calculation or a filter compares one
+variant with: those on its chromosome whose position is no more than a
+stated distance from it. It is never a run of blocks nor a number of
+variants: a window is a stretch of a chromosome in base pairs, and how
+many variants fall in it is whatever the dataset has there. The filter by
+linkage disequilibrium of `docs/specs/filters.md` holds the variants it
+has kept inside the window of the variant it is looking at, and the curve
+of linkage disequilibrium against distance of `docs/specs/ld.md` compares
+each variant with the ones inside its own. Not used: window for a block
+or for a run of blocks, which is what a reader holds and not what a
+calculation compares.
 
 **member.** One gzip stream of a gzipped file. A file that bgzip wrote is
 many of them one after another, each with 64 KiB of text at most and each
@@ -179,6 +220,15 @@ holds for both.
 
 **Python binding crate.** `crates/popnei-python`, written with pyo3. Its
 Python module is `popnei._core`.
+
+**linalg crate.** `crates/popnei-linalg`, the linear algebra of popnei,
+its products and decompositions, with two backends behind one interface:
+BLAS and LAPACK natively, and faer, a library written in Rust, in wasm,
+where there is no BLAS, and natively too when the cargo feature `blas`
+of the crate is off. It is the one crate of popnei with `unsafe` in it,
+the calls to BLAS and LAPACK. The core crate calls it.
+`docs/specs/linalg.md`. Not used: backend for the crate itself, which is
+the word for each of its two libraries.
 
 **JavaScript binding crate.** `crates/popnei-js`, written with
 wasm-bindgen, the Rust tool that generates the JavaScript that calls the

@@ -1,0 +1,19 @@
+[package]
+name = "kspike"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+faer = { version = "0.22", default-features = false, features = ["std"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = "1"
+
+[profile.release]
+opt-level = 3
+
+# Not a member of the workspace of popnei: it is built on its own.
+[workspace]

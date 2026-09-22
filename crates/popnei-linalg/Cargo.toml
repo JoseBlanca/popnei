@@ -1,0 +1,50 @@
+[package]
+name = "popnei-linalg"
+description = "Population genetics: the linear algebra of popnei, on BLAS and LAPACK or on faer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+# A cargo feature can only add, so the feature a user turns off is the one
+# that links BLAS, and not one that turns faer on: `blas` enables the four
+# optional dependencies below, and with it off the crate links faer alone
+# and builds on a machine with no BLAS and no Fortran compiler. The wasm
+# targets have no BLAS at all, so there the feature changes nothing: the
+# four dependencies are of the targets that are not wasm, and lib.rs
+# chooses the backend with `all(feature = "blas", not(target_family =
+# "wasm"))`.
+[features]
+default = ["blas"]
+blas = ["dep:blas", "dep:blas-src", "dep:lapack", "dep:lapack-src"]
+
+[dependencies]
+faer.workspace = true
+thiserror.workspace = true
+
+# faer's `rayon` feature does not build for emscripten, section 3.2 of
+# docs/rust_core.md, so faer runs on the global pool of rayon off the wasm
+# targets and on one thread in them. The features of a dependency add up,
+# so this line gives the faer of `[dependencies]` one feature more where
+# the target allows it.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+blas = { workspace = true, optional = true }
+blas-src = { workspace = true, optional = true }
+faer = { workspace = true, features = ["rayon"] }
+lapack = { workspace = true, optional = true }
+lapack-src = { workspace = true, optional = true }
+
+# faer's products go through `gemm`, which faer brings by itself and which
+# this line names again so that its feature `wasm-simd128-enable` is on
+# where it can be: without it the products do not use the 128 bit vector
+# instructions of WebAssembly even in a build told to emit them. Nothing of
+# this crate calls `gemm`, so the dependency is here to add that feature to
+# the one faer uses. The flag that emits the instructions is not set: it is
+# Open 1 of docs/specs/linalg.md, and its "meanwhile" is this line without
+# the flag.
+[target.'cfg(target_family = "wasm")'.dependencies]
+gemm.workspace = true
+
+[lints]
+workspace = true

@@ -556,6 +556,308 @@ pub enum Error {
         filters: Vec<(&'static str, FilteringStats)>,
     },
 
+    /// A value of the table of a principal component analysis is not
+    /// finite, an infinity or a NaN, with the place where it is. There is
+    /// nothing to give for such a table: the mean of that trait, and with
+    /// it every projection, would be a NaN. pyNei refuses a NaN and lets
+    /// an infinity through to numpy's decomposition, which raises
+    /// `LinAlgError`. In Python it is a `ValueError`.
+    #[error(
+        "the value at row {row}, trait {col} of the table is {value}, and a principal component analysis needs every value finite"
+    )]
+    PcaValueNotFinite {
+        /// Which row of the table holds it, from 0.
+        row: usize,
+        /// Which trait of the table holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// The table of a principal component analysis is to be standardized
+    /// and not centered. Standardizing divides each trait by the standard
+    /// deviation it has once it is centered, so the two go together, which
+    /// is what pyNei's `do_pca` says as well. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the table is to be standardized and not centered, and standardizing divides each trait by the standard deviation it has once it is centered: center the table or do not standardize it"
+    )]
+    PcaStandardizeWithoutCentering,
+
+    /// The table of a principal component analysis has fewer than 2 rows
+    /// or no traits. One row has no variation for the components to hold:
+    /// pyNei raises the error of the traits with no variance for it when
+    /// it standardizes, and without standardizing divides by n - 1 = 0 and
+    /// gives percentages that are NaN. In Python it is a `ValueError`.
+    #[error(
+        "the table is {num_rows} x {num_cols}, and a principal component analysis needs 2 rows at least and 1 trait at least"
+    )]
+    PcaTableTooSmall {
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// The traits of a table that is to be standardized and that have no
+    /// variance, every value of each one being equal to the others. There
+    /// is nothing to divide them by, so the user takes them out or does
+    /// not standardize; without standardizing they are no error and get a
+    /// weight of 0. In Python it is a `ValueError` whose message names the
+    /// traits, since the layer that has the frame puts the name of each
+    /// column in the place of its position.
+    #[error(
+        "{count} of the {num_cols} traits have no variance and cannot be standardized: take them out of the table or do not standardize; they are the traits at {shown}, counting from 0",
+        count = positions.len(),
+        shown = crate::pca::the_positions_listed(positions)
+    )]
+    PcaTraitsWithNoVariance {
+        /// The position of each trait with no variance among the traits of
+        /// the table, from 0 and in order.
+        positions: Vec<usize>,
+        /// How many traits the table has.
+        num_cols: usize,
+    },
+
+    /// A trait whose mean or whose standard deviation is not a number the
+    /// principal component analysis can use, because the values of that
+    /// trait are too large or too small for the arithmetic of an `f64`.
+    /// [`crate::pca::TraitScale`] says which of the three it is, and each
+    /// of them would otherwise give a result with no meaning: NaN
+    /// projections, a trait that quietly becomes a column of zeros, or a
+    /// division by 0. The user scales that trait or takes it out. In
+    /// Python it is a `ValueError` whose message names the trait, as the
+    /// error of the traits with no variance does.
+    #[error(
+        "the trait at the position {position} cannot be centered or standardized: {problem}; scale that trait or take it out of the table"
+    )]
+    PcaTraitOutOfRange {
+        /// The position of the trait among the traits of the table, from
+        /// 0.
+        position: usize,
+        /// Which of the three it is.
+        problem: crate::pca::TraitScale,
+    },
+
+    /// No trait of the table of a principal component analysis has
+    /// variance once it is centered: every value of every trait is equal
+    /// to the others, or the table is all zeros. There is no direction to
+    /// give. pyNei gives 0 for every projection and a percentage of NaN
+    /// for every component. In Python it is a `ValueError`.
+    #[error("no trait has variance, there is nothing to do a PCA with")]
+    PcaNoTraitWithVariance,
+
+    /// The buffer of the table of a principal component analysis does not
+    /// hold exactly its rows times its traits. Only a caller of the function
+    /// of the core crate reaches it, since each binding crate takes the
+    /// two numbers from the array it was given, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the table was given as {num_rows} x {num_cols} and its buffer holds {num_values} values"
+    )]
+    PcaTableOfAnotherSize {
+        /// How many values the buffer holds.
+        num_values: usize,
+        /// The rows the table was said to have.
+        num_rows: usize,
+        /// The traits the table was said to have.
+        num_cols: usize,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a principal
+    /// component analysis asked for did not run, with what was being
+    /// computed. The dimensions and the values that crate refuses are
+    /// checked before it is called, so what is left is a table whose
+    /// products are not finite and a machine with too little memory for
+    /// the workspace of the eigendecomposition. In Python it is a
+    /// `RuntimeError`.
+    #[error("the {operation} of the principal component analysis could not be done: {source}")]
+    PcaLinalg {
+        /// What was being computed: the product of the table with itself,
+        /// the product of a block of variants with itself, the
+        /// eigendecomposition, or one of the three products that give the
+        /// projections of a table, the weights of a table and the weights
+        /// of a block of variants.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
+    /// The reader of a principal component analysis of the variants gave
+    /// no variant. There is nothing to place the individuals by. It is
+    /// pyNei's "There are no variants in the 012 matrix", and in Python it
+    /// is a `ValueError`: the steps of the `Variants` let no variant
+    /// through, or the source has none.
+    #[error("there are no variants to do a PCA with")]
+    PcaNoVariants,
+
+    /// No variant of a principal component analysis of the variants has
+    /// variance: every one of them has one dosage among its called
+    /// genotypes, or no called genotype at all. There is no direction to
+    /// give. One individual gives it, since every variant of one
+    /// individual has one dosage. In Python it is a `ValueError`.
+    #[error(
+        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+    )]
+    PcaNoVariantWithVariance,
+
+    /// A variant of a principal component analysis of the variants has
+    /// more than two different alleles among its called genotypes, and
+    /// `transform_to_biallelic` is false. The dosage of a genotype is how
+    /// many of its alleles are not the major one, which has a meaning for
+    /// two alleles; with the argument true every allele that is not the
+    /// major one counts the same. The alleles are those the genotypes
+    /// hold and not those the source lists. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
+    )]
+    PcaVariantWithMoreThanTwoAlleles {
+        /// Which variant of those the reader gave it is, from 0.
+        position: usize,
+        /// How many different alleles it has among its called genotypes.
+        num_alleles: usize,
+    },
+
+    /// The weights of a principal component analysis of the variants were
+    /// asked for and no second pass over the variants was made. The weight
+    /// of a variant needs the eigenvectors, which are known when the first
+    /// pass ends, so a second reader over the same variants gives them.
+    /// Only a caller of the function of the core crate reaches it, since
+    /// each binding crate opens both readers, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the weights of {num_prin_comps} components were asked for and no second pass over the variants was made: the weight of a variant needs the eigenvectors, which are known when the first pass ends, so a second reader over the same variants is given whenever `num_prin_comps` is above 0"
+    )]
+    PcaSecondPassMissing {
+        /// How many components the weights were asked for.
+        num_prin_comps: usize,
+    },
+
+    /// The second pass of a principal component analysis of the variants
+    /// read other variants than the first. The weights it works out belong
+    /// to the variants of the first pass, which the eigenvectors come
+    /// from, so there is nothing to give. It is what a source that changed
+    /// between the two passes gives.
+    /// [`crate::pca::VariantsOfTheSecondPass`] says what differed. In
+    /// Python it is a `RuntimeError`: no argument is wrong, and the core
+    /// has no name of a source to give.
+    #[error(
+        "the second pass over the variants read other variants than the first: {problem}; the source changed between the two passes"
+    )]
+    PcaSecondPassDiffers {
+        /// What the second pass found that the first did not, or the other
+        /// way round.
+        problem: crate::pca::VariantsOfTheSecondPass,
+    },
+
+    /// The source of a principal component analysis of the variants has no
+    /// individual. The components are the axes the individuals of a
+    /// dataset are placed on, so there is nobody to place, and the
+    /// standardizing of a block would read its rows in chunks of no
+    /// allele. Every source of popnei has one individual at least, as
+    /// `docs/specs/block.md` says, so it is a caller of the function of the
+    /// core crate with a reader of its own that reaches it. In Python it is
+    /// a `ValueError`.
+    #[error(
+        "the source has no individual, and the principal components of the variants are the axes the individuals of a dataset are placed on"
+    )]
+    PcaNoIndividual,
+
+    /// The second pass of a principal component analysis of the variants
+    /// worked out the weight of a variant whose column of the weights is
+    /// not there. The variants of that pass are the variants of the first,
+    /// which it checks as it goes, so each of them has a column: this is a
+    /// defect of popnei, and in Python it is a `RuntimeError`.
+    #[error(
+        "the weights of the variant at the column {column} of the {num_used} that were used have no column to go in, which is a defect of popnei: the second pass over the variants counts them against the variants of the first and each of them has one"
+    )]
+    PcaWeightOutOfPlace {
+        /// The column the weights were to go in.
+        column: usize,
+        /// How many variants the first pass used, which is how many
+        /// columns the weights have.
+        num_used: usize,
+    },
+
+    /// A dataset the principal components of its variants cannot be taken
+    /// on, because one of its sizes is beyond what the analysis counts in.
+    /// [`crate::pca::VariantsTooLarge`] says which of the four it is. In
+    /// Python it is a `ValueError`.
+    #[error("the principal components of the variants cannot be taken on this dataset: {problem}")]
+    PcaVariantsTooLarge {
+        /// Which of the four sizes it is, with the number the dataset has.
+        problem: crate::pca::VariantsTooLarge,
+    },
+
+    /// The reader a calculation was given had no variant, and there is
+    /// nothing to calculate over: its source holds none, or the filters of
+    /// the pass kept none. `calc_kosman_sums` of `docs/specs/dists.md`
+    /// gives it when the first block it asks for is not there.
+    ///
+    /// Which of the two it was, and how many variants each filter of the
+    /// pass was given and kept, is what the binding crate adds: it holds
+    /// the chain of readers and reads the counts from it, as "A pass that
+    /// was not finished" of `docs/specs/filters.md` says, and the core does
+    /// not have them.
+    #[error("the reader gave no variant, and a calculation needs 1 variant at least")]
+    ReaderGaveNoVariants,
+
+    /// The distances of that many individuals need more memory than the
+    /// machine gives: popnei keeps two `u32` for every pair of them, which
+    /// is 8 bytes times the pairs, 400 MB for 10000 individuals, and the
+    /// machine did not give them. The individuals are those the reader says
+    /// its source has, so the memory is asked for once, when the first
+    /// block arrives.
+    #[error(
+        "the distances of {num_individuals} individuals are {num_pairs} pairs, and this machine did not give the memory of the two counts popnei keeps for each pair, 8 bytes a pair; calculate over fewer individuals"
+    )]
+    DistancesOfTooManyIndividuals {
+        /// How many individuals the source has.
+        num_individuals: usize,
+        /// How many pairs they make, which a `usize` holds: the
+        /// individuals whose pairs are more than one counts are refused by
+        /// [`Error::MorePairsThanAreCounted`] before the memory is asked
+        /// for.
+        num_pairs: usize,
+    },
+
+    /// The distances of that many individuals are more pairs than this
+    /// machine counts, so popnei cannot give each pair a place, whatever
+    /// memory there is: it holds the two counts of the pairs in one vector,
+    /// in the order of the distance vector, and a place in a vector is a
+    /// `usize`. A `usize` is 64 bits natively and 32 in wasm, where 92682
+    /// individuals make 4294930221 pairs and 92683 make more than one
+    /// counts.
+    #[error(
+        "the distances of {num_individuals} individuals are more pairs than this machine counts: popnei gives each pair a place among the others, and a place is counted in a usize, which holds {largest} here; calculate over fewer individuals",
+        largest = usize::MAX
+    )]
+    MorePairsThanAreCounted {
+        /// How many individuals the source has.
+        num_individuals: usize,
+    },
+
+    /// The sums the Kosman distances are worked out from do not fit in a
+    /// `u32`. popnei keeps, for each pair of individuals, the ploidy times
+    /// the sum of d and how many variants both of them were called at, and
+    /// the first is at most the ploidy times the second. So it takes more
+    /// than 4295 million variants of the ploidy 1, and 2147 million of the
+    /// ploidy 2, in one block or over a whole pass.
+    #[error(
+        "the Kosman distances of {num_vars} variants of the ploidy {ploidy} add up, for a pair of individuals, beyond the {largest} that popnei keeps for a pair: it keeps the ploidy times the sum of the distances of the pair, which is at most the ploidy times the variants; calculate over fewer variants",
+        largest = u32::MAX
+    )]
+    KosmanSumsTooLarge {
+        /// The variants whose distances were being added: the variants of
+        /// the block when the sets of bits of that block are built, and the
+        /// variants the pass has read so far, that block's among them, when
+        /// a block is added to the sums of the pass.
+        num_vars: u64,
+        /// How many alleles the genotype of one individual holds.
+        ploidy: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

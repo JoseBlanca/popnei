@@ -470,6 +470,21 @@ It cost a constant, a type alias, two private functions and one more
 exemption from the lint that denies plain arithmetic on integers, with
 the bound that makes it safe written beside it.
 
+What the merge of `main` did to these numbers, on 22 September 2026.
+`main` had gained a fast path of its own for the same loop: a variant
+whose alleles are only the missing one, 0 and 1 is counted by two
+comparisons and two additions per allele, in runs of 255 with counters of
+one byte, and never touches the table of 128. The merge kept both, the
+fast path first and the four arrays as what it falls back to. Every
+variant of this benchmark has two alleles, so the fast path takes every
+row of it and the four arrays never run here: on one thread, best of nine
+at a load average of 1.5, the five statistics with one population went
+from 0.184 s to 0.112 s and the allele frequency alone from 0.089 s to
+0.015 s. The four arrays are what a variant of three alleles or more
+still takes, and what `count_alleles_of` takes for a population that is
+not every individual: the pass with four populations, which has no fast
+path, is 0.328 s.
+
 ### Applied: the lookup of an individual builds no error it throws away
 
 H2, commit 4b977be, at one of the two sites the finding named. The count
