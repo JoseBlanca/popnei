@@ -87,6 +87,21 @@ allele of the variant, from 0 to the ploidy, every allele other than the
 major one counting the same. The dosage matrix is the variants x
 individuals array of them. pyNei: `to_012` and "the 012 matrix".
 
+**component.** A principal component: one of the directions, at right
+angles to each other, along which the individuals of a standardized table
+vary most, the first the one with the largest variance. "PC" in the names
+of a result, `PC0`, and `comps` in identifiers. Not used: axis, eigenvector,
+which is how a component is computed and not what it is.
+
+**projection.** Where an individual falls along a component, the
+coordinate a user plots. pyNei: `projections`. Not used: score, which is
+R's word, coordinate.
+
+**princomps.** The weights of each variant, or of each trait, in each
+component, components x variants, a field of the result of a PCA under
+the name pyNei gives it. "Weight" in prose. Not used: loading, rotation,
+which is R's word.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`
@@ -164,6 +179,14 @@ holds for both.
 
 **Python binding crate.** `crates/popnei-python`, written with pyo3. Its
 Python module is `popnei._core`.
+
+**linalg crate.** `crates/popnei-linalg`, the linear algebra of popnei,
+its products and decompositions, with two backends behind one interface:
+BLAS and LAPACK natively and faer, a library written in Rust, in wasm. It
+is the one crate of popnei with `unsafe` in it, the calls to BLAS and
+LAPACK. The core crate calls it. `docs/specs/linalg.md`. Not used:
+backend for the crate itself, which is the word for each of its two
+libraries.
 
 **JavaScript binding crate.** `crates/popnei-js`, written with
 wasm-bindgen, the Rust tool that generates the JavaScript that calls the
