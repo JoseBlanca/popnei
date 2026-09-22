@@ -247,7 +247,7 @@ the calculation in it.
 
 **Tasks.**
 
-- [ ] 3.1 The measurement and its report. From "Speed" of the dists
+- [x] 3.1 The measurement and its report. From "Speed" of the dists
   spec, with the machine and the load average as
   `docs/reports/filters-measurement.md` gives them, and pyNei's own vars
   file of `big.vcf` written outside the repository beside `big.vars`.
