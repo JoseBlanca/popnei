@@ -1738,17 +1738,58 @@ fn the_major_allele(counts: &AlleleCounts) -> i8 {
 /// and `codes` one byte for each. It is the first of the two passes over a
 /// row that `docs/specs/pca.md` writes for the compiler to turn into
 /// vector instructions.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
-)]
+///
+/// The ploidies 1 to 4 each get the loop with the length of a genotype
+/// written into it, because with that length a constant the compiler reads
+/// the alleles of several genotypes at once, and with it a number the
+/// dataset carries it reads one allele at a time. Every other ploidy takes
+/// the loop that reads the length from the dataset. The arms give the same
+/// codes: the dosage is a count of alleles and the missing flag is a
+/// boolean, and [`the_codes_of_any_ploidy`] is the same body with the same
+/// length.
 fn the_codes_of_the_genotypes(
     gts: &[i8],
     of_a_genotype: NonZeroUsize,
     major: i8,
     codes: &mut [u8],
 ) {
-    for (code, genotype) in codes.iter_mut().zip(gts.chunks_exact(of_a_genotype.get())) {
+    match of_a_genotype.get() {
+        1 => the_codes_of_a_ploidy_of::<1>(gts, major, codes),
+        2 => the_codes_of_a_ploidy_of::<2>(gts, major, codes),
+        3 => the_codes_of_a_ploidy_of::<3>(gts, major, codes),
+        4 => the_codes_of_a_ploidy_of::<4>(gts, major, codes),
+        of_a_genotype => the_codes_of_any_ploidy(gts, of_a_genotype, major, codes),
+    }
+}
+
+/// The codes of the genotypes of a row whose genotypes hold `OF_A_GENOTYPE`
+/// alleles, which is the body of [`the_codes_of_the_genotypes`] with the
+/// length of a genotype known when the code is compiled.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
+)]
+fn the_codes_of_a_ploidy_of<const OF_A_GENOTYPE: usize>(gts: &[i8], major: i8, codes: &mut [u8]) {
+    let (genotypes, _) = gts.as_chunks::<OF_A_GENOTYPE>();
+    for (code, genotype) in codes.iter_mut().zip(genotypes) {
+        let mut dosage = 0_u8;
+        let mut missing = 0_u8;
+        for allele in genotype {
+            dosage += u8::from(*allele != major);
+            missing |= u8::from(*allele == MISSING_ALLELE);
+        }
+        *code = if missing == 0 { dosage } else { MISSING_CODE };
+    }
+}
+
+/// The codes of the genotypes of a row whose genotypes hold
+/// `of_a_genotype` alleles, a length the dataset carries.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
+)]
+fn the_codes_of_any_ploidy(gts: &[i8], of_a_genotype: usize, major: i8, codes: &mut [u8]) {
+    for (code, genotype) in codes.iter_mut().zip(gts.chunks_exact(of_a_genotype)) {
         let mut dosage = 0_u8;
         let mut missing = 0_u8;
         for allele in genotype {
@@ -1995,14 +2036,16 @@ pub mod bench_internals {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::num::NonZeroUsize;
     use std::path::{Path, PathBuf};
 
     use popnei_linalg::eigh_lower;
 
     use super::{
         AfterTheFirstPass, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS, MAX_PLOIDY_OF_THE_VARIANTS,
-        Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions, VariantsOfTheSecondPass,
-        VariantsTooLarge, fix_the_signs, pca, pca_of_variants, the_components_with_variance,
+        MISSING_CODE, Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions,
+        VariantsOfTheSecondPass, VariantsTooLarge, fix_the_signs, pca, pca_of_variants,
+        the_codes_of_any_ploidy, the_codes_of_the_genotypes, the_components_with_variance,
         the_first_pass, the_scaled_vectors_of, the_standardized_row, the_weights_of_a_second_pass,
     };
     // The two ways of reading the rows of a block are one function in
@@ -2014,7 +2057,7 @@ mod tests {
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::{ChromTable, Needs};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
     /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
     /// literal here and in the reference files is written with 12
@@ -3351,6 +3394,94 @@ mod tests {
             TOLERANCE,
             "the dosages 0 2 1 1 of the major allele 0",
         );
+    }
+
+    /// The codes of a genotype of 1, 2, 3, 4 and 5 alleles, with the major
+    /// allele 0. The ploidies 1 to 4 take the arms of
+    /// `the_codes_of_the_genotypes` that have the length of a genotype
+    /// written into them and the ploidy of 5 takes the loop that reads it
+    /// from the dataset, so this pins every arm of that match. A dosage is
+    /// how many alleles of the genotype are not the major one, and a
+    /// genotype with one allele missing has no dosage.
+    #[test]
+    fn the_codes_of_a_genotype_are_its_dosage_at_every_ploidy() {
+        let of_one = |ploidy: usize| match NonZeroUsize::new(ploidy) {
+            Some(of_a_genotype) => of_a_genotype,
+            None => panic!("a ploidy of 0"),
+        };
+        let cases: [(usize, Vec<i8>, Vec<u8>); 5] = [
+            (1, vec![0, 1, -1, 2], vec![0, 1, MISSING_CODE, 1]),
+            (
+                2,
+                vec![0, 0, 0, 1, 1, 1, -1, 0, 0, -1, 1, -1],
+                vec![0, 1, 2, MISSING_CODE, MISSING_CODE, MISSING_CODE],
+            ),
+            (
+                3,
+                vec![0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, -1],
+                vec![0, 2, 3, MISSING_CODE],
+            ),
+            (
+                4,
+                vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 2, 1, 1, 1, 1, -1, 0, 0, 0],
+                vec![0, 2, 3, 4, MISSING_CODE],
+            ),
+            (
+                5,
+                vec![0, 0, 1, 1, 1, 0, 0, 0, 0, -1, 2, 2, 2, 2, 2],
+                vec![3, MISSING_CODE, 5],
+            ),
+        ];
+        for (ploidy, gts, expected) in cases {
+            let mut codes = vec![0_u8; expected.len()];
+            the_codes_of_the_genotypes(&gts, of_one(ploidy), 0, &mut codes);
+            assert_eq!(codes, expected, "the codes of a ploidy of {ploidy}");
+        }
+    }
+
+    /// The arms of `the_codes_of_the_genotypes` that have the length of a
+    /// genotype written into them give the same codes as the loop that
+    /// reads that length from the dataset, over a row of 131 individuals,
+    /// which is not a whole number of the 16 genotypes a vector load of
+    /// the first arm reads, so the tail of the loop is walked too. The
+    /// alleles repeat with a period of 11, which no ploidy here divides,
+    /// so a missing allele falls in every position of a genotype, and the
+    /// run of four major alleles the period opens with gives a genotype of
+    /// the dosage 0 at each of the four ploidies, which the two assertions
+    /// at the end check.
+    #[test]
+    fn the_codes_of_a_fixed_ploidy_are_the_codes_of_the_loop_that_reads_the_ploidy() {
+        const NUM_INDIVIDUALS: usize = 131;
+        for ploidy in 1..=4_usize {
+            let of_a_genotype = match NonZeroUsize::new(ploidy) {
+                Some(of_a_genotype) => of_a_genotype,
+                None => panic!("a ploidy of 0"),
+            };
+            let gts: Vec<i8> = (0..NUM_INDIVIDUALS * ploidy)
+                .map(|allele| match allele % 11 {
+                    0..=3 | 7 | 8 | 10 => 1,
+                    4 | 9 => 0,
+                    5 => 2,
+                    _ => MISSING_ALLELE,
+                })
+                .collect();
+            let mut of_the_match = vec![0_u8; NUM_INDIVIDUALS];
+            let mut of_the_loop = vec![0_u8; NUM_INDIVIDUALS];
+            the_codes_of_the_genotypes(&gts, of_a_genotype, 1, &mut of_the_match);
+            the_codes_of_any_ploidy(&gts, ploidy, 1, &mut of_the_loop);
+            assert_eq!(
+                of_the_match, of_the_loop,
+                "the codes of a ploidy of {ploidy}"
+            );
+            assert!(
+                of_the_match.contains(&MISSING_CODE),
+                "a genotype with an allele missing at a ploidy of {ploidy}"
+            );
+            assert!(
+                of_the_match.contains(&0),
+                "a genotype of the major allele only at a ploidy of {ploidy}"
+            );
+        }
     }
 
     /// The dosages of a tetraploid variant, which is the only fixture of
