@@ -1,10 +1,88 @@
 # Work report: the stats module and the filter of individuals
 
-The plan `docs/plans/stats.md` is under way, on the branch `plan/stats`,
-in the worktree `.claude/worktrees/stats`, since 22 September 2026. The
-orchestrator, in this report, is the session of the assistant that runs
-the plan: it sends each task to a subagent on Opus, checks what comes
-back and has each work package reviewed.
+The plan `docs/plans/stats.md` is done, on the branch `plan/stats`, in
+the worktree `.claude/worktrees/stats`, where it ran on 22 September
+2026. It is not merged. The orchestrator, in this report, is the session
+of the assistant that ran the plan: it sent each task to a subagent on
+Opus, checked what came back and had each work package reviewed.
+
+What exists now that did not. A user keeps the individuals they name, in
+the order they name them, with `variants.filter_individuals(["ind05",
+"ind00", "ind49"])` in Python and `filterIndividuals` in TypeScript, and
+every consumer after that sees those three. They call
+`calc_per_var_distribs(variants, pops=...)` and get, per population, the
+mean and the histogram of the observed heterozygosity, the major allele
+frequency, the expected heterozygosity plain and unbiased, and the three
+counts and two ratios of the polymorphism ratio; and
+`calc_per_individual_stats(variants)` for the missing rate and the
+heterozygosity rate of every individual. Both run in the browser, in the
+wheel for pyodide, and both have their twin in TypeScript. On the panel
+of 200 individuals and on `many.vcf` the numbers are those of plink2
+v2.0.0-a.7.7 and of pyNei at ef0ca6e: the two rates of every individual
+equal plink2's exactly, and the four distributions equal pyNei's, the
+counts exactly and the means within 1e-12.
+
+The final check of the plan, from a clean clone of the branch at
+048a112, the commit that finished it; the commits after it change only
+this report. `cargo fmt --all --check` exit 0; `cargo clippy --workspace
+--all-targets -- -D warnings` no warning; `cargo test --workspace` `428
+passed`, 2 ignored, where the plan started from 306; `cargo wasm-check`
+finished; ruff `21 files already formatted` and `All checks passed!`;
+`uv run maturin develop && uv run pytest` `244 passed`, from 174; in
+`js/popnei`, `npm run build && npm test` `tests 162`, `fail 0`, from
+126; the wheel of pyodide built and its smoke test exited with 0.
+
+What is asked of the owner.
+
+1. The merge of `plan/stats`, which is the orchestrator's only ask and
+   which it does not do. The branch is from `spec/stats`, which is from
+   `main` at 7d8366f, and `main` has moved since: the Kosman plan was
+   merged into it at 3aa9484. Three places will meet at the merge. The
+   two functions the Kosman plan added to the binding crates call
+   `chain_of` with the signature `main` has, and this branch changed it
+   to take a list of `PassStep`; they will not build until they take
+   steps. The error of a calculation whose pass gave no variant exists
+   twice, as `ReaderGaveNoVariants` in `main`, which the binding crate
+   fills with the counts of the filters, and as `PassGaveNoVariant`
+   here, which carries them in the core; each follows its own spec, and
+   which one stays is a decision. And the list of modules of the core
+   and the end of the error enum are where this branch, the Kosman plan
+   and `plan/pca`, which is not merged either, all add lines; keeping
+   both sides is the resolution, as the board says.
+2. The one number of "Speed" that is not met: the per variant pass with
+   the five statistics takes 0.479 to 0.483 s on one thread where the
+   spec asks 0.25 s. The plan says that is a finding and not a task, so
+   nothing was changed for it. Work package 6 below says where the time
+   goes, and whether to work on it is the owner's, through a performance
+   review.
+3. Eight decisions the plan made that the owner can reverse, each
+   written where it happened below: a key of `hist_kwargs` that popnei
+   does not know is refused, where pyNei ignores it; a histogram has at
+   most 100000 bins and its range must be one a float64 spans, both new
+   refusals that stop a panic and a silently wrong histogram; at ploidy
+   1 the plain expected heterozygosity is a hair below 0 and falls out
+   of the histogram, and was not rounded to 0; the `repr` of a filter of
+   individuals prints every kept name; `filter_individuals("ind05")`
+   with a bare string is a `TypeError`; the missing rate of an index
+   that is no individual is NaN; and in TypeScript the populations of a
+   result come in the iteration order of the keys of the object, which
+   JavaScript puts in numeric order for names that are whole numbers,
+   where a `Map` would keep the order the user wrote.
+4. Three things this plan did not settle and did not touch. The case of
+   the genotypes not being in a block reaches Python as a wrong input of
+   a user where the code calls it a defect of a reader; it has behaved
+   so since before this plan. Neither pass honours Ctrl-C while it runs,
+   which is the choice the writer of the vars file made and which the
+   report of the filters already put before the owner; a pass over the
+   400 MB file is about 2.4 s of a dead Ctrl-C. And `docs/glossary.md`
+   ends a sentence in the middle at its line 154, from a commit long
+   before this branch, in a file other branches also change, so it was
+   left alone.
+5. Two things a user of the Python package will notice. It now depends
+   on pandas 3.0.2, pyNei's version, because the spec says the results
+   are its series and frames. And it still ships no `py.typed`, so the
+   type hints the coding skill asks for never reach a user's type
+   checker; that is not this plan's to add.
 
 ## Before the first task
 
