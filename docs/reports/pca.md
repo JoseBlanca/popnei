@@ -258,3 +258,97 @@ The deliverables, checked by the orchestrator at b3a2575:
    --workspace` `319 passed`, 2 ignored, and `33 passed`; ruff `20 files
    already formatted` and `All checks passed!`; `uv run maturin develop
    && uv run pytest` `182 passed`; `cargo wasm-check` finished.
+
+The review, seven reviewers at b3a2575, spec, tests, numbers, errors,
+api, binding and architecture, and the fixes at d512968 to 61b49d3.
+What was found and is fixed:
+
+- A trait whose squared deviations overflow, values above about 1e154,
+  was zeroed in silence and left the analysis with a weight of 0 and the
+  whole variance given to the other traits; one whose squares underflow,
+  values below about 2e-162, or whose sum overflows, reached the linalg
+  crate as a value that is not finite and gave a `RuntimeError` blaming
+  popnei. Each is a `ValueError` naming the trait and which of the three
+  happened, in the spec, the core, Python and TypeScript.
+- Two products overflowed before the division that would have kept them
+  finite: the percentages, 100 times λ before dividing by the sum, were
+  infinite for λ above 1.8e306 where pyNei divides first, and the
+  threshold of a component with no variance, λ₁ times max(n, p), dropped
+  every component for λ₁ above 1.8e308 / max(n, p). Both divide first.
+- A table in which no component has variance gave empty frames and no
+  word; it is a `ValueError`, "no trait has variance, there is nothing
+  to do a PCA with", the wording of the variants half, and pyNei gives
+  NaN percentages there. This is a value a user sees that the spec did
+  not state, and the owner can reverse it.
+- The core read the first values of a buffer longer than rows x columns
+  while its error case said the buffer had another size; it refuses it.
+- Four tests could not fail: no fixture had more rows than traits and a
+  component dropped, so the truncation of the weights on that side was
+  unguarded; three of the four `ValueError`s the spec promises in Python
+  had no pytest, so moving them to the `RuntimeError` arm failed
+  nothing; the ten-name cutoff of the no-variance message was
+  unguarded; the branches of the TypeScript arguments for an undefined
+  option and a transferred buffer had no test. Each has its test now.
+- The exception of the traits with no variance carried the positions
+  and no message on the Python side; it carries the core's message and
+  the positions, and the new error of a trait out of range does the
+  same.
+- A missing value of a nullable pandas dtype gave numpy's `TypeError`;
+  the frame is converted with NaN for it, so the core names the row and
+  the trait in a `ValueError`.
+- The defaults `center_data` and `standardize_data` were written in the
+  Python and the TypeScript layers and nowhere in the core; they are two
+  `pub const` of the core that both bindings export and read, as the
+  ploidy of the VCF reader is.
+- The JavaScript binding's export was `do_pca` where the Python one was
+  `pca`; both are `pca`. A `bool` parameter of a private function became
+  an enum. Doc comments, docstrings, comments with a wrong number, and
+  the `pca` row of section 9 of the architecture, which did not name
+  the PCA of a table, corrected. The spec says which three fields the
+  TypeScript result of `doPca` leaves out, what the memory of the
+  analysis is as the code holds it, and that the sign of the second
+  component of pyNei's 3 x 3 table is decided by rounding.
+- The `pyo3.md` of the coding skill said `as_slice()` fails on an array
+  that is not C contiguous; it takes a Fortran contiguous one and hands
+  its values column after column, and a pandas frame of one dtype is
+  Fortran contiguous, so a binding that trusted the skill would read
+  every table transposed. The skill says to ask `is_c_contiguous()`
+  first.
+
+Not taken, with the reason: naming the row and the trait in the message
+of a value that is not finite, which the spec asks of the no-variance
+message only; a message naming the argument for a wrong dtype at
+`_core.pca`, unreachable from `do_pca`; pinning the threshold constant
+with a fixture near it; a `popnei:` prefix on the core's messages in
+TypeScript, the package's existing convention.
+
+What the owner should know:
+
+- With more traits than rows the core holds the weights twice, so the
+  memory of `do_pca` on a 1000 x 8000 frame is 216 MB in the core plus
+  the 64 MB contiguous copy Python makes, where the spec said the table
+  plus the square of its smaller side; the spec says now what the code
+  uses, and a strided write would save 64 MB there.
+- `do_pca` is one call into the core with the interpreter released, and
+  a Ctrl-C reaches it only when it returns; the core has no callback
+  for it. The PCA of the variants runs block by block and can check
+  for signals between blocks.
+- The threshold of a component with no variance is pinned by no test:
+  a threshold 1e6 times larger passes every test, since the smallest
+  real eigenvalue of every fixture is far above it.
+- The Python tests of `do_pca` compare with pyNei at run time and hold
+  no literal of R; the core's tests hold every row of R's files.
+
+After the fixes, at 61b49d3: `cargo test -p popnei --lib pca` `19
+passed`; `cargo test --workspace` `325 passed`, 2 ignored, and `33
+passed`; clippy, fmt and `cargo wasm-check` clean; ruff clean; `uv run
+maturin develop && uv run pytest` `192 passed`, 18 in
+`tests/test_pca.py`; `npm run build && npm test` `tests 142`, `fail 0`;
+the wheel built and the smoke test exited 0 with pandas now a
+dependency of the package, which micropip fetches under pyodide.
+
+How the work went: the three tasks went to three subagents, 213330,
+168021 and 142411 tokens at the end of the tasks and 290523, 224367 and
+173885 after the fixes; the seven reviewers used 132110, 119847,
+120233, 110675, 115533, 104737 and 94049 tokens. No task had to be sent
+twice.
