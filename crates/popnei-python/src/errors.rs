@@ -282,7 +282,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // too, which `docs/specs/variant.md` says in "The Rust interface":
         // the counts have no function in Python, so the genotypes they
         // refuse, the ploidy they were given and a variant of more alleles
-        // than a count of them holds are a reader's and not a user's. A step
+        // than a count of them holds are a reader's and not a user's.
         // The three of `Block::retain_individuals` are of that kind as
         // well, the indices of the individuals a filter of individuals
         // keeps: they come from `resolve_individuals`, which refuses the
