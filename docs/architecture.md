@@ -238,6 +238,7 @@ which generates the JavaScript that calls Rust functions (section 11).
 ```
 Cargo.toml                 the workspace
 crates/popnei/             the core crate, pure Rust, no pyo3, cargo test
+crates/popnei-linalg/      the linear algebra the core calls, the one crate with unsafe
 crates/popnei-python/      the Python binding crate, pyo3 + numpy, built by maturin
 crates/popnei-js/          the JavaScript binding crate, wasm-bindgen
 python/popnei/             the Python package: API, results, Variants
@@ -248,14 +249,22 @@ docs/
 pyproject.toml             maturin, manifest-path to the Python binding crate
 ```
 
+The linear algebra is a crate of its own, `crates/popnei-linalg`, with
+two backends behind one interface: BLAS and LAPACK natively, the
+libraries numpy calls, and faer, a linear algebra library written in
+Rust, on the two wasm targets and natively when its cargo feature `blas`
+is off. It is the one crate of popnei with `unsafe` in it, the calls to
+BLAS and LAPACK; the core crate keeps `#![forbid(unsafe_code)]` and
+calls it. `docs/specs/linalg.md`.
+
 pyNei is a development dependency of the Python side, taken from
 `https://github.com/JoseBlanca/pynei` at the commit that `[tool.uv.sources]`
 of `pyproject.toml` names, and the tests run both libraries on the same
 inputs where they overlap.
 
-## 9. The modules of the core crate, and what of pyNei each one carries
+## 9. The modules of the core crate, the linalg crate, and what of pyNei each one carries
 
-| module | what it holds | pyNei functions it replaces |
+| module or crate | what it holds | pyNei functions it replaces |
 |---|---|---|
 | `variant` | `Needs`, `ChromTable`, `MISSING_ALLELE`, `VariantRef`, the view of one variant of a block, and the row helpers over it: dosages, missing and het masks, allele counts | `Genotypes.to_012`, `gt_counts` |
 | `io::vcf` | the reader, which parses the lines of a block in parallel, gzip; the writer | `vars_from_vcf`, and a writer pyNei does not have |
@@ -265,7 +274,7 @@ inputs where they overlap.
 | `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
 | `dists` | Kosman between individuals on blocks, Jost's D between pops | `calc_pairwise_kosman_dists`, `calc_jost_dest_pop_dists` |
-| `linalg` | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares; backends: BLAS and LAPACK natively, faer in wasm | numpy.linalg |
+| the linalg crate, which the core calls | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares; backends: BLAS and LAPACK natively, faer in wasm and natively with the cargo feature `blas` off | numpy.linalg |
 | `pca` | PCA of the 012 matrix, PCoA of a distance matrix | `do_pca_from_variants`, `do_pcoa_from_variants` |
 | `ld` | Rogers Huff r2 between blocks of variants, by distance | `calc_rogers_huff_r2_matrix`, `iter_rogers_huff_r2`, `calc_ld_and_dist_per_pop` |
 | `kinship` | the GRM, per pair denominators, principal components of it | `calc_kinship` |
@@ -273,8 +282,8 @@ inputs where they overlap.
 
 The order of the work is the order of the rows: `variant`, `io::vcf`,
 `io::vars`, `filters` and `block` are the walking skeleton, `stats` and
-`dists` come next because they are what most users run, then `linalg` and
-what sits on it.
+`dists` come next because they are what most users run, then the linalg
+crate and what sits on it.
 
 ## 10. The walking skeleton
 
