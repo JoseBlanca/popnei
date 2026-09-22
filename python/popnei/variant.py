@@ -128,11 +128,10 @@ class Variants:
         :func:`popnei.open_vars` build."""
         self._source = source
         # The names of the individuals of the source come from the header,
-        # which was read once, so they are taken out of the core here and
-        # not at every use. They are given to the steps as well, which
-        # resolve the names of a filter of individuals against them.
-        self._of_the_source = tuple(source.individuals())
-        self._steps = _core.Steps(list(self._of_the_source))
+        # which was read once. The steps are given them: they resolve the
+        # names of a filter of individuals against them, and they are what
+        # says which individuals the next pass gives.
+        self._steps = _core.Steps(list(source.individuals()))
 
     def __repr__(self) -> str:
         """The source the variants are read from, the options it is read
@@ -164,10 +163,7 @@ class Variants:
         changes nothing of them, so they are the same read before one and
         after one.
         """
-        for step in self.steps:
-            if step.kind == "individuals":
-                return step.args["individuals"]
-        return self._of_the_source
+        return tuple(self._steps.individuals())
 
     @property
     def num_individuals(self) -> int:
@@ -190,7 +186,7 @@ class Variants:
         The tuple and the ``args`` dict of every step in it are built at
         each read, out of what the ``Variants`` holds, so writing into one
         of those dicts changes nothing of the steps: a step is added by one
-        of the three filter methods and by nothing else.
+        of the four filter methods and by nothing else.
         """
         return tuple(
             Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
@@ -305,6 +301,13 @@ class Variants:
         what their user thinks. A user who wants two sets of individuals
         over one file opens it twice. After any of them the steps are as
         they were.
+
+        One name written as a string, ``filter_individuals("ind05")``, is a
+        ``TypeError`` that says to write ``("ind05",)``: a string is a
+        sequence of its letters and the call would ask for the individuals
+        ``i``, ``n``, ``d``, ``0`` and ``5``. What is no sequence at all,
+        and an element of it that is no name, are a ``TypeError`` that
+        names `individuals` and what was given.
         """
         if isinstance(individuals, str):
             # A string is a sequence of its letters, and one name written
@@ -314,7 +317,27 @@ class Variants:
                 f"`individuals` is a sequence of names and not one name: write "
                 f'individuals=("{individuals}",) for that one individual'
             )
-        self._steps.filter_individuals(list(individuals))
+        try:
+            names = list(individuals)
+        except TypeError:
+            # What Python says of its own here, `'int' object is not
+            # iterable`, names neither the argument nor the call.
+            raise TypeError(
+                f"`individuals` is a sequence of the names of the individuals "
+                f"to keep, and {individuals!r}, a "
+                f"{type(individuals).__name__}, was given"
+            ) from None
+        for name in names:
+            if not isinstance(name, str):
+                # pyo3 refuses it with `'int' object is not an instance of
+                # 'str'`, which names neither the argument nor which of the
+                # names it is.
+                raise TypeError(
+                    f"`individuals` is a sequence of the names of the "
+                    f"individuals to keep, and {name!r}, a "
+                    f"{type(name).__name__}, is one of them"
+                )
+        self._steps.filter_individuals(names)
 
     def iter_blocks(
         self,

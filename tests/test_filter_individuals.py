@@ -16,6 +16,7 @@ individuals with the missing data filter after it keeps are those of
 bcftools 1.24 as well, which "How it is verified" of the filter gives.
 """
 
+import copy
 from pathlib import Path
 
 import numpy
@@ -356,6 +357,26 @@ def test_a_second_filter_of_individuals_is_refused_with_the_kind(
         variants.filter_individuals(("ind01",))
 
 
+def test_a_shallow_copy_shares_the_steps_and_the_kept_individuals(
+    reference_vcf_dir: Path,
+) -> None:
+    """`copy.copy(variants)` after a filter of individuals.
+
+    A shallow copy is a second handle over the same source and the same
+    steps, and the individuals a handle gives are the ones its steps keep,
+    so a filter of individuals put on either of them is on both and both
+    give the kept names, in the order they were named.
+    """
+    variants = _many(reference_vcf_dir)
+    twin = copy.copy(variants)
+
+    variants.filter_individuals(THE_THREE)
+
+    assert twin.steps == variants.steps
+    assert twin.individuals == THE_THREE
+    assert twin.num_individuals == len(THE_THREE)
+
+
 def test_one_name_written_as_a_string_is_a_type_error(
     reference_vcf_dir: Path,
 ) -> None:
@@ -372,4 +393,32 @@ def test_one_name_written_as_a_string_is_a_type_error(
         variants.filter_individuals("ind05")
 
     assert "ind05" in str(refusal.value)
+    assert variants.steps == ()
+
+
+def test_what_is_no_sequence_of_names_is_a_type_error_that_names_the_argument(
+    reference_vcf_dir: Path,
+) -> None:
+    """`filter_individuals(5)` and `filter_individuals(["ind00", 3])`.
+
+    Python says `'int' object is not iterable` of the first and pyo3 says
+    `'int' object is not an instance of 'str'` of the second, and neither
+    message names the argument or the call the user wrote. The package
+    checks both, as the TypeScript one does.
+    """
+    variants = _many(reference_vcf_dir)
+
+    with pytest.raises(TypeError) as of_no_sequence:
+        variants.filter_individuals(5)  # type: ignore[arg-type]
+
+    assert "individuals" in str(of_no_sequence.value)
+    assert "5" in str(of_no_sequence.value)
+    assert "int" in str(of_no_sequence.value)
+
+    with pytest.raises(TypeError) as of_a_name_that_is_no_name:
+        variants.filter_individuals(["ind00", 3])  # type: ignore[list-item]
+
+    assert "individuals" in str(of_a_name_that_is_no_name.value)
+    assert "3" in str(of_a_name_that_is_no_name.value)
+    assert "int" in str(of_a_name_that_is_no_name.value)
     assert variants.steps == ()
