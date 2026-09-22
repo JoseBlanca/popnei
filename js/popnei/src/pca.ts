@@ -173,9 +173,29 @@ export function doPca(
 export interface VariantsPcaResult extends PcaResult {
   /**
    * The names of the individuals, in the order the source has them, which
-   * is the order of the rows of `projections`.
+   * is the order of the rows of `projections`. They are the names of the
+   * rows of the table that a user of `doPca` keeps for themselves: here the
+   * source carries them.
    */
   readonly individuals: readonly string[];
+  /**
+   * Where each individual falls along each component, the individuals x
+   * `numComps`, row after row. Every component that has variance is here,
+   * whatever `numPrinComps` was.
+   */
+  readonly projections: Float64Array;
+  /**
+   * How many components the weights are given for: `numPrinComps` of the
+   * call, or the components that have variance when fewer were found, or 0
+   * when no weights were asked for.
+   */
+  readonly numPrinComps: number;
+  /**
+   * The weight of each variant that was used in each component,
+   * `numPrinComps` x `usedVars.length`, row after row. It has no row when no
+   * weights were asked for, and `usedVars` names its columns then as well.
+   */
+  readonly princomps: Float64Array;
   /**
    * The position of each variant that was used, from 0, among the variants
    * the pass gave, the ones with no variance included. They are the columns
@@ -205,6 +225,12 @@ export interface DoPcaFromVariantsOptions {
    * number of 0 or more. 10 when it is not given, more than the components
    * there are gives those there are, and 0 gives no weight and reads the
    * source once instead of twice.
+   *
+   * It cuts the weights and nothing else: `projections` and
+   * `explainedVariancePercent` are of every component that has variance
+   * whatever it is. What it is for is the weights of a million variants,
+   * which are 80 MB for 10 components and 8 GB for every component of a
+   * dataset of 1000 individuals.
    */
   numPrinComps?: number;
 }
@@ -232,16 +258,23 @@ export interface DoPcaFromVariantsOptions {
  * `Variants` here, and which gives the weights of every variant where this
  * gives those of the first `numPrinComps` components.
  *
+ * A page holds 4 GB at a time, and the matrix of the individuals, its
+ * eigenvectors and the workspace of the eigendecomposition are about 6 times
+ * 8 bytes per pair of individuals, so a dataset of more than 9381
+ * individuals is an `Error` here and is analysed by a program outside the
+ * browser, popnei in Python among them.
+ *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
  * `transformToBiallelic` is not a boolean, when `numPrinComps` is not a
- * whole number of 0 or more and at most 4294967295, when the source cannot
- * be read, a wrong line of a VCF among the causes, when a variant has more
- * than two alleles among its called genotypes and `transformToBiallelic` is
- * false, when the pass gives no variant or no variant with variance, when
- * the ploidy is above 254, the individuals are more than 46340 or the
- * variants or the weights are more than a whole number of WebAssembly
- * counts, when the linear algebra could not be done, and when `init` has not
- * been awaited.
+ * whole number of 0 or more and at most 4294967295, when the analysis of
+ * these individuals does not fit in the memory of a page, when the source
+ * cannot be read, a wrong line of a VCF among the causes, when a variant has
+ * more than two alleles among its called genotypes and `transformToBiallelic`
+ * is false, when the pass gives no variant or no variant with variance, when
+ * the source has no individual, when the ploidy is above 254, the
+ * individuals are more than 46340 or the variants or the weights are more
+ * than a whole number of WebAssembly counts, when the linear algebra could
+ * not be done, and when `init` has not been awaited.
  */
 export function doPcaFromVariants(
   variants: Variants,

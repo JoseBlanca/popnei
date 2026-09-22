@@ -241,10 +241,12 @@ impl PcaOfVariants {
 /// done.
 pub(crate) fn pca_of_the_variants(
     source: &dyn OpenSource,
+    num_individuals: usize,
     transform_to_biallelic: bool,
     num_prin_comps: usize,
     steps: Steps,
 ) -> Result<PcaOfVariants, JsPopneiError> {
+    room_for_the_analysis(num_individuals)?;
     let options = VariantPcaOptions {
         transform_to_biallelic,
         num_prin_comps,
@@ -264,9 +266,13 @@ pub(crate) fn pca_of_the_variants(
     };
     let result = popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)?;
     // The variants the pass gave, used or not, which is what the counts of a
-    // pass say. A `usize` is 32 bits in wasm and 64 natively, and both fit
-    // in a `u64`, so the conversion cannot fail.
-    let num_vars = u64::try_from(result.num_cols).unwrap_or(u64::MAX);
+    // pass say.
+    let num_vars = u64::try_from(result.num_cols).map_err(|_| {
+        JsPopneiError::Broken(format!(
+            "the pass gave {num_vars} variants, more than the count of a pass holds",
+            num_vars = result.num_cols
+        ))
+    })?;
     let pass_stats = PassCounts::of(num_vars, &first_pass.filtering_stats());
     Ok(PcaOfVariants {
         num_comps: result.num_comps,
@@ -277,6 +283,70 @@ pub(crate) fn pca_of_the_variants(
         used_vars: Some(the_positions_of_the_used_variants(&result.used_cols)?),
         pass_stats,
     })
+}
+
+/// The memory a wasm module addresses, 4 GiB, which is what a page holds of
+/// everything popnei has open in it at once.
+const MEMORY_OF_A_WASM_MODULE: u64 = 4 * 1024 * 1024 * 1024;
+
+/// How much memory the principal components of the variants hold at their
+/// peak, in tenths of the individuals x individuals matrix, which is 8 bytes
+/// per pair of individuals: that matrix, its eigenvectors, and the workspace
+/// the eigendecomposition of faer allocates for itself.
+///
+/// The workspace is faer's own allocation and not one popnei asks for, and
+/// an allocation that fails in wasm aborts, which is a trap that ends the
+/// module where section 11 of `docs/architecture.md` asks for an `Error`. So
+/// the size is measured and the analysis is refused before it starts.
+///
+/// Measured under node 24 on 22 September 2026, on a VCF of 2 variants read
+/// with `numPrinComps` 1: 3000 individuals grew the memory of wasm to
+/// 385220608 bytes, 5.35 times the 72000000 of their matrix; 9410
+/// individuals ran, 9415 ended the module with `RuntimeError: unreachable`
+/// after 173 ms, and 9415 individuals have a matrix of 709137800 bytes, of
+/// which 4 GiB is 6.05. So the analysis holds about 6 times its matrix, and
+/// popnei counts 6.1 of them, which takes 9381 individuals at most, 29 below
+/// the smallest number that trapped.
+const TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS: u64 = 61;
+
+/// That the memory of wasm takes the principal components of the variants of
+/// `num_individuals` individuals.
+///
+/// What the analysis holds is
+/// [`TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS`] tenths of the individuals x
+/// individuals matrix, and a page holds 4 GiB of everything at once. What
+/// this does not know is what the tab already holds, the bytes of the file
+/// among them, so a page with little left can still run out; what it stops
+/// is the dataset that cannot fit however empty the tab is, which is the one
+/// that ends the module with no message.
+///
+/// # Errors
+///
+/// When the analysis of that many individuals does not fit in the memory of
+/// a page.
+#[wasm_bindgen]
+pub fn room_for_the_analysis(num_individuals: usize) -> Result<(), JsPopneiError> {
+    // A count that is beyond what these multiplications hold is a dataset
+    // that is far beyond the memory of a page, so every one of them
+    // saturates instead of being checked: what the number then says is the
+    // largest the arithmetic holds, and the analysis is refused either way.
+    let individuals = u64::try_from(num_individuals).unwrap_or(u64::MAX);
+    let wanted = individuals
+        .saturating_mul(individuals)
+        .saturating_mul(8)
+        .saturating_mul(TENTHS_OF_THE_MATRIX_THE_ANALYSIS_HOLDS)
+        / 10;
+    if wanted <= MEMORY_OF_A_WASM_MODULE {
+        return Ok(());
+    }
+    Err(JsPopneiError::NoMemory(format!(
+        "the principal components of {num_individuals} individuals hold about \
+         {gigabytes} GB, the individuals x individuals matrix of the analysis, its \
+         eigenvectors and the workspace of the eigendecomposition, and a page holds \
+         at most 4 GB of everything at a time. A dataset of this many individuals is \
+         analysed by a program outside the browser, popnei in Python among them.",
+        gigabytes = wanted.div_ceil(1000 * 1000 * 1000)
+    )))
 }
 
 /// The positions of the variants that were used as the `Uint32Array` they

@@ -88,18 +88,25 @@ impl VcfSource {
     ///
     /// # Errors
     ///
-    /// When the VCF cannot be read, when a variant has more than two alleles
-    /// among its called genotypes and `transform_to_biallelic` is false,
-    /// when the pass gives no variant or no variant with variance, when a
-    /// size of the dataset is beyond what the analysis counts in, and when
-    /// the linear algebra could not be done.
+    /// When the analysis of these individuals does not fit in the memory of
+    /// a page, when the VCF cannot be read, when a variant has more than two
+    /// alleles among its called genotypes and `transform_to_biallelic` is
+    /// false, when the pass gives no variant or no variant with variance,
+    /// when a size of the dataset is beyond what the analysis counts in, and
+    /// when the linear algebra could not be done.
     pub fn pca_of_variants(
         &self,
         transform_to_biallelic: bool,
         num_prin_comps: usize,
         steps: Steps,
     ) -> Result<PcaOfVariants, JsPopneiError> {
-        pca_of_the_variants(self, transform_to_biallelic, num_prin_comps, steps)
+        pca_of_the_variants(
+            self,
+            self.individuals.len(),
+            transform_to_biallelic,
+            num_prin_comps,
+            steps,
+        )
     }
 }
 

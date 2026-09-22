@@ -32,15 +32,26 @@ import { test } from "node:test";
 
 import { doPca, doPcaFromVariants, init, openVcf } from "popnei";
 
+import { room_for_the_analysis as roomForTheAnalysis } from "../wasm/popnei.js";
 import { theValuesOf } from "../dist/pca.js";
 import { referencePcaVcf, referenceTable } from "./reference.ts";
 
 await init();
 
 /**
- * The tolerance of "How it is verified" of `docs/specs/pca.md`: the
- * reference files write 12 significant digits, and the two routes to the
- * components differ by 3e-15 in a projection.
+ * The tolerance of "How it is verified" of `docs/specs/pca.md`, which the
+ * numbers here are far inside.
+ *
+ * The reference files write 12 significant digits, and what is compared with
+ * them is what popnei computes, so what the tolerance has to cover is the
+ * distance between popnei and R. Measured here on 22 September 2026, over
+ * every number of the three files of the worked example: 5.73e-15 in a
+ * projection, 4.93e-12 in a percentage and 4.43e-14 in a weight. The
+ * percentages are the widest apart because they are numbers of about 70 and
+ * the others are of about 1. For a table, the spec measures 3e-15 in a
+ * projection between the two routes to the components, the
+ * eigendecomposition of the product of the rows and that of the product of
+ * the traits.
  */
 const TOLERANCE = 1e-9;
 
@@ -289,6 +300,19 @@ const WORKED_PROJECTIONS = [
 
 const WORKED_PERCENT = [76.74407104469, 21.71669104093, 1.53923791438];
 
+/**
+ * Where the first individual of `worked3.vcf` falls, and the variance each
+ * of its components holds, from `worked3.r.projections.tsv` and
+ * `worked3.r.percent.tsv`: the dataset of the worked example with a sixth
+ * variant of three alleles, read with every allele that is not the major one
+ * counting the same.
+ */
+const WORKED3_ROW_0 = [
+  -0.540318123982, 1.0305897036, 0.564890574265,
+];
+
+const WORKED3_PERCENT = [70.7485198149, 26.495544613, 2.75593557214];
+
 /** The weight of each of the three variants used, component after component. */
 const WORKED_PRINCOMPS = [
   0.5019679573733, 0.6484646269251, 0.5722952012706, -0.7978606574051,
@@ -330,11 +354,17 @@ test("the worked example gives the projections and the weights of R", () => {
   assertClose(result.princomps, WORKED_PRINCOMPS, "the weights");
 });
 
-test("the worked example gives the counts of its pass", () => {
+test("the worked example with no option gives its counts and 10 weights", () => {
   const result = theVariantsPca(WORKED_VCF);
   // The five variants of the file, the two with no variance included: the
   // pass gave them and the analysis left them out, and no filter ran.
   assert.deepEqual(result.passStats, { numVars: 5, filtering: {} });
+  // The default of `numPrinComps` is 10, which is more components than this
+  // dataset has, so the weights are of the 3 there are: with a default of 0
+  // there would be none.
+  assert.equal(result.numPrinComps, 3);
+  assert.equal(result.princomps.length, 9);
+  assertClose(result.princomps, WORKED_PRINCOMPS, "the weights");
 });
 
 test("no weights are asked for and princomps has no row", () => {
@@ -366,8 +396,21 @@ test("every allele that is not the major one counts the same", () => {
     transformToBiallelic: true,
     numPrinComps: 3,
   });
+  // R gives four components for this dataset and popnei the three that have
+  // variance, the fourth holding 1.09e-31 of the variance, so the three
+  // percentages are the first three of R's.
   assert.equal(result.numComps, 3);
   assert.deepEqual(result.usedVars, Uint32Array.from([0, 1, 4, 5]));
+  assertClose(
+    result.projections.subarray(0, 3),
+    WORKED3_ROW_0,
+    "the projections of the first individual",
+  );
+  assertClose(
+    result.explainedVariancePercent,
+    WORKED3_PERCENT,
+    "the percentages",
+  );
   assert.equal(result.princomps.length, 3 * 4);
 });
 
@@ -382,4 +425,57 @@ test("variants that were freed cannot be analysed", () => {
   const variants = openVcf(WORKED_VCF);
   variants.free();
   assert.throws(() => doPcaFromVariants(variants), /were freed/);
+});
+
+/**
+ * A VCF of `numIndividuals` individuals and 2 variants, for the datasets
+ * that are too many individuals for a page.
+ */
+function vcfOfManyIndividuals(numIndividuals: number): Uint8Array {
+  const names = Array.from(
+    { length: numIndividuals },
+    (_unused, individual) => `i${individual}`,
+  );
+  const genotypes = (variant: number) =>
+    Array.from(
+      { length: numIndividuals },
+      (_unused, individual) => ["0/0", "0/1", "1/1"][(individual + variant) % 3],
+    ).join("\t");
+  return new TextEncoder().encode(
+    [
+      "##fileformat=VCFv4.2",
+      `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+      `1\t1\tv0\tA\tC\t.\t.\t.\tGT\t${genotypes(0)}`,
+      `1\t2\tv1\tA\tC\t.\t.\t.\tGT\t${genotypes(1)}`,
+      "",
+    ].join("\n"),
+  );
+}
+
+test("more individuals than a page holds is an Error and not a trap", () => {
+  // 10000 individuals, which the objectives of popnei name and the core
+  // takes: before this was checked, the eigendecomposition allocated its
+  // workspace, the allocation failed, and an allocation that fails in wasm
+  // aborts, which ended the module with `RuntimeError: unreachable` and left
+  // every later call to popnei broken. The dataset is refused before any
+  // variant is read, so nothing of it is allocated.
+  assert.throws(
+    () => theVariantsPca(vcfOfManyIndividuals(10000), { numPrinComps: 1 }),
+    /the principal components of 10000 individuals hold about 5 GB/,
+  );
+});
+
+test("the individuals a page holds are the ones measured under node", () => {
+  // 9410 individuals ran under node and 9415 ended the module, so the
+  // largest dataset popnei takes is under both. Neither of the two is run
+  // here: the one that works takes five minutes, since the time of the
+  // eigendecomposition goes with the cube of the individuals.
+  roomForTheAnalysis(9381);
+  assert.throws(
+    () => roomForTheAnalysis(9382),
+    /the principal components of 9382 individuals hold about 5 GB/,
+  );
+  // The worked example, and every dataset a page really holds, passes.
+  roomForTheAnalysis(5);
+  roomForTheAnalysis(0);
 });
