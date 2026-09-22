@@ -412,8 +412,11 @@ from pyNei, besides the sign and the components with no variance:
 
 In TypeScript it is `doPca(data, numRows, numCols, {centerData,
 standardizeData})`, with `data` a `Float64Array`, row after row, and the
-result that of `doPcaFromVariants` with `usedVars` left out. The names of
-the rows and of the traits stay with the application.
+result that of `doPcaFromVariants` without the three fields that a table
+has nothing to fill with: `individuals`, the names of the rows;
+`usedVars`, since every trait is used; and `passStats`, since no
+`Variants` was read. The names of the rows and of the traits stay with the
+application.
 
 ### Errors and the cases pyNei asserts
 
@@ -425,16 +428,44 @@ that the user can take them out. The core gives the positions of those
 columns and the Python layer puts the names. Without standardizing such a
 trait is no error and gets a weight of 0.
 
-Two more are a `RuntimeError`, because no argument of `do_pca` can give
-them. One is a buffer that does not hold `num_rows` x `num_cols` values,
+Two more are a `ValueError` as well, and both are of a table that the
+analysis cannot be done on in `f64`, whatever the user meant by it.
+
+The first is a trait whose mean or whose standard deviation is not a
+number the analysis can use, which happens in three ways. The sum of a
+trait can be above the largest `f64`, 1.8e308, and then its mean is an
+infinity and every value of it becomes a NaN; that one is found whenever
+the table is centered. The squares of the deviations of a trait can sum
+above that number, which values of 1e154 do, and then its standard
+deviation is an infinity, the trait becomes a column of zeros, and it
+would leave the analysis with a weight of 0 and no word, looking like a
+trait with no variance. Or those squares can all fall below the smallest
+`f64` that is not 0, 5e-324, which values of 1e-200 do, and then the
+standard deviation is 0 although the values of the trait differ, and the
+division gives infinities. The error names the trait, by its position as
+above, and says which of the three happened, so the user can scale that
+trait or take it out.
+
+The second is a table in which no trait has variance once it is centered:
+every value of every trait equal to the others, or a table of zeros. There
+is no direction to give, and popnei says so with the message "no trait has
+variance, there is nothing to do a PCA with", the wording of the PCA of
+the variants for the same case, which every message of the core starts in
+lower case as its own. pyNei gives 0 for every projection and a
+percentage of NaN for every component. It cannot happen when the table is
+standardized, since a trait with no variance is refused first.
+
+Two are a `RuntimeError`, because no argument of `do_pca` can give them.
+One is a buffer that does not hold exactly `num_rows` x `num_cols` values,
 which only a caller of the Rust function of "The Rust interface" reaches,
 since each binding crate takes the two numbers from the array it was
 given. The other is an error of the `linalg` crate, which the core wraps
 with the operation it was doing, the product of the table with itself or
-the eigendecomposition: the dimensions and the values that crate refuses
-are checked here first, so what is left is a table whose values are so
-large that their products are not finite, 1e200 among them, where the
-crate refuses the matrix it is asked to decompose.
+the eigendecomposition: the dimensions that crate refuses are checked
+here, and so are the values, of the table and of the mean and the standard
+deviation of every trait, so what is left for it to refuse is a table
+whose values are finite and whose products are not, 1e200 among them,
+where it refuses the matrix it is asked to decompose.
 
 `test_pca` asserts the four princomps of iris, up to sign, and
 `test_pca_refuses_traits_with_no_variance` the error, that its message
@@ -444,10 +475,24 @@ the third has no variance, and the test says so.
 
 ### How it runs
 
-On the whole table, which is copied once to be centered and standardized.
+On the whole table, which is copied once to be centered and standardized,
+in the layout the product needs: the traits as the rows of the copy when
+there are more traits than rows, which is the transpose of the table, and
+as its columns otherwise.
+
 The product is over the smaller side, as "What both analyses compute"
-says, so its memory is that of the table plus the square of its smaller
-side. Nothing is kept and there are no blocks.
+says. What the analysis holds at once is that copy, `num_rows` x
+`num_cols`; the matrix of the smaller side, which the eigendecomposition
+turns into its eigenvectors in the same buffer; the projections,
+`num_rows` x `num_comps`; and the weights. When there are more traits than
+rows the weights are held twice, `num_cols` x `num_comps` as the product
+gives them and `num_comps` x `num_cols` as the result holds them, and the
+eigenvectors divided by sqrt(λ) are another `num_rows` x `num_comps`. On a
+table of 1000 rows x 8000 traits that is 216 MB: 64 MB for the copy, 8 MB
+for the 1000 x 1000 matrix, 8 MB for the projections, 8 MB for the scaled
+eigenvectors and 64 MB for each of the two copies of the weights.
+
+Nothing is kept and there are no blocks.
 
 ### How it is verified
 
@@ -528,7 +573,7 @@ and the trait with no variance has a weight of 0 in both:
 
 | | PC0 | PC1 |
 |---|---|---|
-| projection of row 0 | 1.41421356237 | 1.19454087712e-16 |
+| projection of row 0 | 1.41421356237 | 0 |
 | projection of row 1 | -0.707106781187 | -0.707106781187 |
 | projection of row 2 | -0.707106781187 | 0.707106781187 |
 | explained_variance_percent | 75 | 25 |
@@ -538,12 +583,50 @@ and the trait with no variance has a weight of 0 in both:
 
 The second component of that table is given up to its sign, and the test
 compares the size of its numbers and not their sign. Its two largest
-projections are the same number with opposite signs but for the last bit,
-0.707106781187, so which of the two the sign rule finds largest, and with
-it the sign of the whole component, is decided by the rounding of the
-eigendecomposition and can differ between the backends and the platforms.
-The rule fixes the sign of a component whose largest projection is one
-number; it does not fix it when two are that close.
+projections are the same number with opposite signs, 0.707106781187, and
+whether they are equal bit for bit or a bit or two apart depends on the
+route to them: popnei gives them equal natively, on Accelerate's LAPACK,
+where the rule takes the first of the two; one bit apart in WebAssembly,
+on faer, where the larger of the two decides; and numpy's
+eigendecomposition of the same table gives them two bits apart. So which
+of the two the sign rule finds largest, and with it the sign of the whole
+component, can differ between the backends and the platforms. The rule fixes the sign of a component whose largest projection
+is one number; it does not fix it when two are that close.
+
+Two more tables are checked in the core alone, for what the two above do
+not reach. Their numbers come from the same two routes of numpy 2.5.3 and
+agree within 1e-15 in the projections.
+
+One is 5 rows x 3 traits, whose traits are 1 2 3 4 7, then 5 5 5 5 5, then
+3 1 2 9 2: it has more rows than traits, as iris has, and unlike iris it
+loses a component, the second trait having no variance. Centered and not
+standardized it has 2 components of the 3 traits:
+
+| | PC0 | PC1 |
+|---|---|---|
+| projection of row 0 | -0.765373820993 | -2.30958933885 |
+| projection of row 1 | -2.58720936972 | -1.01308818829 |
+| projection of row 2 | -1.44494156963 | -0.179287089168 |
+| projection of row 3 | 5.62553292806 | -0.270886092928 |
+| projection of row 4 | -0.828008167714 | 3.77285070924 |
+| explained_variance_percent | 66.8261599339 | 33.1738400661 |
+| weight of trait 0 | 0.15423335048 | 0.988034449602 |
+| weight of trait 1 | 0 | 0 |
+| weight of trait 2 | 0.988034449602 | -0.15423335048 |
+
+The other is 3 rows x 3 traits whose values are large enough that the
+arithmetic around the eigenvalues has to be written in the order that does
+not overflow: 1 2 3, then 2 4 1, then 5 1 4, each value multiplied by
+1e153 and, in a second run, by 2.5e153. Centered and not standardized it
+has 2 components at both scales, with the percentages 78.8675134595 and
+21.1324865405, which are the percentages of the table unscaled. The
+projections are of the size of the values, 1e153, and the tests compare
+the percentages and the count of the components, which are what the two
+orders of the arithmetic differ in. At 1e153 the largest eigenvalue is
+1.4e307, so 100 times it is an infinity while 100 times its share of the
+total is not; at 2.5e153 it is 8.9e307, so that eigenvalue times the
+larger side of the table, 3, is an infinity as well, and a threshold of
+infinity leaves no component at all.
 
 ## The Rust interface
 

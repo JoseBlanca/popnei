@@ -275,7 +275,7 @@ inputs where they overlap.
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
 | `dists` | Kosman between individuals on blocks, Jost's D between pops | `calc_pairwise_kosman_dists`, `calc_jost_dest_pop_dists` |
 | the linalg crate, which the core calls | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares; backends: BLAS and LAPACK natively, faer in wasm and natively with the cargo feature `blas` off | numpy.linalg |
-| `pca` | PCA of the 012 matrix, PCoA of a distance matrix | `do_pca_from_variants`, `do_pcoa_from_variants` |
+| `pca` | PCA of a table of numbers, individuals by traits; PCA of the 012 matrix, PCoA of a distance matrix | `do_pca`, `do_pca_from_variants`, `do_pcoa_from_variants` |
 | `ld` | Rogers Huff r2 between blocks of variants, by distance | `calc_rogers_huff_r2_matrix`, `iter_rogers_huff_r2`, `calc_ld_and_dist_per_pop` |
 | `kinship` | the GRM, per pair denominators, principal components of it | `calc_kinship` |
 | `gwas` | the four null models, the tests, the distributions erfc and betainc | `calc_gwas` |
