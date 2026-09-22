@@ -238,7 +238,7 @@ after it in the steps counts over the three.
   docstring, the `repr`; and `tests/test_filter_individuals.py`. From
   "In Python and in TypeScript" and "What pyNei asserts" of the filter.
   Needs 2.2. Serves deliverables 3 and 5.
-- [ ] 2.4 The TypeScript side, the same in `crates/popnei-js` and
+- [x] 2.4 The TypeScript side, the same in `crates/popnei-js` and
   `js/popnei`, with `test/filter_individuals.test.ts`. Needs 2.2. Serves
   deliverable 4. After 2.3 in the plan's worktree.
 
