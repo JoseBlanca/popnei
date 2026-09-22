@@ -228,7 +228,10 @@ Each of these is a `ValueError` in Python:
   More variants than a `usize` counts, 4294967295 in WebAssembly, where
   a `usize` is 32 bits: the variants given, used or not, are counted in
   one, and so are the positions of the used ones, so a pass of more is
-  refused instead of counted into a number that wrapped.
+  refused instead of counted into a number that wrapped. And weights
+  that are more values than a `usize` counts, which is
+  `num_prin_comps` times the variants that were used and which fewer
+  variants reach the more components are asked for.
 
 `test/test_pca.py` of pyNei asserts, for this function: that the variants
 with one allele and the variant where everyone is heterozygous are not
