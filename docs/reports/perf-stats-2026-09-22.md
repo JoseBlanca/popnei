@@ -24,8 +24,8 @@ with lz4.
 
 ## The scope and its limits
 
-Reviewed at 2742918 on the branch `perf/stats`, which is `plan/stats`
-plus one commit: `crates/popnei/src/stats.rs`, `variant.rs`,
+Reviewed at the commit 2742918 on the branch `perf/stats`, which is
+`plan/stats`, the branch that built this module, plus one commit: `crates/popnei/src/stats.rs`, `variant.rs`,
 `io/vars.rs`, `block.rs`, the two binding crates' `stats.rs`,
 `python/popnei/stats.py`, the timing harness and the build
 configuration. Nine categories were sent, one reviewer each:
@@ -108,6 +108,16 @@ explain, and it has an answer.
 
 ## The findings
 
+Each is numbered so that the rest of the document can name it. The
+letter is how sure the review is that the change would give a gain worth
+its complexity, which is what a performance finding is about, and not
+how serious a defect it is: **H** for a site a profile or a benchmark
+names, with a clear mechanism for the gain; **L** for one matched by
+pattern, with a plausible call frequency and no profile yet, which is
+where most of them start; **S** for one where it is not even clear that
+the site is hot, filed so that it is known. One of them, H4, is a
+refusal rather than a proposal.
+
 ### H1 The allele count is a chain of dependent stores, not a stream
 
 `crates/popnei/src/variant.rs:506`, the counting loop of
@@ -127,19 +137,35 @@ LBB321_45:
 
 It reads a counter, adds one and writes it back, at an address the datum
 chooses. The file has two alleles a variant, so almost every allele hits
-the counter the one before it just wrote, and each increment waits for
-the store of the previous one to reach the load through store to load
-forwarding. That is a serial chain of about four to six cycles per
-allele. The arithmetic agrees: 0.28 s over 2e8 alleles is 1.4 ns each,
-which at this machine's clock is about six cycles. The genotype count
-walks the same bytes into registers, with no such chain, and costs a
-third as much.
+the counter that the allele before it just wrote.
+
+That is what makes it slow, and it is worth spelling out, because the
+whole finding turns on it. A processor runs the instructions of a loop
+several at a time and out of order, so a loop like this one normally has
+many alleles in flight at once. It can do that only where the
+instructions do not depend on each other. Here they do: to add one to a
+counter the processor must first know what is in it, and what is in it
+is what the previous allele wrote a moment ago, which has not yet
+reached memory. The hardware has a shortcut for exactly this, handing
+the value straight from the pending write to the waiting read, which is
+called store to load forwarding, and it still takes about four to six
+cycles. So the alleles cannot overlap: they queue, each waiting for the
+one before it, and the loop runs at the speed of that queue instead of
+at the speed the processor could issue its instructions.
+
+The arithmetic agrees with that reading. The pass spends 0.28 s on 2e8
+alleles, which is 1.4 ns each; the cores of this machine run at about
+4 GHz, so 1.4 ns is about six cycles, the length of one link of that
+queue. The genotype count walks the same bytes but keeps its running
+totals in registers, where there is no such queue, and costs a third as
+much.
 
 The fix the three reviewers propose is the standard one for a histogram
 whose values repeat: count into four interleaved arrays of counters,
 choosing the array by the position rather than by the value, and add the
-four together at the end of the row. That gives four independent chains
-and lets the loop run at its issue rate instead of at its latency.
+four together at the end of the row. Four consecutive alleles then touch
+four different arrays, so none of them waits for the one before it, and
+the loop can overlap its work again instead of queueing.
 
 The numbers reviewer cleared it: these are integer counts, so splitting
 and re-merging them is exactly equal whatever the order, and the
@@ -232,8 +258,10 @@ to 0.140 s over the same genotypes, 0.4 to 0.47 µs per variant per
 population. At the 50 populations of 20 individuals that the objectives
 call ordinary it would dominate.
 
-Carrying the largest allele seen beside the counters, and clearing and
-scanning only up to it, makes all three costs two entries. The numbers
+The change is to carry, beside the counters, the largest allele that has
+been seen, and to clear the counters and run both scans only up to that
+one instead of to the end. On a file of two alleles all three of those
+costs then touch two entries instead of 128. The numbers
 reviewer confirmed it is bit for bit the same, since the entries above
 the largest are zero and both expected heterozygosities already skip
 zero counts.
@@ -253,9 +281,14 @@ in genotypes instead leaves this dataset unchanged at 64 rows and gives
 42 chunks per block at 10000 individuals.
 
 The numbers reviewer adds an argument for a larger chunk that has
-nothing to do with threads: the total is a sum over chunks of sums over
-rows, so a larger chunk narrows the worst case error of the mean, and at
-a million variants 1000 rows per chunk is near the optimum. It also
+nothing to do with threads. A mean here is a sum of floating point
+numbers and every addition rounds, so the error of a sum grows with how
+many additions a value passes through. The pass adds the rows of a chunk
+into one running total and then adds the chunks together, so the longest
+such chain is the rows in a chunk plus the number of chunks. A bigger
+chunk shortens one of those and lengthens the other, and the two are
+equal when the chunk is the square root of the rows: at a million
+variants that is about 1000 rows, against 64 today. It also
 warns that the grain must never be computed from the thread count, or
 the result would stop being the same at every thread count, which a test
 asserts.
@@ -317,14 +350,19 @@ In the order in which they unblock each other.
    on the pass with four populations.
 3. The four counting lanes of H1, gated on the assembly showing four
    chains and then on the pass with the allele frequency alone.
-4. The build configuration. The numbers reviewer established that it
-   cannot move a float result here: it counted zero fused multiply adds
-   in the row loop at every optimisation level and with the native
-   processor selected, and found the output with the native processor
-   byte identical to the default. So linking across crates and one code
-   generation unit are pure speed experiments, and the second is the one
-   worth timing, since one of the counting functions is still an out of
-   line call.
+4. The build configuration: optimising across crate boundaries, and
+   compiling the crate as one piece instead of the sixteen the compiler
+   splits it into by default, which lets it inline more. The numbers
+   reviewer established that neither can move a float result here. The
+   one way a compiler changes a floating point answer without being
+   asked is by fusing a multiply and an addition into a single
+   instruction that rounds once instead of twice; it counted how many of
+   those the row loop holds at every optimisation level and with the
+   processor of this machine selected, and the answer was none every
+   time, with the output for this processor byte identical to the
+   default. So both are pure speed experiments, and the second is the one
+   worth timing, since one of the counting functions is still called
+   rather than inlined.
 5. The prefix of L1 and the grain of L2, each on the benchmark and then
    on a sweep of the populations, which nobody has run.
 
@@ -334,8 +372,12 @@ In the order in which they unblock each other.
 assumed: with the checks on, the counting loop is 16 instructions per
 allele instead of 11, with three overflow branches added, and the two
 counting functions stop being inlined into the row loop altogether. It
-costs no safety, because the lint denies the plain operators and the two
-places that carry an exception state a bound their callers establish.
+costs no safety. popnei denies the plain arithmetic operators on integers
+throughout, with a lint, so an addition that could overflow does not
+compile and the code has to say what it wants to happen instead; only two
+places in this counting code are exempted from that lint, and each
+carries a written bound that its callers do establish before they call.
+So nothing here relies on the release build checking an overflow.
 The consequence to remember is that a timing taken under the test
 profile, which is built at a lower optimisation level with the checks
 on, measures a different loop and is not comparable with a release one.
@@ -356,9 +398,11 @@ merge, or it measures a build nobody ships.
 The spec of the vars file claims the genotypes are written without a
 validity mask and they are not, under L3 above.
 
-`iter_blocks` ignores the block size a user asks for and lets the
-reblocking join and cut instead, so a user who asks for a size other
-than the file's copies every genotype once, 200 MB for this file. It
+`iter_blocks`, the method a user calls to get the genotypes themselves
+in blocks, ignores the block size they ask for. A reader further down the
+chain then cuts and joins the blocks the file gave into the size that was
+wanted, and that copies every genotype once, 200 MB for this file, for
+any size other than the one the file was written at. It
 does not touch any number here, because the file's batches happen to be
 written at exactly popnei's default size, which is also why the read
 baseline of the measurement is a fair one.
@@ -423,7 +467,8 @@ three reviewers proposed is therefore the right one: the cost was the
 chain of dependent stores and not the count of instructions.
 
 It cost a constant, a type alias, two private functions and one more
-exception to the arithmetic lint.
+exemption from the lint that denies plain arithmetic on integers, with
+the bound that makes it safe written beside it.
 
 ### Applied: the lookup of an individual builds no error it throws away
 
@@ -439,9 +484,9 @@ rather than once per individual, it gave the four population pass the
 same 0.416 s, and it cost the pass with no populations, which is the one
 that misses its target. So the finding is applied at one site of two.
 
-It cost one exception to a lint, the one that asks for the eager form
-wherever the value is cheap to build and which is what put the code in
-that shape in the first place.
+It cost one exemption from a lint: the one that asks for the eager form
+wherever the value is cheap to build, which is what put the code in that
+shape in the first place and will do the same to the next site.
 
 ### Closed with no gain at the sizes that matter: the prefix of the counters
 
@@ -463,18 +508,20 @@ from the counting loop; that was not built.
 
 ### Closed with no gain: linking across crates and one code generation unit
 
-The release profile sets neither. Neither paid. Both binaries and all
+The release profile sets neither: it neither optimises across crate
+boundaries nor compiles the crate as one piece. Neither paid. Both binaries and all
 three built modules were kept and the three settings were run
 interleaved, back to back, which removes the drift of the machine
 entirely: on the benchmark the five statistics with one population read
-0.182 and 0.183 s at the default, 0.183 and 0.184 s with one code
-generation unit, and 0.183 and 0.184 s with thin linking; over
+0.182 and 0.183 s at the default, 0.183 and 0.184 s with the crate
+compiled as one piece, and 0.183 and 0.184 s with thin linking; over
 `big.vars` 0.290, 0.293 and 0.290 s. The read alone read 0.102 s in all
 six runs, so linking across crates gives the lz4 decompression nothing,
 although it lives in another crate and is exactly what that setting
 should help. Fat linking was not run, because thin gave nothing.
 
-One code generation unit does inline two of the five counting calls,
+Compiling the crate as one piece does inline two of the five counting
+calls,
 including one the review had singled out, and the pass does not get
 faster, which closes that observation as a cause. It costs 2.5 times a
 rebuild: 3.2 s against 1.3 s for the core crate and 5.7 s against 2.0 s
@@ -483,8 +530,9 @@ for the binding crate.
 Two things for whoever runs the next one of these. `cargo asm` appends
 its own single code generation unit to every invocation, so its listing
 is the same whatever the release profile says and it cannot be used to
-gate an experiment on linking or on code generation units; disassembling
-the built binary is what sees them. And interleaving the builds back to
+gate an experiment on linking or on how many pieces the crate is
+compiled in; disassembling the binary that was actually built is what
+sees them. And interleaving the builds back to
 back is better than matching load averages: the drift of this machine
 between two clean measurements is larger than any effect this experiment
 was looking for.
