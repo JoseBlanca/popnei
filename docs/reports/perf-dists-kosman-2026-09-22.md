@@ -261,9 +261,9 @@ wheel is built by maturin in release; neither passes `+simd128`, and
 
 Each names its file and line at 59e76a5, its severity as
 `finding_format.md` of the skill defines it, its gate, what it does to
-the numbers and what it costs; the last line of each is what its
-experiment gave, or why it was not run. All keep the two integers of
-every pair the same at every thread count and block size.
+the numbers and what it costs. All keep the two integers of every pair
+the same at every thread count and block size. What each experiment gave
+is in section 9, which was written as they ran.
 
 ### Hot path
 
@@ -504,6 +504,97 @@ gain. Filed by data_layout.
 
 ## 9. The experiments
 
-Written as each closes, in the order run, one at a time, each on the
-commit before it, with the bench command of section 3 and the gate of
-its finding.
+Run one at a time on this branch, each on the commit the one before it
+left, with the bench command of section 3, best of 5 after an untimed
+run, on the owner's M5 Pro, the load average beside each. The two
+settings are the blocks handed out from memory, which is the
+calculation with no reader in it and so the setting the targets are of,
+and the same calculation over `big.vars`. The whole of the table is the
+"blocks in memory" line of the bench.
+
+| after | one thread | 18 threads | what it changed |
+|---|---|---|---|
+| the baseline, 80b7b85 | 1.147 s | 0.635 s | |
+| H1, 7d29ae4 | 0.995 s | 0.467 s | the error not built per allele |
+| H2, 371aaf7 | 1.007 s | 0.475 s | the call to `memchr` gone |
+| L1, 67b7a16 | 0.835 s | 0.303 s | one compare for the copies at ploidy 2 |
+| L2, e5b0f25 | 0.817 s | 0.286 s | the rank lookup infallible |
+| H3, 1bd476a | 0.767 s | 0.102 s | the sets built on the threads |
+| the targets | 0.97 s | 0.38 s | |
+
+Over the vars file, whose reader is not in the targets, the same six
+commits take it from 1.264 s to 0.891 s on one thread and from 0.737 s
+to 0.229 s on 18 threads; of that last number the reader is 0.127 s,
+more than the calculation it feeds.
+
+The phase split after H3, by the same `Instant` harness as in section 3,
+not committed, over the blocks in memory:
+
+| | whole | the sets phase | the pairs phase |
+|---|---|---|---|
+| 18 threads | 0.103 s | 0.054 s | 0.049 s |
+| one thread | 0.769 s | 0.172 s | 0.603 s |
+
+**H1, the error not built per allele. Applied, 7d29ae4.** The gate was
+the count: `bl core::ptr::drop_glue::<popnei::error::Error>` in the
+assembly of `of_block` went from 2 to 1, the one inside the loop over
+the alleles gone. One thread 1.147 to 0.995 s, 18 threads 0.635 to
+0.467 s, 13 and 26 in 100. `cargo test --workspace` 345 passed. It cost
+an `#[expect(clippy::unnecessary_lazy_evaluations)]`, which the lint
+demanded because it reads the closure as needless, and which L2 later
+removed.
+
+**H2, the call to `memchr` gone. Applied on the count, 371aaf7.** `bl
+core::slice::memchr::memchr` went from 1 to 0 and `of_block` from 531 to
+507 instructions, but the wall time did not move: 0.995 to 1.007 s on
+one thread and 0.467 to 0.475 s on 18, both inside the 2 in 100 that
+two invocations of the bench agree to. Kept because the gate is the
+count and the change costs nothing, with an
+`#[expect(clippy::manual_contains)]`, the lint holding `contains` to be
+the faster of the two, which on a slice of two bytes it is not.
+
+**L1, one compare for the copies at a ploidy of 2. Applied, 67b7a16.**
+The largest single gain: one thread 1.007 to 0.835 s, 17 in 100, and 18
+threads 0.475 to 0.303 s. Its assembly gate was not met as written,
+because the general loop stays for every other ploidy and the function
+grew from 507 to 668 instructions; the wall time decided it, twice. No
+test was added: the diploid worked example holds homozygous,
+heterozygous, half called and fully missing genotypes, and the arm made
+wrong on purpose fails it together with seven others, the comparison of
+every pair of the four reference files with R's `gd.kosman` among them.
+
+**L2, the rank lookup infallible. Applied, e5b0f25.** The table of the
+places of the alleles becomes a `[u8; 128]` read with
+`allele.cast_unsigned()`, total because a block whose smallest allele is
+below the missing one is refused before the loop and a missing genotype
+is skipped inside it; the invariant is written where the lookup is.
+`of_block` 668 to 659 instructions. One thread 0.835 to 0.817 s, 1.8 in
+100, and 18 threads 0.303 to 0.286 s, 5.6 in 100, each measured twice a
+side with a spread of 0.001 s inside a round. It was first closed for
+being under a gate of 2 in 100 set on the one thread number, then taken:
+the effect repeated, it is above the gate on 18 threads, and it removes
+an `#[expect]` instead of adding one.
+
+**H3, the sets of a block built on the threads. Applied, 1bd476a.** The
+sets of 64 individuals are one work item of `par_chunks_mut` over the
+two arrays, the loop variant major inside the item, behind
+`cfg(not(target_family = "wasm"))` with the serial builder beside it for
+wasm and for a new test that compares the two on a block whose variants
+are not a multiple of 64. Nothing inside an item can fail, since L2 made
+the lookup total and the block is refused from its smallest allele
+before any item runs, so the items need no error path: L2 made H3
+simpler. The sets phase on 18 threads 0.229 to 0.054 s and the whole
+line 0.286 to 0.102 s, 64 in 100. The individuals per item were swept
+over 8, 14, 32 and 64, and 64 won on both thread counts although it
+leaves 16 items for 18 threads; the sweep never turned around, so the
+best value may be above 64, which the constant's comment says. 346 tests
+pass.
+
+Two things came out against the finding. The gate, the sets phase below
+0.325 s on 18 threads, was already met before H3 ran, since H1, L1 and
+L2 had taken that phase from the review's 0.569 s to 0.229 s; the whole
+line is what H3 was judged on. And the one thread line fell, 0.817 to
+0.767 s, where the finding expected it to rise from reading each row of
+genotypes once per item: at 64 individuals an item writes into 202 KB of
+the block's 3.16 MB of sets, which is the cache effect of H5 got for
+free, and H5's own reorderings have that much less left to take.
