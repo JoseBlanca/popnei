@@ -29,21 +29,13 @@ use pyo3::types::PyBool;
 
 use popnei::block::BlockReader;
 use popnei::stats::{
-    ExpHet, HistBins, LINEAR_BINS, LOGARITHMIC_BINS, Maf, ObsHet, PerVarDistribs,
-    PerVarDistribsConfig, PerVarStat, PolyVarsStats, Pops, StatsDistrib,
+    ExpHet, HistBins, Maf, ObsHet, PerVarDistribs, PerVarDistribsConfig, PerVarStat, PolyVarsStats,
+    Pops, StatsDistrib,
 };
 
 use crate::errors::PyPopneiError;
 use crate::source::{PassCounts, count_of, source_of, threshold_of, written_as};
 use crate::steps::{Steps, chain_of};
-
-/// The name a Python user writes each of the five statistics under, which
-/// is also the field of the result that holds it.
-const OBS_HET: &str = "obs_het";
-const MAF: &str = "maf";
-const EXP_HET: &str = "exp_het";
-const UNBIASED_EXP_HET: &str = "unbiased_exp_het";
-const POLY_VARS_RATIO: &str = "poly_vars_ratio";
 
 /// The name of the argument that says how many called genotypes a
 /// population needs at a variant to have a value there, as a Python user
@@ -111,19 +103,20 @@ pub(crate) fn calc_per_var_distribs<'py>(
     let source = source_of(source)?;
     let stats = the_stats(&stats)?;
     let min_num_individuals = the_min_num_individuals(min_num_individuals)?;
-    let bins = the_bins(bin_type, hist_range, count_of("num_bins", num_bins)?)?;
+    let (start, end) = hist_range;
+    let bins = HistBins::of_kind(bin_type, start, end, count_of("num_bins", num_bins)?)?;
     // The ploidy of the variants turns the alleles a population called into
     // called genotypes, for the `min_num_individuals` test, and it is the
-    // exponent of the two expected heterozygosities unless the user asks
-    // for another one.
+    // exponent of the two expected heterozygosities when the user asks for
+    // no other, which the core is what decides.
     let of_the_variants = source.ploidy();
-    let exponent = match ploidy {
-        Some(asked_for) => count_of("ploidy", asked_for)?,
-        None => of_the_variants,
-    };
+    let exponent = ploidy
+        .map(|asked_for| count_of("ploidy", asked_for))
+        .transpose()?;
     let obs_het = ObsHet::new(min_num_individuals);
     let maf = Maf::new(of_the_variants, min_num_individuals)?;
-    let exp_het = ExpHet::new(exponent, of_the_variants, min_num_individuals)?;
+    let exp_het =
+        ExpHet::of_the_exponent_asked_for(exponent, of_the_variants, min_num_individuals)?;
     let poly_threshold = threshold_of("poly_threshold", poly_threshold)?;
     // Every statistic of the pass counts its values in these bins, so their
     // edges are the result's and are kept here, where the bins themselves
@@ -197,7 +190,7 @@ pub(crate) fn calc_per_var_distribs<'py>(
 }
 
 /// The statistics a user asked for, out of the names the Python package
-/// gives them.
+/// gives them, which are the core's.
 ///
 /// # Errors
 ///
@@ -205,22 +198,11 @@ pub(crate) fn calc_per_var_distribs<'py>(
 /// `popnei._core` themselves: the package takes the members of its
 /// `PerVarStat` and nothing else.
 fn the_stats(names: &[String]) -> Result<Vec<PerVarStat>, PyPopneiError> {
-    names
-        .iter()
-        .map(|name| match name.as_str() {
-            OBS_HET => Ok(PerVarStat::ObsHet),
-            MAF => Ok(PerVarStat::Maf),
-            EXP_HET => Ok(PerVarStat::ExpHet),
-            UNBIASED_EXP_HET => Ok(PerVarStat::UnbiasedExpHet),
-            POLY_VARS_RATIO => Ok(PerVarStat::PolyVarsRatio),
-            _ => Err(PyValueError::new_err(format!(
-                "`{name}` is not one of the statistics of a variant, which are \
-                 `{OBS_HET}`, `{MAF}`, `{EXP_HET}`, `{UNBIASED_EXP_HET}` and \
-                 `{POLY_VARS_RATIO}`"
-            ))
-            .into()),
-        })
-        .collect()
+    let mut asked_for = Vec::with_capacity(names.len());
+    for name in names {
+        asked_for.push(PerVarStat::of_name(name)?);
+    }
+    Ok(asked_for)
 }
 
 /// The populations of the pass: the ones the user named, looked up among
@@ -240,34 +222,6 @@ fn the_pops(
         Some(named) => Pops::from_names(named, individuals),
         None => Ok(Pops::all(individuals.len())),
     }
-}
-
-/// The bins of the histogram, of equal width or of equal ratio.
-///
-/// # Errors
-///
-/// A `bin_type` that is neither of the two names, and what the core refuses
-/// of a range and a number of bins: a histogram of no bin, a range that does
-/// not run from a number up to a larger one, and a range of bins of equal
-/// ratio that starts at 0 or below.
-fn the_bins(
-    bin_type: &str,
-    (start, end): (f64, f64),
-    num_bins: usize,
-) -> Result<HistBins, PyPopneiError> {
-    let bins = match bin_type {
-        LINEAR_BINS => HistBins::linear(start, end, num_bins),
-        LOGARITHMIC_BINS => HistBins::logarithmic(start, end, num_bins),
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "`bin_type` is `{bin_type}`, and the bins of a histogram are \
-                 `{LINEAR_BINS}`, of equal width, or `{LOGARITHMIC_BINS}`, of equal \
-                 ratio; pyNei spells the first one `lineal`, the Spanish word"
-            ))
-            .into());
-        }
-    };
-    Ok(bins?)
 }
 
 /// The `value` a user gave for `min_num_individuals`.

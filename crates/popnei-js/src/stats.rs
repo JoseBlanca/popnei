@@ -30,26 +30,21 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::stats::{
-    ExpHet, HistBins, LINEAR_BINS, LOGARITHMIC_BINS, Maf, ObsHet, PerVarDistribsConfig, PerVarStat,
-    Pops,
-};
+use popnei::stats::{ExpHet, HistBins, Maf, ObsHet, PerVarDistribsConfig, PerVarStat, Pops};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
-/// The name a TypeScript user writes each of the five statistics under,
-/// which is also the name of the field of the result that holds it.
-const OBS_HET: &str = "obs_het";
-const MAF: &str = "maf";
-const EXP_HET: &str = "exp_het";
-const UNBIASED_EXP_HET: &str = "unbiased_exp_het";
-const POLY_VARS_RATIO: &str = "poly_vars_ratio";
-
 /// The name of the argument that says below which major allele frequency a
 /// variant is polymorphic in a population, as a TypeScript user writes it.
 const POLY_THRESHOLD: &str = "polyThreshold";
+
+/// The name of the argument that says which kind of bins the histogram
+/// holds, as a TypeScript user writes it, and as the core names it in the
+/// message that refuses a kind, which is the name a Python user writes.
+const BIN_TYPE: &str = "binType";
+const BIN_TYPE_IN_THE_CORE: &str = "bin_type";
 
 /// The arguments of one pass, as they crossed from TypeScript.
 ///
@@ -109,17 +104,22 @@ pub(crate) fn per_var_distribs_of(
     asked: &ArgumentsOfThePass,
 ) -> Result<PerVarDistribs, JsPopneiError> {
     let stats = the_stats(&asked.stats)?;
-    let bins = the_bins(&asked.bin_type, asked.hist_range, asked.num_bins)?;
+    let (start, end) = asked.hist_range;
+    let bins =
+        HistBins::of_kind(&asked.bin_type, start, end, asked.num_bins).map_err(under_its_name)?;
     let named = the_pops_given(asked)?;
     // The ploidy of the variants turns the alleles a population called into
     // called genotypes, for the `min_num_individuals` test, and it is the
-    // exponent of the two expected heterozygosities unless the user asked
-    // for another one.
+    // exponent of the two expected heterozygosities when the user asked for
+    // no other, which the core is what decides.
     let of_the_variants = source.ploidy();
-    let exponent = asked.ploidy.unwrap_or(of_the_variants);
     let obs_het = ObsHet::new(asked.min_num_individuals);
     let maf = Maf::new(of_the_variants, asked.min_num_individuals)?;
-    let exp_het = ExpHet::new(exponent, of_the_variants, asked.min_num_individuals)?;
+    let exp_het = ExpHet::of_the_exponent_asked_for(
+        asked.ploidy,
+        of_the_variants,
+        asked.min_num_individuals,
+    )?;
     // Every statistic of the pass counts its values in these bins, so their
     // edges are the result's and are kept here, where the bins themselves go
     // on to the core.
@@ -156,65 +156,28 @@ pub(crate) fn per_var_distribs_of(
     Ok(PerVarDistribs {
         pop_names,
         hist_bin_edges,
-        obs_het: distrib_of(obs_het.as_ref(), OBS_HET)?,
-        maf: distrib_of(maf.as_ref(), MAF)?,
-        exp_het: distrib_of(exp_het.as_ref(), EXP_HET)?,
-        unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), UNBIASED_EXP_HET)?,
+        obs_het: distrib_of(obs_het.as_ref(), PerVarStat::ObsHet)?,
+        maf: distrib_of(maf.as_ref(), PerVarStat::Maf)?,
+        exp_het: distrib_of(exp_het.as_ref(), PerVarStat::ExpHet)?,
+        unbiased_exp_het: distrib_of(unbiased_exp_het.as_ref(), PerVarStat::UnbiasedExpHet)?,
         poly_vars_ratio: poly_counts_of(poly_vars_ratio.as_ref())?,
         counts,
     })
 }
 
 /// The statistics a user asked for, out of the names the TypeScript package
-/// gives them.
+/// gives them, which are the core's.
 ///
 /// # Errors
 ///
 /// A name that is of no statistic, which a user reaches by writing one in
 /// JavaScript: in TypeScript the five are a union of string literals.
 fn the_stats(names: &[String]) -> Result<Vec<PerVarStat>, JsPopneiError> {
-    names
-        .iter()
-        .map(|name| match name.as_str() {
-            OBS_HET => Ok(PerVarStat::ObsHet),
-            MAF => Ok(PerVarStat::Maf),
-            EXP_HET => Ok(PerVarStat::ExpHet),
-            UNBIASED_EXP_HET => Ok(PerVarStat::UnbiasedExpHet),
-            POLY_VARS_RATIO => Ok(PerVarStat::PolyVarsRatio),
-            _ => Err(JsPopneiError::Refused(format!(
-                "`{name}` is not one of the statistics of a variant, which are \
-                 `{OBS_HET}`, `{MAF}`, `{EXP_HET}`, `{UNBIASED_EXP_HET}` and \
-                 `{POLY_VARS_RATIO}`"
-            ))),
-        })
-        .collect()
-}
-
-/// The bins of the histogram, of equal width or of equal ratio.
-///
-/// # Errors
-///
-/// A `bin_type` that is neither of the two names, and what the core refuses
-/// of a range and a number of bins: a histogram of no bin, a range that does
-/// not run from a number up to a larger one, and a range of bins of equal
-/// ratio that starts at 0 or below.
-fn the_bins(
-    bin_type: &str,
-    (start, end): (f64, f64),
-    num_bins: usize,
-) -> Result<HistBins, JsPopneiError> {
-    let bins = match bin_type {
-        LINEAR_BINS => HistBins::linear(start, end, num_bins),
-        LOGARITHMIC_BINS => HistBins::logarithmic(start, end, num_bins),
-        _ => {
-            return Err(JsPopneiError::Refused(format!(
-                "`binType` is `{bin_type}`, and the bins of a histogram are \
-                 `{LINEAR_BINS}`, of equal width, or `{LOGARITHMIC_BINS}`, of equal \
-                 ratio; pyNei spells the first one `lineal`, the Spanish word"
-            )));
-        }
-    };
-    Ok(bins?)
+    let mut asked_for = Vec::with_capacity(names.len());
+    for name in names {
+        asked_for.push(PerVarStat::of_name(name)?);
+    }
+    Ok(asked_for)
 }
 
 /// The populations a user named, each with the names of its individuals in
@@ -283,7 +246,7 @@ fn the_pops_given(asked: &ArgumentsOfThePass) -> Result<Option<PopsGiven>, JsPop
 /// of counts holds, which is more rows than a file of a tab has.
 fn distrib_of(
     distrib: Option<&popnei::stats::StatsDistrib>,
-    statistic: &str,
+    statistic: PerVarStat,
 ) -> Result<Option<Distrib>, JsPopneiError> {
     let Some(distrib) = distrib else {
         return Ok(None);
@@ -321,12 +284,10 @@ fn poly_counts_of(
     let mut num_variable = Vec::with_capacity(pops.len());
     let mut num_vars_with_data = Vec::with_capacity(pops.len());
     for pop in pops.clone() {
-        num_poly.push(for_javascript(poly.num_poly(pop), POLY_VARS_RATIO)?);
-        num_variable.push(for_javascript(poly.num_variable(pop), POLY_VARS_RATIO)?);
-        num_vars_with_data.push(for_javascript(
-            poly.num_vars_with_data(pop),
-            POLY_VARS_RATIO,
-        )?);
+        let of_the_ratio = PerVarStat::PolyVarsRatio;
+        num_poly.push(for_javascript(poly.num_poly(pop), of_the_ratio)?);
+        num_variable.push(for_javascript(poly.num_variable(pop), of_the_ratio)?);
+        num_vars_with_data.push(for_javascript(poly.num_vars_with_data(pop), of_the_ratio)?);
     }
     // A ratio whose denominator is 0 has no value, and NaN is what the
     // package gives its user for one.
@@ -356,27 +317,38 @@ fn poly_counts_of(
 /// When the count is above 4294967295, which is more variants than a file in
 /// the memory of a tab holds: that memory addresses 4 GB, and a variant is a
 /// row of a file.
-fn for_javascript(count: u64, statistic: &str) -> Result<u32, JsPopneiError> {
+fn for_javascript(count: u64, statistic: PerVarStat) -> Result<u32, JsPopneiError> {
     u32::try_from(count).map_err(|_| {
         JsPopneiError::NotInJavaScript(format!(
-            "the {statistic} of one population counted {count} variants, more than a \
-             JavaScript array of counts holds"
+            "the {name} of one population counted {count} variants, more than a \
+             JavaScript array of counts holds",
+            name = statistic.name()
         ))
     })
 }
 
-/// `error`, and the major allele frequency below which a variant is
-/// polymorphic under the name a TypeScript user wrote it in.
+/// `error`, with what a user wrote under the name they wrote it in.
 ///
-/// The core names it by what it is for and the message a user reads names
-/// `polyThreshold`, which only this crate knows: what they have to look at is
-/// the call they wrote.
+/// The core names the major allele frequency below which a variant is
+/// polymorphic by what it is for, and the kind of the bins of a histogram
+/// `bin_type`, which is what a Python user writes it as. What a TypeScript
+/// user has to look at is the call they wrote, `polyThreshold` and
+/// `binType`, and this crate is what knows those names.
 fn under_its_name(error: popnei::Error) -> JsPopneiError {
     if let popnei::Error::PolyThresholdOutOfRange { value } = error {
         return JsPopneiError::Threshold {
             name: POLY_THRESHOLD,
             threshold: value,
         };
+    }
+    if matches!(error, popnei::Error::HistBinsOfAnUnknownKind { .. }) {
+        // The core writes the name of the argument once, at the start of
+        // what it says, and the kind the user wrote comes after it.
+        return JsPopneiError::Refused(error.to_string().replacen(
+            BIN_TYPE_IN_THE_CORE,
+            BIN_TYPE,
+            1,
+        ));
     }
     JsPopneiError::Core(error)
 }
