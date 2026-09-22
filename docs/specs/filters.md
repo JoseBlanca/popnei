@@ -461,8 +461,15 @@ the threshold filters after it in the steps see the kept individuals
 alone: the missing rate then divides by them, and the maf and the
 observed heterozygosity are over their genotypes, as in pyNei, where a
 chunk that went through `filter_samples` holds the kept individuals and
-no other. Whether the kept individuals come in the order of the source or
-in the order the user named them is **Open 1**, below.
+no other. The kept individuals come in the order the user named them,
+so the filter is also the way to put the individuals in the order a user
+wants, the populations together, and the rows of the per individual
+statistics and of a distance matrix come out that way; it costs nothing,
+since the gather of a row takes any order. The owner decided it on 22
+September 2026; the option not taken was the order of the source, which
+is pyNei's: `filter_samples(v, ["ind05", "ind00", "ind49"])` on
+`many.vcf` gives `ind00, ind05, ind49`, whatever the order of the
+argument, where bcftools's `-s` gives the order of the argument.
 
 ### In Python and in TypeScript
 
@@ -503,7 +510,8 @@ gives, individual for pyNei's sample. The differences:
 - It has no entry in `pass_stats.filtering`, since it takes no variant
   out. pyNei's `gather_filtering_stats` lists it under the kind `sample`,
   with every variant processed and kept.
-- The order of the kept individuals, Open 1.
+- The kept individuals come in the order of the argument, and not of the
+  source, under "What it gives".
 
 The three refusals of the names are made at the call, against the
 individuals of the source, with `resolve_individuals` of "The Rust
@@ -846,23 +854,10 @@ performance review.
 
 ## Open points
 
-The owner decides this one. Until then the implementer follows its
-"meanwhile". What the owner decided on 21 September 2026 about the
-threshold filters, in chat, is written where it applies, with the option
-that was not taken.
-
-**Open 1: the order of the kept individuals.** pyNei gives them in the
-order of the source whatever the order of the argument:
-`filter_samples(v, ["ind05", "ind00", "ind49"])` on `many.vcf` gives
-`ind00, ind05, ind49`. bcftools's `-s` gives the order of the argument.
-The options are the order of the source, which reproduces pyNei, or the
-order of the argument, which makes the filter also the way to put the
-individuals in the order a user wants, the populations together, so that
-the rows of the per individual statistics and of a distance matrix come
-out that way; it costs nothing, since the gather of a row takes any
-order. Recommendation: the order of the argument. Meanwhile the
-implementer keeps the order of the argument, and the comparison against
-pyNei matches the genotypes by name.
+None. What the owner decided on 21 September 2026 about the threshold
+filters, in chat, is written where it applies, with the option that was
+not taken, and so is the order of the kept individuals, decided on 22
+September 2026 under "What it gives" of the filter of individuals.
 
 ## Not in this spec
 
