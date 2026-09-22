@@ -8,9 +8,7 @@ met now, on the branch `perf/dists-kosman`, which is not merged: section
 2 has the numbers and section 9 the five changes that gave them. The
 report also says where the time goes, which was not known before it, and
 what was left unrun and why, so that the next review starts from its
-measurement plan and its numbers. It was run by the session of the
-assistant, with one reviewer subagent per category and one subagent per
-measurement, as the `performance-review` skill says.
+measurement plan and its numbers.
 
 The words this document uses. The **calculation** is one call of
 `calc_kosman_sums` over a reader, which gives, for every pair of
@@ -71,13 +69,22 @@ reading taken out, on the machine below:
 | 18 cores | 0.635 s | 0.102 s | 0.38 s | 0.280 s on 6 |
 | wasm under node | 2.158 s | 1.423 s | 1.43 s | not measured |
 
-popnei is now 6 in 100 above pyNei on one thread and 2.7 times faster
-than pyNei's best, where the spec accepted being 1.3 times slower. The
-wasm number sits on its line: two rounds gave 1.429 and 1.423 s where
-the runs of one round spread 1.6 in 100, so it is met by less than the
-noise, and it is the one to watch. Over the vars file on 18 threads the
-reader is now 0.127 s of the 0.229 s a user waits, more than the
-calculation it feeds, which is where the next work on this path is.
+popnei is now 6 in 100 slower than pyNei on one thread, where it was 60
+in 100 slower, and 2.7 times faster than pyNei's best; the spec accepted
+being 1.3 times slower. The wasm number sits on its line: two rounds
+gave 1.429 and 1.423 s where the runs of one round spread 1.6 in 100, so
+it is met by less than the noise, and it is the one to watch. Over the
+vars file on 18 threads the reader is now 0.127 s of the 0.229 s a user
+waits, more than the calculation it feeds, which is where the next work
+on this path is.
+
+What is asked of the owner: whether to merge the branch, which is his
+order as always and which nothing in this report stands in the way of;
+and, if a next round of speed is wanted, whether popnei may require of a
+browser the vector instructions of WebAssembly, which is what L5 of
+section 6 needs and which raises the floor of the browsers popnei runs
+in. Everything else the report leaves open needs no decision, only the
+order to run it.
 
 The verdict when the review was written, before the experiments, was
 "run the experiments", on this evidence:
@@ -183,11 +190,15 @@ calls its out of line drop on the success path, 2e8 times; `memchr` is
 `genotype.contains(&MISSING_ALLELE)` on a slice of two bytes, 1e8 times;
 `alleles_of` is the pass that finds the smallest and the largest allele
 and ranks them. The same two calls are in the wasm32 assembly of
-`of_block`. The pairs loop, `sums_of_two`, is vectorized: `ldp` of 16
-words a time, `and.16b`, `cnt.16b`, `udot.4s`, then `uaddlp.2d`,
-`uzp1.4s` and `add.4s` because the sum is asked per word, 48 SIMD
-instructions per 16 word pairs, no bounds check and no call; in wasm32
-it is `i64.and`, `i64.popcnt`, `i32.add`, unrolled by two, no call.
+`of_block`. The pairs loop, `sums_of_two`, is vectorized, which is to
+say the compiler made it work on sixteen bytes at a time with the vector
+instructions the chip has for that, called NEON on this machine: it
+loads sixteen words at a time, ANDs them, counts the ones of each byte,
+adds those counts into a running total, and then widens and folds the
+total, because the code asks for the count of each word on its own; 48
+vector instructions per 16 word pairs, with no bounds check and no call.
+In wasm it is the plain 64 bit AND, the instruction that counts the ones
+of a word, and an addition, unrolled by two, with no call.
 
 The counts, the same on every run: 999 rayon work items per block, the
 largest row 999 pairs and the smallest 1; 79 words per set; 5 sets per
@@ -260,11 +271,13 @@ wheel is built by maturin in release; neither passes `+simd128`, and
   wasm build through the node script. The cost is link time on every
   build. After H1 and H2 the calls are gone anyway, so this is measured
   after them.
-- **`target-cpu`** is not a candidate: the stock build already emits
-  `and.16b`, `cnt.16b` and `udot.4s` for the pairs loop, since NEON is
-  in the aarch64 baseline. An allocator swap is not one either, at 60
-  allocations per block. PGO is premature while two named frames carry
-  a fifth of the CPU.
+- **`target-cpu`**, which lets the compiler use the instructions of the
+  machine it builds on, is not a candidate: the stock build already uses
+  the vector instructions for the pairs loop, since they are in the
+  baseline of every 64 bit ARM. An allocator swap is not one either, at
+  60 allocations per block. Building the library twice, once to collect
+  which branches it takes on a real dataset and once with that knowledge,
+  is premature while two named frames carry a fifth of the CPU.
 - **`+simd128` for wasm** [Likely, build]: alone it gives nothing. Built
   with `RUSTFLAGS="-C target-feature=+simd128"`, `sums_of_two` gets
   `v128.and` and `v128.load` but still six `i64.popcnt` and no
@@ -278,11 +291,14 @@ wheel is built by maturin in release; neither passes `+simd128`, and
 
 ## 6. The findings
 
-Each names its file and line at 59e76a5, its severity as
-`finding_format.md` of the skill defines it, its gate, what it does to
-the numbers and what it costs. All keep the two integers of every pair
-the same at every thread count and block size. What each experiment gave
-is in section 9, which was written as they ran.
+Each names its file and line at 59e76a5, what says it is worth trying,
+what would decide it, what it does to the numbers and what it costs. The
+severities are those of the review skill: **hot path** is a site a
+profile names with a mechanism for a gain, **likely** is a pattern whose
+site is plausibly hot, **speculative** is a pattern whose site may well
+be cold, and a **note** is for a later reader. All of them keep the two
+integers of every pair the same at every thread count and block size.
+What each experiment gave is in section 9.
 
 ### Hot path
 
@@ -319,15 +335,16 @@ phase 0.569 s of the 0.624 s on 18 threads and the same 0.529 s on one;
 the profile, 1.91 cores busy on average over 18 threads, the sets phase
 78 in 100 of the main thread. Mechanism: `of_block` writes every bit on
 one thread. The writes are disjoint per individual: individual i owns
-`called[i * 79..]` and `holds[i * 316..]`, so a range of c individuals
-is one work item of `par_chunks_mut` over the two arrays, no lock and
-no atomic, the pattern the VCF reader already uses over its rows. The
-loop stays variant major inside the item so that `gts` is still read as
-a stream, 2c bytes of each 2000 byte row per item, which reads each
-128 byte line 4 times over the items at c = 14 instead of once, 40 MB a
-block instead of 10. A split by variants would be wrong at any range
-that is not a multiple of 64, two threads ORing into one word, and is
-not proposed. Gate: the sets phase of the bench in memory on 18
+`called[i * 79..]` and `holds[i * 316..]`, so a range of individuals is
+one work item of `par_chunks_mut` over the two arrays, no lock and no
+atomic, the pattern the VCF reader already uses over its rows. Inside an
+item the loop stays variant major, so that the genotypes of the block
+are read in the order they lie; what the item pays for its range is that
+each row of genotypes, 2000 bytes for 1000 diploid individuals, is read
+once per item instead of once in all, since an item wants only the bytes
+of its own individuals. A split by variants would be wrong at any range
+that is not a multiple of 64, two threads setting bits in one word, and
+is not proposed. Gate: the sets phase of the bench in memory on 18
 threads below 0.325 s, the one thread line within 2 in 100 of 1.138 s,
 `cargo test --workspace` green with the test that compares the parallel
 and the serial adding, and a new test on a block whose variants are not
@@ -347,14 +364,16 @@ assembly, the loop at the SIMD issue width, about 4.5 instructions per
 cycle from a working set in L2; the spec, which leaves "whether a block
 with only the alleles 0 and 1 gets fewer sets" to the implementer.
 Mechanism: with two alleles the copies of allele 1 are the ploidy less
-those of allele 0, so `holds(1, m) = called AND NOT holds(0, k + 1 -
-m)` and the two sets of allele 1 carry nothing the others do not. Two
-exact forms: the AND form, where the count of the partner set is
-`popcount(C AND NOT h_i AND NOT h_j)` with `C` the called of both, and
-the XOR form, where the ploidy times the sum of d is
-`popcount((h_i XOR h_j) AND C)` summed over the two sets of allele 0.
-Either walks 3 sets per individual, 237 words, 474 per pair against
-790, and writes 3 sets per individual in the sets phase. A block with
+those of allele 0, so the set "holds m copies of allele 1 or more" is
+the complement, within the variants the individual has called, of "holds
+k + 1 - m copies of allele 0 or more", and the two sets of allele 1
+carry nothing the others do not. Two exact forms, with C the variants
+both individuals called and h the two remaining sets of allele 0: the
+AND form counts the partner set as the ones of `C AND NOT h_i AND NOT
+h_j`, and the XOR form gives the ploidy times the sum of the distances
+of the pair directly, as the ones of `(h_i XOR h_j) AND C` added over
+the two sets. Either walks 3 sets per individual, 237 words, 474 per
+pair against 790, and writes 3 sets per individual in the sets phase. A block with
 a third allele or another ploidy keeps the general path, chosen per
 block on `num_alleles == 2`. The complements must stay masked by a set
 of the individual, so that the padding bits of the last word stay 0.
@@ -392,9 +411,11 @@ Filed by data_layout and hot_loops; medium confidence.
 
 **L1. The count of copies is three loops for a trip count of one or
 two.** `dists.rs:199-203`, `iter().take(at + 1).filter(..).count()` per
-allele. Evidence: the assembly, a 32 byte NEON loop, an 8 byte one and a
-scalar tail with two range branches, for at most two compares, and
-O(k²) in the ploidy. Experiment: an arm for ploidy 2, one compare,
+allele. Evidence: the assembly, where the compiler made three versions
+of that count, one over 32 bytes at a time, one over 8 and one over the
+bytes one by one, with the branches that choose between them, for a
+count that at ploidy 2 compares at most two values; and it is quadratic
+in the ploidy. Experiment: an arm for ploidy 2, one compare,
 with the general loop kept and a test that both give the same sets;
 gate on the instruction count of `of_block` and the bench on one
 thread. Numbers: none. Cost: one branch. Filed by hot_loops.
@@ -408,12 +429,13 @@ allele reaching the lookup is 0 to 127. `allele.cast_unsigned()` into a
 loop body of `of_block` in the assembly, then the bench. Numbers: none.
 Cost: the invariant written down. Filed by numbers.
 
-**L3. The popcount reduction is lowered at about 3 SIMD instructions per
-word pair where 2 would do.** `dists.rs:412-423`. Evidence: the
-assembly, `cnt.16b` then `movi`, `udot.4s`, `uaddlp.2d`, `uzp1.4s` and
-`add.4s` per 16 bytes because `.map(count_ones).sum()` asks for a per
-word `u32`; `cnt.16b` with `uadalp` into 16 bit lanes, which 395 words
-never overflow, is 3 per 16 bytes instead of 5. The integers are the
+**L3. Counting the ones costs about 3 vector instructions per word pair
+where 2 would do.** `dists.rs:412-423`. Evidence: the assembly, five
+vector instructions per 16 bytes, of which two are there only to give
+each word its own count before the sum, which is what
+`.map(count_ones).sum()` asks for; counting the ones of the bytes and
+adding them straight into 16 bit running totals, which 395 words can
+never overflow, is three instructions per 16 bytes instead of five. The integers are the
 same in any order. Experiment: a prototype with a SIMD crate, `wide` or
 `fearless_simd`, since `std::simd` is nightly, checked with `cargo asm`,
 then the bench on one thread. Cost: a dependency, a second kernel for
@@ -470,6 +492,9 @@ gain. Filed by data_layout.
 
 ### Notes
 
+The three notes below count bytes from the shapes of the arrays; none of
+them was measured, and nothing has been measured at 10000 individuals.
+
 - **N1.** `python/popnei/dists.py:214`: `pandas.DataFrame(square, ...)`
   copies its array under pandas 3.0, so `square_dists` holds 800 MB
   twice at 10000 individuals; `copy=False` gives away nothing, the
@@ -501,10 +526,11 @@ gain. Filed by data_layout.
   or an inline hint.
 - `scripts/build_pyodide_wheel.sh`: pyodide's link flags carry `-Oz`,
   and whether that reaches a Rust side module was not checked.
-- `docs/reports/kosman-method/kspike/src/lib.rs:59-76`: the trial's set
-  builder, `pack`, has neither the error nor the `memchr` and took
-  0.015 s a block where `of_block` takes 0.029 s; the 18 core target
-  was set from it. A binary that times both on one block would say
+- `docs/reports/kosman-method/kspike/src/lib.rs:59-76`: the crate of the
+  trial on which the owner chose the sets of bits over pyNei's matrix
+  products, and from whose times the three targets were set. Its set
+  builder, `pack`, has neither the error nor the call to `memchr` and
+  took 0.015 s a block where `of_block` took 0.029 s. A binary that times both on one block would say
   whether the target is reachable at all; H1, H2 and L1 are the
   difference between the two.
 
