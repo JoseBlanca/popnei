@@ -226,3 +226,40 @@ fmt`, `cargo clippy`, `cargo wasm-check` and ruff clean.
 The reviewers used, in tokens: spec 148820, tests 151940, numbers
 134789, errors 127376, api 113582, architecture 115202, binding
 126337. The fixer used 231504 in 129 tool calls.
+
+## Work package 3: the populations and the counts over one
+
+Task 3.1, commit 51e98e9: `Pops` in the new module
+`crates/popnei/src/stats.rs`, with `all`, `from_names`, `len`,
+`is_empty`, `name`, `individuals`, `is_all` and the named constant of
+the population of every individual, `pop`; four cases of the error for
+its refusals, each a `ValueError` in Python, and one for an index
+beyond the variant, a `RuntimeError`; and `count_gts_of` and
+`count_alleles_of` in `crates/popnei/src/variant.rs`, beside the two
+counts of the whole row, with what one genotype and one allele add to
+the counts in one private function each that both pairs share. Four
+things the subagent decided: the map from a name to its index is built
+once per population and not once per pass, since "The Rust interface"
+has `from_names` call `resolve_individuals` for each, which builds its
+own, so 3 populations of 200 individuals build 3 maps; `name`,
+`individuals` and `is_all` keep the signatures of the spec, a bare
+`usize` and no `Option`, and a number at or beyond `len()` gives an
+empty name, no individual and false, written in each doc comment; and
+both counts refuse a population whose individuals times the ploidy is
+above what a `u32` holds, with the case `count_gts` already has, which
+only a caller that names an individual twice can reach.
+
+Both deliverables are met, run by the orchestrator at 51e98e9. `cargo
+test -p popnei --lib -- stats::pops --list` prints `9 tests`, where the
+plan asks 5 or more; `cargo test -p popnei --lib -- count_gts_of
+count_alleles_of --list` `12 tests`, 9 new and 3 that were there whose
+names begin with `count_gts_of_the_`, where it asks 4 or more. `cargo
+test --workspace` `352 passed`, 2 ignored, from 334; `uv run pytest`
+`189 passed`, untouched; `cargo fmt`, `cargo clippy`, `cargo
+wasm-check` and ruff clean.
+
+Nothing was changed in the plan. The review of this work package is
+made together with work package 4, which calls its two counts from the
+statistics and compares them with pyNei through them.
+
+The subagent of task 3.1 used 156366 tokens in 63 tool calls.

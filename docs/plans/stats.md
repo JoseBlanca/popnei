@@ -279,7 +279,7 @@ pyNei runs in work package 4, through the statistics.
 
 **Tasks.**
 
-- [ ] 3.1 `Pops` and its errors in `crates/popnei/src/stats.rs`, a new
+- [x] 3.1 `Pops` and its errors in `crates/popnei/src/stats.rs`, a new
   module with nothing else yet, and `count_gts_of` and
   `count_alleles_of` in `crates/popnei/src/variant.rs`, with their
   tests. From "The populations", "The counts of one variant over a
