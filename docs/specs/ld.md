@@ -295,9 +295,10 @@ size. It has two chromosomes of 250 biallelic variants each, 1000 bp
 apart, and 100 diploid individuals, and its haplotypes come from four
 founders recombined along the chromosome at a rate of 2 in 100 between
 one variant and the next, with 3 in 100 genotypes then set to missing.
-The script that writes it is `docs/reports/ld-method/make_ld.py`, which
-the implementation plan moves to `tests/reference/ld/make_reference.py`
-unchanged. Every literal of this spec and of the filter item of
+The script that writes it is `tests/reference/ld/make_reference.py`,
+beside the file itself, and `tests/reference/ld/run_plink2.sh` runs it
+and the plink2 commands again and compares what they give with what is
+stored. Every literal of this spec and of the filter item of
 `docs/specs/filters.md` depends on the order in which that script asks
 `numpy.random.default_rng(29)` for its numbers, the four founders, then
 the recombination of each haplotype along the chromosome, then the mask
