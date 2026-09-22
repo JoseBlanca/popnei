@@ -251,11 +251,14 @@ Each of these is a `ValueError` in Python:
   nothing to do a PCA with", pyNei's without its "012 matrix" and its
   "sample", and starting in lower case as every message of the core does.
 - A negative `num_prin_comps`.
-- A dataset beyond what this analysis reads, which is one of five and
-  the message says which. A source of no individual: the components
-  place the individuals of a dataset on axes, and there is nobody to
-  place. No reader of popnei gives one, so it is the function of the
-  core crate that refuses it. A ploidy above 254: the first pass writes the
+- A source of no individual: the components are the axes the individuals
+  of a dataset are placed on, and there is nobody to place, and the
+  standardizing of a block would read its rows in chunks of no allele.
+  Every source of popnei has one individual at least, as
+  `docs/specs/block.md` says, so it is a caller of the function of the
+  core crate with a reader of its own that reaches it.
+- A dataset beyond what this analysis counts in, which is one of four and
+  the message says which. A ploidy above 254: the first pass writes the
   genotype of each individual as one byte, its dosage or the missing
   genotype, as "Speed" below has it, and the 256 dosages of a ploidy of
   255, the largest the VCF reader takes, are with the missing genotype
