@@ -235,8 +235,10 @@ an error in both.
 ## A `Variants` from an array of genotypes
 
 Added on 22 September 2026 with the first calculation, the Kosman
-distances between individuals of `docs/specs/dists.md`, whose tests need
-it. It has no code.
+distances between individuals of `docs/specs/dists.md`, and left out of
+the plan of that calculation the same day by the owner, whose tests run
+on small VCF files instead. It has no code and no plan; it waits for a
+user who has genotypes in memory.
 
 ### What it gives
 

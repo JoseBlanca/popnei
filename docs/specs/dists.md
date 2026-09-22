@@ -9,10 +9,12 @@ D between populations is not written. It depends on `docs/specs/block.md`,
 which has the block, the run of consecutive variants held as arrays, and
 `BlockReader`, the trait of everything that gives blocks; on
 `docs/specs/variant.md`, which has the `Variants` a user holds, with the
-steps put on it and the counts of a pass, and the `Variants` built from an
-array of genotypes, an item written with this spec because its tests need
-it; and on `docs/specs/filters.md`, which builds the chain of filters of
-a pass.
+steps put on it and the counts of a pass; and on `docs/specs/filters.md`,
+which builds the chain of filters of a pass. The `Variants` built from an
+array of genotypes of the variant spec was written with this spec and is
+not needed by it: the owner decided on 22 September 2026 that the tests
+run on small VCF files written for them, and that the array waits for a
+user who needs it.
 
 ## Kosman distances between individuals
 
@@ -375,8 +377,8 @@ No program outside the project checks the half called genotype: the
 genotypes reached R as whole genotypes or as missing.
 
 Against pyNei: both libraries run `calc_pairwise_kosman_dists` on the two
-files and on the genotypes of the worked example below, the last through
-`Variants.from_gt_array`, with `min_num_snps` of `None` and of a value
+files and on the genotypes of the worked example below, the last written
+as a VCF for the test, with `min_num_snps` of `None` and of a value
 that leaves some pairs without a distance, 1125 for the panel. The vectors
 have to be equal exactly, with NaN in the same places: both sides divide
 the same two integers once.
@@ -478,8 +480,10 @@ glossary, and 0 for `None`.
 ## Speed
 
 The dataset is 100000 variants x 1000 individuals, biallelic, 3 in 100
-genotypes missing, from memory, so that the reader is not in the time.
-pyNei takes 0.76 s with `num_threads=1` and 0.30 s with 6, which is its
+genotypes missing, read from a vars file, with the time of reading that
+file alone measured beside it and taken out, so that the reader is not in
+the number; on a vars file of 20000 variants of 1000 individuals the
+reader took 18.8 ms, section 1 of the architecture. pyNei takes 0.76 s with `num_threads=1` and 0.30 s with 6, which is its
 best, on the owner's M5 Pro on 21 September 2026 with numpy 2.5.3 on
 Accelerate. The trial of "How it runs", with no tuning, takes 0.044 s a
 block, 0.88 s for the 20 blocks, on one thread, 0.017 s a block, 0.34 s,
@@ -522,4 +526,5 @@ the tetraploid and the haploid datasets of "How it is verified" show.
   first calculation that consumes blocks: it is a reader over a reader, and
   `calc_kosman_sums` takes any reader, so it is an item of that spec and
   nothing here changes with it.
-- `Variants.from_gt_array`: `docs/specs/variant.md`.
+- `Variants.from_gt_array`, the `Variants` from an array of genotypes:
+  `docs/specs/variant.md`, for a later plan.
