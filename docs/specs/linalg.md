@@ -167,12 +167,13 @@ Each of these is an error of the crate before any routine runs, and the
 core crate turns it into its own error and Python into a `RuntimeError`,
 since they are defects of the caller: a dimension that does not match,
 a `g` that is not c x c for the product or a buffer shorter than its rows
-times its columns; a c or an n of 0; and a value that is not finite in a
-matrix. The last is checked here because the backends do not agree on
-it: `dsyevd` on a matrix with a NaN gives NaN eigenvalues and an `info`
-of 0, measured through numpy 2.5 on 22 September 2026, and faer's
-`self_adjoint_eigen` gives its error of no convergence. A routine of
-LAPACK that stops, `info` other than 0, which for `dsyevd` is an
+times its columns; a c or an n of 0, and in `product` an `inner` of 0 as
+well, while the rows of either product may be 0; and a value that is not
+finite in a matrix. The last is checked here because the backends do not
+agree on it: `dsyevd` on a matrix with a NaN gives NaN eigenvalues and
+an `info` of 0, measured through numpy 2.5 on 22 September 2026, and
+faer's `self_adjoint_eigen` gives its error of no convergence. A routine
+of LAPACK that stops, `info` other than 0, which for `dsyevd` is an
 eigendecomposition that did not converge, is an error with the routine
 and the `info`, and faer's error for the same case is the same error of
 the crate.
@@ -260,7 +261,11 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
 ```
 
 `c = a b`; `a` is `rows` x `inner`, `b` is `inner` x `cols`, and `c`,
-which is overwritten, `rows` x `cols`.
+which is overwritten, `rows` x `cols`. `rows` may be 0, and then nothing
+is written, as an `a` of no rows adds nothing to `g` above: the second
+pass of the PCA multiplies the block it has standardized by the
+eigenvectors, and a block whose rows all had no variance leaves an `a`
+of no rows here too. `inner` and `cols` are 1 at least.
 
 ```rust
 pub fn product(a: &[f64], rows: usize, inner: usize, b: &[f64], cols: usize, c: &mut [f64]) -> Result<()>;
