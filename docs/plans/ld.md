@@ -125,7 +125,7 @@ this plan.
 
 ### Its tasks
 
-- [ ] 1.1 The reference dataset: `docs/reports/ld-method/make_ld.py`
+- [x] 1.1 The reference dataset: `docs/reports/ld-method/make_ld.py`
       moved to `tests/reference/ld/make_reference.py` unchanged, since
       every literal of both specs depends on the order in which it asks
       its generator for its numbers; `ld.vcf.gz`, `example.vcf`, the

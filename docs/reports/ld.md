@@ -61,3 +61,35 @@ called, whose major allele is the missing one. The tests of `variant::`
 go from 10 to 11 and those of `pca::` from 48 to 47, so the workspace
 count does not move. The plan's deliverable says that no test changes;
 this one did, and what it covers grew rather than shrank.
+
+Task 1.1, the reference dataset, commit f714f79. `tests/reference/ld/`
+holds `make_reference.py` and `example.vcf`, both moved from
+`docs/reports/ld-method/` and byte for byte what they were, which is what
+keeps every literal of the two specs valid: the program's numbers come
+from `numpy.random.default_rng(29)` and depend on the order in which it
+asks for them. Beside them are `ld.vcf.gz`, the two matrices plink2 gives
+for the dataset and for the worked example, the identifiers of their rows
+in their order, and `run_plink2.sh`, which makes the five files again and
+compares each with the stored one.
+
+Deliverable 1 holds. `tests/reference/ld/run_plink2.sh` into an empty
+directory exited 0, which is the script saying that none of the five
+files differed, and the `ld.vcf` it wrote is what `gzip -dc` gives from
+the stored `ld.vcf.gz`. Read back from the stored matrix of the dataset:
+500 variants, 124750 pairs of which 93096 have an r² and 31654 are NaN,
+68 variants with no variance, and the pair chr1:1000 with chr1:2000 at
+0.353466669239891 and with chr1:3000 at 0.39849991080910563, the bits the
+spec's table has.
+
+Two things the task decided that the plan did not say. `example.vcf` was
+moved rather than copied, so there is one copy of it, and
+`docs/reports/ld-method/README.md` says where both files went. plink2's
+`.bin.vars` files are stored although deliverable 1 does not name them:
+they carry the order of the rows of each matrix, which the cargo test of
+deliverable 4 has to read the matrix in. plink2's `.log` is not stored,
+since it carries the time of the run and the paths of the machine.
+
+`docs/specs/ld.md` still pointed the reader at
+`docs/reports/ld-method/make_ld.py`, which the move had taken away. The
+sentence now names `tests/reference/ld/make_reference.py` and the script
+beside it: commit 7b6ce62. No value and no open point of the spec moved.
