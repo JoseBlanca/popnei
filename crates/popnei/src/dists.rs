@@ -8,16 +8,21 @@
 //! ploidy times the sum of d and how many variants both were called at,
 //! which every block adds to.
 //!
-//! [`KosmanBits`] is the genotypes of one block as sets of bits, one set
-//! for each individual and each question that a count of a pair asks, and
-//! it gives those two integers for a pair of individuals over that block.
+//! [`calc_kosman_sums`] is the calculation a user reaches: it reads a
+//! reader of blocks to its end and gives the [`KosmanSums`], the two
+//! integers of every pair over all of its variants, which the distance of
+//! each pair is worked out from. [`KosmanBits`] is the genotypes of one
+//! block as sets of bits, one set for each individual and each question
+//! that a count of a pair asks, and it gives those two integers for a pair
+//! over that block.
+//!
 //! `docs/specs/dists.md` has the design, the formula and the numbers the
 //! tests assert, and the row `dists` of section 9 of
 //! `docs/architecture.md` is where the module sits.
 
 use std::num::NonZeroUsize;
 
-use crate::block::{Block, BlockSize};
+use crate::block::{Block, BlockReader, BlockSize};
 use crate::error::{Error, Result};
 use crate::variant::{MISSING_ALLELE, Needs};
 
@@ -47,14 +52,6 @@ const VARS_PER_WORD: usize = 64;
 /// each, so the two sums of a pair are one pass over two contiguous
 /// slices and one pass over two more.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "nothing in the crate counts the pairs of a block yet: the calculation over \
-                  a reader, which builds these sets for every block it takes, is not written"
-    )
-)]
 pub(crate) struct KosmanBits {
     /// How many individuals the block holds, which is how many the sets
     /// are of.
@@ -78,14 +75,6 @@ pub(crate) struct KosmanBits {
     holds: Vec<u64>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "nothing in the crate counts the pairs of a block yet: the calculation over \
-                  a reader, which builds these sets for every block it takes, is not written"
-    )
-)]
 impl KosmanBits {
     /// The sets of bits of the genotypes of `block`.
     ///
@@ -257,6 +246,15 @@ impl KosmanBits {
     /// The two numbers are the same for (i, j) and for (j, i). It gives
     /// `None` when the two are one individual and when either of them is
     /// not an individual of the block.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the calculation over a reader takes the pairs of a block a row of the \
+                      upper triangle at a time, and not one pair at a time; this is what the \
+                      tests that assert the two counts of one named pair call"
+        )
+    )]
     pub(crate) fn sums_of_the_pair(&self, first: usize, second: usize) -> Option<(u32, u32)> {
         if first == second {
             return None;
@@ -269,9 +267,22 @@ impl KosmanBits {
     /// The two sums of every pair of individuals of the block, in the
     /// order of the distance vector: (0, 1), (0, 2), ..., (1, 2), ...
     pub(crate) fn sums_of_the_pairs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.individuals_from(0)
-            .enumerate()
-            .flat_map(move |(first, one)| {
+        (0..self.num_individuals).flat_map(move |first| self.sums_of_the_pairs_of(first))
+    }
+
+    /// The two sums of the pairs of the individual `first` with every
+    /// individual after it, in the order of the distance vector: for the
+    /// individual 1 of a block of four, (1, 2) and then (1, 3).
+    ///
+    /// These are the pairs of one row of the upper triangle of the square
+    /// matrix of the distances, and they are the run of pairs that a thread
+    /// takes. It gives nothing when `first` is not an individual of the
+    /// block.
+    pub(crate) fn sums_of_the_pairs_of(&self, first: usize) -> impl Iterator<Item = (u32, u32)> {
+        self.individuals_from(first)
+            .next()
+            .into_iter()
+            .flat_map(move |one| {
                 self.individuals_from(first.saturating_add(1))
                     .map(move |other| sums_of_two(one, other, self.ploidy))
             })
@@ -364,12 +375,368 @@ fn sums_of_two(first: (&[u64], &[u64]), second: (&[u64], &[u64]), ploidy: u32) -
     (ploidy * called_in_both - alleles_that_pair, called_in_both)
 }
 
+/// The two sums of every pair of individuals over the variants of
+/// `reader`, from which the Kosman distance of each pair is worked out.
+///
+/// It asks `reader` for the genotypes alone and reads it to its end,
+/// building the sets of bits of each block and adding the two integers of
+/// every pair of that block to what the blocks before it gave. The sums are
+/// integers, so the result is the same to the last bit whatever the size of
+/// the blocks and however many threads the pairs were counted on, and the
+/// reader needs no [`Reblock`](crate::block::Reblock) before it.
+///
+/// `reader` is borrowed and not taken, so that whoever built the chain of
+/// filters of the pass can read their counts from it when this returns, as
+/// `docs/specs/filters.md` says; how many variants the calculation was
+/// given is [`KosmanSums::num_vars`].
+///
+/// # Errors
+///
+/// When `reader` has no variant, when the sums of a pair would go above
+/// what a `u32` holds, when the machine does not give the memory of the two
+/// counts of every pair, and when the reader fails, whose error is given on
+/// as it is. A block of other individuals or of another ploidy than the
+/// reader says its source has is the error of a reader with a defect.
+pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<KosmanSums> {
+    // The genotypes are all this reads, so a reader over a file leaves the
+    // columns of a variant unparsed.
+    reader.set_needs(Needs::GTS);
+    let num_individuals = reader.individuals().len();
+    let ploidy = reader.ploidy();
+    // The two counts of every pair are asked of the machine once, when the
+    // first block is there: at 10000 individuals they are 400 MB, which a
+    // reader with no variant would have asked for and given back.
+    let Some(mut block) = reader.next_block()? else {
+        return Err(Error::ReaderGaveNoVariants);
+    };
+    let mut sums = KosmanSums::at_zero(num_individuals, ploidy)?;
+    loop {
+        // Every variant of the block counts here, called in a pair or not:
+        // `num_vars` is what a user reads as the variants of the pass. A
+        // `usize` is 64 bits natively and 32 in wasm, so the conversion
+        // holds; the sum stops at the largest `u64`, which is more variants
+        // than any source holds, and the sums of a pair are refused long
+        // before it.
+        sums.num_vars = sums
+            .num_vars
+            .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        let bits = KosmanBits::of_block(&block)?;
+        add_the_block(&mut sums, &bits)?;
+        let Some(next) = reader.next_block()? else {
+            break;
+        };
+        block = next;
+    }
+    Ok(sums)
+}
+
+/// For every pair of individuals, the ploidy times the sum of d over the
+/// variants of a pass and n, how many of those variants both individuals
+/// were called at. The Kosman distance of the pair is the first over the
+/// ploidy times the second.
+///
+/// The pairs are in the order of the distance vector of
+/// `docs/specs/dists.md`, (0, 1), (0, 2), ..., (0, N-1), (1, 2), ..., the
+/// upper triangle of the square matrix of the distances row by row.
+#[derive(Debug)]
+pub struct KosmanSums {
+    /// How many individuals the source has, which is how many the pairs
+    /// are of.
+    num_individuals: usize,
+    /// How many variants the calculation was given, called in a pair or
+    /// not.
+    num_vars: u64,
+    /// How many alleles the genotype of one individual holds, the k the
+    /// sum of d is multiplied by.
+    ploidy: usize,
+    /// The ploidy times the sum of d and n of every pair, in the order of
+    /// the distance vector.
+    sums: Vec<(u32, u32)>,
+}
+
+impl KosmanSums {
+    /// The two counts of every pair of `num_individuals` individuals of the
+    /// ploidy `ploidy` at 0, before any block has been added.
+    ///
+    /// # Errors
+    ///
+    /// When the machine does not give the memory of the pairs, 8 bytes
+    /// each. It is asked for with `try_reserve_exact`, which gives it back
+    /// as an error where `vec![(0, 0); n]` would end the process.
+    fn at_zero(num_individuals: usize, ploidy: usize) -> Result<KosmanSums> {
+        let too_many = |num_pairs| Error::DistancesOfTooManyIndividuals {
+            num_individuals,
+            num_pairs,
+        };
+        let num_pairs = num_pairs_of(num_individuals).ok_or_else(|| too_many(usize::MAX))?;
+        let mut sums: Vec<(u32, u32)> = Vec::new();
+        sums.try_reserve_exact(num_pairs)
+            .map_err(|_| too_many(num_pairs))?;
+        sums.resize(num_pairs, (0, 0));
+        Ok(KosmanSums {
+            num_individuals,
+            num_vars: 0,
+            ploidy,
+            sums,
+        })
+    }
+
+    /// How many individuals the pairs are of.
+    #[must_use]
+    pub fn num_individuals(&self) -> usize {
+        self.num_individuals
+    }
+
+    /// The variants the calculation was given, called in a pair or not.
+    #[must_use]
+    pub fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    /// How many alleles the genotype of one individual holds.
+    #[must_use]
+    pub fn ploidy(&self) -> usize {
+        self.ploidy
+    }
+
+    /// The ploidy times the sum of d of the pair, and n, the variants at
+    /// which both genotypes were called. The same for (i, j) and (j, i).
+    /// `None` when i == j or when either is not an individual.
+    #[must_use]
+    pub fn sums(&self, i: usize, j: usize) -> Option<(u32, u32)> {
+        self.sums.get(self.index_of_the_pair(i, j)?).copied()
+    }
+
+    /// The distance of the pair, the first of [`sums`](KosmanSums::sums)
+    /// over the ploidy times the second. `None` when n is 0 or below
+    /// `min_num_vars`, and where `sums` gives `None`.
+    ///
+    /// A pair with exactly `min_num_vars` variants keeps its distance.
+    #[must_use]
+    pub fn dist(&self, i: usize, j: usize, min_num_vars: u32) -> Option<f64> {
+        let (k_sum, n) = self.sums(i, j)?;
+        self.distance_of(k_sum, n, min_num_vars)
+    }
+
+    /// The distance of every pair, in the order of the distance vector.
+    /// The binding crates write NaN for a `None`.
+    pub fn dists(&self, min_num_vars: u32) -> impl Iterator<Item = Option<f64>> + '_ {
+        self.sums
+            .iter()
+            .map(move |&(k_sum, n)| self.distance_of(k_sum, n, min_num_vars))
+    }
+
+    /// The distance of a pair whose two counts these are: `None` when n is
+    /// 0 or below `min_num_vars`, and the sum of d over n otherwise.
+    ///
+    /// The three numbers are whole and far below 2^53, so each is exact in
+    /// a `f64`, and there is one division, so popnei and a program that
+    /// divides the same two integers, as R and pyNei do, give the same
+    /// bits.
+    fn distance_of(&self, k_sum: u32, n: u32, min_num_vars: u32) -> Option<f64> {
+        if n == 0 || n < min_num_vars {
+            return None;
+        }
+        Some(f64::from(k_sum) / (self.ploidy as f64 * f64::from(n)))
+    }
+
+    /// Where the pair of the individuals `first` and `second` is in the
+    /// vector, in either order, and `None` when the two are one individual
+    /// or either of them is not an individual.
+    ///
+    /// The pairs of the individual i start after those of the individuals
+    /// before it, which are all the pairs of the source but those of the
+    /// individuals from i on: two triangles of pairs, each of them the
+    /// pairs of a number of individuals.
+    fn index_of_the_pair(&self, first: usize, second: usize) -> Option<usize> {
+        let (first, second) = if first < second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        if first == second || second >= self.num_individuals {
+            return None;
+        }
+        let from_first_on = num_pairs_of(self.num_individuals.checked_sub(first)?)?;
+        let before_first = num_pairs_of(self.num_individuals)?.checked_sub(from_first_on)?;
+        before_first.checked_add(second.checked_sub(first)?.checked_sub(1)?)
+    }
+}
+
+/// How many pairs `num_individuals` individuals make, `n (n - 1) / 2`, and
+/// `None` when that is more than a `usize` holds.
+fn num_pairs_of(num_individuals: usize) -> Option<usize> {
+    let Some(others) = num_individuals.checked_sub(1) else {
+        // No individual makes no pair, which the subtraction below cannot
+        // give.
+        return Some(0);
+    };
+    // One of two consecutive numbers is even, so their product is, and the
+    // division by 2 is exact.
+    num_individuals
+        .checked_mul(others)
+        .map(|in_both_orders| in_both_orders / 2)
+}
+
+/// The two counts of every pair of the block whose sets of bits `bits` are,
+/// added into `sums`.
+///
+/// # Errors
+///
+/// When the block is not of the individuals or of the ploidy the sums are
+/// of, which only a reader with a defect gives, and when a sum would go
+/// above what a `u32` holds.
+fn add_the_block(sums: &mut KosmanSums, bits: &KosmanBits) -> Result<()> {
+    if bits.num_individuals() != sums.num_individuals
+        || u32::try_from(sums.ploidy) != Ok(bits.ploidy)
+    {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals: sums.num_individuals,
+            ploidy: sums.ploidy,
+            found_num_individuals: bits.num_individuals(),
+            found_ploidy: usize::try_from(bits.ploidy).unwrap_or(usize::MAX),
+        });
+    }
+    let (num_vars, ploidy) = (sums.num_vars, sums.ploidy);
+    add_the_pairs_of_the_block(&mut sums.sums, bits, num_vars, ploidy)
+}
+
+/// The two counts of every pair of the block added into `sums`, the pairs
+/// of one individual with the individuals after it on one thread of rayon.
+///
+/// `sums` is cut into one slice for each of those runs of pairs, so no two
+/// threads write in the same place and none of them takes a lock. The runs
+/// are as uneven as the upper triangle of a square matrix, the first
+/// holding one pair for every other individual and the last holding one,
+/// and there is one for each individual: rayon hands them out as the
+/// threads ask for them. One work item for each pair was the other way, and
+/// 5e7 pairs for 10000 individuals is that many items.
+///
+/// The counts are integers, so the sums do not depend on how the runs were
+/// shared out.
+///
+/// # Errors
+///
+/// When a sum would go above what a `u32` holds. Which pair is found first
+/// depends on the threads, and every pair that overflows gives the same
+/// message, which names the variants and the ploidy and not the pair.
+#[cfg(not(target_family = "wasm"))]
+fn add_the_pairs_of_the_block(
+    sums: &mut [(u32, u32)],
+    bits: &KosmanBits,
+    num_vars: u64,
+    ploidy: usize,
+) -> Result<()> {
+    use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+
+    let mut rows: Vec<(usize, &mut [(u32, u32)])> = Vec::new();
+    let mut rest = sums;
+    for first in 0..bits.num_individuals() {
+        // The pairs of the individual `first` are its pairs with each
+        // individual after it. `add_the_block` checked that the block is of
+        // the individuals the sums are of, so what is left of the vector
+        // holds that run and the runs after it; the smaller of the two is
+        // taken so that the split cannot panic.
+        let of_the_row = rest.len().min(
+            bits.num_individuals()
+                .saturating_sub(first)
+                .saturating_sub(1),
+        );
+        if of_the_row == 0 {
+            break;
+        }
+        let (row, tail) = std::mem::take(&mut rest).split_at_mut(of_the_row);
+        rows.push((first, row));
+        rest = tail;
+    }
+    rows.par_iter_mut().try_for_each(|(first, row)| {
+        for (pair, of_the_block) in row.iter_mut().zip(bits.sums_of_the_pairs_of(*first)) {
+            add_the_pair(pair, of_the_block, num_vars, ploidy)?;
+        }
+        Ok(())
+    })
+}
+
+/// The same sums, with the pairs added one after another, which is what
+/// wasm does: it has no threads.
+///
+/// # Errors
+///
+/// When a sum would go above what a `u32` holds.
+#[cfg(target_family = "wasm")]
+fn add_the_pairs_of_the_block(
+    sums: &mut [(u32, u32)],
+    bits: &KosmanBits,
+    num_vars: u64,
+    ploidy: usize,
+) -> Result<()> {
+    add_the_pairs_one_by_one(sums, bits, num_vars, ploidy)
+}
+
+/// The pairs of the block added one after another.
+///
+/// It is compiled for every target and not for wasm alone, so that the
+/// cargo tests, which run natively, can add the same blocks with it and
+/// with the threads and compare what the two give.
+///
+/// # Errors
+///
+/// When a sum would go above what a `u32` holds.
+#[cfg_attr(
+    all(not(target_family = "wasm"), not(test)),
+    expect(
+        dead_code,
+        reason = "in wasm it is how a block is added, and natively it is what the test that \
+                  compares the two ways of adding one calls; outside the tests and outside \
+                  wasm nothing calls it"
+    )
+)]
+fn add_the_pairs_one_by_one(
+    sums: &mut [(u32, u32)],
+    bits: &KosmanBits,
+    num_vars: u64,
+    ploidy: usize,
+) -> Result<()> {
+    for (pair, of_the_block) in sums.iter_mut().zip(bits.sums_of_the_pairs()) {
+        add_the_pair(pair, of_the_block, num_vars, ploidy)?;
+    }
+    Ok(())
+}
+
+/// The two counts of one pair over one block added into what the blocks
+/// before it gave.
+///
+/// # Errors
+///
+/// When either sum would go above what a `u32` holds. `num_vars` and
+/// `ploidy` are what the message names: the variants the pass has read so
+/// far and the alleles of one genotype.
+fn add_the_pair(
+    pair: &mut (u32, u32),
+    of_the_block: (u32, u32),
+    num_vars: u64,
+    ploidy: usize,
+) -> Result<()> {
+    let too_large = || Error::KosmanSumsTooLarge { num_vars, ploidy };
+    pair.0 = pair.0.checked_add(of_the_block.0).ok_or_else(too_large)?;
+    pair.1 = pair.1.checked_add(of_the_block.1).ok_or_else(too_large)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::KosmanBits;
-    use crate::block::Block;
-    use crate::error::Error;
-    use crate::variant::MISSING_ALLELE;
+    use std::path::{Path, PathBuf};
+
+    use super::{KosmanBits, KosmanSums, add_the_block, calc_kosman_sums};
+    use crate::block::{Block, BlockReader};
+    use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
+
+    /// The allele of a genotype that was not called, short enough to read
+    /// a table of genotypes with.
+    const M: i8 = MISSING_ALLELE;
 
     /// A block of the variants given, of `num_individuals` individuals of
     /// the ploidy `ploidy`, with the genotypes and no column: the fields a
@@ -394,46 +761,63 @@ mod tests {
         }
     }
 
+    /// The rows of a table of genotypes as the slices `block_of` takes.
+    fn rows_of<const ALLELES: usize>(variants: &[[i8; ALLELES]]) -> Vec<&[i8]> {
+        variants.iter().map(|row| row.as_slice()).collect()
+    }
+
+    /// Those rows cut into blocks of `num_vars_per_block` variants, the
+    /// last of them shorter, which is how a reader gives them.
+    fn blocks_of<const ALLELES: usize>(
+        variants: &[[i8; ALLELES]],
+        num_individuals: usize,
+        ploidy: usize,
+        num_vars_per_block: usize,
+    ) -> Vec<Block> {
+        variants
+            .chunks(num_vars_per_block)
+            .map(|chunk| block_of(&rows_of(chunk), num_individuals, ploidy))
+            .collect()
+    }
+
     /// The four variants of three diploid individuals of the worked
     /// example of "How it is verified" of `docs/specs/dists.md`: 0/0 0/1
     /// 1/1, 0/1 0/1 1/2, 0/0 0/. 2/2 and ./. 1/1 1/1. The third variant
     /// has the half called genotype, which is missing, and the second and
     /// the third hold three alleles where the first and the last hold two.
-    fn the_diploid_worked_example() -> Block {
-        const M: i8 = MISSING_ALLELE;
-        block_of(
-            &[
-                &[0, 0, 0, 1, 1, 1],
-                &[0, 1, 0, 1, 1, 2],
-                &[0, 0, 0, M, 2, 2],
-                &[M, M, 1, 1, 1, 1],
-            ],
-            3,
-            2,
-        )
-    }
+    const THE_DIPLOID_WORKED_EXAMPLE: [[i8; 6]; 4] = [
+        [0, 0, 0, 1, 1, 1],
+        [0, 1, 0, 1, 1, 2],
+        [0, 0, 0, M, 2, 2],
+        [M, M, 1, 1, 1, 1],
+    ];
 
     /// The three variants of three tetraploid individuals of the same
     /// part of the spec: 0/0/0/1 0/1/1/1 1/1/1/1, 0/0/1/1 0/1/0/1 0/0/2/2
     /// and 0/0/0/0 0/0/./0 1/2/2/2.
-    fn the_tetraploid_worked_example() -> Block {
-        const M: i8 = MISSING_ALLELE;
-        block_of(
-            &[
-                &[0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1],
-                &[0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 2, 2],
-                &[0, 0, 0, 0, 0, 0, M, 0, 1, 2, 2, 2],
-            ],
-            3,
-            4,
-        )
-    }
+    const THE_TETRAPLOID_WORKED_EXAMPLE: [[i8; 12]; 3] = [
+        [0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1],
+        [0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 2, 2],
+        [0, 0, 0, 0, 0, 0, M, 0, 1, 2, 2, 2],
+    ];
 
     /// The four variants of three haploid individuals of the same part of
     /// the spec: 0 0 1, 0 1 2, . 1 1 and 0 0 0.
+    const THE_HAPLOID_WORKED_EXAMPLE: [[i8; 3]; 4] = [[0, 0, 1], [0, 1, 2], [M, 1, 1], [0, 0, 0]];
+
+    /// The diploid worked example as one block.
+    fn the_diploid_worked_example() -> Block {
+        block_of(&rows_of(&THE_DIPLOID_WORKED_EXAMPLE), 3, 2)
+    }
+
+    /// The tetraploid worked example as one block.
+    fn the_tetraploid_worked_example() -> Block {
+        block_of(&rows_of(&THE_TETRAPLOID_WORKED_EXAMPLE), 3, 4)
+    }
+
+    /// The haploid worked example as one block.
     fn the_haploid_worked_example() -> Block {
-        const M: i8 = MISSING_ALLELE;
-        block_of(&[&[0, 0, 1], &[0, 1, 2], &[M, 1, 1], &[0, 0, 0]], 3, 1)
+        block_of(&rows_of(&THE_HAPLOID_WORKED_EXAMPLE), 3, 1)
     }
 
     /// The numbers of the table of the diploid worked example of "How it
@@ -619,5 +1003,717 @@ mod tests {
             matches!(error, Error::FieldsNotInTheBlock { fields } if fields == crate::variant::Needs::GTS),
             "{error}"
         );
+    }
+
+    /// A reader of blocks written for these tests: it gives the blocks it
+    /// was built with, keeps what it was last asked to fill, and gives an
+    /// error instead of a block at the call a test names, so that a test
+    /// sees what the calculation does with the error of a reader.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks still to give, the last one first.
+        left: Vec<Block>,
+        /// The call at which it gives an error instead of a block, counted
+        /// from 1.
+        fails_at: Option<usize>,
+        /// How many times it was asked for a block.
+        calls: usize,
+        /// What it was last asked to fill.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// A reader of `num_individuals` individuals of the ploidy
+        /// `ploidy`, named `ind0` and on, that gives `blocks` in their
+        /// order.
+        fn of(blocks: Vec<Block>, num_individuals: usize, ploidy: usize) -> GivenBlocks {
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (0..num_individuals).map(|at| format!("ind{at}")).collect(),
+                ploidy,
+                chroms: ChromTable::new(),
+                left,
+                fails_at: None,
+                calls: 0,
+                needs: Needs::ALL,
+            }
+        }
+
+        /// The same reader, whose call number `call` is an error.
+        fn failing_at(blocks: Vec<Block>, num_individuals: usize, call: usize) -> GivenBlocks {
+            GivenBlocks {
+                fails_at: Some(call),
+                ..GivenBlocks::of(blocks, num_individuals, 2)
+            }
+        }
+    }
+
+    /// What the reader of the tests says when a test asked it to fail.
+    const THE_READER_FAILED: &str = "the reader of the tests failed";
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            self.calls = self.calls.saturating_add(1);
+            if self.fails_at == Some(self.calls) {
+                return Err(Error::Io(std::io::Error::other(THE_READER_FAILED)));
+            }
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The two counts of every pair, in the order of the distance vector.
+    fn every_sum(sums: &KosmanSums) -> Vec<(u32, u32)> {
+        let mut every = Vec::new();
+        for first in 0..sums.num_individuals() {
+            for second in first.saturating_add(1)..sums.num_individuals() {
+                match sums.sums(first, second) {
+                    Some(of_the_pair) => every.push(of_the_pair),
+                    None => panic!("the pair {first}, {second} is not there"),
+                }
+            }
+        }
+        every
+    }
+
+    /// The distances of the pairs, `None` where a pair has none, compared
+    /// within 1e-9, the digits of the shortest values of the spec's table.
+    fn assert_the_distances_are(found: &[Option<f64>], expected: &[Option<f64>]) {
+        assert_eq!(
+            found.len(),
+            expected.len(),
+            "{found:?} against {expected:?}"
+        );
+        for (at, (found, expected)) in found.iter().zip(expected).enumerate() {
+            match (found, expected) {
+                (Some(found), Some(expected)) => assert!(
+                    (found - expected).abs() < 1e-9,
+                    "the pair {at} has {found} and not {expected}"
+                ),
+                (None, None) => {}
+                _ => panic!("the pair {at} has {found:?} and not {expected:?}"),
+            }
+        }
+    }
+
+    /// The four reference files of the Kosman distances and what R gives
+    /// for them live at the root of the repository, beside the Python
+    /// tests that read the same files, and not inside this crate. The path
+    /// is built from the directory of the manifest, so it holds whether
+    /// the tests are run with `cargo test --workspace` or with `cargo test
+    /// -p popnei`.
+    fn reference_dists(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/dists")
+            .join(name)
+    }
+
+    /// A VCF reader over one of the four reference files, of the ploidy of
+    /// its dataset and with blocks of the size a test asks for.
+    fn reader_of_the_reference(
+        name: &str,
+        ploidy: usize,
+        num_vars_per_block: Option<usize>,
+    ) -> VcfReader<std::io::BufReader<std::fs::File>> {
+        let options = VcfOptions {
+            ploidy,
+            num_vars_per_block,
+            ..VcfOptions::default()
+        };
+        match VcfReader::from_path(&reference_dists(name), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{name}: {error}"),
+        }
+    }
+
+    /// The two counts of every pair of one of the reference files, with
+    /// the names of its individuals in the order of the file.
+    fn sums_of_the_reference(
+        name: &str,
+        ploidy: usize,
+        num_vars_per_block: Option<usize>,
+    ) -> (Vec<String>, KosmanSums) {
+        let mut reader = reader_of_the_reference(name, ploidy, num_vars_per_block);
+        let individuals = reader.individuals().to_vec();
+        match calc_kosman_sums(&mut reader) {
+            Ok(sums) => (individuals, sums),
+            Err(error) => panic!("{name}: {error}"),
+        }
+    }
+
+    /// Where the individual of that name is in the file.
+    fn individual_at(individuals: &[String], name: &str) -> usize {
+        match individuals.iter().position(|held| held == name) {
+            Some(at) => at,
+            None => panic!("{name} is not an individual of the file"),
+        }
+    }
+
+    /// The pair of the two named individuals has the ploidy times the sum
+    /// of d, the n and the distance of one line of the table of "How it is
+    /// verified" of `docs/specs/dists.md`: the integers exactly and the
+    /// distance within 1e-9.
+    fn assert_the_pair_is(
+        sums: &KosmanSums,
+        individuals: &[String],
+        of: (&str, &str),
+        k_sum: u32,
+        n: u32,
+        dist: f64,
+    ) {
+        let (one, other) = (
+            individual_at(individuals, of.0),
+            individual_at(individuals, of.1),
+        );
+        assert_eq!(sums.sums(one, other), Some((k_sum, n)), "{of:?}");
+        match sums.dist(one, other, 0) {
+            Some(found) => assert!(
+                (found - dist).abs() < 1e-9,
+                "{of:?} has the distance {found} and not {dist}"
+            ),
+            None => panic!("{of:?} has no distance"),
+        }
+    }
+
+    /// The five pairs of the panel in the table of "How it is verified" of
+    /// `docs/specs/dists.md`, which `gd.kosman` of R gives: 200 diploid
+    /// individuals over 1200 biallelic variants, 3 in 100 genotypes
+    /// missing, read with the VCF reader.
+    #[test]
+    fn the_panel_of_the_reference_has_the_five_pairs_of_the_spec() {
+        let (individuals, sums) = sums_of_the_reference("panel.vcf.gz", 2, None);
+
+        assert_eq!(sums.num_individuals(), 200);
+        assert_eq!(sums.num_vars(), 1200);
+        assert_eq!(sums.ploidy(), 2);
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("s000", "s001"),
+            372,
+            1122,
+            0.1657754010695187,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("s000", "s002"),
+            376,
+            1128,
+            0.16666666666666666,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("s198", "s199"),
+            351,
+            1134,
+            0.15476190476190477,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("s010", "s033"),
+            804,
+            1123,
+            0.3579697239536955,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("s116", "s119"),
+            310,
+            1133,
+            0.13680494263018536,
+        );
+    }
+
+    /// The three pairs of the 4 allele dataset in the same table: 40
+    /// diploid individuals over 300 variants of up to four alleles, where
+    /// a pair of genotypes can share no allele although both are
+    /// heterozygous.
+    #[test]
+    fn the_four_allele_file_of_the_reference_has_the_three_pairs_of_the_spec() {
+        let (individuals, sums) = sums_of_the_reference("four_alleles.vcf.gz", 2, None);
+
+        assert_eq!(sums.num_individuals(), 40);
+        assert_eq!(sums.num_vars(), 300);
+        assert_the_pair_is(&sums, &individuals, ("i00", "i01"), 325, 269, 0.6040892193);
+        assert_the_pair_is(&sums, &individuals, ("i00", "i02"), 304, 264, 0.5757575758);
+        assert_the_pair_is(&sums, &individuals, ("i00", "i03"), 347, 272, 0.6378676471);
+    }
+
+    /// The three pairs of the tetraploid dataset in the same table: the
+    /// ploidy is read from the reader and is 4, so the first integer is
+    /// four times the sum of d.
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "the distances are the literals of the table of \"How it is verified\" of \
+                  docs/specs/dists.md, which are what R printed with 17 digits; the digits \
+                  beyond what a f64 keeps read back as the same value, and the literals are \
+                  the spec's"
+    )]
+    fn the_tetraploid_file_of_the_reference_has_the_three_pairs_of_the_spec() {
+        let (individuals, sums) = sums_of_the_reference("tetraploid.vcf.gz", 4, None);
+
+        assert_eq!(sums.num_individuals(), 12);
+        assert_eq!(sums.num_vars(), 200);
+        assert_eq!(sums.ploidy(), 4);
+        assert_the_pair_is(&sums, &individuals, ("t00", "t01"), 282, 188, 0.375);
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("t00", "t02"),
+            284,
+            183,
+            0.38797814207650272,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("t00", "t03"),
+            294,
+            183,
+            0.40163934426229508,
+        );
+    }
+
+    /// The three pairs of the haploid dataset in the same table: the
+    /// ploidy is 1, so the first integer is the sum of d itself.
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "the distances are the literals of the table of \"How it is verified\" of \
+                  docs/specs/dists.md, which are what R printed with 17 digits; the digits \
+                  beyond what a f64 keeps read back as the same value, and the literals are \
+                  the spec's"
+    )]
+    fn the_haploid_file_of_the_reference_has_the_three_pairs_of_the_spec() {
+        let (individuals, sums) = sums_of_the_reference("haploid.vcf.gz", 1, None);
+
+        assert_eq!(sums.num_individuals(), 12);
+        assert_eq!(sums.num_vars(), 200);
+        assert_eq!(sums.ploidy(), 1);
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("h00", "h01"),
+            112,
+            180,
+            0.62222222222222223,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("h00", "h02"),
+            123,
+            184,
+            0.66847826086956519,
+        );
+        assert_the_pair_is(
+            &sums,
+            &individuals,
+            ("h00", "h03"),
+            113,
+            179,
+            0.63128491620111726,
+        );
+    }
+
+    /// What `gd.kosman` of R gave for one of the reference files: the
+    /// distance, n and k times the sum of d of every pair, in the order of
+    /// the distance vector, from the header line on.
+    fn gdkosman_of(name: &str) -> Vec<(f64, u32, u32)> {
+        let path = reference_dists(name);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => panic!("{}: {error}", path.display()),
+        };
+        text.lines()
+            .skip(1)
+            .map(|line| {
+                let mut fields = line.split('\t');
+                let mut number = || match fields.next() {
+                    Some(field) => field.to_owned(),
+                    None => panic!("{name}: the line `{line}` has fewer than three fields"),
+                };
+                let (dist, n, k_sum) = (number(), number(), number());
+                (
+                    dist.parse().unwrap_or_else(|_| panic!("{dist}")),
+                    n.parse().unwrap_or_else(|_| panic!("{n}")),
+                    k_sum.parse().unwrap_or_else(|_| panic!("{k_sum}")),
+                )
+            })
+            .collect()
+    }
+
+    /// Every pair of the four reference files, 20812 of them, has the two
+    /// integers that `gd.kosman` of R gives it and a distance within 1e-9
+    /// of R's, where the tests above assert the fourteen pairs that the
+    /// spec's table names.
+    #[test]
+    fn every_pair_of_the_four_reference_files_has_the_sums_and_the_distance_of_r() {
+        let files = [
+            ("panel", 2, 19900),
+            ("four_alleles", 2, 780),
+            ("tetraploid", 4, 66),
+            ("haploid", 1, 66),
+        ];
+        for (name, ploidy, num_pairs) in files {
+            let of_r = gdkosman_of(&format!("{name}.gdkosman.tsv"));
+            assert_eq!(of_r.len(), num_pairs, "{name}");
+            let (_, sums) = sums_of_the_reference(&format!("{name}.vcf.gz"), ploidy, None);
+
+            let of_popnei = every_sum(&sums);
+            let dists: Vec<Option<f64>> = sums.dists(0).collect();
+            assert_eq!(of_popnei.len(), num_pairs, "{name}");
+            for (at, (dist, n, k_sum)) in of_r.into_iter().enumerate() {
+                assert_eq!(
+                    of_popnei.get(at),
+                    Some(&(k_sum, n)),
+                    "{name}, the pair {at}"
+                );
+                match dists.get(at) {
+                    Some(&Some(found)) => assert!(
+                        (found - dist).abs() < 1e-9,
+                        "{name}, the pair {at}: {found} is not {dist}"
+                    ),
+                    found => panic!("{name}, the pair {at} has {found:?} and not {dist}"),
+                }
+            }
+        }
+    }
+
+    /// The diploid worked example of "How it is verified" of
+    /// `docs/specs/dists.md` read from a reader, one variant to a block,
+    /// so that the two counts of every pair are added over four blocks:
+    /// the distances are 0.25, 0.833333 and 0.333333, which pyNei and
+    /// `gd.kosman` give too.
+    #[test]
+    fn the_diploid_worked_example_read_in_blocks_gives_the_distances_of_the_spec() {
+        let blocks = blocks_of(&THE_DIPLOID_WORKED_EXAMPLE, 3, 2, 1);
+        let mut reader = GivenBlocks::of(blocks, 3, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.num_vars(), 4);
+        assert_eq!(every_sum(&sums), [(1, 2), (5, 3), (2, 3)]);
+        assert_the_distances_are(
+            &sums.dists(0).collect::<Vec<_>>(),
+            &[
+                Some(0.25),
+                Some(0.8333333333333334),
+                Some(0.3333333333333333),
+            ],
+        );
+    }
+
+    /// A pair needs `min_num_vars` variants called in both to get a
+    /// distance, and a pair with exactly that many keeps it. The first
+    /// pair of the diploid worked example has 2 variants and the other two
+    /// have 3, so 3 takes the first pair's distance away and 4 takes them
+    /// all.
+    #[test]
+    fn a_pair_of_fewer_variants_than_min_num_vars_has_no_distance() {
+        let mut reader = GivenBlocks::of(vec![the_diploid_worked_example()], 3, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_the_distances_are(
+            &sums.dists(3).collect::<Vec<_>>(),
+            &[None, Some(0.8333333333333334), Some(0.3333333333333333)],
+        );
+        assert_the_distances_are(&sums.dists(4).collect::<Vec<_>>(), &[None, None, None]);
+        assert_eq!(sums.dist(0, 1, 2), Some(0.25));
+        assert_eq!(sums.dist(0, 1, 3), None);
+    }
+
+    /// The tetraploid worked example read from a reader, in blocks of two
+    /// variants: the distances are 0.25, 0.75 and 0.375, which
+    /// `gd.kosman` gives.
+    #[test]
+    fn the_tetraploid_worked_example_read_in_blocks_gives_the_distances_of_the_spec() {
+        let blocks = blocks_of(&THE_TETRAPLOID_WORKED_EXAMPLE, 3, 4, 2);
+        let mut reader = GivenBlocks::of(blocks, 3, 4);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.ploidy(), 4);
+        assert_eq!(every_sum(&sums), [(2, 2), (9, 3), (3, 2)]);
+        assert_the_distances_are(
+            &sums.dists(0).collect::<Vec<_>>(),
+            &[Some(0.25), Some(0.75), Some(0.375)],
+        );
+    }
+
+    /// The haploid worked example read from a reader, in blocks of three
+    /// variants: the distances are 0.333333, 0.666667 and 0.5, which
+    /// `gd.kosman` gives.
+    #[test]
+    fn the_haploid_worked_example_read_in_blocks_gives_the_distances_of_the_spec() {
+        let blocks = blocks_of(&THE_HAPLOID_WORKED_EXAMPLE, 3, 1, 3);
+        let mut reader = GivenBlocks::of(blocks, 3, 1);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.ploidy(), 1);
+        assert_eq!(every_sum(&sums), [(1, 3), (2, 3), (2, 4)]);
+        assert_the_distances_are(
+            &sums.dists(0).collect::<Vec<_>>(),
+            &[
+                Some(0.3333333333333333),
+                Some(0.6666666666666666),
+                Some(0.5),
+            ],
+        );
+    }
+
+    /// The two counts are integers that each block adds to, so the size of
+    /// the blocks changes nothing: the 4 allele file in blocks of 7, of
+    /// 64, of 65 and of 300 variants gives the same integers, the three
+    /// sizes around a word of 64 bits among them.
+    #[test]
+    fn the_size_of_the_blocks_does_not_change_the_sums() {
+        let (_, whole) = sums_of_the_reference("four_alleles.vcf.gz", 2, Some(300));
+        let of_the_whole_file = every_sum(&whole);
+        assert_eq!(of_the_whole_file.len(), 780);
+
+        for num_vars_per_block in [7, 64, 65] {
+            let (_, cut) =
+                sums_of_the_reference("four_alleles.vcf.gz", 2, Some(num_vars_per_block));
+
+            assert_eq!(cut.num_vars(), 300, "blocks of {num_vars_per_block}");
+            assert_eq!(
+                every_sum(&cut),
+                of_the_whole_file,
+                "blocks of {num_vars_per_block}"
+            );
+        }
+    }
+
+    /// The pairs of a block are counted on the threads of the pool the
+    /// caller is in, and the counts are integers, so one thread and four
+    /// give the same integers.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those
+    /// alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_sums() {
+        let in_a_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                let (_, sums) = sums_of_the_reference("four_alleles.vcf.gz", 2, Some(64));
+                every_sum(&sums)
+            })
+        };
+
+        let on_one = in_a_pool(1);
+        assert_eq!(on_one.len(), 780);
+        assert_eq!(on_one, in_a_pool(4));
+    }
+
+    /// The pairs shared out over the threads are the pairs walked one
+    /// after another, which is what wasm does: the two ways of adding a
+    /// block give the same integers over the 780 pairs of the 4 allele
+    /// file.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_pairs_added_on_the_threads_are_the_ones_added_one_after_another() {
+        use super::add_the_pairs_one_by_one;
+
+        let mut reader = reader_of_the_reference("four_alleles.vcf.gz", 2, Some(64));
+        let mut one_after_another = KosmanSums::at_zero(40, 2).expect("the sums");
+        let mut on_the_threads = KosmanSums::at_zero(40, 2).expect("the sums");
+
+        while let Some(block) = reader.next_block().expect("the block") {
+            let bits = KosmanBits::of_block(&block).expect("the sets of bits");
+            add_the_pairs_one_by_one(&mut one_after_another.sums, &bits, 0, 2).expect("the sums");
+            add_the_block(&mut on_the_threads, &bits).expect("the sums");
+        }
+
+        assert_eq!(every_sum(&one_after_another).len(), 780);
+        assert_eq!(every_sum(&one_after_another), every_sum(&on_the_threads));
+    }
+
+    /// The calculation asks its reader for the genotypes and for nothing
+    /// else, so a reader over a file leaves the columns of a variant
+    /// unparsed.
+    #[test]
+    fn the_calculation_asks_its_reader_for_the_genotypes_alone() {
+        let mut reader = GivenBlocks::of(vec![the_diploid_worked_example()], 3, 2);
+
+        calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(reader.needs, Needs::GTS);
+    }
+
+    /// Every variant the calculation was given counts in `num_vars`,
+    /// whether or not it was called in a pair: a block whose genotypes are
+    /// all missing adds its variants to the count and nothing to the pairs.
+    #[test]
+    fn num_vars_counts_the_variants_that_no_pair_was_called_at() {
+        let blocks = vec![
+            the_diploid_worked_example(),
+            block_of(&[&[M; 6], &[M; 6]], 3, 2),
+        ];
+        let mut reader = GivenBlocks::of(blocks, 3, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.num_vars(), 6);
+        assert_eq!(every_sum(&sums), [(1, 2), (5, 3), (2, 3)]);
+    }
+
+    /// One individual with itself is not a pair, and neither is one with
+    /// an individual that is not in the source: both have no counts and no
+    /// distance.
+    #[test]
+    fn an_individual_with_itself_and_one_that_is_not_there_have_no_sums() {
+        let mut reader = GivenBlocks::of(vec![the_diploid_worked_example()], 3, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.sums(1, 1), None);
+        assert_eq!(sums.sums(0, 3), None);
+        assert_eq!(sums.sums(3, 0), None);
+        assert_eq!(sums.dist(1, 1, 0), None);
+        assert_eq!(sums.dist(0, 3, 0), None);
+    }
+
+    /// The two counts of a pair are the same whichever of the two
+    /// individuals is named first, and the pairs are in the order of the
+    /// distance vector.
+    #[test]
+    fn the_sums_of_a_pair_over_a_pass_are_the_same_in_either_order() {
+        let mut reader = GivenBlocks::of(vec![the_diploid_worked_example()], 3, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.sums(2, 0), sums.sums(0, 2));
+        assert_eq!(sums.sums(2, 1), sums.sums(1, 2));
+        assert_eq!(sums.sums(0, 2), Some((5, 3)));
+    }
+
+    /// A reader with no variant is an error: there is nothing to calculate
+    /// over, and the memory of the pairs is never asked for.
+    #[test]
+    fn a_reader_with_no_variant_is_an_error() {
+        let mut reader = GivenBlocks::of(Vec::new(), 3, 2);
+
+        let error = calc_kosman_sums(&mut reader).expect_err("the error");
+
+        assert!(matches!(error, Error::ReaderGaveNoVariants), "{error}");
+    }
+
+    /// popnei keeps two `u32` for each pair, and a sum that would go above
+    /// what a `u32` holds is an error and does not wrap. The sums are set
+    /// by hand here: reaching the end of a `u32` takes more than two
+    /// thousand million variants of diploids.
+    #[test]
+    fn a_sum_above_what_a_u32_holds_is_an_error() {
+        let mut sums = KosmanSums::at_zero(3, 2).expect("the sums");
+        sums.num_vars = 2_147_483_648;
+        sums.sums = vec![(u32::MAX, 5), (0, 0), (0, 0)];
+        let bits = KosmanBits::of_block(&the_diploid_worked_example()).expect("the sets of bits");
+
+        let error = add_the_block(&mut sums, &bits).expect_err("the error");
+
+        assert!(
+            matches!(
+                error,
+                Error::KosmanSumsTooLarge {
+                    num_vars: 2_147_483_648,
+                    ploidy: 2
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// The error of the reader is given on as it is: the calculation adds
+    /// nothing of its own to it and does not turn it into an error of its
+    /// own.
+    #[test]
+    fn an_error_of_the_reader_is_given_on_as_it_is() {
+        let blocks = blocks_of(&THE_DIPLOID_WORKED_EXAMPLE, 3, 2, 1);
+        let mut reader = GivenBlocks::failing_at(blocks, 3, 2);
+
+        let error = calc_kosman_sums(&mut reader).expect_err("the error");
+
+        assert!(
+            matches!(&error, Error::Io(of_the_reader) if of_the_reader.to_string() == THE_READER_FAILED),
+            "{error}"
+        );
+        assert_eq!(reader.calls, 2);
+    }
+
+    /// A reader that gives a block of other individuals than it says its
+    /// source has would have its genotypes read one individual at the
+    /// place of another, so it is an error. Only a reader with a defect
+    /// gives one.
+    #[test]
+    fn a_block_of_other_individuals_than_the_reader_says_is_an_error() {
+        let blocks = vec![
+            the_diploid_worked_example(),
+            block_of(&[&[0, 0, 1, 1]], 2, 2),
+        ];
+        let mut reader = GivenBlocks::of(blocks, 3, 2);
+
+        let error = calc_kosman_sums(&mut reader).expect_err("the error");
+
+        assert!(
+            matches!(
+                error,
+                Error::BlocksDoNotFitTogether {
+                    num_individuals: 3,
+                    ploidy: 2,
+                    found_num_individuals: 2,
+                    found_ploidy: 2
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// One individual makes no pair, so the distances of a source of one
+    /// are an empty vector, and the variants are counted all the same.
+    #[test]
+    fn a_source_of_one_individual_has_no_pair() {
+        let mut reader = GivenBlocks::of(vec![block_of(&[&[0, 1], &[0, 0]], 1, 2)], 1, 2);
+
+        let sums = calc_kosman_sums(&mut reader).expect("the sums");
+
+        assert_eq!(sums.num_individuals(), 1);
+        assert_eq!(sums.num_vars(), 2);
+        assert_eq!(sums.dists(0).count(), 0);
     }
 }

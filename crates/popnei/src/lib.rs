@@ -19,8 +19,9 @@
 //! of one variant of a block; and `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept.
 //! The modules that calculate over blocks are being written: `dists`, the
-//! distances between individuals, holds so far the genotypes of a block as
-//! the sets of bits that the counts of a pair are read from.
+//! distances between individuals, holds the Kosman distance of every pair
+//! of individuals over the variants of a reader, counted from the
+//! genotypes of each block as sets of bits.
 //! `docs/architecture.md` has the order of the ones that follow.
 
 #![forbid(unsafe_code)]

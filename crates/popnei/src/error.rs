@@ -228,6 +228,36 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
+    /// The reader a calculation was given had no variant, and there is
+    /// nothing to calculate over: its source holds none, or the filters of
+    /// the pass kept none. `calc_kosman_sums` of `docs/specs/dists.md`
+    /// gives it when the first block it asks for is not there.
+    ///
+    /// Which of the two it was, and how many variants each filter of the
+    /// pass was given and kept, is what the binding crate adds: it holds
+    /// the chain of readers and reads the counts from it, as "A pass that
+    /// was not finished" of `docs/specs/filters.md` says, and the core does
+    /// not have them.
+    #[error("the reader gave no variant, and a calculation needs 1 variant at least")]
+    ReaderGaveNoVariants,
+
+    /// The distances of that many individuals need more memory than the
+    /// machine gives: popnei keeps two `u32` for every pair of them, which
+    /// is 8 bytes times the pairs, 400 MB for 10000 individuals, and the
+    /// machine did not give them. The individuals are those the reader says
+    /// its source has, so the memory is asked for once, when the first
+    /// block arrives.
+    #[error(
+        "the distances of {num_individuals} individuals are {num_pairs} pairs, and this machine did not give the memory of the two counts popnei keeps for each pair, 8 bytes a pair; calculate over fewer individuals"
+    )]
+    DistancesOfTooManyIndividuals {
+        /// How many individuals the source has.
+        num_individuals: usize,
+        /// How many pairs they make, `num_individuals * (num_individuals -
+        /// 1) / 2`, or `usize::MAX` when that is more than a `usize` holds.
+        num_pairs: usize,
+    },
+
     /// The sums the Kosman distances are worked out from do not fit in a
     /// `u32`. popnei keeps, for each pair of individuals, the ploidy times
     /// the sum of d and how many variants both of them were called at, and
