@@ -191,7 +191,7 @@ TypeScript,
   From "What it gives" and "How it runs" of the dists spec. Serves
   deliverable 1. Its failure would be silent, a wrong integer, so the
   three worked examples guard it and it has a commit of its own.
-- [ ] 2.2 `calc_kosman_sums` and `KosmanSums`, in the same file, the loop
+- [x] 2.2 `calc_kosman_sums` and `KosmanSums`, in the same file, the loop
   over the blocks of a reader with the accumulation, the pairs of a
   block on rayon natively and one after another in wasm, behind
   `cfg(not(target_family = "wasm"))` as the VCF reader does it, and the

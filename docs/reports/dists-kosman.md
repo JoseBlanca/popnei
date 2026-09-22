@@ -121,3 +121,28 @@ individuals, biallelic, one thread, on this machine: 14 ms to build the
 sets and 30 ms for the 499500 pairs, against the trial's 15 and 29 ms; a
 first shape of the pair loop, take and skip over a zip, took 86 ms. 197707
 tokens.
+
+Task 2.2, commit 4834445: `calc_kosman_sums` and `KosmanSums` as "The
+Rust interface" gives them. The pairs of a block go to rayon one row of
+the upper triangle at a time, an individual's pairs with those after it,
+with the accumulator cut into one slice per row so that no thread takes
+a lock; the serial version beside it is what wasm runs and what the test
+of the threads compares against. Run by the orchestrator: `cargo test -p
+popnei --lib -- dists:: --list` 33 tests, where the deliverable asks 14;
+`cargo test --workspace` `339 passed`, 2 ignored; fmt, clippy, `cargo
+wasm-check`, ruff and `pytest` `174 passed` clean. All 20812 pairs of the
+four reference files match `gd.kosman` on both integers, and the 14
+literals within 1e-9. 216350 tokens.
+
+For the owner, from task 2.2, his to reverse:
+
+- A third error case that the spec did not name: the accumulator of two
+  `u32` per pair is asked of the machine with `try_reserve_exact`, and a
+  panel it has no memory for is an error, a `ValueError` in Python, as a
+  block too large for the machine is in `docs/specs/block.md`. The
+  orchestrator wrote it into "The Rust interface" of the dists spec in
+  this commit rather than stop: no value and no signature changes.
+- A block whose individuals or ploidy differ from what the reader says
+  its source has is refused with the error the readers already have for
+  blocks that do not fit together, so that a reader with a defect cannot
+  line the pairs up wrongly in silence.

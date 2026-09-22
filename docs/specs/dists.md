@@ -431,9 +431,14 @@ functions, with the numbers that `gd.kosman` gives for them:
 
 The calculation over a reader. It asks the reader for the genotypes alone
 and reads it to its end. Its errors: no variant in the reader; a sum
-above `u32::MAX`; and those of the reader. The first two are new cases
-of the error of the crate, and each is a `ValueError` in Python, an input
-that popnei cannot calculate on.
+above `u32::MAX`; the two `u32` of every pair, asked of the machine at
+the first block, that the machine has not the memory for, 400 MB at
+10000 individuals; and those of the reader. The first three are new
+cases of the error of the crate, and each is a `ValueError` in Python, an
+input that popnei cannot calculate on. The third was added by the plan
+on 22 September 2026, as the block that the machine has not the memory
+for is refused in `docs/specs/block.md`, so that a panel too large for
+the machine is an error and not a process that ends.
 
 ```rust
 pub fn calc_kosman_sums<R: BlockReader + ?Sized>(reader: &mut R) -> Result<KosmanSums>;
