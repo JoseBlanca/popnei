@@ -853,10 +853,17 @@ _HEADER_OF_FIVE = (
 # as the data lines of a VCF: every variant has three alleles, the genotype
 # of `ind1` at the first one holds the third of them, `ind4` has no genotype
 # at the second variant, and nobody has one at the third.
+#
+# The genotype of `ind0` at the third variant is written `0/.`, a half
+# called genotype whose missing allele is the last one, which is missing
+# like `./.` and changes no rate. `many.vcf` writes all 257 of its half
+# called genotypes the other way round, with the missing allele first, so
+# without this one a rule that read the first allele alone would pass every
+# test here.
 _PYNEIS_THREE_VARIANTS = (
     "chr1\t1\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/0\t2/1\t0/0\t0/0\t0/0",
     "chr1\t2\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/0\t0/0\t0/1\t1/0\t./.",
-    "chr1\t3\t.\tA\tC,G\t.\tPASS\t.\tGT\t./.\t./.\t./.\t./.\t./.",
+    "chr1\t3\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/.\t./.\t./.\t./.\t./.",
 )
 
 
@@ -907,8 +914,9 @@ def test_per_individual_stats_of_many_vcf_are_pyneis_over_the_called_genotypes()
     None
 ):
     """The same on the 500 variants of `many.vcf`, whose 257 half called
-    genotypes are missing and not heterozygous, in popnei as in pyNei, and
-    whose third alleles the panel has none of."""
+    genotypes, each written with the missing allele first, are missing and
+    not heterozygous, in popnei as in pyNei, and whose third alleles the
+    panel has none of."""
     ours = calc_per_individual_stats(_many())
     theirs = pynei_calc_per_sample_stats(vars_from_vcf(MANY))
 
@@ -923,6 +931,11 @@ def test_per_individual_stats_divide_pyneis_three_variants_by_the_called_genotyp
     `test_filter_missing`: the missing rates are pyNei's, 1/3 for the first
     four individuals and 2/3 for `ind4`, and the heterozygosity rates are
     0, 1/2, 1/2, 1/2 and 0 where pyNei gives 0, 1/3, 1/3, 1/3 and 0.
+
+    The genotype of `ind0` at the third variant is half called with the
+    missing allele last, `0/.`, and it counts as missing and not as
+    heterozygous: the rates of `ind0` are those of an individual missing at
+    that variant alone, 1/3 and 0.
     """
     path = _write_the_vcf_of_five(tmp_path, _PYNEIS_THREE_VARIANTS)
 

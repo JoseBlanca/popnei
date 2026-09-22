@@ -773,8 +773,9 @@ test("the two rates of s000 and s001 of the panel are the literals of plink2", (
 
 test("the two rates of ind00 and ind01 of many.vcf are the literals of plink2", () => {
   // `many.vcf` has what the panel has none of: 257 half called genotypes,
-  // which are missing and not heterozygous, and one variant in ten of three
-  // alleles, whose heterozygous genotypes are heterozygous like any other.
+  // each written with the missing allele first, which are missing and not
+  // heterozygous, and one variant in ten of three alleles, whose
+  // heterozygous genotypes are heterozygous like any other.
   const variants = many();
 
   const stats = calcPerIndividualStats(variants);
@@ -791,10 +792,17 @@ test("an individual with no called genotype has a missing rate of 1 and no heter
   // and an individual that called none has no rate: NaN is what the package
   // gives its user for a value the core does not have. `ind1` is called at
   // both variants and heterozygous at one of them.
+  //
+  // The genotype of `ind3` at the second variant is written `0/.`, a half
+  // called genotype whose missing allele is the last one, which is missing
+  // like `./.` and changes no rate. `many.vcf` writes all 257 of its half
+  // called genotypes the other way round, with the missing allele first, so
+  // without this one a rule that read the first allele alone would pass
+  // every test here.
   const variants = openVcf(
     vcfOf([
       "chr1\t1\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t0/0\t./.",
-      "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
+      "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
     ]),
   );
 
