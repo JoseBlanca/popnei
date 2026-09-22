@@ -517,8 +517,9 @@ pub(crate) fn written_as(value: &Bound<'_, PyAny>) -> String {
 }
 
 /// The array, which nothing writes into any more: a block is frozen, and
-/// its arrays hold the memory the core filled.
-fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
+/// its arrays hold the memory the core filled, and the edges of the bins of
+/// a pass are one array that the four distributions of its result share.
+pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
         .getattr("flags")?

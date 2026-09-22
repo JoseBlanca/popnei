@@ -34,7 +34,7 @@ use popnei::stats::{
 };
 
 use crate::errors::PyPopneiError;
-use crate::source::{PassCounts, count_of, source_of, threshold_of, written_as};
+use crate::source::{PassCounts, count_of, read_only, source_of, threshold_of, written_as};
 use crate::steps::{Steps, chain_of};
 
 /// The name of the argument that says how many called genotypes a
@@ -184,7 +184,10 @@ pub(crate) fn calc_per_var_distribs<'py>(
     } = distribs;
     Ok((
         pop_names,
-        edges.into_pyarray(py),
+        // The four distributions of the result share this one array, as
+        // pyNei's do, so nothing writes into it: a number written into the
+        // edges of one statistic would be in the edges of the other three.
+        read_only(edges.into_pyarray(py))?,
         distrib_of(py, obs_het.as_ref())?,
         distrib_of(py, maf.as_ref())?,
         distrib_of(py, exp_het.as_ref())?,

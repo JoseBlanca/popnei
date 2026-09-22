@@ -500,6 +500,18 @@ def test_per_var_distribs_takes_the_range_and_the_number_of_bins() -> None:
     numpy.testing.assert_array_equal(ours.obs_het.hist_bin_edges, [0, 0.25, 0.5])
 
 
+def test_per_var_distribs_give_bin_edges_that_nothing_writes_into() -> None:
+    """The four distributions of one result share one array of edges, as
+    pyNei's do, so a number written into the edges of one statistic would be
+    in the edges of the other three: the array is read only."""
+    ours = calc_per_var_distribs(_many(), min_num_individuals=MANY_MIN_NUM_INDIVIDUALS)
+
+    assert ours.maf.hist_bin_edges is ours.obs_het.hist_bin_edges
+    with pytest.raises(ValueError, match="read-only"):
+        ours.maf.hist_bin_edges[0] = 0.5
+    assert float(ours.obs_het.hist_bin_edges[0]) == 0
+
+
 def test_per_var_distribs_makes_logarithmic_bins_span_the_range() -> None:
     """Four bins of equal ratio from 0.01 to 100 have the edges 0.01, 0.1,
     1, 10 and 100."""

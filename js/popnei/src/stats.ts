@@ -148,8 +148,14 @@ export interface StatsDistrib {
    */
   mean: Float64Array;
 
-  /** The edges of the bins, one more number than there are bins. */
-  histBinEdges: Float64Array;
+  /**
+   * The edges of the bins, one more number than there are bins.
+   *
+   * The four distributions of one result share this array, as pyNei's do,
+   * so it is read only: a number written into the edges of one statistic
+   * would be in the edges of the other three.
+   */
+  histBinEdges: Readonly<Float64Array>;
 
   /**
    * How many variants fell in each bin, the bins of one population after
@@ -492,7 +498,7 @@ function theHistogram(histKwargs: HistKwargs | undefined): {
  * crate gives, under the edges of the bins of the pass.
  */
 function distribOf(
-  histBinEdges: Float64Array,
+  histBinEdges: Readonly<Float64Array>,
   mean: Float64Array | undefined,
   histCounts: Uint32Array | undefined,
   statistic: string,

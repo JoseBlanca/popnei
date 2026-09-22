@@ -68,7 +68,11 @@ class StatsDistrib:
     population, NaN for a population in which no variant had one."""
 
     hist_bin_edges: numpy.ndarray
-    """The edges of the bins, one more than there are bins."""
+    """The edges of the bins, one more than there are bins.
+
+    The four distributions of one result share this array, as pyNei's do, so
+    it is read only: a number written into the edges of one statistic would
+    be in the edges of the other three."""
 
     hist_counts: pandas.DataFrame
     """How many variants fell in each bin, one row per bin and one column
