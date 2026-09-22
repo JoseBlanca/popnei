@@ -432,7 +432,7 @@ could run it beside them, since they touch different files.
   `calc_per_sample_stats` of `pynei/sample_stats.py`. Serves deliverable
   1. A wrong count is silent: its own commit, guarded by deliverables 1
   and 2.
-- [ ] 5.2 The Python side, in `crates/popnei-python` and
+- [x] 5.2 The Python side, in `crates/popnei-python` and
   `python/popnei/stats.py`, with the tests of deliverable 2. From "In
   Python and in TypeScript" and "What pyNei asserts" of the item. Needs
   5.1. Serves deliverable 2.
