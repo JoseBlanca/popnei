@@ -19,8 +19,13 @@
 //! of one variant of a block; `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept;
 //! and `stats` the populations a statistic is calculated for, each a named
-//! set of individuals. The modules that calculate over blocks are being
-//! written, and `docs/architecture.md` has their order.
+//! set of individuals, with the pass over the variants that gives, for each
+//! population, the mean and the histogram of five statistics of a variant:
+//! the observed heterozygosity, the major allele frequency, the expected
+//! heterozygosity, plain and unbiased, and how many variants vary. The
+//! statistics of each individual, the distances between individuals and the
+//! modules that follow them are being written, and
+//! `docs/architecture.md` has their order.
 
 #![forbid(unsafe_code)]
 

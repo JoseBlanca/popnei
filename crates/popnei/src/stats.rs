@@ -1471,8 +1471,12 @@ fn add_the_rows(
     totals: &mut Totals,
 ) -> Result<()> {
     // One array of counts for every row and every population, which
-    // `count_alleles_of` clears before it counts: a pass over a block
-    // allocates nothing for a variant.
+    // `count_alleles_of` clears before it counts, so the loop over the rows
+    // allocates nothing for a variant. What the pass allocates is the
+    // `Totals` of each chunk of rows: the `Vec` of its populations and, in
+    // it, one `Vec` of bin counts for each population and each of the four
+    // statistics that have bins, which for 50 populations is 200 of them
+    // per chunk.
     let mut counts: AlleleCounts = [0; 128];
     for row in gts.chunks_exact(alleles_per_var) {
         for (pop, of_the_pop) in totals.pops.iter_mut().enumerate() {
