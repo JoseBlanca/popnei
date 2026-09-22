@@ -114,9 +114,9 @@ pub(crate) fn calc_per_var_distribs<'py>(
     let (start, end) = hist_range;
     let bins = HistBins::of_kind(bin_type, start, end, count_of("num_bins", num_bins)?)?;
     // The ploidy of the variants turns the alleles a population called into
-    // called genotypes, for the `min_num_individuals` test, and it is the
-    // exponent of the two expected heterozygosities when the user asks for
-    // no other, which the core is what decides.
+    // called genotypes, for the `min_num_individuals` test, and it is also
+    // the exponent of the two expected heterozygosities when the user asks
+    // for no other, which the core decides and not this crate.
     let of_the_variants = source.ploidy();
     let exponent = ploidy
         .map(|asked_for| count_of("ploidy", asked_for))

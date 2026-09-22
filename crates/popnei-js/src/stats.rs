@@ -116,9 +116,9 @@ pub(crate) fn per_var_distribs_of(
         HistBins::of_kind(&asked.bin_type, start, end, asked.num_bins).map_err(under_its_name)?;
     let named = the_pops_given(asked)?;
     // The ploidy of the variants turns the alleles a population called into
-    // called genotypes, for the `min_num_individuals` test, and it is the
-    // exponent of the two expected heterozygosities when the user asked for
-    // no other, which the core is what decides.
+    // called genotypes, for the `min_num_individuals` test, and it is also
+    // the exponent of the two expected heterozygosities when the user asks
+    // for no other, which the core decides and not this crate.
     let of_the_variants = source.ploidy();
     let obs_het = ObsHet::new(asked.min_num_individuals);
     let maf = Maf::new(of_the_variants, asked.min_num_individuals)?;
