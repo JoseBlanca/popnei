@@ -102,7 +102,10 @@ def _the_same_number(ours, theirs) -> bool:
     ours, theirs = float(ours), float(theirs)
     if math.isnan(ours) or math.isnan(theirs):
         return math.isnan(ours) and math.isnan(theirs)
-    return math.isclose(ours, theirs, rel_tol=1e-12, abs_tol=1e-12)
+    # The relative tolerance alone, which "How it is verified" of the pass
+    # asks for: an absolute one of 1e-12 is the wider of the two for a value
+    # near 0, and it would take any two means below it for equal.
+    return math.isclose(ours, theirs, rel_tol=1e-12, abs_tol=0)
 
 
 def _on_each_bin_edge(path: Path, pops, min_num_individuals: int, edges):
@@ -525,6 +528,44 @@ def test_per_var_distribs_makes_logarithmic_bins_span_the_range() -> None:
     numpy.testing.assert_allclose(
         ours.obs_het.hist_bin_edges, [0.01, 0.1, 1, 10, 100], rtol=1e-12
     )
+
+
+def test_per_var_distribs_refuse_a_histogram_of_no_bin() -> None:
+    """A histogram counts the variants that fall in each of its bins, so one
+    with no bin counts nothing: pyNei hands `num_bins` to `linspace`, which
+    gives one edge and a histogram that no value falls in."""
+    with pytest.raises(ValueError, match="0 bins"):
+        calc_per_var_distribs(_many(), hist_kwargs={"num_bins": 0})
+
+
+def test_per_var_distribs_refuse_more_bins_than_a_machine_counts_in() -> None:
+    """A bin is a count of 8 bytes for each population and each statistic,
+    once in the pass and once more in every chunk of rows a thread reads, so
+    there are 100000 bins at most, far above the tens a person reads. Above
+    that bound 2**60 bins were a `PanicException` of a capacity that
+    overflowed, which `except Exception` does not catch."""
+    for num_bins in (100001, 2**60):
+        with pytest.raises(ValueError, match="100000 at most"):
+            calc_per_var_distribs(_many(), hist_kwargs={"num_bins": num_bins})
+
+
+def test_per_var_distribs_refuse_a_range_that_does_not_go_up() -> None:
+    """The bins divide the range, so it runs from a number up to a larger
+    one: two ends that are equal or the wrong way round give no bin to
+    divide, and one that is NaN or infinite leaves every edge NaN."""
+    for hist_range in ((1, 1), (1, 0), (0, float("nan")), (0, float("inf"))):
+        with pytest.raises(ValueError, match="runs from a number up to a larger one"):
+            calc_per_var_distribs(_many(), hist_kwargs={"range": hist_range})
+
+
+def test_per_var_distribs_refuse_a_range_whose_ends_are_too_far_apart() -> None:
+    """The width of a bin is the distance between the two ends over the
+    bins, and two ends that are each a number can be further apart than a
+    float64 goes: from -1e308 to 1e308 in 4 bins the edges are NaN, infinite,
+    infinite, infinite and 1e308, which do not go up, so every value would
+    land in the first bin. numpy refuses the same range."""
+    with pytest.raises(ValueError, match="above the largest float64"):
+        calc_per_var_distribs(_many(), hist_kwargs={"range": (-1e308, 1e308)})
 
 
 def test_per_var_distribs_refuse_an_unknown_bin_type() -> None:
