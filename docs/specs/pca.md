@@ -425,6 +425,17 @@ that the user can take them out. The core gives the positions of those
 columns and the Python layer puts the names. Without standardizing such a
 trait is no error and gets a weight of 0.
 
+Two more are a `RuntimeError`, because no argument of `do_pca` can give
+them. One is a buffer that does not hold `num_rows` x `num_cols` values,
+which only a caller of the Rust function of "The Rust interface" reaches,
+since each binding crate takes the two numbers from the array it was
+given. The other is an error of the `linalg` crate, which the core wraps
+with the operation it was doing, the product of the table with itself or
+the eigendecomposition: the dimensions and the values that crate refuses
+are checked here first, so what is left is a table whose values are so
+large that their products are not finite, 1e200 among them, where the
+crate refuses the matrix it is asked to decompose.
+
 `test_pca` asserts the four princomps of iris, up to sign, and
 `test_pca_refuses_traits_with_no_variance` the error, that its message
 names the trait, and that without standardizing the same table gives 3
@@ -459,6 +470,80 @@ without centering has a reference outside the project: `prcomp` with
 `center=FALSE` divides by n - 1 a sum of squares that was not centered, as
 pyNei does, so it can be added to `reference.R` when the test is written,
 and until then that case is compared with pyNei alone.
+
+Iris has 150 rows and 4 traits, so its product is the 4 x 4 Z'Z, and a
+mistake in the other half of "What both analyses compute", the n x n ZZ'
+of a table with fewer rows than traits, would not show in it. Two small
+tables are checked there as well.
+
+Their numbers were got with numpy 2.5.3 on 22 September 2026, by both
+routes of "What both analyses compute" over the same Z, the table
+centered and divided by the standard deviation with n in it. One is
+`numpy.linalg.eigh` of Z Z', with the projections u sqrt(λ), the weights
+Z' u / sqrt(λ) and the percentages 100 λ over the sum of every λ, which is
+what popnei computes; the other is `numpy.linalg.svd` of Z, which is what
+pyNei computes, with the projections Z v and the percentages over the
+squares of the singular values. The sign rule of "What both analyses
+compute" was applied to both, and the components under the threshold of
+that part were dropped. Over the three runs below the two routes differ by
+3e-15 at most in the projections and 1.5e-14 in the percentages, so the
+tests compare with the numbers below within 1e-9.
+
+The first table is 3 rows x 5 traits, the rows being 1 2 3 4 5, then
+2 4 1 3 2, then 5 1 4 2 6. Centered and standardized it has 2 components
+and not 3, because centering takes one of the three dimensions of its rows
+out:
+
+| | PC0 | PC1 |
+|---|---|---|
+| projection of row 0 | -0.347154191646 | 1.62410767053 |
+| projection of row 1 | -2.14982434306 | -0.994055030603 |
+| projection of row 2 | 2.49697853471 | -0.630052639924 |
+| explained_variance_percent | 73.1810836106 | 26.8189163894 |
+| weight of trait 0 | 0.420101972196 | -0.513968704337 |
+| weight of trait 1 | -0.496432942021 | -0.270671721206 |
+| weight of trait 2 | 0.496432942021 | 0.270671721206 |
+| weight of trait 3 | -0.317325807736 | 0.686274627813 |
+| weight of trait 4 | 0.47950738561 | 0.344001373342 |
+
+Neither centered nor standardized, the same table has all 3 components,
+which is the run no program outside the project gives a number for:
+
+| | PC0 | PC1 | PC2 |
+|---|---|---|---|
+| projection of row 0 | 7.07789159873 | 1.12190772301 | 1.90912901021 |
+| projection of row 1 | 4.87213205354 | 2.87255560109 | -1.41801042717 |
+| projection of row 2 | 8.66041659868 | -2.53292797372 | -0.762535387595 |
+| explained_variance_percent | 87.0392022767 | 9.31343669027 | 3.64736103304 |
+| weight of trait 0 | 0.403960199411 | -0.364035502371 | -0.759913160568 |
+| weight of trait 1 | 0.28423522248 | 0.703323259808 | -0.419484427674 |
+| weight of trait 2 | 0.408147561391 | -0.244470602227 | 0.201897964367 |
+| weight of trait 3 | 0.404797068091 | 0.504800545607 | 0.297806276491 |
+| weight of trait 4 | 0.652365999566 | -0.241298733997 | 0.342218405411 |
+
+The second table is the one of `test_pca_refuses_traits_with_no_variance`
+of pyNei, 3 rows x 3 traits, whose traits `a`, `fixed` and `b` are
+1 2 3, 5 5 5 and 3 1 2. Centered and not standardized it has 2 components,
+and the trait with no variance has a weight of 0 in both:
+
+| | PC0 | PC1 |
+|---|---|---|
+| projection of row 0 | 1.41421356237 | 1.19454087712e-16 |
+| projection of row 1 | -0.707106781187 | -0.707106781187 |
+| projection of row 2 | -0.707106781187 | 0.707106781187 |
+| explained_variance_percent | 75 | 25 |
+| weight of `a` | -0.707106781187 | 0.707106781187 |
+| weight of `fixed` | 0 | 0 |
+| weight of `b` | 0.707106781187 | 0.707106781187 |
+
+The second component of that table is given up to its sign, and the test
+compares the size of its numbers and not their sign. Its two largest
+projections are the same number with opposite signs but for the last bit,
+0.707106781187, so which of the two the sign rule finds largest, and with
+it the sign of the whole component, is decided by the rounding of the
+eigendecomposition and can differ between the backends and the platforms.
+The rule fixes the sign of a component whose largest projection is one
+number; it does not fix it when two are that close.
 
 ## The Rust interface
 
