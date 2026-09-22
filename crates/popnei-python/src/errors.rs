@@ -341,9 +341,10 @@ fn left_behind(raised: PyErr, path: &Path, problem: &str) -> PyErr {
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "popnei::Error is non_exhaustive, so a match on it outside the core crate \
-              has to have a wildcard arm; a case that a later module adds is a ValueError, \
-              which is what every case that is neither of the file system nor a defect of \
-              popnei is"
+              has to have a wildcard arm; a case that a later module adds is a ValueError \
+              with the file it was read from before its message, which is what a wrong \
+              input found in a file is, and the cases of a module that are a defect of \
+              popnei or that name no file are the ones listed by name above"
 )]
 fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
     let message = error.to_string();
@@ -443,7 +444,24 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // it goes, so nothing a user writes reaches it.
         | popnei::Error::PcaSecondPassMissing { .. }
         | popnei::Error::PcaSecondPassDiffers { .. }
-        | popnei::Error::PcaWeightOutOfPlace { .. } => {
+        | popnei::Error::PcaWeightOutOfPlace { .. }
+        // The four of the r² of two sets of variants that no argument of
+        // `calc_rogers_huff_r2_matrix` gives, for the same reason as the
+        // two of the principal component analysis above: a range of
+        // variants that is not in the dosages, which the tiles of the
+        // products and the window of the filter by linkage disequilibrium
+        // ask for; two sets of dosages built over different individuals of
+        // the block, which one call of this crate builds both of; a buffer
+        // for the r² that does not hold one value for each pair, which
+        // this crate holds and a user never sees; and a product of the
+        // linear algebra that did not run, which is left with a result of
+        // more values than the routines of BLAS and LAPACK count in, a
+        // size the cap of `calc_r2_matrix` refuses before a user reaches
+        // it.
+        | popnei::Error::LdRowsNotInTheDosages { .. }
+        | popnei::Error::LdDosagesOfOtherIndividuals { .. }
+        | popnei::Error::LdR2OfAnotherSize { .. }
+        | popnei::Error::LdLinalg { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -483,7 +501,22 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaValueNotFinite { .. }
         | popnei::Error::PcaStandardizeWithoutCentering
         | popnei::Error::PcaTableTooSmall { .. }
-        | popnei::Error::PcaNoTraitWithVariance => PyValueError::new_err(message),
+        | popnei::Error::PcaNoTraitWithVariance
+        // The five of the r² of a set of variants that are wrong whatever
+        // file is read: an index that is not an individual of the dataset
+        // and one given twice, which are the individuals of a population
+        // as a user writes them; and the three sizes the calculation
+        // cannot be done at, dosages of more values than the linear
+        // algebra counts in, a variant of more alleles than the sums come
+        // out of exactly, and a matrix this machine has not the memory
+        // for. What a user does about each of the last three is calculate
+        // over fewer variants or over fewer individuals, whichever file
+        // they read.
+        | popnei::Error::LdIndividualNotInTheDataset { .. }
+        | popnei::Error::LdIndividualAskedForTwice { .. }
+        | popnei::Error::LdDosagesTooLarge { .. }
+        | popnei::Error::LdTooManyAllelesInAVariant { .. }
+        | popnei::Error::LdNoMemory { .. } => PyValueError::new_err(message),
         // The five of the principal components of the variants that the
         // dataset a user gave is wrong for: no variants, which the steps of
         // a `Variants` can leave; no variant with variance, which one

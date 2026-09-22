@@ -566,9 +566,9 @@ pub enum Error {
 
     /// The variants asked of a set of dosages are not variants of it: a
     /// tile of the products, or a window of the filter by linkage
-    /// disequilibrium, that runs past the variants there are. It is a
-    /// defect of popnei, and in Python it is a `ValueError`, as every case
-    /// of this module is.
+    /// disequilibrium, that runs past the variants there are. No argument
+    /// a user writes asks for a range of variants, so it is a defect of
+    /// popnei, and in Python it is a `RuntimeError`.
     #[error("the {asked_for} variants from {first} were asked of dosages of {num_vars} variants")]
     LdRowsNotInTheDosages {
         /// The first variant that was asked for.
@@ -663,8 +663,9 @@ pub enum Error {
     },
 
     /// The buffer given for the r² of two sets of variants does not hold
-    /// one value for each pair of them. It is a defect of popnei, and in
-    /// Python it is a `ValueError`, as every case of this module is.
+    /// one value for each pair of them. The caller of the core crate holds
+    /// that buffer and no argument a user writes is it, so it is a defect
+    /// of popnei, and in Python it is a `RuntimeError`.
     #[error(
         "the r² of {num_vars_of_a} variants against {num_vars_of_b} is one value for each pair of them, and the buffer given holds {num_values}"
     )]
@@ -683,8 +684,10 @@ pub enum Error {
     /// checked where the dosages are built, so what is left is a result of
     /// more values than the routines of BLAS and LAPACK count in, the r²
     /// of two sets whose variants multiplied together are more than
-    /// 2147483647. In Python it is a `ValueError`, as every case of this
-    /// module is.
+    /// 2147483647, which the cap of `calc_r2_matrix` refuses before a user
+    /// reaches it. So no argument a user writes is wrong here, and in
+    /// Python it is a `RuntimeError`, as the linear algebra of the
+    /// principal component analysis is.
     #[error("the {operation} of the r² of two sets of variants could not be worked out: {source}")]
     LdLinalg {
         /// Which of the six sums of the formula was being computed, as
