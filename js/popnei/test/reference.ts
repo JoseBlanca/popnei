@@ -26,6 +26,11 @@ const REFERENCE_VARS_DIR = new URL(
   import.meta.url,
 );
 
+const REFERENCE_STATS_DIR = new URL(
+  "../../../tests/reference/stats/",
+  import.meta.url,
+);
+
 /** The bytes of the reference VCF `name`, `cases.vcf` or `many.vcf.gz`. */
 export async function referenceVcf(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VCF_DIR)));
@@ -34,6 +39,18 @@ export async function referenceVcf(name: string): Promise<Uint8Array> {
 /** The bytes of the reference vars file `name`, `zstd.vars`. */
 export async function referenceVars(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_VARS_DIR)));
+}
+
+/**
+ * The bytes of the reference file `name` of the stats module, the panel
+ * `panel.vcf.gz` and the `panel_pops_bcftools.txt` of its populations.
+ *
+ * `tests/reference/stats/make_reference.py` writes both, and the same
+ * script runs the plink2 and bcftools commands of `docs/specs/stats.md` and
+ * keeps their reports beside them.
+ */
+export async function referenceStats(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_STATS_DIR)));
 }
 
 /**

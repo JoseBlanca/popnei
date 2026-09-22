@@ -32,6 +32,11 @@ pub enum JsPopneiError {
     /// Something the core read that JavaScript does not hold: a position
     /// above 2^53, which a float64 rounds.
     NotInJavaScript(String),
+    /// An argument this crate refuses before the core sees it, because it
+    /// is the crate and not the core that knows the names a user writes:
+    /// the name of a statistic and the kind of the bins of a histogram,
+    /// each of a finite set of names, whose message writes the set.
+    Refused(String),
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -65,7 +70,7 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the five cases are one `Error`, where Python tells a `ValueError`
+    /// the six cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
@@ -81,6 +86,7 @@ impl From<JsPopneiError> for JsValue {
                 value = as_javascript_writes_it(threshold)
             ),
             JsPopneiError::NotInJavaScript(message)
+            | JsPopneiError::Refused(message)
             | JsPopneiError::NoMemory(message)
             | JsPopneiError::Broken(message) => message,
         };

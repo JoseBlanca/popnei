@@ -53,6 +53,57 @@ export function wholeNumberOfOneOrMore(
 }
 
 /**
+ * `value` when it is a whole number of 0 or more that the core holds, and an
+ * `Error` that names `argument` and what was given otherwise.
+ *
+ * What it refuses is what would reach the core as another number: the
+ * generated code throws the fraction of 2.5 away and keeps 2^32 + 2 modulo
+ * 2^32. Whether the number is one the argument takes, a histogram of 1 bin
+ * or more and a ploidy of 1 to 255, is a rule of the core, which holds for
+ * every pass and not for this call alone.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function wholeNumberOfZeroOrMore(
+  argument: string,
+  value: unknown,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > LARGEST_WHOLE_NUMBER
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
+        `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a string, and an `Error` that names `argument` and what
+ * was given otherwise.
+ *
+ * Which strings the argument takes, the two kinds of bins of a histogram
+ * among them, is a rule of the core: it refuses a name it does not know and
+ * writes the ones it knows in the message. What the generated code does with
+ * what is no string at all is to throw a `TypeError` of its own, which names
+ * neither the argument nor what was given.
+ *
+ * @throws {Error} When `value` is not a string.
+ */
+export function aString(argument: string, value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(
+      `popnei: \`${argument}\` is a name, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a number, and an `Error` that names `argument` and what
  * was given otherwise.
  *

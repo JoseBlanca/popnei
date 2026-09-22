@@ -17,6 +17,7 @@ use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::errors::JsPopneiError;
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
+use crate::stats::{ArgumentsOfThePass, PerVarDistribs, per_var_distribs_of};
 use crate::steps::Steps;
 
 /// A VCF that was opened: its bytes, the options it is read with, and the
@@ -80,9 +81,78 @@ impl VcfSource {
     ) -> Result<VarsFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
     }
+
+    /// The five per variant statistics of one pass over the VCF, through
+    /// the steps of `steps`, for each population of `pop_names`.
+    ///
+    /// The arguments are those of `calcPerVarDistribs` of
+    /// `docs/specs/stats.md`, as the package checked them and flat: `stats`
+    /// holds the name of each statistic to calculate; the populations are
+    /// their names, the names of the individuals of every one of them one
+    /// after another, and how many individuals each of them holds, and
+    /// `pop_names` is nothing when the user named no population, which is
+    /// one population of every individual of the pass;
+    /// `min_num_individuals` is how many called genotypes a population needs
+    /// at a variant to have a value there; `hist_start`, `hist_end`,
+    /// `num_bins` and `bin_type` are the histogram every statistic is
+    /// counted in; `ploidy` is the exponent of the two expected
+    /// heterozygosities, and nothing for the ploidy of the variants; and
+    /// `poly_threshold` is the major allele frequency below which a variant
+    /// is polymorphic in a population.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`per_var_distribs_of`]: a name that is of no statistic, a
+    /// histogram that cannot be made of what was given, an exponent of 0 or
+    /// above 255, a population that names an individual the pass does not
+    /// give, names one twice or names none, `pops` with no population, a
+    /// polymorphism threshold that is no frequency, a source that cannot be
+    /// read, and a pass that gives no variant.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of `calcPerVarDistribs` of `docs/specs/stats.md`, each \
+                  one as the package checked it, and the populations flat: an array of \
+                  arrays is not one of the types wasm-bindgen carries"
+    )]
+    pub fn calc_per_var_distribs(
+        &self,
+        steps: Steps,
+        stats: Vec<String>,
+        pop_names: Option<Vec<String>>,
+        pop_individuals: Vec<String>,
+        num_individuals_per_pop: Vec<u32>,
+        min_num_individuals: u32,
+        hist_start: f64,
+        hist_end: f64,
+        num_bins: usize,
+        bin_type: String,
+        ploidy: Option<usize>,
+        poly_threshold: f64,
+    ) -> Result<PerVarDistribs, JsPopneiError> {
+        per_var_distribs_of(
+            self,
+            &steps,
+            &ArgumentsOfThePass {
+                stats,
+                pop_names,
+                pop_individuals,
+                num_individuals_per_pop,
+                min_num_individuals,
+                hist_range: (hist_start, hist_end),
+                num_bins,
+                bin_type,
+                ploidy,
+                poly_threshold,
+            },
+        )
+    }
 }
 
 impl OpenSource for VcfSource {
+    fn ploidy(&self) -> usize {
+        self.options.ploidy
+    }
+
     fn reader(
         &self,
         num_vars_per_block: Option<usize>,

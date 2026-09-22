@@ -53,6 +53,11 @@ const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
 
 /// A file of variants that was opened, which every pass reads again.
 pub(crate) trait OpenSource {
+    /// How many alleles the genotype of one individual holds in the blocks
+    /// of every pass over the source, which a calculation that counts
+    /// genotypes out of called alleles is built with.
+    fn ploidy(&self) -> usize;
+
     /// The reader of one pass over the source, which reads the bytes from
     /// their start.
     ///
@@ -415,7 +420,7 @@ impl PassCounts {
 impl PassCounts {
     /// The `num_vars` variants of a pass and the `filtering` its chain gave,
     /// as the numbers of JavaScript.
-    fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
+    pub(crate) fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
         PassCounts {
             num_vars: num_vars as f64,
             kinds: filtering
