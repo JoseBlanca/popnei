@@ -1377,6 +1377,27 @@ use:
 | the same, the four, 4 populations of 250 | 2.67 s | |
 | `calc_per_sample_stats` | 1.02 s | 0.255 s |
 
+Run again later the same day, best of 5 at a load average of 1.4 to 2.4,
+every row of that table came back within 0.05 s of it except its pass,
+0.168 s instead of 0.187 s, and the four populations on 6 threads, which
+the table leaves blank, gave 0.598 s.
+
+popnei at b0360f8 of the branch `plan/stats`, built with `maturin develop
+--release` and called from Python through `open_vars`, over `big.vars` on
+22 September 2026, best of 5 runs, two sets in each cell taken at load
+averages of 1.6 and of 2.3, and one set for the two rows with one
+statistic, at 1.9. `docs/reports/stats-measurement.md` has every run and
+its load average.
+
+| | 1 thread | 18 cores |
+|---|---|---|
+| its pass, the genotypes alone | 0.102, 0.104 s | 0.102, 0.105 s |
+| `calc_per_var_distribs`, the five statistics, no `pops` | 0.479, 0.483 s | 0.139, 0.143 s |
+| the same, `obs_het` alone | 0.193 s | 0.117 s |
+| the same, `maf` alone | 0.383 s | 0.130 s |
+| the same, the five, 4 populations of 250 | 0.599, 0.623 s | 0.154, 0.158 s |
+| `calc_per_individual_stats` | 0.202, 0.207 s | 0.118, 0.122 s |
+
 The numbers to reach, for the five statistics with no `pops`, which is
 what pyNei's four cost it and one more value from the same counts, and
 for the per individual statistics, each a whole pass over `big.vars`:
@@ -1384,13 +1405,32 @@ for the per individual statistics, each a whole pass over `big.vars`:
 one thread and 0.15 s on 18 cores. Each is the pass plus twice what the
 filter adds to it, rounded up, because the statistics read each row
 twice, once for the genotype counts and once for the allele counts,
-where the filter reads it once. The first measurement of the
-implementation says whether they hold, and what the four populations
-cost over that, which has no number yet. They are 4.5 times under
-pyNei's 1.13 s on one thread, and under its best with 6 threads. In
-wasm, single threaded, nothing has been measured, and the number to
-reach is set with the first measurement, as `docs/specs/dists.md` set
-its.
+where the filter reads it once.
+
+Three of the four are reached and one is not. The five statistics on one
+thread take 0.479 to 0.483 s against the 0.25 s: the genotype count adds
+0.089 to 0.091 s to the pass, which is about what the filter's one read
+adds, and the allele count adds 0.279 to 0.281 s, three times as much
+over the same rows, where the number to reach assumed the two reads cost
+the same. Whether to work on that is the owner's, through a performance
+review; `docs/reports/stats-measurement.md` says what such a review would
+start from. The five statistics on 18 cores, 0.139 to 0.143 s, and the
+per individual statistics, 0.202 to 0.207 s on one thread and 0.118 to
+0.122 s on 18, are under their numbers.
+
+What the four populations of 250 cost over a pass with no `pops`, which
+had no number before the measurement: 0.120 to 0.140 s on one thread and
+0.015 s on 18 cores. Every individual is in exactly one of the four, so
+both passes count the same genotypes and what the four add is per variant
+and per population.
+
+Against pyNei on one thread, each library over its own vars file of these
+variants, popnei is 2.4 times faster on the per variant statistics with no
+`pops`, 4.4 times with the four populations and 5.1 times on the per
+individual statistics; popnei on 18 cores against pyNei on 6, 1.9, 3.9 and
+2.1 times. In wasm, single threaded, nothing has been measured, and the
+number to reach is set with the first measurement, as
+`docs/specs/dists.md` set its.
 
 ## Open points
 
