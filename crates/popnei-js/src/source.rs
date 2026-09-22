@@ -415,7 +415,7 @@ impl PassCounts {
 impl PassCounts {
     /// The `num_vars` variants of a pass and the `filtering` its chain gave,
     /// as the numbers of JavaScript.
-    fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
+    pub(crate) fn of(num_vars: u64, filtering: &[(&'static str, FilteringStats)]) -> PassCounts {
         PassCounts {
             num_vars: num_vars as f64,
             kinds: filtering

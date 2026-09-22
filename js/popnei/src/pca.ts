@@ -1,5 +1,6 @@
 /**
- * The principal component analysis of a table that the page holds.
+ * The principal component analysis of a table that the page holds, and of
+ * the variants of a dataset.
  *
  * A principal component analysis places the rows of a table, the
  * individuals, on a few axes that hold as much of the variation between them
@@ -10,16 +11,20 @@
  * direction has, the second the largest among the directions at a right
  * angle to the first, and so on.
  *
- * `docs/specs/pca.md` has what it computes. The principal components of the
- * variants of a dataset are the other analysis of that spec and are not
- * written yet; `PcaResult` is what both give, and the one over variants adds
- * the names of the individuals, the variants it used and the counts of its
- * pass to it.
+ * `doPca` takes the table the user brings, and `doPcaFromVariants` makes the
+ * table out of the variants of a dataset: each variant becomes one number
+ * per individual, its dosage, how many alleles of its genotype are not the
+ * major allele of that variant. `docs/specs/pca.md` has what each of the two
+ * computes. `PcaResult` is what both give, and `VariantsPcaResult` adds the
+ * names of the individuals, the variants that were used and the counts of
+ * the pass to it.
  */
 
 import {
   default_center_data as defaultCenterData,
+  default_num_prin_comps as defaultNumPrinComps,
   default_standardize_data as defaultStandardizeData,
+  default_transform_to_biallelic as defaultTransformToBiallelic,
   pca as pcaOfTheCore,
 } from "../wasm/popnei.js";
 
@@ -27,8 +32,11 @@ import {
   aBoolean,
   valuesOfATable,
   wholeNumberOfOneOrMore,
+  wholeNumberOfZeroOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
+import type { PassStats, Variants } from "./variant.js";
+import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 
 /**
  * What a principal component analysis gives.
@@ -158,12 +166,153 @@ export function doPca(
 }
 
 /**
+ * What the principal components of the variants of a dataset give, which is
+ * what a table's analysis gives with the names of the individuals, the
+ * variants that were used and the counts of the pass beside it.
+ */
+export interface VariantsPcaResult extends PcaResult {
+  /**
+   * The names of the individuals, in the order the source has them, which
+   * is the order of the rows of `projections`.
+   */
+  readonly individuals: readonly string[];
+  /**
+   * The position of each variant that was used, from 0, among the variants
+   * the pass gave, the ones with no variance included. They are the columns
+   * of `princomps`, and they are given whether or not any weights were
+   * asked for.
+   */
+  readonly usedVars: Uint32Array;
+  /**
+   * How many variants the pass gave, used or not, and what each filter of
+   * the `Variants` was given and kept. The analysis reads the source twice
+   * when it is asked for weights, both passes count the same, and these are
+   * the counts of the first.
+   */
+  readonly passStats: PassStats;
+}
+
+/** How the principal components of the variants of a dataset are taken. */
+export interface DoPcaFromVariantsOptions {
+  /**
+   * Whether every allele that is not the major one counts the same, which
+   * is what gives a variant of more than two alleles a dosage. False when
+   * it is not given, and such a variant is then an `Error`.
+   */
+  transformToBiallelic?: boolean;
+  /**
+   * How many components the weight of each variant is given for, a whole
+   * number of 0 or more. 10 when it is not given, more than the components
+   * there are gives those there are, and 0 gives no weight and reads the
+   * source once instead of twice.
+   */
+  numPrinComps?: number;
+}
+
+/**
+ * The principal components of the variants of `variants`, after its steps.
+ *
+ * Each variant becomes one number per individual, its dosage: how many
+ * alleles of the genotype are not the major allele of that variant, which is
+ * the most frequent among its called alleles. A genotype with an allele
+ * missing takes the mean of the dosages of its variant, so that after
+ * centering it pulls its individual nowhere. A variant whose called
+ * genotypes all have one dosage has no variance and is left out, a variant
+ * with one allele and one where every individual is heterozygous among them;
+ * `usedVars` is the ones that were used.
+ *
+ * The source is read once for the components and a second time for the
+ * weights, since a weight needs the eigenvectors and those are known when
+ * the first reading ends. Nothing of the size of the variants x the
+ * individuals is held: what stays between two blocks is the individuals x
+ * individuals matrix. Both readings go through the steps the `Variants` has
+ * when the call starts.
+ *
+ * It is pyNei's `do_pca_from_variants`, whose filters are steps of the
+ * `Variants` here, and which gives the weights of every variant where this
+ * gives those of the first `numPrinComps` components.
+ *
+ * @throws {Error} When `variants` is not a `Variants` or was freed, when
+ * `transformToBiallelic` is not a boolean, when `numPrinComps` is not a
+ * whole number of 0 or more and at most 4294967295, when the source cannot
+ * be read, a wrong line of a VCF among the causes, when a variant has more
+ * than two alleles among its called genotypes and `transformToBiallelic` is
+ * false, when the pass gives no variant or no variant with variance, when
+ * the ploidy is above 254, the individuals are more than 46340 or the
+ * variants or the weights are more than a whole number of WebAssembly
+ * counts, when the linear algebra could not be done, and when `init` has not
+ * been awaited.
+ */
+export function doPcaFromVariants(
+  variants: Variants,
+  options: DoPcaFromVariantsOptions = {},
+): VariantsPcaResult {
+  theWasmHasToBeLoaded();
+  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const transformToBiallelic =
+    options.transformToBiallelic === undefined
+      ? defaultTransformToBiallelic()
+      : aBoolean("transformToBiallelic", options.transformToBiallelic);
+  const numPrinComps =
+    options.numPrinComps === undefined
+      ? defaultNumPrinComps()
+      : wholeNumberOfZeroOrMore("numPrinComps", options.numPrinComps);
+  // The steps of the two passes are a copy of the list, made after the
+  // arguments were checked so that nothing refused here leaves one behind:
+  // the call takes it over and frees it.
+  const result = source.pca_of_variants(
+    transformToBiallelic,
+    numPrinComps,
+    steps.of_a_pass(),
+  );
+  try {
+    return {
+      individuals: variants.individuals,
+      numComps: result.num_comps(),
+      projections: theValuesOf(result.projections(), "projections"),
+      explainedVariancePercent: theValuesOf(
+        result.explained_variance_percent(),
+        "explainedVariancePercent",
+      ),
+      numPrinComps: result.num_prin_comps(),
+      princomps: theValuesOf(result.princomps(), "princomps"),
+      usedVars: thePositionsOf(result.used_vars(), "usedVars"),
+      passStats: passStatsOf(result.pass_stats()),
+    };
+  } finally {
+    result.free();
+  }
+}
+
+/**
+ * The positions of one array of the result.
+ *
+ * It is `theValuesOf` for the array of positions, which is a
+ * `Uint32Array`: each array of a result leaves the memory of wasm the first
+ * time it is asked for.
+ *
+ * @throws {Error} When the array had been read already.
+ */
+function thePositionsOf(
+  positions: Uint32Array | undefined,
+  name: string,
+): Uint32Array {
+  if (positions === undefined) {
+    throw new Error(
+      `popnei: \`${name}\` was read twice out of the memory of WebAssembly, ` +
+        "which is a defect of popnei; please report it",
+    );
+  }
+  return positions;
+}
+
+/**
  * The values of one array of the result.
  *
  * Each array leaves the memory of wasm the first time it is asked for, so
- * the call after that gives nothing; `doPca` reads each of them once, and
- * the `Error` here is a defect of this package and not something a caller
- * can do.
+ * the call after that gives nothing; `doPca` and `doPcaFromVariants` read
+ * each of them once, and the `Error` here is a defect of this package and
+ * not something a caller can do.
  *
  * @throws {Error} When the array had been read already.
  */

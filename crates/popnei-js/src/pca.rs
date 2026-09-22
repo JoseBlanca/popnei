@@ -1,16 +1,23 @@
-//! What a TypeScript user reaches through `doPca`: the principal components
-//! of a table of numbers that the page holds, individuals x traits.
+//! What a TypeScript user reaches through `doPca` and `doPcaFromVariants`:
+//! the principal components of a table of numbers that the page holds,
+//! individuals x traits, and those of the variants of a source.
 //!
 //! The table crosses as one `Float64Array`, row after row, which the code
 //! wasm-bindgen generates copies into the memory of wasm before any code of
-//! popnei runs, and the arrays of the result cross back the same way. The
-//! analysis is the `pca` of the core crate and nothing of it is here.
+//! popnei runs, and the arrays of every result cross back the same way. The
+//! variants are not a table that crosses: the core reads them block by block
+//! from the readers this crate opens over the source and the steps of the
+//! `Variants`, as it does for `write_vars`, and what comes back is of the
+//! size of the individuals and of the variants that were used. Both analyses
+//! are the core crate's and nothing of either is here.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::pca::{Pca, PcaOptions};
+use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
 use crate::errors::JsPopneiError;
+use crate::source::{OpenSource, PassCounts};
+use crate::steps::{Steps, chain_of};
 
 /// The principal components of a table, on their way to TypeScript.
 ///
@@ -127,4 +134,169 @@ pub fn default_center_data() -> bool {
 #[must_use]
 pub fn default_standardize_data() -> bool {
     popnei::pca::DEFAULT_STANDARDIZE_DATA
+}
+
+/// Whether every allele that is not the major one counts the same when the
+/// caller says nothing.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_transform_to_biallelic() -> bool {
+    popnei::pca::DEFAULT_TRANSFORM_TO_BIALLELIC
+}
+
+/// How many components the weights of the variants are given for when the
+/// caller says nothing.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_num_prin_comps() -> usize {
+    popnei::pca::DEFAULT_NUM_PRIN_COMPS
+}
+
+/// The principal components of the variants of a source, on their way to
+/// TypeScript.
+///
+/// Each array leaves the memory of wasm the first time it is asked for, as
+/// the arrays of a table's analysis do. The names of the individuals are not
+/// here: the `Variants` a user gave read them from the header of the VCF or
+/// the schema of the vars file when it was opened, and the package puts them
+/// on the result.
+#[wasm_bindgen]
+pub struct PcaOfVariants {
+    num_comps: usize,
+    projections: Option<Vec<f64>>,
+    explained_variance_percent: Option<Vec<f64>>,
+    num_prin_comps: usize,
+    princomps: Option<Vec<f64>>,
+    used_vars: Option<Vec<u32>>,
+    pass_stats: PassCounts,
+}
+
+#[wasm_bindgen]
+impl PcaOfVariants {
+    /// How many components have variance, which is how many are given.
+    #[must_use]
+    pub fn num_comps(&self) -> usize {
+        self.num_comps
+    }
+
+    /// Where each individual falls along each component, the individuals of
+    /// the source x `num_comps`, row after row.
+    pub fn projections(&mut self) -> Option<Vec<f64>> {
+        self.projections.take()
+    }
+
+    /// The variance of each component as a percentage of the variance of
+    /// every component of the data, the ones with no variance counted, one
+    /// number per component.
+    pub fn explained_variance_percent(&mut self) -> Option<Vec<f64>> {
+        self.explained_variance_percent.take()
+    }
+
+    /// How many components the weights are given for, which is
+    /// `num_prin_comps` of the call, or the components there are when fewer
+    /// were found, or 0 when none were asked for.
+    #[must_use]
+    pub fn num_prin_comps(&self) -> usize {
+        self.num_prin_comps
+    }
+
+    /// The weight of each variant that was used in each component,
+    /// `num_prin_comps` x the variants of `used_vars`, row after row.
+    pub fn princomps(&mut self) -> Option<Vec<f64>> {
+        self.princomps.take()
+    }
+
+    /// The position of each variant that was used, from 0, among the
+    /// variants the pass gave, the ones with no variance included.
+    pub fn used_vars(&mut self) -> Option<Vec<u32>> {
+        self.used_vars.take()
+    }
+
+    /// How many variants the pass gave, used or not, and what each filter of
+    /// it was given and kept. The two passes count the same and these are
+    /// the counts of the first.
+    #[must_use]
+    pub fn pass_stats(&self) -> PassCounts {
+        self.pass_stats.clone()
+    }
+}
+
+/// The principal components of the variants of `source`, through the steps
+/// of `steps`, with the weights of the first `num_prin_comps` components.
+///
+/// Both readers are opened here, over the same source and the same steps,
+/// and lent to the core, which reads the variants of each in blocks: the
+/// counts of the filters of the first are read when it returns, as
+/// `docs/specs/filters.md` asks of every calculation. No reader is opened
+/// for the second pass when no weights were asked for, and the core then
+/// makes one pass.
+///
+/// # Errors
+///
+/// When the source cannot be read again, a wrong line of a VCF among the
+/// causes; when a variant has more than two alleles among its called
+/// genotypes and `transform_to_biallelic` is false; when the pass gives no
+/// variant or no variant with variance; when a size of the dataset is beyond
+/// what the analysis counts in; and when the linear algebra could not be
+/// done.
+pub(crate) fn pca_of_the_variants(
+    source: &dyn OpenSource,
+    transform_to_biallelic: bool,
+    num_prin_comps: usize,
+    steps: Steps,
+) -> Result<PcaOfVariants, JsPopneiError> {
+    let options = VariantPcaOptions {
+        transform_to_biallelic,
+        num_prin_comps,
+    };
+    // The source is asked for no size of block: the core puts a `reblock`
+    // over each reader and chooses the size there, since the product of a
+    // block is matrix work and a filter leaves blocks of uneven size.
+    let mut first_pass = chain_of(source.reader(None)?, steps.steps())?;
+    // The weights of a variant need the eigenvectors, which are known when
+    // the first pass ends, so they come from a second pass over the same
+    // variants. With none asked for there is no second reader and the source
+    // is read once.
+    let mut second_pass = if num_prin_comps > 0 {
+        Some(chain_of(source.reader(None)?, steps.steps())?)
+    } else {
+        None
+    };
+    let result = popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)?;
+    // The variants the pass gave, used or not, which is what the counts of a
+    // pass say. A `usize` is 32 bits in wasm and 64 natively, and both fit
+    // in a `u64`, so the conversion cannot fail.
+    let num_vars = u64::try_from(result.num_cols).unwrap_or(u64::MAX);
+    let pass_stats = PassCounts::of(num_vars, &first_pass.filtering_stats());
+    Ok(PcaOfVariants {
+        num_comps: result.num_comps,
+        projections: Some(result.projections),
+        explained_variance_percent: Some(result.explained_variance_percent),
+        num_prin_comps: result.num_prin_comps,
+        princomps: Some(result.princomps),
+        used_vars: Some(the_positions_of_the_used_variants(&result.used_cols)?),
+        pass_stats,
+    })
+}
+
+/// The positions of the variants that were used as the `Uint32Array` they
+/// cross in.
+///
+/// # Errors
+///
+/// When a position is above 4294967295, which no pass of wasm reaches: a
+/// `usize` is 32 bits there, and the core refuses a pass of more variants
+/// than one counts.
+fn the_positions_of_the_used_variants(used_cols: &[usize]) -> Result<Vec<u32>, JsPopneiError> {
+    used_cols
+        .iter()
+        .map(|position| {
+            u32::try_from(*position).map_err(|_| {
+                JsPopneiError::NotInJavaScript(format!(
+                    "the variant at the position {position} is above 4294967295, the \
+                     largest position the array of the variants that were used holds"
+                ))
+            })
+        })
+        .collect()
 }

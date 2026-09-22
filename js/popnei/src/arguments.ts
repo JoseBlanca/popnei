@@ -53,6 +53,35 @@ export function wholeNumberOfOneOrMore(
 }
 
 /**
+ * `value` when it is a whole number of 0 or more that the core holds, and an
+ * `Error` that names `argument` and what was given otherwise.
+ *
+ * It is how many components the weights are asked for that comes through
+ * here, and 0 is the call that asks for none: a negative number would
+ * arrive as a count of about four thousand million, which the generated
+ * code makes of it, and be read as more components than any dataset has.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function wholeNumberOfZeroOrMore(
+  argument: string,
+  value: unknown,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > LARGEST_WHOLE_NUMBER
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
+        `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a number, and an `Error` that names `argument` and what
  * was given otherwise.
  *

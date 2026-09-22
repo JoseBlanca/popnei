@@ -1,5 +1,6 @@
 /**
- * The principal components of a table, at `doPca`.
+ * The principal components of a table, at `doPca`, and of the variants of a
+ * dataset, at `doPcaFromVariants`.
  *
  * The table is iris, 150 rows x 4 traits, the one of pyNei's
  * `test/datasets.py` that `tests/reference/pca/make_reference.py` writes as
@@ -11,20 +12,28 @@
  * crate assert the same numbers; the Python tests hold no literal of R and
  * compare with pyNei instead.
  *
+ * The dataset of `doPcaFromVariants` is the worked example of "How it is
+ * verified" of "The PCA of the variants", `tests/reference/pca/worked.vcf`,
+ * 5 individuals and 5 variants of which the third and the fourth have no
+ * variance and are left out, and `worked3.vcf`, which adds a variant of
+ * three alleles.
+ *
  * The analysis itself is tested in the core crate, over every row of the
  * reference files. What these tests say is that the table reaches the core
- * as it was written, row after row and not trait after trait, that the
- * arrays come back with the shape of the result, and that an error of the
- * core is thrown as an `Error` with the message it has in Rust.
+ * as it was written, row after row and not trait after trait, that the two
+ * readers of the variants are opened over the source and the steps of the
+ * `Variants`, that the arrays come back with the shape of the result, and
+ * that an error of the core is thrown as an `Error` with the message it has
+ * in Rust.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { doPca, init } from "popnei";
+import { doPca, doPcaFromVariants, init, openVcf } from "popnei";
 
 import { theValuesOf } from "../dist/pca.js";
-import { referenceTable } from "./reference.ts";
+import { referencePcaVcf, referenceTable } from "./reference.ts";
 
 await init();
 
@@ -264,4 +273,113 @@ test("a table whose buffer was transferred away is an Error", () => {
     () => doPca(values, 3, 2),
     /popnei: the buffer of `data` was transferred/,
   );
+});
+
+/** The bytes of the two VCFs of the worked example, read once. */
+const WORKED_VCF = await referencePcaVcf("worked.vcf");
+const WORKED3_VCF = await referencePcaVcf("worked3.vcf");
+
+/** Where each of the 5 individuals of the worked example falls. */
+const WORKED_PROJECTIONS = [
+  -0.76228776254, 0.994550847306, -0.320852228237, -0.863187556071,
+  -0.87503028832, -0.007193635382, 3.025289193432, -0.097439191351,
+  -0.02164630288, -0.536626318751, 0.852948920685, 0.35688580188,
+  -0.863187556071, -0.87503028832, -0.007193635382,
+];
+
+const WORKED_PERCENT = [76.74407104469, 21.71669104093, 1.53923791438];
+
+/** The weight of each of the three variants used, component after component. */
+const WORKED_PRINCOMPS = [
+  0.5019679573733, 0.6484646269251, 0.5722952012706, -0.7978606574051,
+  0.0917847782057, 0.5958136670595, -0.3338360992098, 0.7556911949445,
+  -0.5634574311763,
+];
+
+/**
+ * The analysis of `bytes` read as a VCF, which frees the handle afterwards.
+ *
+ * Every call of `doPcaFromVariants` reads the source again, so one handle
+ * would serve every test here; each builds its own so that a test that
+ * leaves a step on it cannot reach the next.
+ */
+function theVariantsPca(
+  bytes: Uint8Array,
+  options?: Parameters<typeof doPcaFromVariants>[1],
+): ReturnType<typeof doPcaFromVariants> {
+  const variants = openVcf(bytes);
+  try {
+    return doPcaFromVariants(variants, options);
+  } finally {
+    variants.free();
+  }
+}
+
+test("the worked example gives the projections and the weights of R", () => {
+  const result = theVariantsPca(WORKED_VCF, { numPrinComps: 3 });
+  assert.deepEqual(result.individuals, ["i0", "i1", "i2", "i3", "i4"]);
+  assert.equal(result.numComps, 3);
+  assertClose(result.projections, WORKED_PROJECTIONS, "the projections");
+  assertClose(
+    result.explainedVariancePercent,
+    WORKED_PERCENT,
+    "the percentages",
+  );
+  assert.deepEqual(result.usedVars, Uint32Array.from([0, 1, 4]));
+  assert.equal(result.numPrinComps, 3);
+  assertClose(result.princomps, WORKED_PRINCOMPS, "the weights");
+});
+
+test("the worked example gives the counts of its pass", () => {
+  const result = theVariantsPca(WORKED_VCF);
+  // The five variants of the file, the two with no variance included: the
+  // pass gave them and the analysis left them out, and no filter ran.
+  assert.deepEqual(result.passStats, { numVars: 5, filtering: {} });
+});
+
+test("no weights are asked for and princomps has no row", () => {
+  const result = theVariantsPca(WORKED_VCF, { numPrinComps: 0 });
+  assert.equal(result.numComps, 3);
+  assert.equal(result.numPrinComps, 0);
+  assert.equal(result.princomps.length, 0);
+  // The variants that were used are the columns of the weights there would
+  // have been, and they are given whether or not any were asked for.
+  assert.deepEqual(result.usedVars, Uint32Array.from([0, 1, 4]));
+  assertClose(result.projections, WORKED_PROJECTIONS, "the projections");
+});
+
+test("more components than there are gives the weights of those there are", () => {
+  const result = theVariantsPca(WORKED_VCF, { numPrinComps: 10 });
+  assert.equal(result.numPrinComps, 3);
+  assertClose(result.princomps, WORKED_PRINCOMPS, "the weights");
+});
+
+test("a variant of three alleles is an Error that names it", () => {
+  assert.throws(
+    () => theVariantsPca(WORKED3_VCF),
+    /the variant at the position 5 among those given has 3 different alleles among its called genotypes/,
+  );
+});
+
+test("every allele that is not the major one counts the same", () => {
+  const result = theVariantsPca(WORKED3_VCF, {
+    transformToBiallelic: true,
+    numPrinComps: 3,
+  });
+  assert.equal(result.numComps, 3);
+  assert.deepEqual(result.usedVars, Uint32Array.from([0, 1, 4, 5]));
+  assert.equal(result.princomps.length, 3 * 4);
+});
+
+test("a numPrinComps that is not a whole number of 0 or more is an Error", () => {
+  assert.throws(
+    () => theVariantsPca(WORKED_VCF, { numPrinComps: -1 }),
+    /popnei: `numPrinComps` is a whole number of 0 or more/,
+  );
+});
+
+test("variants that were freed cannot be analysed", () => {
+  const variants = openVcf(WORKED_VCF);
+  variants.free();
+  assert.throws(() => doPcaFromVariants(variants), /were freed/);
 });

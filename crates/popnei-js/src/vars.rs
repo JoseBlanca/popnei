@@ -23,6 +23,7 @@ use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 
 use crate::errors::JsPopneiError;
+use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
 use crate::steps::Steps;
 
@@ -86,6 +87,26 @@ impl VarsSource {
         steps: Steps,
     ) -> Result<VarsFile, JsPopneiError> {
         bytes_of_a_vars_file(self, num_vars_per_block, steps)
+    }
+
+    /// The principal components of the variants of the file, through the
+    /// steps of `steps`, with the weights of the first `num_prin_comps`
+    /// components.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be read, when a variant has more than two
+    /// alleles among its called genotypes and `transform_to_biallelic` is
+    /// false, when the pass gives no variant or no variant with variance,
+    /// when a size of the dataset is beyond what the analysis counts in, and
+    /// when the linear algebra could not be done.
+    pub fn pca_of_variants(
+        &self,
+        transform_to_biallelic: bool,
+        num_prin_comps: usize,
+        steps: Steps,
+    ) -> Result<PcaOfVariants, JsPopneiError> {
+        pca_of_the_variants(self, transform_to_biallelic, num_prin_comps, steps)
     }
 }
 

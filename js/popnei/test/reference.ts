@@ -72,6 +72,14 @@ const REFERENCE_PCA_DIR = new URL(
   import.meta.url,
 );
 
+/**
+ * The bytes of the VCF `name` of `tests/reference/pca/`, `worked.vcf`,
+ * which `tests/reference/pca/make_reference.py` writes.
+ */
+export async function referencePcaVcf(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_PCA_DIR)));
+}
+
 /** A table of numbers: its values row after row, and its two sides. */
 export interface Table {
   values: Float64Array;
