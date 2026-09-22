@@ -276,7 +276,7 @@ pub enum Error {
     /// drops it in silence, and `filter_samples(v, ["ind05", "nope"])`
     /// gives variants of one individual.
     #[error(
-        "`{name}` is not an individual of the variants; an individual is named as the source of the variants names it"
+        "`{name}` is not an individual of the variants; `individuals` gives the names the source has, written as the source writes them"
     )]
     IndividualNotInTheSource {
         /// The name that is not an individual of the variants.
