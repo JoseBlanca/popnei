@@ -471,3 +471,51 @@ clean.
 The reviewers used, in tokens: spec 208043, tests 242450, numbers
 200040, errors 158749, api 180412, architecture 154966, binding 147875.
 The two fixers used 291812 in 214 tool calls and 282016 in 186.
+
+## Work package 5: the per individual statistics, through the three layers
+
+Task 5.1, commit 37f5be2: `calc_per_individual_stats` and
+`PerIndividualStats` in `crates/popnei/src/stats.rs`. The pass keeps two
+counts per individual, the missing genotypes and the heterozygous ones,
+reads the rows in chunks of 64 on rayon and adds the chunks in the order
+of the block, with a serial version beside it for wasm, and makes the
+two divisions once at the end. A chunk allocates one array of two
+counts per individual and nothing per variant. Two things the subagent
+did beyond the task, both inside the tests: the test reader and the
+three helpers that open a reference VCF moved into a module of fixtures
+that both test modules read, and what a missing and a heterozygous
+genotype are is now one function of the `variant` module that both
+passes call, rather than written twice.
+
+Task 5.2, commit 8f40a83: the Python side, which mirrors the per variant
+pass: it builds the chain, takes the names of the individuals from it,
+runs the pass with the interpreter released, turns the individual with
+no called genotype into NaN and reads the counts of the filters from the
+chain afterwards. `python/popnei/stats.py` has the frozen dataclass and
+the function, exported from `popnei`, and `tests/test_stats.py` eight
+more tests. The tests of the five individuals of pyNei's own test write
+their own VCF, because the fixture of `tests/conftest.py` has a fixed
+header of three.
+
+Task 5.3, commit c93a6e2: the TypeScript side, `calcPerIndividualStats`
+as a method of each source class, with six tests. Its tests read
+`many.vcf` with `onlyPassed` false, because the literals of the spec are
+over its 500 variants and the default of the reader keeps 475, which
+the reference script confirms, since its plink2 command has no filter of
+the variants that passed.
+
+The three deliverables are met, run by the orchestrator at c93a6e2.
+`cargo test -p popnei --lib -- stats::per_individual --list` prints `8
+tests`, where the plan asks 5 or more; `uv run pytest tests/test_stats.py
+-k per_individual` `8 passed`, with the 44 of the per variant pass
+untouched; `npm test` `tests 162`, `fail 0`, from 156. `cargo test
+--workspace` `420 passed`, 2 ignored, from 412; `uv run pytest` `241
+passed`, from 233. `cargo fmt`, `cargo clippy`, `cargo wasm-check` and
+ruff clean.
+
+Nothing was changed in the plan and nothing in either spec: the
+subagent of task 5.1 recomputed the literals of the panel and of
+`many.vcf` from the files and they are the spec's.
+
+The subagents used: task 5.1 187351 tokens in 97 tool calls; task 5.2
+158161 in 76; task 5.3 207184 in 82. None had to be sent back.
