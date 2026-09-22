@@ -552,10 +552,39 @@ back is better than matching load averages: the drift of this machine
 between two clean measurements is larger than any effect this experiment
 was looking for.
 
+### The merge with `main` met the target
+
+The branch was merged with `main` on 22 September 2026, at 8f01b8b, and
+`main` had meanwhile gained a change to the same counting from the
+performance review of the principal components: a variant whose alleles
+are only the missing one, 0 and 1 is counted without the table of 128
+counters at all. The merge kept both, that fast path first and the four
+arrays of this review as the loop it falls back to, which is what still
+carries a variant of more than two alleles and the counting over one
+population.
+
+On the benchmark of this module, one thread, best of nine at a load
+average of 1.5, the five statistics with one population and the allele
+frequency alone: 0.112 s and 0.015 s merged, 0.112 s and 0.015 s with
+`main`'s counting alone, and 0.184 s and 0.089 s with this review's
+alone. Every variant of that benchmark has two alleles, so the fast path
+takes every row there and the four arrays never run in it; they are what
+the multiallelic case and the per population counting still use.
+
+With both, the four numbers of "Speed" of `docs/specs/stats.md` are met.
+Over `big.vars`, best of five at a load average of 3.8, which can only
+make a number worse: the five statistics with no populations 0.222 s on
+one thread against the 0.25 s asked and 0.125 s on 18 cores against
+0.15 s, and the per individual statistics 0.206 s on one thread. The
+pass that this review was called for was 0.479 s when it began.
+
+So the question the review existed to answer is answered, and it took
+two changes from this review and one from another to answer it.
+
 ## What is left, and what is the owner's
 
-The target is not met and this review cannot meet it by itself. What
-remains, in the order of what it would buy.
+The target is met, as the section above says, so what remains is what
+this review found and did not do, in the order of what it would buy.
 
 The read is 0.102 s of the 0.285 s and is serial. On 18 cores it is the
 whole floor, under H3 above. `docs/architecture.md` already prescribes

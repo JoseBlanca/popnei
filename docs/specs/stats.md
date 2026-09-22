@@ -1407,16 +1407,27 @@ filter adds to it, rounded up, because the statistics read each row
 twice, once for the genotype counts and once for the allele counts,
 where the filter reads it once.
 
-Three of the four are reached and one is not. The five statistics on one
-thread take 0.479 to 0.483 s against the 0.25 s: the genotype count adds
-0.089 to 0.091 s to the pass, which is about what the filter's one read
-adds, and the allele count adds 0.279 to 0.281 s, three times as much
-over the same rows, where the number to reach assumed the two reads cost
-the same. Whether to work on that is the owner's, through a performance
-review; `docs/reports/stats-measurement.md` says what such a review would
-start from. The five statistics on 18 cores, 0.139 to 0.143 s, and the
-per individual statistics, 0.202 to 0.207 s on one thread and 0.118 to
-0.122 s on 18, are under their numbers.
+All four are reached, after a performance review. When the module was
+first measured, three were and one was not: the five statistics took
+0.479 to 0.483 s on one thread against the 0.25 s, because the genotype
+count adds 0.089 to 0.091 s to the pass, about what the filter's one read
+adds, while the allele count added 0.279 to 0.281 s, three times as much
+over the same rows, where the number to reach had assumed the two reads
+cost the same.
+
+`docs/reports/perf-stats-2026-09-22.md` says why and what was done. The
+allele count wrote into a counter that the allele itself chose, and on a
+file of two alleles almost every write landed on the counter the write
+before it had just made, so the increments queued on one another instead
+of overlapping. Counting into four arrays at once broke that queue, and
+counting a variant of two alleles without the table at all, which the
+performance review of the principal components added to the same
+function, removed the writes for that case altogether. With both, and
+with an error value that the lookup of an individual no longer builds and
+throws away, the pass over `big.vars` takes 0.222 s on one thread and
+0.125 s on 18 cores, and the per individual statistics 0.206 s on one
+thread, each best of five at a load average of 3.8, which can only make a
+number worse.
 
 What the four populations of 250 cost over a pass with no `pops`, which
 had no number before the measurement: 0.120 to 0.140 s on one thread and
