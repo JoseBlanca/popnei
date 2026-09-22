@@ -132,7 +132,7 @@ this plan.
       plink2 matrices and the script that runs plink2 beside it. Built
       from "How it is verified" of `docs/specs/ld.md`. Serves deliverable
       1. Needs nothing.
-- [ ] 1.2 `the_major_allele` public in `variant`: taken out of
+- [x] 1.2 `the_major_allele` public in `variant`: taken out of
       `crates/popnei/src/pca.rs`, where the PCA work left it private and
       exposed a copy for the benches, and put in
       `crates/popnei/src/variant.rs` with the doc comment of "The Rust

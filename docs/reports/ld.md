@@ -36,3 +36,28 @@ called genotypes, has no answer, so task 1.2 follows its "meanwhile", the
 rule `docs/specs/pca.md` already has: the move of `the_major_allele` into
 `variant` changes no number. Open 1 belongs to the curve of r² against
 distance, which this plan does not build.
+
+## Work package 1: the r² of two sets of variants
+
+The tasks as they are done. The deliverables, the review and what the
+owner should know go at the end of the work package.
+
+Task 1.2, `the_major_allele` public in `variant`, commit 7777f48. The
+function that picks the allele a variant was called most often at was
+private to `pca`, with a second copy made public for the benchmark of the
+row; it is now one public function in `variant` that `pca` and the
+benchmark call. Deliverable 2 holds: `grep -c "fn the_major_allele"
+crates/popnei/src/pca.rs` prints `0`, and `cargo test --workspace` passes
+`395 passed` in the core crate and `35 passed` in the linalg crate, the
+counts the plan started from.
+
+One thing was not a plain move. The test that a variant whose two alleles
+were called equally often takes the lower numbered one asserted, in
+`pca`, the standardized row of four individuals, and it uses internals of
+`pca` that `variant` does not have. It now asserts the allele those same
+four genotypes give, and two cases beside it that `pca` never reached: a
+variant with a half called genotype, and one of which no allele was
+called, whose major allele is the missing one. The tests of `variant::`
+go from 10 to 11 and those of `pca::` from 48 to 47, so the workspace
+count does not move. The plan's deliverable says that no test changes;
+this one did, and what it covers grew rather than shrank.
