@@ -378,7 +378,7 @@ polymorphism ratio, with `pass_stats`; in TypeScript,
   TypeScript" and "What pyNei asserts, and the size of the blocks" of
   the pass, "In Python" of each statistic, and "In Python and in
   TypeScript" of "The populations". Needs 4.2. Serves deliverable 3.
-- [ ] 4.4 The TypeScript side: the same in `crates/popnei-js`,
+- [x] 4.4 The TypeScript side: the same in `crates/popnei-js`,
   `calcPerVarDistribs` and its result in `js/popnei/src/stats.ts`, and
   `test/stats.test.ts`. From the TypeScript paragraphs of the same
   parts. Needs 4.2. Serves deliverable 4. After 4.3 in the plan's
