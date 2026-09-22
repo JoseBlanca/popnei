@@ -19,6 +19,8 @@ export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
 export type { OpenVcfOptions } from "./io_vcf.js";
+export { doPca } from "./pca.js";
+export type { DoPcaOptions, PcaResult } from "./pca.js";
 export { Variants } from "./variant.js";
 export type { Blocks, IterBlocksOptions, PassStats } from "./variant.js";
 

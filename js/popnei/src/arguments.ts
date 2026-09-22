@@ -129,6 +129,60 @@ export function bytes(argument: string, value: unknown): Uint8Array {
 }
 
 /**
+ * The values of `value` when it is a `Float64Array` that holds a table of
+ * `numRows` rows of `numCols` values each, row after row, and that the
+ * memory of wasm takes, and an `Error` otherwise.
+ *
+ * The two sides are checked against the values there are here and not in the
+ * core: a table given with fewer rows than it has would be the analysis of
+ * the first of them, with nothing to show it, and one given with more traits
+ * than it has would read the second row as the end of the first. The core
+ * refuses only the second of the two, so a caller that says `numCols: 3` of
+ * a table of 4 traits has to be stopped before the call.
+ *
+ * @throws {Error} When `value` is not a `Float64Array`, when its buffer was
+ * transferred, which leaves the array with nothing to read, when it does not
+ * hold `numRows` times `numCols` values, and when the memory of wasm does not
+ * take a copy of it.
+ */
+export function valuesOfATable(
+  argument: string,
+  value: unknown,
+  numRows: number,
+  numCols: number,
+): Float64Array {
+  if (!(value instanceof Float64Array)) {
+    throw new Error(
+      `popnei: \`${argument}\` is a Float64Array with the values of the table, ` +
+        `row after row, and ${whatWasGiven(value)} was given; an array of ` +
+        `numbers is turned into one with Float64Array.from(numbers)`,
+    );
+  }
+  // A page that sends the values to a web worker transfers their buffer,
+  // which leaves the array it came from with a length of 0 and no memory
+  // behind it, as `bytes` says above.
+  if ((value.buffer as { detached?: unknown }).detached === true) {
+    throw new Error(
+      `popnei: the buffer of \`${argument}\` was transferred, to a web worker ` +
+        "or somewhere else, and the values of the table are there and not in " +
+        "this array; the worker that was given them is where they are read",
+    );
+  }
+  if (value.length !== numRows * numCols) {
+    throw new Error(
+      `popnei: the table was given as ${numRows} x ${numCols}, which is ` +
+        `${numRows * numCols} values, and \`${argument}\` holds ${value.length}`,
+    );
+  }
+  // The copy into the memory of wasm is made by the generated code, before
+  // any code of popnei runs, and an allocation that fails there is a trap
+  // that leaves the module unusable, as `bytes` says above. A value is 8
+  // bytes.
+  roomForBytes(value.length * 8);
+  return value;
+}
+
+/**
  * The names of `value` when it is an array of strings, and an `Error`
  * otherwise.
  *
