@@ -12,6 +12,12 @@ gives, for each statistic and population, the mean over the variants that
 had a value and a histogram of them. The per variant values are not kept: a
 million of them for each population do not fit a browser tab, and a user who
 wants them takes the genotypes with :meth:`popnei.Variants.iter_blocks`.
+
+:func:`popnei.calc_per_individual_stats` makes a pass of its own and gives
+two numbers for each individual instead: the share of the variants at which
+its genotype is missing and the share of its called genotypes at which it is
+heterozygous. It takes no `pops`, since each of its values is of one
+individual.
 """
 
 from collections.abc import Iterable, Mapping, Sequence
@@ -439,4 +445,67 @@ def _poly_vars_stats_of(
         poly_ratio_over_variables=pandas.Series(over_variables, index=names),
         num_variable=pandas.Series(num_variable, index=names),
         tot_num_variants_with_data=pandas.Series(with_data, index=names),
+    )
+
+
+@dataclass(frozen=True)
+class PerIndividualStats:
+    """What :func:`popnei.calc_per_individual_stats` gives back.
+
+    The two series are indexed by the names of the individuals the pass
+    gave, in its order, which is the order of the source unless a filter of
+    individuals named them in another one.
+    """
+
+    missing_gt_rate: pandas.Series
+    """The variants at which the genotype of the individual is missing, a
+    half called genotype among them, over the variants of the pass."""
+
+    obs_het_rate: pandas.Series
+    """The variants at which the genotype of the individual is called and
+    its alleles are not all the same, over its called genotypes, NaN for an
+    individual that called none of them."""
+
+    pass_stats: PassStats
+    """How many variants the pass gave, after the steps of the ``Variants``,
+    and what each filter of it was given and kept."""
+
+
+def calc_per_individual_stats(variants: Variants) -> PerIndividualStats:
+    """The missing rate and the heterozygosity rate of every individual, in
+    one pass over `variants`.
+
+    The missing rate is the share of the variants at which the individual
+    has no genotype, and a half called genotype is missing and not
+    heterozygous. The heterozygosity rate is the share of its called
+    genotypes at which its alleles are not all the same. The first tells a
+    user which individuals were badly genotyped, and the second which ones
+    are more heterozygous than the rest, a sign of a mixed sample or of an
+    outcrossed individual among inbred ones. An individual that called no
+    genotype has a missing rate of 1 and no heterozygosity rate, NaN.
+
+    It is a consumer of the `variants`: it makes one pass over the source
+    through the steps the ``Variants`` has when it is called, and the
+    ``Variants`` is as it was afterwards. A pass that gives no variant is a
+    ``ValueError``, whether the source holds none or the steps kept none.
+
+    It mirrors pyNei's ``calc_per_sample_stats``, with these differences:
+    the heterozygosity rate divides by the called genotypes of the
+    individual, where pyNei divides by every variant, so an individual with
+    more missing data looks less heterozygous there, and popnei's number is
+    what plink2's ``--het`` gives, with the missing rate beside it saying
+    what pyNei's one number said; the result is this dataclass and not a
+    pandas frame of the two columns, since every result of a consumer
+    carries its `pass_stats`, which a frame has no place for; and there is
+    no `num_threads`, since the threads are those of the pool of the Rust
+    core.
+    """
+    individuals, missing_gt_rate, obs_het_rate, counts = (
+        _core.calc_per_individual_stats(variants._source, variants._steps)
+    )
+    names = list(individuals)
+    return PerIndividualStats(
+        missing_gt_rate=pandas.Series(missing_gt_rate, index=names),
+        obs_het_rate=pandas.Series(obs_het_rate, index=names),
+        pass_stats=_pass_stats_of(counts),
     )

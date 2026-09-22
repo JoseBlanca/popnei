@@ -1,7 +1,9 @@
-"""The per variant distributions from Python: the five statistics of one
-pass, per population, and what the call refuses.
+"""The two passes of the stats module from Python: the five statistics of
+every variant, per population, the missing rate and the heterozygosity rate
+of every individual, and what each call refuses.
 
-`docs/specs/stats.md` has them under "The per variant distributions", and
+`docs/specs/stats.md` has them under "The per variant distributions" and
+"The per individual statistics", and
 the comparison it asks for is with pyNei at commit ef0ca6e, which
 `pyproject.toml` names, on two datasets. The panel is
 `tests/reference/stats/panel.vcf.gz`, 1200 biallelic diploid variants of
@@ -22,6 +24,12 @@ there. Every value is read by the name of its population and not by its
 place, because pyNei sorts the populations of the expected heterozygosity
 and keeps the order of the keys for the others, so its columns do not line
 up with each other.
+
+The per individual statistics are compared with pyNei on the same two
+datasets. Its `calc_per_sample_stats` divides the heterozygous genotypes of
+an individual by every variant and popnei divides them by the called
+genotypes of that individual, which the owner decided on 22 September 2026,
+so popnei's rate is pyNei's times the variants over the called genotypes.
 """
 
 import json
@@ -37,10 +45,12 @@ from popnei import (
     PerVarStat,
     PolyVarsStats,
     StatsDistrib,
+    calc_per_individual_stats,
     calc_per_var_distribs,
     open_vcf,
 )
 from popnei.variant import Variants
+from pynei import calc_per_sample_stats as pynei_calc_per_sample_stats
 from pynei import calc_per_var_distribs as pynei_calc_per_var_distribs
 from pynei import vars_from_vcf
 from pynei.diversity import _calc_unbiased_exp_het_per_var
@@ -826,3 +836,214 @@ def test_per_var_distribs_are_the_same_in_pools_of_one_and_of_four_threads() -> 
             assert _the_same_number(ours, theirs), stat
     for ours, theirs in zip(of_one["poly_ratio"], of_four["poly_ratio"], strict=True):
         assert _the_same_number(ours, theirs)
+
+
+# The `##` lines and the `#CHROM` line of a VCF of the five diploid
+# individuals `ind0` to `ind4`. popnei has no `Variants.from_gt_array`, so
+# the genotypes that pyNei's `test_filter_missing` writes as numbers are
+# written here as a file.
+_HEADER_OF_FIVE = (
+    "##fileformat=VCFv4.4",
+    '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
+    + "\t".join(f"ind{individual}" for individual in range(5)),
+)
+
+# The three variants of five individuals of pyNei's `test_filter_missing`,
+# as the data lines of a VCF: every variant has three alleles, the genotype
+# of `ind1` at the first one holds the third of them, `ind4` has no genotype
+# at the second variant, and nobody has one at the third.
+_PYNEIS_THREE_VARIANTS = (
+    "chr1\t1\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/0\t2/1\t0/0\t0/0\t0/0",
+    "chr1\t2\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/0\t0/0\t0/1\t1/0\t./.",
+    "chr1\t3\t.\tA\tC,G\t.\tPASS\t.\tGT\t./.\t./.\t./.\t./.\t./.",
+)
+
+
+def _write_the_vcf_of_five(tmp_path: Path, data_lines) -> Path:
+    """A VCF of the five individuals `ind0` to `ind4` with `data_lines`
+    under its header, and its path."""
+    path = tmp_path / "five.vcf"
+    path.write_text("\n".join(list(_HEADER_OF_FIVE) + list(data_lines)) + "\n")
+    return path
+
+
+def _compare_per_individual_with_pynei(ours, theirs, num_vars: int) -> None:
+    """popnei's missing rate is pyNei's, and its heterozygosity rate is
+    pyNei's times the variants over the called genotypes of the individual,
+    which are the variants less pyNei's missing rate times them.
+
+    Both datasets have a called genotype for every individual, so no
+    denominator here is 0.
+    """
+    assert list(ours.missing_gt_rate.index) == list(theirs.index)
+    assert list(ours.obs_het_rate.index) == list(theirs.index)
+    for individual in theirs.index:
+        their_missing = float(theirs["missing_gt_rate"][individual])
+        assert _the_same_number(ours.missing_gt_rate[individual], their_missing), (
+            individual
+        )
+        called = num_vars - their_missing * num_vars
+        assert called > 0, individual
+        over_the_called = float(theirs["obs_het_rate"][individual]) * num_vars / called
+        assert _the_same_number(ours.obs_het_rate[individual], over_the_called), (
+            individual
+        )
+
+
+def test_per_individual_stats_of_the_panel_are_pyneis_over_the_called_genotypes() -> (
+    None
+):
+    """The two rates of the 200 individuals of the panel, over its 1200
+    variants, with the names in the order of the pass."""
+    ours = calc_per_individual_stats(_panel())
+    theirs = pynei_calc_per_sample_stats(vars_from_vcf(PANEL))
+
+    assert ours.pass_stats.num_vars == PANEL_NUM_VARS
+    _compare_per_individual_with_pynei(ours, theirs, PANEL_NUM_VARS)
+
+
+def test_per_individual_stats_of_many_vcf_are_pyneis_over_the_called_genotypes() -> (
+    None
+):
+    """The same on the 500 variants of `many.vcf`, whose 257 half called
+    genotypes are missing and not heterozygous, in popnei as in pyNei, and
+    whose third alleles the panel has none of."""
+    ours = calc_per_individual_stats(_many())
+    theirs = pynei_calc_per_sample_stats(vars_from_vcf(MANY))
+
+    assert ours.pass_stats.num_vars == MANY_NUM_VARS
+    _compare_per_individual_with_pynei(ours, theirs, MANY_NUM_VARS)
+
+
+def test_per_individual_stats_divide_pyneis_three_variants_by_the_called_genotypes(
+    tmp_path: Path,
+) -> None:
+    """The three variants of five individuals of pyNei's
+    `test_filter_missing`: the missing rates are pyNei's, 1/3 for the first
+    four individuals and 2/3 for `ind4`, and the heterozygosity rates are
+    0, 1/2, 1/2, 1/2 and 0 where pyNei gives 0, 1/3, 1/3, 1/3 and 0.
+    """
+    path = _write_the_vcf_of_five(tmp_path, _PYNEIS_THREE_VARIANTS)
+
+    ours = calc_per_individual_stats(open_vcf(path))
+    theirs = pynei_calc_per_sample_stats(vars_from_vcf(path))
+
+    assert list(ours.missing_gt_rate.index) == [
+        f"ind{individual}" for individual in range(5)
+    ]
+    for ours_rate, theirs_rate, expected in zip(
+        ours.missing_gt_rate,
+        theirs["missing_gt_rate"],
+        [1 / 3, 1 / 3, 1 / 3, 1 / 3, 2 / 3],
+        strict=True,
+    ):
+        assert _the_same_number(ours_rate, expected)
+        assert _the_same_number(theirs_rate, expected)
+    for ours_rate, theirs_rate, expected, pyneis in zip(
+        ours.obs_het_rate,
+        theirs["obs_het_rate"],
+        [0.0, 1 / 2, 1 / 2, 1 / 2, 0.0],
+        [0.0, 1 / 3, 1 / 3, 1 / 3, 0.0],
+        strict=True,
+    ):
+        assert _the_same_number(ours_rate, expected)
+        assert _the_same_number(theirs_rate, pyneis)
+
+
+def test_per_individual_stats_leave_an_individual_with_no_called_genotype_without_a_rate(
+    write_vcf,
+) -> None:
+    """An individual whose genotype is missing at every variant has a
+    missing rate of 1 and no heterozygosity rate, NaN, since that rate is
+    over the called genotypes and it has none."""
+    ours = calc_per_individual_stats(
+        open_vcf(
+            write_vcf(
+                [
+                    "chr1\t1\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t0/0\t./.",
+                    "chr1\t2\t.\tA\tC\t.\tPASS\t.\tGT\t0/0\t0/1\t./.",
+                ]
+            )
+        )
+    )
+
+    assert list(ours.missing_gt_rate.index) == ["ind1", "ind2", "ind3"]
+    assert float(ours.missing_gt_rate["ind3"]) == 1.0
+    assert math.isnan(float(ours.obs_het_rate["ind3"]))
+    assert float(ours.missing_gt_rate["ind1"]) == 0.0
+    assert float(ours.obs_het_rate["ind1"]) == 0.5
+
+
+def test_per_individual_stats_of_a_source_with_no_variant_are_refused(
+    write_vcf,
+) -> None:
+    """A VCF with a header and no data line holds no variant, and a rate
+    over no variant is no number: the message says that the source holds
+    none."""
+    with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
+        calc_per_individual_stats(open_vcf(write_vcf([])))
+    assert "its source holds none" in str(refusal.value)
+
+
+def test_per_individual_stats_of_a_pass_whose_filter_kept_no_variant_are_refused() -> (
+    None
+):
+    """The steps that kept no variant are the other half of that refusal,
+    and the message says what each filter counted."""
+    variants = _many()
+    # No variant with a called allele has a major allele frequency of 0, and
+    # one without a called allele is not kept either.
+    variants.filter_by_maf(0)
+
+    with pytest.raises(ValueError, match="the pass gave no variant") as refusal:
+        calc_per_individual_stats(variants)
+    assert "the `maf` filter was given 500 and kept 0" in str(refusal.value)
+
+
+def test_per_individual_stats_give_the_counts_of_the_pass_and_of_its_filters() -> None:
+    """The result carries how many variants the pass gave and what each
+    filter of the `Variants` was given and kept, in the order of the steps.
+
+    The filter of individuals takes no variant away and has no counts, and a
+    missing data filter at 0 over `ind05`, `ind00` and `ind49` keeps 423 of
+    the 500 variants of `many.vcf`, which is what the pass then gives.
+    """
+    ours = calc_per_individual_stats(_panel())
+    assert ours.pass_stats.num_vars == PANEL_NUM_VARS
+    assert ours.pass_stats.filtering == {}
+
+    variants = _many()
+    variants.filter_individuals(("ind05", "ind00", "ind49"))
+    variants.filter_by_missing_data(0)
+    filtered = calc_per_individual_stats(variants)
+
+    assert filtered.pass_stats.num_vars == 423
+    assert list(filtered.pass_stats.filtering) == ["missing_data"]
+    assert filtered.pass_stats.filtering["missing_data"].vars_processed == 500
+    assert filtered.pass_stats.filtering["missing_data"].vars_kept == 423
+
+
+def test_per_individual_stats_come_in_the_order_the_individuals_were_named_in() -> None:
+    """A filter of individuals keeps them in the order the user named them,
+    and the two series are indexed in that order, which is the order of the
+    pass. It takes no variant away, so the rates of the three are those of
+    the pass over the 50 individuals of `many.vcf`."""
+    named = ("ind05", "ind00", "ind49")
+    variants = _many()
+    variants.filter_individuals(named)
+
+    ours = calc_per_individual_stats(variants)
+    of_every_individual = calc_per_individual_stats(_many())
+
+    assert list(ours.missing_gt_rate.index) == list(named)
+    assert list(ours.obs_het_rate.index) == list(named)
+    for individual in named:
+        assert _the_same_number(
+            ours.missing_gt_rate[individual],
+            of_every_individual.missing_gt_rate[individual],
+        ), individual
+        assert _the_same_number(
+            ours.obs_het_rate[individual],
+            of_every_individual.obs_het_rate[individual],
+        ), individual

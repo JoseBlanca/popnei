@@ -1,23 +1,29 @@
 //! The statistics of the variants and of the individuals, per population,
 //! on their way between Python and the core.
 //!
-//! One pass calculates up to five statistics for every variant and every
-//! population and gives back, for each of them, the mean over the variants
-//! that had a value and a histogram of them. This module builds that pass:
-//! it turns the arguments a Python user wrote into what the core takes, the
-//! statistics they asked for, the bins of the histogram and the thresholds
-//! of each statistic; it builds the chain of readers of the pass from the
-//! steps of the `Variants`, as the writer of the vars file does, and the
-//! populations against the individuals that chain gives, which are those of
-//! the source after a filter of individuals when the variants carry one;
-//! and it reads the counts of the filters from that chain when the pass is
-//! over, which are the counts of the pass beside the variants the result
-//! counted.
+//! It builds the two passes of the module. One calculates up to five
+//! statistics for every variant and every population and gives back, for
+//! each of them, the mean over the variants that had a value and a
+//! histogram of them; the other gives the share of the variants at which
+//! every individual has no genotype and the share of its called genotypes
+//! at which it is heterozygous.
+//!
+//! Each of the two turns the arguments a Python user wrote into what the
+//! core takes, which for the first pass are the statistics they asked for,
+//! the bins of the histogram and the thresholds of each statistic and for
+//! the second are none; builds the chain of readers of the pass from the
+//! steps of the `Variants`, as the writer of the vars file does, and takes
+//! from that chain the individuals the pass gives, which are those of the
+//! source after a filter of individuals when the variants carry one, under
+//! their names for the second pass and as the populations of the first; and
+//! reads the counts of the filters from that chain when the pass is over,
+//! which are the counts of the pass beside the variants the result counted.
 //!
 //! What goes out is arrays and tuples, and the Python package builds the
-//! frozen dataclasses and the pandas frames out of them: one mean and one
-//! column of histogram counts for each population, in the order of the
-//! populations, with NaN where the core has no value.
+//! frozen dataclasses and the pandas frames and series out of them: one
+//! mean and one column of histogram counts for each population, in the
+//! order of the populations, and one rate for each individual, in the order
+//! of the pass, with NaN where the core has no value.
 //!
 //! `docs/specs/stats.md` has the design.
 
@@ -197,6 +203,94 @@ pub(crate) fn calc_per_var_distribs<'py>(
             .map(|poly| poly_counts_of(py, poly))
             .transpose()?,
         (num_vars, filtering),
+    ))
+}
+
+/// What one pass of [`calc_per_individual_stats`] gives Python: the names
+/// of the individuals of the pass in its order, the share of the variants
+/// at which each of them has no genotype, the share of its called genotypes
+/// at which it is heterozygous, and the counts of the pass.
+type StatsOfEveryIndividual<'py> = (
+    Vec<String>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    PassCounts,
+);
+
+// The missing rate and the heterozygosity rate of every individual over one
+// pass of `source` through the steps of `steps`. A `///` comment here would
+// become the `__doc__` of `popnei._core.calc_per_individual_stats`, and what
+// a Python user reads belongs to the package, which is the API.
+#[pyfunction]
+pub(crate) fn calc_per_individual_stats<'py>(
+    py: Python<'py>,
+    source: &Bound<'py, PyAny>,
+    steps: &Bound<'py, Steps>,
+) -> Result<StatsOfEveryIndividual<'py>, PyPopneiError> {
+    let source = source_of(source)?;
+    let steps = steps.get().of_a_pass()?;
+    let path = source.path();
+    // A Ctrl-C that was pending when this was called is raised here, before
+    // the file is opened.
+    py.check_signals()?;
+    // The whole source is read inside this one call, which is seconds for a
+    // file of hundreds of megabytes, so the interpreter is released for all
+    // of it: the loop over the blocks is the core's, and it runs the rows of
+    // each block on rayon, whose workers would deadlock on an interpreter
+    // this thread held.
+    let (stats, individuals, filtering) = py
+        .detach(|| -> Result<_, popnei::Error> {
+            let reader = source.reader(None)?;
+            // The chain of the pass stays here, lent to the core, so that
+            // the counts of its filters can be read when the call is over.
+            let mut chain = chain_of(reader, &steps)?;
+            // The rates come out in the order of the rows of the blocks,
+            // which is the order of these names: a filter of individuals
+            // gives them in the order the user named them.
+            let individuals = chain.individuals().to_vec();
+            let stats = popnei::stats::calc_per_individual_stats(&mut *chain)?;
+            let filtering = chain
+                .filtering_stats()
+                .into_iter()
+                .map(|(kind, stats)| (kind, stats.vars_processed, stats.vars_kept))
+                .collect();
+            Ok((stats, individuals, filtering))
+        })
+        .map_err(|error| PyPopneiError::of_the_file(error, path))?;
+    // A Ctrl-C that arrived while the pass ran is still pending: the
+    // interpreter was released and no bytecode ran to raise it. It is raised
+    // here, before numpy is called, because the first array of a process
+    // imports the C API of numpy, that import fails with the exception that
+    // is pending, and the numpy crate panics when it does.
+    py.check_signals()?;
+    let num_individuals = stats.num_individuals();
+    // The package indexes the two series by these names, and a name and a
+    // rate that are not of the same individual are a wrong number that says
+    // nothing about itself.
+    if individuals.len() != num_individuals {
+        return Err(PyPopneiError::Broken {
+            message: format!(
+                "the pass gave the names of {given} individuals and the rates of \
+                 {num_individuals}",
+                given = individuals.len()
+            ),
+            path: None,
+        });
+    }
+    let missing_gt_rate: Vec<f64> = (0..num_individuals)
+        .map(|individual| stats.missing_rate(individual))
+        .collect();
+    // An individual with no called genotype has no heterozygosity rate, and
+    // pandas reads a missing value as NaN, which is where the `Option` of
+    // the core becomes one.
+    let obs_het_rate: Vec<f64> = (0..num_individuals)
+        .map(|individual| stats.obs_het_rate(individual).unwrap_or(f64::NAN))
+        .collect();
+    Ok((
+        individuals,
+        missing_gt_rate.into_pyarray(py),
+        obs_het_rate.into_pyarray(py),
+        (stats.num_vars(), filtering),
     ))
 }
 

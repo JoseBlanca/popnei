@@ -54,7 +54,7 @@ mod _core {
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]
-    use super::stats::calc_per_var_distribs;
+    use super::stats::{calc_per_individual_stats, calc_per_var_distribs};
     #[pymodule_export]
     use super::steps::Steps;
     #[pymodule_export]
