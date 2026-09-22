@@ -65,11 +65,20 @@ What is asked of the owner.
 
    The third is where three branches add lines to the same two files,
    the list of the modules of the core and the end of its error enum:
-   this branch, the Kosman plan and `plan/pca`, which is not merged
-   either. Each adds its own module and its own cases and none removes
+   this branch, the Kosman plan and `plan/pca`, the principal
+   components, which finished its own plan this afternoon and is also
+   waiting. Each adds its own module and its own cases and none removes
    another's, so the resolution is to keep every line of both sides of
    each conflict rather than choose between them. The messages the
-   sessions left each other, in `.claude/board/`, say the same.
+   sessions left each other, in `.claude/board/`, say the same. That
+   branch changes four more files this one also changes, the exports of
+   the Python package and of the two entry points of the TypeScript
+   one, and both binding crates; and in the file of the Python binding
+   that holds the helpers both branches touched, it made the helper that
+   reads a count refuse a truth value, where `open_vcf(path,
+   ploidy=True)` used to read a haploid file in silence. This branch
+   changed only the doc comments beside that helper, so where the two
+   meet there, its fix is the one to keep.
 2. The one number of "Speed" that is not met: the per variant pass with
    the five statistics takes 0.479 to 0.483 s on one thread where the
    spec asks 0.25 s. The plan says that is a finding and not a task, so
