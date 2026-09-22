@@ -811,8 +811,8 @@ impl Block {
             // block has and this product is at most `alleles_per_var`,
             // which did not overflow.
             let kept_alleles_per_var = keep.len().saturating_mul(self.ploidy);
-            gather_the_kept_genotypes(&mut self.gts, keep, self.ploidy, alleles_per_var);
-            pack_the_rows(&mut self.gts, alleles_per_var, kept_alleles_per_var);
+            gather_the_kept_genotypes(&mut self.gts, keep, self.ploidy, alleles_per_var)?;
+            pack_the_rows(&mut self.gts, alleles_per_var, kept_alleles_per_var)?;
         }
         self.num_individuals = keep.len();
         Ok(())
@@ -895,62 +895,126 @@ impl Block {
 /// wherever it was gathered. The threads are those of the pool the caller
 /// is running in, and rayon's global pool only when the caller is in none.
 ///
-/// Each thread gathers through a buffer of its own, the kept individuals
-/// times the ploidy, which it hands to one row after another: a genotype
-/// cannot be written over one that is still to be read, since the kept
-/// individuals come in the order the user named them in.
+/// Each job gathers through a buffer of its own, the kept individuals times
+/// the ploidy, which it hands to one row after another: a genotype cannot
+/// be written over one that is still to be read, since the kept individuals
+/// come in the order the user named them in.
 ///
 /// `alleles_per_var` is 1 or more and `gts` holds a whole number of rows of
 /// it, which [`Block::check`] said.
+///
+/// # Errors
+///
+/// What [`gather_the_row`] refuses, a row that does not hold the genotype of
+/// one of `keep`.
 #[cfg(not(target_family = "wasm"))]
 fn gather_the_kept_genotypes(
     gts: &mut [i8],
     keep: &[usize],
     ploidy: usize,
     alleles_per_var: usize,
-) {
-    use rayon::iter::ParallelIterator;
+) -> Result<()> {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
     use rayon::slice::ParallelSliceMut;
 
     let kept_alleles_per_var = keep.len().saturating_mul(ploidy);
-    gts.par_chunks_mut(alleles_per_var).for_each_init(
-        || Vec::with_capacity(kept_alleles_per_var),
-        |buffer, row| gather_the_row(row, keep, ploidy, buffer),
-    );
+    gts.par_chunks_mut(alleles_per_var)
+        // The buffer of `for_each_init` is built once for each job, and
+        // with no floor rayon splits the rows into jobs of two or three.
+        .with_min_len(ROWS_PER_GATHER_JOB)
+        .try_for_each_init(
+            || Vec::with_capacity(kept_alleles_per_var),
+            |buffer, row| gather_the_row(row, keep, ploidy, buffer),
+        )
 }
+
+/// How many rows of a block one job of the gather takes at least, which is
+/// how many rows the buffer of a job is built for.
+///
+/// rayon splits the rows of a block until a job is one it does not split
+/// further, and it builds the buffer of [`gather_the_kept_genotypes`] once
+/// per job. With no floor a block of 5000 variants of 1000 individuals, 500
+/// of them kept, was split into 1861, 2011 and 2245 jobs in three runs on
+/// the owner's M5 Pro, 18 threads, macOS 27.0, on 22 September 2026: one
+/// buffer for every two or three rows. With this floor the same block was
+/// split into 63 jobs in each of three runs, which leaves 3 or 4 jobs for
+/// each of the 18 threads to balance the rows with.
+///
+/// It is a floor and not a size: a block of fewer rows than this is one job.
+/// What the gather costs with this floor and with another has not been
+/// measured.
+#[cfg(not(target_family = "wasm"))]
+const ROWS_PER_GATHER_JOB: usize = 64;
 
 /// The same gather, with the rows read one after another, which is what
 /// wasm does: it has no threads.
+///
+/// # Errors
+///
+/// What [`gather_the_row`] refuses, a row that does not hold the genotype of
+/// one of `keep`.
 #[cfg(target_family = "wasm")]
 fn gather_the_kept_genotypes(
     gts: &mut [i8],
     keep: &[usize],
     ploidy: usize,
     alleles_per_var: usize,
-) {
+) -> Result<()> {
     let mut buffer = Vec::with_capacity(keep.len().saturating_mul(ploidy));
     for row in gts.chunks_mut(alleles_per_var) {
-        gather_the_row(row, keep, ploidy, &mut buffer);
+        gather_the_row(row, keep, ploidy, &mut buffer)?;
     }
+    Ok(())
 }
 
 /// The genotypes of the individuals `keep` of one row, in the order of
 /// `keep`, gathered through `buffer` to the front of the row.
-fn gather_the_row(row: &mut [i8], keep: &[usize], ploidy: usize, buffer: &mut Vec<i8>) {
+///
+/// # Errors
+///
+/// When the row does not hold the genotype of one of `keep`, which is the
+/// error [`Block::check`] gives for genotypes that are not of the size of
+/// the block, with the alleles of this row in the place of theirs: the rows
+/// are cut out of the genotypes by the size the block states, so a row that
+/// is short is a block whose genotypes are. No call reaches it, since
+/// [`Block::retain_individuals`] runs that check before it moves an allele,
+/// and a row that was gathered by a genotype of another individual would
+/// give a user the genotypes of the wrong individuals with nothing to show
+/// it.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "an index of `keep` is below the individuals of the block and the row holds \
+              those individuals times the ploidy, which `Block::check` said before the \
+              first row was touched, so the product and the sum are at most the alleles \
+              of one row, which are a part of an array that was allocated"
+)]
+fn gather_the_row(
+    row: &mut [i8],
+    keep: &[usize],
+    ploidy: usize,
+    buffer: &mut Vec<i8>,
+) -> Result<()> {
     buffer.clear();
     for individual in keep {
-        // Every one of these is a genotype of the row: `keep` holds indices
-        // below the individuals of the block, and the row holds those
-        // individuals times the ploidy, which `check` just said.
-        let start = individual.saturating_mul(ploidy);
-        let end = start.saturating_add(ploidy);
-        if let Some(genotype) = row.get(start..end) {
-            buffer.extend_from_slice(genotype);
-        }
+        let start = individual * ploidy;
+        let end = start + ploidy;
+        let genotype = row.get(start..end).ok_or(Error::BlockArrayOfAnotherSize {
+            array: "gts",
+            found: row.len(),
+            expected: end,
+        })?;
+        buffer.extend_from_slice(genotype);
     }
-    if let Some(front) = row.get_mut(..buffer.len()) {
-        front.copy_from_slice(buffer);
-    }
+    let alleles_of_the_row = row.len();
+    let front = row
+        .get_mut(..buffer.len())
+        .ok_or(Error::BlockArrayOfAnotherSize {
+            array: "gts",
+            found: alleles_of_the_row,
+            expected: buffer.len(),
+        })?;
+    front.copy_from_slice(buffer);
+    Ok(())
 }
 
 /// The rows of `gts`, each of them gathered to the front of the
@@ -962,20 +1026,41 @@ fn gather_the_row(row: &mut [i8], keep: &[usize], ploidy: usize, buffer: &mut Ve
 /// thread's, as [`Block::retain_vars`] is. `kept_alleles_per_var` is at most
 /// `alleles_per_var`, so no row is written over one that is still to be
 /// read.
-fn pack_the_rows(gts: &mut Vec<i8>, alleles_per_var: usize, kept_alleles_per_var: usize) {
+///
+/// # Errors
+///
+/// When a row of `kept_alleles_per_var` alleles is not there where one
+/// starts, which is the error [`Block::check`] gives for genotypes that are
+/// not of the size of the block. No call reaches it, for the reason
+/// [`gather_the_row`] gives.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "`gts` holds a whole number of rows of `alleles_per_var` alleles, which \
+              `Block::check` said, and `kept_alleles_per_var` is at most `alleles_per_var`, \
+              so neither place passes the length of an array that was allocated"
+)]
+fn pack_the_rows(
+    gts: &mut Vec<i8>,
+    alleles_per_var: usize,
+    kept_alleles_per_var: usize,
+) -> Result<()> {
     let mut read = 0usize;
     let mut write = 0usize;
     while read < gts.len() {
-        // Every one of these is a place in `gts`, which holds a whole
-        // number of rows of `alleles_per_var` alleles.
-        let end = read.saturating_add(kept_alleles_per_var);
-        if end <= gts.len() {
-            gts.copy_within(read..end, write);
+        let end = read + kept_alleles_per_var;
+        if end > gts.len() {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "gts",
+                found: gts.len(),
+                expected: end,
+            });
         }
-        write = write.saturating_add(kept_alleles_per_var);
-        read = read.saturating_add(alleles_per_var);
+        gts.copy_within(read..end, write);
+        write += kept_alleles_per_var;
+        read += alleles_per_var;
     }
     gts.truncate(write);
+    Ok(())
 }
 
 /// The entries of one column whose `keep` is true, in their order, and the
@@ -2826,6 +2911,35 @@ mod tests {
         assert_eq!((block.num_individuals, block.num_vars), (5, 6));
     }
 
+    /// The rows of a block are cut out of its genotypes by the size it
+    /// states, so `retain_individuals` checks the block before it moves an
+    /// allele: a block whose genotypes are short would be gathered with the
+    /// genotypes of the wrong individuals in every row from the fault on.
+    #[test]
+    fn retain_individuals_refuses_a_block_whose_arrays_are_not_of_its_size() {
+        let mut block = of_five_individuals();
+        block.gts.pop();
+
+        let error = match block.retain_individuals(&[4, 0]) {
+            Ok(()) => panic!("the block was compacted"),
+            Err(error) => error,
+        };
+
+        let Error::BlockArrayOfAnotherSize {
+            array,
+            found,
+            expected,
+        } = error
+        else {
+            panic!("the error is {error}");
+        };
+        assert_eq!((array, found, expected), ("gts", 59, 60));
+        // The block is left as it was: its five individuals and the allele
+        // it was short.
+        assert_eq!((block.num_individuals, block.num_vars), (5, 6));
+        assert_eq!(block.gts.len(), 59);
+    }
+
     /// A block of no variants holds no genotype, and the individuals it
     /// states are the ones the blocks of its reader hold: it is left with
     /// the individuals that were kept and its `gts` empty.
@@ -2856,17 +2970,28 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn retain_individuals_gathers_the_same_genotypes_on_one_thread_and_on_several() {
-        // 300 variants of 10 diploid individuals, 6000 alleles that run
-        // -1, 0, 1, 2, 3 over and over, so that no two individuals of a
-        // variant hold the same genotype.
+        // 300 variants of 10 diploid individuals, 6000 alleles. The
+        // genotype of the individual `k` of the variant `v` is
+        // `(k + v) % 5 - 1` over `(k / 5 + v) % 5 - 1`, so no two
+        // individuals of one variant hold the same genotype, since `k % 5`
+        // and `k / 5` make a different pair for each of the ten, and the
+        // row of a variant is the row of the one before it with both
+        // alleles moved on by one, so no row is the row of its neighbours.
+        // A gather that read the row of another variant, or the columns of
+        // the wrong individuals, gives other alleles than the ones asserted
+        // below.
         let of_ten_individuals = || Block {
             num_vars: 300,
             num_individuals: 10,
             ploidy: 2,
-            gts: [MISSING, 0, 1, 2, 3]
-                .into_iter()
-                .cycle()
-                .take(6000)
+            gts: (0..300)
+                .flat_map(|variant| {
+                    (0..10).flat_map(move |individual: usize| {
+                        [individual, individual / 5].map(|of_the_allele| {
+                            i8::try_from((of_the_allele + variant) % 5).unwrap_or(MISSING) - 1
+                        })
+                    })
+                })
                 .collect(),
             chrom: None,
             pos: None,
@@ -2888,12 +3013,17 @@ mod tests {
         let on_one = kept(1);
         assert_eq!(on_one.len(), 1800);
         assert_eq!(on_one, kept(4));
-        // The first variant holds the alleles -1, 0, 1, 2, 3, -1, 0, 1, 2,
-        // 3, ... so the individual 7 is `3/-1`, the individual 0 `-1/0` and
-        // the individual 3 `0/1`.
+        // At the variant 0 the individual 7 is `1/0`, the individual 0
+        // `./.` and the individual 3 `2/.`, and at the variant 299, where
+        // both alleles have moved on by 299, they are `0/.`, `3/3` and
+        // `1/3`.
         assert_eq!(
             on_one.get(..6),
-            Some([3, MISSING, MISSING, 0, 0, 1].as_slice())
+            Some([1, 0, MISSING, MISSING, 2, MISSING].as_slice())
+        );
+        assert_eq!(
+            on_one.get(1794..),
+            Some([0, MISSING, 3, 3, 1, 3].as_slice())
         );
     }
 
