@@ -139,7 +139,7 @@ this plan.
       interface" of `docs/specs/ld.md`. The PCA calls it. It changes no
       number. Serves deliverable 2. Needs nothing, and can run beside
       1.1.
-- [ ] 1.3 `LdDosages` in a new `crates/popnei/src/ld.rs`: the three
+- [x] 1.3 `LdDosages` in a new `crates/popnei/src/ld.rs`: the three
       matrices of "How it runs" of `docs/specs/ld.md`, its constructor
       over a block and a set of individuals, `rows`, `has_variance`,
       `dosages` and `maf`, with the errors of "The Rust interface".

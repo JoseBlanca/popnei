@@ -93,3 +93,43 @@ since it carries the time of the run and the paths of the machine.
 `docs/reports/ld-method/make_ld.py`, which the move had taken away. The
 sentence now names `tests/reference/ld/make_reference.py` and the script
 beside it: commit 7b6ce62. No value and no open point of the spec moved.
+
+Task 1.3, `LdDosages`, commit 3cb0968. `crates/popnei/src/ld.rs` is new
+and holds the three matrices of "How it runs" of `docs/specs/ld.md` built
+over a block and a set of individuals, with `rows`, `has_variance`,
+`dosages` and `maf`. `cargo test --workspace` gives `410 passed`, the 395
+it started from and 15 of this task, and `cargo test -p popnei --lib ld::
+-- --list` prints `15 tests`, which is deliverable 6 moving off `0
+tests`. The tests were each seen to fail with the code broken.
+
+The task found a fifth way `of_block` can refuse a block that the spec's
+list of four did not have: genotypes of more than 255 alleles each. A
+dosage is how many alleles of a genotype are not the major allele of its
+variant, so it is at most the ploidy, and the spec's own `dosages` gives
+a dosage as a `u8`. Such a block would have wrapped the dosage into a
+wrong number instead of being refused. Nothing a user does reaches it
+today, since the VCF reader takes 255 alleles in a genotype at most. The
+spec's error list now names it: commit b28b115.
+
+`linalg::product` has no transpose. It works out `c = a b` with `a` of
+`rows` x `inner` and `b` of `inner` x `cols`, both row after row, and the
+three matrices are variants x individuals, so the product of one set of
+variants with another sums over the individuals and needs the second
+matrix as individuals x variants. This is the risk the work package names
+under "What could go wrong": `product` was built for the principal
+component analysis, whose result is individuals x individuals, and here
+the result is variants x variants. Task 1.4 transposes the second matrix
+inside `ld.rs`, which for a tile of 512 variants of 1000 individuals is
+three matrices of about 4 MB copied. The other way, a product in
+`crates/popnei-linalg` that takes its second operand transposed, changes
+`docs/specs/linalg.md`, which is a spec this plan does not build. Work
+package 4 measures what the transposes cost against the 0.50 s of "Speed"
+of `docs/specs/ld.md`, and the owner decides on a performance review then
+if the target is missed, as the plan says.
+
+Two more things left for work package 4 to measure rather than guessed at
+now: `rows` gives an owned `LdDosages`, as the spec's signature says, so
+each tile copies three matrices, 12 MB for 512 variants of 1000
+individuals; and the rows are built by one serial loop, where `pca.rs`
+has a loop per ploidy with the length of a genotype known at compile
+time.
