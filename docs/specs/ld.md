@@ -330,7 +330,13 @@ September 2026:
 | chr1:4000, chr1:5000, chr1:4000 having no variance | NaN | |
 
 They are compared within 1e-12 relative, and the NaN cells are compared
-as NaN. The last pair is on two chromosomes, which this function gives
+as NaN. The tolerance is there for a version of plink2 that computes the
+expression in another order, not for popnei's own rounding: on 22
+September 2026 every one of the 93096 pairs of `ld.vcf.gz` that has an
+r², and the 6 of the worked example, came out of the whole numbers with
+the bits plink2 has, and the 31654 pairs that have none were NaN on both
+sides. So a difference of 1e-13 in this test is something to look at and
+not the noise the tolerance allows for. The last pair is on two chromosomes, which this function gives
 like any other: it has no distance, and the next item is the one that
 leaves it out. The test also asserts that the 68 variants with no
 variance have NaN in their row, their column and their diagonal cell, and
