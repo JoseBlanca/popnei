@@ -49,18 +49,22 @@ What is asked of the owner.
    it. The options: order the performance review the spec names, which
    starts from a sampling profile and from the two things the spec left
    unmeasured, fewer sets for a biallelic block and the building of the
-   sets on the threads, which the arithmetic under work package 3 puts
-   first for the 18 core case; or accept the numbers and correct "Speed"
-   to them; or hold the merge until the review. The recommendation is
-   the first with the merge now: the numbers are right and the same at
-   every layer, what is slow is the split of the work and not its
-   shape, and a review runs on the merged code as well as on the
-   branch.
-2. The merge. The board says that the branch `spec/stats` changes the
-   signature of `chain_of` of the core, which the two new binding
-   functions of this branch call with the signature `main` has today: the
-   two branches meet in `crates/popnei-python/src/dists.rs` and
-   `crates/popnei-js/src/dists.rs` at the merge, one line each.
+   sets on the threads, of which the second is what the arithmetic under
+   work package 3 says to try first for the 18 core case; or accept the
+   numbers and correct "Speed" to them; or hold the merge until the
+   review. The recommendation is the first with the merge now: the
+   numbers are right and the same at every layer, what is slow is the
+   split of the work and not its shape, and a review runs on the merged
+   code as well as on the branch.
+2. The merge. `chain_of` is the function of the core that builds the
+   chain of filters of a pass from the steps a `Variants` holds, which
+   both binding crates call before every pass. The board says that the
+   branch `spec/stats` changes its signature, to take the steps as an
+   enum of its own instead of the criteria of the three filters, and the
+   two new binding functions of this branch call it with the signature
+   `main` has today: the two branches meet in
+   `crates/popnei-python/src/dists.rs` and `crates/popnei-js/src/dists.rs`
+   at the merge, one line each, the call.
 3. What the plan decided that is his to reverse, each where it happened
    below: a third error of the calculation, an accumulator the machine
    has no memory for, written into "The Rust interface" of the spec; a
@@ -72,14 +76,17 @@ What is asked of the owner.
    differences from pyNei; `Distances([], names=[])` is taken, with no
    individual; the messages of the package name the type of what was
    given without an article; pandas is declared with the floor pyodide
-   ships, 3.0.2; the result type of both binding crates is
-   `KosmanDistances`.
+   ships, 3.0.2; and the type that carries the vector, the names and the
+   counts from the core to the package inside each binding crate, which
+   no user sees, is `KosmanDistances` in both, where the Python one was
+   `KosmanDists`, under the fixes of work package 2.
 4. What waits for a spec or an issue of its own: a Ctrl-C during the
    pass is raised when the pass returns, as in `write_vars`, which the
    filters report already put to him; `cargo wasm-check` checks the core
    alone, and the wasm binding crate is compiled for wasm by `npm run
-   build` only, because the alias also builds for emscripten where that
-   crate does not compile; against a release build one pytest test of
+   build` only, because the alias also builds for emscripten, for which
+   wasm-bindgen refuses the reader type that crate holds; against a
+   release build one pytest test of
    `write_vars` fails and two of `test_interrupt.py` skip, all three
    timing dependent, so the release build the measurement needs and the
    test suite are run one after the other; ruff sees neither
@@ -135,8 +142,9 @@ For the owner, from task 1.1:
 
 - pyNei and `gd.kosman` are 0.0 apart on the panel's 19900 pairs and on
   the 780 of the 4 allele dataset. The spec's "How it is verified" says
-  2.8e-17 on the panel, measured by `ref.R` of the report, where the
-  values went through a text file; the script gives R and pyNei the same
+  2.8e-17 on the panel, measured by `ref.R`, the R script of the trial's
+  report, `docs/reports/kosman-method/`, where the values went through a
+  text file; the script gives R and pyNei the same
   genotypes and compares the vectors in Python. The spec's tolerance of
   1e-15 holds either way, and the spec was not changed.
 - Where the PopGenReport source lives: the script downloads the tarball
@@ -163,7 +171,9 @@ things, all fixed in a73714d by the subagent of the task:
 - Both reviewers, from different sides: the tetraploid and the haploid
   files rested on 3 of their 66 pairs, the literals of the spec's table,
   because the loop in Python that the spec's "How it is verified" names
-  had not been carried over from `poly_export.py`; the tests reviewer
+  had not been carried over from `poly_export.py`, the script of the
+  trial's report, `docs/reports/kosman-method/`, that made the
+  polyploid datasets; the tests reviewer
   scrambled R's output past the third pair and the script stored it
   without a word. The loop is in the script now and every pair of the
   four datasets is checked against it, the integers exactly and the
@@ -384,9 +394,13 @@ take 0.030 s as before the ranking of the alleles; 3000 variants of
 for the pairs against 0.018 s biallelic, 282 words of `holds` per
 individual against 188, where it had 10240. Two things the subagent of
 the Python side decided and the owner may reverse: `Distances([],
-names=[])` is taken, with no individual, since an empty vector is what
-one individual gives and what none would give; and the messages name the
-type of what was given without an article, as the Rust ones do.
+names=[])` is taken, with no individual, where it was refused: an empty
+vector is what one individual gives and also what none would give, so
+the vector cannot tell the two apart, and the 0 names given are what
+says which; and the messages name the type of what was given without an
+article, as the Rust ones do. The type that carries the result from the
+core to the package inside the Python binding crate was renamed from
+`KosmanDists` to `KosmanDistances`, the name the TypeScript one had.
 
 Run by the orchestrator at a996652, after the fixes: `cargo fmt --all
 --check` exit 0; clippy no warning; `cargo test --workspace` `345
