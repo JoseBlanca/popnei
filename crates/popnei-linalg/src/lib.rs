@@ -388,6 +388,40 @@ fn the_matrix_of_mut<'a>(
     })
 }
 
+/// The bits of the exponent of an `f64`, which are all ones in an infinity
+/// and in a NaN and in nothing else, so that a value is finite exactly
+/// when its bits and this one are not this one.
+const THE_EXPONENT_OF_A_VALUE_THAT_IS_NOT_FINITE: u64 = 0x7ff0_0000_0000_0000;
+
+/// How many values one turn of [`every_value_is_finite`] reads, one to
+/// each of its counters. Eight `f64` are four pairs of vector registers on
+/// this machine.
+const THE_VALUES_OF_ONE_TURN: usize = 8;
+
+/// Whether every value of the buffer is finite.
+///
+/// It is written without a branch on the value so that the compiler
+/// vectorizes it: each turn reads [`THE_VALUES_OF_ONE_TURN`] values and
+/// puts into its own counter whether that value is an infinity or a NaN,
+/// and the counters are read once at the end. The same test with a branch
+/// per value compiles to one value per iteration, which is 1.68 ms of the
+/// 12.05 ms of a product of a block of 5000 x 1000 with itself, measured
+/// on 22 September 2026 and written in "Speed" of `docs/specs/linalg.md`.
+fn every_value_is_finite(values: &[f64]) -> bool {
+    let (turns, what_is_left_over) = values.as_chunks::<THE_VALUES_OF_ONE_TURN>();
+    let mut what_is_not_finite = [0_u64; THE_VALUES_OF_ONE_TURN];
+    for turn in turns {
+        for (found, value) in what_is_not_finite.iter_mut().zip(turn) {
+            *found |= u64::from(
+                value.to_bits() & THE_EXPONENT_OF_A_VALUE_THAT_IS_NOT_FINITE
+                    == THE_EXPONENT_OF_A_VALUE_THAT_IS_NOT_FINITE,
+            );
+        }
+    }
+    what_is_not_finite.iter().all(|found| *found == 0)
+        && what_is_left_over.iter().all(|value| value.is_finite())
+}
+
 /// Refuses a matrix that holds an infinity or a NaN, which the backends do
 /// not treat the same way and which a routine turns into a result that
 /// says nothing of where it came from.
@@ -396,7 +430,7 @@ fn the_matrix_of_mut<'a>(
 ///
 /// [`Error::NotFinite`] when one of the values is one of those.
 fn refuse_a_value_that_is_not_finite(values: &[f64], argument: &'static str) -> Result<()> {
-    if values.iter().all(|value| value.is_finite()) {
+    if every_value_is_finite(values) {
         Ok(())
     } else {
         Err(Error::NotFinite { argument })
@@ -418,7 +452,7 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
     let it_is_all_finite = values.chunks_exact(n).enumerate().all(|(row, entries)| {
         entries
             .get(..row.saturating_add(1))
-            .is_some_and(|half| half.iter().all(|value| value.is_finite()))
+            .is_some_and(every_value_is_finite)
     });
     if it_is_all_finite {
         Ok(())
@@ -777,6 +811,59 @@ mod tests {
         let mut g = vec![0.0; 9];
         *g.get_mut(1).unwrap() = f64::INFINITY;
         add_self_product_lower(&A_OF_2_BY_3, 2, 3, &mut g).unwrap();
+    }
+
+    /// The two matrices of these tests hold 6 and 9 values, and the scans
+    /// read 8 at a turn, so a value that is not finite in them is found by
+    /// the few values left over at the end and never by the turns. These
+    /// two put one in every place of a matrix of 2 x 12 and of the lower
+    /// half of a g of 12 x 12, which the turns do read.
+    #[test]
+    fn the_self_product_refuses_an_a_whose_value_that_is_not_finite_is_at_any_place() {
+        let rows = 2;
+        let cols = 12;
+        for place in 0..rows * cols {
+            let mut a = vec![1.0; rows * cols];
+            *a.get_mut(place).unwrap() = if place % 2 == 0 {
+                f64::NAN
+            } else {
+                f64::NEG_INFINITY
+            };
+            let mut g = vec![0.0; cols * cols];
+            let error = add_self_product_lower(&a, rows, cols, &mut g).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "a" }),
+                "the error for the place {place} is {error}"
+            );
+        }
+        let a = vec![1.0; rows * cols];
+        let mut g = vec![0.0; cols * cols];
+        add_self_product_lower(&a, rows, cols, &mut g).unwrap();
+    }
+
+    #[test]
+    fn the_self_product_refuses_a_g_whose_value_that_is_not_finite_is_at_any_place_of_its_lower_half()
+     {
+        let n = 12;
+        let a = vec![1.0; 2 * n];
+        for row in 0..n {
+            for column in 0..n {
+                let mut g = vec![0.0; n * n];
+                *g.get_mut(row * n + column).unwrap() = f64::INFINITY;
+                let result = add_self_product_lower(&a, 2, n, &mut g);
+                if column <= row {
+                    let error = result.unwrap_err();
+                    assert!(
+                        matches!(error, Error::NotFinite { argument: "g" }),
+                        "the error for the row {row} and the column {column} is {error}"
+                    );
+                } else {
+                    result.unwrap_or_else(|error| {
+                        panic!("the row {row} and the column {column} gave {error}")
+                    });
+                }
+            }
+        }
     }
 
     #[test]
