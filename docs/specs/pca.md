@@ -217,6 +217,18 @@ Each of these is a `ValueError` in Python:
   nothing to do a PCA with", pyNei's without its "012 matrix" and its
   "sample".
 - A negative `num_prin_comps`.
+- A dataset beyond what this analysis reads, which is one of three and
+  the message says which. A ploidy above 254: the first pass writes the
+  genotype of each individual as one byte, its dosage or the missing
+  genotype, as "Speed" below has it, and the 256 dosages of a ploidy of
+  255, the largest the VCF reader takes, are with the missing genotype
+  one value more than a byte holds. More than 46340 individuals: the
+  individuals x individuals matrix would hold more than the 2147483647
+  values the linear algebra counts in, which `docs/specs/linalg.md` has.
+  More variants than a `usize` counts, 4294967295 in WebAssembly, where
+  a `usize` is 32 bits: the variants given, used or not, are counted in
+  one, and so are the positions of the used ones, so a pass of more is
+  refused instead of counted into a number that wrapped.
 
 `test/test_pca.py` of pyNei asserts, for this function: that the variants
 with one allele and the variant where everyone is heterozygous are not
