@@ -55,3 +55,53 @@ twice today, at the function and at that wrapper, and must name only
 `variant.rs` when the task is done. The new check is the stronger of the
 two: it distinguishes the row from the block driver, which the old one
 could not.
+
+### What was built
+
+Task 1.1, in commit `23e82e9`: six files, 768 lines added and 472 removed.
+The pass that turns one variant into its standardized dosages,
+`the_standardized_row` with its buffers `RowScratch` and the helpers it
+calls, left `crates/popnei/src/pca.rs` for `crates/popnei/src/variant.rs`,
+and now takes a `DosageOptions` holding `transform_to_biallelic` and a
+`DosageScale`, which is either the standard deviation of the dosages, what
+the principal components of the variants divide by, or
+`sqrt(ploidy * p * (1 - p))`, what the kinship will divide by in work
+package 2. The three functions that drive a whole block of variants stayed
+in `pca.rs`, one for the threads, one for WebAssembly, which has none, and
+one that reads the rows one after another.
+
+`Error::PcaVariantWithMoreThanTwoAlleles` became
+`Error::VariantWithMoreThanTwoAlleles`, since the kinship raises it too.
+Its message is unchanged character for character.
+
+### The deliverables
+
+Each check was run by the orchestrator on `eae2e59`, the commit of the code
+with the correction to the spec on top of it.
+
+| deliverable | command | result |
+| --- | --- | --- |
+| 1, the pass lives in `variant.rs` | `grep -rn "fn the_standardized_row(" crates/popnei/src/*.rs` | two hits, both `variant.rs`; `pca.rs` named in neither |
+| 2, the PCA computes what it computed | `cargo test -p popnei --lib pca -- --list` | `47 tests, 0 benchmarks` |
+| 2 | `cargo test --workspace` | 607 passed, 0 failed, 2 ignored in the core crate; 149 in the linear algebra crate |
+| 2 | `uv run pytest tests/test_pca.py` | 33 passed |
+| 3, one error for both callers | `cargo test -p popnei --lib more_than_two_alleles -- --list` | `2 tests`, one named for the PCA and one for the row pass called with either divisor |
+
+The other checks of the `coding` skill on the same commit: `cargo fmt --all
+--check` and `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo test -p popnei-linalg --no-default-features` 136 passed, `cargo
+wasm-check` clean, `uv run pytest` 347 passed, and `npm run build && npm
+test` in `js/popnei` 242 pass with 0 fail.
+
+Deliverable 2 asks for 604 tests in the core crate and there are 607. The
+three are new in `variant.rs`, which deliverable 3 asks for; none was
+removed. Every line of `pca.rs` holding an assertion is the same before and
+after the move, checked by sorting them and comparing the two lists, except
+one `const _: () = assert!(GENOTYPES_PER_RUN <= 255)`, which is read when
+the code is compiled and not when it is run, and which moved to `variant.rs`
+with the constant it is about. One test was renamed, from
+`a_variant_of_three_alleles_is_the_error_that_names_its_position` to
+`a_variant_of_more_than_two_alleles_is_the_error_that_names_its_position`,
+so that the check of deliverable 3 finds a test for each of the two callers.
+The 45 test names the two versions of the file hold differ in that one name
+and nothing else.
