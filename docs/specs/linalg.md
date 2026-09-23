@@ -8,17 +8,18 @@ calls, and in WebAssembly, where there is none, on faer, a linear
 algebra library written in Rust. There is no code. This spec develops the
 row `linalg` of the table in section 9 of `docs/architecture.md` and
 decision 5 of `docs/rust_core.md`, which chose the two backends. It
-covers the crate, its backends, the builds, and eleven operations. Four
-are called by calculations that are specified: the three of
-`docs/specs/pca.md`, which are the product of a matrix with itself, the
-eigendecomposition of a symmetric matrix and the product of two
-matrices, and the one of the r² of `docs/specs/ld.md`, the product of a
-matrix with the transpose of another. The other seven are what the
-genome wide association study calls, read from pyNei, and they are under
-"The seven operations of the GWAS": a Cholesky factorization and the
-solve, the log determinant and the inverse that come off it, the thin QR
-of the design, the solve against an upper triangular matrix, and the
-rank of a matrix.
+covers the crate, its backends, the builds, and thirteen operations. Two
+are the product of a matrix with itself and the eigendecomposition of a
+symmetric matrix, which `docs/specs/pca.md` calls. Four are the product
+of two matrices, one for each way round the two can be laid out, of which
+`docs/specs/pca.md` and the r² of `docs/specs/ld.md` call two and the
+genome wide association study calls a third: "The product with its first
+operand turned" is the one that adds them. The last seven are what the
+association study calls besides, read from pyNei, and they are under "The
+seven operations of the GWAS": a Cholesky factorization and the solve,
+the log determinant and the inverse that come off it, the thin QR of the
+design, the solve against an upper triangular matrix, and the rank of a
+matrix.
 
 The routines of BLAS and LAPACK are reached through the crates `blas`
 0.23 and `lapack` 0.20, and each is an `unsafe fn` over slices whose
@@ -89,25 +90,53 @@ off the wasm targets.
 
 ### The wasm builds and the vector instructions
 
-WebAssembly has a set of 128 bit vector instructions, `simd128`, which a
-build uses only when it is told to, with `-C target-feature=+simd128`,
-and which faer's products use only when, besides, the crate that does
-them, `gemm`, has its feature `wasm-simd128-enable` on. Measured on 21
-September 2026 with the trial crate of `docs/specs/pca.md`, the product
-of a block of 5000 variants x 1000 individuals with itself, its lower
-half, under node 26: 306 ms without and 187 ms with both. The pyodide
-wheel built with the flag in `RUSTFLAGS` loaded under pyodide on node 26
-on 22 September 2026 and passed the smoke test of `tests/pyodide/`.
-Whether the flag is turned on is **Open 1**, below.
+WebAssembly has a set of 128 bit vector instructions, which work on
+sixteen bytes at a time, and popnei's wasm builds use them. Two different
+switches ask for them and both are named after them, which is why they are
+kept apart here and never called `simd128` alone:
 
-Where the flag goes when it is: into the two commands that build for
-wasm, `build:wasm` of `js/popnei/package.json` and
-`scripts/build_pyodide_wheel.sh`, through `RUSTFLAGS`, which is how it
-was tried, and not into `.cargo/config.toml`. A `rustflags` for a target
-in that file makes cargo ignore the `build.rustflags` that the
-`wasm-check` alias of the same file passes to deny warnings, and the
-alias would stop denying them without a word. The feature of `gemm` is
-a dependency of this crate under `cfg(target_family = "wasm")`.
+- **The feature of `gemm`**, `wasm-simd128-enable`, a cargo feature of the
+  crate that does faer's products. It is **on**, named by
+  `crates/popnei-linalg/Cargo.toml` under `cfg(target_family = "wasm")`,
+  and it is what the speed comes from.
+- **The rustc flag**, `-C target-feature=+simd128`, which tells the
+  compiler to emit those instructions for the crates it compiles. It is
+  **off**.
+
+The feature is what pays. Measured on 21 September 2026 with the trial
+crate of `docs/specs/pca.md`, the product of a block of 5000 variants x
+1000 individuals with itself, its lower half, under node 26: 306 ms with
+neither switch and 187 ms with both. With the feature off and the flag on,
+the analysis of 100000 variants x 1000 individuals under node takes 7.066
+s against 4.500 s with the feature on, which task 4.2 of
+`docs/plans/pca.md` measured on 22 September 2026.
+
+The flag adds nothing to it. With the feature on, the module built with
+the flag and the module built without it are the same file, byte for byte,
+checked on three builds from empty target directories with rustc 1.98,
+the flag being on the rustc command line of every crate of the build that
+carries it. Nor would the flag cost any browser: the feature already emits
+those instructions, so the floor of Chrome and Edge 91, Firefox 89 and
+Safari 16.4 that `docs/objectives.md` sets is what popnei ships today
+either way, and Open 6 of `docs/specs/pca.md` details it.
+
+The owner decided on 23 September 2026 that the feature stays on and the
+flag stays off, since on this rustc the flag changes no file. The options
+not taken were to set the flag in both wasm builds and to set it in the
+wasm package alone; on rustc 1.98 all three give the same files. What is
+not known is whether a later rustc, or a dependency that stops annotating
+its own functions, would make the flag matter, and the measurement that
+would say so is the byte comparison above, run again.
+
+Where the flag would go if it were ever wanted: into the two commands that
+build for wasm, `build:wasm` of `js/popnei/package.json` and
+`scripts/build_pyodide_wheel.sh`, through `RUSTFLAGS`, which is how it was
+tried, and not into `.cargo/config.toml`. A `rustflags` for a target in
+that file makes cargo ignore the `build.rustflags` that the `wasm-check`
+alias of the same file passes to deny warnings, and the alias would stop
+denying them without a word. The pyodide wheel built with the flag in
+`RUSTFLAGS` loaded under pyodide on node 26 on 22 September 2026 and
+passed the smoke test of `tests/pyodide/`.
 
 ### Threads
 
@@ -124,7 +153,7 @@ the one popnei's own loops run on, which `RAYON_NUM_THREADS` sizes, and
 one thread in wasm. The product of the block above takes Accelerate 10.5
 ms with the variable at 1 and 7.4 ms without it.
 
-## The four operations
+## The four operations of the PCA and the LD
 
 ### What they give
 
@@ -166,34 +195,35 @@ both libraries do inside the routine and neither pays a copy for,
 measured at 1.174 ms against 1.179 ms for 512 x 1000 on Accelerate on
 one thread and within 0.3 % on faer, on 23 September 2026.
 
-Without it a caller whose
-two matrices are both laid out with one row for each thing has to write
-the transpose of one of them into a buffer of its own, which is a matrix
-operation in a crate that is not this one and a copy of the whole
-matrix, 4.1 MB for 512 x 1000. What that copy costs was timed four ways
-on the machine of "Speed" on 23 September 2026 and came out between 0.14
-and 0.47 ms, a spread too wide to quote a figure from; what was measured
-end to end is that the r² of one pair of 512 variants of 1000
-individuals went from 8.25 ms to 7.40 ms when the three copies it made
-were dropped for this operation, and from 5.97 ms to 5.02 ms for a set
-of variants against itself. The r² of `docs/specs/ld.md` is the caller:
-its three matrices hold one row for each variant and one column for each
-individual, and the product of one set of variants with another sums
-over the individuals.
+Without it a caller whose two matrices are both laid out with one row
+for each thing has to write the transpose of one of them into a buffer
+of its own, which is a matrix operation in a crate that is not this one
+and a copy of the whole matrix, 4.1 MB for 512 x 1000. What that copy
+costs was timed four ways on the machine of "Speed" on 23 September 2026
+and came out between 0.14 and 0.47 ms, a spread too wide to quote a
+figure from; what was measured end to end is that the r² of one pair of
+512 variants of 1000 individuals went from 8.25 ms to 7.40 ms when the
+three copies it made were dropped for this operation, and from 5.97 ms
+to 5.02 ms for a set of variants against itself. The r² of
+`docs/specs/ld.md` is the caller: its three matrices hold one row for
+each variant and one column for each individual, and the product of one
+set of variants with another sums over the individuals.
 
 ### Layout, half and the backends
 
 Every matrix crosses the interface row after row, and the Fortran
-routines of BLAS and LAPACK read a matrix column after column. The buffer
-of an r x c matrix read that way is its transpose, c x r, so the BLAS
-backend calls each routine on the transposes: the lower half of G in
-popnei's layout is the upper half for the routine, `uplo` is `U`; `A'A`
-is `A A'` of the transposed view, `trans` `N`; and `C = AB` is
-`C' = B'A'`, so `dgemm` gets the buffer of B as its first operand and
-that of A as its second, both with `trans` `N`. The faer backend tells
-faer that the buffers are row major and calls its functions as written.
-A test of each product on matrices that are not square, "How it is
-verified", is what catches a backend that mixed the two.
+routines of BLAS and LAPACK read a matrix column after column. The
+buffer of an r x c matrix read that way is its transpose, c x r, so the
+BLAS backend calls each routine on the transposes: the lower half of G
+in popnei's layout is the upper half for the routine, `uplo` is `U`;
+`A'A` is `A A'` of the transposed view, `trans` `N`; and `C = AB` is `C'
+= B'A'`, so `dgemm` gets the buffer of B as its first operand and that
+of A as its second, both with `trans` `N`; "The product with its first
+operand turned" has the two calls where the first operand is turned as
+well. The faer backend tells faer that the buffers are row major and
+calls its functions as written. A test of each product on matrices that
+are not square, "How it is verified", is what catches a backend that
+mixed the two.
 
 ### Errors
 
@@ -203,7 +233,7 @@ since they are defects of the caller: a dimension that does not match,
 a `g` that is not c x c for the product nor n x n for the
 eigendecomposition, or an `a`, a `b` or a `c` shorter than its rows times
 its columns, a longer one being taken by its first rows times columns
-values; a c or an n of 0, and in the two products an `inner` of 0 as
+values; a c or an n of 0, and in a product an `inner` of 0 as
 well, while the rows of a product may be 0; a dimension, or a number of
 values of a matrix, above 2147483647, which is what the routines of
 BLAS and LAPACK count in, checked for both backends so that the two
@@ -309,29 +339,28 @@ rounding of a literal. The test gives each vector that sign and compares
 the eigenvalues and the vectors within 1e-12.
 
 At `eigh_lower`, on a matrix too large to write down, so that the two
-backends are checked on the size they will run at: G = ZZ' for Z of
-1000 rows and 1200 columns, with z(i, c) the (c · 1000 + i)-th number of
-the xorshift generator below, started at 7. G then has full rank and its
+backends are checked on the size they will run at: G = ZZ' for Z of 1000
+rows and 1200 columns, with z(i, c) the (c · 1000 + i)-th number of the
+xorshift generator below, started at 7. G then has full rank and its
 eigenvalues are apart, between 0.79 and 361.9, no two closer than 0.003.
 The literals, from numpy 2.5.3 on 22 September 2026: the trace
-99996.3873081677, which is the sum of the
-eigenvalues, and which numpy adds up to 99996.38730816769 when it adds
-the eigenvalues instead; the three largest eigenvalues 361.9125119011332,
-359.66517178659313 and 356.4439329949563, and the smallest
-0.7933289215408484; and the first three entries of the eigenvector of
-the largest, with the sign of its largest entry positive,
-0.018111301861995926, -0.004576022169100455 and
--0.00518748985091827. The test compares the
-eigenvalues within 1e-12 relative and the entries within 1e-9, because
-an eigenvector is less well determined than its eigenvalue by the gap to
-its neighbours, and a matrix of a real dataset has closer ones than
-this. Measured on 22 September 2026 with the trial of "Speed": the two
-backends agree to 2.9e-14 relative on the eigenvalues and to 1.3e-12 on
-the entries of the eigenvectors after the sign, and their products of
-the same Z agree to the bit. A matrix of rank below n is not such a
-test: with Z of 1000 x 200 the 800 eigenvalues that are 0 come out
-between -8e-14 and 8e-14 and their eigenvectors are any base of that
-space, different in each backend.
+99996.3873081677, which is the sum of the eigenvalues, and which numpy
+adds up to 99996.38730816769 when it adds the eigenvalues instead; the
+three largest eigenvalues 361.9125119011332, 359.66517178659313 and
+356.4439329949563, and the smallest 0.7933289215408484; and the first
+three entries of the eigenvector of the largest, with the sign of its
+largest entry positive, 0.018111301861995926, -0.004576022169100455 and
+-0.00518748985091827. The test compares the eigenvalues within 1e-12
+relative and the entries within 1e-9, because an eigenvector is less
+well determined than its eigenvalue by the gap to its neighbours, and a
+matrix of a real dataset has closer ones than this. Measured on 22
+September 2026 with the trial of "Speed": the two backends agree to
+2.9e-14 relative on the eigenvalues and to 1.3e-12 on the entries of the
+eigenvectors after the sign, and their products of the same Z agree to
+the bit. A matrix of rank below n is not such a test: with Z of 1000 x
+200 the 800 eigenvalues that are 0 come out between -8e-14 and 8e-14 and
+their eigenvectors are any base of that space, different in each
+backend.
 
 The generator, so that the test and numpy make the same Z: a 64 bit
 state s that starts at 7 with its lowest bit set, and for each number
@@ -409,7 +438,32 @@ individuals and 2000 variants, with allele frequencies drawn between 0.05
 and 0.5 and genotypes missing at random: the smallest eigenvalue of that
 kinship is 0 with nothing missing, -0.02 at 2 per cent missing, -0.11 at
 10 per cent and -1.00 at 50 per cent, against a largest of 1.7 to 2.4.
-What that costs is **Open 4**.
+
+`Σ` is that eigenvalue times the variance component the fit is searching
+over, plus one over the weight of each individual on the diagonal, and a
+weight is at most 0.25, so the diagonal adds at least 4: `Σ` goes
+indefinite when the variance component passes about 4 divided by the size
+of that negative eigenvalue, which is about 200 at 2 per cent missing and
+4 at 50 per cent. pyNei never meets this, because its LU factors an
+indefinite matrix without complaining and gives an inverse that is an
+inverse. A Cholesky refuses, so popnei stops where pyNei gave a fit. pyNei
+clamps the kinship's negative eigenvalues at 0 at line 506, calling them
+rounding, but only in the continuous mixed model, which eigendecomposes
+the kinship anyway; the logistic one never does.
+
+The owner decided on 23 September 2026 to leave the kinship as pyNei
+computes it and let the fit fail with `Singular`, which tells the user
+that the kinship is not one, and to reconsider if the implementation of
+the GWAS meets it. The options not taken were to clamp the kinship's
+eigenvalues at 0 before the logistic mixed model uses it, as line 506 does
+for the continuous one, which costs an eigendecomposition of n x n per
+fit, 0.035 s at 1000 individuals and 6.3 s at 5000 from "Speed", and
+changes the fit for every dataset with missing genotypes in a direction
+nothing here has measured; and to give the kinship a per pair denominator
+that keeps it positive semidefinite, which is `docs/specs/kinship.md`'s
+decision and not this one. What is not known is how often a real dataset
+reaches it: no run of pyNei's logistic mixed model on missing genotypes
+was made for this spec.
 
 The sizes are of two kinds. Everything but lines 689, 483 and 693 is a
 matrix of the size of the coefficients, a handful square, and the cost of
@@ -463,20 +517,20 @@ takes the second value of numpy's `slogdet` and throws the first, the
 sign, away; the determinant of a positive definite matrix is above 0, so
 that sign is always 1 and nothing is lost.
 
-**The inverse of a factorized matrix.** For the `l` above, the lower half
-of the inverse of `a`, written into a buffer of n x n that the caller
-gives; its upper half is left as it was. It is `dpotri` in LAPACK, which
-the crate calls on a copy of `l` in that buffer and which needs no
-workspace, and `inverse` of faer's `linalg::cholesky::llt::inverse`,
-which writes into the buffer and asks for a scratch of n x n of its own,
-8 bytes to a value, which faer 0.24.4 says and which it was asked for at
-n = 1000, where it wanted 8000000 bytes. So an inverse at 10000
-individuals needs the two buffers the caller gives, 800 MB each, and in
-faer 800 MB more, which is `docs/rust_core.md`'s open question about the
-memory in the browser, where a kinship of 10000 individuals is already
-800 MB. The crate asks for
-faer's scratch with `try_new` of `dyn_stack`, so that a machine without
-the memory gets `Memory` and not the end of the process.
+**The inverse of a factorized matrix.** For the `l` above, the lower
+half of the inverse of `a`, written into a buffer of n x n that the
+caller gives; its upper half is left as it was. It is `dpotri` in
+LAPACK, which the crate calls on a copy of `l` in that buffer and which
+needs no workspace, and `inverse` of faer's
+`linalg::cholesky::llt::inverse`, which writes into the buffer and asks
+for a scratch of n x n of its own, 8 bytes to a value, which faer 0.24.4
+says and which it was asked for at n = 1000, where it wanted 8000000
+bytes. So an inverse at 10000 individuals needs the two buffers the
+caller gives, 800 MB each, and in faer 800 MB more, which is
+`docs/rust_core.md`'s open question about the memory in the browser,
+where a kinship of 10000 individuals is already 800 MB. The crate asks
+for faer's scratch with `try_new` of `dyn_stack`, so that a machine
+without the memory gets `Memory` and not the end of the process.
 
 **The thin QR of the design.** For `a` of `rows` x `cols` with `rows` at
 least `cols`, the `q` of `rows` x `cols` whose columns are of length 1
@@ -529,7 +583,8 @@ singular values but is not them, so that its rank at the same tolerance
 can differ from numpy's on a design whose columns are nearly dependent; and a
 test the caller makes, trying the Cholesky of the design multiplied by
 itself, which is cheaper and refuses a band of designs that pyNei accepts,
-measured in **Open 2**. Neither is worth taking for its speed: the rank of
+measured under "Why a Cholesky where numpy uses an LU". Neither is worth
+taking for its speed: the rank of
 a design of 10000 x 5 took 0.145 ms on Accelerate and 0.159 ms on faer,
 once for a whole study.
 
@@ -547,9 +602,40 @@ carrying on with a tiny pivot. It is also 2.1 times faster than numpy's
 `inv` at 5000 individuals, which "What the seven of the GWAS cost" has
 the two numbers of.
 
-What that changes for a user is the subject of **Open 2**: a Cholesky
-refuses matrices an LU solves against, and the GWAS spec says what each
-refusal becomes.
+The owner decided on 23 September 2026 that the factorization is a
+Cholesky. The option not taken was an LU, `dgesv` and faer's
+`partial_piv_lu`, which matches numpy input for input at twice the
+arithmetic, gives no log determinant off the same factorization, and is
+no test for a design whose columns are not independent.
+
+What it changes for a user is which inputs are refused, and there are two
+of them. An LU carries on with a pivot that rounding made tiny and gives a
+number; a Cholesky stops, so popnei refuses some inputs pyNei answers for.
+
+The first is a design whose covariates are independent on paper and nearly
+not in the numbers, which the rank of line 841 lets through and the
+Cholesky then refuses. The band was measured on 23 September 2026 with
+numpy 2.5.3 on a design of 10000 rows and 4 columns built with its
+smallest singular value at a chosen fraction of its largest:
+`matrix_rank` gave 4 down to a fraction of 1e-11 and 3 at 1e-12, which is
+where its tolerance of `max(rows, cols)` times 2.2e-16 lies, while the
+Cholesky of that design multiplied by itself succeeded down to 1e-8 and
+refused at 1e-9, the fractions in between going either way as rounding
+decided. So the band is about three orders wide, between 1e-9 and 1e-12.
+A design that falls in it has its largest singular value between 1e9 and
+1e12 times its smallest, and the relative error of a solve is about that
+ratio times 2.2e-16, so the coefficients numpy gives for such a design
+keep roughly between seven and four of the sixteen digits an `f64` holds.
+
+The second is a variant of the logistic Wald test, the test that fits the
+model again with the variant in it and asks how many of its own
+uncertainties the variant's effect is away from 0, whose fit is running
+away and whose matrix goes flat as the weights of the individuals go to 0.
+pyNei reaches those variants by another road and gives them the same
+answer: lines 649 to 651 mark a variant whose step is not finite and line
+658 one whose coefficient passes 30, and line 670 gives both NaN.
+
+What each refusal becomes where it is caught is for `docs/specs/gwas.md`.
 
 ### The systems of one block, and what the fallback becomes
 
@@ -606,11 +692,10 @@ iterations, and it is not a defect of the caller either: it is what the
 data was.
 
 ```rust
-/// A matrix that could not be factored at the row the value names,
-/// counting from 0: the Cholesky reached a diagonal entry that is not
-/// above 0 there, or the solve against an upper triangular matrix
-/// reached one that is 0.
-Singular { argument: &'static str, at: usize },
+/// A matrix that could not be factored at the row the value names, ///
+counting from 0: the Cholesky reached a diagonal entry that is not ///
+above 0 there, or the solve against an upper triangular matrix ///
+reached one that is 0. Singular { argument: &'static str, at: usize },
 ```
 
 Its message is "the matrix a is singular: the factorization stopped at its
@@ -639,7 +724,7 @@ is not finite already is.
 ### How the seven are verified
 
 The reference outside the project is numpy 2.5.3 on Accelerate, the same
-one the four operations above use. Every number below was taken from it on
+one the operations above use. Every number below was taken from it on
 23 September 2026 and every one was then run on both backends, `cargo test
 -p popnei-linalg` and the same with `--no-default-features`, in a trial
 crate that is not in git. Each check is made at the function of "The Rust
@@ -676,41 +761,41 @@ Then a matrix too large to write down, so that the two backends are
 checked at a size they will run at, and it is the G of the
 eigendecomposition above: `G = ZZ'` for Z of 1000 rows and 1200 columns
 built with the xorshift generator of "How it is verified" of "The four
-operations", started at 7, whose trace is 99996.3873081677. Its
-eigenvalues are between 0.79 and 361.9, so it is positive definite. The
-literals, from numpy 2.5.3: the first and the last entries of the
-diagonal of its factorization, 10.135944716832457 and 4.115426436421405,
-within 1e-12 relative; its log determinant, 3963.7986384485084, within
-1e-13, which numpy's `slogdet` gives as 3963.7986384485057 through its
-LU; the solution of `G x = v` for `v` the vector of 1000 ones, of which
-the test asserts the first three entries, -0.3054837936349659,
--0.04576083734778211 and -0.21314634692119025, and their sum over the
-1000, 73.9565335781636, within 1e-11 relative; and of its inverse the
-first and last entries of the diagonal, 0.06230734831937398 and
-0.059043258015696806, and the trace, 59.78707893196584, within 1e-11.
-What the two backends were measured to be away from those numbers on 23
-September 2026 is 5.7e-16 and 8.0e-16 relative on the log determinant,
-1.8e-14 and 1.1e-14 on the four numbers of the solve, and 5.4e-15 and
-4.9e-15 on the three of the inverse, Accelerate first and faer second,
-so each tolerance above has at least two orders of room.
+operations of the PCA and the LD", started at 7, whose trace is
+99996.3873081677. Its eigenvalues are between 0.79 and 361.9, so it is
+positive definite. The literals, from numpy 2.5.3: the first and the
+last entries of the diagonal of its factorization, 10.135944716832457
+and 4.115426436421405, within 1e-12 relative; its log determinant,
+3963.7986384485084, within 1e-13, which numpy's `slogdet` gives as
+3963.7986384485057 through its LU; the solution of `G x = v` for `v` the
+vector of 1000 ones, of which the test asserts the first three entries,
+-0.3054837936349659, -0.04576083734778211 and -0.21314634692119025, and
+their sum over the 1000, 73.9565335781636, within 1e-11 relative; and of
+its inverse the first and last entries of the diagonal,
+0.06230734831937398 and 0.059043258015696806, and the trace,
+59.78707893196584, within 1e-11. What the two backends were measured to
+be away from those numbers on 23 September 2026 is 5.7e-16 and 8.0e-16
+relative on the log determinant, 1.8e-14 and 1.1e-14 on the four numbers
+of the solve, and 5.4e-15 and 4.9e-15 on the three of the inverse,
+Accelerate first and faer second, so each tolerance above has at least
+two orders of room.
 
 The design the QR, the triangular solve and the rank are checked on is
 the 4 x 2 of an intercept and one covariate, with rows (1, 1), (1, 2),
 (1, 3) and (1, 4). At `thin_qr`, with the sign of each column of `q`
-taken so that the diagonal of `r` is positive, `r` has rows (2, 5) and (0,
-2.23606797749979), which is the square root of 5, and `q` has the first
-column (0.5, 0.5, 0.5, 0.5) and the second (-0.6708203932499368,
+taken so that the diagonal of `r` is positive, `r` has rows (2, 5) and
+(0, 2.23606797749979), which is the square root of 5, and `q` has the
+first column (0.5, 0.5, 0.5, 0.5) and the second (-0.6708203932499368,
 -0.22360679774997894, 0.223606797749979, 0.6708203932499369), which is
 the covariate less its mean, divided by the length of that; both within
-1e-14, because
-Accelerate gave -2.0 for the first entry of `r` and faer
--1.9999999999999998. At `solve_upper_triangular`, the trait (1, 3, 5, 7),
-which is twice the covariate less 1, gives the coefficients (-1, 2) from
-`r c = q' y`, within 1e-14: an exact fit, so a backend that read `r` the
-wrong way round gives something else. And at `solve_upper_triangular`
-again, the `r` with rows (2, 5) and (0, 0) is `Singular` at the row 1,
-which is the case the crate reads the diagonal for, since faer would
-divide by that 0 and give an infinity.
+1e-14, because Accelerate gave -2.0 for the first entry of `r` and faer
+-1.9999999999999998. At `solve_upper_triangular`, the trait (1, 3, 5,
+7), which is twice the covariate less 1, gives the coefficients (-1, 2)
+from `r c = q' y`, within 1e-14: an exact fit, so a backend that read
+`r` the wrong way round gives something else. And at
+`solve_upper_triangular` again, the `r` with rows (2, 5) and (0, 0) is
+`Singular` at the row 1, which is the case the crate reads the diagonal
+for, since faer would divide by that 0 and give an infinity.
 
 At `rank`, five matrices and their ranks, which is all `rank` gives: it
 returns a count, so its singular values cannot be asserted at it, and the
@@ -737,36 +822,144 @@ third. They are here so that a reader can see where each count comes from,
 and no test asserts them. The last two are the
 two designs line 841 refuses, the collinear one and the constant one.
 
+## The product with its first operand turned
+
+pyNei's GWAS writes `a.T @ b`, a matrix multiplied by another that has
+one row for each of the same individuals, at fourteen places of
+`gwas.py`, and the `product` of "The four operations of the PCA and the
+LD" can do none of them: it reads its first operand as one row for each
+row of the result, and there is no way to ask it for the other. Four of
+the fourteen are the design multiplied by itself with one weight for
+each individual, at 411, 511, 554 and 586, which
+`add_self_product_lower` does give, since the weights are above 0 and
+the caller can multiply each row of the design by the square root of its
+weight first. The other ten are `q' y` at 378 and 379, the design by the
+weighted trait at 412 and 512, the design by the projected design at 482
+and 691, the eigenvectors of the kinship by the trait and by the design
+at 507 and 508, the design by the residuals at 555, and the projected
+design by the working trait at 692.
+
+The owner left this decision to the writer of this spec on 23 September
+2026, saying that changing the signature of `product` is not a cost to
+weigh against the tool being the best one popnei can build. So the first
+operand gets a type, the way the fourth operation above gave the second
+one a type for the r² of `docs/specs/ld.md`. The options not taken were
+one function for `c = a' b` beside `product`, which brings back what the
+typed second operand was for, two functions over the same four numbers
+either of which takes the other's call and gives a different matrix with
+no error; and leaving it out, so that the caller writes the transpose of
+one operand into a buffer of its own, which is a matrix operation in a
+crate that is not this one and which costs more than the product it
+feeds.
+
+### What it gives
+
+`product` takes a `TheFirstOperand` beside its `TheSecondOperand`, and the
+two together say which of four matrices it computes. Each operand says how
+its buffer is laid out, never what the routine should do to it, so a
+caller states what it has and not what it wants done.
+
+| the first operand | the second | what `product` writes into `c` |
+|---|---|---|
+| `ByTheRowsOfTheResult` | `ByTheValuesSummedOver` | `c = a b` |
+| `ByTheRowsOfTheResult` | `ByTheColumnsOfTheResult` | `c = a b'` |
+| `ByTheValuesSummedOver` | `ByTheValuesSummedOver` | `c = a' b` |
+| `ByTheValuesSummedOver` | `ByTheColumnsOfTheResult` | `c = a' b'` |
+
+The first two are what `product` computes today and the callers of them do
+not change what they compute, only how they say it: the four calls of
+`product` in the core crate, three in `pca.rs` and one in `ld.rs`, name
+`ByTheRowsOfTheResult` for their first operand and are otherwise as they
+were. The third is the ten places above. The fourth has no caller in
+popnei and is built anyway, because the two enums make it a call that
+compiles, and an interface that takes a call it then refuses at run time is
+worse than one that answers it; it costs one `dgemm` with both `trans`
+flags set and one `matmul` over two transposed references, and it is
+tested like the other three.
+
+`add_self_product_lower` stays and does not become a case of `product`,
+although `a' a` is now one: it is `dsyrk`, which writes the lower half
+alone and which "What they give" measured at 95 ms against 174 ms for
+`dgemm` on a block of 5000 x 1000 with faer on one thread.
+
+### What it costs
+
+Neither backend copies anything for it and neither routine is a different
+routine. In the BLAS backend `c = a' b` is the same `dgemm` with `transb`
+set to `T`, since in the routine's column major view `c' = b' a`, and
+`c = a' b'` is `c' = b a` with both `trans` flags `T`. In faer both are
+`matmul` over a transposed `MatRef`, which is another reference over the
+same values read the other way round.
+
+Measured on 23 September 2026 on the machine of "Speed", a 1000 x 1000 by
+a 1000 x 5: `c = a b` took 0.102 ms and `c = a' b` 0.030 ms on Accelerate,
+and 0.069 ms and 0.091 ms on faer, the two giving the same matrix to the
+bit when the first operand of one is the transpose of the first operand of
+the other. Writing that transpose of the 1000 x 1000 into a buffer
+instead, which is what a caller without this would do, took 0.361 ms,
+three to twelve times the product it would feed.
+
+### How it is verified
+
+At `product`, on the A of 2 x 3 with rows (1, 2, 0) and (0, 1, 3) and
+the B of 3 x 2 with rows (1, 1), (2, 0) and (0, 3), which "How it is
+verified" of "The four operations of the PCA and the LD" already uses,
+and whose product `a b` is the 2 x 2 with rows (5, 1) and (2, 9). That
+matrix is not symmetric, so a backend that wrote the transpose of `c`
+fails on it.
+
+The same three numbers come out of all four combinations when each operand
+is given as the matrix the combination expects, and the test asserts that,
+exactly: `a b` from A and B; `a' b` from the 3 x 2 with rows (1, 0),
+(2, 1) and (0, 3), which is A written the other way round, and B; `a b'`
+from A and the 2 x 3 with rows (1, 2, 0) and (1, 0, 3), which is B written
+the other way round; and `a' b'` from those last two. Run on both backends
+on 23 September 2026 and all four gave (5, 1) and (2, 9). A backend that
+read one operand the way another combination reads it gives a different
+matrix for at least one of the four, which is what the four assertions
+together catch.
+
 ## The Rust interface
 
 The lower half of `g += a'a`; `a` is `rows` x `cols`, and `g` is `cols`
 x `cols`. `rows` may be 0.
 
 ```rust
-pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]) -> Result<()>;
+pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g:
+&mut [f64]) -> Result<()>;
 ```
 
-The two products are one function, and the second operand says which way
-round it is read. `a` is `rows` x `inner` and `c`, which is overwritten,
-is `rows` x `cols`. `rows` may be 0, and then nothing is written, as an
-`a` of no rows adds nothing to `g` above: the second pass of the PCA
-multiplies the block it has standardized by the eigenvectors, and a
-block whose rows all had no variance leaves an `a` of no rows here too.
-`inner` and `cols` are 1 at least.
+The four products are one function, and each operand says how its own
+buffer is laid out, which together says which of the four the call is, as
+"The product with its first operand turned" lays out. `c`, which is
+overwritten, is `rows` x `cols`. `rows` may be 0, and then nothing is
+written, as an `a` of no rows adds nothing to `g` above: the second pass
+of the PCA multiplies the block it has standardized by the eigenvectors,
+and a block whose rows all had no variance leaves an `a` of no rows here
+too. `inner` and `cols` are 1 at least.
 
-The two cases carry the same two values and differ in what the rows of
-the second matrix are, so a caller cannot reach for the wrong one
-without writing the name of the wrong one. They are one function and not
-two because two functions of the same arguments would take each other's
-call and give a different matrix with no error: the check of a length is
-`rows` times `cols` either way.
+The cases of an operand carry the same two values and differ in what its
+rows are, so a caller cannot reach for the wrong one without writing the
+name of the wrong one. They are one function and not several because
+functions of the same arguments would take each other's call and give a
+different matrix with no error: the check of a length is `rows` times
+`inner`, or `rows` times `cols`, whichever way the buffer is read.
 
-Giving the same slice for `a` and for the second operand read by the
-columns of the result, with `rows` equal to `cols`, is the product of a
-matrix with its own transpose, which is what a set of variants against
-itself asks for.
+Giving the same slice for both operands, the first by the rows of the
+result and the second by the columns of it, with `rows` equal to `cols`,
+is the product of a matrix with its own transpose, which is what a set of
+variants against itself asks for.
 
 ```rust
+pub enum TheFirstOperand<'a> {
+    /// `rows` x `inner`, one row for each row of the result, which is
+    /// the first matrix of a product as it is usually written.
+    ByTheRowsOfTheResult { values: &'a [f64], rows: usize },
+    /// `inner` x `rows`, one row for each of the values the product
+    /// sums over, which gives `c = a' b`.
+    ByTheValuesSummedOver { values: &'a [f64], rows: usize },
+}
+
 pub enum TheSecondOperand<'a> {
     /// `inner` x `cols`, one row for each of the values the product
     /// sums over, which gives `c = a b`.
@@ -776,7 +969,8 @@ pub enum TheSecondOperand<'a> {
     ByTheColumnsOfTheResult { values: &'a [f64], cols: usize },
 }
 
-pub fn product(a: &[f64], rows: usize, inner: usize, b: TheSecondOperand<'_>, c: &mut [f64]) -> Result<()>;
+pub fn product(a: TheFirstOperand<'_>, inner: usize, b:
+TheSecondOperand<'_>, c: &mut [f64]) -> Result<()>;
 ```
 
 The eigendecomposition of the symmetric `g` of `n` x `n`, whose lower
@@ -831,7 +1025,8 @@ and it comes back holding the solutions the same way. `sides` is 1 at
 least.
 
 ```rust
-pub fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()>;
+pub fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides:
+usize) -> Result<()>;
 ```
 
 The log of the determinant of the `a` whose factorization is `l`. There
@@ -847,7 +1042,8 @@ The lower half of the inverse of that same `a`, into `inverse` of `n` x
 buffers and not one.
 
 ```rust
-pub fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()>;
+pub fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) ->
+Result<()>;
 ```
 
 The thin QR of `a` of `rows` x `cols`, with `rows` at least `cols` and
@@ -873,7 +1069,8 @@ The `x` of `r x = b` for the upper triangular `r` of `n` x `n`, whose
 lower half is not read. `b` is laid out as it is for the Cholesky solve.
 
 ```rust
-pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()>;
+pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides:
+usize) -> Result<()>;
 ```
 
 How many singular values of `a` of `rows` x `cols` are above numpy's
@@ -919,10 +1116,10 @@ matrix.
 `dsyevr`, the routine of LAPACK that computes a chosen range of
 eigenvalues and their vectors, asked for the 10 largest took 0.025 s,
 0.18 s and 4.9 s. It is not taken now: the PCA gives every component
-until Open 1 of its spec is answered. The eigendecomposition is 0.04 s
-of the 0.3 s of the PCA at 1000 individuals; at 5000 it is 6.3 s beside
-products of 5.8 s for 100000 variants, from the 58 ms per block of
-`docs/specs/pca.md`, and with faer 11.4 s. Under pyodide on the same
+until Open 1 of `docs/specs/pca.md` is answered. The eigendecomposition
+is 0.04 s of the 0.3 s of the PCA at 1000 individuals; at 5000 it is 6.3
+s beside products of 5.8 s for 100000 variants, from the 58 ms per block
+of `docs/specs/pca.md`, and with faer 11.4 s. Under pyodide on the same
 machine the eigendecomposition with faer took 0.31 s at n = 1000, 2.4 s
 at 2000 and 13.6 s at 3000, section 3.2 of `docs/rust_core.md`, on 19
 September 2026.
@@ -958,16 +1155,16 @@ whole pass: each block is a new matrix.
 ### What the seven of the GWAS cost
 
 Measured on 23 September 2026 on the owner's Apple M5 Pro, rustc 1.98,
-release, from a trial crate
-kept in `tmp/linalg_gwas_trial/`, not in git, the best of 3 runs at 5000
-and above and of 5 below. The matrix of each size is `ZZ'` for Z of n rows
-and as many columns of the xorshift generator, 200 at n = 1000 and 20
-above it, with n added to each of its diagonal entries, which makes it
-positive definite; its rank before the addition does not change the cost,
-since both routines reduce the whole matrix. Accelerate takes the threads it
-finds, and faer is given twice, once for each of its two rules: the global
-pool of rayon, which is what it runs on natively, and one thread, which is
-what it runs on in the browser.
+release, from a trial crate kept in `tmp/linalg_gwas_trial/`, not in
+git, the best of 3 runs at 5000 and above and of 5 below. The matrix of
+each size is `ZZ'` for Z of n rows and as many columns of the xorshift
+generator, 200 at n = 1000 and 20 above it, with n added to each of its
+diagonal entries, which makes it positive definite; its rank before the
+addition does not change the cost, since both routines reduce the whole
+matrix. Accelerate takes the threads it finds, and faer is given twice,
+once for each of its two rules: the global pool of rayon, which is what
+it runs on natively, and one thread, which is what it runs on in the
+browser.
 
 | operation | n | Accelerate | faer, the pool | faer, one thread |
 |---|---|---|---|---|
@@ -1019,152 +1216,29 @@ nothing.
 
 ## Open points
 
-The owner decides these four. Until then the implementer follows the
-"meanwhile" of each.
+None. The four this spec had were decided by the owner on 23 September
+2026 and each is in the text where its subject is, with the option that
+was not taken and what is still unknown about it:
 
-**Open 1: `simd128` in the two wasm builds.** With the flag and the
-feature of `gemm`, the product of a block takes 187 ms in wasm instead
-of 306 ms, and the product is nearly all the time of the PCA in the
-browser. **The flag is not what gives that**, which task 4.2 of
-`docs/plans/pca.md` measured on 22 September 2026: with the feature of
-`gemm` on, which is the meanwhile and what popnei ships, the module built
-with `-C target-feature=+simd128` and the module built without it are the
-same file byte for byte, checked on three builds from empty target
-directories with rustc 1.98, and the flag is on the rustc command line of
-every crate of the build that carries it. With the feature off instead,
-the analysis of 100000 variants x 1000 individuals under node takes
-7.066 s against 4.500 s, so the feature is what the two numbers are of.
-The options are still to turn the flag on in both builds, in the wasm
-package alone, or in neither, and on this rustc all three give the same
-files; what is not known is whether a later rustc, or a dependency that
-drops its own annotations, would make the flag matter. A build with those
-instructions does not load in a browser without them, which every browser
-of 2023 and later has, as Open 6 of `docs/specs/pca.md` details, and that
-holds for what popnei ships today and not only for a build with the flag.
-Recommendation: leave the flag off, since it changes no file, and keep
-the feature of `gemm` on, which is what the speed comes from.
-Meanwhile the flag is not set and the feature of `gemm` is.
+- The feature of `gemm` stays on and the rustc flag stays off: "The wasm
+  builds and the vector instructions".
+- Every square matrix but the `r` of the QR is factored with a Cholesky
+  and not an LU: "Why a Cholesky where numpy uses an LU", which has the
+  band of designs that changes.
+- `product` gets a typed first operand, so that it computes all four of
+  `a b`, `a b'`, `a' b` and `a' b'`: "The product with its first operand
+  turned".
+- The kinship is left as pyNei computes it, and the fit of the logistic
+  mixed model fails with `Singular` when missing genotypes have made it
+  not positive semidefinite: "What the GWAS calls of numpy, and where".
+  This one is reconsidered if the implementation of the GWAS meets it.
 
-**Open 2: a Cholesky where numpy uses an LU.** Every square matrix the
-GWAS solves against, except the `r` of the QR, is symmetric positive
-definite, and this spec factors them with a Cholesky, which "Why a
-Cholesky where numpy uses an LU" gives the reasons for. What that changes
-for a user is which inputs are refused. An LU carries on with a pivot that
-rounding made tiny and gives a number; a Cholesky stops. So popnei refuses
-some inputs pyNei answers for, and there are two of them.
-
-The first is a design whose covariates are independent on paper and nearly
-not in the numbers, which the rank of line 841 lets through and the
-Cholesky then refuses. The band was measured on 23 September 2026 with
-numpy 2.5.3 on a design of 10000 rows and 4 columns built with its
-smallest singular value at a chosen fraction of its largest:
-`matrix_rank` gave 4 down to a fraction of 1e-11 and 3 at 1e-12, which is
-where its tolerance of `max(rows, cols)` times 2.2e-16 lies, while the
-Cholesky of that design multiplied by itself succeeded down to 1e-8 and
-refused at 1e-9, the fractions in between going either way as rounding
-decided. So the band is about three orders wide, between 1e-9 and 1e-12.
-A design that falls in it has its largest singular value between 1e9 and
-1e12 times its smallest, and the relative error of a solve is about that
-ratio times 2.2e-16, so the coefficients numpy gives for such a design
-keep roughly between seven and four of the sixteen digits an `f64` holds.
-
-The second is a variant of the logistic Wald test, the test that fits the
-model again with the variant in it and asks how many of its own
-uncertainties the variant's effect is away from 0, whose fit is running
-away and whose matrix goes flat as the weights of the individuals go to
-0. pyNei reaches those variants by another road and gives them the same
-answer: lines 649 to 651 mark a variant whose step is not finite and line
-658 one whose coefficient passes 30, and line 670 gives both NaN.
-
-The options are to factor with a Cholesky and let the GWAS spec say what
-each `Singular` becomes, which is the recommendation; or to factor with an
-LU, `dgesv` and faer's `partial_piv_lu`, which matches numpy input for
-input at twice the arithmetic, gives no log determinant off the same
-factorization, and is no test for a design whose columns are not
-independent. Meanwhile the Cholesky is what is built.
-
-**Open 3: a product that reads its first operand by the values summed
-over.** pyNei's GWAS writes `a.T @ b`, a matrix multiplied by another
-that has one row for each of the same individuals, at fourteen places of
-`gwas.py`, and `product` cannot do any of them: its first operand is read
-as one row for each row of the result, and the four operations give no
-way to read it the other way round.
-
-Four of the fourteen are the design multiplied by itself with one weight
-for each individual, `d' w d`, at 411, 511, 554 and 586, and those the
-crate already gives: the weights are above 0, so the caller multiplies
-each row of the design by the square root of its weight and calls
-`add_self_product_lower` on that, and the result is the same matrix. The
-other ten are not, and they are `q' y` at 378 and 379, the design by the
-weighted trait at 412 and 512, the design by the projected design at 482
-and 691, the eigenvectors of the kinship by the trait and by the design
-at 507 and 508, the design by the residuals at 555, and the projected
-design by the working trait at 692.
-
-The options. Give the first operand a type as the fourth operation above
-gave the second, so that `product` takes a `TheFirstOperand` of two
-cases and covers all four combinations, of which three have a caller;
-the two calls of the PCA and the three of the LD are rewritten, none of
-them changing what they compute. Or add one function for `c = a' b`
-alone and leave `product` as it is, which brings back what the typed
-operand was for: two functions over the same four numbers, either of
-which takes the other's call and gives a different matrix with no error.
-Or leave it out and have the caller write the transpose of one operand
-into a buffer of its own.
-
-The recommendation is the typed first operand. Neither backend pays for
-it: measured on 23 September 2026 on the machine of "Speed", a 1000 x
-1000 by a 1000 x 5 took 0.102 ms as `a b` and 0.030 ms as `a' b` on
-Accelerate and 0.069 ms and 0.091 ms on faer, and the two gave the same
-matrix to the bit, `a'` in the second being the transpose of `a` written
-out. Writing the transpose of that 1000 x 1000 into a buffer instead
-took 0.361 ms, three to twelve times the product it would feed, and it
-is a matrix operation in a crate that is not this one, which is the
-reason "What they give" gives for the fourth operation above. Meanwhile
-the implementer builds the seven above and not this one, since no code
-calls it until the GWAS does.
-
-**Open 4: a kinship with missing genotypes is not positive semidefinite,
-and the logistic mixed model does not clamp it.** The matrix `Σ` of line
-689, which the fit of that model factors a few dozen times, is positive
-definite only while the kinship makes `v' k v` never negative. "What the
-GWAS calls of numpy, and where" measures that pyNei's kinship does not,
-once genotypes are missing: its smallest eigenvalue is -0.02 at 2 per cent
-missing and -1.00 at 50 per cent, because `_KinshipCalc` divides the
-product of the standardized dosages entry by entry by the variants called
-in both individuals of each pair. `Σ` is that eigenvalue times the
-variance component the fit is searching over, plus one over the weight of
-each individual on the diagonal, and a weight is at most 0.25, so the
-diagonal adds at least 4: `Σ` goes indefinite when the variance component
-passes about 4 divided by the size of that negative eigenvalue, which is
-about 200 at 2 per cent missing and 4 at 50 per cent.
-
-pyNei does not meet this because its LU factors an indefinite matrix
-without complaining and gives an inverse that is an inverse. A Cholesky
-refuses, so popnei would stop where pyNei gave a fit. pyNei clamps the
-kinship's negative eigenvalues at 0 at line 506, calling them rounding,
-but only in the continuous mixed model, which eigendecomposes the kinship
-anyway; the logistic one never does.
-
-The options. Clamp the kinship's eigenvalues at 0 before the logistic
-mixed model uses it, as line 506 does for the continuous one, which costs
-an eigendecomposition of n x n per fit, 0.035 s at 1000 individuals and
-6.3 s at 5000 from "Speed", and changes the fit for every dataset with
-missing genotypes, in a direction nothing here has measured. Or give the
-kinship a per pair denominator that keeps it positive semidefinite, which
-is `docs/specs/kinship.md`'s decision and not this one. Or leave the
-kinship as pyNei computes it and let the fit fail with `Singular`, telling
-the user that the kinship is not one, which is what the seven operations
-do today.
-
-The recommendation is the third, with the second raised in
-`docs/specs/kinship.md`: the failure is loud, it happens only for a
-variance component far above what a real trait gives at the missing rates
-a user should be running at, and clamping is a change to the numbers pyNei
-produces that `docs/objectives.md` would have written down. What is not
-known is how often a real dataset reaches it; no run of pyNei's logistic
-mixed model on missing genotypes was made for this spec. Meanwhile the
-seven are built as they are, and the GWAS spec records what it does.
+Two of them leave work outside this spec. The rustc flag is named in a
+comment of `crates/popnei-linalg/Cargo.toml` as the "meanwhile" of an open
+point, which the commit that first changes code updates. The typed first
+operand changes the signature of `product`, so the four calls of it in the
+core crate, three in `pca.rs` and one in `ld.rs`, are rewritten with it,
+computing what they computed before.
 
 ## Not in this spec
 
