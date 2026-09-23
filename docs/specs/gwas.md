@@ -239,6 +239,29 @@ The mixed models are given the kinship that plink2 wrote for the panel with
 every genotype called, so that they are tested against a kinship that came
 from neither popnei nor pyNei.
 
+**How many digits each reference gives, and what that costs.** Two of the
+five files are printed to six significant digits, plink2's `--glm` and
+GMMAT's `glmm.score`; neither program has a binary form for them, so that is
+all there is. Six significant digits round a value by up to 5e-6 of itself,
+so a comparison against one of those two can have at most twofold headroom
+at a tolerance of 1e-5 relative: it says that popnei computes the same
+quantity, and it would not catch an arithmetic error smaller than the
+printing. That rounding is relative, so the tolerances against those two are
+relative too. An absolute tolerance would hold on this panel, whose values
+are small, and break on data whose values are larger, for an implementation
+that is right.
+
+The other three are full precision: rrBLUP's `GWAS`, R's `anova(glm, test =
+"Rao")` and GMMAT's `glmmkin` null models, which the reference script writes
+itself. Their tolerances are the distance between two fits and not the width
+of a printed digit.
+
+**The check with headroom is pyNei**, at 1e-9 relative over every column of
+every model, and the worked example at 1e-12, both against float64 with
+nothing rounded away. Those two are what would catch a wrong digit that the
+printed references could not. No work package rests on a printed reference
+alone.
+
 Each model item says what it is checked against and how closely. Three
 checks are common to all four:
 
@@ -308,13 +331,12 @@ with `cov1` and `cov2` as covariates, which writes
 `NA`. plink2 tests the minor allele and popnei the non major one, which here
 are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
 
-Over all 1200 variants: `allele_freq` within 1e-6 absolute, `beta` and `se`
-within 1e-5 absolute, and `p_value` within 1e-5 relative. plink2 writes six
-significant digits, and those are the units of its last digit.
+Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
+frequency and lies between 0 and 1, and `beta`, `se` and `p_value` within
+1e-5 relative, which is twice the 5e-6 that six significant digits round by.
 
-The six literals are held to the same tolerances as the whole columns,
-1e-5 absolute on `beta` and `se` and 1e-5 relative on `p`. From plink2 on
-23 September 2026:
+The six literals are held to the same tolerance as the whole columns, 1e-5
+relative on all three. From plink2 on 23 September 2026:
 
 | variant | beta | se | p |
 |---|---|---|---|
@@ -453,8 +475,11 @@ The Wald test against rrBLUP 4.6.3's `GWAS` with `P3D = TRUE`, which holds
 the variance components at the null as popnei does. rrBLUP takes every fixed
 effect as a factor, so only the binary covariate `cov2` was given to it, and
 popnei is run with the same one covariate for this comparison. It reports
-`-log10(p)`, so that is what is compared, over all 1200 variants within
-1e-4, from `tests/reference/gwas/rrblup.panel_called.lmm.tsv`.
+`-log10(p)` at full precision, so that is what is compared, over all 1200
+variants within 1e-4 absolute, from
+`tests/reference/gwas/rrblup.panel_called.lmm.tsv`. The tolerance is the
+distance between two fits, not a printed digit: 1e-4 in `-log10(p)` is 2.3e-4
+of the p-value itself.
 
 The six literals, held to 1e-4 absolute as the whole column is, are
 `-log10(p_value)` and nothing else, because `-log10(p)` is all rrBLUP
@@ -470,7 +495,9 @@ p-values are compared in `log10` because they span 23 orders of magnitude
 and what a user reads is the exponent.
 
 The six literals are `1 / se²` against `VAR`, within 1e-5 relative, and
-`p_value` within 1e-4 in `log10`, the same as the whole columns. The
+`p_value` within 1e-4 in `log10`, the same as the whole columns. Both are
+against six printed significant digits, so the first has twofold headroom
+and the second has more, `log10` shrinking a relative difference. The
 variance of the score and the p-value, with every genotype called and then
 with 3 in 100 missing:
 
@@ -488,7 +515,8 @@ variant, which it calls `impute2mean` and which is popnei's rule too; that
 is why the two agree on the second panel.
 
 The null model against GMMAT's `glmmkin`, from `gmmat.null_models.tsv`,
-within 1e-5 absolute: `genetic_variance` 1.221617, `residual_variance`
+which the reference script writes at full precision, within 1e-5 absolute,
+which is how far two restricted maximum likelihood searches land apart: `genetic_variance` 1.221617, `residual_variance`
 0.342359, and the three covariate effects 4.678021, 0.473361 and 1.110279.
 `heritability` is 1.221617 / (1.221617 + 0.342359).
 
@@ -565,11 +593,12 @@ the odds ratio, so `beta` is compared with its logarithm.
 The one variant plink2 fell back to Firth for is left out of the comparison,
 and instead a test asserts that popnei's NaNs are exactly the variants
 plink2 marked `FIRTH?` `Y`, which is `var0006` and no other. Over the other
-1199: `beta` within 1e-4 absolute, `se` within 1e-4 absolute, and `p_value`
-within 5e-3 relative. That last tolerance is loose because plink2 stops its
-logistic fit earlier than popnei does, not because of rounding; the six
-literals below are held to 1e-5 on `beta`, 1e-4 on `se` and 5e-3 on `p`, the
-same as pyNei holds them.
+1199: `beta` and `se` within 1e-4 relative and `p_value` within 5e-3
+relative. All three are wider than plink2's printing, which rounds by 5e-6,
+because plink2 stops its logistic fit earlier than popnei does; the
+difference between the two fits is what these measure, and the printing is
+not what limits them. The six literals below are held to 1e-5 on `beta`,
+1e-4 on `se` and 5e-3 on `p`, the same as pyNei holds them.
 
 | variant | beta, a log odds ratio | se | p |
 |---|---|---|---|
@@ -585,9 +614,9 @@ ratio and these are its logarithm.
 
 The score test against R 4.6.1's `anova(glm, test = "Rao")`, one logistic
 regression per variant fitted by R, from `r.panel_called.glm.score.tsv`.
-R reports the score statistic and its p-value. Over all 1200 variants the
-statistic `(beta / se)²` is within 1e-2 absolute and `|log10(p / p_R)|`
-below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
+R reports the score statistic and its p-value at full precision. Over all
+1200 variants the statistic `(beta / se)²` is within 1e-2 absolute and
+`|log10(p / p_R)|` below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
 1e-8 in the deviance, which is what those tolerances are.
 
 The six literals, the score statistic `(beta / se)²` within 1e-3 absolute
