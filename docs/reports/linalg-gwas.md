@@ -1,31 +1,57 @@
 # Work report: the linear algebra the association study needs
 
-The plan `docs/plans/linalg-gwas.md` is under way, on the branch
-`plan/linalg-gwas`, in the worktree `.claude/worktrees/linalg-gwas`,
-where it started on 23 September 2026. It builds, in
-`crates/popnei-linalg`, the seven operations that a genome wide
-association study needs: a Cholesky factorization, which is the
-factorization of a symmetric matrix that no vector makes negative, and
-the solve, the log of the determinant and the inverse that come off it;
-the thin QR of a design, which is what fits a linear model to more
-individuals than coefficients; the solve against an upper triangular
-matrix; and the rank, how many of a design's columns are independent. It
-also gives `product` a typed first operand, so that it computes all four
-of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
-error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
+23 September 2026. This is the work report of the plan
+`docs/plans/linalg-gwas.md`, carried out on the branch `plan/linalg-gwas`
+in the worktree `.claude/worktrees/linalg-gwas`, which built the linear
+algebra that a genome wide association study needs into
+`crates/popnei-linalg` from the spec `docs/specs/linalg.md`. It was
+written while the work went, so the sections below are in the order the
+work happened, each work package with the commands that checked it, what
+its review found and what was done about that. The section that follows
+this paragraph is what the owner reads first, and the last two are the
+decisions that are theirs and what the work taught about running the next
+plan.
 
-Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is done, reviewed and fixed, and work package 3 is built and its four
-deliverables check out; its review is running.
-Work package 3 has not started. Two things
-are waiting on the owner and neither stops the plan; the last section of
-this report says what they are.
+## What the owner reads first
 
-This report is written as the work goes. Each work package gets a section
-below when it is done, with the command that checked each deliverable and
-what it gave, what was changed in the plan and why, what the review
-found, and what the owner should know. When the plan is done, what the
-owner reads first goes at the top of this file.
+**The plan is done.** All four work packages are built, reviewed and
+fixed, every deliverable checks out, and the plan's final check was run
+again on the last commit. The branch is `plan/linalg-gwas`, in the
+worktree `.claude/worktrees/linalg-gwas`. Nothing is merged into `main`
+and nothing is pushed.
+
+**What exists that did not this morning.** `crates/popnei-linalg` gives
+the seven operations a genome wide association study needs, each on both
+of its backends: the Cholesky factorization of a symmetric matrix that no
+vector makes negative, and the solve, the log of the determinant and the
+inverse that come off it; the thin QR of a design, which is the
+factorization that fits a linear model to more individuals than
+coefficients; the solve against a triangular matrix, either half; and the
+rank, how many of a design's columns are independent. Its product of two
+matrices now computes all four ways the two can be laid out, and its error
+type has one case more, for a matrix that could not be factored. The crate
+went from 42 tests to 149, and from 37 to 136 in the build that uses faer,
+the linear algebra library that runs in the browser.
+
+**How you know it works.** Every number a test asserts is a literal taken
+from numpy 2.5.3, the same library pyNei computes with, and every test
+runs twice, once against each backend. Where a reviewer doubted that a
+test could fail, it broke the code on purpose and showed which test
+caught it. Nothing of the crate is reached from Python or TypeScript yet,
+so the check that popnei and pyNei agree end to end is not this plan's to
+make; the association study, whose spec another session is writing now,
+will be the caller.
+
+**What is asked of you.** The merge, which is yours to order. The branch
+merges into `main` at `bed9031`, and the merge was made in a throwaway
+worktree, built, tested and thrown away, so it is known to build and pass
+and not only to be free of conflicts: "The merge into `main`, tried and
+not made" has the numbers. The session writing `docs/specs/gwas.md` and
+`docs/specs/kinship.md` asked to be told when this branch is ready, so
+that the three can be merged together if you want that.
+
+And four decisions, none of which stops anything and each of which
+"What is waiting on the owner" gives with its options and its cost.
 
 ## Before the first task
 
@@ -305,9 +331,14 @@ case was found while the task was written.
 Every check is `cargo test -p popnei-linalg --lib <filter> -- --list`, and
 every filter printed `0 tests` before the work package.
 
+A filter matches a test by its name, and the name of a test of the solve,
+the log of the determinant or the inverse says which factorization it
+takes, so `cholesky` matches the tests of all four operations and not the
+eight of the factorization alone.
+
 | Deliverable | Filter | What it gave |
 | --- | --- | --- |
-| 1, the factorization and the row it stops at | `cholesky` | 34 tests |
+| 1, the factorization and the row it stops at | `cholesky` | 34 tests, of which 8 are the factorization's own |
 | 2, the solve with its right hand sides as rows | `solve_with` | 12 tests |
 | 3, the log of the determinant | `determinant` | 7 tests |
 | 4, the inverse | `invert` | 11 tests |
@@ -584,7 +615,37 @@ tests to 141 and from 90 to 128; the gap between the two backends is the
 
 That subagent used 291256 tokens for the two tasks and the fixes.
 
-### Task 4.2, the code of either half, and the review of work package 4
+## Work package 4: the solve against a lower triangular matrix
+
+Added by the owner on 23 September 2026, after work packages 1 to 3 were
+done, at the request of the session writing `docs/specs/gwas.md`. Its fit
+of the null model of the logistic mixed model needs the Cholesky factor of
+a covariance solved against with one right hand side for each individual,
+and a Cholesky factor fills the lower half of its buffer, so the solve
+that existed, which reads the upper half, could not serve it.
+
+### Task 4.1, the spec item and the shape of the interface
+
+`852cb7b`. The orchestrator wrote this one rather than send it out,
+because what it decides is an interface: whether the lower half is a
+second function beside the upper one, or an argument of the one that
+exists. It is an argument. Two functions would take the same four
+arguments, and either would accept the other's call and answer with a
+different matrix and no error, no length telling them apart, which is the
+reason `docs/specs/linalg.md` already gives for the product of two
+matrices being one function with typed operands. It is not a hypothetical:
+the symmetric buffer with rows (2, 1, 0), (1, 3, 2) and (0, 2, 1), against
+the right hand side (8, 40, 27), gives (4, 12, 3) read as the lower half
+and (6.333333333333333, -4.666666666666666, 27) read as the upper, and
+both are answers a caller could believe. `cholesky_lower` and `eigh_lower`
+keep their names, neither having another half in the crate for a call of
+them to mean.
+
+The timings that justify the operation are the other session's, measured
+with numpy and not with this crate, and the spec quotes them as theirs and
+points at their report. This plan owns the operation and not the fit.
+
+### Task 4.2, the code of both halves, and the review of work package 4
 
 `28925db`, and `5eb4e7b` after the review. `solve_upper_triangular` is
 `solve_triangular(a, n, half, b, sides)` with the public
@@ -661,6 +722,21 @@ through the `product` that work package 1 changed, and the last three rows
 are where a change in what they compute would have been seen by a user.
 None of them moved.
 
+### The machine every timing here was measured on
+
+The owner's Apple M5 Pro, rustc 1.98, release builds, unless a number is
+said to be someone else's. The BLAS and LAPACK of this machine are
+Accelerate, the framework numpy also computes through, and it takes the
+threads it finds; a number of faer is of faer built natively, which runs
+on the same pool of threads popnei's own loops use.
+
+Two timings quoted here were not measured by this plan. The 1.8 ms against
+5.2 ms of the bit count of the `dists` module, which is why the rustc flag
+below is set at all, is from `docs/specs/pca.md`, where its input and its
+machine are. The fit of the logistic mixed model at 4000 individuals, 5.75
+s against pyNei's 9.959 s, was measured with numpy by the session writing
+`docs/specs/gwas.md` and is in its own report.
+
 ### The merge into `main`, tried and not made
 
 `main` moved while this plan ran: it was `bce303c` when the plan started
@@ -675,46 +751,172 @@ of `product`.
 The merge was made in a throwaway worktree at a detached `main`, built and
 thrown away; `main` itself was not touched and is still `bed9031`. It has
 no conflict, the one call site both sides changed keeps this branch's form,
-and the merged tree passes: `cargo test --workspace` `604 passed` with 2
-ignored in the core crate, which is what `main` has grown to, and `148
+and the merged tree passes. Run again on the last commit of the branch, so
+that these are the counts the branch itself gives: `cargo test
+--workspace` `604 passed` with 2 ignored in the core crate, which is what
+`main` has grown to from the 472 this plan started against, and `149
 passed` in the linear algebra crate; `cargo test -p popnei-linalg
---no-default-features` `135 passed`; `cargo fmt --all --check`, `cargo
+--no-default-features` `136 passed`; `cargo fmt --all --check`, `cargo
 clippy --workspace --all-targets -- -D warnings` and `cargo wasm-check`
 all clean.
 
 The trial crate is left in `tmp/`, not committed, as the plan said. What
-replaces it is the cargo tests of the three work packages, which assert
-the same literals through the crate's own checks and error enum.
+replaces it is the cargo tests of the four work packages, which assert the
+same literals through the crate's own checks and error type.
 
 ## What is waiting on the owner
 
-Neither of these stops the plan, and work packages 2 and 3 do not depend
-on them.
+Four decisions. None of them stops the merge or anything this plan built,
+and each is written here with what it would take.
 
-**How the decision about the vector instructions of WebAssembly is
-worded.** "Open points" of `docs/specs/linalg.md` records the owner's
-decision of 23 September 2026 as "the rustc flag stays off". The flag is
-on: `.cargo/config.toml` sets it for both wasm targets because
-`sums_of_two` of the `dists` module counts the bits of a pair sixteen
-bytes at a time behind `cfg(target_feature = "simd128")`, 1.8 ms against
-5.2 ms, and that code went in on 22 September 2026 in `7f3b6cc`, after the
-byte comparison the decision rests on was measured and before the spec was
-written. Built again on 23 September 2026 on the same machine, the
-WebAssembly of `crates/popnei-js` in release is 2249734 bytes with the
-flag and 2246645 without it, with different md5 sums. What the owner chose
-is untouched, since for the linear algebra the flag still changes no file,
-and `68b29fd` corrected every statement of fact around it; the one
-sentence that is theirs to write is how the decision itself is put.
+### 1. How your decision about the vector instructions of WebAssembly is worded
 
-**Whether `a' b'` should replace a buffer and a loop in the principal
-component analysis.** The `architecture` reviewer found that
-`the_components_of_the_product_of_the_rows` of `crates/popnei/src/pca.rs`
-writes a matrix of the traits by the components and then copies it entry
-by entry into its transpose, and that the fourth combination writes that
-transpose directly. It ran both on both backends and got the same numbers.
-It costs an allocation and a copy of the traits times the components once
-per call, not once per variant, so no result and no time of a whole
-analysis is known to change. It changes the principal component analysis,
-which work package 1 is not allowed to do, so it is left for the owner to
-put in a task or an issue. This repository has no issue open and none has
-been filed, so none was filed for this.
+WebAssembly has instructions that work on sixteen bytes at a time, and two
+different switches ask for them: a cargo feature of the library that does
+faer's products, and a flag to the Rust compiler. You decided on 23
+September 2026 that the feature stays on and the flag stays off, because
+on this compiler the flag changed no byte of what popnei builds.
+
+The flag is on. `.cargo/config.toml` sets it for both WebAssembly targets,
+because the `dists` module counts the bits of a pair of individuals
+sixteen bytes at a time behind a compile time test for those instructions,
+and without the flag the scalar loop beside it is what compiles. That code
+went in on 22 September 2026, after the byte comparison your decision
+rests on was measured and before the spec quoted it. Built again on 23
+September 2026, the WebAssembly of the JavaScript crate in release is
+2249734 bytes with the flag and 2246645 without, with different md5 sums.
+
+Your choice is untouched: for the linear algebra the flag still changes no
+file. What is wrong is only the sentence that records it. `68b29fd`
+corrected every statement of fact around it and left the record itself to
+you, since it is your decision.
+
+- **Reword it**, to say that nothing is added for the sake of the linear
+  algebra and that the flag is on for the `dists` module. Costs one
+  sentence; the spec already says the facts in the section the bullet
+  points at.
+- **Leave it**, and a reader of "Open points" learns something untrue
+  about the build. Costs nothing now.
+
+Recommended: reword it. I have not, because what you decided is yours to
+put in your own words.
+
+### 2. Whether the fourth product replaces a buffer and a loop in the PCA
+
+A reviewer found that `the_components_of_the_product_of_the_rows` of
+`crates/popnei/src/pca.rs` writes a matrix of the traits by the components
+and then copies it entry by entry into its transpose, and that the fourth
+of the four products this plan added writes that transpose directly. It
+ran both on both backends and got the same numbers.
+
+- **Do it**, as a task on a branch of its own. Costs an afternoon with its
+  review, and saves an allocation and a copy of the traits times the
+  components once per call of the analysis, not once per variant, so no
+  time of a whole analysis is known to change.
+- **File it**, so that it is not lost. This repository has no issue open
+  and none has ever been filed, so I did not open the first one without
+  you.
+- **Leave it.** Costs nothing; the code is correct as it stands.
+
+Recommended: file it. It is a real simplification and nothing waits on it.
+
+### 3. Whether a diagonal entry that is subnormal should be refused
+
+The three operations that read the diagonal of a Cholesky factorization
+refuse an entry at most 0, and the triangular solve refuses one that is 0.
+An entry that is neither, but so small that one divided by it overflows,
+passes both. Measured on 23 September 2026 on the 2 x 2 with 4e-309 and 1
+on its diagonal against the right hand side (0.5, 1), whose exact answer
+is (1.2500000000000008e308, 1) and both of whose entries an `f64` holds:
+LAPACK gave an infinity for the first entry and faer a NaN, each reporting
+success, and numpy 2.5.3 gave the infinity.
+
+This is the one place in the crate where the two backends answer
+differently and neither says so, which the crate's own doc comment
+promises does not happen. What makes it bearable is that both answers are
+not finite, so the one test a caller has to make on what came back catches
+either, and the spec already requires that test of the association study.
+
+- **Refuse it**, by reading the diagonal for an entry whose reciprocal is
+  not finite. Costs one line in four places and makes the two backends
+  agree; popnei then refuses an input numpy answers, which is a departure
+  from the oracle the spec elsewhere works hard to match.
+- **Leave it and keep the record.** `e076edc` writes the case, the
+  measurement and both answers into the spec. Costs nothing, and the
+  divergence stays.
+
+Recommended: leave it. A caller that does not test its own result for
+being finite is broken whichever answer it gets, and the spec makes that
+test the association study's.
+
+### 4. Whether the message of `Singular` should stop naming a factorization
+
+A matrix that cannot be factored gives an error whose message is "the
+matrix a is singular: the factorization stopped at its row 3, counting
+from 0". Five operations now raise it and only one factors anything: for
+the other four the matrix was handed in as a factorization, or, for the
+triangular solve of a QR's `r`, was never a factorization at all.
+
+- **Reword it** to say what was found rather than what was being done,
+  "the matrix a is singular at its row 3, counting from 0". Costs a
+  sentence of the spec, one line of the code and one assertion of a test.
+- **Leave it.** Costs nothing, and the message is defensible for four of
+  the five, the spec saying that the row is where the factorization that
+  would have produced that matrix stops.
+
+Recommended: reword it when `docs/specs/gwas.md` decides what a user sees
+for each case, since that spec is what turns this error into the message a
+user reads, and doing both at once is one change instead of two. I did not
+do it now, because a message is a value a user sees.
+
+## How the work went
+
+Every task and every fixing round went to a subagent on the model the
+owner uses for coding, and every review to one reviewer per category. What
+they used, which is what tells the right size of a task for the next plan:
+
+| The work | Tokens |
+| --- | --- |
+| task 1.1, the typed first operand and its callers | 123k |
+| task 1.2, the two new products | 144k, and 181k for the fixes of its review |
+| task 2.1, the Cholesky and `Singular` | 177k |
+| task 2.2, the solve and the log determinant | 156k |
+| task 2.3, the inverse | 175k, and 230k for the fixes of the work package's review |
+| task 3.1, the thin QR | 195k |
+| tasks 3.2 and 3.3, the triangular solve and the rank | 231k, and 291k for the fixes |
+| task 4.2, both halves of the triangular solve | 154k, and 219k for the fixes |
+| seventeen reviewers over the four work packages | 92k to 156k each |
+
+Three things worth carrying into the next plan.
+
+**One operation is the size of a task.** The tasks of a single operation
+on two backends with its tests came to between 123k and 195k tokens. The
+one that ran to 231k was two operations in one prompt, and its round of
+fixes to 291k, the largest of the plan.
+
+**One reviewer per category is what made the serious findings certain.**
+Of everything the four reviews found, the defects that would have given a
+user a wrong number — the Cholesky solve answering with NaN, the rank's
+tolerance overflowing, and the two fixtures that could not tell two
+dimensions apart — were each found by two or more reviewers independently,
+by different routes. What a single reviewer saw alone was, without
+exception, documentation, a message or a gap in coverage. The overlap is
+what let those be fixed without asking the owner.
+
+**The same defect kept coming back in new clothes.** Four times over, a
+test fixture could not tell two things apart, because every case it used
+made them equal: a result whose rows and columns were both 2, a `Singular`
+that always stopped at the same row, a tolerance pinned only on square
+matrices, and a triangular `r` always given with its sign fixed. Three of
+the four were found by mutation and by nothing else. A plan that asks for
+a fixture at each size is not enough; what caught these was reviewers
+breaking the code to see which test noticed.
+
+**And one thing the orchestrator did worst.** Of the fourteen findings of
+work package 4, five were errors in the spec item the orchestrator had
+written itself, including a worked contrast that named the wrong matrix
+and a sentence about a LAPACK routine that was the opposite of what the
+code must pass. The three tasks whose spec items were written before the
+plan began had no such finding. The lesson is that a spec item written by
+the session that is also running the plan wants the same first reader and
+the same spec reviewer as any other, and got neither until the review.
