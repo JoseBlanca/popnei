@@ -49,7 +49,7 @@ use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
 use crate::stats::{ObsHet, Pops, raised};
-use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts_of};
+use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_and_gts_of};
 
 /// How many populations a pairwise measure is over, the s of the
 /// corrections of H_S and H_T.
@@ -129,10 +129,10 @@ impl PopVarCounts {
     ///
     /// # Errors
     ///
-    /// Those of [`count_alleles_of`] and [`count_gts_of`]: genotypes that
-    /// are not a whole number of genotypes of the ploidy, a variant of more
-    /// alleles than a count of them holds, an allele below the missing one,
-    /// and an individual of the population beyond the variant.
+    /// Those of [`count_alleles_and_gts_of`]: genotypes that are not a
+    /// whole number of genotypes of the ploidy, a variant of more alleles
+    /// than a count of them holds, an allele below the missing one, and an
+    /// individual of the population beyond the variant.
     pub(crate) fn count_the_var(
         &mut self,
         gts: &[i8],
@@ -141,10 +141,15 @@ impl PopVarCounts {
         per_var: &PopDistPerVar,
     ) -> Result<()> {
         let alleles_of_the_var_before = self.num_alleles;
-        let counted = count_alleles_of(gts, ploidy, individuals, &mut self.allele_counts)?;
+        // The alleles and the genotypes are counted in one walk over the
+        // individuals of the population: the pass wants both of every
+        // population at every variant, and the genotype of an individual
+        // is looked up once for the two counts and not once for each.
+        let (counted, of_the_gts) =
+            count_alleles_and_gts_of(gts, ploidy, individuals, &mut self.allele_counts)?;
         self.called_alleles = counted.called_alleles;
         self.num_alleles = counted.num_alleles;
-        self.gts = count_gts_of(gts, ploidy, individuals)?;
+        self.gts = of_the_gts;
         self.take_the_freqs(alleles_of_the_var_before);
         self.of_the_pop = per_var.of_the_pop(self);
         Ok(())
