@@ -1264,7 +1264,9 @@ pub fn refuse_a_second_filter_of_a_kind(
 
 ## Speed
 
-There is no number to reach: what the filter costs was measured, and what
+### The three threshold filters
+
+There is no number to reach: what each filter costs was measured, and what
 it should cost is the owner's to set. The numbers are of 21 September
 2026, on the owner's Apple M5 Pro, 18 cores, macOS 27.0, native
 `aarch64-apple-darwin`, a build of `cargo bench`, over the 400 MB VCF of
@@ -1319,16 +1321,81 @@ the load average it was taken at, how pyNei's difference was told apart
 from the drift of the machine over a pass of 14 s, and what it leaves to a
 performance review.
 
-The numbers above are of the three threshold filters. The filter by
-linkage disequilibrium has none: what it costs is the products of r² of
-each variant against the variants of its window, which
-`docs/specs/ld.md` measures at 1.9 ms for the r² of 256 variants against
-another 256 over 1000 individuals, and how many variants a window holds
-depends on the
-dataset and on `max_dist`. The implementation plan that builds it, under
-`docs/plans/`, measures a whole pass,
-on `tests/reference/ld/ld.vcf.gz` and on the 400 MB VCF of the table
-above, and this section gets the numbers.
+### The filter by linkage disequilibrium
+
+Measured on 23 September 2026 by the performance review of
+`docs/reports/perf-ld-2026-09-23.md`, on the same machine and the same two
+files as the table above, with
+`crates/popnei/benches/filter_vars.rs --max-ld-r2 --max-dist`. A number is
+the median of 5 runs of a whole pass with the genotypes alone asked for,
+with the best and the worst beside it, taken with nothing else running.
+
+**What this filter costs is set by how many variants its window holds, and
+that is set by the dataset and by `max_dist`, not by the filter.** The 400
+MB VCF has its 100000 variants 1000 base pairs apart on two chromosomes, so
+`max_dist` sets the window almost exactly, and its variants carry no
+linkage, so at a threshold of 0.3 the filter keeps 99919 of them and every
+window stays full. That is the worst case for this filter: a dataset whose
+variants are linked leaves a short window and costs less, which the last
+two rows show. Every number below therefore states what the window held,
+and a number without one says nothing.
+
+Over the vars file, one thread, against the same pass with no filter, which
+takes 0.106 s:
+
+| threshold | max_dist | what the window held | kept of 100000 | the pass | what the filter costs |
+|---|---|---|---|---|---|
+| 0.3 | 1 | 0.0 variants | 100000 | 0.696 s | 0.590 s |
+| 0.3 | 10000 | 10.0 | 99994 | 0.840 s | 0.734 s |
+| 0.3 | 50000 | 50.0 | 99974 | 0.991 s | 0.885 s |
+| 0.3 | 250000 | 249.2 | 99919 | 1.631 s | 1.525 s |
+| 0.3 | 1000000 | 988.5 | 99850 | 4.184 s | 4.078 s |
+| 0.02 | 250000 | 88.7 | 35673 | 1.107 s | 1.001 s |
+| 0.005 | 250000 | 13.7 | 5759 | 0.849 s | 0.743 s |
+
+The first row is `max_dist` of 1, where no variant is ever in another's
+window: **0.590 s of the cost is paid before the window holds anything**.
+That is the three matrices built for every variant of the pass and the r²
+of every set of candidates against itself, neither of which depends on
+`max_dist`. The three rows at a `max_dist` of 250000 and different
+thresholds show the same thing from the other side: what changes the cost
+is the window, 249.2 variants at 1.631 s and 13.7 at 0.849 s, and not how
+many variants are kept.
+
+Over the 400 MB VCF, at a threshold of 0.3 and a `max_dist` of 250000:
+
+| | the pass with no filter | with the filter | what the filter costs |
+|---|---|---|---|
+| 1 thread | 0.600 s | 2.147 s | 1.547 s |
+| 18 threads | 0.086 s | 1.655 s | 1.569 s |
+
+**The thread column of this filter does not mean what it means for the
+three above.** The three threshold filters read the rows of a block on the
+pool, so their thread column is their own work spread over cores. This one
+never does: its rule is sequential, since whether a variant is kept decides
+what the variants after it are compared with, and its products go to
+Accelerate, which does not split a product of this shape across cores. So
+the filter costs the same 1.55 s on one thread and on eighteen, and what
+the threads speed up is the parsing of the VCF, 0.600 s to 0.086 s. Over
+the vars file, whose reader runs on the calling thread, the two columns
+would be the same number. One set of 5 runs at 18 threads over the VCF gave
+a worst of 2.388 s against a best of 1.629 s; the other sets were stable to
+0.03 s.
+
+The filter is 6 to 40 times the cost of the pass it filters, where the
+three threshold filters are a tenth to a half of theirs. The work is
+different: the three compare one number per variant, and this one takes the
+r² of every candidate against every variant of its window, which is matrix
+products over the genotypes.
+
+What was measured and not changed, from the same review: the window keeps
+the genotypes of its variants, one byte per allele, and expands them into
+the three matrices of `docs/specs/ld.md` for every set of candidates it
+settles, which over a pass of 100000 variants at a window of 270 is 2.53 GB
+of `f64` written. Keeping the three matrices in the window instead would
+make it twelve times larger, 5 MB to 60 MB at a window of 2500 variants of
+1000 individuals, and "How it runs" of this item chose the smaller window.
+That trade is the owner's and is in the report.
 
 ## Open points
 

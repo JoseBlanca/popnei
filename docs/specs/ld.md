@@ -895,57 +895,122 @@ out.
 
 ## Speed
 
-Measured on 22 September 2026 on the owner's Apple M5 Pro, 18 cores, with
-numpy 2.5.3 on Accelerate, which is the BLAS that `docs/specs/linalg.md`
-gives the native build, on dosages made at random with 3 in 100 genotypes
-missing, the best of 3 runs for the first table and the mean of 5 for
-the second.
-They are the cost of the products and the arithmetic over them, with no
-reader and no binding in them, and they are what popnei has to reach with
-a tenth over them, since the products are the work and popnei adds the
-building of the three matrices and the tiling.
+### What popnei takes
 
-One block of 5000 variants and 1000 individuals against itself, which is
-`calc_r2_matrix` at its default `max_num_vars`:
+Measured on 23 September 2026 by the performance review of
+`docs/reports/perf-ld-2026-09-23.md`, on the owner's Apple M5 Pro, 18
+cores, 64 GB, macOS, native `aarch64-apple-darwin`, with the products on
+Accelerate. The dataset is the 400 MB VCF of `docs/rust_core.md`, 100000
+variants of 1000 individuals whose genotypes are missing at a rate of 0.03,
+read from the vars file popnei writes of it, already in the page cache. A
+number is the median of 5 runs of `crates/popnei/benches/r2_matrix.rs`,
+with the best and the worst beside it, taken with nothing else running on
+the machine. The memory of the matrix, 200 MB, is asked for inside what is
+timed; reading the file is timed apart and given separately.
 
-| | time | what it gives |
+| the matrix of 5000 variants of 1000 individuals | best | median | worst |
+|---|---|---|---|
+| the whole call | 0.384 s | 0.386 s | 0.399 s |
+| reading the vars file | 0.006 s | 0.006 s | 0.006 s |
+| the calculation, less the reading | 0.378 s | 0.380 s | 0.394 s |
+
+**The number to reach is 0.50 s and popnei takes 0.386 s**, which meets it
+with 0.114 s to spare. What that comparison is worth is below.
+
+The calculation runs on one core. With `VECLIB_MAXIMUM_THREADS` at 1 it
+takes 0.388 s and with it unset 0.386 s, which is the same number: a
+product of 1000 variants by 1000 individuals by 1000 variants is small
+enough that Accelerate does not split it across cores, and popnei's own
+loop over the pairs of tiles is serial. So 17 of the 18 cores of this
+machine are idle for the whole of it.
+
+Where the time goes, from a sampling profile of `sample` over the
+benchmark, 7107 samples 1 ms apart, at the tile of 256 variants this was
+first measured at:
+
+| | share |
+|---|---|
+| the six products, inside Accelerate | 72.7% |
+| the scan of both operands of every product for a value that is not finite | 10.9% |
+| the r² of every pair, cell by cell, from the six sums | 5.7% |
+| writing each pair of tiles into the matrix and its transpose | 3.8% |
+| reading the vars file | 1.8% |
+| building the three matrices of the variants | 1.5% |
+| zeroing the buffers the products then overwrite | 1.3% |
+
+### What the target compares
+
+The 0.50 s comes from numpy taking 0.455 s for what the table below calls
+the six products. It is not the same work. `docs/reports/ld-method/speed.py`
+takes six full 5000 x 5000 products, where two of the six are the
+transposes of two others and both halves of a symmetric matrix are
+computed; popnei takes only the pairs of tiles from the diagonal up, and
+four products instead of six on the diagonal. Counting the cells of the
+products of each:
+
+| | cells of the products | cells of the r² |
 |---|---|---|
-| one product of the dosages with themselves | 0.050 s | the covariances alone |
-| the six products and the r² of every pair | 0.455 s | the 5000 x 5000 matrix, 200 MB |
-| pyNei's one product and division | 0.067 s | r, with a missing genotype left in |
+| numpy, `docs/reports/ld-method/speed.py` | 150000000 | 25000000 |
+| popnei, at the tile of 1000 variants it uses | 76263680 | 13131840 |
 
-So the rule that drops the individuals missing at either variant costs
-6.8 times pyNei's, and the number to reach for `calc_r2_matrix` at 5000
-variants of 1000 individuals is 0.50 s.
+So popnei does about half the arithmetic and takes 0.386 s against numpy's
+0.455 s: **per unit of arithmetic popnei is about 1.5 times slower than
+numpy on Accelerate**, on the same machine and through the same library.
+Meeting 0.50 s says the calculation is fast enough for a user; it does not
+say the code is level with numpy. Whether the target should be restated as
+about 0.25 s, which is the like-for-like figure, is Open 3 below.
 
-For the curve against distance the cost is set by how many variants fall
-inside `max_dist`, since only those pairs are computed. One tile pair of
-1000 individuals, and what a pass over 100000 variants of 1000
-individuals costs at a window of that many variants, which is two tile
-pairs for each tile of variants:
+### The tile
 
-| tile | one tile pair | 100000 variants at that window |
-|---|---|---|
-| 256 variants | 1.9 ms | 1.5 s |
-| 512 variants | 5.7 ms | 2.2 s |
+How many variants one tile of the products holds was chosen by this
+review, over the matrix of 5000 variants of 1000 individuals, best of 5
+runs, less the reading:
 
-pyNei has no comparable number: `calc_ld_and_dist_per_pop` over a dataset
-of that size would hold every chunk in memory and build the whole square
-matrix of each chunk pair.
+| tile | 128 | 256 | 512 | 1000 | 1024 | 1250 | 2500 | 5000 |
+|---|---|---|---|---|---|---|---|---|
+| | 0.539 s | 0.449 s | 0.424 s | 0.382 s | 0.414 s | 0.380 s | 0.403 s | 0.427 s |
 
-Neither was measured in WebAssembly, and no factor is given for it here,
-because the product `docs/specs/linalg.md` timed in both places is not
-one of these: it is `A'A` of a 5000 x 1000 block, whose result is 1000 x
-1000, where the products above have a result of 5000 x 5000 and five
-times the arithmetic. What that spec measured is faer at 187 ms in wasm
-against Accelerate at 7.4 ms natively on the threads it takes by itself,
-and 10.5 ms on one. The implementation plan measures these products in
-both places. The 187 ms is with the vector instructions of WebAssembly,
-the ones that work on sixteen bytes at a time, which `.cargo/config.toml`
-now passes to both wasm targets and which `docs/objectives.md` made the
-floor of the browsers popnei runs in on 22 September 2026, after the
-performance review of the Kosman distances asked for them; without them
-the same product took 306 ms.
+Two things pull against each other. A larger tile gives Accelerate a larger
+product, which it works out faster per pair of variants, and it calls the
+linear algebra crate fewer times, each call scanning both of its operands
+for a value that is not finite. Against that, a tile against itself
+computes its whole square where the matrix needs half of it, so a larger
+tile computes more pairs it throws away: 12819520 of them at 128 and
+25000000 at 5000. The bottom is flat from 1000 to 1250.
+
+A tile that does not divide the variants leaves a short last tile whose
+products are shaped badly: 1024 takes 0.414 s against the 0.382 s of 1000,
+8 per 100 slower for a tile 2 per 100 larger. The tile is 1000, which is
+also the better of 1000 and 1250 away from the cap: over 4000 variants
+0.255 s against 0.263 s, and over 3000 variants 0.147 s against 0.150 s.
+
+The matrix is the same to the bit at every tile: the tiles cut the variants
+and every sum of a pair runs over the individuals, and every sum is a whole
+number below the 2^53 an `f64` counts one by one, so no order of
+accumulation changes a bit.
+
+### What was measured and not taken
+
+The scan of both operands of every product for a value that is not finite
+costs 0.048 s at a tile of 256 and 0.017 s at a tile of 1000, measured by
+taking the two scans out of `crates/popnei-linalg` in a build made for the
+measurement and putting them back. Nothing on this path needs it: the three
+matrices are built from whole numbers and are not changed afterwards.
+Hoisting it would need a type in `crates/popnei-linalg` that carries the
+promise that the caller has checked, which changes "Errors" of
+`docs/specs/linalg.md`. At 4.4 per 100 of the calculation that is not worth
+the change, which is the same conclusion, on the same scans, that
+`docs/reports/perf-pca-2026-09-22.md` reached on 22 September 2026.
+
+### For comparison
+
+pyNei's one product and division over the same dosages, which leaves a
+missing genotype in rather than dropping the individuals missing at either
+variant of a pair, takes 0.067 s with numpy on Accelerate. The rule popnei
+follows costs 6.8 times that in numpy. pyNei has no comparable number for
+a whole matrix of this size: `calc_ld_and_dist_per_pop` would hold every
+chunk in memory and build the whole square matrix of each chunk pair.
+
 
 ## Open points
 
@@ -993,6 +1058,22 @@ allele; or to change `docs/specs/pca.md` and the code built from it.
 Recommendation: keep the one rule. Meanwhile the dosages follow
 `docs/specs/pca.md` and `many.vcf` checks the dosages against pyNei and
 not the r² against plink2.
+
+**Open 3: what the 0.50 s of "Speed" should be.** It was set from numpy
+taking 0.455 s for six full 5000 x 5000 products, plus a tenth. popnei
+takes only the pairs of tiles from the diagonal up, and four products
+instead of six on the diagonal, so it does about half that arithmetic:
+76263680 cells of products against numpy's 150000000. It takes 0.386 s, so
+it meets the target. The options are to keep 0.50 s, which is what a user
+waits for and which the calculation now meets; or to restate it as about
+0.25 s, the like-for-like figure, against which popnei is 1.5 times slower
+than numpy on Accelerate through the same library, which is what would say
+whether the code itself is good. What the second costs is that the spec
+then states a target popnei does not meet, and no experiment of
+`docs/reports/perf-ld-2026-09-23.md` found a way to halve the remaining
+time: 72.7 per 100 of it is inside Accelerate. Recommendation: keep 0.50 s
+as the target and record the like-for-like figure beside it, which "What
+the target compares" of "Speed" does. Meanwhile 0.50 s stands and is met.
 
 ## Not in this spec
 
