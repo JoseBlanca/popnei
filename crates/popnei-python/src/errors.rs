@@ -102,24 +102,6 @@ pub(crate) enum PyPopneiError {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
     },
-    /// Memory this crate asked the machine for and was not given, with what
-    /// a user reads of it: what could not be held, how large it is and what
-    /// they do about it.
-    ///
-    /// The one case today is the copy of the matrix of r² that numpy is
-    /// given, which `ld.rs` asks for with `try_reserve_exact`. The core
-    /// refuses the memory of its own matrices the same way, and both are a
-    /// `ValueError` in Python: the convention of
-    /// `.claude/skills/coding/SKILL.md` has three exceptions and none of
-    /// them is for a machine that has not the memory, so this goes where
-    /// `Error::LdNoMemory` and `Error::DistancesOfTooManyIndividuals` of
-    /// the core go.
-    NoMemory {
-        /// What a user reads, which the call site writes because it is the
-        /// one that knows what was being held.
-        message: String,
-    },
-
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -246,16 +228,6 @@ impl From<PyPopneiError> for PyErr {
                 path,
                 problem,
             } => left_behind(PyErr::from(*error), &path, &problem),
-            // Memory the machine did not give is a `ValueError`, where the
-            // memory the core asked for and was not given goes: the three
-            // exceptions of the convention are a `ValueError` for a wrong
-            // input, a `RuntimeError` for a defect of popnei and an
-            // `OSError` for a file, and a fourth for this would change
-            // which exception every user of popnei catches, which is the
-            // owner's to settle. It names no file, since what could not be
-            // held is the size of the calculation and not what any file
-            // holds.
-            PyPopneiError::NoMemory { message } => PyValueError::new_err(message),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }

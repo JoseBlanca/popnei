@@ -42,15 +42,16 @@
 //
 // The memory of the matrix is inside the time of the matrix and not outside
 // it, in WebAssembly and in the heap of JavaScript both: the call asks for 8
-// bytes a pair, 200 MB at 5000 variants, and the binding makes a second copy
-// of it on the way out.
+// bytes a pair, 200 MB at 5000 variants, and wasm-bindgen writes that into
+// the `Float64Array` of the JavaScript heap a user gets. The binding copies
+// nothing inside WebAssembly, the core handing its own allocation over, so
+// the module holds the matrix once.
 //
 // WebAssembly never gives memory back to the host, so what the module holds
 // is the high water mark of everything that has run in it. The byte length
 // of that memory is printed after `openVars`, after the run that is not
-// timed and after every timed run, which is what the copy the binding makes
-// of the matrix is read from: it is reached by the run that is not timed and
-// no timed run adds to it.
+// timed and after every timed run: it is reached by the run that is not
+// timed and no timed run adds to it.
 //
 // It prints the checksum the native benchmark prints, what the values of the
 // matrix that are numbers add to and how many of them are not a number, so

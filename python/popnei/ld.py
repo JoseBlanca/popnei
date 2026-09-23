@@ -127,9 +127,9 @@ def calc_rogers_huff_r2_matrix(
 
     A cap raised above what the machine then gives is a ``ValueError`` too,
     one that says how many values could not be held. The matrix is held
-    twice while it is copied into the numpy array, 400 MB at 5000 variants
-    while the call runs and 200 MB afterwards, so that is the memory to
-    have.
+    once: the array a caller gets is the memory the calculation filled, and
+    nothing copies it, so 200 MB at 5000 variants is what the call asks the
+    machine for and what it keeps afterwards.
 
     What it gives is an :class:`R2Matrix` with the matrix, the chromosome and
     the position of each variant and the counts of the pass in its

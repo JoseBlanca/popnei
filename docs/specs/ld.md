@@ -1026,12 +1026,14 @@ The matrix is the same in both: every run printed the 25000000 values
 adding to 224076.635484 with none of them not a number, which is the native
 benchmark's figure to all six decimals.
 
-The module holds 593 MB of WebAssembly memory at the high-water mark of one
+The module holds 393 MB of WebAssembly memory at the high-water mark of one
 call, which it reaches on the first call and never adds to. The matrix is
-200 MB of that, the copy the binding makes of it on the way to JavaScript
-another 200 MB, the three matrices of the five tiles 120 MB and the six
-sums of a pair of tiles 48 MB. WebAssembly gives no page back to the host,
-so that mark is what a tab keeps for its lifetime.
+200 MB of that, the three matrices of the five tiles 120 MB, the six sums
+of a pair of tiles 48 MB and the file 6 MB, which is 374 MB of the 393 MB.
+WebAssembly gives no page back to the host, so that mark is what a tab
+keeps for its lifetime. It was 593 MB until the binding stopped copying the
+matrix on its way out and took it from the core instead, on 23 September
+2026.
 
 ### For comparison
 

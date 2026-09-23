@@ -18,17 +18,16 @@
 //!
 //! The matrix is 8 bytes for each pair of the variants of the pass, 200 MB
 //! at the 5000 variants of [`MAX_NUM_VARS_OF_THE_MATRIX`], and this crate
-//! copies it once: the core gives it as a slice it owns and wasm-bindgen
-//! moves a `Vec` out of the result, so the two lie side by side in the
-//! memory of wasm while the copy is made, 400 MB at that cap, and the
-//! core's is dropped as soon as it is made. The copy is asked for with
-//! `try_reserve_exact`, so a tab that has not the room gets an `Error` and
-//! not the trap a failed allocation is in wasm. A `Vec` the core gave up
-//! would save it, which `crates/popnei/src/ld.rs` does not offer today.
+//! copies none of it inside wasm: `R2Matrix::given_away` of the core hands
+//! the `Vec` over and this one holds that same allocation until
+//! wasm-bindgen moves it out. So the memory of wasm holds the matrix once
+//! and not twice, 200 MB at that cap and not 400 MB, which is what a tab
+//! keeps for its lifetime: a module gives no page back to the host, so the
+//! high-water mark of one call is the ceiling of every call after it.
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, R2Matrix as R2MatrixOfTheCore, calc_r2_matrix};
+use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, TheMatrixGivenAway, calc_r2_matrix};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts, positions_of};
@@ -165,17 +164,16 @@ pub(crate) fn r2_matrix_of(
         ))
     })?;
     let counts = PassCounts::of(counted, &chain.filtering_stats());
+    // The matrix is taken out of the core's result and not read from it, so
+    // that what crosses into JavaScript is the allocation the core filled.
+    // `given_away` consumes that result, so the chromosomes and the
+    // positions are read from what it gave and not from it.
+    let matrix = matrix.given_away();
     let chroms = the_names_of_the_chromosomes(&matrix)?;
-    let poss = positions_of(matrix.poss())?;
-    let r2 = the_r2_that_crosses(matrix.r2())?;
-    // The core's matrix is dropped as soon as its values were copied, and
-    // not at the end of the call: what a tab holds while the copy that
-    // crosses is made is the two of them, and what it holds afterwards is
-    // the one this returns.
-    drop(matrix);
+    let poss = positions_of(&matrix.poss)?;
     Ok(R2Matrix {
         num_vars,
-        r2: Some(r2),
+        r2: Some(matrix.r2),
         chroms: Some(chroms),
         poss: Some(poss),
         counts,
@@ -217,10 +215,10 @@ fn of_this_pass(error: popnei::Error) -> JsPopneiError {
 ///
 /// When a number of a variant is not in that table, which cannot happen
 /// unless this crate or the core has a defect.
-fn the_names_of_the_chromosomes(matrix: &R2MatrixOfTheCore) -> Result<Vec<String>, JsPopneiError> {
-    let table = matrix.chrom_table();
+fn the_names_of_the_chromosomes(matrix: &TheMatrixGivenAway) -> Result<Vec<String>, JsPopneiError> {
+    let table = &matrix.chrom_table;
     matrix
-        .chroms()
+        .chroms
         .iter()
         .map(|number| {
             table.name(*number).map(str::to_owned).ok_or_else(|| {
@@ -231,34 +229,4 @@ fn the_names_of_the_chromosomes(matrix: &R2MatrixOfTheCore) -> Result<Vec<String
             })
         })
         .collect()
-}
-
-/// The copy of the matrix that crosses into JavaScript.
-///
-/// The core owns its values and lends them, so this is the one copy the
-/// crossing costs on the side of wasm: the code wasm-bindgen generates
-/// copies this `Vec` into a `Float64Array` of the JavaScript heap and frees
-/// it afterwards. It is asked for with `try_reserve_exact` and not taken, as
-/// the matrix itself is in the core, because an allocation that fails in
-/// wasm aborts, which is a trap that leaves the module unusable where
-/// section 11 of `docs/architecture.md` asks for an `Error`.
-///
-/// # Errors
-///
-/// When the memory of the tab does not take the values a second time.
-fn the_r2_that_crosses(values: &[f64]) -> Result<Vec<f64>, JsPopneiError> {
-    let mut crossing: Vec<f64> = Vec::new();
-    crossing.try_reserve_exact(values.len()).map_err(|_| {
-        JsPopneiError::NoMemory(format!(
-            "the memory of this tab does not take the {num_values} values of the \
-             matrix of r², 8 bytes each: a page holds at most 4 GB of everything that \
-             is open in it at a time, and the matrix is held twice while it crosses \
-             into JavaScript. Ask for the matrix of fewer variants, with a filter on \
-             the variants, or calculate it outside the browser, with popnei in Python \
-             among the ways.",
-            num_values = values.len()
-        ))
-    })?;
-    crossing.extend_from_slice(values);
-    Ok(crossing)
 }

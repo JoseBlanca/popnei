@@ -123,10 +123,16 @@ pub(crate) fn calc_rogers_huff_r2_matrix<'py>(
     // of numpy, that import fails with the exception that is pending, and
     // the numpy crate panics when it does, which a user cannot catch.
     py.check_signals()?;
-    let chroms = ChromColumn::of(matrix.chroms(), matrix.chrom_table(), &path)?;
+    // The matrix is taken out of the result and not read from it: numpy is
+    // given the allocation the core filled, 200 MB at the cap of 5000
+    // variants, instead of a second one written from it. Everything the
+    // result holds is read from what it gave away, since `given_away`
+    // consumes it.
+    let matrix = matrix.given_away();
+    let chroms = ChromColumn::of(&matrix.chroms, &matrix.chrom_table, &path)?;
     let chroms = chrom_column(py, &chroms, &path)?;
-    let poss = read_only(matrix.poss().to_vec().into_pyarray(py))?;
-    let r2 = read_only(the_square_of(py, &matrix)?)?;
+    let poss = read_only(matrix.poss.into_pyarray(py))?;
+    let r2 = read_only(the_square_of(py, matrix.num_vars, matrix.r2)?)?;
     Ok((r2, chroms, poss, (num_vars, filtering)))
 }
 
@@ -167,75 +173,34 @@ fn over_the_source(
 
 /// The r² of the matrix as a numpy array of its variants x its variants.
 ///
-/// The values the core filled are copied once into the array: the matrix
-/// gives them out as a slice it owns, so there is no allocation to hand
-/// over to numpy as the distances of `dists.rs` hand theirs. A core that
-/// gave its `Vec` away instead would save the copy.
+/// `values` is the `Vec` the core filled and gave away, and numpy takes it
+/// over as it takes the distances of `dists.rs`: nothing of the matrix is
+/// copied, and nothing asks this machine for memory here, so the matrix is
+/// held once and not twice, 200 MB at the 5000 variants of
+/// `DEFAULT_MAX_NUM_VARS` instead of 400 MB. A machine that has not the
+/// memory of the matrix is refused by the core, which asks for its own with
+/// `try_reserve_exact` and fails with `Error::LdNoMemory`.
 ///
 /// # Errors
 ///
-/// [`PyPopneiError::NoMemory`] when this machine did not give the memory of
-/// the copy, and [`PyPopneiError::Broken`] when the core gave a matrix
-/// whose values are not the square of its variants, which is a defect of
-/// popnei: a user reports it instead of looking for what they typed wrong.
+/// [`PyPopneiError::Broken`] when the core gave a matrix whose values are
+/// not the square of its variants, which is a defect of popnei: a user
+/// reports it instead of looking for what they typed wrong.
 fn the_square_of<'py>(
     py: Python<'py>,
-    matrix: &R2Matrix,
+    num_vars: usize,
+    values: Vec<f64>,
 ) -> Result<Bound<'py, PyArray2<f64>>, PyPopneiError> {
-    let num_vars = matrix.num_vars();
-    let num_values = matrix.r2().len();
-    let square = Array2::from_shape_vec((num_vars, num_vars), the_r2_copied(matrix.r2())?)
-        .map_err(|error| PyPopneiError::Broken {
+    let num_values = values.len();
+    let square = Array2::from_shape_vec((num_vars, num_vars), values).map_err(|error| {
+        PyPopneiError::Broken {
             message: format!(
                 "the r² of the pairs of {num_vars} variants holds {num_values} values: {error}"
             ),
             path: None,
-        })?;
+        }
+    })?;
     Ok(square.into_pyarray(py))
-}
-
-/// The values of the matrix in a `Vec` of their own, which numpy is given.
-///
-/// The memory is asked for with `try_reserve_exact` and the values are
-/// written into what it gave. `to_vec` asks for it through the allocator
-/// that ends the process when the memory is not there, `handle_alloc_error`
-/// aborting with no traceback and nothing a user could catch, where
-/// `docs/specs/ld.md` asks for an error and not a process that ends. The
-/// core asks for the memory of its own matrices the same way, and
-/// `crates/popnei-js/src/ld.rs` guards this same copy, where a failed
-/// allocation is a trap that leaves the module unusable.
-///
-/// The matrix is held twice while the copy is made, 400 MB at the 5000
-/// variants of `DEFAULT_MAX_NUM_VARS` and 14.4 GB at 30000, so what reaches
-/// the error is a pass whose matrix fits once and not twice: 30000 variants
-/// on a machine with 12 GB free. No test reaches it, since one that did
-/// would have to take the memory of the machine it runs on. What a user
-/// gets there is a `ValueError` that says how many values could not be
-/// held and that the matrix is held twice while it crosses, and their
-/// interpreter goes on.
-///
-/// # Errors
-///
-/// [`PyPopneiError::NoMemory`] when this machine did not give the values a
-/// second time.
-fn the_r2_copied(values: &[f64]) -> Result<Vec<f64>, PyPopneiError> {
-    let mut copied: Vec<f64> = Vec::new();
-    copied
-        .try_reserve_exact(values.len())
-        .map_err(|_| PyPopneiError::NoMemory {
-            message: format!(
-                "this machine did not give the memory of the matrix of r², \
-                 {num_values} values of 8 bytes: the core holds the matrix and popnei \
-                 copies it into the array numpy is given, so it is held twice while \
-                 the copy is made. Ask for the matrix of fewer variants, with a filter \
-                 on the variants or a lower `max_num_vars`",
-                num_values = values.len()
-            ),
-        })?;
-    // The capacity above is the length of the slice, so nothing here asks
-    // the machine for memory again.
-    copied.extend_from_slice(values);
-    Ok(copied)
 }
 
 /// What each filter of a chain was given and kept, the outermost filter
