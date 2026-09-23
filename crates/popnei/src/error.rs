@@ -862,6 +862,55 @@ pub enum Error {
     )]
     JackknifeGroupOfNoBasePairs,
 
+    /// The distances between populations were asked for fewer than two
+    /// populations. Every one of the seven measures is of a pair, so one
+    /// population makes no pair and there is nothing to give. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the distances between populations are calculated for each pair of populations, and `pops` names {num_pops}: name two populations at least"
+    )]
+    PopDistsOfFewerThanTwoPops {
+        /// How many populations the caller named, which is 1: `Pops`
+        /// refuses a `pops` that names none.
+        num_pops: usize,
+    },
+
+    /// The variants of a pass fell into fewer resampling groups than a
+    /// standard error is built from. Each group is left out in turn and the
+    /// measure calculated again, so a handful of groups gives a number that
+    /// says more about where the cuts fell than about the populations, and
+    /// a user who chose a length too long for their data is told rather
+    /// than handed it. In Python it is a `ValueError`.
+    #[error(
+        "the variants fell into {num_groups} resampling groups, and a standard error is built from {at_least} at least: cut them into shorter groups, or ask for no standard error"
+    )]
+    TooFewJackknifeGroups {
+        /// How many groups the variants of the pass fell into.
+        num_groups: usize,
+        /// How many the standard errors need,
+        /// [`MIN_NUM_JACKKNIFE_GROUPS`](crate::pop_dists::MIN_NUM_JACKKNIFE_GROUPS).
+        at_least: usize,
+    },
+
+    /// The six sums the distances between populations are worked out from
+    /// are more than this machine gave room for: popnei keeps them for each
+    /// pair of populations and each resampling group, 48 bytes each, and
+    /// either the pairs and the groups are more than a `usize` counts or
+    /// the machine did not give their memory. The groups appear while the
+    /// variants are read, so it is raised where the sums grow. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the six sums popnei keeps for each pair of {num_pops} populations within each of the {num_groups} resampling groups the variants have fallen into, 48 bytes each, are more than this machine gave room for: calculate over fewer populations, or cut the variants into longer groups"
+    )]
+    PopDistSumsTooLarge {
+        /// How many populations the pairs are of.
+        num_pops: usize,
+        /// How many groups the variants read so far have fallen into, and 1
+        /// when no standard errors were asked for, since the sums are then
+        /// one run of the pairs.
+        num_groups: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.

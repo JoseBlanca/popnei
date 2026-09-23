@@ -996,7 +996,8 @@ pub struct PerVarDistribs {
     pub num_vars: u64,
 }
 
-/// How many rows of a block one chunk of the pass reads.
+/// How many rows of a block one chunk of a pass reads, here and in the pass
+/// over the populations of [`pop_dists`](crate::pop_dists).
 ///
 /// The rows of a block are added up chunk by chunk and the chunks are added
 /// together in the order of the block, so the sum of a statistic does not
@@ -1004,7 +1005,7 @@ pub struct PerVarDistribs {
 /// make it: it joins the parts in an order it chooses at run time. The
 /// number is fixed for the same reason, and 64 rows of 1000 diploid
 /// individuals are 128000 genotypes, enough work for one task of rayon.
-const ROWS_PER_CHUNK: usize = 64;
+pub(crate) const ROWS_PER_CHUNK: usize = 64;
 
 /// Which of the five statistics a pass was asked for, and what has to be
 /// counted for them.
@@ -1307,8 +1308,10 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
 }
 
 /// How many alleles one variant of a block holds, its individuals times its
-/// ploidy, which is how the rows of the block are cut, after the checks
-/// both passes of this module make of every block their reader gives them.
+/// ploidy, which is how the rows of the block are cut, after the checks the
+/// passes of this module and the pass over the populations of
+/// [`pop_dists`](crate::pop_dists) make of every block their reader gives
+/// them.
 ///
 /// `num_individuals` and `ploidy` are what the reader says its source has.
 /// A pass reads the rows of every block as rows of one run over the
@@ -1327,7 +1330,11 @@ pub fn calc_per_var_distribs<R: BlockReader + ?Sized>(
 /// which a pass asked its reader for; and a block of other individuals or
 /// of another ploidy than the reader says its source has. Each of them is a
 /// defect of the reader that gave the block.
-fn alleles_per_var_of(block: &Block, num_individuals: usize, ploidy: usize) -> Result<usize> {
+pub(crate) fn alleles_per_var_of(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<usize> {
     // The rows are cut out of the genotypes by the sizes the block states,
     // so those sizes are checked before anything is read.
     block.check()?;
@@ -1355,10 +1362,10 @@ fn alleles_per_var_of(block: &Block, num_individuals: usize, ploidy: usize) -> R
     Ok(alleles_per_var)
 }
 
-/// How many alleles one chunk of the pass holds: [`ROWS_PER_CHUNK`] rows of
+/// How many alleles one chunk of a pass holds: [`ROWS_PER_CHUNK`] rows of
 /// `alleles_per_var` alleles, and one allele at least, because a cut of 0
 /// is what the standard library refuses with a panic.
-fn alleles_of_a_chunk(alleles_per_var: usize) -> usize {
+pub(crate) fn alleles_of_a_chunk(alleles_per_var: usize) -> usize {
     // A block of more alleles than a `usize` counts is refused before this,
     // and a chunk that saturated would be the whole block, which is a
     // chunking that gives the right numbers and no threads.
