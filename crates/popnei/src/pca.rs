@@ -971,7 +971,10 @@ enum Layout {
 /// [`pca_of_variants`] refuses above [`MAX_INDIVIDUALS_OF_THE_VARIANTS`],
 /// whose square is 2147395600, but for the weights, whose values
 /// [`the_weights_of_a_second_pass`] takes with `checked_mul` before it
-/// builds either of the two buffers that hold them.
+/// builds either of the two buffers that hold them. The components of a
+/// kinship call this too, over a matrix of the individuals by the
+/// individuals whose values `eigh_lower` refuses above the 2147483647 the
+/// linear algebra counts in before this is reached.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "for a table one side is its smaller side or a count of components, at most that side, and the other is at most the other side, so the product is at most the values of the table; for the variants both sides are at most the 46340 individuals the analysis takes, but for the weights, whose values the second pass took with checked_mul and which are more than the buffer of one block of them holds"

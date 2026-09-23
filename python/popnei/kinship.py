@@ -162,8 +162,9 @@ class Kinship:
         with ``n`` the individuals, is not given, so asking for more
         components than the matrix has gives those it has and the frame has
         that many columns. A kinship measures a pair against the average pair
-        of the panel, which takes one direction out of it, so a panel of 200
-        individuals has 199 components and not 200. A `num_pcs` of 0 gives a
+        of the panel, which takes one direction out of it when no genotype is
+        missing, and both reference panels of the spec have 199 components
+        and not 200. A `num_pcs` of 0 gives a
         frame of no columns and is no error, as asking a principal component
         analysis for no components is not; a negative one, and what is no
         whole number, are a ``ValueError`` and a ``TypeError`` that name the

@@ -451,8 +451,8 @@ const COMPONENTS_OF_THE_PANEL = 199;
  *
  * The bound is absolute and not relative to each projection for that reason:
  * a projection of 0 has no digits to be relative to, and the ones that are
- * not 0 here are near 1. Measured on faer, the furthest is 3e-12 from the
- * literal.
+ * not 0 here are near 1. Measured on faer, the furthest is 3.6e-12 from
+ * the literal.
  */
 const OF_THE_WORKED_EXAMPLE_COMPONENTS = [
   1.45989777643, -0.212872996577, 0, 0, -1.34910400096, -0.550866821327,
@@ -465,10 +465,13 @@ const OF_THE_PROJECTIONS = 1e-9;
 /**
  * The kinship of two individuals called at one variant, `0/0` and `1/1`:
  * its matrix is 2 on the diagonal and -2 off it, its first component is
- * 1.41421356 and -1.41421356, and its second eigenvalue is 0. It is where
- * the tolerance of the sign rule is read: the two projections are one
- * number with opposite signs, and the rule gives the first of the two the
- * positive sign.
+ * 1.41421356 and -1.41421356, and its second eigenvalue is 0. The two
+ * projections are one number with opposite signs and the rule gives the
+ * first of the two the positive sign, which is the rule itself and not its
+ * tolerance: both backends give the two coordinates with identical bits, so
+ * the comparison of their absolute values decides and the 64 units in the
+ * last place the rule allows are never consulted. A cargo test of the core
+ * is where they are.
  */
 const OF_TWO_INDIVIDUALS = Float64Array.from([2, -2, -2, 2]);
 const ITS_FIRST_COMPONENT = [1.41421356, -1.41421356];

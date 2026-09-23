@@ -172,8 +172,9 @@ pub struct PcsOfAKinship {
 #[wasm_bindgen]
 impl PcsOfAKinship {
     /// How many components were given: a kinship measures a pair against
-    /// the average pair of the panel, which takes one direction out of it,
-    /// so a panel of 200 individuals has 199 components and not 200.
+    /// the average pair of the panel, which takes one direction out of it
+    /// when no genotype is missing, and both reference panels of
+    /// `docs/specs/kinship.md` have 199 components and not 200.
     #[must_use]
     pub fn num_comps(&self) -> usize {
         self.num_comps

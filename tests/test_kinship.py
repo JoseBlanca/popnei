@@ -853,9 +853,14 @@ OF_THE_PROJECTIONS_OF_PYNEI = 1e-11
 # The kinship of two individuals called at one variant, `0/0` and `1/1`,
 # which "How it is verified" gives: its matrix is 2 on the diagonal and -2
 # off it, its first component is 1.41421356 and -1.41421356, and its second
-# eigenvalue is 0, so asking it for 2 components gives 1. It is where the
-# tolerance of the sign rule is read: the two projections are one number with
-# opposite signs, and the rule gives the first of the two the positive one.
+# eigenvalue is 0, so asking it for 2 components gives 1. The two
+# projections are one number with opposite signs and the rule gives the first
+# of the two the positive one, which is the rule itself and not its
+# tolerance: both backends give the two coordinates with identical bits, so
+# the comparison of their absolute values decides and the 64 units in the
+# last place the rule allows are never consulted. The cargo test
+# `the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size`
+# is where they are.
 OF_TWO_INDIVIDUALS = [[2.0, -2.0], [-2.0, 2.0]]
 ITS_FIRST_COMPONENT = (1.41421356, -1.41421356)
 OF_THE_SPECS_DIGITS = 1e-8

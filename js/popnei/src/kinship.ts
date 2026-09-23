@@ -168,8 +168,8 @@ export class Kinship {
    * `n` the individuals, is not given, so asking for more components than
    * the matrix has gives those it has and `numComps` says how many. A
    * kinship measures a pair against the average pair of the panel, which
-   * takes one direction out of it, so a panel of 200 individuals has 199
-   * components and not 200. A `numPcs` of 0 gives no component and is no
+   * takes one direction out of it when no genotype is missing, and both
+   * reference panels of the spec have 199 components and not 200. A `numPcs` of 0 gives no component and is no
    * error.
    *
    * These are close to the principal components of the variants the kinship
@@ -187,7 +187,7 @@ export class Kinship {
    * the eigendecomposition could not be done, and when `init` has not been
    * awaited.
    */
-  principalComponents(numPcs: number): KinshipPcs {
+  principalComponents(numPcs: number): KinshipPcsResult {
     theWasmHasToBeLoaded();
     const wanted = wholeNumberOfZeroOrMore("numPcs", numPcs);
     const calculated = kinshipPrincipalComponents(
@@ -333,7 +333,7 @@ function theMatrixIsSymmetric(
  * components from the one the panel varies most along. It is what the Python
  * package gives as a pandas frame indexed by the names of the individuals.
  */
-export interface KinshipPcs {
+export interface KinshipPcsResult {
   /**
    * How many components were given: the `numPcs` that were asked for, or
    * the components the matrix has above the tolerance when it has fewer.

@@ -20,7 +20,7 @@ export { calcPairwiseKosmanDists, Distances } from "./dists.js";
 export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
 export type { FilteringStats, Step } from "./filters.js";
 export { calcKinship, Kinship } from "./kinship.js";
-export type { CalcKinshipOptions, KinshipPcs } from "./kinship.js";
+export type { CalcKinshipOptions, KinshipPcsResult } from "./kinship.js";
 export { calcRogersHuffR2Matrix } from "./ld.js";
 export type { CalcRogersHuffR2MatrixOptions, R2Matrix } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";

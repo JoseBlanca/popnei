@@ -1141,9 +1141,11 @@ mod tests {
             .collect()
     }
 
-    /// Every entry of the matrix is plink2's within 1e-12 relative, and the
-    /// individuals are `s000` to `s199` in the order plink2 wrote them in,
-    /// which is the order of the VCF and what `<name>.plink2.rel.id` says.
+    /// Every entry of the matrix is plink2's within
+    /// [`OF_THE_BITS_OF_PLINK2`] of the largest absolute entry of it, and
+    /// the individuals are `s000` to `s199` in the order plink2 wrote them
+    /// in, which is the order of the VCF and what `<name>.plink2.rel.id`
+    /// says.
     fn assert_the_matrix_is_plink2s(panel: &(Vec<String>, Kinship), name: &str) {
         let (individuals, kinship) = panel;
         for (at, individual) in individuals.iter().enumerate() {
@@ -1959,7 +1961,9 @@ mod components {
         individual_at, the_kinship_of, the_panel_called, the_panel_with_genotypes_missing,
         the_worked_example, variant, vcf_of,
     };
-    use super::{Kinship, KinshipPcs, principal_components, the_components_with_variance};
+    use super::{
+        Kinship, KinshipPcs, fix_the_sign_of, principal_components, the_components_with_variance,
+    };
     use crate::error::Error;
 
     /// What the eigenvalues and the projections of numpy 2.5.3 are held to,
@@ -1977,8 +1981,11 @@ mod components {
     /// the 1e-9 they are held to: a change that is right and moves an
     /// eigenvalue by 1.5e-10 would have reddened this and the two suites
     /// that assert the same three numbers.
-    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] =
-        [17.269_141_155_457_5, 12.447_315_235_850_9, 3.358_712_577_141_36];
+    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] = [
+        17.269_141_155_457_5,
+        12.447_315_235_850_9,
+        3.358_712_577_141_36,
+    ];
 
     /// The projections of the two components of the worked example of "How
     /// it is verified" of `docs/specs/kinship.md`, from numpy 2.5.3 on 23
@@ -2033,11 +2040,16 @@ mod components {
     ///
     /// The rule of `docs/specs/pca.md` takes two projections within 64 units
     /// in the last place of each other for one absolute value, which this
-    /// does not. Neither panel has such a pair: the two largest absolute
-    /// values of a component are 2.5e-3 of each other at the closest on
-    /// `panel_called` and 4.2e-4 on `panel`, measured with numpy 2.5.3 over
-    /// the 199 components of each. The kinship of two individuals below is
-    /// where the tolerance decides.
+    /// does not. No dataset of this module reaches that tolerance: neither
+    /// panel has such a pair, the two largest absolute values of a component
+    /// being 2.5e-3 of each other at the closest on `panel_called` and
+    /// 4.2e-4 on `panel`, measured with numpy 2.5.3 over the 199 components
+    /// of each; and the two projections of the kinship of two individuals
+    /// below are one number with opposite signs, which both backends give
+    /// with identical bits, so their absolute values are compared and found
+    /// equal without it.
+    /// `the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size`
+    /// is where the tolerance decides.
     fn the_projection_that_fixes_the_sign_of(
         pcs: &KinshipPcs,
         component: usize,
@@ -2245,9 +2257,12 @@ mod components {
     }
 
     /// A kinship measures each pair against the average pair of the panel,
-    /// which takes one direction out of it, so the last eigenvalue of a
-    /// panel is 0 or below it: -3.44e-15 on `panel_called` and -0.0321 on
-    /// `panel` from numpy 2.5.3, against a tolerance of 7.67e-13 on both.
+    /// which takes one direction out of it exactly when no genotype is
+    /// missing, since each variant is centered; with the per pair
+    /// denominators it is measured and not proved, which
+    /// `docs/specs/kinship.md` says. The last eigenvalue is 0 or below it
+    /// on both panels: -3.44e-15 on `panel_called` and -0.0321 on `panel`
+    /// from numpy 2.5.3, against a tolerance of 7.67e-13 on both.
     /// pyNei gives 200 components on either, the last of them the square
     /// root of the absolute value of that eigenvalue.
     #[test]
@@ -2293,6 +2308,37 @@ mod components {
                 "the first component of {name} is {projection} and numpy gives {of_numpy}"
             );
         }
+    }
+
+    /// The rule that fixes the sign of a component calls two projections
+    /// one absolute value when they are within 64 units in the last place
+    /// of each other, and keeps the first of the two: here the second is 32
+    /// units above the first in absolute value, so without that tolerance
+    /// the second would decide and the component would be left as it is.
+    ///
+    /// No kinship of this module reaches the tolerance, so nothing else
+    /// here reads it: setting it to 0 leaves every test of the kinship
+    /// green. It is the rule of `docs/specs/pca.md`, which the components
+    /// of a kinship take unchanged, and it is read here because the 47
+    /// tests of `pca.rs` are the evidence that this plan changed no number
+    /// of the principal components and they keep their names and their
+    /// count.
+    #[test]
+    fn the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size() {
+        // One component of two individuals: -1 and one number 32 units in
+        // the last place above 1.
+        let mut projections = [-1.0, 1.0 + 32.0 * f64::EPSILON];
+
+        let turned = fix_the_sign_of(&mut projections, 0, 1);
+
+        assert!(
+            turned,
+            "the component is turned round by the first of the two"
+        );
+        assert!(
+            projections[0] > 0.0,
+            "the projections are {projections:?} and the first of them decides the sign"
+        );
     }
 
     /// The components come in the order of their eigenvalues, from the
