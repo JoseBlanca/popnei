@@ -308,7 +308,7 @@ and `js/popnei/src/ld.ts`.
       and `max_dist()` on `VarFilteringCriterion`, `chain_of` and
       `refuse_a_second_filter_of_a_kind`, from "The Rust interface" of
       the same spec. Serves deliverables 1 and 4. Needs 3.1.
-- [ ] 3.3 The checks against the stored numbers: the three properties
+- [x] 3.3 The checks against the stored numbers: the three properties
       added to `tests/reference/ld/make_reference.py` with their output
       stored, and the cargo test of the four rows of the table. Serves
       deliverables 2 and 3. Needs 1.1 and 3.2.

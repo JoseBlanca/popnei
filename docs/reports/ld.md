@@ -706,3 +706,47 @@ the 0.0845 median r the program prints. So the numbers a reader would act
 on are sound and the program kept to reproduce them is not, which is the
 worse way round for a number that has to survive a change on either side.
 It is being put right.
+
+Task 3.3, the checks against the stored numbers, commit 921114e. This is
+the guard the plan asks for over task 3.1, the task whose failure would
+have been a wrong set of variants and not a crash. It is a check now and
+no longer a measurement.
+
+The four counts hold, and they hold twice over by two routes that share
+no arithmetic: the rule of the spec written again in Python over plink2's
+stored r² matrix, and popnei's own reader. Both give 84, 133, 85 and 85
+variants kept of 500 at the four settings of the table, the five
+positions of each row, the same variants in blocks of 7, of 64 and of the
+default size, and chr2:1000 first of its chromosome. The cargo test
+asserts that popnei's kept variants are exactly the ones the stored file
+holds, chromosome and position, which is more than deliverable 2 asked
+for: it asked for the counts and five positions.
+
+The three properties of the kept set hold at all four settings, with
+nothing violating any of them: no kept variant has fewer than two
+dosages, no kept pair inside a window is above the threshold, of 84, 288,
+593 and 1764 such pairs, and no dropped variant with two dosages lacks
+something above the threshold kept before it in its window, of 348, 299,
+347 and 347 such variants. Those counts of what was examined are
+consistent on their face: 500 less the 84 kept is 416, less the 68
+variants of one dosage is the 348 the third property looked at.
+
+All three were shown to be able to fail: pyNei's rule leaves 707 pairs
+above the threshold, a set that kept everything leaves 68 variants of one
+dosage, and a set with ten variants taken out of it leaves 45 dropped for
+no reason.
+
+`cargo test --workspace` goes to `473 passed` and `filters::` to 64
+tests. `run_plink2.sh` writes eight files now and still exits 0, so
+`ld.vcf.gz` is what it was.
+
+### A claim of the spec that this disproved
+
+`docs/specs/filters.md` said the three properties do not pin the kept set
+and that "a set that dropped a variant it could have kept would pass all
+three". It would not. Such a variant has two dosages and nothing above
+the threshold kept before it inside its window, which is exactly the
+negation of what the third property asks of every dropped variant, and
+the deliberate break above named 45 of them. The spec now says what each
+of the three catches, and the counts of the table are a check beside them
+rather than the only one. Commit 6d127ad.
