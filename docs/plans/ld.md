@@ -235,7 +235,7 @@ Work package 1.
       with its result in `python/popnei/ld.py`, from "Its Python
       function" of `docs/specs/ld.md`. Serves deliverables 2, 3 and 4.
       Needs 2.1.
-- [ ] 2.3 The TypeScript function: the binding in `crates/popnei-js` and
+- [x] 2.3 The TypeScript function: the binding in `crates/popnei-js` and
       `js/popnei/src/ld.ts`, from the TypeScript paragraph of the same
       part. Serves deliverable 5. Needs 2.1, and can run beside 2.2.
 
@@ -303,7 +303,7 @@ and `js/popnei/src/ld.ts`.
       is the task whose failure would be silent, a set of variants that
       is wrong and not a crash, and deliverable 2 is what guards it.
       Serves deliverables 1 and 4. Needs 1.4.
-- [ ] 3.2 `LdFilteredReader`, the criterion and the chain: the reader
+- [x] 3.2 `LdFilteredReader`, the criterion and the chain: the reader
       over a reader with the rules of `docs/specs/block.md`, `MaxLdR2`
       and `max_dist()` on `VarFilteringCriterion`, `chain_of` and
       `refuse_a_second_filter_of_a_kind`, from "The Rust interface" of

@@ -603,3 +603,57 @@ instruction the orchestrator gave, to commit only one's own hunks of a
 shared file, asks for something git makes awkward. The next plan should
 give each file one owner for the length of a work package, or not run
 two tasks that need the same file at once.
+
+Task 2.3, the TypeScript function, commit 940682c. `calcRogersHuffR2Matrix`
+and its result in `js/popnei/src/ld.ts`, with the binding in
+`crates/popnei-js`. `npm test` in `js/popnei` goes from 172 tests to 180.
+
+The five r² of the spec's table come out under node, where the products
+run on faer and not on the system BLAS, **equal to the spec's decimals to
+the bit**: 0.353466669239891 is the 64 bits `3fd69f32aa2720de` on both
+sides, which the orchestrator checked, and so are the other four. The
+committed test keeps the 1e-12 the spec gives.
+
+One thing the owner should know about the memory. The binding copies the
+matrix once, because the core lends its values and gives up no vector, so
+at the cap of 5000 variants the core's 200 MB and the copy's sit in the
+memory of the WebAssembly instance together. The copy asks with
+`try_reserve_exact`, so a tab without the room gets an `Error` and not a
+dead instance. An accessor on `R2Matrix` that gives the vector up would
+remove the copy; the task did not add one, since `crates/popnei/src/ld.rs`
+was not its file.
+
+Task 3.2, `LdFilteredReader` and the chain, commit 1d41f14. The filter is
+a reader over a reader now, with the three rules of `docs/specs/block.md`,
+`MaxLdR2` and `max_dist()` on the criterion, the kind `"ld"`, its place in
+`chain_of`, and the refusal of a second filter of the kind. `filters::`
+goes from 51 tests to 63 and the workspace from 460 to 472.
+
+The four counts of the filter did not move: the task ran them again
+through the new reader, at the four settings and at three block sizes,
+and got 84, 133, 85 and 85 of 500 with the five positions of each row.
+
+It added one case to the error of the crate that the spec did not have,
+and asked whether it belonged there. It does, and the spec has it now,
+commit 0b5dd76: the plain filter of a threshold cannot answer for the
+criterion of this filter, because whether a variant is kept turns on the
+variants kept before it and not on the variant alone, so building one for
+that criterion is refused. Nothing a user writes reaches it, since
+`chain_of` sends that criterion to the reader that does answer it, so it
+is a `RuntimeError` and not a `ValueError`. The spec said the module adds
+three cases and it adds five; the other one it did not name is the
+variant whose position does not rise within its chromosome.
+
+### What running three tasks at once cost
+
+Giving every file one owner stopped the trouble of the first pair: no
+task committed another's work. A different thing happened instead. Adding
+`MaxLdR2` to the criterion of the core crate broke both binding crates,
+which match on that type and have no arm to spare, so the workspace would
+not compile until each binding crate gained one. The task that added the
+variant did not own either binding crate, and the two tasks that did own
+them found their crate broken by work they had not done. They fixed their
+own side and said so, and nothing was lost, but the orchestrator had not
+foreseen it: ownership of a file is not the same as ownership of what
+compiles. A task that adds a variant to an enum the bindings match on
+should either own the arms it breaks or not run beside the tasks that do.
