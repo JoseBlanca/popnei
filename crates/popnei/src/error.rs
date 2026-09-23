@@ -194,8 +194,8 @@ pub enum Error {
         "the threshold of the {kind} filter is {threshold:?}, and a threshold is a number from 0 to 1, both included: the number of the variant it is compared with is one count of the variant divided by another"
     )]
     VarFilterThresholdOutOfRange {
-        /// Which filter it is: `missing_data`, `maf` or `obs_het`, the name
-        /// its counts have for a Python and a TypeScript user.
+        /// Which filter it is: `missing_data`, `maf`, `obs_het` or `ld`,
+        /// the name its counts have for a Python and a TypeScript user.
         kind: &'static str,
         /// The threshold that was given for it.
         threshold: f64,
@@ -213,8 +213,8 @@ pub enum Error {
             .map_or_else(String::new, |set| format!(", with a threshold of {set:?}"))
     )]
     VarFilterOfAKindThatIsSet {
-        /// The kind that is filtered twice: `missing_data`, `maf` or
-        /// `obs_het`.
+        /// The kind that is filtered twice: `missing_data`, `maf`,
+        /// `obs_het` or `ld`.
         kind: &'static str,
         /// The threshold of the filter that was refused, which is the one
         /// the caller wrote.
@@ -228,6 +228,20 @@ pub enum Error {
         /// is `None`.
         threshold_that_is_set: Option<f64>,
     },
+
+    /// A filter that compares one number of each variant was asked for with
+    /// the criterion of the filter by linkage disequilibrium, which
+    /// compares a variant with the variants kept behind it and holds the
+    /// window of them between one block and the next. The filter of that
+    /// criterion is `LdFilter` and the reader of it is `LdFilteredReader`,
+    /// which `chain_of` builds for the criterion, so no call from Python or
+    /// from TypeScript reaches this: it is a caller of the core crate that
+    /// built the wrong filter for a criterion. In Python it is a
+    /// `RuntimeError`, the defect of popnei that it is.
+    #[error(
+        "a filter that compares one number of each variant was asked for with the criterion of the filter by linkage disequilibrium, which compares a variant with the variants kept behind it: the filter of that criterion is LdFilter, and chain_of builds an LdFilteredReader for it"
+    )]
+    VarFilterOfTheLdCriterion,
 
     /// The `max_dist` of the filter by linkage disequilibrium is below 1: a
     /// window that holds nothing but the variants at the very position of

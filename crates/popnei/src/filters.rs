@@ -18,10 +18,11 @@
 //! its window, between one block and the next.
 //!
 //! A filter of a pass over the variants is a reader over another reader,
-//! [`FilteredReader`], and several filters are several of them, one over
-//! the other, in the order in which the user put them on. [`chain_of`]
-//! builds that chain from the criteria of one pass, and it is what each
-//! binding crate calls when a pass starts.
+//! [`FilteredReader`] for the three that compare one number of a variant
+//! and [`LdFilteredReader`] for the fourth, and several filters are several
+//! of them, one over the other, in the order in which the user put them on.
+//! [`chain_of`] builds that chain from the criteria of one pass, and it is
+//! what each binding crate calls when a pass starts.
 //!
 //! `docs/specs/filters.md` has the design, and the row `filters` of section
 //! 9 of `docs/architecture.md` where the module sits.
@@ -51,15 +52,21 @@ pub struct FilteringStats {
     pub vars_kept: u64,
 }
 
-/// Which number of a variant a filter compares with a threshold, with the
-/// largest value of that number that keeps the variant.
+/// What a filter compares with a threshold, with the largest value that
+/// keeps the variant.
 ///
-/// A variant stays when its number is at most the threshold, so one whose
-/// number is exactly the threshold stays. Each number is one count of the
-/// variant divided by another, so a threshold is a number from 0 to 1. A
-/// variant that has no number, one with no called allele for the major
-/// allele frequency and one with no called genotype for the observed
-/// heterozygosity, is not kept, whatever the threshold.
+/// The first three compare one number of the variant alone, and the fourth
+/// compares the variant with the variants kept before it. A variant stays
+/// when the value is at most the threshold, so one whose value is exactly
+/// the threshold stays. Each of the four values is one count divided by
+/// another, or an r², which is a correlation squared, so a threshold is a
+/// number from 0 to 1. A variant that has no value, one with no called
+/// allele for the major allele frequency and one with no called genotype
+/// for the observed heterozygosity, is not kept, whatever the threshold.
+///
+/// The first three are filtered by a [`VarFilter`] under a
+/// [`FilteredReader`], and the fourth by an [`LdFilter`] under an
+/// [`LdFilteredReader`], which [`chain_of`] is what builds for each.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VarFilteringCriterion {
     /// Missing genotypes divided by all the individuals of the dataset, and
@@ -77,24 +84,41 @@ pub enum VarFilteringCriterion {
     /// is heterozygous when it is called and its alleles are not all the
     /// same, at any ploidy.
     MaxObsHet(f64),
+    /// The largest r² a variant may have against a variant kept no more
+    /// than `max_dist` base pairs behind it on its chromosome, which is the
+    /// window of that variant. r² is the squared correlation between the
+    /// dosages of two variants, `docs/specs/ld.md`, and a variant whose
+    /// called genotypes hold one dosage is dropped at every threshold,
+    /// having nothing to tell another variant apart with.
+    MaxLdR2 {
+        /// The largest r² against a variant of the window that keeps the
+        /// variant, a number from 0 to 1.
+        max_allowed_r2: f64,
+        /// How many base pairs behind a variant its window reaches, 1 or
+        /// more.
+        max_dist: u64,
+    },
 }
 
 impl VarFilteringCriterion {
-    /// `"missing_data"`, `"maf"` or `"obs_het"`: the name under which the
-    /// counts of the filter reach a Python or a TypeScript user, and the
-    /// name by which a chain of readers is asked whether it holds a filter
-    /// of this kind already.
+    /// `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`: the name under
+    /// which the counts of the filter reach a Python or a TypeScript user,
+    /// and the name by which a chain of readers is asked whether it holds a
+    /// filter of this kind already.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             VarFilteringCriterion::MaxMissingRate(_) => "missing_data",
             VarFilteringCriterion::MaxMaf(_) => "maf",
             VarFilteringCriterion::MaxObsHet(_) => "obs_het",
+            VarFilteringCriterion::MaxLdR2 { .. } => THE_KIND_OF_THE_LD_FILTER,
         }
     }
 
-    /// The largest value of the number of a variant that keeps it,
-    /// whichever of the three numbers this criterion compares.
+    /// The largest value that keeps the variant, whichever of the four
+    /// values this criterion compares, which for
+    /// [`MaxLdR2`](VarFilteringCriterion::MaxLdR2) is its
+    /// `max_allowed_r2`.
     ///
     /// A binding crate reads it for the arguments of the step it shows the
     /// user, `{"max_allowed_maf": 0.95}`.
@@ -103,7 +127,28 @@ impl VarFilteringCriterion {
         match self {
             VarFilteringCriterion::MaxMissingRate(threshold)
             | VarFilteringCriterion::MaxMaf(threshold)
-            | VarFilteringCriterion::MaxObsHet(threshold) => *threshold,
+            | VarFilteringCriterion::MaxObsHet(threshold)
+            | VarFilteringCriterion::MaxLdR2 {
+                max_allowed_r2: threshold,
+                ..
+            } => *threshold,
+        }
+    }
+
+    /// The `max_dist` of [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), the
+    /// second value of the arguments of its step, and `None` for the three
+    /// criteria that compare one number of a variant alone.
+    ///
+    /// A binding crate reads it for the step it shows the user,
+    /// `{"max_allowed_r2": 0.1, "max_dist": 10000}`, where the threshold is
+    /// the first of the two.
+    #[must_use]
+    pub fn max_dist(&self) -> Option<u64> {
+        match self {
+            VarFilteringCriterion::MaxMissingRate(_)
+            | VarFilteringCriterion::MaxMaf(_)
+            | VarFilteringCriterion::MaxObsHet(_) => None,
+            VarFilteringCriterion::MaxLdR2 { max_dist, .. } => Some(*max_dist),
         }
     }
 }
@@ -129,8 +174,16 @@ impl VarFilter {
     /// # Errors
     ///
     /// When the threshold is NaN, below 0 or above 1: the error names the
-    /// criterion and the value.
+    /// criterion and the value. And when `criterion` is
+    /// [`MaxLdR2`](VarFilteringCriterion::MaxLdR2), which holds the window
+    /// of the variants kept behind a variant and is filtered by an
+    /// [`LdFilter`]: no call from Python or from TypeScript reaches it,
+    /// since [`chain_of`] builds an [`LdFilteredReader`] for that
+    /// criterion.
     pub fn new(criterion: VarFilteringCriterion) -> Result<VarFilter> {
+        if let VarFilteringCriterion::MaxLdR2 { .. } = criterion {
+            return Err(Error::VarFilterOfTheLdCriterion);
+        }
         let threshold = criterion.threshold();
         // A NaN is in no range, so this one comparison refuses the three
         // thresholds that are not a number from 0 to 1.
@@ -397,6 +450,16 @@ impl LdFilter {
             before: None,
             chroms_read: Vec::new(),
         })
+    }
+
+    /// What it filters by, with both its arguments: the criterion a binding
+    /// crate reads the kind and the arguments of the step from.
+    #[must_use]
+    pub fn criterion(&self) -> VarFilteringCriterion {
+        VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2: self.max_allowed_r2,
+            max_dist: self.max_dist,
+        }
     }
 
     /// The largest r² a variant may have against a variant of its window.
@@ -915,9 +978,171 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
     }
 }
 
-/// One [`FilteredReader`] over `reader` for each criterion, in their order,
-/// so that each filter sees what the one before it kept: the chain of the
-/// filters of one pass. No criterion gives `reader` as it is.
+/// A reader that gives the variants of its source that the filter by
+/// linkage disequilibrium keeps.
+///
+/// It is [`FilteredReader`] for an [`LdFilter`], and it keeps the same
+/// contract of a reader of `docs/specs/block.md`: a block left with no
+/// variant is not given and the next one is taken; after an error, of its
+/// source or of its filter, it gives `None` at every call and does not call
+/// its source again; and a source that gives a block of no variants has a
+/// defect and is the error of that.
+///
+/// Two things are its own. Its filter holds the window of the variants kept
+/// behind the variant it is reading, so what carries from one block to the
+/// next is that window and not two counts alone. And it asks its source for
+/// the chromosome and the position besides the genotypes, whatever its
+/// consumer asked for, since the window of a variant is the variants kept
+/// within `max_dist` base pairs of it on its chromosome: the blocks it
+/// gives hold all three.
+pub struct LdFilteredReader<R: BlockReader> {
+    reader: R,
+    filter: LdFilter,
+    /// Whether the source has no more blocks or one of the two, the source
+    /// or the filter, gave an error. After any of them there is no block.
+    finished: bool,
+}
+
+impl<R: BlockReader> LdFilteredReader<R> {
+    /// The reader that gives the variants of `reader` that `filter` keeps.
+    ///
+    /// Building the chain asks `reader` for nothing: the consumer of the
+    /// pass calls [`BlockReader::set_needs`] on the outermost reader of the
+    /// chain, once it is built, and this one adds the genotypes, the
+    /// chromosome and the position to what it passes on. A source that was
+    /// narrowed to fields without them before it was wrapped, and that
+    /// nobody asks again, gives blocks the filter fails at with the error
+    /// of a field that is not in the block.
+    ///
+    /// # Errors
+    ///
+    /// When `reader` holds a filter by linkage disequilibrium already,
+    /// which its [`BlockReader::filtering_stats`] says: the second one
+    /// would work its r² out over the variants the first left, which is not
+    /// what either threshold asks for. The error carries the
+    /// `max_allowed_r2` of `filter`, and no threshold of the filter that is
+    /// set: a chain says which kinds it holds and not with which
+    /// thresholds.
+    pub fn new(reader: R, filter: LdFilter) -> Result<LdFilteredReader<R>> {
+        let kind = THE_KIND_OF_THE_LD_FILTER;
+        if reader
+            .filtering_stats()
+            .iter()
+            .any(|(of_the_chain, _)| *of_the_chain == kind)
+        {
+            return Err(Error::VarFilterOfAKindThatIsSet {
+                kind,
+                threshold: filter.max_allowed_r2(),
+                threshold_that_is_set: None,
+            });
+        }
+        Ok(LdFilteredReader {
+            reader,
+            filter,
+            finished: false,
+        })
+    }
+}
+
+impl<R: BlockReader> BlockReader for LdFilteredReader<R> {
+    /// The next block of the source with the variants that the filter keeps
+    /// kept in it, and the blocks that its filter emptied passed over.
+    ///
+    /// # Errors
+    ///
+    /// When the source fails; when a block of the source holds no variant,
+    /// which no reader of popnei gives; and everything the filter refuses,
+    /// which the `# Errors` of [`LdFilter::filter_block`] lists: a block
+    /// whose arrays are not of its size, a block that has variants and no
+    /// genotypes or no position, a variant that does not come after the one
+    /// before it, and what the dosages of a block refuse. After any of them
+    /// there is no block and the source is not called again.
+    fn next_block(&mut self) -> Result<Option<Block>> {
+        if self.finished {
+            return Ok(None);
+        }
+        loop {
+            let mut block = match self.reader.next_block() {
+                Ok(Some(block)) => block,
+                Ok(None) => {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Err(error);
+                }
+            };
+            // A source that gives a block of no variants has a defect, and
+            // it is not asked again: over a source that always gives one, a
+            // reader that asked again would never come back.
+            if block.num_vars == 0 {
+                self.finished = true;
+                return Err(Error::ReaderGaveABlockOfNoVariants);
+            }
+            if let Err(error) = self.filter.filter_block(&mut block) {
+                self.finished = true;
+                return Err(error);
+            }
+            // A block the filter emptied is not given: the next one is
+            // taken, and the source says when there are no more.
+            if block.num_vars > 0 {
+                return Ok(Some(block));
+            }
+        }
+    }
+
+    fn individuals(&self) -> &[String] {
+        self.reader.individuals()
+    }
+
+    fn ploidy(&self) -> usize {
+        self.reader.ploidy()
+    }
+
+    /// The table of the source: a reader over another reader has none of
+    /// its own.
+    fn chroms(&self) -> &ChromTable {
+        self.reader.chroms()
+    }
+
+    /// The fields of the consumer, the genotypes, the chromosome and the
+    /// position, which the filter reads for every variant of every block:
+    /// so the blocks this reader gives hold the three also when the
+    /// consumer asked for none of them.
+    fn set_needs(&mut self, needs: Needs) {
+        self.reader
+            .set_needs(needs.union(Needs::GTS).union(Needs::CHROM_POS));
+    }
+
+    /// The counts of this filter, and after them those of the filters
+    /// between the source and its own source.
+    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+        let mut stats = vec![(THE_KIND_OF_THE_LD_FILTER, self.filter.stats())];
+        stats.extend(self.reader.filtering_stats());
+        stats
+    }
+}
+
+impl<R: BlockReader> fmt::Debug for LdFilteredReader<R> {
+    /// What it filters and where it has got to. The source is left out, so
+    /// that an `LdFilteredReader` over a reader that has no `Debug` has
+    /// one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LdFilteredReader")
+            .field("filter", &self.filter)
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One reader over `reader` for each criterion, in their order, so that
+/// each filter sees what the one before it kept: the chain of the filters
+/// of one pass. A [`FilteredReader`] for the three criteria that compare
+/// one number of a variant and an [`LdFilteredReader`] for
+/// [`MaxLdR2`](VarFilteringCriterion::MaxLdR2). No criterion gives `reader`
+/// as it is.
 ///
 /// Both binding crates build the chain of a pass with this, and neither
 /// writes the loop: in which order the filters go, and what comes out while
@@ -931,17 +1156,32 @@ impl<R: BlockReader> BlockReader for FilteredReader<R> {
 ///
 /// # Errors
 ///
-/// What [`VarFilter::new`] refuses, a threshold that is NaN, below 0 or
-/// above 1, and what [`FilteredReader::new`] refuses, a criterion of the
-/// kind of one before it in `criteria` or of a filter that `reader` holds
-/// already, which a chain built over a chain has. No block was read then.
+/// What [`VarFilter::new`] and [`LdFilter::new`] refuse, a threshold that is
+/// NaN, below 0 or above 1 and a `max_dist` below 1, and what
+/// [`FilteredReader::new`] and [`LdFilteredReader::new`] refuse, a criterion
+/// of the kind of one before it in `criteria` or of a filter that `reader`
+/// holds already, which a chain built over a chain has. No block was read
+/// then.
 pub fn chain_of(
     reader: Box<dyn BlockReader>,
     criteria: &[VarFilteringCriterion],
 ) -> Result<Box<dyn BlockReader>> {
     let mut chain = reader;
     for criterion in criteria {
-        chain = Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?);
+        chain = match *criterion {
+            VarFilteringCriterion::MaxMissingRate(_)
+            | VarFilteringCriterion::MaxMaf(_)
+            | VarFilteringCriterion::MaxObsHet(_) => {
+                Box::new(FilteredReader::new(chain, VarFilter::new(*criterion)?)?)
+            }
+            VarFilteringCriterion::MaxLdR2 {
+                max_allowed_r2,
+                max_dist,
+            } => Box::new(LdFilteredReader::new(
+                chain,
+                LdFilter::new(max_allowed_r2, max_dist)?,
+            )?),
+        };
     }
     Ok(chain)
 }
@@ -950,10 +1190,11 @@ pub fn chain_of(
 /// one of `set`, the criteria of the filters that are set already.
 ///
 /// Two threshold filters of one kind keep the variants that the stricter of
-/// the two keeps alone, so the second says that the user has lost track of
-/// what their variants carry. Both binding crates call this when a user
-/// adds a filter to a `Variants`, where no reader exists yet and the steps
-/// are what says which filters are set.
+/// the two keeps alone, and a second filter by linkage disequilibrium works
+/// its r² out over the variants the first left, so either says that the
+/// user has lost track of what their variants carry. Both binding crates
+/// call this when a user adds a filter to a `Variants`, where no reader
+/// exists yet and the steps are what says which filters are set.
 ///
 /// # Errors
 ///
@@ -1133,6 +1374,13 @@ fn keeps(
             }
             f64::from(gt_counts.het) / f64::from(gt_counts.called)
         }
+        VarFilteringCriterion::MaxLdR2 { .. } => {
+            // A criterion reaches this through a `VarFilter`, which is not
+            // built for this one, so it is not reached: the r² of a variant
+            // is not a number of the variant alone and is worked out by an
+            // `LdFilter` against the window it holds.
+            return Err(Error::VarFilterOfTheLdCriterion);
+        }
     };
     Ok(number <= criterion.threshold())
 }
@@ -1146,7 +1394,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{
-        FilteredReader, FilteringStats, LdFilter, THE_VARS_SETTLED_AT_A_TIME,
+        FilteredReader, FilteringStats, LdFilter, LdFilteredReader, THE_VARS_SETTLED_AT_A_TIME,
         TheOrderOfTheVariants, VarFilter, VarFilteringCriterion, chain_of, keep_of_the_rows,
         keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
     };
@@ -1155,7 +1403,7 @@ mod tests {
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
-    use VarFilteringCriterion::{MaxMaf, MaxMissingRate, MaxObsHet};
+    use VarFilteringCriterion::{MaxLdR2, MaxMaf, MaxMissingRate, MaxObsHet};
 
     /// The six variants of five diploid individuals of the worked example
     /// of "How it is verified" of `docs/specs/filters.md`, each at the
@@ -1614,7 +1862,63 @@ mod tests {
         assert_eq!(MaxMissingRate(0.04).kind(), "missing_data");
         assert_eq!(MaxMaf(0.8).kind(), "maf");
         assert_eq!(MaxObsHet(0.5).kind(), "obs_het");
+        assert_eq!(
+            MaxLdR2 {
+                max_allowed_r2: 0.1,
+                max_dist: 10_000,
+            }
+            .kind(),
+            "ld"
+        );
         assert_eq!(MaxMaf(0.0).kind(), MaxMaf(1.0).kind());
+    }
+
+    /// The criterion by linkage disequilibrium carries both the arguments a
+    /// user wrote: its threshold is the `max_allowed_r2`, the first of the
+    /// two values of the step a binding crate shows them, and its
+    /// `max_dist` is the second. The three criteria that compare one number
+    /// of a variant have no distance at all, so nothing of them reaches
+    /// that second value.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the threshold comes back as it was written and is not the end of any arithmetic"
+    )]
+    fn the_criterion_by_linkage_disequilibrium_carries_the_threshold_and_the_distance() {
+        let criterion = MaxLdR2 {
+            max_allowed_r2: 0.3,
+            max_dist: 50_000,
+        };
+
+        assert_eq!(criterion.threshold(), 0.3);
+        assert_eq!(criterion.max_dist(), Some(50_000));
+        assert_eq!(MaxMissingRate(0.04).max_dist(), None);
+        assert_eq!(MaxMaf(0.8).max_dist(), None);
+        assert_eq!(MaxObsHet(0.5).max_dist(), None);
+    }
+
+    /// The criterion of the filter by linkage disequilibrium is no
+    /// criterion of a `VarFilter`: the r² of a variant is worked out
+    /// against the window of the variants kept behind it and not out of the
+    /// counts of the variant alone. `chain_of` builds the reader of the
+    /// right filter for it, so no call from Python or from TypeScript
+    /// reaches this, and a caller of the core crate that builds the wrong
+    /// one is told which filter that criterion is filtered by.
+    #[test]
+    fn a_filter_of_one_number_of_a_variant_is_refused_the_criterion_by_linkage_disequilibrium() {
+        let error = VarFilter::new(MaxLdR2 {
+            max_allowed_r2: 0.1,
+            max_dist: 10_000,
+        })
+        .expect_err("the criterion was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VarFilterOfTheLdCriterion),
+            "{message}"
+        );
+        assert!(message.contains("LdFilter"), "{message}");
+        assert!(message.contains("chain_of"), "{message}");
     }
 
     /// The table of "How it is verified" of `docs/specs/filters.md`: each
@@ -1976,6 +2280,17 @@ mod tests {
         fn failing_at(blocks: Vec<Block>, call: usize) -> GivenBlocks {
             GivenBlocks {
                 fails_at: Some(call),
+                ..GivenBlocks::of(blocks)
+            }
+        }
+
+        /// A reader of the six individuals of the worked example of the r²,
+        /// which the blocks of the filter by linkage disequilibrium are
+        /// built from, where the worked example of the three filters has
+        /// five.
+        fn of_the_r2_example(blocks: Vec<Block>) -> GivenBlocks {
+            GivenBlocks {
+                individuals: (1..=6).map(|number| format!("ind{number}")).collect(),
                 ..GivenBlocks::of(blocks)
             }
         }
@@ -2875,5 +3190,338 @@ mod tests {
         let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
         assert_eq!(kept, [1000, 5000]);
         assert_eq!(filter.stats(), pair(5, 2));
+    }
+
+    /// The reader of the filter by linkage disequilibrium, of the worked
+    /// example of the r², over the blocks a reader of the tests gives.
+    fn ld_reader_of(blocks: Vec<Block>) -> LdFilteredReader<GivenBlocks> {
+        LdFilteredReader::new(
+            GivenBlocks::of_the_r2_example(blocks),
+            LdFilter::new(0.5, 5000).expect("the filter"),
+        )
+        .expect("the reader over the blocks")
+    }
+
+    /// A block that the filter emptied is not given: the reader takes the
+    /// next block of its source, and the variants of the block it dropped
+    /// are in its counts. Here the first and the last block hold a variant
+    /// of one dosage, which the filter drops wherever it is, and the middle
+    /// one v5, which has no variant of its window to be compared with.
+    #[test]
+    fn a_block_the_ld_filter_left_with_no_variant_is_not_given_and_the_next_one_is_taken() {
+        let (_, one_dosage) = THE_WORKED_EXAMPLE_OF_THE_R2[3];
+        let mut filtered = ld_reader_of(vec![
+            block_of_the_chromosomes(&[(0, 1000, one_dosage.as_slice())], 6, 2),
+            block_of_the_r2_example(&[4]),
+            block_of_the_chromosomes(&[(0, 6000, one_dosage.as_slice())], 6, 2),
+        ]);
+
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(positions_of_blocks(&blocks), [5000]);
+        assert_eq!(filtered.filtering_stats(), vec![("ld", pair(3, 1))]);
+        // And there is no block after the last one.
+        assert!(filtered.next_block().expect("no more blocks").is_none());
+    }
+
+    /// After an error of its source the reader gives no block and does not
+    /// call its source again, as every reader over a reader of
+    /// `docs/specs/block.md` does.
+    #[test]
+    fn after_an_error_of_the_source_the_ld_reader_gives_no_block_and_does_not_call_it_again() {
+        let source = GivenBlocks {
+            fails_at: Some(2),
+            ..GivenBlocks::of_the_r2_example(vec![
+                block_of_the_r2_example(&[0]),
+                block_of_the_r2_example(&[4]),
+            ])
+        };
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let first = filtered.next_block().expect("the first block");
+        assert_eq!(first.map(|block| positions_of(&block)), Some(vec![1000]));
+        let error = filtered.next_block().expect_err("the source failed");
+        assert!(matches!(error, Error::Io(_)), "{error}");
+
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// After an error of its filter the reader gives no block and does not
+    /// call its source again either: the variants that follow the one the
+    /// filter refused would otherwise come out as if nothing had happened,
+    /// and the window of every variant after it is the one the wrong order
+    /// broke.
+    #[test]
+    fn after_an_error_of_the_ld_filter_there_is_no_block_and_the_source_is_not_called_again() {
+        let (_, v1) = THE_WORKED_EXAMPLE_OF_THE_R2[0];
+        let (_, v2) = THE_WORKED_EXAMPLE_OF_THE_R2[1];
+        let source = GivenBlocks::of_the_r2_example(vec![
+            block_of_the_chromosomes(&[(0, 3000, v1.as_slice())], 6, 2),
+            block_of_the_chromosomes(&[(0, 2000, v2.as_slice())], 6, 2),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let first = filtered.next_block().expect("the first block");
+        assert_eq!(first.map(|block| positions_of(&block)), Some(vec![3000]));
+        let error = filtered.next_block().expect_err("the block was refused");
+        assert!(
+            matches!(
+                error,
+                Error::LdFilterVariantOutOfOrder {
+                    variant: 2,
+                    problem: TheOrderOfTheVariants::ThePositionFalls {
+                        pos: 2000,
+                        pos_before: 3000,
+                    },
+                }
+            ),
+            "{error}"
+        );
+
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A source that gives a block of no variants has a defect and is the
+    /// error of that, and it is not asked again: over a source that always
+    /// gives one, a reader that asked again would never come back.
+    #[test]
+    fn a_source_that_gives_the_ld_reader_a_block_of_no_variants_is_an_error_and_is_not_called_again()
+     {
+        let source = GivenBlocks::of_the_r2_example(vec![
+            block_of_the_r2_example(&[]),
+            block_of_the_r2_example(&[0]),
+        ]);
+        let calls = source.calls();
+        let mut filtered =
+            LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        let error = filtered.next_block().expect_err("the block was refused");
+        assert!(
+            matches!(error, Error::ReaderGaveABlockOfNoVariants),
+            "{error}"
+        );
+        assert!(
+            filtered
+                .next_block()
+                .expect("no block after the error")
+                .is_none()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The reader has no individuals, no ploidy and no chromosome names of
+    /// its own: it gives those of its source, whose ploidy here is 4 and
+    /// not the 2 of the blocks of the other tests. A filter that has taken
+    /// no block yet counts 0 given and 0 kept.
+    #[test]
+    fn the_ld_reader_gives_the_individuals_the_ploidy_and_the_chromosomes_of_its_source() {
+        let source = GivenBlocks {
+            ploidy: 4,
+            ..GivenBlocks::of_the_r2_example(Vec::new())
+        };
+        let filtered = LdFilteredReader::new(source, LdFilter::new(0.5, 5000).unwrap()).unwrap();
+
+        assert_eq!(filtered.individuals().len(), 6);
+        assert_eq!(
+            filtered.individuals().first().map(String::as_str),
+            Some("ind1")
+        );
+        assert_eq!(filtered.ploidy(), 4);
+        assert_eq!(filtered.chroms().name(0), Some("chr1"));
+        assert_eq!(filtered.filtering_stats(), vec![("ld", pair(0, 0))]);
+    }
+
+    /// The filter reads the genotypes, the chromosome and the position of
+    /// every variant, so the blocks the reader gives hold the three also
+    /// when the consumer asked for none of them, and they hold no column
+    /// that nobody asked for. The consumer here asks for the qualities
+    /// alone, over the 500 variants of `many.vcf`.
+    #[test]
+    fn the_blocks_of_the_ld_reader_hold_the_chromosome_and_the_position_the_filter_reads() {
+        let reader = many_vcf_reader(Some(7), Needs::ALL);
+        let mut filtered =
+            LdFilteredReader::new(reader, LdFilter::new(0.1, 10_000).unwrap()).unwrap();
+        filtered.set_needs(Needs::QUAL);
+
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+
+        assert!(!blocks.is_empty());
+        for block in &blocks {
+            assert!(
+                block
+                    .fields()
+                    .contains(Needs::GTS | Needs::CHROM_POS | Needs::QUAL)
+            );
+            assert!(!block.gts.is_empty());
+            assert!(block.id.is_none());
+            assert!(block.alleles.is_none());
+        }
+        let stats = filtered.filtering_stats();
+        assert_eq!(
+            stats
+                .first()
+                .map(|(kind, stats)| (*kind, stats.vars_processed)),
+            Some(("ld", 500))
+        );
+    }
+
+    /// The chain of a maf filter and the filter by linkage disequilibrium,
+    /// which is what a user writes in place of pyNei's one call to
+    /// `filter_by_ld_and_maf`: the maf filter at 0.8 drops v4, whose
+    /// major allele frequency is 1, and the filter at 0.5 and 5000 bp keeps
+    /// v1 and v5 of the four variants left. The counts of both reach the
+    /// user apart, the outermost filter first, which is the last step.
+    #[test]
+    fn a_chain_of_a_maf_filter_and_the_ld_filter_keeps_two_variants_and_gives_the_counts_of_both() {
+        let source =
+            GivenBlocks::of_the_r2_example(vec![block_of_the_r2_example(&[0, 1, 2, 3, 4])]);
+        let mut chain = chain_of(
+            Box::new(source),
+            &[
+                MaxMaf(0.8),
+                MaxLdR2 {
+                    max_allowed_r2: 0.5,
+                    max_dist: 5000,
+                },
+            ],
+        )
+        .expect("the chain of the two criteria");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks), [1000, 5000]);
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![("ld", pair(4, 2)), ("maf", pair(5, 4))]
+        );
+    }
+
+    /// A second criterion by linkage disequilibrium is refused where the
+    /// chain is built, among the criteria of one call and over a chain that
+    /// holds one already, which is what a binding crate builds over a
+    /// chain. The message names the `max_allowed_r2` that was written.
+    #[test]
+    fn chain_of_a_second_criterion_by_linkage_disequilibrium_is_refused() {
+        let ld = |max_allowed_r2| MaxLdR2 {
+            max_allowed_r2,
+            max_dist: 5000,
+        };
+        let source = Box::new(GivenBlocks::of_the_r2_example(Vec::new()));
+
+        let error = chain_of(source, &[ld(0.1), ld(0.3)])
+            .err()
+            .expect("the chain was refused");
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "ld", .. }),
+            "{message}"
+        );
+        assert!(message.contains("0.3"), "{message}");
+
+        let holds_one = chain_of(
+            Box::new(GivenBlocks::of_the_r2_example(Vec::new())),
+            &[ld(0.1)],
+        )
+        .expect("the chain of one criterion");
+        let error = chain_of(holds_one, &[MaxMaf(0.8), ld(0.3)])
+            .err()
+            .expect("the chain over it was refused");
+        assert!(
+            matches!(error, Error::VarFilterOfAKindThatIsSet { kind: "ld", .. }),
+            "{error}"
+        );
+    }
+
+    /// The two arguments of the filter by linkage disequilibrium are
+    /// refused where the chain is built, as the threshold of the three
+    /// filters that compare one number of a variant is, and the errors are
+    /// those of `LdFilter::new`.
+    #[test]
+    fn chain_of_the_arguments_of_the_ld_filter_out_of_range_is_the_error_of_the_filter() {
+        let refused = |criterion| {
+            let source = Box::new(GivenBlocks::of_the_r2_example(Vec::new()));
+            chain_of(source, &[MaxMissingRate(0.04), criterion])
+                .err()
+                .expect("the chain was refused")
+        };
+
+        let error = refused(MaxLdR2 {
+            max_allowed_r2: 1.5,
+            max_dist: 5000,
+        });
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterThresholdOutOfRange { kind: "ld", .. }
+            ),
+            "{error}"
+        );
+
+        let error = refused(MaxLdR2 {
+            max_allowed_r2: 0.5,
+            max_dist: 0,
+        });
+        assert!(
+            matches!(error, Error::LdFilterMaxDistTooSmall { max_dist: 0 }),
+            "{error}"
+        );
+    }
+
+    /// The kind of the filter by linkage disequilibrium is looked for among
+    /// the criteria that are set as every other kind is, which is what a
+    /// binding crate calls when a user adds the filter to a `Variants`, and
+    /// the message names both thresholds: the one that is set and the one
+    /// that was written.
+    #[test]
+    fn refuse_a_second_filter_of_a_kind_refuses_a_second_one_by_linkage_disequilibrium() {
+        let set = [
+            MaxMaf(0.8),
+            MaxLdR2 {
+                max_allowed_r2: 0.1,
+                max_dist: 10_000,
+            },
+        ];
+
+        assert!(refuse_a_second_filter_of_a_kind(&set, MaxObsHet(0.5)).is_ok());
+        let error = refuse_a_second_filter_of_a_kind(
+            &set,
+            MaxLdR2 {
+                max_allowed_r2: 0.3,
+                max_dist: 50_000,
+            },
+        )
+        .expect_err("the second filter by linkage disequilibrium was refused");
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::VarFilterOfAKindThatIsSet {
+                    kind: "ld",
+                    threshold_that_is_set: Some(_),
+                    ..
+                }
+            ),
+            "{message}"
+        );
+        assert!(message.contains("0.3"), "{message}");
+        assert!(message.contains("0.1"), "{message}");
     }
 }
