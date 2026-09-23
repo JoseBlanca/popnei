@@ -54,9 +54,10 @@ and `:875`. `product` is called three times from `pca.rs` and once from
 other eleven — a Cholesky factorization and the solve, the log of the
 determinant and the inverse that come off it, the thin QR of a design,
 the solve against a triangular matrix of either half, the rank, and the
-two products that work package 1 added — are reached by nothing at all:
-`grep` for them across `crates/popnei`, `crates/popnei-python` and
-`crates/popnei-js` finds no call. Their caller will be the genome wide
+two products that the merged plan's first work package added, which
+compute the product with its first matrix turned — are reached by nothing
+at all: `grep` for them across `crates/popnei`, `crates/popnei-python`
+and `crates/popnei-js` finds no call. Their caller will be the genome wide
 association study, whose spec is being written on the branch `spec/gwas`
 and is not merged.
 
@@ -128,7 +129,9 @@ In the order in which they unblock the findings.
    section 5's L1 argues for it.
 4. **The faer backend through the callers' benchmarks, which nobody has
    run.** `cargo bench --no-default-features --features bench-internals`
-   builds both `pca_vars` and `r2_matrix` on faer natively. It is the
+   builds both `pca_vars` and `r2_matrix` on faer natively; the second
+   feature is the one those two benchmarks already need, which opens the
+   private functions they time. It is the
    browser's arithmetic timed without a browser, and it is one flag away.
 5. **Peak memory in a tab**, for the eigendecomposition, which needs three
    n x n matrices alive at once: the analysis under node at n = 2000,
@@ -234,10 +237,16 @@ The options.
 - **Leave it**, and keep paying 4 per 100 of the r², 0.6 per 100 of faer
   and under 1 per 100 in a browser.
 
-Recommended: leave it unless the owner wants the r²'s 4 per 100, and
-decide it before `docs/specs/gwas.md` settles, because that is the moment
-the price changes. The cheaper thing to try first is H1, which needs no
-spec change and may take about half of the same cost.
+Recommended: leave it, which is the same answer the two earlier reviews
+gave and for the same reason, that 4 per 100 of one calculation does not
+justify a change to the spec and a permanent invariant. What the merged
+plan changed is the price of the edit and not the size of the gain. **But
+the moment to decide is before `docs/specs/gwas.md` settles**: the eleven
+signatures have no callers today, so if the promise is ever wanted, now is
+when it is cheap, and after that spec is written against them it is not.
+The thing that would change the answer is a measurement showing the scan
+costs more on a path this review could not reach, which is the whole
+second group.
 
 **O2. On faer the eigendecomposition gives a different result at each
 number of threads.** `crates/popnei-linalg/src/faer.rs:394`. The reached
@@ -263,7 +272,8 @@ bit identical at 1, 4, 8 and 18 threads, and Accelerate is bit identical
 at 1, 4 and all cores for all three operations.
 
 The mechanism is in the code and its own comment says so. The nine
-operations that take a thread argument are given `the_threads()`;
+operations that take a thread argument are given `the_threads()`, which
+is the pool of rayon natively and one thread in a browser;
 `self_adjoint_eigen` at `faer.rs:394` takes no such argument and reads
 faer's global parallelism instead, which rayon sizes. Its divide and
 conquer then joins the same sums in a different order at each pool size.
@@ -376,8 +386,8 @@ targets nothing can reproduce.** `crates/popnei-linalg/Cargo.toml` has no
 
 The two benchmarks that reach this crate time a whole analysis and a whole
 matrix, so they can say that popnei got slower and cannot say which call
-did it. The eigendecomposition cannot be separated at all: its BLAS3
-phases land in `libBLAS.dylib`, where the LAPACK total is 2.3% of samples
+did it. The eigendecomposition cannot be separated at all: the phases of
+it that are matrix products land in `libBLAS.dylib`, where the LAPACK total is 2.3% of samples
 while the spec's 0.035 s at n = 1000 is 7.7% of a 0.453 s run, and 60 to
 78 per 100 of the samples are unsymbolicated addresses inside that
 library, so no profile goes finer. The claims that steer this crate — 12.7
@@ -488,7 +498,8 @@ review.
   reduction to tridiagonal form is the bulk. faer 0.24.4 has no
   eigensolver over a range, so it would help Accelerate and do nothing in
   a browser, which is where the analysis is slowest. Recorded so that
-  Open 1 of `docs/specs/pca.md` is decided with that number.
+  Open 1 of `docs/specs/pca.md`, which asks whether the analysis should
+  give every component or only the first few, is decided with that number.
 - **The lower half of the accumulated product is scanned once per block,
   and after the first block those values are the crate's own output**, not
   what the caller gave. 500500 values per block, about a ninth of what the
@@ -513,10 +524,13 @@ review.
 - `crates/popnei/src/pca.rs:672` asks for a product that
   `docs/specs/linalg.md` measured at 0.102 ms against 0.030 ms for the
   transposed form on the same shapes, and the caller then re-scatters the
-  result column by column. The fourth combination that work package 1
-  added may give both the faster routine and a contiguous copy. This is
-  the owner's open decision 2 at the end of `docs/reports/linalg-gwas.md`,
-  and this review supports filing it.
+  result column by column. The combination that reads both of its
+  operands the other way round, which that work package added and nothing
+  calls, may give both the faster routine and a contiguous copy. This is
+  the owner's second open decision at the end of
+  `docs/reports/linalg-gwas.md`, which asks whether that product should
+  replace a buffer and a loop in the analysis, and this review supports
+  filing it.
 - The analysis profile puts all 2546 samples of decompression, 21 per 100
   of on-CPU, on the same thread as the 6939 of the library. The read ahead
   thread of section 3 of `docs/architecture.md` is not on this path.
@@ -616,8 +630,7 @@ that.
 ### What the experiments did not settle
 
 L1's benchmark is being built and its result goes here when it lands.
-Nothing else
-in section 5 was run: L3, L4, L6 and L7 are all about the eleven
-operations, and none of them can be timed until either that benchmark or
-the association study gives them a caller. That is not a gap this review
-can close by working longer.
+Nothing else in section 5 was run: L3, L4, L6 and L7 are all about the
+eleven operations, and none of them can be timed until either that
+benchmark or the association study gives them a caller. That is not a gap
+this review can close by working longer.
