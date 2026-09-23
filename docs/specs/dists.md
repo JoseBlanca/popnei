@@ -308,9 +308,12 @@ each allele, which are the `holds_a_1` and `holds_a_2` above. The three
 gave the same two integers for every pair. Accelerate runs the
 products on the matrix units of the Apple chip. On the first block the bits are 1.5 times slower than Accelerate, 11 times
 faster than faer natively and 45 times faster than faer in wasm, where
-there is no BLAS, and on the third block they are faster than Accelerate; they do not need
-the `linalg` module, which the architecture puts after `dists` and which
-is not written; and their sums are integers. Not measured: OpenBLAS on
+there is no BLAS, and on the third block they are faster than Accelerate; and their sums are
+integers. A third reason on 21 September 2026 was that the bits need no
+linear algebra, which popnei did not have then. It has it now, the crate
+`crates/popnei-linalg`, so that reason is gone and the decision rests on
+the times above, where the products lose to the bits by 11 times natively
+and 45 times in wasm. Not measured: OpenBLAS on
 x86, and faer built with the SIMD instructions of wasm. The programs and
 how to run them are in `docs/reports/kosman-method/`.
 
