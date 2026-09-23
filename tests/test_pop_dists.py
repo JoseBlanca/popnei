@@ -69,6 +69,17 @@ PANEL_NUM_VARS = 1200
 MICRO = POP_DISTS_REFERENCE_DIR / "micro.vcf.gz"
 MICRO_NUM_VARS = 120
 
+# The haploid file of the Kosman item, `tests/reference/dists/haploid.vcf.gz`:
+# 200 variants of 12 individuals, `h00` to `h11`, read at a ploidy of 1. The
+# two populations here are its first six individuals and its last six, and it
+# is the file "Variants that do not count" of the spec measured the residue
+# of the corrected H_S and H_T on.
+HAPLOID = DISTS_REFERENCE_DIR / "haploid.vcf.gz"
+HAPLOID_POPS = {
+    "p0": [f"h{number:02d}" for number in range(6)],
+    "p1": [f"h{number:02d}" for number in range(6, 12)],
+}
+
 # The three pairs of both panels, in the order of the distance vector, which
 # is the order the populations are named in.
 PAIRS = ("p0-p1", "p0-p2", "p1-p2")
@@ -895,6 +906,55 @@ def test_a_pair_with_no_variant_is_nan_and_the_pass_is_not_an_error() -> None:
     assert numpy.isnan(dists.f2_groups[:, :2]).all()
     assert not numpy.isnan(dists.f2_groups[:, 2]).any()
     assert dists.pass_stats.num_vars == PANEL_NUM_VARS
+
+
+def test_the_three_measures_of_the_corrected_diversities_are_nan_at_a_ploidy_of_one() -> (
+    None
+):
+    """Jost's D, Nei's G_ST and the standardized G''_ST have no value at a
+    ploidy of 1, NaN in the distance vector and in the standard errors, and
+    Hudson's F_ST, f_2, the chord distance and Nei's D_A have one there.
+
+    The three are ratios of the corrected H_S and H_T, which raise the allele
+    frequencies of a variant to the ploidy and take the sum from 1: at a
+    ploidy of 1 that sum is 1, a haploid genotype is never heterozygous, and
+    the sums a pass keeps hold nothing but the residue of adding frequencies
+    that a float does not bring to exactly 1. Before this rule popnei gave a
+    G_ST of 0.250299 for this pair at three called genotypes and of 0.234741
+    at four, 6 in 100 apart, where the chord distance moves 2 in 1000, and a
+    Jost's D of 1.4e-17. The two thresholds are read here for that reason:
+    one of them alone would not show that the number moves with what it is
+    over.
+
+    A haploid pass is not refused, which is what the four measures that keep
+    their value are here to say.
+    """
+    for min_num_individuals, num_vars in ((3, 200), (4, 198)):
+        dists = calc_pop_dists(
+            open_vcf(HAPLOID, ploidy=1),
+            HAPLOID_POPS,
+            jackknife_group="variant",
+            min_num_individuals=min_num_individuals,
+        )
+
+        at_the_threshold = f"of the haploid file at {min_num_individuals}"
+        assert tuple(dists.num_vars) == (num_vars,), at_the_threshold
+        for measure in ("dest", "gst", "gst_standardized"):
+            values = getattr(dists, measure)
+            assert math.isnan(values.dist_vector[0]), (
+                f"the {measure} {at_the_threshold}"
+            )
+            assert math.isnan(values.standard_errors[0]), (
+                f"the standard error of the {measure} {at_the_threshold}"
+            )
+        for measure in ("fst", "f2", "chord", "da"):
+            values = getattr(dists, measure)
+            assert math.isfinite(values.dist_vector[0]), (
+                f"the {measure} {at_the_threshold}"
+            )
+            assert math.isfinite(values.standard_errors[0]), (
+                f"the standard error of the {measure} {at_the_threshold}"
+            )
 
 
 def test_the_pairs_are_in_the_order_the_populations_were_named_in() -> None:

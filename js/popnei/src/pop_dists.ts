@@ -178,6 +178,13 @@ export interface PopDists {
    * populations of 30, 3.5e-4. A user who finds a third number in some
    * program is holding a third estimator, which is what the Jost's D item of
    * `docs/specs/dists.md` writes both formulas out for.
+   *
+   * At a ploidy of 1 it has no value, NaN for every pair: it is a ratio of
+   * the corrected H_S and H_T, which raise the allele frequencies of a
+   * variant to the ploidy and take the sum from 1, so both are 0 there by
+   * their definitions and what would be divided is the residue of the
+   * rounding of the frequencies. `fst`, `f2`, `chord` and `da` are given at
+   * a ploidy of 1 as at any other.
    */
   readonly dest: Distances | null;
 
@@ -186,6 +193,7 @@ export interface PopDists {
    * from the same two corrected means as `dest`, so mmod's
    * `pairwise_Gst_Nei` carries the same difference of estimator, 7.2e-5 at
    * the furthest on the biallelic panel and 9.0e-5 on the multiallelic one.
+   * It has no value at a ploidy of 1 either, for the reason `dest` gives.
    */
   readonly gst: Distances | null;
 
@@ -199,7 +207,8 @@ export interface PopDists {
    * `gst` with one division, `gst * (1 + H_S) / (1 - H_S)`. mmod's
    * `pairwise_Gst_Hedrick` computes this one whatever its name suggests, and
    * is 1.9e-4 from it at the furthest on the biallelic panel and 4.7e-4 on
-   * the multiallelic one.
+   * the multiallelic one. It has no value at a ploidy of 1 either, for the
+   * reason `dest` gives.
    */
   readonly gstStandardized: Distances | null;
 

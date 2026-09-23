@@ -153,14 +153,22 @@ class PopDists:
     populations of 30, 3.5e-4. A user who finds a third number in some
     program is holding a third estimator, which is what the Jost's D item of
     `docs/specs/dists.md` writes both formulas out for.
+
+    At a ploidy of 1 it has no value, NaN for every pair: it is a ratio of
+    the corrected H_S and H_T, which raise the allele frequencies of a
+    variant to the ploidy and take the sum from 1, so both are 0 there by
+    their definitions and what would be divided is the residue of the
+    rounding of the frequencies. :attr:`fst`, :attr:`f2`, :attr:`chord` and
+    :attr:`da` are given at a ploidy of 1 as at any other.
     """
 
     gst: Distances | None = None
     """Nei's G_ST of every pair, and ``None`` when it was not asked for. It
     comes from the same two corrected means as :attr:`dest`, so mmod's
     ``pairwise_Gst_Nei`` carries the same difference of estimator, 7.2e-5 at
-    the furthest on the biallelic panel and 9.0e-5 on the multiallelic
-    one."""
+    the furthest on the biallelic panel and 9.0e-5 on the multiallelic one.
+    It has no value at a ploidy of 1 either, for the reason :attr:`dest`
+    gives."""
 
     gst_standardized: Distances | None = None
     """The standardized G''_ST of every pair, and ``None`` when it was not
@@ -168,7 +176,8 @@ class PopDists:
     G'_ST, and mmod's ``pairwise_Gst_Hedrick``, which computes this one
     whatever its name suggests, is 1.9e-4 from it at the furthest on the
     biallelic panel and 4.7e-4 on the multiallelic one, by the same
-    difference of estimator as :attr:`dest`."""
+    difference of estimator as :attr:`dest`. It has no value at a ploidy of
+    1 either, for the reason :attr:`dest` gives."""
 
     f2_groups: numpy.ndarray | None = None
     """f_2 within each resampling group, a read only float64 array of groups

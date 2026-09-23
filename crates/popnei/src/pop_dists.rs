@@ -704,6 +704,25 @@ impl PopDistMeasure {
         PopDistMeasure::THAT_HAVE_A_VALUE.contains(&self)
     }
 
+    /// The three measures that are ratios of the corrected H_S and H_T,
+    /// Jost's D, Nei's G_ST and the standardized G''_ST, which are the ones
+    /// that have no value at a ploidy of 1.
+    ///
+    /// Both corrected values raise the allele frequencies of a variant to
+    /// the ploidy and take the sum from 1, so at a ploidy of 1 they are 0
+    /// by their definitions, as the observed heterozygosity of a haploid
+    /// genotype is, and the sums of a pass hold nothing but the residue of
+    /// adding frequencies that a `f64` does not bring to exactly 1.
+    /// "Variants that do not count" of `docs/specs/dists.md` has what that
+    /// residue looked like before the three were given no value there.
+    #[must_use]
+    pub fn is_of_the_corrected_diversities(self) -> bool {
+        matches!(
+            self,
+            PopDistMeasure::Dest | PopDistMeasure::Gst | PopDistMeasure::GstStandardized
+        )
+    }
+
     /// The names of the measures that have a value, which the two packages
     /// name in the refusal of one that has none.
     #[must_use]
@@ -877,8 +896,22 @@ impl PairSums {
 /// two populations with the same allele frequencies at every variant do,
 /// both are 0 and not a D_A of -2.2e-16 and a chord that is NaN, as "What
 /// it gives" of the chord item of the spec has it.
-fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
+///
+/// Jost's D, G_ST and G''_ST have no value at all at a ploidy of 1,
+/// whatever the sums hold, which
+/// [`is_of_the_corrected_diversities`](PopDistMeasure::is_of_the_corrected_diversities)
+/// says why: H_S' and H_T' are 0 there by their definitions and the sums of
+/// them are the residue of the rounding of the frequencies. F_ST, f_2, the
+/// chord distance and Nei's D_A read neither of the two and are at a ploidy
+/// of 1 what they are at any other.
+///
+/// The ploidy is the reader's, which the pass kept, and not one of the
+/// sums.
+fn value_of(measure: PopDistMeasure, sums: &PairSums, ploidy: u32) -> Option<f64> {
     if sums.num_vars == 0 {
+        return None;
+    }
+    if ploidy == 1 && measure.is_of_the_corrected_diversities() {
         return None;
     }
     let between_minus_within = sums.h_b - sums.h_w;
@@ -924,6 +957,9 @@ fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
 pub struct PopDistSums {
     /// How many populations the pairs are of.
     num_pops: usize,
+    /// The ploidy of the reader the pass read, which the three measures
+    /// built from the corrected H_S and H_T have no value at when it is 1.
+    ploidy: u32,
     /// The variants the pass was given, counted for a pair or not.
     num_vars: u64,
     /// The resampling groups in the order they were started, which is the
@@ -940,19 +976,21 @@ pub struct PopDistSums {
 impl PopDistSums {
     /// The sums a pass built: the six numbers of each pair within each
     /// group, `groups.len()` runs of one for each pair, in the order of the
-    /// distance vector.
+    /// distance vector, and the ploidy of the reader it read.
     ///
     /// When `groups` is empty, which is what a caller who asked for no
     /// standard errors gets, `of_each_group` is one run of the pairs and
     /// holds every variant the pass counted.
     pub(crate) fn of_the_pass(
         num_pops: usize,
+        ploidy: u32,
         num_vars: u64,
         groups: Vec<GroupId>,
         of_each_group: Vec<PairSums>,
     ) -> PopDistSums {
         PopDistSums {
             num_pops,
+            ploidy,
             num_vars,
             groups,
             of_each_group,
@@ -1087,14 +1125,18 @@ impl PopDistSums {
         if group >= self.groups.len() {
             return None;
         }
-        value_of(PopDistMeasure::F2, self.of_the_group(group, pair)?)
+        value_of(
+            PopDistMeasure::F2,
+            self.of_the_group(group, pair)?,
+            self.ploidy,
+        )
     }
 
     /// The jackknife standard error of the measure of the pair at `pair` of
     /// the distance vector.
     fn standard_error_of(&self, measure: PopDistMeasure, pair: usize) -> Option<f64> {
         let over_all = self.total_of(pair)?;
-        let over_all_value = value_of(measure, &over_all)?;
+        let over_all_value = value_of(measure, &over_all, self.ploidy)?;
         let mut num_groups: usize = 0;
         let mut jackknife_estimate = 0.0;
         for group in 0..self.groups.len() {
@@ -1155,7 +1197,7 @@ impl PopDistSums {
         let weight = over_all.num_vars as f64 / of_the_group.num_vars as f64;
         let Some(without_the_group) = over_all
             .without(of_the_group)
-            .and_then(|rest| value_of(measure, &rest))
+            .and_then(|rest| value_of(measure, &rest, self.ploidy))
         else {
             return OfTheGroupLeftOut::NoValueWithoutIt;
         };
@@ -1167,7 +1209,7 @@ impl PopDistSums {
 
     /// The measure of the pair at `pair` of the distance vector.
     fn of_the_pair(&self, measure: PopDistMeasure, pair: usize) -> Option<f64> {
-        value_of(measure, &self.total_of(pair)?)
+        value_of(measure, &self.total_of(pair)?, self.ploidy)
     }
 
     /// The six sums of the pair over every variant that counted for it, its
@@ -1396,6 +1438,7 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     }
     Ok(PopDistSums::of_the_pass(
         num_pops,
+        of_the_pass.per_var.ploidy,
         num_vars,
         walk.groups().to_vec(),
         of_each_group,
@@ -2629,6 +2672,37 @@ mod tests {
         .expect("the sums of the two populations of two")
     }
 
+    /// The six sums of the one pair of two populations of 6 over the 200
+    /// variants of the haploid file of `tests/reference/dists/`, read at a
+    /// ploidy of 1, at `min_num_individuals` called genotypes and with no
+    /// resampling groups.
+    ///
+    /// Its 12 individuals are `h00` to `h11`, the first six of them the
+    /// first population and the last six the second.
+    fn sums_of_the_haploid_file(min_num_individuals: u32) -> PopDistSums {
+        let options = VcfOptions {
+            ploidy: 1,
+            ..VcfOptions::default()
+        };
+        let mut reader = VcfReader::from_path(&reference("dists/haploid.vcf.gz"), options)
+            .expect("the reader of the haploid file");
+        let individuals = reader.individuals().to_vec();
+        let named = [
+            ("pop1".to_owned(), individuals[..6].to_vec()),
+            ("pop2".to_owned(), individuals[6..].to_vec()),
+        ];
+        let pops = Pops::from_names(&named, &individuals).expect("the two haploid populations");
+        calc_pop_dist_sums(
+            &mut reader,
+            &pops,
+            &PopDistOptions {
+                min_num_individuals,
+                groups: JackknifeGroups::None,
+            },
+        )
+        .expect("the sums of the haploid file")
+    }
+
     /// The genotypes of the 25 variants of "How it is verified" of
     /// `docs/specs/dists.md` where the two populations are fixed for the
     /// same allele: 4 diploid individuals, the two alleles of each after
@@ -3000,6 +3074,54 @@ mod tests {
         );
     }
 
+    /// Jost's D, Nei's G_ST and the standardized G''_ST have no value at a
+    /// ploidy of 1, and the other four measures have one, which "Variants
+    /// that do not count" of `docs/specs/dists.md` asks for.
+    ///
+    /// The three are built from the corrected H_S and H_T, which raise the
+    /// allele frequencies to the ploidy: at a ploidy of 1 those sums are
+    /// the frequencies themselves, which add to 1, and a haploid genotype
+    /// is never heterozygous, so H_S, H_T and the observed heterozygosity
+    /// are 0 by their definitions and the sums of a pass hold nothing but
+    /// the residue of adding frequencies that a f64 does not bring to
+    /// exactly 1. Before this rule, popnei gave a G_ST of 0.250299 for this
+    /// pair at a `min_num_individuals` of 3 and of 0.234741 at 4, 6 in 100
+    /// apart, where the chord distance moves 2 in 1000, and a Jost's D of
+    /// 1.4e-17. The two thresholds are read here because one of them alone
+    /// would not show that the number moves with what it is over.
+    #[test]
+    fn the_three_measures_of_the_corrected_diversities_have_no_value_at_a_ploidy_of_one() {
+        for (min_num_individuals, num_vars) in [(3, 200), (4, 198)] {
+            let sums = sums_of_the_haploid_file(min_num_individuals);
+
+            assert_eq!(sums.num_vars_of(0, 1), Some(num_vars));
+            for measure in [
+                PopDistMeasure::Dest,
+                PopDistMeasure::Gst,
+                PopDistMeasure::GstStandardized,
+            ] {
+                let named = measure.name();
+                assert_eq!(
+                    sums.measure(measure, 0, 1),
+                    None,
+                    "the {named} of a haploid pass at {min_num_individuals} called genotypes"
+                );
+            }
+            for measure in [
+                PopDistMeasure::Fst,
+                PopDistMeasure::F2,
+                PopDistMeasure::Chord,
+                PopDistMeasure::Da,
+            ] {
+                let named = measure.name();
+                assert!(
+                    sums.measure(measure, 0, 1).is_some_and(f64::is_finite),
+                    "the {named} of a haploid pass at {min_num_individuals} called genotypes"
+                );
+            }
+        }
+    }
+
     /// Two populations fixed for the same allele at every variant that
     /// counted for them have no F_ST, no G_ST and no G''_ST: their sum of
     /// H_b and their mean corrected H_T are both 0, and each of the three
@@ -3116,6 +3238,7 @@ mod tests {
     #[test]
     fn the_dest_and_the_gst_standardized_of_a_pair_whose_mean_corrected_h_s_is_one_have_no_value() {
         let sums = PopDistSums::of_the_pass(
+            2,
             2,
             2,
             Vec::new(),
