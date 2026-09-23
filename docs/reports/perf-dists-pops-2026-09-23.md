@@ -1,7 +1,10 @@
 # Performance review: the distances between populations
 
-23 September 2026. The first measurement of `calc_pop_dists`, the
-calculation merged into `main` that day in 05f1538, which gives for every
+23 September 2026. The first measurement of the distances between
+populations, which a user calls as `calc_pop_dists` in Python and
+`calcPopDists` in TypeScript and whose work the core crate does in
+`calc_pop_dist_sums`. It was merged into `main` that day in 05f1538 and
+gives for every
 pair of populations, out of one reading of the variants, seven measures
 with a block jackknife standard error each. Nothing of it had ever been
 timed: no benchmark, no profile, no wall time, for the core, for Python or
@@ -28,8 +31,13 @@ whole, and how many of those are heterozygous. The **pair arithmetic** is
 what turns the counts of two populations at one variant into what that
 variant adds to their six sums. The **counter table** is the array of 128
 counters, one for each allele a variant could hold, that the counting
-fills. A **resampling group** is a stretch of a chromosome that the
-standard errors leave out in turn. The **reader** is what turns a file
+fills. Two functions do the counting of one population at one variant, and
+the report names them often: `count_alleles_of` fills the counter table
+and `count_gts_of` counts the genotypes that are called whole, missing and
+heterozygous; both are called from `count_the_var`, and `count_alleles`
+without the `_of` is the different function that counts a whole row rather
+than one population. A **resampling group** is a stretch of a chromosome
+that the standard errors leave out in turn. The **reader** is what turns a file
 into blocks of genotypes, and it is outside every number called "the
 calculation" below.
 
@@ -172,7 +180,7 @@ work:
 | `variant::count_gts_of` | 32.9% | 21.1% |
 | `variant::count_the_alleles` | 32.6% | 20.2% |
 | `variant::count_alleles_of` | 12.8% | 12.5% |
-| `lz4_flex ... read_to_end`, the reader | 12.2% | 7.2% |
+| `lz4_flex ... read_to_end`, the decompression in the reader | 12.2% | 7.2% |
 | `_platform_memset` | 1.2% | 3.7% |
 | `_platform_memmove` | 1.7% | 1.0% |
 | `drop_glue::<popnei::error::Error>` | — | 0.6% |
@@ -260,18 +268,25 @@ run while another process compiled on the machine, and is not reported as
 a measurement. The one-thread run is 502.105 s with the untimed run before
 it at 513.250 s, 2 in 100 apart.
 
-Two things have to be said wherever those numbers sit beside popnei's.
-**The comparison is one pass against one pass and not one number against
-one number**: popnei calculates seven measures with a block jackknife
-standard error each, and pyNei calculates Jost's D alone with none, from
-counts the two share. And **pyNei's cost grows with the pairs in a way
-popnei's does not**: `_DestPopHsHtCalculator.__call__` loops over the pairs
-and hands `_calc_pairwise_dest` the whole dictionary of populations each
-time, so every pair recounts the alleles and the called genotypes of every
+What goes beside those numbers is popnei over the vars file, since
+pyNei's reading is inside its own number. The code as merged took 0.388 s
+and 0.620 s on one thread, so it was 20 times faster at 3 populations and
+810 at 20; after the three changes of section 14 it takes 0.277 s and
+0.352 s, so it is **28 times faster at 3 populations and 1426 at 20**.
+Those are the ratios section 2 gives, and they are the ones to quote.
+
+Two things have to be said wherever they sit beside pyNei's. **The
+comparison is one pass against one pass and not one number against one
+number**: popnei calculates seven measures with a block jackknife standard
+error each, and pyNei calculates Jost's D alone with none, from counts the
+two share. And **pyNei's cost grows with the pairs in a way popnei's does
+not**: `_DestPopHsHtCalculator.__call__` loops over the pairs and hands
+`_calc_pairwise_dest` the whole dictionary of populations each time, so
+every pair recounts the alleles and the called genotypes of every
 population of the chunk. Its own numbers show it: 502.105 s against
-7.811 s is 64.3 times, where the pairs are 63.3 times. So the 810-fold
-ratio at 20 populations is mostly a measure of that repeated counting.
-The 20-fold ratio at 3 populations is the fairer one to quote.
+7.811 s is 64.3 times, where the pairs are 63.3 times. So the ratio at 20
+populations is mostly a measure of that repeated counting, and **the
+28-fold ratio at 3 populations is the fairer one**.
 
 ## 6. The findings
 
@@ -298,8 +313,10 @@ the fixed per-population cost of section 4 is this table and little else.
 `count_alleles`, the whole-row counting, already has a two-allele path,
 `the_counts_of_a_variant_of_two_alleles`, which never touches the table;
 `count_alleles_of`, the per-population one, has none, and a pairwise pass
-can never reach the whole-row path. The statistics review of 22 September
-2026 built the neighbouring change, bounding the clear, the merge and the
+can never reach the whole-row path. The review of the statistics pass of 22 September
+2026, `docs/reports/perf-stats-2026-09-22.md`, a third report beside this
+one and the Kosman one, which shares both counting functions with this
+module, built the neighbouring change, bounding the clear, the merge and the
 scan to the alleles seen, measured it at 1 and at 4 populations where it
 gave nothing, and closed it with this: "At the 50 populations of 20
 individuals that `docs/objectives.md` calls ordinary, the same change takes
@@ -343,10 +360,12 @@ than two called alleles or both have exactly one called genotype, and on
 that path the hoisted `n/(n-1)` and `1/called` would be infinities, so the
 hoisted values must sit behind the same integer tests.
 
-Measured by: the count of `fdiv` in `sums_of_the_chunk` from `objdump -d`
-on the built benchmark, not `cargo asm`, which forces its own
-`codegen-units=1`; then the refit, where the coefficient that must fall is
-the 0.00058 s per pair.
+Measured by: how many floating-point divide instructions the pass runs for
+one variant, counted from `objdump -d` on the benchmark that was actually
+built and attributed to the loop each one sits in — not from `cargo asm`,
+which forces its own `codegen-units=1` and so disassembles something the
+release profile did not build; then the refit, where the coefficient that
+must fall is the 0.00058 s per pair.
 
 ### H3 — `raised` is a run-time loop of multiplications, called six times per allele per pair
 
@@ -399,8 +418,10 @@ today.
 is computed twice for every measure and every pair: 4200 times at 3
 populations and 266000 at 20. That is the 8 to 14 ms of section 7 and 2.8
 in 100 of a 20-population call, which is not worth a scratch vector. It
-stops being cold under `jackknife_group="variant"`, where the same count
-is 266 million over 100000 variants.
+stops being cold when a user asks for a resampling group of each variant
+instead of a stretch of a chromosome, `jackknife_group="variant"`, which a
+panel of unlinked microsatellites takes: the same count is then 266 million
+over 100000 variants.
 
 ### L3 — The split of a block is sized from the thread count, on cores that are not equal
 
@@ -687,9 +708,10 @@ against deliberately broken code.
 
 ### H2, applied at 4d6b616: take each population's own quantities once a variant, not once a pair
 
-`PopVarCounts` now carries, beside its counts, each population's allele
-frequencies and the five numbers a pair reads of one of its two
-populations. The pair loop keeps only what is of the pair: the product of
+`PopVarCounts`, the three counts of one population at one variant that the
+pass writes over at each variant, now carries beside them that
+population's allele frequencies and the five numbers a pair reads of one
+of its two populations. The pair loop keeps only what is of the pair: the product of
 the two frequencies, its square root and the pooled power.
 
 The gate was the divisions executed for one biallelic variant at 20
