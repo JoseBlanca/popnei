@@ -609,12 +609,23 @@ pub enum PopDistMeasure {
     /// f_2, how much allele frequency the two populations have drifted
     /// apart by, in the units it was measured in.
     F2,
-    /// The chord distance of Cavalli-Sforza and Edwards.
+    /// The chord distance of Cavalli-Sforza and Edwards, one of the two
+    /// measures here that are Euclidean. It is the form
+    /// `adegenet::dist.genpop(method = 2)` gives, which is the chord of
+    /// the sphere of radius 1 divided by the square root of 2: two
+    /// populations that share no allele are 1 apart here and 1.414 apart
+    /// unscaled. Books normalize it in several ways, so a number compared
+    /// with another program has to be compared with the same form, and the
+    /// scaling changes nothing for a tree or for a principal coordinate
+    /// analysis.
     Chord,
     /// Nei's D_A, the square of the chord distance.
     Da,
     /// Jost's D, how much of the allelic variety of the two is not
-    /// shared. It is the D_est of Jost (2008) under the correction of Nei
+    /// shared. It is the one to read on microsatellites, where
+    /// [`Gst`](PopDistMeasure::Gst) cannot reach 1.
+    ///
+    /// It is the D_est of Jost (2008) under the correction of Nei
     /// and Chesser (1983) for the individuals it was estimated from, which
     /// is the estimator pyNei computes and the one GenAlEx prints. mmod's
     /// `pairwise_D` in R computes another estimator of the same quantity,
@@ -626,7 +637,11 @@ pub enum PopDistMeasure {
     /// alleles in three populations of 30.
     Dest,
     /// Nei's G_ST, the share of the diversity of the two that lies between
-    /// them. It comes from the same two corrected means as
+    /// them. With two populations it cannot pass (1 - H_S)/(1 + H_S), with
+    /// H_S the mean corrected diversity within them, so two internally
+    /// diverse populations that share no allele still give a small number.
+    ///
+    /// It comes from the same two corrected means as
     /// [`PopDistMeasure::Dest`], so mmod's `pairwise_Gst_Nei` carries the
     /// same difference of estimator, 7.2e-5 at the furthest on the
     /// biallelic panel and 9.0e-5 on the multiallelic one.
@@ -677,9 +692,7 @@ impl PopDistMeasure {
             .unwrap_or("")
     }
 
-    /// The measures a pass gives a value for, which is all seven of them
-    /// since work package 3 of `docs/plans/dists-pops.md` added the chord
-    /// distance and Nei's D_A to the five the work packages 1 and 2 wrote.
+    /// The measures a pass gives a value for, which is all seven of them.
     ///
     /// Both packages refuse a measure that is not here, so that nobody
     /// reads a vector of NaN as a distance, and there is nothing left for
@@ -1033,9 +1046,13 @@ impl PopDistSums {
     }
 
     /// The measure for the pair. `None` where
-    /// [`num_vars_of`](PopDistSums::num_vars_of) is 0 or `None`, and for
-    /// the five measures the work packages 2 and 3 of
-    /// `docs/plans/dists-pops.md` add.
+    /// [`num_vars_of`](PopDistSums::num_vars_of) is 0 or `None`; where the
+    /// divisor of the measure came to 0, which is the sum of H_b for
+    /// [`Fst`](PopDistMeasure::Fst), the mean corrected H_T for
+    /// [`Gst`](PopDistMeasure::Gst), 1 minus the mean corrected H_S for
+    /// [`Dest`](PopDistMeasure::Dest) and the product of those last two for
+    /// [`GstStandardized`](PopDistMeasure::GstStandardized); and, for those
+    /// same three, at a ploidy of 1.
     #[must_use]
     pub fn measure(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64> {
         self.of_the_pair(measure, self.index_of_the_pair(i, j)?)
@@ -3533,13 +3550,19 @@ mod tests {
     /// numbers.
     ///
     /// adegenet computes the same estimator, so the comparison is within
-    /// 1e-12 relative and not the 5e-4 of the measures mmod checks. Each of
-    /// the biallelic panel's three comes out as the same double adegenet
-    /// prints, and the multiallelic panel's within 6.7e-16, which is the
-    /// last bits of one. D_A is in no program and is checked as the square
-    /// of what adegenet gives, which "How it is verified" of the item asks
-    /// for; it is 3.9e-15 from that square at the furthest, since squaring
-    /// doubles how far from adegenet the chord distance is.
+    /// 1e-12 relative and not the 5e-4 of the measures mmod checks. It is
+    /// within that and nothing tighter: the biallelic panel's three do come
+    /// out as the same doubles adegenet prints when the panel is read in
+    /// one block with no resampling groups, which is how this test reads
+    /// it, but `assert_it_is_the_same_number` does not hold them to their
+    /// bits, and in blocks of 100 variants two of the three move.
+    ///
+    /// The multiallelic panel's three are 6.7e-16 from adegenet's in
+    /// absolute terms at the furthest and 2.0e-15 relative. D_A is in no
+    /// program and is checked as the square of what adegenet gives, which
+    /// "How it is verified" of the item asks for; it is 4.4e-16 from that
+    /// square in absolute terms and 3.9e-15 relative, so squaring doubles
+    /// the relative gap and leaves a smaller absolute one.
     #[test]
     #[expect(
         clippy::excessive_precision,
@@ -3836,12 +3859,11 @@ mod tests {
     }
 
     /// The measures of [`PopDistMeasure::THAT_HAVE_A_VALUE`] are the ones a
-    /// pass gives a number for, which since work package 3 of
-    /// `docs/plans/dists-pops.md` is all seven. Both packages refuse a
-    /// measure by that array, so a measure written into [`value_of`] and
-    /// not into it is refused although popnei calculates it, and one
-    /// written into the array and not into `value_of` gives a user a vector
-    /// of NaN read as a distance.
+    /// pass gives a number for, which is all seven of them. Both packages
+    /// refuse a measure by that array, so a measure written into
+    /// [`value_of`] and not into it is refused although popnei calculates
+    /// it, and one written into the array and not into `value_of` gives a
+    /// user a vector of NaN read as a distance.
     #[test]
     fn the_measures_that_have_a_value_are_the_ones_a_pass_gives_a_number_for() {
         let sums = sums_of_the_worked_example(JackknifeGroups::None);
