@@ -3232,9 +3232,11 @@ mod tests {
     /// a value there, which is what "Variants that do not count" of
     /// `docs/specs/dists.md` says of the three.
     ///
-    /// No genotypes of a panel reach a mean corrected H_S of exactly 1, so
-    /// the sums are written here as a pass would have left them: two
-    /// variants whose corrected H_S added to 2.
+    /// The sums are written here as a pass would have left them, two
+    /// variants whose corrected H_S added to 2, because they are the case
+    /// where the mean corrected H_T is not 1 as well: the test below reads
+    /// the genotypes that reach a mean corrected H_S of exactly 1, and
+    /// there H_T' is 1 too and G_ST is a different number, 0.
     #[test]
     fn the_dest_and_the_gst_standardized_of_a_pair_whose_mean_corrected_h_s_is_one_have_no_value() {
         let sums = PopDistSums::of_the_pass(
@@ -3263,6 +3265,44 @@ mod tests {
             None,
             "the G''_ST of a pair whose mean corrected H_S is 1"
         );
+    }
+
+    /// The genotypes that reach a mean corrected H_S of exactly 1, which
+    /// "How it is verified" of `docs/specs/dists.md` gives: one variant of
+    /// four alleles of 4 individuals in two populations of two, `0/0 1/1`
+    /// against `2/2 3/3`, at a `min_num_individuals` of 1. Each population
+    /// holds two alleles at 0.5 and the two share none, so H_S is 0.5, the
+    /// observed heterozygosity 0 and the harmonic mean of the called
+    /// genotypes 2, which leaves H_S' = 2 (0.5 - 0) = 1 and
+    /// H_T' = 0.75 + 1/4 = 1.
+    ///
+    /// Jost's D and G''_ST divide by 1 - H_S' and have no value there, and
+    /// G_ST is 0 although the two populations share no allele, which is the
+    /// ceiling of G_ST at its extreme: with two populations it cannot pass
+    /// (1 - H_S)/(1 + H_S). The other four are the numbers of two
+    /// populations that share nothing: F_ST and f_2 are 1/3 and the chord
+    /// distance and Nei's D_A are 1.
+    #[test]
+    fn genotypes_that_reach_a_mean_corrected_h_s_of_one_have_no_dest_and_no_gst_standardized() {
+        let sums = sums_of_the_pair_of_two_over(&[[0, 0, 1, 1, 2, 2, 3, 3]]);
+
+        assert_eq!(sums.num_vars_of(0, 1), Some(1));
+        assert_eq!(sums.measure(PopDistMeasure::Dest, 0, 1), None);
+        assert_eq!(sums.measure(PopDistMeasure::GstStandardized, 0, 1), None);
+        assert_eq!(sums.measure(PopDistMeasure::Gst, 0, 1), Some(0.0));
+        for (measure, value) in [
+            (PopDistMeasure::Fst, 1.0 / 3.0),
+            (PopDistMeasure::F2, 1.0 / 3.0),
+            (PopDistMeasure::Chord, 1.0),
+            (PopDistMeasure::Da, 1.0),
+        ] {
+            assert_it_is_within(
+                sums.measure(measure, 0, 1),
+                value,
+                1e-12,
+                &format!("the {} of four homozygotes of four alleles", measure.name()),
+            );
+        }
     }
 
     /// The groups the variants were cut into change no measure: the sums of
