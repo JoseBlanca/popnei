@@ -15,9 +15,12 @@
 //! are in `lib.rs`, where they hold for whichever backend runs. Nothing
 //! here is `unsafe`.
 
-use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::cholesky::llt::factor::{
     LltError, LltRegularization, cholesky_in_place, cholesky_in_place_scratch,
+};
+use faer::linalg::cholesky::llt::inverse::{
+    inverse as inverse_with_cholesky_of_faer, inverse_scratch,
 };
 use faer::linalg::cholesky::llt::solve::{solve_in_place_scratch, solve_in_place_with_conj};
 use faer::linalg::evd::EvdError;
@@ -270,6 +273,48 @@ pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usi
     Ok(())
 }
 
+/// The lower half of the inverse of the `a` whose factorization `l` is,
+/// with `l` of exactly `n` x `n` values row after row with its lower half
+/// filled and `inverse` of exactly `n` x `n`, and `n` 1 at least. The
+/// upper half of `inverse` is left as it was, faer writing the lower
+/// triangle of its result alone.
+///
+/// faer inverts the triangle into a matrix of its own and multiplies it by
+/// itself into `inverse`, so it asks for a scratch of `n` x `n` values, 8
+/// MB at the 1000 individuals the spec measured it at and 800 MB at the
+/// 10000 of `docs/objectives.md`. That is the one allocation of this crate
+/// that a machine can be without and go on, so it is asked for with
+/// `try_new` and not taken with `MemBuffer::new`, which ends the process
+/// when it fails, and what a caller gets instead is [`Error::Memory`].
+///
+/// # Errors
+///
+/// [`Error::Memory`] when this machine has not the memory for that
+/// scratch. faer refuses nothing else that the checks of `lib.rs` let
+/// through, and a factorization it was given is one it does not read for a
+/// pivot: a diagonal entry of 0 makes it divide by 0 and write infinities
+/// and NaN where `dpotri` of the BLAS backend gives an `info`, which is
+/// why `lib.rs` reads that diagonal before either backend runs.
+pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()> {
+    let l = MatRef::from_row_major_slice(l, n, n);
+    let inverse = MatMut::from_row_major_slice_mut(inverse, n, n);
+    let request = inverse_scratch::<f64>(n, the_threads());
+    let mut scratch = MemBuffer::try_new(request).map_err(|_| Error::Memory {
+        what: "the scratch of the inverse of faer",
+        values: the_values_of_a_request(request),
+    })?;
+    inverse_with_cholesky_of_faer(inverse, l, the_threads(), MemStack::new(&mut scratch));
+    Ok(())
+}
+
+/// How many `f64` a request of faer holds: faer asks for a number of
+/// bytes and [`Error::Memory`] carries a number of values, as its doc
+/// comment says. A request that is not a whole number of them is as many
+/// values as it takes.
+fn the_values_of_a_request(request: StackReq) -> usize {
+    request.size_bytes().div_ceil(size_of::<f64>())
+}
+
 /// The eigendecomposition of the symmetric `g`, of exactly `n` x `n`
 /// values row after row with its lower half filled and `n` 1 at least.
 ///
@@ -313,7 +358,7 @@ pub(crate) fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
 
 #[cfg(test)]
 mod tests {
-    use super::{solve_in_place_scratch, the_threads};
+    use super::{inverse_scratch, solve_in_place_scratch, the_threads, the_values_of_a_request};
 
     /// The size of the matrix the association study solves at, and how
     /// many right hand sides it gives it: five coefficients and one right
@@ -333,5 +378,24 @@ mod tests {
         let (n, sides) = THE_SIZE_THE_GWAS_SOLVES_AT;
         let request = solve_in_place_scratch::<f64>(n, sides, the_threads());
         assert_eq!(request.size_bytes(), 0);
+    }
+
+    /// The n the spec measured faer's scratch for the inverse at, which is
+    /// the 1000 individuals of "How the seven are verified".
+    const THE_SIZE_THE_SPEC_MEASURED_THE_INVERSE_AT: usize = 1000;
+
+    #[test]
+    fn the_scratch_of_inverting_with_the_cholesky_is_the_n_by_n_the_spec_measured() {
+        // 8000000 bytes at n = 1000, which is n x n values of the 8 bytes
+        // of an `f64` and the number "The inverse of a factorized matrix"
+        // of `docs/specs/linalg.md` records. This is the one allocation of
+        // the crate that is asked for with `try_new`, since at the 10000
+        // individuals of `docs/objectives.md` it is 800 MB, and what
+        // `Error::Memory` carries for it is those values and not the
+        // bytes.
+        let n = THE_SIZE_THE_SPEC_MEASURED_THE_INVERSE_AT;
+        let request = inverse_scratch::<f64>(n, the_threads());
+        assert_eq!(request.size_bytes(), 8_000_000);
+        assert_eq!(the_values_of_a_request(request), n * n);
     }
 }

@@ -3,12 +3,13 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds nine: the product of a matrix with
+//! place that has them. It holds ten: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
 //! symmetric positive definite one, [`cholesky_lower`], the solve of a
-//! system with the matrix it factored, [`solve_with_cholesky`], and the
-//! log of that matrix's determinant, [`log_determinant_with_cholesky`];
+//! system with the matrix it factored, [`solve_with_cholesky`], the log of
+//! that matrix's determinant, [`log_determinant_with_cholesky`], and its
+//! inverse, [`invert_with_cholesky`];
 //! and the product of two matrices, [`product`], which is the other four,
 //! because [`TheFirstOperand`] and [`TheSecondOperand`] each say how one
 //! matrix's buffer is laid out and the two together choose among `a b`,
@@ -619,6 +620,77 @@ pub fn log_determinant_with_cholesky(l: &[f64], n: usize) -> Result<f64> {
     Ok(2.0 * total)
 }
 
+/// The lower half of the inverse of the `a` whose factorization `l` of `n`
+/// x `n` is, written into `inverse` of `n` x `n`.
+///
+/// `l` and `inverse` are two buffers and not one: the factorization is
+/// left as it was, so a caller that has more to do with it, another solve
+/// or the log of its determinant, still holds it. Only the lower half of
+/// `inverse` is written, the entries of column `j` at most `i` of row `i`,
+/// and its upper half is left as it was; the inverse of a symmetric matrix
+/// is symmetric, so a caller that needs the whole of it mirrors that half.
+///
+/// Only the lower half of `l` is read, as [`solve_with_cholesky`] reads
+/// it. Either buffer may hold more values than `n` times `n`, and then its
+/// first `n` times `n` are the matrix.
+///
+/// The two backends ask for memory differently here, and this is the one
+/// operation of the crate where the memory a backend asks for can be
+/// refused: faer inverts into a scratch of its own of `n` x `n`, 800 MB at
+/// the 10000 individuals of `docs/objectives.md`, which the crate asks for
+/// instead of taking, while `dpotri` inverts in place and needs no
+/// workspace at all. So a machine without that memory gets
+/// [`Error::Memory`] on faer and no error on BLAS, and no test of popnei
+/// reaches the case.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` is 0, when `l` or `inverse` holds fewer
+/// than `n` times `n` values, or when `n` times `n` is more than
+/// 2147483647, which is what the routines of BLAS and LAPACK count in.
+/// [`Error::NotFinite`] when the lower half of `l` holds a value that is
+/// not finite. [`Error::Singular`] when its diagonal holds an entry that
+/// is not above 0, with the first such row, which is the same `Singular` a
+/// [`cholesky_lower`] that gave this `l` would have given first.
+/// [`Error::Memory`] when this machine has not the memory for faer's
+/// scratch. [`Error::NoConvergence`] when the routine refused an argument
+/// it was given, which is a defect of popnei.
+pub fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()> {
+    if n == 0 {
+        return Err(Error::Dimension {
+            argument: "n",
+            expected: "1 at least, since l is the n x n factorization to invert with".to_owned(),
+        });
+    }
+    let l = the_matrix_of(l, n, n, "l")?;
+    refuse_a_value_that_is_not_finite_in_the_lower_half(l, n, "l")?;
+    // The diagonal is read here, above the backends, because the two do
+    // not agree on it, as they do not on the diagonal of an upper
+    // triangular matrix: measured on 23 September 2026 on an `l` with a 0
+    // at the row 1, `dpotri` gave an `info` of 2 and faer's inverse gave
+    // no error and wrote infinities and NaN. The entry of a factorization
+    // is read for what `cholesky_lower` would have refused first, one that
+    // is not above 0, which is what `log_determinant_with_cholesky` reads
+    // it for too. The diagonal of a matrix held row after row is one value
+    // in every `n` plus 1 from the first, and that addition cannot
+    // overflow: `the_matrix_of` has refused every `n` whose square is
+    // above 2147483647, which leaves `n` at 46340 at most.
+    if let Some((row, _)) = l
+        .iter()
+        .copied()
+        .step_by(n.saturating_add(1))
+        .enumerate()
+        .find(|(_, entry)| *entry <= 0.0)
+    {
+        return Err(Error::Singular {
+            argument: "l",
+            at: row,
+        });
+    }
+    let inverse = the_matrix_of_mut(inverse, n, n, "inverse")?;
+    backend::invert_with_cholesky(l, n, inverse)
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -782,7 +854,8 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 mod tests {
     use super::{
         Eigen, Error, TheFirstOperand, TheSecondOperand, add_self_product_lower, cholesky_lower,
-        eigh_lower, log_determinant_with_cholesky, product, reverse_the_rows, solve_with_cholesky,
+        eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product, reverse_the_rows,
+        solve_with_cholesky,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -2696,5 +2769,243 @@ mod tests {
             matches!(error, Error::Dimension { argument: "l", .. }),
             "the error is {error}"
         );
+    }
+    /// The lower half of the inverse of the 3 x 3 of "How the seven are
+    /// verified", row after row: 7/18, -5/18, 5/9, 1/3, -2/3 and 1. They
+    /// are the exact values and not the ones numpy prints, whose `inv`
+    /// goes through an LU and gives 0.38888888888888884 where 7/18 is
+    /// 0.3888888888888889 and 0.9999999999999998 for the entry that is 1,
+    /// up to 2 units in the last place away from what a Cholesky gives.
+    const THE_LOWER_HALF_OF_THE_INVERSE_OF_THE_3_BY_3: [f64; 6] = [
+        7.0 / 18.0,
+        -5.0 / 18.0,
+        5.0 / 9.0,
+        1.0 / 3.0,
+        -2.0 / 3.0,
+        1.0,
+    ];
+
+    /// The value the buffer of the inverse holds before a call, which is
+    /// nothing of the matrix and nothing of the factorization either, so
+    /// that a call that read what it was given, or that wrote into the
+    /// wrong buffer, gives something else.
+    const THE_VALUE_THE_INVERSE_HELD: f64 = -7.0;
+
+    /// The entries of the lower half of an `n` x `n` matrix held row after
+    /// row, the entries of column `j` at most `i` of row `i`, in that
+    /// order, which is the order the spec writes the six of the 3 x 3 in.
+    fn the_lower_half_of(matrix: &[f64], n: usize) -> Vec<f64> {
+        matrix
+            .chunks_exact(n)
+            .enumerate()
+            .flat_map(|(row, entries)| entries[..=row].to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_of_the_3_by_3_writes_the_lower_half_and_leaves_the_upper_as_it_was()
+     {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+        invert_with_cholesky(&l, 3, &mut inverse).unwrap();
+        for (entry, (got, expected)) in the_lower_half_of(&inverse, 3)
+            .into_iter()
+            .zip(THE_LOWER_HALF_OF_THE_INVERSE_OF_THE_3_BY_3)
+            .enumerate()
+        {
+            assert!(
+                !differ_in_their_digits(got, expected, 1e-15),
+                "the entry {entry} of the lower half of the inverse is {got}"
+            );
+        }
+        let upper_half = vec![inverse[1], inverse[2], inverse[5]];
+        assert_eq!(upper_half, vec![THE_VALUE_THE_INVERSE_HELD; 3]);
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_leaves_the_factorization_as_it_was() {
+        // `l` and `inverse` are two buffers and not one, so the caller
+        // still holds the factorization after the call: a backend that
+        // inverted in place, which `dpotri` does, would leave the inverse
+        // in `l` instead.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let the_factorization = l.clone();
+        let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+        invert_with_cholesky(&l, 3, &mut inverse).unwrap();
+        assert_eq!(l, the_factorization);
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_reads_the_lower_half_of_l_alone() {
+        // A value that is nothing of the factorization above its diagonal
+        // reaches neither the check nor the routine: the inverse is the
+        // one of the matrix.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        l[1] = f64::NAN;
+        let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+        invert_with_cholesky(&l, 3, &mut inverse).unwrap();
+        assert!(
+            !differ(
+                &the_lower_half_of(&inverse, 3),
+                &THE_LOWER_HALF_OF_THE_INVERSE_OF_THE_3_BY_3,
+                1e-15
+            ),
+            "the lower half of the inverse is {:?}",
+            the_lower_half_of(&inverse, 3)
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_of_the_1000_by_1000_matrix_of_the_generator() {
+        // The first and the last entries of the diagonal of the inverse
+        // and its trace, which "How the seven are verified" gives within
+        // 1e-11; the comparison here is relative, which is the stricter of
+        // the two for the two entries, of about 0.06, and the same for the
+        // trace of about 59.8. The two backends were measured at 5.4e-15
+        // and 4.9e-15 relative away from these three numbers.
+        let mut g = the_matrix_of_1000_by_1000_of_the_generator();
+        cholesky_lower(&mut g, THE_LARGE_CASE).unwrap();
+        let mut inverse = vec![0.0_f64; THE_LARGE_CASE * THE_LARGE_CASE];
+        invert_with_cholesky(&g, THE_LARGE_CASE, &mut inverse).unwrap();
+        let first = inverse[0];
+        let last = inverse[THE_LARGE_CASE * THE_LARGE_CASE - 1];
+        assert!(
+            !differ_in_their_digits(first, 0.06230734831937398, 1e-11),
+            "the first entry of the diagonal of the inverse is {first}"
+        );
+        assert!(
+            !differ_in_their_digits(last, 0.059043258015696806, 1e-11),
+            "the last entry of the diagonal of the inverse is {last}"
+        );
+        let trace: f64 = inverse
+            .as_chunks::<THE_LARGE_CASE>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(row, entries)| entries[row])
+            .sum();
+        assert!(
+            !differ_in_their_digits(trace, 59.78707893196584, 1e-11),
+            "the trace of the inverse is {trace}"
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        l.push(7.0);
+        let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+        inverse.push(5.0);
+        invert_with_cholesky(&l, 3, &mut inverse).unwrap();
+        assert!(
+            !differ(
+                &the_lower_half_of(&inverse[..9], 3),
+                &THE_LOWER_HALF_OF_THE_INVERSE_OF_THE_3_BY_3,
+                1e-15
+            ),
+            "the lower half of the inverse is {:?}",
+            the_lower_half_of(&inverse[..9], 3)
+        );
+        assert_eq!(inverse[9..], [5.0]);
+    }
+
+    #[test]
+    fn inverting_with_a_diagonal_entry_of_the_cholesky_that_is_not_above_zero_is_singular_at_that_row()
+     {
+        // A diagonal entry of 0 and one below 0, each at the middle row of
+        // the three, which is the row a `cholesky_lower` that gave such an
+        // `l` would have stopped at. The two backends do not agree on this
+        // `l`, which is why the crate reads the diagonal above them:
+        // measured on 23 September 2026, `dpotri` gave an `info` of 2 for
+        // the 0 and faer's inverse gave no error and wrote infinities and
+        // NaN into the buffer.
+        for entry in [0.0, -3.0] {
+            let l = vec![
+                2.0, 99.0, 99.0, //
+                1.0, entry, 99.0, //
+                0.0, 2.0, 1.0,
+            ];
+            let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+            let error = invert_with_cholesky(&l, 3, &mut inverse).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::Singular {
+                        argument: "l",
+                        at: 1
+                    }
+                ),
+                "the error for the diagonal entry {entry} is {error}"
+            );
+            assert_eq!(inverse, vec![THE_VALUE_THE_INVERSE_HELD; 9]);
+        }
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_refuses_an_n_of_zero() {
+        let error = invert_with_cholesky(&[], 0, &mut []).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "n", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_refuses_an_l_shorter_than_n_times_n() {
+        let error = invert_with_cholesky(&[0.0; 8], 3, &mut [0.0; 9]).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "l", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_refuses_an_inverse_shorter_than_n_times_n() {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let error = invert_with_cholesky(&l, 3, &mut [0.0; 8]).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "inverse",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 2^31, one more than the largest an i32 holds. The check comes
+        // before the one of the length of the buffer, so empty slices
+        // reach it, and it is made whichever backend would run.
+        let error = invert_with_cholesky(&[], 1 << 31, &mut []).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "l", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn inverting_with_the_cholesky_refuses_a_value_that_is_not_finite_in_the_lower_half_of_l() {
+        // Below the diagonal and on it. Above it is the test that reads
+        // the lower half alone.
+        for entry in [3_usize, 4] {
+            let mut l = the_matrix_to_factor();
+            cholesky_lower(&mut l, 3).unwrap();
+            l[entry] = f64::INFINITY;
+            let mut inverse = vec![THE_VALUE_THE_INVERSE_HELD; 9];
+            let error = invert_with_cholesky(&l, 3, &mut inverse).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "l" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
     }
 }

@@ -1,6 +1,6 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd`, `dpotrf` and `dpotrs`, the ones numpy calls.
+//! `dsyevd`, `dpotrf`, `dpotrs` and `dpotri`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -451,6 +451,79 @@ pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usi
             routine: "dpotrs",
             info,
         })
+    }
+}
+
+/// The lower half of the inverse of the `a` whose factorization `l` is,
+/// with `l` of exactly `n` x `n` values row after row with its lower half
+/// filled and `inverse` of exactly `n` x `n`, and `n` 1 at least. The
+/// upper half of `inverse` is left as it was.
+///
+/// `dpotri` inverts a factorization where it lies, so the lower half of
+/// the factorization is copied into the buffer the caller gave for the
+/// inverse and the routine works there: that copy is what keeps `l` as it
+/// was, which the interface of the crate promises, and the routine asks
+/// for no workspace besides it. The copy is of that half alone, and not of
+/// the whole buffer, because the upper half of `inverse` is the caller's
+/// and is left as it was, and because the routine reads nothing else.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` is larger than the `i32` the routine
+/// takes. [`Error::Singular`] when the diagonal of `l` holds a 0 at the
+/// row the error names, which the routine would divide by; `lib.rs` reads
+/// that diagonal before either backend runs, since faer's inverse does not
+/// look at it, so no caller of the crate reaches this one.
+/// [`Error::NoConvergence`] when the routine refused an argument it was
+/// given, which is a defect of popnei.
+pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()> {
+    let order = the_i32_of(n, "n")?;
+    // Both buffers hold exactly n * n values, `lib.rs` having cut them to
+    // the dimensions, so each is n rows of n, and the lower half is the
+    // entries of column `j` at most `i` of row `i`. What is left of the
+    // row after those is the caller's and is not written.
+    for (row, (into, from)) in inverse
+        .chunks_exact_mut(n)
+        .zip(l.chunks_exact(n))
+        .enumerate()
+    {
+        for (into, from) in into.iter_mut().zip(from).take(row.saturating_add(1)) {
+            *into = *from;
+        }
+    }
+    let mut info = 0_i32;
+    // SAFETY: with `uplo` U, `n` = n and `lda` = n the routine reads and
+    // writes the upper triangle of `inverse` as a column major matrix of
+    // n x n, which is the lower half of `inverse` in popnei's layout and
+    // is inside the n * n values it holds, the copy of `l` just written
+    // there. It reads and writes nothing else of that buffer and nothing
+    // at all of `l`, and `info` is one integer. `n` is not 0 and fits in
+    // the `i32` the routine takes, which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dpotri(b'U', order, inverse, order, &mut info);
+    }
+    if info == 0 {
+        return Ok(());
+    }
+    // An `info` above 0 is the row of the diagonal entry of the
+    // factorization that is 0, counting from 1, which no `l` that
+    // `cholesky_lower` gave holds, since it stops at the first entry that
+    // is not above 0. An `info` below 0 is an argument the routine
+    // refused, and that is the arm the conversion fails in, since no
+    // negative number is a count.
+    match usize::try_from(info) {
+        Ok(row) => Err(Error::Singular {
+            argument: "l",
+            at: row.saturating_sub(1),
+        }),
+        Err(_) => Err(Error::NoConvergence {
+            routine: "dpotri",
+            info,
+        }),
     }
 }
 
