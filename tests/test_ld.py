@@ -222,12 +222,28 @@ def test_a_filter_on_the_variants_is_run_and_counted() -> None:
 
 
 def test_the_matrix_is_the_r_squared_of_pynei_when_no_genotype_is_missing() -> None:
-    """popnei and pyNei over the variants of `ld.vcf.gz` that are called at
-    every individual, each library running its own missing data filter.
+    """popnei and pyNei over the 21 variants of `ld.vcf.gz` that are called
+    at every individual, each library running its own missing data filter.
 
-    With no missing genotype the two rules are one rule, so the two matrices
-    are the same calculation and agree within 1e-12 relative. pyNei gives r,
-    which is squared before the comparison.
+    With no missing genotype the two rules for a missing genotype are one
+    rule, so the two matrices are the same calculation, and what is left
+    between them is the order the two sum in: popnei takes the six sums of a
+    pair out of matrix products on the BLAS the build links, and pyNei
+    centres the dosages and sums them with numpy. pyNei gives r, which is
+    squared before the comparison.
+
+    The two are 1.19e-13 apart, relative, at the pair they differ most at,
+    against the 1e-12 they are asserted within: eight times of room.
+    Measured on 23 September 2026 over the 256 pairs of those 21 variants
+    that have an r² in both libraries, on the owner's Apple M5 Pro with the
+    BLAS the native build links there, Accelerate. It does not move between
+    runs, and the run with one rayon thread gives the same bits. So the
+    tolerance is there for a machine whose BLAS sums in another order, or a
+    release of pyNei that does, and not for popnei's own rounding, which is
+    what "How it is verified" of `docs/specs/ld.md` says of its own 1e-12.
+    Whoever meets this test red reads the largest difference off it: one
+    near 1.19e-13 and above 1e-12 is the ground moving under the test, and
+    one far above is popnei.
     """
     variants = _the_ld_dataset()
     variants.filter_by_missing_data(0)
