@@ -3950,6 +3950,45 @@ mod tests {
         );
     }
 
+    /// The three counts of the worked example of the filter by linkage
+    /// disequilibrium in "How it is verified" of `docs/specs/filters.md`: a
+    /// missing data filter at 1 before it and an observed heterozygosity
+    /// filter at 1 after it give 5 and 5, 5 and 2, and 2 and 2.
+    ///
+    /// Neither of the two filters at 1 drops anything, v3 having one
+    /// missing genotype of six and the most heterozygous variant three of
+    /// six, so the counts of the three say where each of them stands in the
+    /// chain and what the one in the middle took out.
+    #[test]
+    fn the_chain_of_the_worked_example_gives_the_three_pairs_of_counts_of_the_spec() {
+        let source =
+            GivenBlocks::of_the_r2_example(vec![block_of_the_r2_example(&[0, 1, 2, 3, 4])]);
+        let mut chain = chain_of(
+            Box::new(source),
+            &[
+                MaxMissingRate(1.0),
+                MaxLdR2 {
+                    max_allowed_r2: 0.5,
+                    max_dist: 5000,
+                },
+                MaxObsHet(1.0),
+            ],
+        )
+        .expect("the chain of the three criteria");
+
+        let blocks = blocks_of(&mut chain).expect("the blocks");
+
+        assert_eq!(positions_of_blocks(&blocks), [1000, 5000]);
+        assert_eq!(
+            chain.filtering_stats(),
+            vec![
+                ("obs_het", pair(2, 2)),
+                ("ld", pair(5, 2)),
+                ("missing_data", pair(5, 5)),
+            ]
+        );
+    }
+
     /// The chain of a maf filter and the filter by linkage disequilibrium,
     /// which is what a user writes in place of pyNei's one call to
     /// `filter_by_ld_and_maf`: the maf filter at 0.8 drops v4, whose
