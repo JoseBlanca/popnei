@@ -653,15 +653,27 @@ Variant 4 of the worked example below has f_2 = -0.1. popnei does not
 clamp them, and a user who sees a small negative F_ST has populations
 that this dataset cannot tell apart.
 
-A `min_num_individuals` of 1 adds one condition to the test. When both
-populations have exactly one called genotype at a variant, the harmonic
-mean of the two counts that Jost's D corrects with, "Jost's D" below, is
-1, and its factor divides by zero. Such a variant does not count for that
-pair at all, so that the seven numbers are over the same variants and a
-pair has one count of them. It is the only case where the count of called
-genotypes is not the whole test, and it cannot arise at a
-`min_num_individuals` of 2 or more. pyNei drops the same variant by another
-route, "What pyNei does that is odd" of Jost's D below.
+A `min_num_individuals` of 1 adds two conditions to the test, and neither
+can arise at 2 or more. The first: when both populations have exactly one
+called genotype at a variant, the harmonic mean of the two counts that
+Jost's D corrects with, "Jost's D" below, is 1, and its factor divides by
+zero. Such a variant does not count for that pair at all, so that the
+seven numbers are over the same variants and a pair has one count of them.
+pyNei drops the same variant by another route, "What pyNei does that is
+odd" of Jost's D below.
+
+The second: a population with one called allele at a variant has no within
+population heterozygosity there, since u_P is n_P / (n_P - 1) times
+1 - sum over a of p_Pa^2, which is 0 over 0, and the variant would add a
+NaN to every sum of every pair that population is in. It does not count for
+those pairs. One called genotype gives one called allele only at a ploidy
+of 1, since a genotype of two alleles or more that was called whole gives
+two called alleles or more, so this needs a haploid dataset as well as a
+`min_num_individuals` of 1; and when both populations are that one
+genotype the first condition has dropped the variant already. Decided by
+the plan on 23 September 2026, the spec having said what H_b, H_w and the
+correction of H_S do with little data and not what they do with one called
+allele.
 
 ### How it runs
 
