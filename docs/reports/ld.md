@@ -1,26 +1,165 @@
 # Work report: r², the matrix of it, and the filter by linkage disequilibrium
 
-The plan `docs/plans/ld.md` is under way, on the branch `plan/ld`, in the
-worktree `.claude/worktrees/ld`, where it started on 22 September 2026.
-It builds r², the squared correlation between the dosages of two
-variants; `calc_rogers_huff_r2_matrix`, which gives the r² of every pair
-of a set of variants and is named for the way Rogers and Huff work it out
-from the dosages alone, without knowing which alleles travel together on
-a chromosome; and `Variants.filter_by_ld`, which takes out the
-variants that repeat what a variant near them on the chromosome already
-said. The two specs behind it are `docs/specs/ld.md` and the item "The
-filter by linkage disequilibrium" of `docs/specs/filters.md`.
+The plan `docs/plans/ld.md` built three of its four work packages, and
+they were merged into `main` on 23 September 2026. The fourth, which
+measures the speed of what the other three built, was deferred that day
+by the owner's decision: it becomes a performance review of its own
+rather than the last work package of this plan. So popnei can now work
+out every number this plan set out to give, and nobody has yet measured
+how long it takes.
 
-Where the plan stands on 22 September 2026: work package 1, the r² of two
-sets of variants inside the core crate, is done, reviewed and fixed. Work
-packages 2, 3 and 4 have not started, and the last section of this report
-says what is waiting on the owner before work package 2 begins.
+## What exists now that did not
 
-This report is written as the work goes. Each work package gets a section
-below when it is done, with the command that checked each deliverable and
-what it gave, what was changed in the plan and why, what the review found,
-and what the owner should know. When the plan is done, what the owner
-reads first goes at the top of this file.
+A user writes `calc_rogers_huff_r2_matrix(variants)` in Python or
+`calcRogersHuffR2Matrix` in TypeScript and gets the r² of every pair of
+the variants of a pass, the squared correlation between their dosages,
+with the chromosome and the position of each variant beside it and the
+counts of every filter the pass ran. A user writes
+`variants.filter_by_ld(max_allowed_r2, max_dist)` or `filterByLd` and
+every consumer of those variants afterwards sees only the ones that do
+not repeat what a variant kept near them on the chromosome already said.
+Under both is `crates/popnei/src/ld.rs`, which works r² out for two sets
+of variants through six matrix products.
+
+`crates/popnei-linalg` gained a fourth operation on the way, by the
+owner's decision of 23 September: the product of a matrix with the
+transpose of another, which the r² needs and which the crate did not
+have.
+
+## Whether the numbers are right
+
+popnei's r² is plink2's **to the bit**. Not within a tolerance: equal.
+That holds for all 93096 pairs of the reference dataset that plink2 gives
+a number for, for all 250000 cells of the matrix, and on three arithmetic
+paths — the system BLAS natively, faer natively, and faer compiled to
+WebAssembly and run under node. It was checked by setting the tests'
+tolerance to exactly 0 and rerunning, which the orchestrator did at every
+stage where the arithmetic underneath was changed.
+
+The dosages popnei counts are pyNei's `to_012` exactly, over all 25000
+genotypes of a file with 54 variants of more than two alleles and 257
+half called genotypes. Where popnei and pyNei part is where they were
+always going to: popnei leaves the individuals missing at either variant
+of a pair out of that pair and pyNei leaves them in with a dosage of -1.
+The test pins that divergence at the median 0.00369, 99th percentile
+0.04680 and largest 0.19374 of the table of `docs/specs/ld.md`, so a
+change on either side of it shows.
+
+The filter keeps 84, 133, 85 and 85 variants of 500 at the four settings
+of the table of `docs/specs/filters.md`. Four implementations that share
+no arithmetic agree on that set: the rule of the spec written again in
+Python over plink2's stored matrix, popnei's reader in Rust, the same
+compiled to WebAssembly, and the Python binding. A reviewer wrote a fifth
+from the spec's words alone, worked out for itself which variants have
+two dosages rather than reading plink2's diagonal, and got the same set
+variant by variant.
+
+## What was found and fixed
+
+Ten reviewers read the three work packages. Thirty-three findings held,
+two were refused with evidence the orchestrator accepted, and **not one
+of them was a wrong number**. What they found was that the code asked too
+much of a machine and that some of its checks could not fail.
+
+The filter was doing about eighteen times the work its spec asks,
+comparing its window one variant at a time where the spec says one set of
+matrix products. Rewriting it as the spec has it took a pass of 20000
+variants from 2.62 s to 0.180 s and moved no variant of the result. Three
+allocations ended the process where the spec promises an error, one of
+them in the Python binding where the TypeScript binding had guarded the
+same copy. The three properties on which the filter's rule rests were
+worked out over the set that built them and so were 0 by construction;
+they now run against the file that was written, with three damaged sets
+beside them that the program refuses to write a 0 for. The path that
+carries the filter's window from one block to the next had no test at
+all, and two mutations of it survived the whole suite, one of them
+directly against the spec's rule about a pair with no r².
+
+Six statements of the two specs no longer matched the code, and in two of
+them the code was right. Seven differences between what Python and
+TypeScript accept and refuse were closed, which is what four subagents
+building the two languages at once without sight of each other produced.
+
+## What is open
+
+- **The speed of both calculations is not measured.** This is the whole
+  of work package 4 and it is now a performance review. Nothing in this
+  plan says how long the matrix of 5000 variants takes against the 0.50 s
+  the spec asks of it, or what a pass of the filter costs. popnei has no
+  bench for either.
+- **`has_variance` and `maf` of `LdDosages`** answer `false` and `None`
+  both for a variant that has no data and for an index that is not a
+  variant at all, so a tile or a window that runs one past its end fails
+  quietly. `docs/specs/ld.md` fixes both signatures, so narrowing them is
+  the owner's.
+- **Which exception a machine that cannot give memory should raise.**
+  `.claude/skills/coding/SKILL.md` records the convention the owner gave
+  on 21 September 2026, with a `ValueError` for a wrong input, a
+  `RuntimeError` for a defect of popnei and an `OSError` for a file. A
+  machine too small for a matrix is none of the three, and Python has
+  `MemoryError` for it. Two cases sit on this, the matrix of the r² and
+  the Kosman distances of `docs/specs/dists.md`, and they agree today by
+  both being a `ValueError`.
+- **Both bindings copy the matrix on the way out**, 200 MB at the default
+  cap, because `R2Matrix` lent its values. It can now give them away
+  instead, and neither binding has been changed to take them; in a
+  browser that copy is 200 MB of the instance's memory that is never
+  given back.
+- **The second item of `docs/specs/ld.md`**, the curve of r² against
+  distance per population, is written and reviewed and not built, which
+  the owner decided on 22 September. Open 1 of that spec belongs to it.
+- **Open 2 of `docs/specs/ld.md`**, how the major allele of a variant
+  with half called genotypes is chosen, is unanswered. Everything here
+  follows its "meanwhile", the rule `docs/specs/pca.md` gives, so
+  answering it the other way would move the dosages and the r² of
+  variants of more than two alleles.
+
+## What a performance review should start from
+
+Each of these was measured by a reviewer of this plan, on the owner's
+Apple M5 Pro, and each is a candidate and not a conclusion.
+
+- **The size of a tile of the matrix**, which is 256 variants. It was
+  chosen by reading the "Speed" table of `docs/specs/ld.md` as 1.9 ms for
+  a pair of 256-variant tiles against 5.7 ms for a pair of 512-variant
+  ones, where a pair of 512 covers four times as many pairs of variants.
+  Per pair of variants a reviewer measured 51.8 ns at 128, 38.0 ns at
+  256, 30.1 ns at 512 and 29.1 ns at 1024, which at the cap of 5000
+  variants is about 0.43 s of products at 256 against 0.35 s at 512,
+  where the number to reach is 0.50 s. The comment in the code now says
+  that the size is what a performance review settles.
+- **The copy each binding makes of the matrix**, 200 MB at the cap, which
+  `R2Matrix` can now hand over instead.
+- **The transposed half of each pair of tiles**, written cell by cell
+  with a stride of the width of the matrix: about 800 MB of scattered
+  writes at the cap, which a reviewer asked be measured apart from the
+  products before anything is done to the products.
+- **`LdDosages::rows`**, which gives an owned copy, and the six sums a
+  pair of tiles allocates inside the call with no way to hand in scratch,
+  where `pca.rs` has a scratch type for exactly this.
+- **What the filter costs now that its window is one set of products.**
+  The only figure is the one from the fix: 20000 variants of 400
+  individuals with a window of about 270 kept variants, 2.62 s before and
+  0.180 s after. Nothing is known about 100000 variants of 1000, which is
+  the dataset `docs/rust_core.md` measures popnei on.
+- **The window's memory**, one byte for each allele held between blocks
+  and 24 bytes for each individual and each of its variants while a set
+  is settled. How many variants a window holds is set by the dataset: a
+  dataset whose variants carry no linkage leaves every one of them in a
+  window as wide as a chromosome.
+
+## What is asked of the owner
+
+The merge is done. What is left is the four open points above, of which
+two are decisions only the owner can take: whether `has_variance` and
+`maf` should narrow their signatures, and whether the convention of
+exceptions should gain a fourth for a machine that has not the memory.
+The performance review is the other thing this plan hands on.
+
+---
+
+The rest of this file is what was written while the work went, work
+package by work package, and it is where every number above comes from.
 
 ## Before the first task
 

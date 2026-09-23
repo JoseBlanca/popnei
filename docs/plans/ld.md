@@ -1,6 +1,11 @@
 # Plan: r² between variants, the matrix of it, and the filter by linkage disequilibrium
 
-22 September 2026. State: under way. It builds
+22 September 2026. State: work packages 1, 2 and 3 done and merged into
+`main` on 23 September 2026. Work package 4, the measurements, is not
+built: the owner decided that day to take the speed of both calculations
+in a performance review of its own rather than inside this plan, so the
+three tasks below are deferred and the "Speed" sections of the two specs
+still say that they are to be filled. It builds
 from `docs/specs/ld.md`, which has r², the squared correlation between
 the dosages of two variants, and the matrix of it for a set of variants;
 and from the item "The filter by linkage disequilibrium" of
@@ -337,6 +342,17 @@ variants that are not sorted, so such a source exists in the tests
 already and the error has to name the variant and both positions.
 
 ## Work package 4: the measurements
+
+DEFERRED on 23 September 2026 by the owner's decision, to a performance
+review of its own, which the `performance-review` skill runs. Nothing of
+it was built and nothing of it was committed: popnei has no bench for
+either calculation and the "Speed" sections of `docs/specs/ld.md` and of
+`docs/specs/filters.md` still say that they are to be filled.
+
+What the review starts from, which this plan's own reviews measured, is
+in "What a performance review should start from" of `docs/reports/ld.md`.
+The deliverables below stand as they are written, for whoever carries
+them out.
 
 ### What it gives
 
