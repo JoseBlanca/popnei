@@ -183,7 +183,7 @@ and about a frame are made where those are, in the Python and the TypeScript
 layers: an individual of the phenotype that the `Variants` has not, a
 covariate that does not cover a tested individual, and a covariate value
 that is missing or is not a number. The core makes the rest over the
-positions and the numbers it holds, and three more that only it can see.
+positions and the numbers it holds, and four more that only it can see.
 
 The positions rise, and any other order is a `ValueError`. They are the
 order the source has the individuals in, and the phenotype, the rows of the
@@ -196,9 +196,20 @@ individual between its two halves gives. A phenotype that is not a finite
 number is a `ValueError` naming where it is: the individuals tested are
 those that have a phenotype, so a NaN is an individual that should not have
 been tested at all, and an infinity would carry through the null model into
-the effect of every variant. And the phenotype holds one value for each
-tested individual, the design one row of its columns for each, and the
-design has the column of ones at least; none of the three can be reached
+the effect of every variant. A value of the design that is not a finite
+number is a `ValueError` too, naming the individual whose row it is in, the
+column it is in and the value. The Python and the TypeScript layers refuse a
+covariate that is missing or is not a number, so what reaches this is a
+covariate that was a number and came out of the user's own arithmetic as an
+infinity, and a caller of the core crate; left in, it would reach the rank,
+which refuses what it is given and not what it produced, and the user would
+be told of a defect of popnei where they gave a wrong covariate. pyNei
+catches a NaN covariate at the frame, as a missing value, and an infinity
+reaches its rank, where numpy 2.5.3's `matrix_rank` gives 0 and the user is
+told the covariates are collinear; what popnei adds is the value and where
+it is. And the phenotype holds one value
+for each tested individual, the design one row of its columns for each, and
+the design has the column of ones at least; none of the three can be reached
 from Python or from TypeScript, which build the three from the same
 individuals, so each is a `RuntimeError`.
 
