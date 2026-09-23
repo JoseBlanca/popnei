@@ -67,11 +67,15 @@ const INTERCEPT = "intercept";
  * which `float` also takes, are matched apart, since `Number` reads only the
  * second of the three.
  */
-const A_DIGIT_RUN = "\\d+(?:_\\d+)*";
+const A_DIGIT_RUN = "[\\p{Nd}]+(?:_[\\p{Nd}]+)*";
 const WRITTEN_AS_FLOAT_WRITES_ONE = new RegExp(
   `^[+-]?(?:${A_DIGIT_RUN}(?:\\.(?:${A_DIGIT_RUN})?)?|\\.${A_DIGIT_RUN})` +
     `(?:[eE][+-]?${A_DIGIT_RUN})?$`,
+  "u",
 );
+
+/** One decimal digit of any script, which is what `\p{Nd}` is. */
+const A_DECIMAL_DIGIT = /^\p{Nd}$/u;
 const WRITTEN_AS_A_WORD_FLOAT_TAKES = /^([+-]?)(nan|inf|infinity)$/i;
 
 /** What was measured on each individual. */
@@ -244,8 +248,12 @@ export interface CalcGwasOptions {
   >;
   /**
    * Which test is made of every variant, and the default of the model when
-   * it is not given. What `calcGwas` fits is the linear model, whose only
-   * test is `wald`, so `score` is an `Error` that says so.
+   * it is not given, which for both models of a continuous trait is `wald`.
+   *
+   * The linear model, a trait with no kinship, has the Wald test alone,
+   * which for it is the t test of the effect it fitted, so `score` is an
+   * `Error` that says so; the linear mixed model takes either, the Wald
+   * test being rrBLUP's and the score test GMMAT's.
    */
   test?: TestType;
   /**
@@ -497,8 +505,8 @@ function theTestedIndividuals(
     if (!Number.isFinite(number)) {
       throw new Error(
         `popnei: the phenotype of \`${name}\` is ${number}, and a study is ` +
-          "fitted on numbers: an individual with no phenotype is left out " +
-          "of `phenotype` altogether, which is what leaves it untested",
+          "fitted on numbers: leave that individual out of the phenotype, " +
+          "which is what leaves it untested",
       );
     }
     tested.push({ name, position, phenotype: number });
@@ -550,7 +558,54 @@ function theNumberOf(value: unknown): number | undefined {
   if (!WRITTEN_AS_FLOAT_WRITES_ONE.test(written)) {
     return undefined;
   }
-  return Number(written.replaceAll("_", ""));
+  const inAscii = theDigitsInAscii(written.replaceAll("_", ""));
+  return inAscii === undefined ? undefined : Number(inAscii);
+}
+
+/**
+ * `written` with every decimal digit of it written as the ASCII digit of the
+ * same value, and `undefined` when one of them has no value.
+ *
+ * `float` reads a decimal digit of any script, so `float("１")` is 1.0,
+ * where `Number("１")` is NaN: matching the digits is not enough and they
+ * have to be handed to `Number` as the digits it reads. The value of one is
+ * where it sits in its own run of ten, and Unicode lays every run of decimal
+ * digits out as ten code points with the zero first, so walking back to the
+ * first code point that is not a digit gives it.
+ */
+function theDigitsInAscii(written: string): string | undefined {
+  let inAscii = "";
+  for (const character of written) {
+    if (!A_DECIMAL_DIGIT.test(character)) {
+      inAscii += character;
+      continue;
+    }
+    const value = theValueOfTheDigit(character);
+    if (value === undefined) {
+      return undefined;
+    }
+    inAscii += String(value);
+  }
+  return inAscii;
+}
+
+/**
+ * Where the decimal digit `of` sits in its own run of ten, 0 to 9, and
+ * `undefined` when ten code points below it are all digits, which no run of
+ * Unicode has.
+ */
+function theValueOfTheDigit(of: string): number | undefined {
+  const code = of.codePointAt(0);
+  if (code === undefined) {
+    return undefined;
+  }
+  for (let value = 0; value <= 9; value += 1) {
+    const below = code - value - 1;
+    if (below < 0 || !A_DECIMAL_DIGIT.test(String.fromCodePoint(below))) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 /** One covariate: its name and its value for each tested individual. */
@@ -650,10 +705,22 @@ function theValuesOfTheCovariate(
           "them, 1 for the individuals of that value and 0 for the others",
       );
     }
-    // A NaN and an infinity are numbers to JavaScript and not to a fit, and
-    // this is the layer that has the name of the covariate and of the
-    // individual: the core refuses them as well, by their places among the
-    // columns and the rows, which is what a caller of the core crate reads.
+    // A value whose `float` is NaN is the missing value of a covariate, and
+    // a covariate has no missing value: every tested individual has a row
+    // of the design. It says what the Python package says of a blank cell,
+    // which is what pandas reads as NaN there and what a user fills in.
+    if (Number.isNaN(number)) {
+      throw new Error(
+        `popnei: the value of the covariate \`${name}\` at \`${individual}\` ` +
+          "is missing, and a covariate holds a number for every individual " +
+          "that is tested: leave that individual out of the phenotype, or " +
+          "fill the value in",
+      );
+    }
+    // An infinity is a number to JavaScript and not to a fit, and this is
+    // the layer that has the name of the covariate and of the individual:
+    // the core refuses it as well, by its place among the columns and the
+    // rows, which is what a caller of the core crate reads.
     if (!Number.isFinite(number)) {
       throw new Error(
         `popnei: the value of the covariate \`${name}\` at \`${individual}\` ` +

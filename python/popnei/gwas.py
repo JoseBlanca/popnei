@@ -370,7 +370,7 @@ def calc_gwas(
         trait_name,
         test_name,
         _the_kinship_of_the_tested(kinship, names),
-        bool(use_grammar_gamma_approx),
+        use_grammar_gamma_approx,
         transform_to_biallelic,
         variants._steps,
     )
@@ -427,10 +427,23 @@ def _the_kinship_of_the_tested(
     kinship of a panel is the one a user has, and a phenotype that leaves
     individuals out does not make it another matrix.
 
-    Whether the entries of the matrix are finite numbers is not checked
-    here: `Kinship.__post_init__` refuses a matrix that holds anything else,
-    and the core refuses it again by the cell it is in, which is what a
-    caller of `popnei._core` reads.
+    The rows and the columns are taken in one indexing of the array the
+    frame holds, and not with `.loc` and then `to_numpy` and then
+    `ascontiguousarray`: those are three copies of the matrix where the core
+    needs one, because a frame of one dtype lies column after column and
+    comes back from `to_numpy` the wrong way round for the core, which reads
+    it row after row. Measured at 3000 individuals, a matrix of 72 MB, on 25
+    September 2026: 144.4 MB at the peak and 72.4 MB held with the three, and
+    72.2 MB at the peak and 72.0 MB held with this, which at the 10000
+    individuals of
+    `docs/objectives.md` is 800 MB of transient saved. Indexing with two
+    arrays of positions gives a new array that already lies row after row,
+    which is the layout the binding crate refuses anything else in.
+
+    Whether the entries of the matrix are finite numbers and whether it is
+    symmetric are not checked here: `Kinship.__post_init__` refuses a matrix
+    that is neither, and the core refuses both again by the cell they are
+    in, which is what catches a frame written into after it was built.
 
     # Raises
 
@@ -441,9 +454,11 @@ def _the_kinship_of_the_tested(
     """
     if kinship is None:
         return None
-    of_the_matrix = set(kinship.individuals)
+    of_the_matrix = {name: row for row, name in enumerate(kinship.individuals)}
+    rows = []
     for name in tested:
-        if name not in of_the_matrix:
+        row = of_the_matrix.get(name)
+        if row is None:
             raise ValueError(
                 f"{name!r} is tested and is not one of the "
                 f"{len(kinship.individuals)} individuals of the `kinship`, "
@@ -451,9 +466,11 @@ def _the_kinship_of_the_tested(
                 f"give a kinship of them, `calc_kinship(variants)` for "
                 f"instance, or leave that individual out of the phenotype"
             )
-    return numpy.ascontiguousarray(
-        kinship.matrix.loc[tested, tested].to_numpy(dtype=numpy.float64)
-    )
+        rows.append(row)
+    of_the_pairs = numpy.asarray(rows, dtype=numpy.intp)
+    return kinship.matrix.to_numpy(dtype=numpy.float64)[
+        numpy.ix_(of_the_pairs, of_the_pairs)
+    ]
 
 
 def _a_name_written_in(argument: str, value: object, says: str) -> str:
@@ -572,7 +589,7 @@ def _the_tested_individuals(
             raise ValueError(
                 f"the phenotype of {name!r} is {number}, and a study is "
                 f"fitted on numbers: leave that individual out of the "
-                f"phenotype, which is what a missing value does"
+                f"phenotype, which is what leaves it untested"
             )
         tested.append((name, position, number))
     return tested

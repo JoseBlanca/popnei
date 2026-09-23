@@ -974,6 +974,99 @@ def test_the_private_module_names_a_design_that_is_not_contiguous(
     assert "`design`" in str(refusal.value)
 
 
+def _the_private_call(variants, **written) -> None:
+    """`popnei._core.calc_gwas` over the worked example, with `written` over
+    the arguments the package would have built.
+
+    It is what a user who calls the private module themselves reaches, and
+    the three kinship cases below are the only place the binding's own
+    refusals of a kinship are read: the package builds the matrix itself,
+    cut and contiguous, so nothing a user writes through `calc_gwas` gets
+    there.
+    """
+    asked = {
+        "individuals": numpy.arange(6, dtype=numpy.uint64),
+        "phenotype": numpy.asarray(WORKED_EXAMPLE_TRAIT, dtype=numpy.float64),
+        "design": numpy.ascontiguousarray(
+            numpy.column_stack([numpy.ones(6), WORKED_EXAMPLE_COVARIATE])
+        ),
+        "kinship": None,
+        "use_grammar_gamma_approx": False,
+    }
+    asked.update(written)
+    _core.calc_gwas(
+        variants._source,
+        asked["individuals"],
+        asked["phenotype"],
+        asked["design"],
+        "continuous",
+        None,
+        asked["kinship"],
+        asked["use_grammar_gamma_approx"],
+        False,
+        variants._steps,
+    )
+
+
+def test_the_private_module_names_a_kinship_that_is_not_contiguous(
+    worked_example: pathlib.Path,
+) -> None:
+    """A kinship that lies column after column is refused by the name of the
+    argument, as the design is.
+
+    `pyo3.md` asks for this test of every matrix that crosses, and the
+    package cannot reach it: it indexes the frame's array, which gives one
+    that lies row after row. A matrix that lies the other way round is its
+    own transpose, which for a kinship is the same matrix, so what this
+    refusal is really for is the strided view of another array that
+    `as_slice` would take.
+    """
+    variants = open_vcf(worked_example, only_passed=False)
+    by_columns = numpy.asfortranarray(numpy.eye(6))
+
+    with pytest.raises(ValueError, match="ascontiguousarray") as refusal:
+        _the_private_call(variants, kinship=by_columns)
+
+    assert "`kinship`" in str(refusal.value)
+
+
+def test_the_private_module_refuses_a_kinship_of_another_size(
+    worked_example: pathlib.Path,
+) -> None:
+    """A kinship that is not one row and one column for each tested
+    individual is a ``RuntimeError``, which is what the three buffers of a
+    study that do not hold it are.
+
+    The package builds the matrix from the individuals it tested, so a size
+    that does not fit them is a defect of popnei and not something a user
+    wrote. The message says both sizes.
+    """
+    variants = open_vcf(worked_example, only_passed=False)
+
+    with pytest.raises(RuntimeError, match="the kinship holds 25 values"):
+        _the_private_call(variants, kinship=numpy.ascontiguousarray(numpy.eye(5)))
+
+
+def test_the_private_module_names_the_cell_of_a_kinship_that_is_not_finite(
+    worked_example: pathlib.Path,
+) -> None:
+    """A kinship with a value that is not finite is refused by the cell it is
+    in, before any model is fitted.
+
+    `Kinship.__post_init__` refuses such a matrix, so what reaches here is a
+    frame written into afterwards and a caller of the private module. Left
+    in, it would spread through the eigendecomposition into every eigenvalue
+    and the study would come back with a NaN for every variant.
+    """
+    variants = open_vcf(worked_example, only_passed=False)
+    with_a_nan = numpy.ascontiguousarray(numpy.eye(6))
+    with_a_nan[2, 3] = numpy.inf
+    with_a_nan[3, 2] = numpy.inf
+
+    with pytest.raises(ValueError, match="row 2 and the column 3 of the kinship"):
+        _the_private_call(variants, kinship=with_a_nan)
+
+
 # What GMMAT 1.5.0's `glmmkin` fitted for the panel with every genotype
 # called, from `tests/reference/gwas/gmmat.null_models.tsv`, which the
 # reference script writes at full precision: the variance of the random
@@ -1017,18 +1110,27 @@ OF_RRBLUP = 1e-4
 # both from the spec and both over all 1200 variants of both panels.
 #
 # The two files are printed to six significant digits, which rounds a value
-# by up to 5e-6 of itself, so half of the first bound can go on GMMAT's
-# printing alone and that comparison has twofold headroom at best. `log10`
-# shrinks a relative difference, so the second has more.
+# by up to 5e-6 of itself, so a share of the first bound goes on GMMAT's
+# printing. `log10` shrinks a relative difference, so the second has more.
 #
 # Measured over the 1200 of each panel on 24 September 2026, the same to
 # three digits on both backends: the worst `1 / se**2` is 4.43e-6 of `VAR` at
 # `var0955` of the panel with every genotype called and 5.42e-6 at `var1060`
-# of the panel with genotypes missing, 54 per cent of what is allowed and at
-# the width of GMMAT's own last printed digit; the worst p-value is 4.62e-5
-# and 4.76e-5 in `log10`, both at `var0185`, 48 per cent of what is allowed,
-# and that one is not the printing but the two fits, which land 1.2e-6 apart
-# in the genetic variance.
+# of the panel with genotypes missing, 54 per cent of what is allowed; the
+# worst p-value is 4.62e-5 and 4.76e-5 in `log10`, both at `var0185`, 48 per
+# cent of what is allowed.
+#
+# How much of each of those is popnei's, measured on 25 September 2026. At
+# `var0955` GMMAT prints 11.6504, so half of its last digit is 4.2917e-6 of
+# the value against the 4.4268e-6 measured: at most 1.35e-7 of that
+# difference is popnei's arithmetic. The comparison is not for that reason
+# empty. The largest printing contribution anywhere in the file is 4.9098e-6,
+# so the 1e-5 bound still fails if popnei's variance is about 5.7e-6 relative
+# off, which is forty times above the signal it can resolve; and 282 of the
+# 1200 variants are further from GMMAT than their own printing accounts for,
+# so there is real signal in the column. The p-value half is the tighter of
+# the two: 4.62e-5 in `log10` against a printing floor of 2.2e-6 is
+# twenty-one times above it.
 OF_GMMAT_VARIANCE = 1e-5
 OF_GMMAT_P_VALUE = 1e-4
 
@@ -1043,8 +1145,12 @@ OF_GMMAT_P_VALUE = 1e-4
 # minimum, so an eigenvalue moving in its last bits moves the ratio of the
 # two variances by about the square root of that, and every number of this
 # model is built from that ratio. The two backends alone put the genetic
-# variance 9.7e-9 apart on the same kinship, so a bound at 1e-9 would sit
-# below the noise of the search and would pass or fail by rounding.
+# variance of this build 3.155e-9 apart on the same kinship, 2.583e-9 of it,
+# so a bound at 1e-9 would sit below the noise of the search and would pass
+# or fail by rounding. The 9.7e-9 the spec gives, and this comment gave
+# until 25 September 2026, is the cargo build's figure, which is not this
+# one: the two were measured on different builds and the wrong one was
+# copied here.
 #
 # So it was lowered until it failed, on both backends, over all 1200 variants
 # of both panels under both tests, on 24 September 2026. It breaks at 5.17e-8
@@ -1053,8 +1159,8 @@ OF_GMMAT_P_VALUE = 1e-4
 # error of the search; the worst `beta` is 4.21e-8 and 3.78e-8 of its `se`,
 # at the panel with genotypes missing under the score test, and the worst
 # p-value is 4.32e-8 and 3.88e-8 in `log10`. This is 2.9 times the worst of
-# those, and 15 times the distance between the two backends, so it is a bound
-# the comparison can fail.
+# those, and 58 times the 2.583e-9 the two backends sit apart, so it is a
+# bound the comparison can fail.
 OF_PYNEI_WITH_A_KINSHIP = 1.5e-7
 
 # How many of the 5 causal variants have to be among the 10 smallest p-values
@@ -1498,6 +1604,20 @@ def _the_kinship_of_the_worked_example(without: str | None = None) -> Kinship:
     )
 
 
+def _a_kinship_written_into() -> Kinship:
+    """A kinship of the worked example with one cell of a pair written into
+    after it was built, which is what the core is there to catch.
+
+    ``Kinship.__post_init__`` refuses a matrix that is not symmetric, and the
+    frame it holds is mutable, so the check it made says nothing about what a
+    study is given later. The eigendecomposition reads the lower triangle
+    alone, so such a matrix was being read as that half mirrored.
+    """
+    kinship = _the_kinship_of_the_worked_example()
+    kinship.matrix.iloc[0, 1] = 0.5
+    return kinship
+
+
 def _the_calls_that_are_refused(
     worked_example: pathlib.Path,
 ) -> dict:
@@ -1523,6 +1643,10 @@ def _the_calls_that_are_refused(
     empty["i2"] = ""
     covariate_of_names = covariates.astype(object)
     covariate_of_names.loc["i2", "cov"] = "north"
+    an_infinity = _the_trait()
+    an_infinity["i2"] = numpy.inf
+    a_missing_value = covariates.copy()
+    a_missing_value.loc["i2", "cov"] = numpy.nan
     of_one_value = pandas.Series(
         4.0, index=list(WORKED_EXAMPLE_INDIVIDUALS), dtype=float
     )
@@ -1585,6 +1709,23 @@ def _the_calls_that_are_refused(
         "a covariate that is a name": lambda: _the_worked_example(
             worked_example, covariates=covariate_of_names
         ),
+        "a phenotype that is an infinity": lambda: _the_worked_example(
+            worked_example, phenotype=an_infinity
+        ),
+        "a covariate that has no value at an individual": lambda: _the_worked_example(
+            worked_example, covariates=a_missing_value
+        ),
+        "the covariates explaining the whole of the trait": lambda: _the_worked_example(
+            worked_example,
+            covariates=_the_trait().to_frame(name="itself"),
+            kinship=_the_kinship_of_the_worked_example(),
+        ),
+        "a kinship that is not symmetric": lambda: _the_worked_example(
+            worked_example, kinship=_a_kinship_written_into()
+        ),
+        "an approximation that is not a boolean": lambda: _the_worked_example(
+            worked_example, use_grammar_gamma_approx="no"
+        ),
     }
 
 
@@ -1611,7 +1752,17 @@ def _the_calls_that_are_coerced(worked_example: pathlib.Path) -> dict:
         {"cov": [value == 1.0 for value in WORKED_EXAMPLE_COVARIATE]},
         index=list(WORKED_EXAMPLE_INDIVIDUALS),
     )
+    # The digits of any script are the digits `float` reads, so a trait
+    # written with the full width ones of a spreadsheet is the same trait.
+    in_full_width = str.maketrans("0123456789", "０１２３４５６７８９")
+    trait_in_full_width = pandas.Series(
+        [str(value).translate(in_full_width) for value in WORKED_EXAMPLE_TRAIT],
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
     return {
+        "a phenotype written in full width digits": lambda: _the_worked_example(
+            worked_example, phenotype=trait_in_full_width
+        ),
         "a phenotype written as strings": lambda: _the_worked_example(
             worked_example, phenotype=trait_of_strings
         ),
@@ -1712,7 +1863,8 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
         "refusals", _the_calls_that_are_refused(worked_example)
     ):
         raises = TypeError if case.get("python_raises") == "TypeError" else ValueError
-        with pytest.raises(raises, match=case["match"]):
+        match = case.get("match", case.get("match_in_python"))
+        with pytest.raises(raises, match=match):
             call()
 
 

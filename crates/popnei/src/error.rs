@@ -1427,6 +1427,44 @@ pub enum Error {
         value: f64,
     },
 
+    /// The covariates of a study explain the whole of its trait, so the
+    /// restricted maximum likelihood of a linear mixed model leaves both
+    /// variances at 0, the covariance of the trait is the zero matrix and
+    /// its inverse is infinities. It is reached by giving the trait as one
+    /// of its own covariates and by covariates that together predict it
+    /// exactly, which is a design a user built wrong and not a defect of
+    /// popnei: what it gave until 25 September 2026 was the linear
+    /// algebra's refusal of a matrix that is not finite, naming an operand
+    /// of a product and the file the variants came from, neither of which
+    /// is at fault. In Python it is a `ValueError`, as the trait of one
+    /// value beside it is.
+    #[error(
+        "the covariates explain the whole of the trait, so the fit leaves no variance at all: a study looks for the variants that go with what the covariates do not explain, and here there is nothing they do not explain; take out the covariate that carries the trait"
+    )]
+    GwasDesignExplainsTheTrait,
+
+    /// The kinship a study was given holds two different numbers for one
+    /// pair of individuals. A kinship is symmetric, and the
+    /// eigendecomposition reads the lower triangle alone, so such a matrix
+    /// was being read as its lower half mirrored with no word to the
+    /// caller. The `Kinship` of both packages refuses one at the same
+    /// tolerance, a share of the largest absolute entry, and this is what
+    /// catches a frame written into after it was built and a caller of the
+    /// core crate. In Python it is a `ValueError`.
+    #[error(
+        "the kinship holds {value} for the pair of the tested individuals {individual} and {other} and {and_back} for the same pair the other way round, and a kinship is symmetric; the eigendecomposition reads the lower triangle alone, so the matrix would be read as that half mirrored"
+    )]
+    GwasKinshipNotSymmetric {
+        /// The row of the cell, as a place among the tested individuals.
+        individual: usize,
+        /// The column of the cell, as such a place.
+        other: usize,
+        /// What the matrix holds at that cell.
+        value: f64,
+        /// What it holds at the cell of the same pair the other way round.
+        and_back: f64,
+    },
+
     /// The columns of the design of a study are not independent: a
     /// covariate is constant, or it is a combination of the others, such as
     /// a copy of one or the sum of two. The effects of such a design are

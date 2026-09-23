@@ -331,7 +331,7 @@ const PANEL_KINSHIP = theKinshipOfThePanel(
 const OF_BOTH_LAYERS = JSON.parse(
   await referenceGwas("refusals_of_both_layers.json"),
 ) as {
-  refusals: { case: string; match: string }[];
+  refusals: { case: string; match?: string; match_in_typescript?: string }[];
   coercions: { case: string }[];
   no_phenotype_in_both_layers: { case: string }[];
   refused_in_typescript_alone: { case: string; match: string }[];
@@ -1001,7 +1001,39 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
     "a covariate that is a name": theStudyWith({
       covariates: { cov: { ...cov, i2: "north" } },
     }),
+    "a phenotype that is an infinity": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: Number.POSITIVE_INFINITY },
+    }),
+    "a covariate that has no value at an individual": theStudyWith({
+      covariates: { cov: { ...cov, i2: Number.NaN } },
+    }),
+    "the covariates explaining the whole of the trait": theStudyWith({
+      covariates: { itself: THE_TRAIT },
+      kinship: theKinshipOfTheWorkedExample(),
+    }),
+    "a kinship that is not symmetric": theStudyWith({
+      kinship: aKinshipWrittenInto(),
+    }),
+    "an approximation that is not a boolean": theStudyWith({
+      useGrammarGammaApprox: "no",
+    }),
   };
+}
+
+/**
+ * A kinship of the worked example with one cell of a pair written into
+ * after it was built, which is what the core is there to catch.
+ *
+ * The constructor of `Kinship` refuses a matrix that is not symmetric, and
+ * the `Float64Array` it keeps is the caller's to write into, so the check it
+ * made says nothing about what a study is given later. The eigendecomposition
+ * reads the lower triangle alone, so such a matrix was being read as that
+ * half mirrored.
+ */
+function aKinshipWrittenInto(): Kinship {
+  const kinship = theKinshipOfTheWorkedExample();
+  kinship.matrix[1] = 0.5;
+  return kinship;
 }
 
 /**
@@ -1025,7 +1057,16 @@ function theCallsThatAreCoerced(): Record<string, () => GwasResult> {
         how(value),
       ]),
     );
+  // The digits of any script are the digits `float` reads, so a trait
+  // written with the full width ones of a spreadsheet is the same trait.
+  const inFullWidth = (of: number) =>
+    String(of).replaceAll(/\d/gu, (digit) =>
+      String.fromCodePoint(0xff10 + Number(digit)),
+    );
   return {
+    "a phenotype written in full width digits": theStudyWith({
+      phenotype: written(THE_TRAIT, inFullWidth),
+    }),
     "a phenotype written as strings": theStudyWith({
       phenotype: written(THE_TRAIT, String),
     }),
@@ -1106,12 +1147,20 @@ function theCallsOf<OfTheList extends { case: string }>(
 }
 
 test("both layers refuse the same calls", () => {
-  for (const [{ case: name, match }, call] of theCallsOf(
+  for (const [ofTheList, call] of theCallsOf(
     OF_BOTH_LAYERS.refusals,
     theCallsThatAreRefused(),
     "refusals",
   )) {
-    assert.throws(call, new RegExp(match), name);
+    // A case whose refusal comes from the machinery of its own language
+    // carries one expression for each, since neither message can hold the
+    // other's words; what binds there is that both layers refuse the call.
+    const match = ofTheList.match ?? ofTheList.match_in_typescript;
+    assert.ok(
+      match !== undefined,
+      `\`${ofTheList.case}\` has neither \`match\` nor \`match_in_typescript\``,
+    );
+    assert.throws(call, new RegExp(match), ofTheList.case);
   }
 });
 

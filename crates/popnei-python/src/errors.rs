@@ -624,30 +624,43 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The ten of the association study that are of what a user wrote
-        // and are wrong whatever file is read: a phenotype or a covariate
-        // that is not a finite number, which the package lets through as a
-        // value that came out of the user's own arithmetic as an infinity;
-        // a binomial trait whose phenotype is not 0 or 1 or is one value
-        // for everybody, and a continuous trait that is one value for
-        // everybody too; covariates that are not independent, a copy of one
-        // another or a constant; the score test asked of a linear model and
-        // the Wald test of a logistic mixed one, which are the two pairs no
-        // model has; the GRAMMAR-Gamma approximation asked for by a study
-        // with no kinship; and a study whose trait and kinship ask for one
-        // of the three models that are not written. "The Rust interface" of
+        // The fourteen of the association study that are of what a user
+        // wrote and are wrong whatever file is read: a phenotype or a
+        // covariate that is not a finite number, which the package lets
+        // through as a value that came out of the user's own arithmetic as
+        // an infinity; a kinship whose entries are not finite and one that
+        // is not symmetric, which is a frame written into after the
+        // `Kinship` that checked it was built; a binomial
+        // trait whose phenotype is not 0 or 1 or is one value for
+        // everybody, and a continuous trait that is one value for everybody
+        // too; covariates that are not independent, a copy of one another
+        // or a constant, and covariates that explain the whole of the
+        // trait; the score test asked of a linear model and the Wald test
+        // of a logistic mixed one, which are the two pairs no model has;
+        // the GRAMMAR-Gamma approximation, asked for by a study with no
+        // kinship and asked for by one with a kinship, which say different
+        // things; and a study whose trait and kinship ask for one of the
+        // two models that are not written. "The Rust interface" of
         // `docs/specs/gwas.md` has them, each as the `ValueError` it is
-        // here.
+        // here. What the arm at the end of this function would give them
+        // instead is the same exception with the path of the file in front
+        // of the message, and an argument that is refused names no file:
+        // `GwasGrammarGammaNotBuilt` was there until 25 September 2026 and
+        // arrived with the VCF glued on, where the refusal raised two lines
+        // from it in the core named none.
         | popnei::Error::GwasPhenotypeNotFinite { .. }
         | popnei::Error::GwasPhenotypeNotBinomial { .. }
         | popnei::Error::GwasPhenotypeOfOneValue { .. }
         | popnei::Error::GwasContinuousPhenotypeOfOneValue { .. }
         | popnei::Error::GwasDesignValueNotFinite { .. }
         | popnei::Error::GwasKinshipValueNotFinite { .. }
+        | popnei::Error::GwasKinshipNotSymmetric { .. }
         | popnei::Error::GwasCovariatesCollinear { .. }
+        | popnei::Error::GwasDesignExplainsTheTrait
         | popnei::Error::GwasScoreTestOfALinearModel
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
         | popnei::Error::GwasGrammarGammaWithoutAKinship
+        | popnei::Error::GwasGrammarGammaNotBuilt
         | popnei::Error::GwasModelNotBuilt { .. }
         // The name of a trait and the name of a test that are of neither
         // of the two, which a user writes in `trait` and in `test`.

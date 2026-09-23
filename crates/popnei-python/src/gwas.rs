@@ -26,10 +26,11 @@
 //! covariates is 80 KB, 80 KB and 320 KB, against the variants x individuals
 //! the pass itself reads.
 //!
-//! A mixed model brings a fourth, the kinship of those individuals, which is
-//! copied for the same reason and which is the one of the four that grows
-//! with the square of the panel: 800 MB for 10000 individuals, the size of
-//! the matrix the user already holds.
+//! A mixed model brings a fourth, the kinship of those individuals, and that
+//! one is lent where numpy holds it and not copied: it grows with the square
+//! of the panel, 800 MB for 10000 individuals, and the array is the caller's
+//! and out of reach of Python for as long as the pass runs, which is what
+//! `pca.rs` relies on for its table.
 
 use numpy::{
     IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods as _,
@@ -147,10 +148,11 @@ pub(crate) fn calc_gwas<'py>(
     // The kinship crosses as the matrix of the tested individuals alone,
     // cut and ordered by the package, which is where the names of the
     // individuals are: the core reads it row after row beside the design
-    // and holds no name to cut it by. It is copied for the same reason the
-    // other three are, the interpreter being released for the whole pass,
-    // and for 10000 individuals it is 800 MB, which is what a kinship of
-    // that panel weighs wherever it is held.
+    // and holds no name to cut it by. It is lent to the pass where numpy
+    // holds it and not copied, as `pca.rs` lends its table: the array is
+    // owned by the caller of this function and nothing of Python can reach
+    // it while the interpreter is released, and a copy would be 800 MB for
+    // 10000 individuals where the three arrays beside it are kilobytes.
     let kinship_values = the_kinship(kinship.as_ref())?;
     let steps = steps.get().of_a_pass()?;
     // A Ctrl-C that was pending when this was called is raised here, before
@@ -162,7 +164,7 @@ pub(crate) fn calc_gwas<'py>(
         trait_type,
         design: &design_values,
         num_coefs,
-        kinship: kinship_values.as_deref(),
+        kinship: kinship_values,
         test,
         // The approximation is refused by the core, which says two
         // different things about it, that a study with no kinship has no
@@ -334,21 +336,18 @@ fn the_positions(individuals: &PyReadonlyArray1<'_, u64>) -> Result<Vec<usize>, 
 /// lies column after column would be read as its own transpose, which for
 /// a kinship is the same matrix; the layout is asked for all the same,
 /// because `as_slice` takes a strided view of another matrix altogether.
-fn the_kinship(
-    kinship: Option<&PyReadonlyArray2<'_, f64>>,
-) -> Result<Option<Vec<f64>>, PyPopneiError> {
+fn the_kinship<'a>(
+    kinship: Option<&'a PyReadonlyArray2<'_, f64>>,
+) -> Result<Option<&'a [f64]>, PyPopneiError> {
     match kinship {
         None => Ok(None),
         Some(values) => {
             if !values.is_c_contiguous() {
                 return Err(PyPopneiError::ArrayNotContiguous { name: "kinship" });
             }
-            Ok(Some(
-                values
-                    .as_slice()
-                    .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "kinship" })?
-                    .to_vec(),
-            ))
+            Ok(Some(values.as_slice().map_err(|_| {
+                PyPopneiError::ArrayNotContiguous { name: "kinship" }
+            })?))
         }
     }
 }

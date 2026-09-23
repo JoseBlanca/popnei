@@ -707,6 +707,62 @@ fn refuse_a_kinship_that_is_not_of_the_individuals(
             }
         }
     }
+    refuse_a_kinship_that_is_not_symmetric(kinship, num_individuals)
+}
+
+/// How far a kinship may be from its own transpose before a study refuses
+/// it, as a share of its largest absolute entry: 1e-9.
+///
+/// It is the tolerance the `Kinship` of both packages refuses one at, so a
+/// matrix a user could build is refused in the same place whichever layer
+/// they came through. The two reference panels' matrices are symmetric to
+/// the bit, and what this leaves room for is a matrix a program wrote one
+/// triangle of and rounded, which is why it is not exact equality.
+const LARGEST_ASYMMETRY_OF_A_KINSHIP: f64 = 1e-9;
+
+/// The kinship a study was given, checked against its own transpose.
+///
+/// The eigendecomposition reads the lower triangle alone, so a matrix that
+/// holds two different numbers for one pair is read as that half mirrored,
+/// and a study over it answers with numbers that are of another matrix than
+/// the user's. The `Kinship` of both packages checks this when it is built;
+/// what reaches here is a frame written into afterwards, which neither
+/// package sees, and a caller of the core crate.
+///
+/// The rows are walked once and the upper triangle is compared with the
+/// lower, so nothing of the size of the matrix is allocated: the kinship of
+/// 10000 individuals is 800 MB and a check written as a difference with the
+/// transpose asks for that much again.
+///
+/// # Errors
+///
+/// [`Error::GwasKinshipNotSymmetric`] at the first pair whose two cells are
+/// further apart than [`LARGEST_ASYMMETRY_OF_A_KINSHIP`] of the largest
+/// absolute entry of the matrix.
+fn refuse_a_kinship_that_is_not_symmetric(kinship: &[f64], num_individuals: usize) -> Result<()> {
+    let largest = kinship
+        .iter()
+        .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+    let allowed = largest * LARGEST_ASYMMETRY_OF_A_KINSHIP;
+    for (individual, row) in kinship.chunks(num_individuals.max(1)).enumerate() {
+        for (other, value) in row.iter().copied().enumerate().skip(individual) {
+            let and_back = other
+                .checked_mul(num_individuals)
+                .and_then(|at| at.checked_add(individual))
+                .and_then(|at| kinship.get(at).copied());
+            let Some(and_back) = and_back else {
+                continue;
+            };
+            if (value - and_back).abs() > allowed {
+                return Err(Error::GwasKinshipNotSymmetric {
+                    individual,
+                    other,
+                    value,
+                    and_back,
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1576,8 +1632,9 @@ impl GwasDosages {
     not(test),
     expect(
         dead_code,
-        reason = "only a mixed model makes the approximation, and the linear model is \
-                  the one that is written, so nothing outside the tests builds `Used`"
+        reason = "only a mixed model makes the approximation, the approximation itself \
+                  is being written and a study that asks for it is refused, so nothing \
+                  outside the tests builds `Used`"
     )
 )]
 pub(crate) enum GrammarGammaApprox {
@@ -2727,6 +2784,17 @@ impl LinearMixedModel {
         // gave, as `_LMMNull` of `pynei/gwas.py` does.
         let (quad, _) = search.fit_at(delta)?;
         let genetic_variance = quad / degrees_of_freedom_of_the_null;
+        // `quad` is what the design left of the trait, weighted, so a
+        // design that explains the whole of it leaves 0 here and both
+        // variances are 0. The covariance of the trait is then the zero
+        // matrix and the inverse below is infinities, which reached the
+        // user as the linear algebra refusing a matrix that is not finite.
+        // A NaN is refused here too, which the comparison the other way
+        // round would let past: `quad` is a sum of weighted squares and
+        // cannot be below 0, so what this tests is 0 and not a sign.
+        if genetic_variance.is_nan() || genetic_variance <= 0.0 {
+            return Err(Error::GwasDesignExplainsTheTrait);
+        }
         let residual_variance = delta * genetic_variance;
         let heritability = genetic_variance / (genetic_variance + residual_variance);
         let coefs = std::mem::take(&mut search.coefs);
@@ -6702,9 +6770,11 @@ mod lmm {
     /// `tests/reference/gwas/phenotypes.csv` over the kinship plink2 wrote
     /// for `name`.
     ///
-    /// It is fitted here and not through `calc_gwas`, which refuses a
-    /// continuous trait with a kinship until the two tests of this model
-    /// are written, and because `y' p y` is in no result.
+    /// It is fitted here and not through `calc_gwas` because `y' p y` and
+    /// the two variances as the fit holds them are in no result: the null
+    /// model a user reads carries the two variances and the tests of this
+    /// module that read them through `calc_gwas` are the ones against
+    /// GMMAT and rrBLUP.
     fn the_null_of_the_panel(name: &str) -> LinearMixedModel {
         let individuals = the_individuals_of_the_kinship(name);
         assert_eq!(individuals.len(), 200, "the individuals of {name}");
