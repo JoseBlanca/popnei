@@ -603,6 +603,27 @@ through the `product` that work package 1 changed, and the last three rows
 are where a change in what they compute would have been seen by a user.
 None of them moved.
 
+### The merge into `main`, tried and not made
+
+`main` moved while this plan ran: it was `bce303c` when the plan started
+and `bed9031` on 23 September 2026, other sessions having merged the
+performance review of the linkage disequilibrium and work of the vars
+file. So "merges into `main` with no conflict" was checked again at the
+end, and then checked further, because a merge that has no conflict can
+still not build: both sides changed `Cargo.toml` of the workspace and
+`crates/popnei/src/ld.rs`, and that file is where this plan rewrote a call
+of `product`.
+
+The merge was made in a throwaway worktree at a detached `main`, built and
+thrown away; `main` itself was not touched and is still `bed9031`. It has
+no conflict, the one call site both sides changed keeps this branch's form,
+and the merged tree passes: `cargo test --workspace` `604 passed` with 2
+ignored in the core crate, which is what `main` has grown to, and `148
+passed` in the linear algebra crate; `cargo test -p popnei-linalg
+--no-default-features` `135 passed`; `cargo fmt --all --check`, `cargo
+clippy --workspace --all-targets -- -D warnings` and `cargo wasm-check`
+all clean.
+
 The trial crate is left in `tmp/`, not committed, as the plan said. What
 replaces it is the cargo tests of the three work packages, which assert
 the same literals through the crate's own checks and error enum.
