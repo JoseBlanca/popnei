@@ -37,9 +37,10 @@
 //! ```
 //!
 //! The cargo feature is what makes the four reachable: they are private
-//! functions of the module `pca` and a benchmark is a crate of its own, so
-//! `pca::bench_internals`, which the feature turns on, is what re-exports
-//! them. cargo runs the benchmark with `crates/popnei` as its working
+//! functions of the module `variant`, which the principal components and
+//! the kinship both walk, and a benchmark is a crate of its own, so
+//! `variant::bench_internals`, which the feature turns on, is what
+//! re-exports them. cargo runs the benchmark with `crates/popnei` as its working
 //! directory, so a relative path is read from there and an absolute one is
 //! the plainer thing to give.
 //!
@@ -88,12 +89,13 @@ use std::time::{Duration, Instant};
 
 use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
-use popnei::pca::VariantPcaOptions;
-use popnei::pca::bench_internals::{
+use popnei::variant::bench_internals::{
     Scratch, the_codes_of_the_genotypes, the_counts_of_the_codes, the_standardized_row,
     the_standardized_values,
 };
-use popnei::variant::{AlleleCounts, Needs, count_alleles, the_major_allele};
+use popnei::variant::{
+    AlleleCounts, DosageOptions, DosageScale, Needs, count_alleles, the_major_allele,
+};
 
 /// How many times each pass is timed when the command line does not say.
 const DEFAULT_RUNS: usize = 5;
@@ -206,10 +208,11 @@ struct TheBlock {
     /// of them for each variant, which the pass that looks the codes up is
     /// given.
     dosage_counts: Vec<u32>,
-    /// What the analysis of the variants was asked for, which a whole row
+    /// What the analysis of the variants asks of a row, which a whole row
     /// takes: no variant of more than two alleles is turned into a
-    /// biallelic one, and no weight is asked for.
-    options: VariantPcaOptions,
+    /// biallelic one, and the dosages are divided by their own standard
+    /// deviation, which is the divisor of the principal components.
+    options: DosageOptions,
 }
 
 /// The first block of the vars file at `path`, with the genotypes alone
@@ -293,9 +296,9 @@ fn the_block_of(path: &Path) -> Result<TheBlock, String> {
         majors,
         codes,
         dosage_counts,
-        options: VariantPcaOptions {
+        options: DosageOptions {
             transform_to_biallelic: false,
-            num_prin_comps: 0,
+            scale: DosageScale::OfTheDosages,
         },
     })
 }
@@ -390,7 +393,14 @@ fn the_pass_of_the_values<const CHECKSUM: bool>(
         for (target, count) in counts.iter_mut().zip(counts_of_the_row.iter()) {
             *target = *count;
         }
-        let used = the_standardized_values(counts, block.num_dosages, codes, values, row);
+        let used = the_standardized_values(
+            counts,
+            block.num_dosages,
+            codes,
+            values,
+            row,
+            block.options.scale,
+        );
         black_box(&*row);
         if CHECKSUM && used {
             for value in row.iter() {

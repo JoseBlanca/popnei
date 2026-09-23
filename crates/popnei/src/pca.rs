@@ -25,7 +25,6 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::num::NonZeroUsize;
 
 use popnei_linalg::{
     Eigen, TheFirstOperand, TheSecondOperand, add_self_product_lower, eigh_lower, product,
@@ -33,7 +32,7 @@ use popnei_linalg::{
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::variant::{AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_major_allele};
+use crate::variant::{DosageOptions, DosageScale, Needs, RowScratch, the_standardized_row};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -464,7 +463,7 @@ pub struct VariantPcaOptions {
 ///
 /// [`Error::PcaNoVariants`] when the reader gives no variant and
 /// [`Error::PcaNoVariantWithVariance`] when no variant of it has variance.
-/// [`Error::PcaVariantWithMoreThanTwoAlleles`] when a variant has more
+/// [`Error::VariantWithMoreThanTwoAlleles`] when a variant has more
 /// than two different alleles among its called genotypes and
 /// `transform_to_biallelic` is false. [`Error::PcaSecondPassMissing`] when
 /// `num_prin_comps` is above 0 and no reader was given for the second
@@ -939,7 +938,7 @@ fn the_standardized_block(
         alleles_per_var,
         num_individuals,
         ploidy,
-        options,
+        &the_dosages_of(options),
         first_position,
         standardized,
     )?;
@@ -983,6 +982,22 @@ fn the_row_of(var: usize, num_individuals: usize) -> std::ops::Range<usize> {
     start..start + num_individuals
 }
 
+/// What this analysis asks of the pass over a row that
+/// [`crate::variant`] holds: the centered dosages of a variant divided by
+/// their own standard deviation, which is the divisor of
+/// `docs/specs/pca.md`, and a variant of more than two alleles read or
+/// refused as `transform_to_biallelic` says.
+///
+/// The kinship of `docs/specs/kinship.md` walks that same pass with
+/// [`DosageScale::OfHardyWeinberg`], and the divisor is the only thing the
+/// two differ in.
+fn the_dosages_of(options: &VariantPcaOptions) -> DosageOptions {
+    DosageOptions {
+        transform_to_biallelic: options.transform_to_biallelic,
+        scale: DosageScale::OfTheDosages,
+    }
+}
+
 /// The rows of a block standardized into `standardized`, and whether each
 /// variant was used, in the order of the block.
 ///
@@ -1015,7 +1030,7 @@ fn the_standardized_rows(
     alleles_per_var: usize,
     num_individuals: usize,
     ploidy: usize,
-    options: &VariantPcaOptions,
+    options: &DosageOptions,
     first_position: usize,
     standardized: &mut [f64],
 ) -> Result<Vec<bool>> {
@@ -1051,7 +1066,7 @@ fn the_standardized_rows(
     alleles_per_var: usize,
     num_individuals: usize,
     ploidy: usize,
-    options: &VariantPcaOptions,
+    options: &DosageOptions,
     first_position: usize,
     standardized: &mut [f64],
 ) -> Result<Vec<bool>> {
@@ -1082,7 +1097,7 @@ fn the_standardized_rows_one_by_one(
     alleles_per_var: usize,
     num_individuals: usize,
     ploidy: usize,
-    options: &VariantPcaOptions,
+    options: &DosageOptions,
     first_position: usize,
     standardized: &mut [f64],
 ) -> Result<Vec<bool>> {
@@ -1583,304 +1598,6 @@ fn of_one_size(value: f64, largest: f64) -> Ordering {
     }
 }
 
-/// The buffers one thread keeps while it standardizes the rows of a block,
-/// so that nothing is allocated for a variant.
-struct RowScratch {
-    /// The code of the genotype of each individual: its dosage, 0 to the
-    /// ploidy, or [`MISSING_CODE`] for a genotype with an allele missing.
-    codes: Vec<u8>,
-    /// How often each allele was called in the variant, which gives the
-    /// major allele and how many different alleles the variant has.
-    allele_counts: AlleleCounts,
-    /// How many called genotypes have each dosage, 0 to the ploidy.
-    dosage_counts: [u32; 255],
-    /// The standardized value of each code, which the second pass over
-    /// the row looks up: one entry for each value of a byte, so that the
-    /// lookup has no bound to check.
-    values: [f64; 256],
-}
-
-/// The code of a genotype with an allele missing, which is not a dosage:
-/// [`MAX_PLOIDY_OF_THE_VARIANTS`] is what keeps the dosages below it.
-const MISSING_CODE: u8 = u8::MAX;
-
-/// How many genotypes are counted with one byte of counters at a time. A
-/// counter of a byte holds 255, so a run of 255 genotypes is the longest
-/// one whose codes a byte counts without wrapping.
-const GENOTYPES_PER_RUN: usize = 255;
-
-/// A run longer than what a byte counts would wrap the counters of
-/// [`the_counts_of_the_codes`] with nothing to show it, so the length of a
-/// run is checked against the largest number a `u8` holds when this
-/// compiles.
-const _: () = assert!(GENOTYPES_PER_RUN <= 255, "a byte counts to 255");
-
-impl RowScratch {
-    /// The buffers of one thread, for the rows of `num_individuals`
-    /// individuals.
-    fn of(num_individuals: usize) -> RowScratch {
-        RowScratch {
-            codes: vec![0; num_individuals],
-            allele_counts: [0; 128],
-            dosage_counts: [0; 255],
-            // A genotype with an allele missing takes the mean of the
-            // dosages of its variant, which is 0 once the variant is
-            // centered, and this entry is never written again.
-            values: [0.0; 256],
-        }
-    }
-}
-
-/// One row of a block standardized into `row`, and whether the variant was
-/// used: a variant whose called genotypes all have one dosage, and one
-/// with no called genotype, have no variance and are left out, and `row`
-/// is then left as it was.
-///
-/// `gts` is the genotypes of one variant, `ploidy` alleles for each
-/// individual, and `row` holds one value for each individual. `position`
-/// is which variant of those the reader gave this one is, which the error
-/// of a variant with more than two alleles names.
-///
-/// # Errors
-///
-/// [`Error::PcaVariantWithMoreThanTwoAlleles`] when the variant has more
-/// than two different alleles among its called genotypes and
-/// `transform_to_biallelic` is false, and whatever the counts of the
-/// alleles of one variant refuse.
-fn the_standardized_row(
-    gts: &[i8],
-    ploidy: usize,
-    position: usize,
-    options: &VariantPcaOptions,
-    scratch: &mut RowScratch,
-    row: &mut [f64],
-) -> Result<bool> {
-    if ploidy > MAX_PLOIDY_OF_THE_VARIANTS {
-        return Err(Error::PcaVariantsTooLarge {
-            problem: VariantsTooLarge::Ploidy(ploidy),
-        });
-    }
-    let num_individuals = row.len();
-    // One genotype of the ploidy for each individual, which is what a row
-    // of the genotypes of a block holds. The ploidy of 0 that
-    // `NonZeroUsize` refuses is among these: it would be a genotype of no
-    // allele for every individual.
-    let of_a_genotype = match NonZeroUsize::new(ploidy) {
-        Some(of_a_genotype) if gts.len() == num_individuals.saturating_mul(ploidy) => of_a_genotype,
-        _ => {
-            return Err(Error::GtsNotWholeGenotypes {
-                num_alleles: gts.len(),
-                ploidy,
-            });
-        }
-    };
-    let RowScratch {
-        codes,
-        allele_counts,
-        dosage_counts,
-        values,
-    } = scratch;
-    let called_alleles = count_alleles(gts, allele_counts)?;
-    if called_alleles == 0 {
-        // A variant with no called genotype has no dosage at all, so it
-        // has no variance and is left out, as Open 2 of
-        // `docs/specs/pca.md` has it meanwhile; pyNei makes it an error
-        // and leaves a variant with one allele out in silence.
-        return Ok(false);
-    }
-    let num_alleles = allele_counts.iter().filter(|count| **count > 0).count();
-    if num_alleles > 2 && !options.transform_to_biallelic {
-        return Err(Error::PcaVariantWithMoreThanTwoAlleles {
-            position,
-            num_alleles,
-        });
-    }
-    // The buffer of the codes belongs to the thread and is as long as the
-    // rows it has read so far, which are all of the individuals of the
-    // source: this asks the machine for nothing after the first row.
-    codes.resize(num_individuals, 0);
-    the_codes_of_the_genotypes(gts, of_a_genotype, the_major_allele(allele_counts), codes);
-    // The dosages of a genotype are 0 to the ploidy, and the counts have
-    // one entry for each of them.
-    let num_dosages = ploidy.saturating_add(1);
-    the_counts_of_the_codes(codes, num_dosages, dosage_counts);
-    let Some((mean, deviation)) =
-        the_center_and_the_scale_of_the_dosages(dosage_counts, num_dosages, num_individuals)
-    else {
-        return Ok(false);
-    };
-    // What each code is worth, which the pass over the row below looks up.
-    // The entry of a genotype with an allele missing is the 0 the buffer
-    // was built with and is never written: a dosage is below 255, which
-    // the ploidy of 254 at most is what keeps.
-    for (value, dosage) in values.iter_mut().take(num_dosages).zip(0_u32..) {
-        *value = (f64::from(dosage) - mean) / deviation;
-    }
-    for (target, code) in row.iter_mut().zip(codes.iter()) {
-        // The values have an entry for each of the 256 values of a byte,
-        // so every code has one and the 0.0 is never taken; it is also
-        // what lets the compiler drop the bound of the lookup.
-        *target = values.get(usize::from(*code)).copied().unwrap_or(0.0);
-    }
-    Ok(true)
-}
-
-/// The code of the genotype of each individual: its dosage, how many of
-/// its alleles are not the major one, or [`MISSING_CODE`] when one allele
-/// of it at least was not called.
-///
-/// `gts` holds one genotype of `of_a_genotype` alleles for each individual
-/// and `codes` one byte for each. It is the first of the two passes over a
-/// row that `docs/specs/pca.md` writes for the compiler to turn into
-/// vector instructions.
-///
-/// The ploidies 1 to 4 each get the loop with the length of a genotype
-/// written into it, because with that length a constant the compiler reads
-/// the alleles of several genotypes at once, and with it a number the
-/// dataset carries it reads one allele at a time. Every other ploidy takes
-/// the loop that reads the length from the dataset. The arms give the same
-/// codes: the dosage is a count of alleles and the missing flag is a
-/// boolean, and [`the_codes_of_any_ploidy`] is the same body with the same
-/// length.
-fn the_codes_of_the_genotypes(
-    gts: &[i8],
-    of_a_genotype: NonZeroUsize,
-    major: i8,
-    codes: &mut [u8],
-) {
-    match of_a_genotype.get() {
-        1 => the_codes_of_a_ploidy_of::<1>(gts, major, codes),
-        2 => the_codes_of_a_ploidy_of::<2>(gts, major, codes),
-        3 => the_codes_of_a_ploidy_of::<3>(gts, major, codes),
-        4 => the_codes_of_a_ploidy_of::<4>(gts, major, codes),
-        of_a_genotype => the_codes_of_any_ploidy(gts, of_a_genotype, major, codes),
-    }
-}
-
-/// The codes of the genotypes of a row whose genotypes hold `OF_A_GENOTYPE`
-/// alleles, which is the body of [`the_codes_of_the_genotypes`] with the
-/// length of a genotype known when the code is compiled.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
-)]
-fn the_codes_of_a_ploidy_of<const OF_A_GENOTYPE: usize>(gts: &[i8], major: i8, codes: &mut [u8]) {
-    let (genotypes, _) = gts.as_chunks::<OF_A_GENOTYPE>();
-    for (code, genotype) in codes.iter_mut().zip(genotypes) {
-        let mut dosage = 0_u8;
-        let mut missing = 0_u8;
-        for allele in genotype {
-            dosage += u8::from(*allele != major);
-            missing |= u8::from(*allele == MISSING_ALLELE);
-        }
-        *code = if missing == 0 { dosage } else { MISSING_CODE };
-    }
-}
-
-/// The codes of the genotypes of a row whose genotypes hold
-/// `of_a_genotype` alleles, a length the dataset carries.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
-)]
-fn the_codes_of_any_ploidy(gts: &[i8], of_a_genotype: usize, major: i8, codes: &mut [u8]) {
-    for (code, genotype) in codes.iter_mut().zip(gts.chunks_exact(of_a_genotype)) {
-        let mut dosage = 0_u8;
-        let mut missing = 0_u8;
-        for allele in genotype {
-            dosage += u8::from(*allele != major);
-            missing |= u8::from(*allele == MISSING_ALLELE);
-        }
-        *code = if missing == 0 { dosage } else { MISSING_CODE };
-    }
-}
-
-/// How many genotypes have each dosage, 0 to the ploidy, written into the
-/// first `num_dosages` entries of `counts`. A genotype with an allele
-/// missing has no dosage and is counted in none of them.
-///
-/// The codes are counted in runs of [`GENOTYPES_PER_RUN`] genotypes with
-/// counters of one byte, one for each dosage: a counter of a byte counts a
-/// run whole without wrapping, and each pass over a run compares the code
-/// with one dosage and adds, which is what the compiler turns into vector
-/// instructions.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "a run holds 255 codes at most, so a counter of one byte counts it without wrapping, and each total counts the genotypes of the variant, which the counts of its alleles checked to be a number a u32 holds"
-)]
-fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; 255]) {
-    for total in counts.iter_mut().take(num_dosages) {
-        *total = 0;
-    }
-    for run in codes.chunks(GENOTYPES_PER_RUN) {
-        for (total, dosage) in counts.iter_mut().take(num_dosages).zip(0_u8..) {
-            let mut count = 0_u8;
-            for code in run {
-                count += u8::from(*code == dosage);
-            }
-            *total += u32::from(count);
-        }
-    }
-}
-
-/// The mean of the called dosages of a variant and the standard deviation
-/// it is divided by, or `None` when its called genotypes all have one
-/// dosage and it has no variance.
-///
-/// The divisor of the deviation is all the individuals and not the called
-/// genotypes, because the genotypes with an allele missing are in the
-/// column with a deviation of 0: a variant with much missing data has a
-/// smaller deviation for the same frequencies, and its called genotypes
-/// weigh more. The divisor is the individuals and not the individuals less
-/// one, which is pyNei's `data.std(axis=0)`.
-///
-/// A variant that has variance gets a deviation that is finite and above
-/// 0, so the values of the buffer a block is standardized into are finite,
-/// which is what the product of that buffer with itself asks for: the
-/// dosages are whole numbers from 0 to 254, so their sum is exact in an
-/// `f64` and the squares of their deviations are at most 64516 times the
-/// individuals; and two dosages that differ by 1, the least a variant with
-/// variance has, give squares of 1 over the called genotypes at least.
-///
-/// `counts` holds how many genotypes have each dosage, which
-/// [`the_counts_of_the_codes`] wrote, and `num_individuals` is 1 or more.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the called genotypes are at most the individuals of the variant, which the counts of its alleles checked to be a number a u32 holds, and each dosage is 254 at most, so the sum of the dosages is below 2^53"
-)]
-fn the_center_and_the_scale_of_the_dosages(
-    counts: &[u32; 255],
-    num_dosages: usize,
-    num_individuals: usize,
-) -> Option<(f64, f64)> {
-    let mut called = 0_u64;
-    let mut total = 0_u64;
-    let mut dosages_seen = 0_usize;
-    for (count, dosage) in counts.iter().take(num_dosages).zip(0_u64..) {
-        if *count == 0 {
-            continue;
-        }
-        dosages_seen += 1;
-        called += u64::from(*count);
-        total += dosage * u64::from(*count);
-    }
-    // One dosage among the called genotypes is a variant with no variance:
-    // one with one allele, and one where every individual is heterozygous,
-    // whose major allele frequency is 0.5 and which no filter by frequency
-    // would catch. It is decided on the counts, with no float in it, where
-    // `_remove_vars_with_no_variance` of pyNei tests `std > 0`.
-    if dosages_seen < 2 {
-        return None;
-    }
-    let mean = total as f64 / called as f64;
-    let mut squares = 0.0_f64;
-    for (count, dosage) in counts.iter().take(num_dosages).zip(0_u64..) {
-        let deviation = dosage as f64 - mean;
-        squares += f64::from(*count) * deviation * deviation;
-    }
-    Some((mean, (squares / num_individuals as f64).sqrt()))
-}
-
 /// The positions of the first ten traits of a list, as text, with how many
 /// more there are: `the position 3`, `the positions 0, 3, 7`, or `the
 /// positions 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, and 2 more`.
@@ -1910,115 +1627,6 @@ pub(crate) fn the_positions_listed(positions: &[usize]) -> String {
     }
 }
 
-/// What the benchmark `standardize_row` calls to time each pass over a row
-/// of a block on its own.
-///
-/// The four passes that standardizing a row is made of are private to this
-/// module, and a benchmark is a crate of its own, so nothing outside can
-/// call them; the compiler inlines all four into one closure, so a
-/// sampling profile of the analysis sees them as one frame. This module is
-/// behind the cargo feature `bench-internals`, which is off by default and
-/// which nothing of popnei's own builds turn on, and it holds one wrapper
-/// for each of them, with the arguments the private function takes, so
-/// that what the benchmark times is the code the library runs.
-///
-/// [`the_standardized_values`] is the one thing here that is not a
-/// wrapper. The tail of [`the_standardized_row`] is two loops written
-/// inline in that function and not a function of its own, so timing it
-/// needs those two loops copied here; a change to them there is a change
-/// to them here.
-#[cfg(feature = "bench-internals")]
-#[doc(hidden)]
-pub mod bench_internals {
-    use std::num::NonZeroUsize;
-
-    use super::{
-        RowScratch, VariantPcaOptions, the_center_and_the_scale_of_the_dosages,
-        the_codes_of_the_genotypes as codes_of_the_genotypes,
-        the_counts_of_the_codes as counts_of_the_codes, the_standardized_row as standardized_row,
-    };
-    use crate::error::Result;
-
-    /// The buffers one thread keeps while it standardizes the rows of a
-    /// block, so that nothing is allocated for a variant. It is
-    /// `RowScratch`, which is private, and it is opaque here: the
-    /// benchmark builds one and hands it back.
-    pub struct Scratch(RowScratch);
-
-    impl Scratch {
-        /// The buffers for the rows of `num_individuals` individuals.
-        #[must_use]
-        pub fn of(num_individuals: usize) -> Scratch {
-            Scratch(RowScratch::of(num_individuals))
-        }
-    }
-
-    /// One row of a block standardized into `row`, and whether the variant
-    /// was used, which is `the_standardized_row` of this module and all
-    /// four passes over the row together.
-    ///
-    /// # Errors
-    ///
-    /// What `the_standardized_row` gives: a ploidy the analysis refuses,
-    /// genotypes that are not whole, a variant of more than two alleles.
-    pub fn the_standardized_row(
-        gts: &[i8],
-        ploidy: usize,
-        position: usize,
-        options: &VariantPcaOptions,
-        scratch: &mut Scratch,
-        row: &mut [f64],
-    ) -> Result<bool> {
-        standardized_row(gts, ploidy, position, options, &mut scratch.0, row)
-    }
-
-    /// The code of the genotype of each individual, its dosage or the code
-    /// of a genotype with an allele missing, which is
-    /// `the_codes_of_the_genotypes` of this module.
-    pub fn the_codes_of_the_genotypes(
-        gts: &[i8],
-        of_a_genotype: NonZeroUsize,
-        major: i8,
-        codes: &mut [u8],
-    ) {
-        codes_of_the_genotypes(gts, of_a_genotype, major, codes);
-    }
-
-    /// How many genotypes have each dosage, which is
-    /// `the_counts_of_the_codes` of this module.
-    pub fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; 255]) {
-        counts_of_the_codes(codes, num_dosages, counts);
-    }
-
-    /// The tail of [`the_standardized_row`]: the value of each dosage
-    /// written into `values`, and then the value of each code of the row
-    /// looked up there and written into `row`. It gives whether the
-    /// variant had variance, and leaves `row` as it was when it had none.
-    ///
-    /// These are the two loops that function ends in, copied, because they
-    /// are written inline there and not called.
-    pub fn the_standardized_values(
-        dosage_counts: &[u32; 255],
-        num_dosages: usize,
-        codes: &[u8],
-        values: &mut [f64; 256],
-        row: &mut [f64],
-    ) -> bool {
-        let Some((mean, deviation)) =
-            the_center_and_the_scale_of_the_dosages(dosage_counts, num_dosages, row.len())
-        else {
-            return false;
-        };
-        for (value, dosage) in values.iter_mut().take(num_dosages).zip(0_u32..) {
-            *value = (f64::from(dosage) - mean) / deviation;
-        }
-        for (target, code) in row.iter_mut().zip(codes.iter()) {
-            *target = values.get(usize::from(*code)).copied().unwrap_or(0.0);
-        }
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -2028,11 +1636,11 @@ mod tests {
     use popnei_linalg::eigh_lower;
 
     use super::{
-        AfterTheFirstPass, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS, MAX_PLOIDY_OF_THE_VARIANTS,
-        MISSING_CODE, Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions,
+        AfterTheFirstPass, DosageOptions, DosageScale, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS,
+        MAX_PLOIDY_OF_THE_VARIANTS, Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions,
         VariantsOfTheSecondPass, VariantsTooLarge, fix_the_signs, pca, pca_of_variants,
-        the_codes_of_any_ploidy, the_codes_of_the_genotypes, the_components_with_variance,
-        the_first_pass, the_scaled_vectors_of, the_standardized_row, the_weights_of_a_second_pass,
+        the_components_with_variance, the_first_pass, the_scaled_vectors_of, the_standardized_row,
+        the_weights_of_a_second_pass,
     };
     // The two ways of reading the rows of a block are one function in
     // WebAssembly, which has no threads, so the test that compares them,
@@ -2043,7 +1651,10 @@ mod tests {
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
+    use crate::variant::{
+        ChromTable, MISSING_ALLELE, MISSING_CODE, Needs, the_codes_of_any_ploidy,
+        the_codes_of_the_genotypes,
+    };
 
     /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
     /// literal here and in the reference files is written with 12
@@ -2858,6 +2469,15 @@ mod tests {
         num_prin_comps: 0,
     };
 
+    /// What this analysis asks of the pass over a row, which is what
+    /// `the_dosages_of` builds from [`NO_WEIGHTS`]: the dosages of a
+    /// variant divided by their own standard deviation, and a variant of
+    /// more than two alleles refused.
+    const PCA_DOSAGES: DosageOptions = DosageOptions {
+        transform_to_biallelic: false,
+        scale: DosageScale::OfTheDosages,
+    };
+
     /// The worked example of "How it is verified" of "The PCA of the
     /// variants" of `docs/specs/pca.md`, `worked.vcf`: 5 individuals and 5
     /// variants, of which the one with one allele and the one where every
@@ -2916,16 +2536,16 @@ mod tests {
     /// one does not count the same. The message names the variant by its
     /// position among those given and says which argument to pass.
     #[test]
-    fn a_variant_of_three_alleles_is_the_error_that_names_its_position() {
+    fn a_variant_of_more_than_two_alleles_is_the_error_that_names_its_position() {
         let mut reader = reader_over(&the_reference_vcf("worked3.vcf"), None);
         match the_pca_of_the_variants(&mut reader, &NO_WEIGHTS) {
-            Err(Error::PcaVariantWithMoreThanTwoAlleles {
+            Err(Error::VariantWithMoreThanTwoAlleles {
                 position,
                 num_alleles,
             }) => {
                 assert_eq!(position, 5);
                 assert_eq!(num_alleles, 3);
-                let message = Error::PcaVariantWithMoreThanTwoAlleles {
+                let message = Error::VariantWithMoreThanTwoAlleles {
                     position,
                     num_alleles,
                 }
@@ -3243,7 +2863,7 @@ mod tests {
         ] {
             let mut scratch = RowScratch::of(4);
             let mut row = vec![0.0; 4];
-            let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+            let used = the_standardized_row(&gts, 2, 0, &PCA_DOSAGES, &mut scratch, &mut row)
                 .expect("the standardizing of the row");
             assert!(used, "{what}: the variant has variance");
             assert_close(&row, &expected, TOLERANCE, what);
@@ -3255,7 +2875,7 @@ mod tests {
         let gts = vec![0_i8, 0, 0, 0, 0, 0, -1, -1, 1, 1, 0, -1];
         let mut scratch = RowScratch::of(6);
         let mut row = vec![0.0; 6];
-        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+        let used = the_standardized_row(&gts, 2, 0, &PCA_DOSAGES, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         assert!(used, "the variant has variance");
         assert_close(
@@ -3277,7 +2897,7 @@ mod tests {
         let gts = vec![0_i8; 8];
         let mut scratch = RowScratch::of(4);
         let mut row = vec![7.0; 4];
-        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+        let used = the_standardized_row(&gts, 2, 0, &PCA_DOSAGES, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         assert!(!used, "a variant with one allele has no variance");
         assert_close(
@@ -3456,7 +3076,7 @@ mod tests {
         let gts = [0_i8, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1];
         let mut scratch = RowScratch::of(4);
         let mut row = vec![0.0; 4];
-        let used = the_standardized_row(&gts, 4, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+        let used = the_standardized_row(&gts, 4, 0, &PCA_DOSAGES, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         assert!(used, "the variant has variance");
         assert_close(
@@ -3646,7 +3266,7 @@ mod tests {
         let num_individuals = 260;
         let mut scratch = RowScratch::of(num_individuals);
         let mut row = vec![0.0; num_individuals];
-        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+        let used = the_standardized_row(&gts, 2, 0, &PCA_DOSAGES, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         assert!(used, "the variant has variance");
         let of_each_dosage = [
@@ -3683,7 +3303,7 @@ mod tests {
         let num_individuals = 300;
         let mut scratch = RowScratch::of(num_individuals);
         let mut row = vec![0.0; num_individuals];
-        let used = the_standardized_row(&gts, 2, 0, &NO_WEIGHTS, &mut scratch, &mut row)
+        let used = the_standardized_row(&gts, 2, 0, &PCA_DOSAGES, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         assert!(used, "the variant has variance");
         let of_each_dosage = [
@@ -3738,7 +3358,7 @@ mod tests {
             10,
             num_individuals,
             2,
-            &NO_WEIGHTS,
+            &PCA_DOSAGES,
             0,
             &mut on_threads,
         )
@@ -3749,7 +3369,7 @@ mod tests {
             10,
             num_individuals,
             2,
-            &NO_WEIGHTS,
+            &PCA_DOSAGES,
             0,
             &mut one_by_one,
         )

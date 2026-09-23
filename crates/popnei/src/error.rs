@@ -102,6 +102,25 @@ pub enum Error {
         num_individuals: usize,
     },
 
+    /// A variant that was being turned into one dosage per individual has
+    /// more than two different alleles among its called genotypes, and
+    /// `transform_to_biallelic` is false. The dosage of a genotype is how
+    /// many of its alleles are not the major one, which has a meaning for
+    /// two alleles; with the argument true every allele that is not the
+    /// major one counts the same. The alleles are those the genotypes
+    /// hold and not those the source lists. The principal components of
+    /// the variants and the kinship both refuse it, and both take that
+    /// argument. In Python it is a `ValueError`.
+    #[error(
+        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
+    )]
+    VariantWithMoreThanTwoAlleles {
+        /// Which variant of those the reader gave it is, from 0.
+        position: usize,
+        /// How many different alleles it has among its called genotypes.
+        num_alleles: usize,
+    },
+
     /// A reader that takes a size was asked for blocks of 0 variants. A
     /// block holds one variant at least, and the caller that wants the
     /// size popnei chooses asks for none instead of asking for 0.
@@ -768,24 +787,6 @@ pub enum Error {
         "every variant has the same genotype in every individual, there is nothing to do a PCA with"
     )]
     PcaNoVariantWithVariance,
-
-    /// A variant of a principal component analysis of the variants has
-    /// more than two different alleles among its called genotypes, and
-    /// `transform_to_biallelic` is false. The dosage of a genotype is how
-    /// many of its alleles are not the major one, which has a meaning for
-    /// two alleles; with the argument true every allele that is not the
-    /// major one counts the same. The alleles are those the genotypes
-    /// hold and not those the source lists. In Python it is a
-    /// `ValueError`.
-    #[error(
-        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
-    )]
-    PcaVariantWithMoreThanTwoAlleles {
-        /// Which variant of those the reader gave it is, from 0.
-        position: usize,
-        /// How many different alleles it has among its called genotypes.
-        num_alleles: usize,
-    },
 
     /// The weights of a principal component analysis of the variants were
     /// asked for and no second pass over the variants was made. The weight
