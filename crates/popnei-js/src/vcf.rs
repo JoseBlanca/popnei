@@ -17,6 +17,7 @@ use popnei::io::vcf::{VcfOptions, VcfReader};
 
 use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::errors::JsPopneiError;
+use crate::gwas::{ArgumentsOfTheStudy, GwasOfVariants, gwas_of_the_variants};
 use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
 use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
@@ -216,6 +217,58 @@ impl VcfSource {
         steps: Steps,
     ) -> Result<KinshipOfVariants, JsPopneiError> {
         kinship_of_the_variants(self, individuals, transform_to_biallelic, steps)
+    }
+
+    /// Which of the variants of the VCF that the steps of `steps` keep
+    /// are associated with the trait of `phenotype`, over the individuals at
+    /// the positions of `individuals` and with `design` as the numbers the
+    /// model fits beside each variant.
+    ///
+    /// The three arrays hold the tested individuals in the order the source
+    /// has them, one position, one value of the trait and one row of
+    /// `num_coefs` values of the design each, and they are read together row
+    /// by row.
+    ///
+    /// # Errors
+    ///
+    /// When `trait_name` is of neither trait; when the study needs one of
+    /// the three models that are not written; when the individuals are not
+    /// in the order the source has them, one is there twice or is not in the
+    /// source, or they are fewer than the columns of the design plus two;
+    /// when a value of the phenotype or of the design is not finite; when
+    /// the columns of the design are not independent; when the VCF
+    /// cannot be read; when a variant has more than two alleles among its
+    /// called genotypes and `transform_to_biallelic` is false; when the pass
+    /// gives no variant; and when the linear algebra could not be done.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the study as the package checked it: the tested individuals, their \
+                  trait, their design and how a multiallelic variant is read, each \
+                  array flat, since a table is not one of the types wasm-bindgen \
+                  carries"
+    )]
+    pub fn calc_gwas(
+        &self,
+        individuals: Vec<u32>,
+        phenotype: Vec<f64>,
+        design: Vec<f64>,
+        num_coefs: usize,
+        trait_name: String,
+        transform_to_biallelic: bool,
+        steps: Steps,
+    ) -> Result<GwasOfVariants, JsPopneiError> {
+        gwas_of_the_variants(
+            self,
+            &ArgumentsOfTheStudy {
+                individuals,
+                phenotype,
+                design,
+                num_coefs,
+                trait_name,
+                transform_to_biallelic,
+            },
+            steps,
+        )
     }
 
     /// The Kosman distance of every pair of individuals over the variants

@@ -95,6 +95,26 @@ export async function referenceKinship(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_KINSHIP_DIR)));
 }
 
+const REFERENCE_GWAS_DIR = new URL(
+  "../../../tests/reference/gwas/",
+  import.meta.url,
+);
+
+/**
+ * The text of the reference file `name` of the association study,
+ * `phenotypes.csv`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/gwas.md`, in
+ * `tests/reference/gwas/`, which `tests/reference/gwas/make_reference.py`
+ * writes: the traits and the covariates of the two panels of
+ * `tests/reference/kinship/`, the five causal variants, and what plink2
+ * v2.0.0-a.7.7, GMMAT 1.5.0 and rrBLUP 4.6.3 answered on them. The Python
+ * tests read the same files.
+ */
+export async function referenceGwas(name: string): Promise<string> {
+  return readFile(new URL(name, REFERENCE_GWAS_DIR), "utf8");
+}
+
 const REFERENCE_LD_DIR = new URL(
   "../../../tests/reference/ld/",
   import.meta.url,
