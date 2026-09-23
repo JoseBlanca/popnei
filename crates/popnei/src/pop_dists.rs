@@ -45,9 +45,8 @@
 use crate::block::{Block, BlockReader};
 use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
-use crate::stats::{
-    ObsHet, Pops, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of, checked_ploidy, raised,
-};
+use crate::io::vcf::MAX_PLOIDY;
+use crate::stats::{ObsHet, Pops, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of, raised};
 use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts_of};
 
 /// How many populations a pairwise measure is over, the s of the
@@ -229,6 +228,26 @@ pub(crate) struct PopDistPerVar {
     obs_het: ObsHet,
 }
 
+/// The ploidy the reader of a pass says its genotypes hold, as the number
+/// the allele frequencies of a population are raised to.
+///
+/// # Errors
+///
+/// A ploidy of 0 or above [`MAX_PLOIDY`]. The VCF reader refuses both when
+/// it is opened and the vars file reader refuses a file whose genotypes
+/// hold no allele, so what reaches this is a vars file that says its
+/// genotypes hold more alleles than popnei reads.
+fn ploidy_of_the_variants(ploidy: usize) -> Result<u32> {
+    let out_of_range = || Error::PopDistsPloidyOutOfRange {
+        ploidy,
+        largest: MAX_PLOIDY,
+    };
+    if ploidy == 0 || ploidy > MAX_PLOIDY {
+        return Err(out_of_range());
+    }
+    u32::try_from(ploidy).map_err(|_| out_of_range())
+}
+
 impl PopDistPerVar {
     /// It, with the ploidy of the variants and how many called genotypes a
     /// population needs at a variant for that variant to count for a pair
@@ -240,7 +259,7 @@ impl PopDistPerVar {
     /// gives, 255.
     pub(crate) fn new(ploidy: usize, min_num_individuals: u32) -> Result<PopDistPerVar> {
         Ok(PopDistPerVar {
-            ploidy: checked_ploidy("ploidy", ploidy)?,
+            ploidy: ploidy_of_the_variants(ploidy)?,
             obs_het: ObsHet::new(min_num_individuals),
         })
     }
@@ -922,7 +941,7 @@ impl PopDistSums {
         let pair = self.index_of_the_pair(i, j)?;
         let over_all = self.total_of(pair)?;
         let over_all_value = value_of(measure, &over_all)?;
-        let mut num_groups: u32 = 0;
+        let mut num_groups: usize = 0;
         let mut jackknife_estimate = 0.0;
         for group in 0..self.groups.len() {
             let Some(pseudo) =
@@ -930,7 +949,13 @@ impl PopDistSums {
             else {
                 continue;
             };
-            num_groups = num_groups.checked_add(1)?;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "the loop runs once for each of the groups, so the count reaches self.groups.len() at most, which is a usize"
+            )]
+            {
+                num_groups += 1;
+            }
             jackknife_estimate += pseudo.value / pseudo.weight;
         }
         if num_groups < 2 {
@@ -946,7 +971,9 @@ impl PopDistSums {
             let from_the_estimate = pseudo.value - jackknife_estimate;
             variance += from_the_estimate * from_the_estimate / (pseudo.weight - 1.0);
         }
-        Some((variance / f64::from(num_groups)).sqrt())
+        // The groups are below 2^53, where a `f64` holds the whole numbers
+        // exactly: each one holds a variant of the pair at least.
+        Some((variance / num_groups as f64).sqrt())
     }
 
     /// The pseudo-value of one group and its weight h_j, and `None` when no
@@ -1150,10 +1177,7 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     let of_the_pass = OfThePass {
         pops,
         per_var: PopDistPerVar::new(reader.ploidy(), options.min_num_individuals)?,
-        num_pairs: num_pairs_of(num_pops).ok_or(Error::PopDistSumsTooLarge {
-            num_pops,
-            num_groups: 0,
-        })?,
+        num_pairs: num_pairs_of(num_pops).ok_or(Error::PopDistsOfTooManyPops { num_pops })?,
     };
     let num_individuals = reader.individuals().len();
     let ploidy = reader.ploidy();
@@ -1520,7 +1544,7 @@ fn sums_of_the_chunk(
         for (pop, of_the_pop) in counts.iter_mut().enumerate() {
             of_the_pop.count_the_var(row, ploidy, of_the_pass.pops.individuals(pop))?;
         }
-        add_the_pairs(&counts, &of_the_pass.per_var, &mut of_the_group);
+        add_the_pairs(&counts, &of_the_pass.per_var, &mut of_the_group)?;
     }
     if group_being_filled.is_some() {
         sums.keep_the_group(&mut of_the_group, of_the_pass)?;
@@ -1536,20 +1560,28 @@ fn sums_of_the_chunk(
 /// 2), ..., (1, 2), ..., which is the order `of_the_group` holds them in
 /// and the order every result of the module gives them in. It is as long as
 /// the pairs of `counts`, so every pair has its place there.
-fn add_the_pairs(counts: &[PopVarCounts], per_var: &PopDistPerVar, of_the_group: &mut [PairSums]) {
+fn add_the_pairs(
+    counts: &[PopVarCounts],
+    per_var: &PopDistPerVar,
+    of_the_group: &mut [PairSums],
+) -> Result<()> {
     let mut of_the_pairs = of_the_group.iter_mut();
     for (first, of_one) in counts.iter().enumerate() {
         // The populations are at most as many as the individuals of the
         // source, which a `usize` counts.
         for of_the_other in counts.iter().skip(first.saturating_add(1)) {
             let Some(of_the_pair) = of_the_pairs.next() else {
-                return;
+                return Err(Error::PopDistSumsOfAnotherSize {
+                    num_pops: counts.len(),
+                    num_pairs: of_the_group.len(),
+                });
             };
             if let Some(of_the_var) = per_var.of_var(of_one, of_the_other) {
                 of_the_pair.add_the_var(&of_the_var);
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1559,7 +1591,7 @@ mod tests {
     use super::{
         GroupId, JackknifeGroups, JackknifeWalk, MIN_NUM_JACKKNIFE_GROUPS, PairSums,
         PopDistMeasure, PopDistOptions, PopDistPerVar, PopDistSums, PopVarCounts, VarSums,
-        calc_pop_dist_sums, sums_of_the_pass,
+        add_the_pairs, calc_pop_dist_sums, sums_of_the_pass,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -2178,10 +2210,74 @@ mod tests {
 
     /// A ploidy of 0 is not one the frequencies can be raised to, and 256
     /// is above the largest a reader of popnei gives.
+    ///
+    /// What is refused is the ploidy the reader of the pass says its
+    /// genotypes hold, and not an argument of a statistic of one variant,
+    /// so the message is of the variants that were read: a user of
+    /// `calc_pop_dists` writes no ploidy anywhere.
     #[test]
     fn a_ploidy_of_zero_or_above_the_largest_one_is_an_error() {
-        assert!(PopDistPerVar::new(0, 20).is_err());
-        assert!(PopDistPerVar::new(256, 20).is_err());
+        for ploidy in [0, 256, usize::MAX] {
+            let error = match PopDistPerVar::new(ploidy, 20) {
+                Ok(_) => panic!("the ploidy {ploidy} was taken"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, Error::PopDistsPloidyOutOfRange { ploidy: found, largest }
+                    if *found == ploidy && *largest == 255),
+                "{ploidy}: {error:?}"
+            );
+            let said = error.to_string();
+            assert!(!said.contains("statistic of one variant"), "{said}");
+            assert!(said.contains("ploidy"), "{said}");
+        }
+        assert!(PopDistPerVar::new(1, 20).is_ok());
+        assert!(PopDistPerVar::new(255, 20).is_ok());
+    }
+
+    /// The populations alone can make more pairs than the machine counts,
+    /// which is 93000 of them where a `usize` is 32 bits, as it is in
+    /// wasm. It is found before a variant is read, so the message names
+    /// the populations and not the resampling groups, which are none yet.
+    #[test]
+    fn too_many_populations_are_refused_without_a_word_about_the_groups() {
+        let said = Error::PopDistsOfTooManyPops { num_pops: 93000 }.to_string();
+        assert!(said.contains("93000"), "{said}");
+        assert!(said.contains("populations"), "{said}");
+        assert!(!said.contains("group"), "{said}");
+    }
+
+    /// The sums of a resampling group hold one place for each pair of the
+    /// populations, and a variant whose pairs are more than those places
+    /// would have the rest of them dropped: the pass would give a number
+    /// for every pair, with the pairs after the last place counted at some
+    /// variants and not at others.
+    #[test]
+    fn a_variant_whose_pairs_are_more_than_the_sums_hold_is_refused() {
+        let gts = &WORKED_EXAMPLE[0];
+        let per_var = match PopDistPerVar::new(2, 1) {
+            Ok(per_var) => per_var,
+            Err(error) => panic!("{error}"),
+        };
+        // Three populations make three pairs, and these sums hold two.
+        let counts = [
+            counts_of(gts, 2, &[0, 1]),
+            counts_of(gts, 2, &[2, 3]),
+            counts_of(gts, 2, &[4, 5]),
+        ];
+        let mut of_the_group = vec![PairSums::default(); 2];
+        let refused = add_the_pairs(&counts, &per_var, &mut of_the_group);
+        let error = match refused {
+            Ok(()) => panic!("the variant was added into sums of two pairs"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, Error::PopDistSumsOfAnotherSize { num_pops, num_pairs }
+                if *num_pops == 3 && *num_pairs == 2),
+            "{error:?}"
+        );
+        let mut of_the_three = vec![PairSums::default(); 3];
+        assert!(add_the_pairs(&counts, &per_var, &mut of_the_three).is_ok());
     }
 
     /// The populations of one of the files of `tests/reference/`, which

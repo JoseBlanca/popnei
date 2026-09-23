@@ -971,6 +971,57 @@ pub enum Error {
         num_groups: usize,
     },
 
+    /// The populations the distances were asked for make more pairs than
+    /// this machine counts, which takes about 93000 of them where a
+    /// `usize` is 32 bits, as it is in wasm, and 4294967296 where it is 64.
+    /// It is found before a variant is read, so the resampling groups are
+    /// none yet and have no part in it, which is what tells it from
+    /// [`Error::PopDistSumsTooLarge`]. In Python it is a `ValueError`.
+    #[error(
+        "{num_pops} populations make more pairs than this machine counts, and every measure of how far apart two populations are is of a pair: calculate over fewer populations"
+    )]
+    PopDistsOfTooManyPops {
+        /// How many populations were given.
+        num_pops: usize,
+    },
+
+    /// The reader of a pass over the variants says its genotypes hold 0
+    /// alleles, or more than the largest ploidy a reader of popnei gives.
+    /// The allele frequencies of a population are raised to that ploidy,
+    /// and a ploidy of 0 would turn the `min_num_individuals` test off as
+    /// well, since it asks for 0 called alleles. The VCF reader refuses
+    /// both when it is opened, and the vars file reader refuses a file
+    /// whose genotypes hold no allele, so what is left here is a vars file
+    /// that says its genotypes hold more alleles than popnei reads. In
+    /// Python it is a `ValueError`, and it names the file the variants were
+    /// read from.
+    #[error(
+        "the variants were read at a ploidy of {ploidy}, and the distances between populations are calculated over genotypes of 1 allele at least and {largest} at most: the allele frequencies of a population are raised to the ploidy"
+    )]
+    PopDistsPloidyOutOfRange {
+        /// The ploidy the reader of the pass gives.
+        ploidy: usize,
+        /// The largest one popnei reads, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// The sums of one resampling group do not hold one place for each pair
+    /// of the populations the variants are being counted over. Every
+    /// variant of a block is added into them pair by pair, so the pairs
+    /// after the last place would be counted at no variant while the others
+    /// were counted at every one, and each measure of them would come out
+    /// of sums of different variants. In Python it is a `RuntimeError`:
+    /// nothing a user asks for gives it.
+    #[error(
+        "the sums of one resampling group hold {num_pairs} pairs, and {num_pops} populations make more; a variant is added into the sums of every pair it counts for"
+    )]
+    PopDistSumsOfAnotherSize {
+        /// How many populations the variants are counted over.
+        num_pops: usize,
+        /// How many pairs the sums of one group hold.
+        num_pairs: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
