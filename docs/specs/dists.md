@@ -590,8 +590,15 @@ has.
 float64 array with one value for each pair in the order of
 `dist_vector`, NaN where there is none, and `None` when the calculation
 did not give any. `Distances.square_standard_errors()` gives it as the
-N x N pandas frame with NaN on the diagonal. The Kosman distances above
-leave the field `None` and nothing of theirs changes.
+N x N pandas frame with NaN on the diagonal, and `None` where the field
+is `None`, so that a caller who asked for no standard errors reads the
+same answer from the method and from the field. The Kosman distances
+above leave the field `None` and nothing of theirs changes.
+
+The `names` of each `Distances` of a `PopDists` are the populations, in
+the same order as `pops`, so its `square_dists` and its
+`square_standard_errors` are indexed by the names of the populations on
+both sides, as the Kosman distances' are by the names of the individuals.
 
 It mirrors `calc_jost_dest_pop_dists` of `pynei/dists.py`, which
 calculates Jost's D and nothing else. The objectives ask for every
