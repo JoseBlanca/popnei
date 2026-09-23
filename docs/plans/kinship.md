@@ -188,7 +188,7 @@ both packages, all of which exist.
 
 ### Its tasks
 
-- [ ] 2.0 Move the three functions that drive a whole block of variants,
+- [x] 2.0 Move the three functions that drive a whole block of variants,
       `the_standardized_rows` with its arm for the threads and its arm for
       WebAssembly and `the_standardized_rows_one_by_one`, out of `pca.rs`
       into `crates/popnei/src/variant.rs` as `pub(crate)`, and with them
