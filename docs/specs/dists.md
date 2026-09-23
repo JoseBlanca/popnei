@@ -523,18 +523,20 @@ the end of it. `PopDistMeasure` is a `StrEnum` with `fst`, `f2`, `chord`,
 `da`, `dest`, `gst` and `gst_hedrick`, so a caller writes `"fst"`.
 
 `min_num_samples` is how many called genotypes a population needs at a
-variant for that variant to count for a pair: a variant counts for the
-pair (A, B) when A and B each have at least that many, and it counts for
-no other pair of the same run when one of them has fewer. The default is
+variant for that variant to count for a pair. The test is made for each
+pair on its own: a variant counts for the pair (A, B) when A and B each
+have at least that many there. A population that has fewer loses that
+variant in every pair it is in, and the pairs it is not in keep it. The default is
 20, inherited from pyNei's `MIN_NUM_SAMPLES_FOR_POP_STAT`, and nobody has
 measured whether 20 is the right threshold. Each pair therefore has its
 own count of variants, which the result carries.
 
 `jackknife_group` is how the variants are cut into the groups that the
 standard errors are resampled over, "The standard errors" below. A number
-is a length in base pairs of a chromosome, `"variant"` makes each variant
-its own group, and `None` asks for no standard errors, which is the only
-value that does not need the chromosome and the position of the variants.
+is a length in base pairs of a chromosome and has to be 1 or more, a 0 or
+a negative being an error; `"variant"` makes each variant its own group;
+and `None` asks for no standard errors, which is the only value that does
+not need the chromosome and the position of the variants.
 
 `PopDists` is a frozen dataclass with one `Distances` for each measure
 that was asked for, under the name of the measure, `fst`, `f2`, `chord`,
@@ -544,8 +546,9 @@ dict, which is the order of the pairs of every `Distances` in it;
 `num_vars`, a read only numpy array of int64 with, for each pair in that
 order, how many variants counted for it; `f2_groups`, a read only float64
 array of groups x pairs holding f_2 within each group, or `None` when no
-standard errors were asked for, from which f_3 and f_4 can be built later
-without reading the genotypes again; `group_ids`, a tuple of one
+standard errors were asked for, from which f_3 and f_4, the statistics of
+three and of four populations that admixture graphs are fitted with, can be
+built later without reading the genotypes again; `group_ids`, a tuple of one
 `(chrom, start, end)` for each group, the chromosome and the first and
 last position of its variants, both included; and `pass_stats`, the
 `PassStats` of `docs/specs/variant.md` that every result of a consumer
@@ -609,20 +612,23 @@ Variant 4 of the worked example below has f_2 = -0.1. popnei does not
 clamp them, and a user who sees a small negative F_ST has populations
 that this dataset cannot tell apart.
 
-A `min_num_samples` of 1 leaves two cases that a larger threshold does
-not. A population with one called genotype has n_P = 2 called alleles, so
-u_P is defined; and the harmonic mean of the called genotypes that Jost's
-D corrects with, "Jost's D" below, is 1, and its factor divides by zero,
-so that pair has no value for D, G_ST and G'_ST at that variant while it
-keeps one for F_ST, f_2 and the chord distance.
+A `min_num_samples` of 1 adds one condition to the test. When both
+populations have exactly one called genotype at a variant, the harmonic
+mean of the two counts that Jost's D corrects with, "Jost's D" below, is
+1, and its factor divides by zero. Such a variant does not count for that
+pair at all, so that the seven numbers are over the same variants and a
+pair has one count of them. It is the only case where the count of called
+genotypes is not the whole test, and it cannot arise at a
+`min_num_samples` of 2 or more.
 
 ### How it runs
 
 One pass, over the rows of each block with rayon across them, and it
 needs no `reblock` before it. For each variant of the block and each
 population, the allele counts over the indices of that population come
-from `count_alleles_of` of the `variant` module, the row helper that
-`docs/specs/stats.md` already uses, and the called genotypes and the
+from `count_alleles_of` of the `variant` module, the row helper that fills
+one count for each allele over a set of individual indices and gives their
+sum, which `docs/specs/stats.md` already uses, and the called genotypes and the
 heterozygous ones from `ObsHet` of that same spec, which counts both over
 a population at one variant. Everything else is arithmetic on those three
 counts.
@@ -634,6 +640,13 @@ f64 and one u32:
     sum of H_b, sum of H_w, sum of sqrt(p_Aa * p_Ba) over the alleles,
     sum of the corrected H_S, sum of the corrected H_T, and the variants
     that counted
+
+H_S and H_T are the diversity within the two populations and over the two
+pooled, each corrected for the sample as Nei and Chesser do; "Jost's D"
+below gives both formulas, and their sums are here because that measure
+and the two beside it are ratios of their means. The f_2 of one group,
+which the result gives as `f2_groups`, is that group's sum of H_b minus
+its sum of H_w over the variants of the pair that fell in it.
 
 Every measure is a ratio of those six, so the divisions happen once, at
 the end, and the result does not depend on where the block boundaries
@@ -771,6 +784,17 @@ Against pyNei, which has one of the seven: both libraries run on
 `calc_jost_dest_pop_dists`, within 1e-12 relative, since the two compute
 the same estimator with the sums added in different orders.
 
+Where each check is made. The seven numbers of the worked example below
+and of both panels are checked at `PopDistSums::measure`, on the sums the
+pass built, which is the highest function in the core at which each of
+them can be seen; the standard errors at `PopDistSums::standard_error`
+and the f_2 of one group at `PopDistSums::f2_of_group`. The per variant
+F_ST of `var0000` is checked at the same `measure`, over a reader that
+gives that one variant, since a pass of one variant has an F_ST equal to
+that variant's and no function gives the value of one variant of a longer
+pass. The comparisons against pyNei and the ones on whole panels are made
+at the Python `calc_pop_dists`, where the numbers a user sees come out.
+
 The worked example, which becomes the first cargo tests: 4 variants, 6
 diploid individuals, pop1 = i0, i1, i2 and pop2 = i3, i4, i5,
 `min_num_samples` 1, `jackknife_group` `"variant"`.
@@ -824,14 +848,19 @@ and it is what most SNP work reports.
 It is the estimator Hudson, Slatkin and Maddison proposed and that
 Bhatia, Patterson, Sankararaman and Price (2013, Genome Research 23:
 1514, DOI 10.1101/gr.154831.113) recommend for SNP data, because it does
-not move with the ratio of the sample sizes of the two populations as
-Weir and Cockerham's does. With the H_b and H_w of the item above,
+not move with the ratio of the sample sizes of the two populations. Weir
+and Cockerham's estimator, the other one in wide use and the one plink2
+computes with `method=wc`, does move with it: it gives a different answer
+for 20 individuals of one population against 200 of the other than for 200
+against 200 of the same two, and Hudson's does not. With the H_b and H_w of the item above,
 
     F_ST = (sum over variants of H_b - sum over variants of H_w) / (sum over variants of H_b)
 
 which is the same as the sum of f_2 over the sum of H_b. Summing the
-numerators and the denominators over the variants before dividing, the
-ratio of averages, is the second thing that paper asks for. The mean of
+numerators and the denominators over the variants before dividing is the
+second thing that paper asks for; the paper calls it a ratio of averages
+and this spec a ratio of sums, which are one operation, since dividing
+both sums by the same count of variants changes nothing. The mean of
 the per variant ratios instead gives weight to variants whose denominator
 is near zero, which are the rare ones, and it is undefined for a variant
 where both populations are fixed for the same allele. On the biallelic
@@ -972,9 +1001,11 @@ On the biallelic panel adegenet gives 0.18026704497001397,
 1e-12 relative. D_A is not in adegenet and is checked as the square of
 what is.
 
-Two of adegenet's other four distances were run and are not taken:
-`method=4`, Rogers', and `method=5`, Prevosti's, give the same number on
-the biallelic panel, 0.1672132615 for p0 and p1, because for two alleles
+Two of adegenet's other four distances were run and are not taken.
+Rogers' distance, `method=4`, is the mean over the variants of the
+straight line between the two frequency vectors of one variant, and
+Prevosti's, `method=5`, the mean of the absolute differences of those
+frequencies. They give the same number on the biallelic panel, 0.1672132615 for p0 and p1, because for two alleles
 they are the same formula, and they part on the multiallelic one,
 0.2287511165 against 0.3143145698. Neither adds anything to the chord
 distance for a tree, and "Not in this spec" says so.
@@ -1000,9 +1031,9 @@ possible value is (1 - H_S)/(1 + H_S), so for microsatellites with an H_S
 of 0.8 it cannot pass 0.11, and two populations sharing no allele at all
 still give 0.11. D was built to be free of that. With two alleles H_S
 cannot pass 0.5, the ceiling is 0.33 at the lowest, and Alcala and
-Rosenberg (2019, Molecular Ecology 28: 1624, DOI 10.1111/mec.15000)
-showed that the three measures are then constrained alike and that the
-choice among them hardly matters. So D is the one to read on
+Rosenberg (2019, Molecular Ecology 28: 1624, DOI 10.1111/mec.15000) showed
+that F_ST, Jost's D and G'_ST are then constrained alike and that the
+choice among the three hardly matters. So D is the one to read on
 microsatellites and F_ST on SNPs, and popnei gives both from the one
 pass.
 
@@ -1239,8 +1270,8 @@ impl PopDistSums {
     /// is not a pop.
     pub fn num_vars_of(&self, i: usize, j: usize) -> Option<u64>;
     /// The measure for the pair. None where `num_vars_of` is 0 or None,
-    /// and, for the three that need the corrected heterozygosities, where
-    /// the harmonic mean of the called genotypes was 1 at every variant.
+    /// and, for Dest alone, where the mean corrected H_S came to exactly
+    /// 1, which its division by 1 - H_S cannot take.
     pub fn measure(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64>;
     /// Its jackknife standard error. None where `measure` is None, where
     /// no groups were asked for, and where every variant of the pair fell
@@ -1291,6 +1322,22 @@ would take and what it would give. The review also gave the browsers
 popnei runs in a floor, goal 3 of `docs/objectives.md`, because the
 count of the bits of a pair in wasm uses the vector instructions of
 WebAssembly, which is what took that build under its number.
+
+The distances between populations have no number to reach yet, and the
+measurement comes first. The dataset is the one above, 100000 variants x
+1000 individuals read from a vars file with the reading measured separately
+and taken out, with the individuals cut into 3 populations and into 20, so
+that the growth with the square of the populations is in the measurement
+and not guessed at. The program to compare with is pyNei's
+`calc_jost_dest_pop_dists`, which on 20000 variants x 500 individuals and 3
+populations takes 0.76 s on the owner's M5 Pro with numpy 2.5.3 on
+Accelerate, measured on 23 September 2026 on genotypes drawn at random with
+3 in 100 missing. That run is a tenth of the variants and half the
+individuals of the dataset above, and pyNei was not run on the larger one.
+popnei calculates seven numbers where pyNei calculates one, from counts
+they share, so the comparison is of one pass against one pass and not of
+one number against one number. The plan that builds this item measures both
+first and writes the numbers to reach into this section.
 
 ## Open points
 
@@ -1345,20 +1392,28 @@ the tetraploid and the haploid datasets of "How it is verified" show.
   are sums and differences of the f_2 of pairs, so `f2_groups` of the
   result here is what they are computed from, with no reading of genotypes
   and no new pass.
-- R_ST and the squared difference in repeat number, the microsatellite
-  measures that use how many repeats each allele has: popnei's genotypes
+- R_ST and the squared difference in repeat number, the two microsatellite
+  measures that read an allele as the number of repeats it has and not as a
+  label, so that two alleles differing by one repeat count as nearer than
+  two differing by five: popnei's genotypes
   carry allele numbers and not allele sizes, so nothing here can compute
   them. Carrying the sizes is a change to section 4 of
   `docs/architecture.md`.
-- Weir and Cockerham's theta, and the population-specific F_ST of Goudet
-  and Weir (2023), which `hierfstat` computes: neither is in pyNei, and
+- Weir and Cockerham's theta, the other widely used estimator of F_ST,
+  which plink2 computes with `method=wc` and which moves with the ratio of
+  the sample sizes of the two populations; and the population-specific
+  F_ST of Goudet and Weir (2023), which gives one value for each population
+  against the others rather than one for each pair, and which `hierfstat`
+  computes. Neither is in pyNei, and
   what popnei gives is the pairwise measure that plink2's Hudson method
   checks. `hierfstat` does not install on the owner's machine, its
   dependency gaston failing to build, so it is not a reference program
   here either.
-- Nei's standard distance D_s, Prevosti's and Rogers', which
-  `adegenet::dist.genpop` gives beside the chord distance: D_s and
-  Prevosti's are not Euclidean, Rogers' is the same as Prevosti's for two
+- Nei's standard distance D_s, the negative logarithm of the normalized
+  probability that an allele drawn from each population is the same one,
+  and Prevosti's and Rogers', which the chord distance item above defines;
+  `adegenet::dist.genpop` gives all three beside the chord distance. D_s
+  and Prevosti's are not Euclidean, Rogers' is the same as Prevosti's for two
   alleles, and none of the three adds anything to the chord distance for a
   tree or for a principal coordinate analysis. pyNei has none of them.
 - `calc_pairwise_euclidean_dists` of pyNei, the Euclidean distances
