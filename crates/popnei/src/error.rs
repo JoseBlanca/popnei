@@ -876,6 +876,76 @@ pub enum Error {
         problem: crate::pca::VariantsTooLarge,
     },
 
+    /// No variant of a kinship has variance among the individuals it was
+    /// asked for: every one of them has one dosage among its called
+    /// genotypes, or no called genotype at all. A kinship measures a pair
+    /// against the average pair of the panel, and a panel whose variants
+    /// all give every individual the same dosage has no such average. It
+    /// is pyNei's "No variant varies among the samples, there is no
+    /// kinship", and in Python it is a `ValueError`.
+    #[error(
+        "every variant has the same genotype in every individual, and there is no kinship to take from them"
+    )]
+    KinshipNoVariantWithVariance,
+
+    /// The source of a kinship has no individual. A kinship is the matrix
+    /// of every pair of the individuals of a dataset, so there is no pair
+    /// to give, and the pass over a block would read its rows in chunks of
+    /// no allele. Every source of popnei has one individual at least, as
+    /// `docs/specs/block.md` says, so it is a caller of the function of the
+    /// core crate with a reader of its own that reaches it. In Python it is
+    /// a `ValueError`.
+    #[error("the source has no individual, and a kinship is the matrix of every pair of them")]
+    KinshipNoIndividual,
+
+    /// Two individuals of a kinship have no variant called in both of them,
+    /// so the sum of their pair would be divided by 0. pyNei divides all
+    /// the same and leaves the NaN in the matrix; popnei names the two,
+    /// which a user can drop from the panel. The positions are among the
+    /// individuals the kinship was asked for, in the order it has them. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "the individuals at the positions {one} and {other} have no variant called in both of them, so their entry of the kinship would be divided by no variant at all: {num_vars_of_one} variants are called in the first and {num_vars_of_other} in the second; leave one of the two out"
+    )]
+    KinshipPairWithNoVariantCalled {
+        /// Where the first of the two is among the individuals of the
+        /// kinship, from 0.
+        one: usize,
+        /// Where the second of the two is, from 0.
+        other: usize,
+        /// How many of the variants that were used are called in the
+        /// first.
+        num_vars_of_one: u64,
+        /// How many of them are called in the second.
+        num_vars_of_other: u64,
+    },
+
+    /// A dataset a kinship cannot be taken on, because one of its sizes is
+    /// beyond what the calculation counts in.
+    /// [`crate::kinship::KinshipTooLarge`] says which of the two it is. In
+    /// Python it is a `ValueError`.
+    #[error("the kinship cannot be taken on this dataset: {problem}")]
+    KinshipVariantsTooLarge {
+        /// Which of the two sizes it is, with the number the dataset has.
+        problem: crate::kinship::KinshipTooLarge,
+    },
+
+    /// The linear algebra of a kinship failed. The products of a kinship
+    /// are the standardized dosages of a block with themselves and the
+    /// genotypes that were called with themselves, both individuals x
+    /// individuals. In Python it is a `RuntimeError`: every size was
+    /// checked before the product was asked for, so what is left is a
+    /// defect of popnei or a backend that refused the work.
+    #[error("the {operation} of the kinship could not be done: {source}")]
+    KinshipLinalg {
+        /// What was being computed: the product of a block of variants
+        /// with itself, or the product of the genotypes that were called
+        /// with themselves.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
     /// The distances of that many individuals need more memory than the
     /// machine gives: popnei keeps two `u32` for every pair of them, which
     /// is 8 bytes times the pairs, 400 MB for 10000 individuals, and the

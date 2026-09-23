@@ -898,13 +898,6 @@ pub(crate) enum DosageScale {
     /// is the mean dosage over the ploidy. It is what makes an entry of
     /// the kinship of `docs/specs/kinship.md` twice a coancestry, and it
     /// is what plink2 and GCTA divide by.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the kinship of work package 2 of docs/plans/kinship.md is the caller that builds it and it is not written yet, so the tests of this module are what read it meanwhile; the commit that builds the kinship takes this off, which the unfulfilled expectation will fail until"
-        )
-    )]
     OfHardyWeinberg,
 }
 
