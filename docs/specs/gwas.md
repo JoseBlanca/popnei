@@ -1431,15 +1431,14 @@ with `n` the tested individuals.
 
 The third row is the only one where the exact "before" is not free: for
 `x' p x` it would be `x' V⁻¹ x`, the same quantity before the covariates,
-and an upper bound of it serves. The fourth row is the odd one and worth
+and an upper bound of it serves. The fourth row is the odd one out and worth
 naming as such: it is what the variant leaves of the trait, where the other
 three are what the design leaves of the variant.
 
-In each, the number can round to 0 or below and `beta` is then something
-divided by noise.
-
-All three are reachable and all three were measured on 23 and 24 September
-2026.
+In each, what is left can round to 0 or below and `beta` is then something
+divided by noise. Two of the four have been reached on data and measured,
+on 23 and 24 September 2026; the other two, both score tests, are the same
+arithmetic in another denominator and no dataset here has reached them.
 
 The linear model: eight individuals, a covariate marking two subpopulations
 of four and a variant fixed one way in each. popnei and pyNei agree to the
@@ -1463,7 +1462,7 @@ Refuse, and give the three NaNs that "The variants that have no answer"
 already means: when what is left falls to `n` times 2.2e-16 of what there
 was, which is 1.8e-15 on the collinear fixture against 6.5e-32 measured, and
 8.5e-12 on the panel against 8.53e-13. It is one comparison in each of the
-three places and costs nothing per variant.
+four places and costs nothing per variant.
 
 Or form the residual exactly, which for the linear model is a pass over the
 block's dosages and is what "The linear model" already does, and for the
@@ -1482,7 +1481,7 @@ the linear model; where it costs a matrix product per variant it buys only
 the band just above the floor, which needs a variant explaining 99.9999 per
 cent of the trait, and that is for the performance session to weigh once
 there are numbers. Meanwhile the implementer refuses at that threshold in
-all three places, because a meanwhile that returns NaN where the score test
+all four places, because a meanwhile that returns NaN where the score test
 returns 0.0455 is not a safe thing to build on; no literal moves, since no
 variant of either panel comes near.
 
