@@ -154,7 +154,7 @@ this plan.
       dosages of `many.vcf` against the ones pyNei gave, which this task
       adds to `make_reference.py` and stores. Serves deliverables 4, 5
       and 6. Needs 1.1 and 1.4.
-- [ ] 1.6 The product with a transposed operand, added to the plan on 23
+- [x] 1.6 The product with a transposed operand, added to the plan on 23
       September 2026 by the owner's decision after the review of this
       work package: `product_by_transpose` in `crates/popnei-linalg`, on
       both of its backends, with the item and the three checks that

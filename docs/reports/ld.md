@@ -226,7 +226,7 @@ plan gives for it, run by the orchestrator on the last commit:
 | 3, the worked example | `cargo test -p popnei --lib ld::` | the seven pairs with their six whole numbers, and their r² equal to the spec's decimals with the tolerance at 0 |
 | 4, every pair against plink2 | the same | 93096 pairs with an r², 31654 NaN, none of the 93096 differing from plink2 at all |
 | 5, the dosages against pyNei | the same | every one of the 25000 equal to what `to_012` gave |
-| 6, the tests exist | `cargo test -p popnei --lib ld:: -- --list` | `35 tests`, where the plan started from `0 tests` |
+| 6, the tests exist | `cargo test -p popnei --lib ld:: -- --list` | `36 tests` once task 1.6 was in, where the plan started from `0 tests` |
 
 The seven checks of the `coding` skill on the last commit: `cargo fmt
 --all --check` no output; `cargo clippy --workspace --all-targets -- -D
@@ -331,9 +331,13 @@ are reachable from a vars file, and the spec says so now. Whether the
 vars reader should cap the ploidy itself belongs to
 `docs/specs/io_vars.md` and not to this plan.
 
-One decision is waiting on the owner, and work package 2 should not start
-before it is taken. It is the risk the plan's "What could go wrong"
-named, come back with a measurement.
+One decision was waiting on the owner and was taken on 23 September 2026:
+the operation went into `crates/popnei-linalg`. Task 1.6 below is what
+carried it out. What was decided and why is kept here, since the plan as
+approved did not have that task in it.
+
+It was the risk the plan's "What could go wrong" named, come back with a
+measurement.
 
 What is being decided: whether `crates/popnei-linalg` gains a product
 that takes its second matrix transposed, which changes
@@ -341,8 +345,9 @@ that takes its second matrix transposed, which changes
 r² keeps transposing its matrices itself inside
 `crates/popnei/src/ld.rs`.
 
-The recommendation is to add it to `crates/popnei-linalg`, and to do it
-before work package 2 works the matrix out in tiles. The orchestrator
+The recommendation was to add it to `crates/popnei-linalg`, and to do it
+before work package 2 works the matrix out in tiles, and that is what the
+owner chose. The orchestrator
 decided the other way when the problem appeared, on the grounds that it
 touched no spec outside the plan, and the review showed that reasoning
 incomplete: the `coding` skill says that linear algebra goes through the
@@ -373,14 +378,13 @@ other library `crates/popnei-linalg` is built on. What it costs is the
 spec: `docs/specs/linalg.md` gains a function, and this plan grows by a
 task that was not in it.
 
-What happens next in each case. If the product goes into linalg, the
-orchestrator writes that spec change, runs it as a new task of work
-package 1 and has work package 2 build on it. If the transposes stay in
-the core crate, work package 2's first task hoists them out of
-`r2_between` so that each tile is turned round once instead of once per
-pair, and work package 4 reports what they cost against the 0.50 s. If
-work package 4 then misses the target because of them, the question comes
-back with a measurement instead of an estimate.
+What followed. The orchestrator wrote the spec change, task 1.6 carried
+it out and was itself reviewed, and work package 2 builds on it: a tile
+is a range of rows of a matrix held row after row, so it is a piece of
+that matrix with nothing copied, and both operands of every product of a
+tile pair are read with one row for each variant. The transposes that
+this work package would otherwise have paid for once per pair of tiles do
+not happen at all.
 
 One finding was left for the owner rather than acted on: `has_variance`
 and `maf` answer `false` and `None` both for a variant that has no data
@@ -411,3 +415,104 @@ without being recomputed and was wrong: two of the four transposes of a
 set against itself are 4.1 MB and not 2.1 MB. The `following-plans` skill
 says to check what a subagent claims when the next step rests on it; no
 step rested on either of these, and both were wrong in the record.
+
+### Task 1.6, added after the review: the product with a transposed operand
+
+The owner decided on 23 September 2026 to put the operation into
+`crates/popnei-linalg` rather than leave the r² transposing its own
+matrices, which is what the first review of this work package had found
+the core crate doing against the `coding` skill. The plan gained task 1.6
+for it, and `docs/specs/linalg.md` an operation, written before the code.
+
+What it gives. The linear algebra crate had three operations and now has
+four: the product of a matrix with the transpose of another, where both
+matrices hold one row for each of the things they describe and the
+product sums over their columns. It is the same `dgemm` of BLAS and the
+same `matmul` of faer, told that the second operand is read the other way
+round, which both do inside the routine. The claim that neither pays a
+copy for it was not taken on trust: 1.174 ms against 1.179 ms for 512 x
+1000 on Accelerate on one thread, and within 0.3 % on faer. Had it been
+false the operation would have been worth nothing.
+
+The number that had to stay still, stayed still. With the tolerance of
+the r² tests set to exactly 0.0 by hand, the whole of `ld::` passes on
+the system BLAS and on faer alike, before and after the rewiring and
+again after the interface changed: every one of the 93096 pairs of
+`ld.vcf.gz` that plink2 gives a number for is still equal to plink2's
+bits. `cargo test --workspace` gives `432 passed` in the core crate and
+`42 passed` in the linalg crate, from 431 and 40, and `37 passed` there
+on faer, from 35.
+
+What it saves, measured end to end: one pair of tiles of 512 variants of
+1000 individuals went from 8.25 ms to 7.40 ms, and a set of variants
+against itself from 5.97 ms to 5.02 ms.
+
+#### What that review found
+
+Three reviewers read it: numbers, tests and architecture. Eight findings
+held and are fixed in commits 19a3e98 and 0804219; one was refused with
+evidence, below.
+
+The serious one was the orchestrator's and not the implementer's. The
+spec had given the new operation as a function of its own,
+`product_by_transpose`, taking the same six arguments of the same types
+as `product`, the two differing only in which way round the second matrix
+is read. A reviewer showed that each would take the other's call and
+return a different matrix with no error, since the check of a length is
+the rows times the columns either way: on the shape of the r² itself,
+`product` given the arguments meant for the other returned
+`[1, 1, 6, 3]` where the answer is `[3, 4, 1, 5]`. That is a wrong number
+with no word, reachable by a plausible slip. There is one product now,
+whose second operand carries its layout in its type, so a caller cannot
+reach for the wrong one without writing the name of the wrong one. The
+spec was rewritten to match, and the three call sites of the principal
+component analysis changed with it.
+
+The one that will matter later. The two ways the r² works out the sums of
+a pair, the four products when a set is against itself and the six
+otherwise, are equal to the bit ONLY because the six sums are whole
+numbers. The shortcut reads Σy of the pair i, j as Σx of the pair j, i,
+which is the same dot product with the operands in the other roles, and a
+routine need not sum those in the same order. A reviewer measured the two
+orders differing at 1e-17 on Accelerate with values that are not whole, 4
+entries of 25 at one shape and 19 of 49 at another. Nothing is wrong
+today and the bound of the individuals times the ploidy is what
+guarantees it, but the doc comments stated the identity as if it held for
+any float. The next person to reuse this on values that are not whole,
+the genomic relationship matrix of `docs/specs/kinship.md` or a GWAS,
+would have got a last-bit difference against plink2 that nobody would
+trace. It is said where the identity is stated now.
+
+The rest: four claims of the new operation's doc comment that no test
+guarded, where deleting the check of the first operand's length, or of
+its values being finite, or mislabelling it, left all 40 tests passing;
+the same two holes in the older `product`, closed while they were there;
+a test that builds the two ways of holding the second set's sums over the
+same variants and compares the two r² matrices, which is what would catch
+the two paths drifting apart; a loop that would have truncated in silence
+if its invariant ever broke, now asserted; and three doc comments and a
+module doc left over from the transpose that no longer exists.
+
+One finding was refused, with evidence the orchestrator accepted. The
+`rows == 0` early return of `product` is guarded by no test, and cannot
+be: the implementer deleted it and both backends still wrote nothing,
+because `dgemm` and faer's `matmul` are a no-op for a product of no rows.
+What the guard buys is that no routine is reached with a dimension of 0
+and the pointer of an empty slice, which is now said in a comment instead
+of asserted in a test.
+
+#### A measurement that would not settle
+
+The first review said that writing a transpose out costs 0.422 ms for 512
+x 1000, and this report repeated it, and `docs/specs/linalg.md` carried
+it. It was then timed three more times on the same machine, once by the
+orchestrator: 0.135 ms, 0.253 ms and 0.467 ms. Four measurements of one
+operation spread over a factor of 3.5, depending on whether the
+allocation was counted, how warm the cache was and what the compiler kept.
+A number that unstable is not a fact a spec can hold, so the spec no
+longer quotes one. What it holds instead is the size of the copy, 4.1 MB
+for 512 x 1000, and what was measured end to end, the tile pair going
+from 8.25 ms to 7.40 ms. The decision never rested on the figure. The
+lesson for the next plan is the one already in this report: a number that
+arrives in a hand-back and is not recomputed gets into a document, and
+from there into a spec.
