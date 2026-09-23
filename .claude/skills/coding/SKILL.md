@@ -356,21 +356,34 @@ calculation. `ruff format` and `ruff check` clean.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p popnei --no-default-features
 cargo wasm-check
 uv run ruff format --check && uv run ruff check
 uv run maturin develop && uv run pytest
 ```
 
-The four cargo commands run for every change. The two Python ones run
+The five cargo commands run for every change. The two Python ones run
 from the moment the binding crate and the package exist, also for a change
 in the core alone, because the pytest tests are the ones that compare with
 pyNei. A layer that does not exist yet is reported as not there, not as
 passed.
 
+`cargo test -p popnei --no-default-features` runs the calculations on faer,
+which is the linear algebra a browser runs: the `blas` feature is on by
+default and `cargo test --workspace` therefore only ever ran them on BLAS
+and LAPACK. A tolerance, or a sum whose order the backend chooses, can hold
+on one and fail on the other. It was added on 24 September 2026, when the
+kinship's comparison with plink2 was found red on faer and green on
+Accelerate for two days: the bound was 1e-12 of each entry, the two backends
+are 3.6e-16 and 3.3e-15 of the matrix from plink2, and nothing in any list
+ran the second one. `cargo test -p popnei-linalg --no-default-features`,
+which the plans ask for, tests the backend itself and not the calculations
+over it.
+
 `cargo wasm-check` compiles the core for the two wasm targets with the
 lints denied, and it takes seconds. It is in the list because a change
 behind `cfg(not(target_family = "wasm"))` leaves the other side
-uncompiled by the three commands above: on 22 September 2026 the
+uncompiled by the four commands above: on 22 September 2026 the
 parallel building of the sets of bits of the `dists` module left a
 constant that only the native side uses, and the wasm build warned about
 it in a commit whose other checks were green.
