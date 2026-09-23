@@ -95,22 +95,47 @@ pub const MAX_NUM_VARS_OF_THE_MATRIX: usize = 5000;
 /// the whole set would be six times the result, 1.2 GB at 5000 variants,
 /// where six of a pair of tiles of this size are 3 MB.
 ///
-/// It is the smaller of the two sizes the "Speed" table of that spec was
-/// measured at, on the owner's Apple M5 Pro with the products on
-/// Accelerate, and the two numbers of one pair of tiles do not choose it:
-/// 1.9 ms at 256 variants of 1000 individuals against 5.7 ms at 512 is not
-/// a comparison, since a pair of tiles of 512 covers four times as many
-/// pairs of variants. Per pair of variants the larger tile is the faster
-/// of the two, 30.1 ns against 38.0 ns. What the table does give the
-/// smaller one is the pass beside it, 100000 variants at a window of that
-/// many, 1.5 s at 256 against 2.2 s at 512, where the window is what
-/// bounds the pairs and a wider tile takes in pairs the window does not
-/// ask for. Neither measurement is of `calc_r2_matrix`, whose tiles no
-/// window bounds, so this number is what work package 4 of
-/// `docs/plans/ld.md` settles on a bench of it and 256 is what stands
-/// until then. The matrix does not change with it: the tiles cut the
-/// variants and every sum of a pair runs over the individuals.
-const THE_VARS_OF_A_TILE: usize = 256;
+/// It was measured on 23 September 2026 by the performance review of
+/// `docs/reports/perf-ld-2026-09-23.md`, on the owner's Apple M5 Pro with
+/// the products on Accelerate, over the matrix of 5000 variants of 1000
+/// individuals of the 400 MB VCF of `docs/rust_core.md`, the best of 5
+/// runs of `crates/popnei/benches/r2_matrix.rs` with the reading of the
+/// file taken out: 0.539 s at 128 variants, 0.449 s at 256, 0.424 s at
+/// 512, 0.382 s at 1000, 0.380 s at 1250, 0.403 s at 2500 and 0.427 s at
+/// 5000, which is one tile. Two things pull against each other. A larger
+/// tile gives Accelerate a larger product, which it works out faster per
+/// pair of variants, and it calls the linear algebra crate fewer times,
+/// which scans both operands of every call for a value that is not
+/// finite. Against that, a tile against itself computes its whole square
+/// where the matrix needs half of it, so a larger tile computes more pairs
+/// it throws away: 12819520 of them at 128 and 25000000 at 5000. The two
+/// meet in a broad flat bottom from 1000 to 1250.
+///
+/// 1000 rather than 1250, which is 0.002 s faster at 5000 variants and
+/// inside the spread of the runs, because the bottom moves with the
+/// variants of the matrix and 1000 is the better of the two away from the
+/// cap: over 4000 variants 1000 takes 0.255 s against 0.263 s at 1250, and
+/// over 3000 it takes 0.147 s against 0.150 s. What those three sizes have
+/// in common is that 1000 divides all of them, and a tile that does not
+/// divide the variants leaves a short last tile whose products are shaped
+/// badly: 1024 takes 0.414 s over 5000 variants against the 0.382 s of
+/// 1000, 8 per 100 slower for a tile 2 per 100 larger, and it is the only
+/// one of the sizes measured that leaves a remainder there.
+///
+/// The memory this costs is the six sums of one pair of tiles, which are
+/// 6 x 8 bytes for each pair of variants of the pair: 3 MB at 256 and
+/// 48 MB at 1000, beside the 200 MB of the matrix and the 120 MB of the
+/// three matrices of the variants. In WebAssembly, where a `usize` is 32
+/// bits and a tab holds a few GB, that is the cost to weigh if this
+/// number is ever raised further.
+///
+/// The matrix does not change with it: the tiles cut the variants and
+/// every sum of a pair runs over the individuals, so every sum is the same
+/// whole number in whichever tile it is worked out, and
+/// `neither_the_blocks_nor_the_tiles_change_the_matrix` compares the
+/// matrix to the bit at tiles of 7, 64, 256, 500 and whatever this
+/// constant says, against the matrix of one block.
+const THE_VARS_OF_A_TILE: usize = 1000;
 
 /// How the individuals of two sets of dosages whose r² was asked for
 /// differ.
@@ -3270,7 +3295,12 @@ mod tests {
     /// individuals, which no block and no tile cuts.
     #[test]
     fn neither_the_blocks_nor_the_tiles_change_the_matrix() {
-        let sizes = [7, 64, 256, NUM_VARS_OF_A_REFERENCE];
+        // `THE_VARS_OF_A_TILE` is in the list so that the size the
+        // calculation runs at by default is one of the sizes compared, and
+        // a performance review that moves it cannot move it out of this
+        // test. It is larger than the variants of this dataset, so it is
+        // also the case of one tile that holds every variant.
+        let sizes = [7, 64, 256, NUM_VARS_OF_A_REFERENCE, THE_VARS_OF_A_TILE];
         let mut reader = the_ld_dataset(Some(NUM_VARS_OF_A_REFERENCE));
         let of_one_block = the_r2_matrix_in_tiles_of(&mut reader, 5000, THE_VARS_OF_A_TILE)
             .expect("the matrix of r²");
