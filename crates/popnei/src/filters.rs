@@ -2762,19 +2762,48 @@ mod tests {
     /// before v3 is v2, whose r² against it is 0.643 and below the
     /// threshold, and v3 goes because of v1, which is 0.754 against it and
     /// is in its window too.
+    ///
+    /// v1, v2 and v3 are given in blocks of their own, so that v1 and v2
+    /// are in the window the filter carries over and not in the set of
+    /// variants v3 is settled with: a filter that compared v3 with the last
+    /// kept variant alone would keep it here, where one that compares it
+    /// with its whole window drops it. The same three variants in one block
+    /// say nothing about that, since there v3 is read out of the r² of its
+    /// own set.
     #[test]
     fn a_variant_is_compared_with_every_variant_of_its_window_and_not_the_last_kept_one_alone() {
         assert_eq!(kept_of_the_r2_example(0.7, 5000).0, [1000, 2000, 5000]);
+
+        let mut filter = LdFilter::new(0.7, 5000).unwrap();
+        let of_its_own: Vec<Block> = [0, 1, 2, 4]
+            .into_iter()
+            .map(|variant| block_of_the_r2_example(&[variant]))
+            .collect();
+        let kept = kept_of_the_blocks(&mut filter, of_its_own).expect("the blocks");
+        assert_eq!(kept, [1000, 2000, 5000]);
     }
 
     /// A variant whose r² is exactly the threshold stays, as a variant
     /// whose number is exactly the threshold stays in the three filters
     /// that compare one number: the r² of v1 and v2 is 27/40, which is
     /// 0.675, and v2 stays at that threshold and goes at 0.674.
+    ///
+    /// The two variants are given in one block and in two, the second of
+    /// which compares v2 with the window the filter carried over: the r²
+    /// of a pair of one set and the r² of a candidate against the window
+    /// are two paths, and each of them keeps a pair exactly at the
+    /// threshold.
     #[test]
     fn a_variant_whose_r2_is_exactly_the_threshold_stays() {
         assert_eq!(kept_of_the_r2_example(0.675, 5000).0, [1000, 2000, 5000]);
         assert_eq!(kept_of_the_r2_example(0.674, 5000).0, [1000, 5000]);
+
+        for (threshold, of_two_blocks) in [(0.675, vec![1000, 2000]), (0.674, vec![1000])] {
+            let mut filter = LdFilter::new(threshold, 5000).unwrap();
+            let blocks = vec![block_of_the_r2_example(&[0]), block_of_the_r2_example(&[1])];
+            let kept = kept_of_the_blocks(&mut filter, blocks).expect("the blocks");
+            assert_eq!(kept, of_two_blocks, "at a threshold of {threshold}");
+        }
     }
 
     /// At a threshold of 1 every variant with two dosages stays, whatever
@@ -2817,6 +2846,10 @@ mod tests {
     /// variants here have two dosages each and no individual called at
     /// both, so their r² is NaN, and both stay at a threshold of 0, where
     /// two variants that say the same thing would leave one.
+    ///
+    /// Each pair is given in one block and in two, since a candidate
+    /// against the window and a pair of one set are two paths and a NaN
+    /// drops the candidate on neither.
     #[test]
     fn a_pair_with_no_r2_does_not_drop_the_candidate() {
         // 0/0 0/1 1/1 ./. ./. ./. and ./. ./. ./. 0/0 0/1 1/1.
@@ -2847,6 +2880,20 @@ mod tests {
         let mut filter = LdFilter::new(0.0, 5000).unwrap();
         let kept = kept_of_the_blocks(&mut filter, vec![the_same_twice]).expect("the block");
         assert_eq!(kept, [1000]);
+
+        // The two of each pair in blocks of their own: the second variant
+        // is then compared with the first through the window and not
+        // through the r² of one set.
+        let in_two_blocks = |second: &[i8]| {
+            let blocks = vec![
+                block_of_the_chromosomes(&[(0, 1000, called_first.as_slice())], 6, 2),
+                block_of_the_chromosomes(&[(0, 2000, second)], 6, 2),
+            ];
+            let mut filter = LdFilter::new(0.0, 5000).expect("the filter");
+            kept_of_the_blocks(&mut filter, blocks).expect("the blocks")
+        };
+        assert_eq!(in_two_blocks(called_last.as_slice()), [1000, 2000]);
+        assert_eq!(in_two_blocks(called_first.as_slice()), [1000]);
     }
 
     /// The variants kept do not change with the size of the blocks: the
@@ -3721,5 +3768,33 @@ mod tests {
                 assert_eq!(stats, vec![("ld", pair(500, kept_of_500))], "{what}");
             }
         }
+    }
+
+    /// The filter keeps the same variants of `ld.vcf.gz` on a pool of one
+    /// thread and on one of four, at 10000 bp and 0.3, where it keeps 133
+    /// of the 500.
+    ///
+    /// The r² of the filter is worked out by the products of the linear
+    /// algebra, which on the faer backend run on the pool that is
+    /// installed, so the kept set is asserted on two pools as the matrix of
+    /// `docs/specs/ld.md` and the three filters that compare one number
+    /// are. The pools are built here and are not rayon's global one, which
+    /// has one thread per core of the machine; rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_variants_the_ld_filter_keeps_are_the_same_on_one_thread_and_on_several() {
+        let kept = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| the_kept_of_the_ld_dataset(0.3, 10_000, Some(64)))
+        };
+        let (on_one, counts_of_one) = kept(1);
+        let (on_four, counts_of_four) = kept(4);
+        assert_eq!(on_one.len(), 133);
+        assert_eq!(on_one, on_four);
+        assert_eq!(counts_of_one, counts_of_four);
     }
 }
