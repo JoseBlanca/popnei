@@ -188,6 +188,14 @@ the mean of nothing, which pyNei sets to 0.
 A variant of the logistic Wald test whose fit runs away also gets three
 NaNs, which the item for that model says.
 
+A third case exists and the spec did not describe it. The denominator of
+both score tests is `x' p x`, a quadratic form that is 0 or above in exact
+arithmetic and that can round just below 0 for a variant with almost no
+variance left after the covariates and the kinship are taken out. `beta` is
+then `num` over a tiny negative number, a large value of whichever sign the
+rounding chose, and the statistic `num² / den` is negative. What such a
+variant gets is **Open 2**, below.
+
 `test_monomorphic_and_missing_variants` of pyNei asserts exactly this on 50
 variants of 60 individuals where the first has one allele and the second has
 no called genotype: the first two p-values are NaN and the other 48 are
@@ -844,11 +852,15 @@ is why pyNei wrote both.
 - `chi2_sf_1df(x)`, the chance that a chi square with one degree of freedom
   is above `x`, which every score test and the logistic Wald test need. It
   is `erfc(sqrt(x / 2))`, the complementary error function, which gives how
-  much of a normal distribution lies past a point.
+  much of a normal distribution lies past a point. An `x` of 0 or below
+  gives 1.0, as scipy's `chi2.sf` does, and not the NaN that the square root
+  of a negative number would give. Who may pass one is **Open 2**, below.
 - `t_sf_two_sided(t, df)`, the chance that a Student t with `df` degrees of
   freedom is further from 0 than `t`, which the linear model and the linear
   mixed model's Wald test need. It is the regularized incomplete beta
-  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`.
+  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`, and it hands the
+  incomplete beta `t² / (df + t²)` beside it as `one_minus_x`, for the
+  reason that section gives.
 
 popnei takes `erfc` from the `libm` crate, a pure Rust port of musl's math
 library with no C in it, which builds for both wasm targets, checked as a
@@ -867,15 +879,28 @@ Lentz's method, which builds a continued fraction from its front rather than
 from its far end, so it can stop as soon as a term no longer changes the
 value instead of needing its depth fixed in advance.
 
-`x` at or below 0 gives 0 and at or above 1 gives 1. Otherwise, with
+It takes **both** `x` and `one_minus_x` from its caller and never subtracts
+one from the other. `t_sf_two_sided` has them for nothing, `df / (df + t²)`
+and `t² / (df + t²)`, and computing the second as `1 - x` instead throws
+away every digit of it once `x` has rounded to 1: at 197 degrees of freedom
+and `t` of 1e-7 that returned exactly 1.0 where the answer is
+0.9999999203127337. Measured on 23 September 2026, taking `one_minus_x` from
+the caller moved the worst relative error over `t` in [1e-7, 1e-3] from
+7.97e-8 to 5.34e-17 at 197 degrees of freedom, and from 6.34e-7 to 3.83e-15
+at 9997.
+
+An `x` at or below 0 gives 0 and a `one_minus_x` at or below 0 gives 1.
+Otherwise, with
 
     front = exp(lgamma(a + b) - lgamma(a) - lgamma(b)
-                + a * ln(x) + b * ln(1 - x))
+                + a * ln(x) + b * ln(one_minus_x))
 
 the answer is `front * cf(a, b, x) / a` while `x` is below
-`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, 1 - x) / b` at or above
-it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where the
-fraction converges slowly. `cf` is the continued fraction, with `tiny` at
+`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, one_minus_x) / b` at or
+above it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where
+the fraction converges slowly. pyNei writes both of those from `x` alone,
+`numpy.log1p(-xi)` at `src/pynei/gwas.py:329` and `1 - xi` at 337, and
+`log1p` recovers the logarithm but not the fraction's argument. `cf` is the continued fraction, with `tiny` at
 1e-300, `eps` at 1e-15 and at most 500 rounds:
 
     qab = a + b;  qap = a + 1;  qam = a - 1
@@ -897,8 +922,33 @@ fraction converges slowly. `cf` is the continued fraction, with `tiny` at
 `tiny` keeps a denominator that has come out at 0 from dividing, which is
 what Lentz's method needs to carry on past a term that vanishes, and running
 out of rounds is not an error: the four pairs of arguments this module uses
-converge in at most 40 rounds, measured on 23 September 2026 over the cases
-of "How it is verified".
+converge in at most 52 rounds, measured on 23 September 2026 over the sweep
+below.
+
+**`tiny` cannot fire at any argument the t distribution reaches, and it
+stays.** The first denominator is `d = 1 - (a + b) x / (a + 1)`, and in both
+branches it is bounded below by `2 / (a + b + 2)`: in the direct branch
+because `x` is below `(a + 1) / (a + b + 2)`, in the symmetry branch because
+`1 - x` is at most `(b + 1) / (a + b + 2)`, and the zero of `d` lies above
+both. So `d` reaches 1e-300 only once `a + b` passes about 2e300, which with
+`b` at 1/2 and `a` half the degrees of freedom is a panel of 4e300
+individuals. The bound is tight and two measurements meet it: over 6009003
+calls, degrees of freedom 1 to 3000 and then 1e4, 1e5 and 1e6 with `t` from
+0 to 20, the smallest `|c|` or `|d|` was 4.027585806198886e-6, which is
+`2 / (a + b + 2)` exactly at a million degrees of freedom. It stays because
+the recipe and pyNei have it and because a caller with some other `b` would
+need it; `b` here is always 1/2.
+
+`eps` is a different thing: it caps the work and does not get the digits.
+With it set to 0, so that the loop always runs its 500 rounds, nothing
+became not finite and the worst value moved by 2.3e-13 relative. The
+fraction took at most 52 rounds of its 500, over a sweep of 116802 calls.
+
+So no test of either guard can fail on a value, and the only assertion with
+anything behind it is one on the number of rounds. A reader who finds the five lines that read
+`tiny`, and the one that reads `eps`, covered by no test should stop looking
+for the argument that reaches them: for `tiny` there is none, and the bound
+above says why.
 
 ### How it is verified
 
@@ -911,10 +961,40 @@ for this reason. The cases are pyNei's, in `test_distributions`:
   1e-12 absolute. The pair `(98.5, 0.5)` is what a t with 197 degrees of
   freedom uses, next to the panel's 196: 200 individuals less the three
   columns of its design less one for the variant.
-- `t_sf_two_sided` at 5, 17 and 197 degrees of freedom, over a spread of `t`
-  including 10, 20 and 40, within 1e-10 relative.
+- `t_sf_two_sided` at 5, 17, 197, 997 and 9997 degrees of freedom, over a
+  spread of `t` including 10, 20 and 40, within 1e-10 relative.
+
+**The 1e-10 is claimed to 9997 degrees of freedom and not beyond**, which is
+the 10000 individuals `docs/objectives.md` names, less the coefficients and
+the variant. The error grows with the degrees of freedom and its worst point
+is not spread over `t`: it sits at `t` near 1.73, where the branch of the
+incomplete beta switches. Measured against mpmath at 60 digits on 23
+September 2026: 4.7e-13 relative at 197 degrees of freedom, 7.7e-13 at 997,
+5.5e-11 at 9997, 1.5e-10 at 20000 and 3.5e-9 at 500000. So the bound has 213
+times the room at 197 degrees of freedom, 1.8 times at 9997, and is
+already untrue at 20000 individuals. It is the cancellation in
+`lgamma(a + b) - lgamma(a)`, amplified by the `1 -` of the symmetry branch,
+and not the stopping rule: setting `eps` to 0 moves the worst point from
+3.3326e-9 to 3.3324e-9.
+
+That 1.8 is the one bound of this spec sitting near its failure, and it is
+stated rather than widened because widening it would catch less at the sizes
+popnei actually runs. Whoever first wants popnei past 10000 individuals has
+to come back to this function before they can trust its p-values, and the
+front factor in logarithms is where to start.
 - `chi2_sf_1df` over a chi square sample and at 30, 50 and 100, within 1e-12
   relative.
+
+How far those three bounds are from the differences they allow, measured on
+23 September 2026 on a built implementation: the chi square's worst is
+1.8e-14 relative, 57 times inside its bound; the incomplete beta's worst is
+8.5e-15 absolute at the pair `(98.5, 0.5)`, 117 times inside; and the
+Student t's worst is 4.7e-13 relative at 197 degrees of freedom, 213 times
+inside, at `t` near 1.73 where the branch switches. So these three are not
+the round numbers that
+"How it is verified" of "What every model shares" warns about, and they do
+not need lowering to where they break: the room has been measured and it is
+there.
 
 popnei's and pyNei's p-values differ by the difference between two `erfc`
 implementations, about 1e-14 relative, which is five orders below the 1e-9
@@ -1063,8 +1143,8 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides this one, and until then the implementer follows its
-"meanwhile".
+The owner decides these two, and until then the implementer follows the
+"meanwhile" of each.
 
 **Open 1: a variant that separates the cases from the controls.** Its
 logistic effect is infinite and its Wald fit runs away. pyNei gives NaN for
@@ -1084,6 +1164,27 @@ variant vanish learns whether it had no variance or a runaway fit, which are
 different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
+
+**Open 2: a variant whose score denominator rounds to 0 or below.** `x' p x`
+is 0 or above in exact arithmetic, and rounding can put it just below for a
+variant with almost no variance left once the covariates and the kinship are
+taken out. The options are to give that variant three NaNs, as a variant
+with no variance gets, which says the study could not test it and throws
+away a `beta` that is meaningless anyway; or to let the statistic through to
+`chi2_sf_1df`, which gives 1.0 for an argument of 0 or below, so the user
+sees a p-value of 1 beside a `beta` and an `se` that are large and wrong.
+Recommendation: three NaNs, refused before the statistic is formed, at
+`den <= 0`. A p-value of 1 is a claim that the variant was tested and showed
+nothing, and nothing was tested; and "The variants that have no answer"
+already means the three NaNs together, so a NaN p-value beside a finite
+`beta` would be a fourth thing a user has to learn to read. It costs the
+distinction between a variant with no variance at all and one whose variance
+the null model absorbed, which no reference program reports either. This
+came from the session building `gwas-linear` on 23 September 2026, which met
+it in the score test of the linear mixed model. Meanwhile the implementer
+refuses at `den <= 0` and gives the three NaNs; if the owner chooses the
+other, the change is one comparison and no literal of this spec moves, since
+no variant of either panel reaches it.
 
 ## Not in this spec
 
