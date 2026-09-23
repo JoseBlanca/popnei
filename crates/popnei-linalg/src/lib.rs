@@ -155,9 +155,15 @@ pub enum Error {
     /// it means there. Both backends give the same row, counted from 0:
     /// `dpotrf` gives the order of the leading corner, counting from 1,
     /// and faer an index from 0.
-    #[error(
-        "the matrix {argument} is singular: the factorization stopped at its row {at}, counting from 0"
-    )]
+    /// The message says where it failed and not why: five operations give
+    /// this error and only [`cholesky_lower`] factors anything, so a
+    /// message naming a factorization, or calling the matrix singular,
+    /// would be wrong for the other four, where the matrix was handed in
+    /// as a factorization or, for [`solve_triangular`], was never one.
+    /// Drawing no conclusion about the caller's data is what lets a
+    /// caller whose matrix was built from the user's, and not given by
+    /// them, say what it means itself.
+    #[error("the matrix {argument} failed at its row {at}, counting from 0")]
     Singular {
         /// The name of the argument, as "The Rust interface" of
         /// `docs/specs/linalg.md` spells it.
@@ -2732,7 +2738,7 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "the matrix a is singular: the factorization stopped at its row 1, counting from 0"
+            "the matrix a failed at its row 1, counting from 0"
         );
     }
 
@@ -3123,7 +3129,7 @@ mod tests {
             );
             assert_eq!(
                 error.to_string(),
-                "the matrix l is singular: the factorization stopped at its row 1, counting from 0"
+                "the matrix l failed at its row 1, counting from 0"
             );
         }
     }
