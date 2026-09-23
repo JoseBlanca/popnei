@@ -299,6 +299,20 @@ times `beta`; `p_value` is compared in `log10`, which is already a scale;
 and a check over a vector of numbers is against the largest of them and not
 each one.
 
+Where the right shape comes from, so that the next quantity does not have to
+be got wrong first. A bound is on the rounding of the sum that produced the
+number, and the rounding of a sum of `m` products is about `m` times the
+distance from 1 to the next `f64`, 2.2e-16, times the largest term of the
+sum. So the bound goes against whatever bounds the terms, and the terms are
+what the quantity is built from and not the quantity itself, which is why a
+value that cancelled to near 0 is no guide to its own error. For the kinship
+that scale is the largest entry of the matrix, since the sum of the absolute
+products of a pair is at most `m` times the square root of the two diagonal
+entries and so at most `m` times the largest entry; the bound is then loose
+by the ratio of the largest entry to that square root, measured at 1.4 times
+on both panels. For an effect size it is `se`, which is what the study's own
+arithmetic says the effect is uncertain by.
+
 The kinship met this on 23 September 2026 and it is why the rule is here.
 Its first bound was 1e-12 relative to each entry of the matrix, which looked
 sound: the worst entry as a ratio was 3.31e-13. It broke on the second
