@@ -86,10 +86,12 @@ pub fn chi2_sf_1df(x: f64) -> f64 {
 /// individual left over has no answer to give, which is not what a
 /// statistic of 0 means, and 0 or fewer degrees of freedom would otherwise
 /// take `x` to 0 or below and come back as 0.0, the smallest p-value there
-/// is. Nothing calls this with such a `df` today; what will keep it at 1 or
-/// above is the refusal of a design with no more rows than columns plus
-/// one, which is not written yet, so this is a guard and not the repair of
-/// a live wrong number.
+/// is. Nothing calls this with such a `df` today, and what keeps it at 1 or
+/// above is [`Error::GwasTooFewIndividuals`], which refuses a study of no
+/// more individuals than the columns of its design plus one: the degrees
+/// of freedom of the Wald test of a linear model are the individuals less
+/// those columns less one. So this is a guard and not the repair of a live
+/// wrong number.
 ///
 /// The value is the regularized incomplete beta function
 /// `I_x(df / 2, 1 / 2)` at `x = df / (df + t * t)`, which is written
@@ -356,19 +358,51 @@ impl fmt::Display for GwasInputShape {
 
 /// The matrix every model of a study is fitted on, checked: one row per
 /// tested individual and one column per number the model fits, the
-/// intercept first and then one for each covariate.
+/// intercept first and then one for each covariate. It carries the
+/// individuals those rows belong to, checked with it.
 ///
 /// [`Design::of_the_study`] is the only way to have one, so a model that
 /// takes a `Design` is fitted on individuals the source has, each of them
 /// once and in the source's order, on a phenotype that holds a number for
-/// each of them and fits the trait, and on columns that are independent.
+/// each of them and fits the trait, and on columns that are independent
+/// and hold numbers.
+///
+/// The individuals are in it, and not passed beside it, because the
+/// dosages of a block are read over them: they are the rows of this matrix
+/// in the same order, and [`GwasDosages::read_the_block`] takes a `Design`
+/// so that no pass can read a block over positions that nothing checked.
+/// `Block::retain_individuals` keeps whatever order it is asked for, so
+/// positions that do not rise would put one individual's trait against
+/// another individual's genotypes, which is what
+/// [`Error::GwasIndividualsOutOfOrder`] exists to prevent.
 #[derive(Debug, Clone, Copy)]
-pub struct Design<'a> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) struct Design<'a> {
     values: &'a [f64],
     num_individuals: usize,
     num_coefs: usize,
+    individuals: &'a [usize],
+    num_individuals_of_the_source: usize,
+    multiallelic: MultiallelicVariants,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 impl<'a> Design<'a> {
     /// The design of a study, with everything "Which individuals are
     /// tested, and the design" of `docs/specs/gwas.md` refuses about it,
@@ -393,13 +427,15 @@ impl<'a> Design<'a> {
     /// holds a value that is neither 0 nor 1, and
     /// [`Error::GwasPhenotypeOfOneValue`] when every tested individual of
     /// such a trait has the same one.
-    /// [`Error::GwasCovariatesCollinear`] when the columns of the design
-    /// are not independent, and [`Error::GwasLinalg`] when the rank that
-    /// finds that out could not be taken.
+    /// [`Error::GwasDesignValueNotFinite`] when a value of the design is
+    /// not a finite number, naming the individual, the column and the
+    /// value. [`Error::GwasCovariatesCollinear`] when the columns of the
+    /// design are not independent, and [`Error::GwasLinalg`] when the rank
+    /// that finds that out could not be taken.
     /// [`Error::GwasInputOfAnotherSize`] when the phenotype or the design
     /// does not hold one value or one row for each tested individual, or
     /// the design has no column.
-    pub fn of_the_study(
+    pub(crate) fn of_the_study(
         input: &GwasInput<'a>,
         num_individuals_of_the_source: usize,
     ) -> Result<Design<'a>> {
@@ -452,6 +488,7 @@ impl<'a> Design<'a> {
             num_individuals_of_the_source,
         )?;
         refuse_a_phenotype_that_is_not_the_trait(input.phenotype, input.trait_type)?;
+        refuse_a_design_value_that_is_not_finite(input.design, num_coefs)?;
         // The columns of the design have to be independent, and the rank is
         // how many of them are, at the tolerance of numpy's `matrix_rank`,
         // so that a design popnei refuses is a design pyNei refuses.
@@ -469,27 +506,81 @@ impl<'a> Design<'a> {
             values: input.design,
             num_individuals,
             num_coefs,
+            individuals: input.individuals,
+            num_individuals_of_the_source,
+            multiallelic: MultiallelicVariants::of_the_study(input),
         })
     }
 
     /// The design itself, `num_individuals` x `num_coefs`, row after row.
     #[must_use]
-    pub fn values(&self) -> &'a [f64] {
+    pub(crate) fn values(&self) -> &'a [f64] {
         self.values
     }
 
     /// How many individuals are tested, which is the rows of the design.
     #[must_use]
-    pub fn num_individuals(&self) -> usize {
+    pub(crate) fn num_individuals(&self) -> usize {
         self.num_individuals
     }
 
     /// How many columns the design has: the intercept and one for each
     /// covariate.
     #[must_use]
-    pub fn num_coefs(&self) -> usize {
+    pub(crate) fn num_coefs(&self) -> usize {
         self.num_coefs
     }
+
+    /// The positions of the tested individuals among those the source has,
+    /// which rise and each of which is one the source has.
+    #[must_use]
+    pub(crate) fn individuals(&self) -> &'a [usize] {
+        self.individuals
+    }
+
+    /// How many individuals the source has, which every block of it holds
+    /// the genotypes of.
+    #[must_use]
+    pub(crate) fn num_individuals_of_the_source(&self) -> usize {
+        self.num_individuals_of_the_source
+    }
+}
+
+/// The values of the design of a study: a finite number in every row of
+/// every column.
+///
+/// The Python and the TypeScript layers refuse a covariate that is missing
+/// or is not a number, so what reaches this is a covariate that came out
+/// of a user's own arithmetic as an infinity, and a caller of the core
+/// crate. Left in, it would reach the rank, which refuses what it is given
+/// and not what it produced, and the user would be told of a defect of
+/// popnei where they gave a wrong covariate.
+///
+/// `design` is `num_individuals` x `num_coefs`, row after row, which the
+/// caller has checked, so the row of a value is which individual it
+/// belongs to and the rest of the division is which column.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+fn refuse_a_design_value_that_is_not_finite(design: &[f64], num_coefs: usize) -> Result<()> {
+    for (individual, row) in design.chunks(num_coefs.max(1)).enumerate() {
+        for (coef, value) in row.iter().copied().enumerate() {
+            if !value.is_finite() {
+                return Err(Error::GwasDesignValueNotFinite {
+                    individual,
+                    coef,
+                    value,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The individuals a study tests: each of them one the source has, each of
@@ -499,6 +590,15 @@ impl<'a> Design<'a> {
 /// above the one before it is either that one again or one the source has
 /// earlier. A repeat with another individual between its two halves comes
 /// back as the second of the two and not as the first.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 fn refuse_individuals_that_are_not_the_source_in_order(
     individuals: &[usize],
     num_individuals_of_the_source: usize,
@@ -538,6 +638,15 @@ fn refuse_individuals_that_are_not_the_source_in_order(
               measurement near either, so what is wanted here is the exact \
               comparison and not one within a tolerance; a value of -0.0 is 0.0 \
               by it, which is the answer for an individual without the condition"
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
 )]
 fn refuse_a_phenotype_that_is_not_the_trait(
     phenotype: &[f64],
@@ -604,7 +713,16 @@ pub enum GwasModel {
 /// a continuous trait with no kinship, whose only test is the t test of
 /// the linear model, and [`Error::GwasWaldTestOfALogisticMixedModel`] when
 /// the Wald test is asked of a binomial trait with a kinship.
-pub fn the_model_and_the_test(input: &GwasInput<'_>) -> Result<(GwasModel, TestType)> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) fn the_model_and_the_test(input: &GwasInput<'_>) -> Result<(GwasModel, TestType)> {
     let model = match (input.trait_type, input.kinship.is_some()) {
         (TraitType::Continuous, false) => GwasModel::Lm,
         (TraitType::Continuous, true) => GwasModel::Lmm,
@@ -631,6 +749,15 @@ pub fn the_model_and_the_test(input: &GwasInput<'_>) -> Result<(GwasModel, TestT
 /// of the tested individuals is read or refused, which
 /// [`GwasInput::transform_to_biallelic`] chooses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 enum MultiallelicVariants {
     /// Such a variant is an error naming its position among the variants
     /// the reader has given.
@@ -641,6 +768,15 @@ enum MultiallelicVariants {
     Collapsed,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 impl MultiallelicVariants {
     /// What the study asked for.
     fn of_the_study(input: &GwasInput<'_>) -> MultiallelicVariants {
@@ -957,16 +1093,65 @@ fn the_dosages_of_the_rows_one_by_one(
     Ok(rows)
 }
 
+/// What the pass over the blocks knows about the block it is handing over:
+/// how many alleles the genotype of one individual holds, which the reader
+/// gives and which every block of a dataset has, and which variant of
+/// those the reader has given the first row of this block is.
+///
+/// The two are a struct and not two arguments because they are both a
+/// count of something and a caller that swapped them would compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) struct BlockOfThePass {
+    /// How many alleles the genotype of one individual holds, which the
+    /// reader says its source has. A block of another ploidy is refused:
+    /// the frequency of a variant is its mean dosage over this number, so
+    /// a block read at another one gives frequencies of nothing.
+    pub ploidy: usize,
+    /// Which variant of those the reader has given the first row of the
+    /// block is, counted from 0. It is what the error of a variant with
+    /// more than two alleles names, so it is the reader's count and not
+    /// the block's.
+    pub first_var: usize,
+}
+
 /// The dosages of the variants of one block over the individuals a study
 /// tests, with the frequency of the alleles that are not the major one of
 /// each variant and whether it has any variance, both over those
 /// individuals alone.
 ///
+/// A dosage is how many alleles of a genotype are not the major allele of
+/// its variant, so it is a whole number from 0 to the ploidy, and a
+/// genotype with any allele missing takes the mean dosage of its variant
+/// instead, which is 0 for a variant with no called genotype at all. The
+/// major allele and that mean are of the tested individuals, as everything
+/// else here is. The dosages are not divided by anything: `beta` of the
+/// result is the effect of one more copy of a non major allele in the
+/// units of the trait, which the deviation of the variant would turn into
+/// deviations.
+///
 /// The buffers are made as long as a block needs and are kept from one
 /// block to the next, so a pass over a million variants asks the machine
 /// for them once and allocates nothing for a variant.
 #[derive(Debug, Clone)]
-pub struct GwasDosages {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) struct GwasDosages {
     /// How many variants the block held, which is how many rows of the
     /// result it gives.
     num_vars: usize,
@@ -984,10 +1169,19 @@ pub struct GwasDosages {
     has_variance: Vec<bool>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 impl GwasDosages {
     /// The buffers of a study that has read no block yet.
     #[must_use]
-    pub fn of_a_study() -> GwasDosages {
+    pub(crate) fn of_a_study() -> GwasDosages {
         GwasDosages {
             num_vars: 0,
             num_individuals: 0,
@@ -1007,83 +1201,132 @@ impl GwasDosages {
     /// all of the tested individuals and of nobody else. That is what
     /// "What it gives" of `docs/specs/gwas.md` asks for, and it matters as
     /// soon as a phenotype leaves one individual out: the block is the
-    /// whole panel and the study is of those that have a trait.
+    /// whole panel and the study is of those that have a trait. The block
+    /// is cut down in place, so the caller is left with the genotypes of
+    /// the tested individuals and a block that is read twice is a block
+    /// whose individuals are already gone.
     ///
-    /// `input.individuals` are their positions among the individuals the
-    /// block holds, which [`Design::of_the_study`] has checked rise and
-    /// are the source's; they are the block itself when they are as many
-    /// as it has and rise from 0, and it is then read as it came.
-    /// `ploidy` is the alleles of one genotype, which the reader gives and
-    /// which every block of a dataset has, and `first_var` is which
-    /// variant of those the reader has given the first row of the block
-    /// is.
+    /// `design` carries those individuals, checked, and whether a variant
+    /// with more than two alleles is read. `of_the_pass` is the shape the
+    /// reader says its source has and where the block sits among the
+    /// variants it has given.
+    ///
+    /// Every block is checked against the reader before a row of it is
+    /// read, which is what `alleles_per_var_of` of [`crate::stats`] does
+    /// for the two passes of that module, with the same errors: a pass
+    /// reads the rows of every block as rows of one run over the variants,
+    /// so a block of other individuals or of another ploidy is read one
+    /// individual at the place of another, and a block of no variant is a
+    /// reader that has stopped without saying so.
     ///
     /// # Errors
     ///
+    /// Each of these but the last is a defect of the reader that gave the
+    /// block or of the caller, and not of the dataset.
     /// [`Error::FieldsNotInTheBlock`] when the block holds no genotypes,
-    /// what [`Block::check`] refuses of a block whose arrays are not of
-    /// its size, what [`Block::retain_individuals`] refuses of the tested
-    /// individuals, which is an individual the block has not and one that
-    /// is there twice, [`Error::GtsNotWholeGenotypes`] when the block
-    /// holds no genotype for an individual of it, what reading the dosages
-    /// of one row refuses, and [`Error::GwasVariantsTooLarge`] when the
-    /// position of a variant is beyond what a `usize` counts.
-    pub fn of_the_block(
+    /// [`Error::ReaderGaveABlockOfNoVariants`] when it holds no variant,
+    /// [`Error::BlocksDoNotFitTogether`] when its individuals or its
+    /// ploidy are not the reader's, [`Error::BlockWithNoGenotypeOfAVariant`]
+    /// when it holds the genotypes of no individual, and
+    /// [`Error::BlockArrayOfAnotherSize`] when its arrays are not of the
+    /// size it states, which [`Block::check`] finds and which the rows
+    /// that came out are counted against again.
+    /// [`Error::BlockTooLarge`] when its individuals times its ploidy are
+    /// more than a `usize` counts. What
+    /// [`Block::retain_individuals`] refuses of the tested individuals,
+    /// which is an individual the block has not and one that is there
+    /// twice. And what reading the dosages of one row refuses, with
+    /// [`Error::GwasVariantsTooLarge`] when the position of a variant is
+    /// beyond what a `usize` counts.
+    pub(crate) fn read_the_block(
         &mut self,
         block: &mut Block,
-        input: &GwasInput<'_>,
-        ploidy: usize,
-        first_var: usize,
+        design: &Design<'_>,
+        of_the_pass: BlockOfThePass,
     ) -> Result<()> {
         let missing = Needs::GTS.difference(block.fields());
         if !missing.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: missing });
         }
-        // The rows of a block are cut out of its genotypes by the sizes it
-        // states, so a block whose arrays are not of its size would be read
-        // one variant at the place of another, or its last variants not at
-        // all, with nothing to show it.
+        // The rows of a block are cut out of the sizes it states, so those
+        // sizes are checked before anything is read.
         block.check()?;
-        if !input
-            .individuals
+        if block.num_vars == 0 {
+            return Err(Error::ReaderGaveABlockOfNoVariants);
+        }
+        // The individuals and the ploidy are compared with the reader's
+        // before the block is cut down to the tested individuals, since
+        // that is what changes the first of the two. A block of another
+        // ploidy is the one that no other check catches: its rows would be
+        // cut at one width and its genotypes read at another, and when the
+        // two disagree enough the rows come out as none at all.
+        if block.num_individuals != design.num_individuals_of_the_source()
+            || block.ploidy != of_the_pass.ploidy
+        {
+            return Err(Error::BlocksDoNotFitTogether {
+                num_individuals: design.num_individuals_of_the_source(),
+                ploidy: of_the_pass.ploidy,
+                found_num_individuals: block.num_individuals,
+                found_ploidy: block.ploidy,
+            });
+        }
+        if block.alleles_per_var()? == 0 {
+            return Err(Error::BlockWithNoGenotypeOfAVariant {
+                num_individuals: block.num_individuals,
+                ploidy: block.ploidy,
+            });
+        }
+        if !design
+            .individuals()
             .iter()
             .copied()
             .eq(0..block.num_individuals)
         {
-            block.retain_individuals(input.individuals)?;
+            block.retain_individuals(design.individuals())?;
         }
         let (Some(num_individuals), Some(alleles_per_var)) = (
             NonZeroUsize::new(block.num_individuals),
             NonZeroUsize::new(block.alleles_per_var()?),
         ) else {
-            // A block of no individual, or one whose genotypes hold no
-            // allele for each of them, holds no genotype for a study to
-            // read: a study tests one individual at least.
-            return Err(Error::GtsNotWholeGenotypes {
-                num_alleles: block.gts.len(),
-                ploidy,
+            // The block held the genotypes of one individual at least
+            // above, and the tested individuals are one at least, since
+            // `retain_individuals` refuses none: neither of these is 0.
+            return Err(Error::BlockWithNoGenotypeOfAVariant {
+                num_individuals: block.num_individuals,
+                ploidy: block.ploidy,
             });
         };
-        // The block holds its genotypes, and `check` says they are its
+        // The block is of the reader's ploidy and its genotypes are its
         // variants times the alleles of one of them, so this division is
-        // exact; it is `None` only for a ploidy of 0, which the rows below
-        // refuse.
-        let Some(num_values) = block.gts.len().checked_div(ploidy) else {
-            return Err(Error::GtsNotWholeGenotypes {
-                num_alleles: block.gts.len(),
-                ploidy,
-            });
-        };
+        // exact and the buffer holds one value for each individual of each
+        // row.
+        let num_values = block
+            .num_vars
+            .checked_mul(num_individuals.get())
+            .ok_or(Error::GwasVariantsTooLarge)?;
         self.dosages.resize(num_values, 0.0);
         let rows = the_dosages_of_the_rows(
             &block.gts,
             alleles_per_var,
             num_individuals,
-            ploidy,
-            MultiallelicVariants::of_the_study(input),
-            first_var,
+            of_the_pass.ploidy,
+            design.multiallelic,
+            of_the_pass.first_var,
             &mut self.dosages,
         )?;
+        // The rows are cut out of the genotypes at the width of one
+        // variant, so a block whose genotypes are not its variants times
+        // that width gives fewer rows than it says it holds, and the
+        // variants that are left over would go out of the result with no
+        // error. Everything above says that cannot happen here; this is
+        // what says so of the rows that actually came out.
+        if rows.len() != block.num_vars {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "gts",
+                found: block.gts.len(),
+                expected: block.num_vars.saturating_mul(alleles_per_var.get()),
+            });
+        }
         self.num_vars = rows.len();
         self.num_individuals = num_individuals.get();
         self.allele_freq.clear();
@@ -1118,43 +1361,58 @@ impl GwasDosages {
     }
 
     /// How many variants the block held, which is how many rows of the
-    /// result it gives: the ones that have no answer are among them.
+    /// result it gives: the ones that have no answer are among them. It is
+    /// 0 before a block has been read.
     #[must_use]
-    pub fn num_vars(&self) -> usize {
+    pub(crate) fn num_vars(&self) -> usize {
         self.num_vars
     }
 
     /// How many individuals the study tests, which is the length of one
-    /// row of [`GwasDosages::dosages`].
+    /// row of [`GwasDosages::dosages`]. It is 0 before a block has been
+    /// read, since it is the block that says which of its individuals were
+    /// kept.
     #[must_use]
-    pub fn num_individuals(&self) -> usize {
+    pub(crate) fn num_individuals(&self) -> usize {
         self.num_individuals
     }
 
     /// How many variants of the block have variance among the tested
     /// individuals, which is how many rows [`GwasDosages::dosages`] holds.
     #[must_use]
-    pub fn num_with_variance(&self) -> usize {
+    pub(crate) fn num_with_variance(&self) -> usize {
         self.num_with_variance
     }
 
     /// The dosages of the variants that have variance, one row of
     /// [`GwasDosages::num_individuals`] values for each of them, in the
-    /// order of the block. It is what a model tests as one matrix.
+    /// order of the block. It is what a model tests as one matrix, and it
+    /// is empty before a block has been read.
+    ///
+    /// A dosage is a whole number from 0 to the ploidy, how many alleles
+    /// of the genotype are not the major allele of its variant among the
+    /// tested individuals, and a genotype with any allele missing holds
+    /// the mean dosage of its variant instead, which is what centering the
+    /// variant would make 0.
     #[must_use]
-    pub fn dosages(&self) -> &[f64] {
+    pub(crate) fn dosages(&self) -> &[f64] {
         // The buffer holds one row for every variant of the block, and the
         // rows of the variants that have variance were moved to its start,
-        // so it holds this many values at least.
+        // so it holds this many values at least. A buffer that did not
+        // would be a defect of this module, and what it gives then is no
+        // value at all and not a longer slice, which a model would read as
+        // more variants than the block holds.
         let values = self.num_with_variance.saturating_mul(self.num_individuals);
-        self.dosages.get(..values).unwrap_or(&self.dosages)
+        self.dosages.get(..values).unwrap_or_default()
     }
 
     /// The frequency of the alleles that are not the major one, over the
     /// tested individuals: one for each variant of the block, in its
-    /// order, the variants that have no answer among them.
+    /// order, the variants that have no answer among them. It is the mean
+    /// dosage of the variant over the ploidy, and 0 for a variant with no
+    /// called genotype among those individuals.
     #[must_use]
-    pub fn allele_freq(&self) -> &[f64] {
+    pub(crate) fn allele_freq(&self) -> &[f64] {
         &self.allele_freq
     }
 
@@ -1163,10 +1421,37 @@ impl GwasDosages {
     /// no answer, as "The variants that have no answer" of
     /// `docs/specs/gwas.md` says.
     #[must_use]
-    pub fn has_variance(&self) -> &[bool] {
+    pub(crate) fn has_variance(&self) -> &[bool] {
         &self.has_variance
     }
 }
+
+/// Whether a study used the GRAMMAR-Gamma approximation, which a mixed
+/// model can take to spend one product per variant instead of a fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) enum GrammarGammaApprox {
+    /// The study made the approximation.
+    Used,
+    /// The study did not, which is what every model without a kinship
+    /// does, since there is nothing to approximate.
+    NotUsed,
+}
+
+/// Whether a study makes the GRAMMAR-Gamma approximation when the user
+/// asks for nothing: it does not. It is the default of `calc_gwas` of
+/// `pynei/gwas.py`, which popnei keeps, and the reason is in "What it
+/// gives" of the approximation in `docs/specs/gwas.md`: it costs accuracy
+/// where a panel is strongly structured, so a user asks for it.
+pub const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = false;
 
 /// The model a study fitted without any variant in it, which every variant
 /// is then tested against.
@@ -1197,7 +1482,16 @@ pub struct NullModel {
 /// copy of a non major allele, how uncertain that effect is, and the
 /// p-value of the test that the effect is 0.
 #[derive(Debug, Clone, Copy)]
-pub struct Answers<'a> {
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
+pub(crate) struct Answers<'a> {
     /// The effect of one more copy of a non major allele.
     pub beta: &'a [f64],
     /// The standard error of that effect.
@@ -1242,6 +1536,15 @@ pub struct Gwas {
     pub ids: Option<Vec<String>>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the pass over the blocks and the four models that call this are work \
+                  package 3 of `docs/plans/gwas-linear.md`, and until they are written \
+                  the tests of this module are what call it"
+    )
+)]
 impl Gwas {
     /// The result of a study that has fitted its null model and read no
     /// block yet.
@@ -1252,9 +1555,9 @@ impl Gwas {
     /// blocks add their rows to it. `chrom_table` is the one of the reader
     /// the study reads, which the numbers of `chroms` are read through.
     #[must_use]
-    pub fn of_the_null_model(
+    pub(crate) fn of_the_null_model(
         null_model: NullModel,
-        used_grammar_gamma_approx: bool,
+        grammar_gamma_approx: GrammarGammaApprox,
         chrom_table: ChromTable,
     ) -> Gwas {
         Gwas {
@@ -1264,7 +1567,7 @@ impl Gwas {
             beta: Vec::new(),
             se: Vec::new(),
             p_value: Vec::new(),
-            used_grammar_gamma_approx,
+            used_grammar_gamma_approx: matches!(grammar_gamma_approx, GrammarGammaApprox::Used),
             chroms: None,
             chrom_table,
             poss: None,
@@ -1295,7 +1598,11 @@ impl Gwas {
     /// not hold one value for each variant of the block that has variance,
     /// and [`Error::GwasVariantsTooLarge`] when the variants of the study
     /// are more than a `usize` counts.
-    pub fn add_the_block(&mut self, dosages: &GwasDosages, answers: Answers<'_>) -> Result<()> {
+    pub(crate) fn add_the_block(
+        &mut self,
+        dosages: &GwasDosages,
+        answers: Answers<'_>,
+    ) -> Result<()> {
         for (column, num_values) in [
             ("beta", answers.beta.len()),
             ("se", answers.se.len()),
@@ -2020,6 +2327,52 @@ mod design {
         }
     }
 
+    /// A value of the design that is not a finite number is refused,
+    /// naming the individual whose row it is in, the column it is in and
+    /// the value.
+    ///
+    /// The Python and the TypeScript layers refuse a covariate that is
+    /// missing or is not a number, so what reaches this is a covariate
+    /// that came out of a user's own arithmetic as an infinity, and a
+    /// caller of the core crate. What the refusal is for is where the
+    /// value would go otherwise: the rank refuses what it is given, and
+    /// the user would be told that an operation of the linear algebra
+    /// could not be done, which is how popnei says it has a defect. That
+    /// is asserted here too, by giving the design of the four individuals
+    /// a NaN and an infinity in turn and seeing this refusal and not
+    /// [`Error::GwasLinalg`].
+    ///
+    /// The fixture puts the value in the column 1, the covariate, of the
+    /// individual 2, and then in the column 0, the intercept, of the
+    /// individual 0, so that the two numbers the message carries are told
+    /// apart from each other.
+    #[test]
+    fn a_design_value_that_is_not_a_number_is_refused() {
+        let four = [0, 1, 2, 3];
+        for (individual, coef, not_finite) in [(2, 1, f64::NAN), (0, 0, f64::INFINITY)] {
+            let mut design = DESIGN_OF_FOUR;
+            let value = design
+                .get_mut(individual * 2 + coef)
+                .expect("the value of the design");
+            *value = not_finite;
+            let study = a_study(&PHENOTYPE_OF_FOUR, &design, 2, &four);
+            match Design::of_the_study(&study, 4) {
+                Err(Error::GwasDesignValueNotFinite {
+                    individual: whose,
+                    coef: which,
+                    value,
+                }) => {
+                    assert_eq!((whose, which), (individual, coef));
+                    assert_eq!(value.to_bits(), not_finite.to_bits());
+                }
+                other => panic!(
+                    "the column {coef} of the individual {individual} of the design is \
+                     {not_finite}, and that gave {other:?}"
+                ),
+            }
+        }
+    }
+
     /// A design with a covariate that is twice another is refused: its
     /// columns are not independent, so its effects are not one set of
     /// numbers but many.
@@ -2154,7 +2507,7 @@ mod design {
 /// tested individuals apart from one over the whole panel.
 #[cfg(test)]
 mod fixtures {
-    use super::{GwasInput, TraitType};
+    use super::{BlockOfThePass, Design, GwasInput, TraitType};
     use crate::block::Block;
     use crate::variant::MISSING_ALLELE;
 
@@ -2215,6 +2568,27 @@ mod fixtures {
             .flat_map(|individual| [1.0, 0.5 - *individual as f64])
             .collect();
         (phenotype, design)
+    }
+
+    /// The design of a study whose source has `num_individuals_of_the_source`
+    /// individuals, checked, which is what the dosages of a block are read
+    /// over: it carries the tested individuals and the choice about a
+    /// variant of more than two alleles.
+    pub(super) fn the_design_of<'a>(
+        study: &GwasInput<'a>,
+        num_individuals_of_the_source: usize,
+    ) -> Design<'a> {
+        Design::of_the_study(study, num_individuals_of_the_source)
+            .expect("the design of the tested individuals")
+    }
+
+    /// Where the one block of a fixture sits in the pass that gives it:
+    /// the ploidy the reader says its source has, and the first variant.
+    pub(super) fn the_first_block_of(ploidy: usize) -> BlockOfThePass {
+        BlockOfThePass {
+            ploidy,
+            first_var: 0,
+        }
     }
 
     /// A block of `rows.len()` variants over `num_individuals`
@@ -2334,9 +2708,10 @@ mod fixtures {
 mod dosages {
     use super::fixtures::{
         FREQUENCIES_OF_THE_PANEL, FREQUENCIES_OF_THE_TESTED, MISSING, OF_EIGHT, TESTED_OF_EIGHT,
-        THE_PANEL_OF_EIGHT, a_block, a_study, assert_the_values, the_phenotype_and_the_design_of,
+        THE_PANEL_OF_EIGHT, a_block, a_study, assert_the_values, the_design_of, the_first_block_of,
+        the_phenotype_and_the_design_of,
     };
-    use super::{Design, GwasDosages};
+    use super::{BlockOfThePass, GwasDosages};
     use crate::error::Error;
 
     /// The dosages, the major allele, the mean a genotype with an allele
@@ -2364,13 +2739,14 @@ mod dosages {
         let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
         let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
         // The four individuals that have a phenotype are four of the eight
-        // the source has, in its order, so this is a study that runs.
-        Design::of_the_study(&study, 8).expect("the design of the four tested individuals");
+        // the source has, in its order, so this is a study that runs, and
+        // the design that comes out is what carries them to the block.
+        let design = the_design_of(&study, 8);
         let mut block = a_block(8, 2, &OF_EIGHT);
         let mut dosages = GwasDosages::of_a_study();
 
         dosages
-            .of_the_block(&mut block, &study, 2, 0)
+            .read_the_block(&mut block, &design, the_first_block_of(2))
             .expect("the dosages of the block over the four tested individuals");
 
         assert_eq!(dosages.num_vars(), 4);
@@ -2398,10 +2774,11 @@ mod dosages {
 
         let (phenotype, design) = the_phenotype_and_the_design_of(&THE_PANEL_OF_EIGHT);
         let study = a_study(&phenotype, &design, &THE_PANEL_OF_EIGHT);
+        let design = the_design_of(&study, 8);
         let mut block = a_block(8, 2, &OF_EIGHT);
 
         dosages
-            .of_the_block(&mut block, &study, 2, 0)
+            .read_the_block(&mut block, &design, the_first_block_of(2))
             .expect("the dosages of the block over all eight individuals");
 
         assert_eq!(dosages.num_individuals(), 8, "the whole panel");
@@ -2458,11 +2835,12 @@ mod dosages {
         let six = [0, 1, 2, 3, 4, 5];
         let (phenotype, design) = the_phenotype_and_the_design_of(&six);
         let study = a_study(&phenotype, &design, &six);
+        let design = the_design_of(&study, 8);
         let mut block = a_block(8, 2, &of_the_worked_example);
         let mut dosages = GwasDosages::of_a_study();
 
         dosages
-            .of_the_block(&mut block, &study, 2, 0)
+            .read_the_block(&mut block, &design, the_first_block_of(2))
             .expect("the dosages of the worked example");
 
         assert_the_values(
@@ -2480,10 +2858,11 @@ mod dosages {
         let eight = [0, 1, 2, 3, 4, 5, 6, 7];
         let (phenotype, design) = the_phenotype_and_the_design_of(&eight);
         let study = a_study(&phenotype, &design, &eight);
+        let design = the_design_of(&study, 8);
         let mut block = a_block(8, 2, &of_the_worked_example);
 
         dosages
-            .of_the_block(&mut block, &study, 2, 0)
+            .read_the_block(&mut block, &design, the_first_block_of(2))
             .expect("the dosages of the worked example and the two beside it");
 
         assert_the_values(
@@ -2504,8 +2883,8 @@ mod dosages {
     /// the study, and one a tested individual carries is refused with its
     /// position among the variants the reader has given.
     ///
-    /// The fixture is six triploid individuals, of which the three at 1, 3
-    /// and 5 are tested, and two variants, the second of which has the
+    /// The fixture is six triploid individuals, of which the four at 1, 2,
+    /// 3 and 5 are tested, and two variants, the second of which has the
     /// allele 2 in the individual 0, who has no phenotype. The position
     /// asserted is 101 and not 1, because the block is given as the
     /// hundred and first variant of the reader.
@@ -2524,39 +2903,45 @@ mod dosages {
             // w1: 0/0/2 0/0/0 0/0/0 0/0/1 0/0/0 0/1/1
             &[0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1],
         ];
-        let three = [1, 3, 5];
-        let (phenotype, design) = the_phenotype_and_the_design_of(&three);
-        let study = a_study(&phenotype, &design, &three);
+        let four = [1, 2, 3, 5];
+        let (phenotype, design) = the_phenotype_and_the_design_of(&four);
+        let study = a_study(&phenotype, &design, &four);
+        let of_four = the_design_of(&study, 6);
         let mut block = a_block(6, 3, &of_six_triploids);
         let mut dosages = GwasDosages::of_a_study();
+        let of_the_pass = BlockOfThePass {
+            ploidy: 3,
+            first_var: 100,
+        };
 
         dosages
-            .of_the_block(&mut block, &study, 3, 100)
+            .read_the_block(&mut block, &of_four, of_the_pass)
             .expect("the allele 2 is the individual 0's, who has no phenotype");
 
-        // `w0` over the three tested individuals is 0/0/1 0/1/1 1/1/1,
-        // three 0s and six 1s, so the major allele is 1 and the dosages
-        // are 2 1 0, whose mean is 1 and whose frequency over the ploidy
-        // of 3 is 1 / 3. `w1` is 0/0/0 0/0/1 0/1/1, six 0s and three 1s,
-        // the major allele 0 and the dosages 0 1 2, the same mean and the
-        // same frequency.
+        // `w0` over the four tested individuals is 0/0/1 1/1/1 0/1/1
+        // 1/1/1, three 0s and nine 1s, so the major allele is 1 and the
+        // dosages are 2 0 1 0, whose mean is 3 / 4 and whose frequency
+        // over the ploidy of 3 is 0.25. `w1` is 0/0/0 0/0/0 0/0/1 0/1/1,
+        // nine 0s and three 1s, the major allele 0 and the dosages
+        // 0 0 1 2, the same mean and the same frequency.
         assert_the_values(
             dosages.allele_freq(),
-            &[0.3333333333333333, 0.3333333333333333],
-            "the frequencies over the three tested individuals",
+            &[0.25, 0.25],
+            "the frequencies over the four tested individuals",
         );
         assert_the_values(
             dosages.dosages(),
-            &[2.0, 1.0, 0.0, 0.0, 1.0, 2.0],
-            "the dosages over the three tested individuals",
+            &[2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 2.0],
+            "the dosages over the four tested individuals",
         );
 
         let six = [0, 1, 2, 3, 4, 5];
-        let (phenotype, design) = the_phenotype_and_the_design_of(&six);
-        let study = a_study(&phenotype, &design, &six);
+        let (phenotype, values) = the_phenotype_and_the_design_of(&six);
+        let study = a_study(&phenotype, &values, &six);
+        let of_six = the_design_of(&study, 6);
         let mut block = a_block(6, 3, &of_six_triploids);
 
-        match dosages.of_the_block(&mut block, &study, 3, 100) {
+        match dosages.read_the_block(&mut block, &of_six, of_the_pass) {
             Err(Error::VariantWithMoreThanTwoAlleles {
                 position,
                 num_alleles,
@@ -2569,12 +2954,13 @@ mod dosages {
             ),
         }
 
-        let mut collapsed = a_study(&phenotype, &design, &six);
+        let mut collapsed = a_study(&phenotype, &values, &six);
         collapsed.transform_to_biallelic = true;
+        let collapsed = the_design_of(&collapsed, 6);
         let mut block = a_block(6, 3, &of_six_triploids);
 
         dosages
-            .of_the_block(&mut block, &collapsed, 3, 100)
+            .read_the_block(&mut block, &collapsed, of_the_pass)
             .expect("every allele that is not the major one counts the same");
 
         assert_the_values(
@@ -2640,6 +3026,7 @@ mod dosages {
         let tested: Vec<usize> = (0..40).filter(|individual| individual % 3 == 0).collect();
         let (phenotype, design) = the_phenotype_and_the_design_of(&tested);
         let study = a_study(&phenotype, &design, &tested);
+        let design = the_design_of(&study, 40);
         let read_with = |threads| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
@@ -2647,7 +3034,7 @@ mod dosages {
                 .expect("the pool");
             let mut block = of_forty();
             let mut dosages = GwasDosages::of_a_study();
-            pool.install(|| dosages.of_the_block(&mut block, &study, 2, 0))
+            pool.install(|| dosages.read_the_block(&mut block, &design, the_first_block_of(2)))
                 .expect("the dosages of the block");
             dosages
         };
@@ -2720,30 +3107,52 @@ mod dosages {
         }
     }
 
-    /// A block that holds no genotype is refused, and so is one whose
-    /// arrays are not of the size it states: its rows are cut out of its
-    /// genotypes by that size, so a block that is short would be read one
-    /// variant at the place of another.
+    /// A block that holds no genotype is refused, and so is a block of no
+    /// variant, which is a reader that has stopped without saying so.
     #[test]
-    fn a_block_that_does_not_hold_the_genotypes_of_its_variants_is_refused() {
-        let tested = [0, 2, 4, 6];
-        let (phenotype, design) = the_phenotype_and_the_design_of(&tested);
-        let study = a_study(&phenotype, &design, &tested);
+    fn a_block_that_holds_no_genotype_and_a_block_of_no_variant_are_refused() {
+        let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
+        let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
+        let design = the_design_of(&study, 8);
         let mut dosages = GwasDosages::of_a_study();
         let mut block = a_block(8, 2, &OF_EIGHT);
         block.gts = Vec::new();
 
-        match dosages.of_the_block(&mut block, &study, 2, 0) {
+        match dosages.read_the_block(&mut block, &design, the_first_block_of(2)) {
             Err(Error::FieldsNotInTheBlock { fields }) => {
                 assert_eq!(fields, crate::variant::Needs::GTS);
             }
             other => panic!("the block holds no genotype, and that gave {other:?}"),
         }
 
+        let mut block = a_block(8, 2, &[]);
+
+        match dosages.read_the_block(&mut block, &design, the_first_block_of(2)) {
+            Err(Error::ReaderGaveABlockOfNoVariants) => {}
+            other => panic!("the block holds no variant, and that gave {other:?}"),
+        }
+    }
+
+    /// A block whose arrays are not of the size it states is refused when
+    /// every individual is tested, which is when nothing else looks at it:
+    /// the rows are cut out of the genotypes by that size, so a block that
+    /// is one allele short is read as three variants where it says four,
+    /// and the fourth would leave the result with no error.
+    ///
+    /// A study of some of the individuals reaches the same refusal through
+    /// `Block::retain_individuals`, which checks the block itself before
+    /// it moves an allele. A study of all of them cuts nothing down, so
+    /// this is the case that says the check is made here as well.
+    #[test]
+    fn a_block_whose_arrays_are_not_of_its_size_is_refused_with_every_individual_tested() {
+        let (phenotype, design) = the_phenotype_and_the_design_of(&THE_PANEL_OF_EIGHT);
+        let study = a_study(&phenotype, &design, &THE_PANEL_OF_EIGHT);
+        let design = the_design_of(&study, 8);
+        let mut dosages = GwasDosages::of_a_study();
         let mut block = a_block(8, 2, &OF_EIGHT);
         block.gts.pop();
 
-        match dosages.of_the_block(&mut block, &study, 2, 0) {
+        match dosages.read_the_block(&mut block, &design, the_first_block_of(2)) {
             Err(Error::BlockArrayOfAnotherSize {
                 array,
                 found,
@@ -2755,28 +3164,79 @@ mod dosages {
         }
     }
 
-    /// An individual to test that the block has not is refused, which is a
-    /// defect of the caller: [`Design::of_the_study`] refuses the same
-    /// position against the individuals of the source before any block is
-    /// read.
+    /// A block of another ploidy or of other individuals than the reader
+    /// says its source has is refused, naming both shapes.
+    ///
+    /// The ploidy is the one no other check catches. The rows of a block
+    /// are cut at its own individuals times its own ploidy and its values
+    /// are read at the pass's ploidy, and when the two disagree the rows
+    /// that come out are not the variants of the block: the haploid
+    /// variant of four individuals below, read at the ploidy 2, gives no
+    /// row at all, so before this refusal the block went by with every one
+    /// of its variants gone and no error; and the diploid block of eight,
+    /// read at the ploidy 6, gives one row where it holds four. The
+    /// frequency of a variant is its mean dosage over the pass's ploidy,
+    /// so even a block that came out whole would be read into frequencies
+    /// of nothing.
     #[test]
-    fn an_individual_to_test_that_the_block_does_not_have_is_refused() {
-        let past_the_block = [0, 2, 4, 8];
-        let (phenotype, design) = the_phenotype_and_the_design_of(&past_the_block);
-        let study = a_study(&phenotype, &design, &past_the_block);
-        let mut block = a_block(8, 2, &OF_EIGHT);
+    fn a_block_of_another_ploidy_or_of_other_individuals_than_the_readers_is_refused() {
+        let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
+        let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
+        let of_eight = the_design_of(&study, 8);
         let mut dosages = GwasDosages::of_a_study();
+        let mut block = a_block(8, 2, &OF_EIGHT);
 
-        match dosages.of_the_block(&mut block, &study, 2, 0) {
-            Err(Error::IndividualToKeepNotInTheBlock {
-                individual,
+        match dosages.read_the_block(&mut block, &of_eight, the_first_block_of(6)) {
+            Err(Error::BlocksDoNotFitTogether {
                 num_individuals,
+                ploidy,
+                found_num_individuals,
+                found_ploidy,
             }) => {
-                assert_eq!((individual, num_individuals), (8, 8));
+                assert_eq!((num_individuals, ploidy), (8, 6));
+                assert_eq!((found_num_individuals, found_ploidy), (8, 2));
+            }
+            other => panic!("the block is diploid and the pass reads 6, and that gave {other:?}"),
+        }
+
+        // One haploid variant of five individuals, four of which are
+        // tested, read by a pass that says its source is diploid.
+        let four = [0, 1, 3, 4];
+        let (phenotype, design) = the_phenotype_and_the_design_of(&four);
+        let study = a_study(&phenotype, &design, &four);
+        let of_five = the_design_of(&study, 5);
+        let mut block = a_block(5, 1, &[&[0, 1, 1, 1, 0]]);
+
+        match dosages.read_the_block(&mut block, &of_five, the_first_block_of(2)) {
+            Err(Error::BlocksDoNotFitTogether {
+                ploidy,
+                found_ploidy,
+                ..
+            }) => {
+                assert_eq!((ploidy, found_ploidy), (2, 1));
+            }
+            other => panic!("the block is haploid and the pass reads 2, and that gave {other:?}"),
+        }
+
+        // The same four individuals of a source the reader says has nine,
+        // which is a block of others: the positions of the tested
+        // individuals are positions among the reader's.
+        let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
+        let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
+        let of_nine = the_design_of(&study, 9);
+        let mut block = a_block(8, 2, &OF_EIGHT);
+
+        match dosages.read_the_block(&mut block, &of_nine, the_first_block_of(2)) {
+            Err(Error::BlocksDoNotFitTogether {
+                num_individuals,
+                found_num_individuals,
+                ..
+            }) => {
+                assert_eq!((num_individuals, found_num_individuals), (9, 8));
             }
             other => panic!(
-                "the block holds the individuals 0 to 7 and the individual 8 was to be \
-                 tested, and that gave {other:?}"
+                "the reader says its source has nine individuals and the block has \
+                 eight, and that gave {other:?}"
             ),
         }
     }
@@ -2920,9 +3380,11 @@ mod choice {
 mod result {
     use super::fixtures::{
         FREQUENCIES_OF_THE_TESTED, OF_EIGHT, TESTED_OF_EIGHT, a_block, a_study, assert_the_values,
-        the_phenotype_and_the_design_of,
+        the_design_of, the_first_block_of, the_phenotype_and_the_design_of,
     };
-    use super::{Answers, Gwas, GwasDosages, NullModel, the_model_and_the_test};
+    use super::{
+        Answers, GrammarGammaApprox, Gwas, GwasDosages, NullModel, the_model_and_the_test,
+    };
     use crate::error::Error;
     use crate::variant::ChromTable;
 
@@ -2932,10 +3394,11 @@ mod result {
     fn the_dosages_of_the_tested() -> GwasDosages {
         let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
         let study = a_study(&phenotype, &design, &TESTED_OF_EIGHT);
+        let design = the_design_of(&study, 8);
         let mut block = a_block(8, 2, &OF_EIGHT);
         let mut dosages = GwasDosages::of_a_study();
         dosages
-            .of_the_block(&mut block, &study, 2, 0)
+            .read_the_block(&mut block, &design, the_first_block_of(2))
             .expect("the dosages of the block");
         dosages
     }
@@ -2956,9 +3419,40 @@ mod result {
                 heritability: None,
                 num_individuals: 4,
             },
-            false,
+            GrammarGammaApprox::NotUsed,
             ChromTable::new(),
         )
+    }
+
+    /// The result carries whether the study made the GRAMMAR-Gamma
+    /// approximation, which is the one thing about a study that is not in
+    /// its null model, and a study that was asked for nothing makes it
+    /// not.
+    ///
+    /// It is a `bool` in the result, which "The Rust interface" of
+    /// `docs/specs/gwas.md` fixes, and the two named values on the way in,
+    /// so that a call cannot say which it means with a bare `false`.
+    #[test]
+    fn the_result_says_whether_the_approximation_was_used() {
+        let null_model = a_result().null_model;
+        for (asked, used) in [
+            (GrammarGammaApprox::Used, true),
+            (GrammarGammaApprox::NotUsed, false),
+        ] {
+            let result = Gwas::of_the_null_model(null_model.clone(), asked, ChromTable::new());
+            assert_eq!(result.used_grammar_gamma_approx, used);
+            assert_eq!(result.num_vars, 0, "no block has been read");
+            assert!(result.allele_freq.is_empty());
+        }
+        let asked_for_nothing = match super::DEFAULT_USE_GRAMMAR_GAMMA_APPROX {
+            true => GrammarGammaApprox::Used,
+            false => GrammarGammaApprox::NotUsed,
+        };
+        let result = Gwas::of_the_null_model(null_model, asked_for_nothing, ChromTable::new());
+        assert!(
+            !result.used_grammar_gamma_approx,
+            "a study that is asked for nothing does not approximate"
+        );
     }
 
     /// A variant with no variance among the tested individuals keeps its

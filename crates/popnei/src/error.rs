@@ -1302,6 +1302,27 @@ pub enum Error {
         value: f64,
     },
 
+    /// A value of the design of a study is not a finite number. The Python
+    /// and the TypeScript layers refuse a covariate that is missing or is
+    /// not a number, so what reaches this is a covariate that came out of
+    /// a user's own arithmetic as an infinity, and a caller of the core
+    /// crate. Left in, it would reach the rank of the design, which
+    /// refuses what it is given, and the user would be told of a defect of
+    /// popnei where they gave a wrong covariate. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the value of the column {coef} of the design at the tested individual {individual} is {value}, and a study is fitted on numbers; the column 0 is the intercept and the others are the covariates in the order they were given"
+    )]
+    GwasDesignValueNotFinite {
+        /// Which tested individual's row it is in, from 0.
+        individual: usize,
+        /// Which column of the design it is in, from 0, where 0 is the
+        /// intercept.
+        coef: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
     /// Every tested individual of a binomial trait has the same phenotype.
     /// A study of such a trait compares the individuals that have the
     /// condition with those that have not, and one of the two groups is
@@ -1349,9 +1370,14 @@ pub enum Error {
 
     /// An operation of the crate `popnei-linalg` that a study asked for did
     /// not run, with what was being computed. Its dimensions and its values
-    /// are checked before it is called, so what is left is a machine with
-    /// too little memory for the workspace and a decomposition that did not
-    /// come out. In Python it is a `RuntimeError`.
+    /// are checked before it is called: a design of no row or of no column
+    /// is [`Error::GwasTooFewIndividuals`] and
+    /// [`Error::GwasInputOfAnotherSize`], and a value of it that is not
+    /// finite is [`Error::GwasDesignValueNotFinite`]. What is left is a
+    /// matrix of more values than that crate takes, which is a design of
+    /// more than 2147483647 of them, a machine with too little memory for
+    /// the workspace, and a decomposition that did not come out. In Python
+    /// it is a `RuntimeError`.
     #[error("the {operation} of the association study could not be done: {source}")]
     GwasLinalg {
         /// What was being computed: the rank of the design.
