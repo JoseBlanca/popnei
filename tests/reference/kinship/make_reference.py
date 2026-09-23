@@ -34,13 +34,21 @@ It writes, beside itself:
   script again gives the same bytes.
 - `<name>.plink2.rel.gz`, what `plink2 --make-rel square` writes: 200 lines of
   200 numbers separated by tabs, the matrix row after row, gzipped because the
-  text is 1 MB and the numbers are what the tests compare against.
+  text is 1 MB. It is what the table of literals of the spec is read from, by
+  eye, and it holds six significant digits.
+- `<name>.plink2.rel.bin.gz`, what `plink2 --make-rel square bin` writes: the
+  same matrix as 40000 little endian `f64`, row after row, gzipped. The cargo
+  tests compare against this one, because the text rounds an entry near 1 by
+  up to 5e-6 and a comparison with it leaves no room to find an error of the
+  arithmetic in.
 - `<name>.plink2.rel.id`, the individuals of that matrix in its order, so that
   a test does not have to trust that plink2 kept the order of the VCF.
 
 At the end it checks the literals that `docs/specs/kinship.md` writes into the
 cargo tests against what it has just produced, and says so for each one, so
-that a run of this script is also a check that the spec has not drifted.
+that a run of this script is also a check that the spec has not drifted. It
+also says how far the text is from the binary, which is plink2's rounding and
+nothing of popnei.
 """
 
 from pathlib import Path
@@ -140,25 +148,38 @@ def write_panel_called():
     return path
 
 
+def gzipped_copy_of(source, target):
+    """`source` gzipped into `target`, with the timestamp of gzip fixed to 0."""
+    with (
+        source.open("rb") as src,
+        target.open("wb") as raw,
+        gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as dst,
+    ):
+        shutil.copyfileobj(src, dst)
+
+
 def run_plink2(vcf_gz, name):
-    """`plink2 --make-rel square` on a gzipped VCF, into `<name>.plink2.rel.gz`.
+    """`plink2 --make-rel square` on a gzipped VCF, twice: the text and the bits.
 
     plink2 reads a gzipped VCF, and writes the matrix as text with six
-    significant digits and the individuals in a file of its own.
+    significant digits, or as `f64` with `bin`, and the individuals in a file
+    of its own. Both runs are made, into `<name>.plink2.rel.gz` and
+    `<name>.plink2.rel.bin.gz`: the text is what a reader checks the table of
+    the spec against and the bits are what the tests compare within 1e-12
+    relative, which the text has no room for.
     """
     with tempfile.TemporaryDirectory() as work:
         work = Path(work)
-        subprocess.run(
-            ["plink2", "--vcf", str(vcf_gz.resolve()), "--make-rel", "square",
-             "--out", name],
-            cwd=work, check=True, capture_output=True,
-        )
-        with (
-            (work / f"{name}.rel").open("rb") as src,
-            (REF_DIR / f"{name}.plink2.rel.gz").open("wb") as raw,
-            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as dst,
+        for modifiers, written, kept in (
+            (["square"], f"{name}.rel", f"{name}.plink2.rel.gz"),
+            (["square", "bin"], f"{name}.rel.bin", f"{name}.plink2.rel.bin.gz"),
         ):
-            shutil.copyfileobj(src, dst)
+            subprocess.run(
+                ["plink2", "--vcf", str(vcf_gz.resolve()), "--make-rel", *modifiers,
+                 "--out", name],
+                cwd=work, check=True, capture_output=True,
+            )
+            gzipped_copy_of(work / written, REF_DIR / kept)
         shutil.copy(work / f"{name}.rel.id", REF_DIR / f"{name}.plink2.rel.id")
 
 
@@ -167,13 +188,23 @@ def read_matrix(name):
         return numpy.loadtxt(fhand)
 
 
+def read_binary_matrix(name):
+    with gzip.open(REF_DIR / f"{name}.plink2.rel.bin.gz", "rb") as fhand:
+        values = numpy.frombuffer(fhand.read(), dtype="<f8")
+    side = round(values.size**0.5)
+    return values.reshape(side, side)
+
+
 def main():
     refuse_a_missing_tool()
     called = write_panel_called()
     print(f"wrote {called.name}")
     for name, vcf in (("panel_called", called), ("panel", DISTS_PANEL)):
         run_plink2(vcf, name)
-        print(f"wrote {name}.plink2.rel.gz and {name}.plink2.rel.id")
+        print(
+            f"wrote {name}.plink2.rel.gz, {name}.plink2.rel.bin.gz and "
+            f"{name}.plink2.rel.id"
+        )
 
     matrices = {name: read_matrix(name) for name in ("panel_called", "panel")}
     for name, matrix in matrices.items():
@@ -183,6 +214,11 @@ def main():
         ]
         print(f"{name}: {matrix.shape[0]} individuals, plink2 kept the order of "
               f"the VCF: {order_kept}")
+        of_the_bits = read_binary_matrix(name)
+        if of_the_bits.shape != matrix.shape:
+            sys.exit(f"{name}: the text is {matrix.shape} and the bits {of_the_bits.shape}")
+        print(f"{name}: the text is at most {numpy.abs(matrix - of_the_bits).max():.3g} "
+              "from the bits, which is the rounding of its six digits")
 
     wrong = 0
     for name, row, col, expected in LITERALS:
