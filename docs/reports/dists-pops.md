@@ -18,6 +18,27 @@ Nei's D_A, Jost's D, Nei's G_ST and the standardized G''_ST, with the
 variants that counted for each pair, the f_2 of each pair within each
 resampling group, the groups themselves and the counts of the pass.
 
+What each of the seven answers, since the plan named them and this report
+has not:
+
+| measure | what it answers |
+|---|---|
+| Hudson's F_ST | how much of the diversity the two populations hold together lies between them rather than within them, 0 for two with the same allele frequencies everywhere and 1 for two sharing no allele. The estimator that does not move with the ratio of the two sample sizes, which is what most SNP work reports |
+| f_2 | how much allele frequency the two have drifted apart by, in the units it was measured in rather than divided by the diversity. That is what makes it add along a tree, and it is what admixture graphs are built from |
+| the chord distance | the distance between the two frequency vectors on a sphere, one of the two here that are Euclidean, so a tree or a principal coordinate analysis built from it has no negative eigenvalues |
+| Nei's D_A | the square of the chord distance, the other Euclidean one |
+| Jost's D | how much of the allelic variety is not shared, rather than how much of the diversity. It is the one to read on microsatellites, where a locus of many alleles leaves little diversity between populations for G_ST to find and G_ST cannot reach 1 however far apart they are |
+| Nei's G_ST | the same quantity F_ST measures, computed from the diversity within and over the two pooled, and the measure most of the older microsatellite literature reports |
+| the standardized G''_ST | G_ST rescaled so that it can reach 1 whatever the diversity within the populations, which is Meirmans and Hedrick's correction of the ceiling above |
+
+Each carries a standard error from the block jackknife: the variants are
+cut into groups long enough that two groups are nearly independent, each
+group is left out in turn, the measure is computed again from the rest,
+and how far the answer moves is what the error is built from. It is the
+method the f-statistics literature uses, and popnei says group where that
+literature says block, because a block in popnei is the run of variants a
+reader hands over.
+
 How far the numbers are from the programs they were checked against, each
 measured on the commit this report ends at:
 
@@ -40,10 +61,13 @@ its own before the code that needed it, and `docs/architecture.md` gained
 a row for the new module. Everything the spec left unsaid that the work
 ran into is written down; the plan has no open point left.
 
-## This report is written while the work goes
+## How to read the rest
 
-It has a section for each work package as it finished, in the order they
-were done. What the owner has to decide is at the end.
+A section for each work package in the order it was done, then the two
+reviews, then what is asked of the owner. Each task's section gives the
+tokens its subagent spent, which are there only so that the next plan can
+judge how big a task should be: they ran from 124 630 to 273 503, and
+nothing in them is a cost to the owner or a number to act on.
 
 ## What was in place before the first task
 
@@ -60,8 +84,10 @@ it on the commit this branch starts from, `6704347`:
 | the Python tests | `ls tests/test_pop_dists.py` | no such file |
 | the TypeScript tests | `ls js/popnei/test/pop_dists.test.ts` | no such file |
 
-The three programs print the versions `make_reference.py` refuses any
-other of, so the literals in the tests are of the data in the repository.
+`make_reference.py` refuses to run under any version of those programs
+but the ones it names, and all three printed the versions it names, so the
+numbers written into the tests are of the data that is in the repository
+and not of some other run.
 The last three rows are the baseline the plan's checks are written
 against: a cargo selector alone passes on an empty crate, which is why
 each check names how many tests have to run.
@@ -70,9 +96,8 @@ each check names how many tests have to run.
 
 ### Tasks 1.1 and 1.2, the counts of a variant and the resampling groups
 
-Both went to one subagent, in one prompt, because both write
-`crates/popnei/src/pop_dists.rs` and one tree has one writer per file.
-Three commits came back: `f310edd`, an addition to the spec, `2fc9b0a`,
+Both went to one subagent, since both write the same file. Three commits
+came back: `f310edd`, an addition to the spec, `2fc9b0a`,
 task 1.1, and `f732cf3`, task 1.2. 185 497 tokens.
 
 `crates/popnei/src/pop_dists.rs` now holds the counts of one variant in
@@ -140,7 +165,7 @@ the last bits of a double, so the check the plan named could not have told
 the two apart.
 
 So `make_reference.py` now runs ADMIXTOOLS 2.0.10 a second time, at
-`blgsize = 250000`, which cuts the panel into 6 groups holding 250, 250
+a block length of 250 000 base pairs, which cuts it into 6 groups of 250, 250
 and 100 variants on each of its two chromosomes, and writes
 `panel.f2.uneven.tsv` beside `panel.f2.tsv`. On those groups the spec's
 formula is 9.8e-17 from the furthest of ADMIXTOOLS' three standard errors,
@@ -192,7 +217,7 @@ built from three groups. The two ADMIXTOOLS runs the plan had cut the
 biallelic panel into 12 and 6 groups, so neither could be asserted through
 the Python or the TypeScript package, which deliverables 5 and 6 ask for.
 
-So `make_reference.py` runs ADMIXTOOLS a third time, at `blgsize = 55000`,
+So `make_reference.py` runs ADMIXTOOLS a third time, with its block length set to 55 000 base pairs,
 which cuts the panel into 22 groups, ten of 55 variants and one of 50 on
 each of its two chromosomes: above the minimum, and still of two sizes, so
 the estimator for unequal m is told apart at the Python level too. Its
@@ -222,21 +247,21 @@ what a Python test can see is that there are no standard errors, no
 `f2_groups` and no group, and the test asserts those three and points at
 the cargo test that holds what the reader was asked for.
 
-The seven names of the measures went into the core beside the ones of
-`PerVarStat`, rather than into a table of the binding crate, because task
-1.6 needs the same seven.
+The seven names of the measures went into the core, beside where the
+per-variant statistics keep theirs, rather than into a table of the
+binding crate, because the TypeScript side needs the same seven.
 
 The spec gained two cases it had not said, in `aa821ec`, before the code:
 `square_standard_errors` of a result that has no standard errors gives
 `None`, the same answer as the field, rather than an empty frame or a
 refusal; and the `Distances` of each measure names its pairs by the
 populations, so that its square frames are indexed by them on both sides,
-as the Kosman distances' are by the individuals.
+as those of the distances between individuals are by the individuals.
 
 ### One thing for the owner, which nothing in the plan rests on
 
 `repr` of a `Distances` of populations prints `<Distances of 3
-individuals, 3 pairs>`. The class was written for the Kosman distances
+individuals, 3 pairs>`. The class was written for the distances
 between individuals and the spec gives it only the new `standard_errors`
 field for this item, so the noun stayed. It is a string a user sees and
 the plan does not depend on it, so the work goes on and it is put to the
@@ -257,10 +282,10 @@ in the binding crate, where the Python binding refuses 0, so the package
 itself only tells the three kinds of value apart.
 
 One difference between the two packages that no spec change was needed
-for: in TypeScript each `Distances` of a result carries the counts of the
-pass in `passStats`, which that class requires, and in Python
-`Distances.pass_stats` is `None` there and the counts are on `PopDists`
-alone. Both carry them on the result, which is where a user reads them.
+for: in TypeScript the distances of each measure carry the counts of the pass
+— how many variants the source gave and how many each filter kept — and
+in Python those counts sit only on the result as a whole. Both carry them
+on the result, which is where a user reads them.
 
 ## Work package 1: its six deliverables, each checked by the orchestrator
 
@@ -440,7 +465,8 @@ Seven commits, `73f6b6a` to `887ec0d`, 242 986 tokens. `cargo test
 **A Ctrl-C during a calculation now raises a keyboard interrupt.** It did
 not, and this is the one finding of the review that was a defect of code
 older than this work package. Between releasing the interpreter and
-building the numpy array, the Kosman distances asked numpy for its array
+building the numpy array, the distances between individuals asked numpy
+for its array
 interface without first answering the signal, and a Ctrl-C there came out
 as an exception that derives from `BaseException` and ends the user's
 session. The helper that answers it existed, in the principal coordinate
@@ -614,14 +640,18 @@ would let a change of 1e-5 pass unnoticed.
 
 And the docstring of the standardized measure, in both packages, described
 it as G_ST divided by the largest value it could reach. That is Hedrick's
-G'_ST, a different measure, which the spec says popnei does not give. Both
-now describe Meirmans and Hedrick's G''_ST, with the two numbers that tell
-them apart on the biallelic panel, 0.1620 against 0.1155 for one pair, and
-how a user who wants G'_ST gets it from `gst`.
+G'_ST, the earlier correction of the same ceiling, which rescales by the
+largest G_ST the diversity within the populations allows; popnei gives
+Meirmans and Hedrick's later G''_ST, which rescales over the pair taken
+together, and the spec says popnei does not give Hedrick's. Both
+docstrings now describe the one popnei computes, with the two numbers that
+tell them apart on the biallelic panel, 0.1620 against 0.1155 for one
+pair, and how a user who wants Hedrick's gets it from what the result
+holds.
 
-**The order of the work could not be followed as written**, and the
-subagent said so rather than pretending otherwise: the code paths already
-existed, so its new tests passed the first time they ran. It checked
+**The test written before the code could not be, here.** The code paths
+already existed, so the new tests passed the first time they ran. It
+checked
 instead that each can fail, by moving one literal at a time and seeing the
 named test fail, and reverted both.
 
@@ -815,15 +845,25 @@ since no NaN can reach it today.
 
 ## What is asked of the owner
 
-### The merge
+### The merge, which is what this report asks for first
+
+Nothing is merged and nothing is pushed, and neither happens without the
+owner's order. This section is that request.
 
 The branch `plan/dists-pops` is not merged and not pushed. It is based on
 `spec/dists-pops`, not on `main`, because `docs/specs/dists.md` is on that
 branch and was not merged when this plan started. So the order to merge is
 two orders: `spec/dists-pops` into `main` and then this branch, or this
-branch into `spec/dists-pops` and the pair into `main`. Nothing else on
-either branch conflicts with `main` as it stood when this plan began, but
-`main` has moved since and the merge will say.
+branch into `spec/dists-pops` and the pair into `main`. Either order
+gives the same result and the second keeps the spec and its code together
+until the end, which is what is recommended.
+
+`main` has moved while this plan ran, and how far is not something this
+report can tell: it is a question for the moment the owner decides, and
+the merge itself will say. Nothing on this branch touches a module outside
+`pop_dists` except the block-cutting helpers moved out of the statistics
+module, the shared list of the measures, the one signal helper the three
+calculations now share, and the row added to `docs/architecture.md`.
 
 The speed was deliberately left out of this plan, and the performance
 review measures it after the merge, which the owner decided on 23
@@ -898,11 +938,14 @@ that described the state of this plan, and removing public API from three
 crates on a reviewer's opinion is not a thing to do without the owner.
 
 - Leave it as it is now.
-- Remove it, and take `THAT_HAVE_A_VALUE`, `has_a_value` and
-  `names_that_have_a_value` out of the core and the two binding crates.
+- Remove it: the list of which measures have a value, and the two
+  functions that read it, come out of the core and of both binding
+  crates.
 
-Recommended: leave it until f_3 and f_4 are written, which is a spec of
-their own and the next thing that would add a measure. Then whoever writes
+Recommended: leave it until f_3 and f_4 are written. Those are the
+statistics of three and of four populations that admixture graphs are
+fitted with, built from the f_2 of pairs; they are a spec of their own,
+and they are the next thing that would add a measure. Then whoever writes
 them will know whether it earns its place.
 
 ### Two things for an issue, not for this branch
