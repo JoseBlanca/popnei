@@ -77,7 +77,11 @@ product of two of them is unchanged.
 ### Its Python function, and its TypeScript one
 
 ```python
-calc_kinship(variants: Variants, individuals: Sequence[str] | None = None) -> Kinship
+calc_kinship(
+    variants: Variants,
+    individuals: Sequence[str] | None = None,
+    transform_to_biallelic: bool = False,
+) -> Kinship
 ```
 
 `Kinship` is a frozen dataclass with two fields and one property.
@@ -115,15 +119,34 @@ which `docs/objectives.md` asks to be written down:
 - `pass_stats` is new, as it is for every consumer of a `Variants`.
 - A `Kinship` can still be built by hand, from a matrix and `num_vars`, so
   that a user can bring the one plink2 or a pedigree gave them and pass it
-  to `calc_gwas`. pyNei's fields are checked by nothing; whether popnei's
-  are, and how far a matrix may be from symmetric, is **Open 4**, below.
-- A variant with more than two alleles among its called genotypes is read
-  with every allele that is not the major one counting the same, as pyNei
-  does, and there is no `transform_to_biallelic` to refuse it. This is
-  **Open 1**, below.
+  to `calc_gwas`, and `__post_init__` checks it where pyNei checks nothing:
+  it raises a `ValueError` for a matrix that is not square, whose index and
+  columns name different individuals, or that is further from its own
+  transpose than 1e-9 of its largest absolute entry. The owner decided on
+  23 September 2026 to raise the error sooner rather than later; the option
+  not taken was to reproduce pyNei and let the complaint come out of the
+  linear algebra, where the message names a matrix and a row and not the
+  field the user filled. The tolerance costs a real user nothing: both
+  matrices plink2 wrote for the panels are symmetric to the bit, largest
+  `|m - m'|` of 0, so a matrix that came from a tool is nowhere near it.
+- `transform_to_biallelic` is new. pyNei's kinship reads a variant with
+  more than two alleles among its called genotypes with every allele that
+  is not the major one counting the same, silently, because `to_012` does
+  it for everything. popnei refuses such a variant unless the argument is
+  true, which is what `do_pca_from_variants` already does, so the two
+  functions treat the same dataset alike. The owner decided it on 23
+  September 2026, for being the more explicit of the two to a user; the
+  option not taken was to reproduce pyNei and collapse silently, which
+  would have left a multiallelic dataset refused by one function of popnei
+  and answered by another, for the same reason and on the same variants.
+  `docs/objectives.md` asks the calculations that collapse a multiallelic
+  variant to the major allele against the rest to say so, and an error a
+  user turns off with one argument says it. Neither reference panel has
+  such a variant, so no literal of this spec moves either way.
 - The sign of a principal component is fixed, which is the item below.
 
-In TypeScript it is `calcKinship(variants, {individuals})`. The result has
+In TypeScript it is `calcKinship(variants, {individuals,
+transformToBiallelic})`. The result has
 `individuals`, an array of names, `numVars`, `matrix` as a `Float64Array` of
 individuals by individuals, row after row, and `passStats`, with the methods
 `principalComponents(numPcs)` and `filterIndividuals(individuals)`.
@@ -153,7 +176,20 @@ pyNei divides by it under `numpy.errstate(invalid="ignore", divide="ignore")`
 and the entry is NaN; the matrix is returned with the NaN in it and nothing
 is said. Measured on three individuals and two variants where the first
 individual and the third are never called together: the entry of that pair
-is `nan` and the rest of the matrix is finite (**Open 2**, below).
+is `nan` and the rest of the matrix is finite.
+
+popnei raises instead, a `ValueError` naming the two individuals and how
+many variants each of them has called. The owner decided on 23 September
+2026 to raise it here rather than later; the option not taken was to
+reproduce pyNei and let the NaN travel. It would not have travelled
+silently: "Errors" of `docs/specs/linalg.md` refuses a value that is not
+finite in any matrix before any routine runs, so the mixed model fit that
+factorizes the kinship, and `principal_components`, would both have raised
+a `RuntimeError` saying a matrix holds a value that is not finite. What the
+decision buys is which words the user gets: two names they can drop from
+the panel, instead of "matrix" at a fit they did not know was factoring
+anything. It refuses a dataset pyNei answers for, and neither reference
+panel has such a pair, so no literal moves.
 
 When no variant varies among the individuals, pyNei raises
 `ValueError("No variant varies among the samples, there is no kinship")`.
@@ -180,7 +216,9 @@ in 100 genotypes missing the smallest eigenvalue is -0.0321 against a
 largest of 17.27; with nothing missing it is -4.8e-15, which is rounding. It
 is the per pair denominator that does it: dividing a matrix of products
 entry by entry by different numbers does not keep it positive semidefinite.
-popnei does not reproduce the absolute value (**Open 3**, below).
+popnei does not reproduce the absolute value. It gives only the components
+whose eigenvalue is above the tolerance of `docs/specs/pca.md`, which the
+next item says.
 
 The docstring of `principal_components` says that the eigenvectors of the
 kinship "are the principal components of the standardized genotypes, so this
@@ -374,11 +412,18 @@ differences:
 - A component whose eigenvalue is not above `lambda_1 * n * 2.2e-16`, the
   tolerance of `docs/specs/pca.md` with `n` the individuals, is not given,
   so asking for more components than the panel has gives those it has and
-  `num_comps` says how many. pyNei gives exactly `num_pcs` of them, and
-  above the number of individuals it gives none: asking a kinship of 4
+  `num_comps` says how many. pyNei gives exactly `num_pcs` of them, taking
+  the square root of the absolute value of an eigenvalue below 0, and above
+  the number of individuals it gives none: asking a kinship of 4
   individuals for 6 components raises `ValueError: Shape of passed values
   is (4, 4), indices imply (4, 6)` out of pandas, because
-  `_create_pc_names` made 6 names for 4 columns (**Open 3**, below).
+  `_create_pc_names` made 6 names for 4 columns. The owner decided the
+  tolerance on 23 September 2026; the option not taken was to reproduce
+  pyNei, which always returns the number asked for and turns an eigenvalue
+  below 0 into a length that means nothing. The per pair denominators are
+  what put eigenvalues below 0, and the components a user actually asks for
+  are far above the tolerance: the third eigenvalue of the panel is 3.36
+  against a tolerance of 7.67e-13.
 
 ### How it is verified
 
@@ -420,16 +465,32 @@ pub struct Kinship {
 
 One pass over a reader. `individuals` are the positions among those the
 reader gives, in the order the result has them, and `None` is all of them in
-the reader's order. The pass borrows the reader and does not take it, so
-that whoever built the chain of filters reads its counts when it returns; it
-asks for the genotypes alone and puts `reblock` before it.
+the reader's order. `transform_to_biallelic` says that a variant of more
+than two alleles is read with every allele that is not the major one
+counting the same, as it does for the PCA. The pass borrows the reader and
+does not take it, so that whoever built the chain of filters reads its
+counts when it returns; it asks for the genotypes alone and puts `reblock`
+before it.
 
 ```rust
 pub fn calc_kinship<R: BlockReader>(
     reader: &mut R,
     individuals: Option<&[usize]>,
+    transform_to_biallelic: bool,
 ) -> Result<Kinship>;
 ```
+
+Its errors, each a case of the error enum of the core crate. A variant with
+more than two alleles among its called genotypes while `transform_to_biallelic`
+is false, with the position of the variant among those the reader gave and
+which argument to pass, as the PCA's is. A pair of individuals with no
+variant called in both, with the two positions and how many variants each
+of them has called. No variant with variance among these individuals, and a
+pass that gave no variant at all, which every consumer already has. A ploidy
+above `MAX_PLOIDY_OF_THE_VARIANTS` and more than
+`MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, both of
+`crates/popnei/src/pca.rs`. And whatever the reader and `linalg` fail
+with.
 
 The components of a kinship, `num_pcs` of them at most and fewer when the
 matrix has fewer with variance. `projections` is individuals x `num_comps`,
@@ -476,76 +537,29 @@ code exists.
 
 ## Open points
 
-The owner decides these four, and until then the implementer follows the
-"meanwhile" of each.
+None. The four this spec had were decided by the owner on 23 September 2026
+and each is written where its subject is, with the option that was not taken
+and what is still unknown about it:
 
-**Open 1: a variant with more than two alleles.** pyNei's kinship reads one
-with every allele that is not the major one counting the same, silently,
-because `to_012` does it for everything. `do_pca_from_variants` refuses such
-a variant unless its `transform_to_biallelic` argument says otherwise, which
-`docs/specs/pca.md` settled. So a user with a multiallelic dataset would get
-an error from `do_pca_from_variants` and a silent answer from
-`calc_kinship`, for the same reason and on the same variants. The options
-are to reproduce pyNei, which keeps the kinship of every multiallelic
-dataset as it is and leaves the two functions disagreeing; or to give
-`calc_kinship` the same `transform_to_biallelic` argument, defaulting to
-false, which makes the two agree and refuses datasets pyNei answers for, and
-which no reference verifies since both panels are biallelic.
-Recommendation: give it the argument. `docs/objectives.md` asks the
-calculations that collapse a multiallelic variant to the major allele
-against the rest to say so, and an error a user can turn off with one
-argument says it; the cost is that the same argument now appears on two
-functions instead of one.
-Meanwhile the implementer reproduces pyNei and collapses silently, which is
-what the reference panels need.
+- A variant with more than two alleles is refused unless
+  `transform_to_biallelic` says otherwise, as `do_pca_from_variants` already
+  refuses it: "Its Python function, and its TypeScript one" of "The matrix".
+- A pair of individuals with no variant called in both raises, naming the
+  two, rather than leaving pyNei's NaN in the matrix: "Missing genotypes,
+  variants with no variance, and what pyNei asserts".
+- A component whose eigenvalue is not above the tolerance of
+  `docs/specs/pca.md` is not given, rather than pyNei's square root of the
+  absolute value: "Its Python function, and its TypeScript one" of "The
+  principal components of the kinship".
+- A `Kinship` a user built by hand is checked for being square, for naming
+  the same individuals on both sides, and for being symmetric within 1e-9 of
+  its largest entry: "Its Python function, and its TypeScript one" of "The
+  matrix".
 
-**Open 2: a pair with no variant called in both.** Its denominator is 0,
-pyNei puts a NaN in the matrix and says nothing, and popnei would too. The
-NaN does not stay silent: "Errors" of `docs/specs/linalg.md` refuses a value
-that is not finite in any matrix before any routine runs, so the mixed model
-fit that factorizes the kinship, and `principal_components`, both raise a
-`RuntimeError` saying that a matrix holds a value that is not finite. So the
-choice is not between a wrong answer and an error; it is about where the
-error appears and what it names. The options are to reproduce pyNei, which
-gives the user a matrix they can look at and see the gap in, and an error
-later that names a matrix; or to raise here, naming the two individuals and
-how many variants each of them has called, which refuses a dataset pyNei
-answers for. Recommendation: raise here. The user can do something with the
-names of two individuals and nothing with the word "matrix", and a kinship
-they can look at is of little use when what they wanted was to pass it to
-`calc_gwas`. Meanwhile the implementer raises, since no reference panel has
-such a pair and no literal moves either way.
-
-**Open 3: the components of a kinship that is not positive semidefinite.**
-Its per pair denominators can leave eigenvalues below 0, -0.0321 against a
-largest of 17.27 on the panel with 3 in 100 genotypes missing. pyNei asks
-for `num_pcs` components whatever their eigenvalues and takes the square
-root of the absolute value. The options are to reproduce pyNei, which always
-gives the number asked for and turns a negative eigenvalue into a length
-that means nothing; or to give only the components whose eigenvalue is above
-the tolerance of `docs/specs/pca.md`, which is what that spec decided for
-the same reason and which gives fewer components than asked on a panel with
-much missing data. Recommendation: the tolerance, with `num_comps` saying
-how many came back. Nobody asks for the hundredth component of a kinship,
-and the ones a user does ask for are far above the tolerance: the third
-eigenvalue of the panel is 3.36. Meanwhile the implementer applies the
-tolerance.
-
-**Open 4: what a `Kinship` a user built by hand is checked for.** pyNei's
-`Kinship` is a frozen dataclass whose fields nothing checks, so a frame that
-is not square, whose index and columns name different individuals, or that
-is not symmetric, is taken and reaches the mixed model fit. The options are
-to reproduce pyNei and check nothing, which accepts everything it accepts
-and pushes every complaint into the linear algebra, where the message names
-a matrix and a row and not the field the user filled; or to refuse in
-`__post_init__` a matrix that is not square, whose index and columns differ,
-or that is further from its own transpose than a tolerance. Recommendation:
-refuse, with the tolerance at 1e-9 of the largest absolute entry. What the
-tolerance costs a real user was measured: both matrices plink2 wrote for the
-panels are symmetric to the bit, largest `|m - m'|` of 0, so a matrix that
-came from a tool is not near the tolerance, and one that is further than
-1e-9 from symmetric was built by an arithmetic that is not a kinship's.
-Meanwhile the implementer refuses, at that tolerance.
+Three of the four refuse a dataset that pyNei answers for. None of them
+moves a literal of this spec, because neither reference panel has a
+multiallelic variant, a pair with no variant called in both, or a component
+near the tolerance.
 
 ## Not in this spec
 
