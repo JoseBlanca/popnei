@@ -32,7 +32,7 @@ use popnei_linalg::{
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions, the_standardized_rows};
+use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -884,19 +884,16 @@ fn the_first_pass<R: BlockReader>(
     })
 }
 
-/// The rows of one block standardized into `standardized`, with the rows
-/// of the variants that have variance at its start, in the order of the
-/// block; it gives whether each variant of the block was used.
+/// The rows of one block standardized into `standardized` by the pass
+/// over a block that [`crate::variant`] holds, with the rows of the
+/// variants that have variance at its start; it gives whether each variant
+/// of the block was used.
 ///
-/// The rows that were left out are not in those first rows, so the product
-/// of a block is over its variants that have variance alone. The buffer is
-/// the caller's and is kept from one block to the next: it is made as long
-/// as the block needs and the rows that are left out keep whatever they
-/// held, which nothing reads.
-///
-/// `first_position` is the position, among the variants the reader has
-/// given, of the first variant of the block, which the error of a variant
-/// with more than two alleles names.
+/// This analysis gives that pass its divisor, the standard deviation of
+/// the dosages of the variant, and the error it raises when a reader gives
+/// more variants than a `usize` counts. `first_position` is the position,
+/// among the variants the reader has given, of the first variant of the
+/// block, which the error of a variant with more than two alleles names.
 ///
 /// # Errors
 ///
@@ -912,26 +909,8 @@ fn the_standardized_block(
     first_position: usize,
     standardized: &mut Vec<f64>,
 ) -> Result<Vec<bool>> {
-    let missing = Needs::GTS.difference(block.fields());
-    if !missing.is_empty() {
-        return Err(Error::FieldsNotInTheBlock { fields: missing });
-    }
-    let alleles_per_var = block.alleles_per_var()?;
-    // The block holds its genotypes, so its rows hold one genotype of the
-    // ploidy for each individual: `reblock` checked that the genotypes are
-    // the variants of the block times those alleles, so this division is
-    // exact, and it is `None` only for a ploidy of 0, which such a block
-    // does not have.
-    let Some(num_values) = block.gts.len().checked_div(ploidy) else {
-        return Err(Error::GtsNotWholeGenotypes {
-            num_alleles: block.gts.len(),
-            ploidy,
-        });
-    };
-    standardized.resize(num_values, 0.0);
-    let used = the_standardized_rows(
-        &block.gts,
-        alleles_per_var,
+    crate::variant::the_standardized_block(
+        block,
         num_individuals,
         ploidy,
         &the_dosages_of(options),
@@ -940,22 +919,7 @@ fn the_standardized_block(
             too_many: the_variants_are_too_many,
         },
         standardized,
-    )?;
-    // The rows that were used are moved to the start of the buffer. A
-    // block with no row to leave out moves nothing.
-    for (to, (var, _)) in used
-        .iter()
-        .enumerate()
-        .filter(|(_, was_used)| **was_used)
-        .enumerate()
-    {
-        if to != var {
-            let from = the_row_of(var, num_individuals);
-            let start = the_row_of(to, num_individuals).start;
-            standardized.copy_within(from, start);
-        }
-    }
-    Ok(used)
+    )
 }
 
 /// The error of a pass that gave more variants than a `usize` counts,
@@ -964,21 +928,6 @@ fn the_variants_are_too_many() -> Error {
     Error::PcaVariantsTooLarge {
         problem: VariantsTooLarge::Variants,
     }
-}
-
-/// Where the row `var` of a buffer of rows of `num_individuals` values
-/// begins and ends.
-///
-/// The buffer holds the variants of the block times the individuals
-/// values, which the machine gave, and `var` is below the variants of the
-/// block, so neither the product nor the sum carries over.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the buffer holds the variants of the block times the individuals values, which the machine gave, and `var` is below the variants of the block"
-)]
-fn the_row_of(var: usize, num_individuals: usize) -> std::ops::Range<usize> {
-    let start = var * num_individuals;
-    start..start + num_individuals
 }
 
 /// What this analysis asks of the pass over a row that
@@ -1516,13 +1465,6 @@ mod tests {
         the_components_with_variance, the_first_pass, the_scaled_vectors_of,
         the_weights_of_a_second_pass,
     };
-    // The two ways of reading the rows of a block are one function in
-    // WebAssembly, which has no threads, so the test that compares them,
-    // and what only it uses, are of the targets that have them. Both of
-    // them, and the pass over one row they walk, are of [`crate::variant`]:
-    // the kinship drives a block of variants the same way.
-    #[cfg(not(target_family = "wasm"))]
-    use super::the_row_of;
     use crate::block::{Block, BlockReader, Reblock};
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
@@ -1531,8 +1473,16 @@ mod tests {
         ChromTable, MISSING_ALLELE, MISSING_CODE, Needs, RowScratch, the_codes_of_any_ploidy,
         the_codes_of_the_genotypes, the_standardized_row,
     };
+    // The two ways of reading the rows of a block are one function in
+    // WebAssembly, which has no threads, so the test that compares them,
+    // and what only it uses, are of the targets that have them. The two,
+    // the pass over one row they walk and the pass over a block that
+    // drives them are of `crate::variant`: the kinship reads a block of
+    // variants the same way.
     #[cfg(not(target_family = "wasm"))]
-    use crate::variant::{RowPositions, the_standardized_rows, the_standardized_rows_one_by_one};
+    use crate::variant::{
+        RowPositions, the_row_of, the_standardized_rows, the_standardized_rows_one_by_one,
+    };
 
     /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
     /// literal here and in the reference files is written with 12

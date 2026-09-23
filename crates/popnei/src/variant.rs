@@ -5,9 +5,10 @@
 //! row helpers over it: the counts of its alleles and its genotypes, its
 //! major allele, and the pass that turns it into one standardized dosage
 //! per individual, which the principal components of the variants and the
-//! kinship both walk with their own divisor, with the drive that takes a
-//! whole block of variants through it, on the threads of rayon or one
-//! after another where there are none.
+//! kinship both walk with their own divisor, with the pass over a whole
+//! block that walks it variant by variant, on the threads of rayon or one
+//! after another where there are none, and leaves out the variants with
+//! no variance.
 //!
 //! The variants flow in blocks, which [`crate::block`] holds, and a
 //! calculation that works variant by variant walks the [`VariantRef`] of
@@ -25,7 +26,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::block::AllelesColumn;
+use crate::block::{AllelesColumn, Block};
 use crate::error::{Error, Result};
 
 /// An allele that was not called, `.` in a VCF.
@@ -1319,6 +1320,78 @@ pub(crate) struct RowPositions {
     pub too_many: fn() -> Error,
 }
 
+/// The rows of one block standardized into `standardized`, with the rows
+/// of the variants that have variance at its start, in the order of the
+/// block; it gives whether each variant of the block was used.
+///
+/// The rows that were left out are not in those first rows, so the product
+/// of a block is over its variants that have variance alone. The buffer is
+/// the caller's and is kept from one block to the next: it is made as long
+/// as the block needs and the rows that are left out keep whatever they
+/// held, which nothing reads.
+///
+/// `options` says what the centered dosages are divided by, which is the
+/// one thing the principal components of the variants and the kinship
+/// differ in, and whether a variant of more than two alleles is read;
+/// `positions` where the block sits among the variants the reader has
+/// given.
+///
+/// # Errors
+///
+/// [`Error::FieldsNotInTheBlock`] when the block holds no genotypes, what
+/// the standardizing of a row refuses, and [`RowPositions::too_many`] when
+/// the position of a variant is beyond what a `usize` counts.
+pub(crate) fn the_standardized_block(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut Vec<f64>,
+) -> Result<Vec<bool>> {
+    let missing = Needs::GTS.difference(block.fields());
+    if !missing.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: missing });
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    // The block holds its genotypes, so its rows hold one genotype of the
+    // ploidy for each individual: `reblock` checked that the genotypes are
+    // the variants of the block times those alleles, so this division is
+    // exact, and it is `None` only for a ploidy of 0, which such a block
+    // does not have.
+    let Some(num_values) = block.gts.len().checked_div(ploidy) else {
+        return Err(Error::GtsNotWholeGenotypes {
+            num_alleles: block.gts.len(),
+            ploidy,
+        });
+    };
+    standardized.resize(num_values, 0.0);
+    let used = the_standardized_rows(
+        &block.gts,
+        alleles_per_var,
+        num_individuals,
+        ploidy,
+        options,
+        positions,
+        standardized,
+    )?;
+    // The rows that were used are moved to the start of the buffer. A
+    // block with no row to leave out moves nothing.
+    for (to, (var, _)) in used
+        .iter()
+        .enumerate()
+        .filter(|(_, was_used)| **was_used)
+        .enumerate()
+    {
+        if to != var {
+            let from = the_row_of(var, num_individuals);
+            let start = the_row_of(to, num_individuals).start;
+            standardized.copy_within(from, start);
+        }
+    }
+    Ok(used)
+}
+
 /// The rows of a block standardized into `standardized`, and whether each
 /// variant was used, in the order of the block.
 ///
@@ -1446,6 +1519,21 @@ pub(crate) fn the_standardized_rows_one_by_one(
         )?);
     }
     Ok(used)
+}
+
+/// Where the row `var` of a buffer of rows of `num_individuals` values
+/// begins and ends.
+///
+/// The buffer holds the variants of the block times the individuals
+/// values, which the machine gave, and `var` is below the variants of the
+/// block, so neither the product nor the sum carries over.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the buffer holds the variants of the block times the individuals values, which the machine gave, and `var` is below the variants of the block"
+)]
+pub(crate) fn the_row_of(var: usize, num_individuals: usize) -> std::ops::Range<usize> {
+    let start = var * num_individuals;
+    start..start + num_individuals
 }
 
 /// What the benchmark `standardize_row` calls to time each pass over a row
