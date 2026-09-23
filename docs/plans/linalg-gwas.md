@@ -1,7 +1,9 @@
 # Plan: the linear algebra the association study needs
 
-23 September 2026. State: under way, approved by the owner on 23
-September 2026. It
+23 September 2026. State: under way. Approved by the owner on 23
+September 2026 and carried out the same day; work packages 1 to 3 are
+done, reviewed and fixed, and work package 4 was added by the owner on the
+same day, after the rest was finished, and is what is left. It
 builds from `docs/specs/linalg.md`, which went through its first reader
 and its review and whose four open points the owner decided on 23
 September 2026. Three parts of that spec are what is built: "The seven
@@ -403,6 +405,74 @@ design.
 A task that gives the routines the buffer as it lies will still pass every
 deliverable above, since the trial measured the two routes to agree to
 1e-13, and will be slow at the size the association study runs at.
+
+## Work package 4: the solve against a lower triangular matrix
+
+Added on 23 September 2026, after work packages 1 to 3 were done, by the
+owner's order, at the request of the session writing `docs/specs/gwas.md`.
+
+### What it gives
+
+The core crate can solve `l x = b` for a lower triangular `l` as well as
+for an upper triangular one, which is what the fit of the null model of
+the logistic mixed model needs: the trace that each step of it wants comes
+from the Cholesky factor of the covariance solved against with one right
+hand side for each individual, and a Cholesky factor is lower triangular,
+so the upper form cannot serve it. It stops inside the core crate, as
+every work package of this plan does.
+
+The session writing `docs/specs/gwas.md` measured what it is worth, with
+numpy 2.5.3 on Accelerate on the owner's Apple M5 Pro at 4000 individuals,
+against pyNei's fit of 9.959 s: 5.75 s with the lower form, 7.0 s with
+`solve_with_cholesky`, which is two triangular solves where one is wanted,
+and 5.29 s with an inverse of a triangular matrix, which would be another
+operation written twice. Those numbers and the fit they belong to are
+`docs/reports/glmm-method/README.md` of the branch `spec/gwas`, and this
+plan neither checks nor owns them: what it builds is the operation.
+
+### Its deliverables
+
+1. The spec says what the lower form gives, in "The signatures of the
+   seven of the GWAS" and in "The errors the seven add", in a commit that
+   comes before the code. The check: `grep -c "lower triangular" docs/specs/linalg.md`
+   is above what it is today, and the commit of the spec is an ancestor of
+   the commit of the code.
+2. The crate solves `l x = b` for a lower triangular `l` on both backends,
+   with the numbers of "How the seven are verified", and reads the
+   diagonal for a 0 above the backends as the upper form does, since faer
+   divides by it and gives an infinity where `dtrtrs` gives an `info`. The
+   check: `cargo test -p popnei-linalg --lib triangular -- --list` names
+   more tests than the 12 it names today, among them the lower form's, and
+   `cargo test -p popnei-linalg` and the same with `--no-default-features`
+   both pass.
+3. The upper form computes what it computed: the 12 tests that name
+   `triangular` today pass unchanged.
+
+### What it stands on
+
+Work package 3, whose `solve_upper_triangular` this extends, and task
+2.1's `Singular`, which both forms give.
+
+### Its tasks
+
+- [ ] 4.1 The spec item: what the lower form gives, its signature and its
+      errors, and which of the two shapes the interface takes, written
+      into `docs/specs/linalg.md` in a commit of its own. Built from the
+      request of the session writing `docs/specs/gwas.md` and from the
+      existing "The solve against an upper triangular matrix". Serves
+      deliverable 1. Needs nothing.
+- [ ] 4.2 The code and its tests, in `crates/popnei-linalg/src/lib.rs`,
+      `blas.rs` and `faer.rs`: `dtrtrs` takes a `uplo` already and faer
+      has `solve_lower_triangular_in_place` beside the upper one. Serves
+      deliverables 2 and 3. Needs 4.1.
+
+### What could go wrong
+
+The two forms take the same arguments and give different answers, which is
+the shape of mistake "The Rust interface" made `product` one function with
+typed operands to stop: a caller that names the wrong one gets a wrong
+matrix and no error, since no length can tell them apart. Task 4.1 decides
+which shape the interface takes and says why.
 
 ## How the whole plan is checked
 

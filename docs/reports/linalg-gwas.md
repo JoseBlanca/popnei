@@ -497,6 +497,116 @@ run pytest` `257 passed`.
 
 Those subagents used 195434 and 230876 tokens.
 
+### The review of work package 3
+
+Four reviewers over `75855dc`, `7437913`, `a2dafbb`, `0d1669b` and
+`29ba1c7`: spec, tests, numbers, and errors with api and architecture
+together. They used 453000 tokens between them, and seventeen findings
+held.
+
+**The one that was a wrong number.** `rank` formed numpy's tolerance as
+the largest singular value times the larger dimension, and that product
+times the distance from 1 to the next `f64`; numpy multiplies the last two
+first. The two are the same `f64` for every matrix a study holds, that
+distance being a power of two, and they part when the first product
+overflows: the 2 x 2 with 1e308 and 1 on its diagonal came back rank 0 on
+both backends where numpy gives 2, and numpy warns when asked to compute
+it in popnei's order. "The rank" takes numpy's tolerance so that a design
+popnei refuses is a design pyNei refuses, which is what this broke. Two
+reviewers found it by different routes and the orchestrator ran it against
+numpy before the fix and after, and put the order back afterwards to see
+the new test fail.
+
+**Two fixtures that did not pin what they were written to pin**, both
+shown by mutation. Every matrix pinning the rank's tolerance is 2 x 2,
+where the larger dimension and the smaller are one number, so reading the
+tolerance off the smaller left all 11 rank tests passing while giving a
+wrong rank for any matrix that is not square. And every `thin_qr` fixture
+has two columns, so the half of `r` below its diagonal is a single entry,
+and zeroing too few of them left all 9 tests passing while leaving a
+reflector of LAPACK where the doc comment of `ThinQr` promises 0, which
+gives a caller a matrix that is not upper triangular with no error. This
+is the fourth time a review of this plan has found a fixture that could
+not tell two dimensions apart. `dd11536` put the numbers for both new
+fixtures into the spec, from numpy 2.5.3, before the code that uses them.
+
+**An allocation that would end the process.** The BLAS backend writes a
+column major copy of the matrix for the thin QR and for the rank, and took
+it with `vec!`. Two hundred lines above, `eigh_lower` refuses to do that
+for its workspace and says in a comment why. Both operations are public
+and bounded only by the 2147483647 values of the crate, which is 17 GB.
+`c0d8418` gives them `Memory` in the spec and the code asks for the copy
+with `try_reserve_exact`.
+
+**Thirteen smaller findings, all fixed**: `rank`'s `# Errors` gave
+`NoConvergence` one of its two meanings; three `// SAFETY:` comments of
+the workspace queries said the size goes into a slice it does not go into
+and that `info` is not written when it is; `write_the_rows_of` would
+truncate in silence for a shape the crate refuses before it, and did not
+say so; four messages named an argument that was not the one at fault or
+explained a limit by an output the caller never passed; the crate's own
+doc comment counted eleven operations and left out two of the seven; the
+module comment of `blas.rs` called `dtrtrs` one of the routines numpy
+calls, which `nm` on numpy's shared library shows it is not; a doc comment
+gave a singular value one digit from the spec's; the two new workspace
+queries had no test where the one they follow has five; a doc comment
+carried a false bound; a doc comment quoted a timing of the routines as if
+it were the crate's; and four cases were untested — a wide matrix for the
+rank, a square design for the QR, and the two ends of the `rows < cols`
+boundary.
+
+**What was not taken, and why.** faer and LAPACK give different ranks for
+values near the ends of what an `f64` holds: faer does not converge for a
+4 x 2 of 1e154 and loses subnormal values where LAPACK and numpy do not.
+That is faer's own arithmetic, so `dd11536` records that the two backends
+agree between about 1e-300 and 1e154, which every design of dosages and
+covariates is inside, and the question of scaling the matrix to widen it
+is for the owner below. And the fourth reviewer reported the rank's
+tolerance as already right: every matrix it tried has a largest singular
+value of 1, where both orders give the same `f64`, so it never reached the
+case the other two found.
+
+**One thing the fix could not pin, reported by the subagent that made
+it.** The zeroing of the half of `r` below its diagonal is guarded on the
+BLAS backend alone. faer's `thin_R` already gives 0 there, so the crate's
+write changes nothing on that backend and no test can see it; the line is
+right and is dead, and nothing will catch it if a later faer stops
+zeroing.
+
+**The checks after the fixes**, each run by the orchestrator: fmt, clippy
+with the warnings denied, `cargo wasm-check` and ruff clean; `cargo test
+--workspace` `472 passed` with 2 ignored in the core crate and `141
+passed` in the linear algebra crate; `cargo test -p popnei-linalg
+--no-default-features` `128 passed`; `uv run maturin develop && uv run
+pytest` `257 passed`. Over the whole work package the crate went from 93
+tests to 141 and from 90 to 128; the gap between the two backends is the
+13 tests of `blas.rs`, which test helpers only that backend has.
+
+That subagent used 291256 tokens for the two tasks and the fixes.
+
+## How the whole plan was checked
+
+Run by the orchestrator on the last commit of the branch:
+
+| What | Command | What it gave |
+| --- | --- | --- |
+| the two backends | `cargo test -p popnei-linalg` and the same `--no-default-features` | `141 passed` and `128 passed`, against 42 and 37 when the plan started |
+| the browser target | `cargo check -p popnei-linalg --target wasm32-unknown-unknown --no-default-features` | clean |
+| the pyodide target | the same for `wasm32-unknown-emscripten` | clean |
+| the whole workspace | `cargo test --workspace` | `472 passed`, 2 ignored, in the core crate |
+| the Python layer | `uv run maturin develop && uv run pytest` | `257 passed` |
+| the TypeScript layer | `npm run build && npm test` in `js/popnei` | `pass 180` |
+| the rest of the coding skill | fmt, clippy with the warnings denied, `cargo wasm-check`, ruff | all clean |
+
+The principal component analysis and the r² reach Python and TypeScript
+through the `product` that work package 1 changed, and the last three rows
+are where a change in what they compute would have been seen by a user.
+None of them moved.
+
+The trial crate is left in `tmp/`, not committed, as the plan said. What
+replaces it is the cargo tests of the three work packages, which assert
+the same literals through the crate's own checks and error enum.
+
 ## What is waiting on the owner
 
 Neither of these stops the plan, and work packages 2 and 3 do not depend
