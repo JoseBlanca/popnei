@@ -5,16 +5,20 @@ the numbers this file asserts. The literals are the spec's, and the files the
 reference programs wrote them into are in `tests/reference/pop_dists/`, which
 `tests/reference/pop_dists/make_reference.py` writes.
 
-Four programs are compared with here. plink2 v2.0.0-a.7.7 gives Hudson's
+Five programs are compared with here. plink2 v2.0.0-a.7.7 gives Hudson's
 F_ST of both panels, which it prints to six digits, so the comparison is
 within 1e-6 absolute. ADMIXTOOLS 2.0.10 gives f_2 and its jackknife standard
 error of the biallelic panel, which it writes to seventeen digits, so that
-comparison is within 1e-12 relative. pyNei, at the commit `pyproject.toml`
-names, gives Jost's D of both panels and is the one program that computes
-the estimator popnei computes, so it is run here and its numbers are matched
-within 1e-12 relative. mmod 1.3.3 under R 4.6.1 gives Jost's D, Nei's G_ST
-and the standardized G''_ST of both panels with another estimator of each,
-so those three are an agreement within 5e-4 and not an equality.
+comparison is within 1e-12 relative. adegenet 2.1.11 under R 4.6.1 gives the
+chord distance of both panels and computes the same estimator, so that
+comparison is within 1e-12 relative too, and Nei's D_A, which no program
+has, is checked against the square of it. pyNei, at the commit
+`pyproject.toml` names, gives Jost's D of both panels and is the one program
+that computes the estimator popnei computes, so it is run here and its
+numbers are matched within 1e-12 relative. mmod 1.3.3 under R 4.6.1 gives
+Jost's D, Nei's G_ST and the standardized G''_ST of both panels with another
+estimator of each, so those three are an agreement within 5e-4 and not an
+equality.
 
 ADMIXTOOLS was run on the biallelic panel at three lengths of the resampling
 groups and `calc_pop_dists` refuses a pass of fewer than 20 of them, so of
@@ -24,7 +28,10 @@ and at 250 000, are cargo tests of `crates/popnei/src/pop_dists.rs`.
 
 All seven measures are calculated, so the refusal of one that popnei has no
 value for has nothing left to refuse, which
-`test_no_measure_of_the_seven_is_refused` holds to.
+`test_no_measure_of_the_seven_is_refused` holds to, and a user who leaves
+`measures` out gets all seven, which
+`test_the_default_gives_the_seven_measures_over_the_variants_of_each_pair`
+is the check of.
 """
 
 import math
@@ -103,6 +110,30 @@ PANEL_F2_STANDARD_ERRORS = (
 # Both libraries add the same numbers in a different order, so the last bits
 # are what they can differ by, which is the tolerance the spec gives.
 F2_TOLERANCE = 1e-12
+
+# The chord distance of the three pairs of each panel, which
+# `dist.genpop(method = 2)` of adegenet 2.1.11 under R 4.6.1 wrote into
+# `tests/reference/pop_dists/panel.chord.tsv` and `micro.chord.tsv`, from the
+# chord item of the spec. It is the form adegenet gives, the chord of the
+# sphere of radius 1 divided by the square root of 2: the chord of that sphere
+# itself is 1.414 times each of these six numbers.
+PANEL_CHORD = (0.18026704497001397, 0.17586558860911838, 0.17977447554045811)
+MICRO_CHORD = (0.33853588707322202, 0.33760692274322368, 0.34958215447311330)
+
+# adegenet computes the same estimator, so the comparison is within 1e-12
+# relative and not the 5e-4 of the measures mmod checks. Each of the biallelic
+# panel's three comes out as the same double adegenet prints, and the
+# multiallelic panel's within 2.0e-15 relative, which is the last bits of one.
+# Nei's D_A is in no program and is checked against the square of what adegenet
+# gives, within the same 1e-12 relative, which it is 3.9e-15 of at the
+# furthest: squaring doubles how far from adegenet the chord distance is.
+ADEGENET_TOLERANCE = 1e-12
+
+# popnei computes D_A and takes its square root for the chord distance, so
+# squaring the chord distance again gives D_A to the last bits and not to the
+# bit: the furthest of the six pairs is 2.2e-16 relative away, which is one
+# unit in the last place.
+THE_SQUARE_TOLERANCE = 1e-15
 
 # The threshold of called genotypes at which the pairs of the biallelic panel
 # part, from "How it is verified" of the spec: the variants that count are
@@ -284,6 +315,80 @@ def test_the_f2_of_the_panel_and_its_standard_error_are_admixtools() -> None:
     # of the size of an F_ST of these populations.
     assert dists.fst.standard_errors is not None
     assert all(0 < error < 0.01 for error in dists.fst.standard_errors)
+
+
+def test_the_chord_and_the_da_of_both_panels_are_adegenets() -> None:
+    """The chord distance of the three pairs of each panel against
+    `dist.genpop(method = 2)` of adegenet 2.1.11, and Nei's D_A against the
+    square of it.
+
+    popnei gives the form adegenet gives, the chord of the sphere of radius 1
+    divided by the square root of 2, which "What it gives" of the chord item
+    of the spec says: a number 1.414 times one of these is the chord of that
+    sphere, which books also call the Cavalli-Sforza and Edwards distance.
+
+    adegenet computes the same estimator, so the three of the biallelic panel
+    are the same doubles it prints and the three of the multiallelic one are
+    within the last bits of a double. D_A is in no program, and what says it
+    is Nei's is that it is the square of what adegenet gives; that it is the
+    square of popnei's own chord distance, which the test below asserts, says
+    only that the two come out of the one sum.
+
+    Both panels are read at the default of 20 called genotypes, where every
+    variant counts for every pair. The multiallelic one is the one that says
+    that the arithmetic does not assume two alleles: its 120 loci have six
+    alleles each, and the sum of the square roots runs over all six.
+    """
+    for path, pops, of_adegenet in (
+        (PANEL, PANEL_POPS, PANEL_CHORD),
+        (MICRO, MICRO_POPS, MICRO_CHORD),
+    ):
+        dists = calc_pop_dists(
+            open_vcf(path), pops, jackknife_group=None, measures=("chord", "da")
+        )
+
+        _assert_within(
+            dists.chord.dist_vector,
+            of_adegenet,
+            ADEGENET_TOLERANCE,
+            True,
+            f"the chord distance of {path.name}",
+        )
+        _assert_within(
+            dists.da.dist_vector,
+            [chord * chord for chord in of_adegenet],
+            ADEGENET_TOLERANCE,
+            True,
+            f"Nei's D_A of {path.name}",
+        )
+
+
+def test_the_da_of_every_pair_is_the_square_of_its_chord_distance() -> None:
+    """The two measures come out of the one sum of the square roots: popnei
+    calculates D_A and the chord distance is its square root.
+
+    So the chord distance squared is D_A again to the last bits of a double,
+    on both panels and whether the two are asked for together or each on its
+    own. A square root and a square do not undo each other to the bit, which
+    is why this is a tolerance of one unit in the last place and not an
+    equality.
+    """
+    for path, pops in ((PANEL, PANEL_POPS), (MICRO, MICRO_POPS)):
+        both = calc_pop_dists(
+            open_vcf(path), pops, jackknife_group=None, measures=("chord", "da")
+        )
+        chord_alone = calc_pop_dists(
+            open_vcf(path), pops, jackknife_group=None, measures=("chord",)
+        )
+
+        assert numpy.array_equal(chord_alone.chord.dist_vector, both.chord.dist_vector)
+        _assert_within(
+            both.da.dist_vector,
+            [chord * chord for chord in both.chord.dist_vector],
+            THE_SQUARE_TOLERANCE,
+            True,
+            f"Nei's D_A of {path.name} against the square of the chord distance",
+        )
 
 
 def test_the_dest_of_both_panels_is_the_one_pynei_gives() -> None:
@@ -947,6 +1052,63 @@ def test_no_measure_of_the_seven_is_refused() -> None:
     """
     assert _MEASURES_THAT_HAVE_A_VALUE == EVERY_MEASURE
     assert _the_measures(None) == list(EVERY_MEASURE)
+
+
+def test_the_default_gives_the_seven_measures_over_the_variants_of_each_pair() -> None:
+    """What a user gets who leaves `measures` out: the seven measures of both
+    panels in one pass, each over the variants that counted for the pair it
+    belongs to.
+
+    It is the call the whole of this work was for, and it is also the one that
+    was refused until every measure had a value, since leaving `measures` out
+    asks for all seven.
+
+    A `PopDists` holds one `num_vars` and not one for each measure, so what
+    says that the seven numbers of a pair are over the same variants is what
+    happens when a pair loses variants: at 47 called genotypes p0, of 48
+    individuals, is short at 512 of the 1200 variants of the biallelic panel,
+    and every one of the seven measures of the two pairs p0 is in moves, while
+    every one of the seven of p1-p2, which keeps all 1200, is the same double
+    as at the default. A measure that had kept its own set of variants would
+    have moved where the others did not.
+
+    Asking for one measure gives the same number as asking for all seven: the
+    pass is what costs and each measure is a division at the end of it.
+    """
+    for path, pops, num_vars in (
+        (PANEL, PANEL_POPS, PANEL_NUM_VARS),
+        (MICRO, MICRO_POPS, MICRO_NUM_VARS),
+    ):
+        of_the_seven = calc_pop_dists(open_vcf(path), pops, jackknife_group=None)
+
+        assert tuple(of_the_seven.num_vars) == (num_vars,) * 3
+        for measure in EVERY_MEASURE:
+            of_the_measure = getattr(of_the_seven, measure)
+            assert isinstance(of_the_measure, Distances), measure
+            assert of_the_measure.names == tuple(pops), measure
+            assert len(of_the_measure.dist_vector) == len(PAIRS), measure
+            alone = calc_pop_dists(
+                open_vcf(path), pops, jackknife_group=None, measures=(measure,)
+            )
+            assert numpy.array_equal(
+                getattr(alone, measure).dist_vector, of_the_measure.dist_vector
+            ), f"the {measure} of {path.name} asked for on its own"
+
+    at_the_default = calc_pop_dists(open_vcf(PANEL), PANEL_POPS, jackknife_group=None)
+    parted = calc_pop_dists(
+        open_vcf(PANEL),
+        PANEL_POPS,
+        jackknife_group=None,
+        min_num_individuals=PARTING_MIN_NUM_INDIVIDUALS,
+    )
+
+    assert tuple(parted.num_vars) == PANEL_NUM_VARS_OF_EACH_PAIR
+    for measure in EVERY_MEASURE:
+        of_the_default = getattr(at_the_default, measure).dist_vector
+        of_the_parting = getattr(parted, measure).dist_vector
+        assert of_the_parting[2] == of_the_default[2], measure
+        assert of_the_parting[0] != of_the_default[0], measure
+        assert of_the_parting[1] != of_the_default[1], measure
 
 
 def test_a_measure_that_is_of_none_of_the_seven_is_refused() -> None:

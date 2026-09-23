@@ -296,7 +296,8 @@ export interface PopDists {
  * `jackknifeGroup` is neither `null`, nor `"variant"`, nor a whole length in
  * base pairs of 1 or more; when `measures` is not an array of names, when a
  * name of it is of no measure, when it names none at all and when it names
- * one of the two that are not calculated yet; when `pops` is not an object
+ * one popnei has no value for, which is none of the seven today; when `pops`
+ * is not an object
  * of names to arrays of names, when a population names an individual the
  * pass does not give, names one twice or names none, and when it holds fewer
  * than two populations; when `minNumIndividuals` is not a whole number of 0
@@ -442,10 +443,10 @@ function theGroups(
  * statistics are, and which of them have a value today is the core's: what
  * is refused here is what is no array of names, an array of none, which
  * would make a pass over the whole source for nothing, and a measure that
- * has no value yet.
+ * popnei has no value for, which is none of the seven today.
  *
  * @throws {Error} When `measures` is not an array of names, when it names
- * none, and when it names one of the two that are not calculated yet.
+ * none, and when it names one popnei has no value for.
  */
 function theMeasures(
   measures: readonly PopDistMeasure[] | undefined,

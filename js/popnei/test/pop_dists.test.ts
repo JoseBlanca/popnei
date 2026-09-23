@@ -9,14 +9,17 @@
  * `docs/objectives.md` asks for: the two packages give a user the same
  * numbers.
  *
- * Three programs are compared with. plink2 v2.0.0-a.7.7 gives Hudson's F_ST
+ * Four programs are compared with. plink2 v2.0.0-a.7.7 gives Hudson's F_ST
  * of both panels, which it prints to six digits, so the comparison is within
  * 1e-6 absolute. ADMIXTOOLS 2.0.10 gives f_2 and its jackknife standard
  * error of the biallelic panel, which it writes to seventeen digits, so that
- * comparison is within 1e-12 relative. mmod 1.3.3 under R 4.6.1 gives Jost's
- * D, Nei's G_ST and the standardized G''_ST of both panels with another
- * estimator of each, so those three are an agreement within 5e-4 and not an
- * equality.
+ * comparison is within 1e-12 relative. adegenet 2.1.11 under R 4.6.1 gives
+ * the chord distance of both panels and computes the same estimator, so that
+ * comparison is within 1e-12 relative too, and Nei's D_A, which no program
+ * has, is checked against the square of it. mmod 1.3.3 under R 4.6.1 gives
+ * Jost's D, Nei's G_ST and the standardized G''_ST of both panels with
+ * another estimator of each, so those three are an agreement within 5e-4 and
+ * not an equality.
  *
  * pyNei is the fourth, and it is a Python library that cannot be installed
  * here: it is the one program that computes the estimator of Jost's D that
@@ -139,6 +142,40 @@ const PANEL_F2_STANDARD_ERRORS = [
  * are what they can differ by, which is the tolerance the spec gives.
  */
 const F2_TOLERANCE = 1e-12;
+
+/**
+ * The chord distance of the three pairs of each panel, which
+ * `dist.genpop(method = 2)` of adegenet 2.1.11 under R 4.6.1 wrote into
+ * `tests/reference/pop_dists/panel.chord.tsv` and `micro.chord.tsv`, from the
+ * chord item of the spec. It is the form adegenet gives, the chord of the
+ * sphere of radius 1 divided by the square root of 2: the chord of that
+ * sphere itself is 1.414 times each of these six numbers.
+ */
+const PANEL_CHORD = [
+  0.18026704497001397, 0.17586558860911838, 0.17977447554045811,
+];
+const MICRO_CHORD = [
+  0.33853588707322202, 0.33760692274322368, 0.3495821544731133,
+];
+
+/**
+ * adegenet computes the same estimator, so the comparison is within 1e-12
+ * relative and not the 5e-4 of the measures mmod checks. Each of the
+ * biallelic panel's three comes out as the same double adegenet prints, and
+ * the multiallelic panel's within 2.0e-15 relative, which is the last bits of
+ * one. Nei's D_A is in no program and is checked against the square of what
+ * adegenet gives, within the same 1e-12 relative, which it is 3.9e-15 of at
+ * the furthest: squaring doubles how far from adegenet the chord distance is.
+ */
+const ADEGENET_TOLERANCE = 1e-12;
+
+/**
+ * popnei computes D_A and takes its square root for the chord distance, so
+ * squaring the chord distance again gives D_A to the last bits and not to the
+ * bit: the furthest of the six pairs is 2.2e-16 relative away, which is one
+ * unit in the last place.
+ */
+const THE_SQUARE_TOLERANCE = 1e-15;
 
 /**
  * The threshold of called genotypes at which the pairs of the biallelic
@@ -347,6 +384,89 @@ test("the f_2 of the panel and its standard error are the ones ADMIXTOOLS gives"
   const ofTheFst = dists.fst?.standardErrors;
   assert.ok(ofTheFst !== null && ofTheFst !== undefined);
   assert.ok([...ofTheFst].every((error) => error > 0 && error < 0.01));
+});
+
+test("the chord and the da of both panels are adegenet's", () => {
+  // popnei gives the form adegenet gives, the chord of the sphere of radius 1
+  // divided by the square root of 2: a number 1.414 times one of these is the
+  // chord of that sphere itself. adegenet computes the same estimator, so the
+  // three of the biallelic panel are the same doubles it prints and the three
+  // of the multiallelic one are within the last bits of a double. D_A is in
+  // no program and is what the square of adegenet's number says it is.
+  //
+  // Both panels are read at the default of 20 called genotypes, where every
+  // variant counts for every pair. The multiallelic one is the one that says
+  // that the arithmetic does not assume two alleles: its 120 loci have six
+  // alleles each, and the sum of the square roots runs over all six.
+  for (const { vcf, pops, ofAdegenet, name } of [
+    {
+      vcf: PANEL_VCF,
+      pops: PANEL_POPS,
+      ofAdegenet: PANEL_CHORD,
+      name: "panel.vcf.gz",
+    },
+    {
+      vcf: MICRO_VCF,
+      pops: MICRO_POPS,
+      ofAdegenet: MICRO_CHORD,
+      name: "micro.vcf.gz",
+    },
+  ]) {
+    const dists = popDistsOf(vcf, pops, {
+      jackknifeGroup: null,
+      measures: ["chord", "da"],
+    });
+
+    assertWithin(
+      dists.chord?.distVector,
+      ofAdegenet,
+      ADEGENET_TOLERANCE,
+      true,
+      `the chord distance of ${name}`,
+    );
+    assertWithin(
+      dists.da?.distVector,
+      ofAdegenet.map((chord) => chord * chord),
+      ADEGENET_TOLERANCE,
+      true,
+      `Nei's D_A of ${name}`,
+    );
+  }
+});
+
+test("the da of every pair is the square of its chord distance", () => {
+  // The two come out of the one sum of the square roots: popnei calculates
+  // D_A and the chord distance is its square root, so squaring it gives D_A
+  // again to the last bits of a double. A square root and a square do not
+  // undo each other to the bit, which is why this is a tolerance of one unit
+  // in the last place and not an equality. Asking for the chord distance on
+  // its own gives the same double as asking for both.
+  for (const { vcf, pops, name } of [
+    { vcf: PANEL_VCF, pops: PANEL_POPS, name: "panel.vcf.gz" },
+    { vcf: MICRO_VCF, pops: MICRO_POPS, name: "micro.vcf.gz" },
+  ]) {
+    const both = popDistsOf(vcf, pops, {
+      jackknifeGroup: null,
+      measures: ["chord", "da"],
+    });
+    const chordAlone = popDistsOf(vcf, pops, {
+      jackknifeGroup: null,
+      measures: ["chord"],
+    });
+    const chord = both.chord as { distVector: Float64Array };
+
+    assert.deepEqual(
+      [...(chordAlone.chord as { distVector: Float64Array }).distVector],
+      [...chord.distVector],
+    );
+    assertWithin(
+      both.da?.distVector,
+      [...chord.distVector].map((value) => value * value),
+      THE_SQUARE_TOLERANCE,
+      true,
+      `Nei's D_A of ${name} against the square of the chord distance`,
+    );
+  }
 });
 
 test("the dest of both panels is the one pyNei gives", () => {

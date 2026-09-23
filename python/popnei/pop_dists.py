@@ -407,8 +407,11 @@ def _the_measures(measures: Sequence[PopDistMeasure] | None) -> list[str]:
             "`measures` names no measure, and a result holds the ones that "
             "were asked for: leave `measures` out for every measure there is"
         )
-    # The two that work package 3 of `docs/plans/dists-pops.md` adds have no
-    # value yet, and a vector of NaN says nothing about itself.
+    # A measure that popnei has no value for is refused here, so that nobody
+    # reads a vector of NaN as a distance. All seven have one since work
+    # package 3 of `docs/plans/dists-pops.md`, so this refuses nothing today
+    # and is what a measure added to `PopDistMeasure` with no formula beside
+    # it would meet.
     not_written_yet = [
         measure for measure in asked_for if measure not in _MEASURES_THAT_HAVE_A_VALUE
     ]
