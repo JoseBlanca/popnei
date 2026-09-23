@@ -956,6 +956,19 @@ named, the trait (1, 3, 5,
 from `r c = q' y`, within 1e-14: an exact fit, so a backend that read
 `r` the wrong way round gives something else. The `q' y` of that trait
 is (8, 4.47213595499958), which is the right hand side the check passes.
+
+That `r` has its diagonal made positive, which the test of `thin_qr` does
+before it compares, and no backend gives it so: LAPACK, faer and numpy all
+gave the negative diagonal for this design, as "The thin QR of the design"
+records. So the same fit is checked once more on what a backend really
+hands over, the `r` with rows (-2, -5) and (0, -2.23606797749979) against
+the `q' y` of (-8, -4.47213595499958), both signs turned, which gives the
+same coefficients (-1, 2). It is no new measurement, being that fit with
+the sign of `q` the other way, and it is the case that says the diagonal
+is read for a 0 and not for an entry at most 0: the three operations that
+take a Cholesky factorization refuse an entry at most 0, and a triangular
+solve that did the same would refuse every least squares fit popnei
+makes.
 Two more traits go with it: (4, 7, 10, 13), three times the covariate
 plus 1, whose `q' y` is (17, 6.70820393249937) and whose coefficients
 are (1, 3); and the covariate itself, (1, 2, 3, 4), whose `q' y` is
