@@ -1453,8 +1453,12 @@ Accelerate, measured on 23 September 2026 on genotypes drawn at random with
 individuals of the dataset above, and pyNei was not run on the larger one.
 popnei calculates seven numbers where pyNei calculates one, from counts
 they share, so the comparison is of one pass against one pass and not of
-one number against one number. The plan that builds this item measures both
-first and writes the numbers to reach into this section.
+one number against one number. The owner decided on 23 September 2026 that
+the plan that builds this item does not measure: the performance review
+does, after the work is merged into `main`, and it writes the numbers to
+reach into this section then. The option not taken was a work package of
+the plan for the measurement, which would have set a number to reach
+before there was code whose speed anybody had seen.
 
 ## Open points
 
