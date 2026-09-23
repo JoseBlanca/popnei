@@ -671,6 +671,28 @@ holds at a `min_num_individuals` of 0 as well, which
 the threshold is what a population needs beyond the one called genotype
 that every measure needs.
 
+At a ploidy of 1, Jost's D, Nei's G_ST and the standardized G''_ST have no
+value at all, for any pair and whatever the genotypes. E_P is 1 - sum over
+a of p_Pa^k and H_T is 1 - sum over a of ((p_Aa + p_Ba) / 2)^k, so at
+k = 1 both sums are the frequencies themselves, which add to 1, and a
+haploid genotype is never heterozygous, so H_obs is 0 as well. H_S, H_T
+and the two corrected values are then 0 by their definitions, and what the
+sums hold is the residue of adding frequencies that a f64 does not bring
+to exactly 1. The three measures divide that residue by itself and give a
+number that reads like a measurement: on
+`tests/reference/dists/haploid.vcf.gz`, 200 variants of 12 individuals
+read at `ploidy=1` in two populations of 6, popnei's arithmetic gave a
+G_ST of 0.250299 at a `min_num_individuals` of 3 and of 0.234741 at 4, 6
+in 100 apart, and a G''_ST of 0.400382 and 0.380227, where the chord
+distance moves from 0.400607 to 0.399626, 2 in 1000, and Jost's D was
+1.4e-17. So the three are NaN in the distance vector there, with no
+standard error, and the pass itself is not refused: F_ST, f_2, the chord
+distance and Nei's D_A are at a ploidy of 1 what they are at any other,
+and a user with a haploid dataset keeps those four. That file, at both
+thresholds, is what it is checked on. Decided by the plan on 23 September
+2026, the spec having given the formulas of H_S and H_T without saying
+what they come to at a ploidy of 1.
+
 f_2 and F_ST can come out negative, for one variant and for a whole
 dataset. It is the correction doing its work: two populations that differ
 by no more than the sampling noise have a H_b no larger than their H_w,
@@ -1618,9 +1640,10 @@ impl PopDistSums {
     /// is not a pop.
     pub fn num_vars_of(&self, i: usize, j: usize) -> Option<u64>;
     /// The measure for the pair. None where `num_vars_of` is 0 or None,
-    /// and where the divisor of the measure came to 0: the sum of H_b for
+    /// where the divisor of the measure came to 0, the sum of H_b for
     /// Fst, the mean corrected H_T for Gst, 1 - the mean corrected H_S for
-    /// Dest, and the product of those last two for GstStandardized.
+    /// Dest and the product of those last two for GstStandardized, and,
+    /// for Dest, Gst and GstStandardized, at a ploidy of 1.
     pub fn measure(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64>;
     /// Its jackknife standard error. None where `measure` is None, where
     /// no groups were asked for, where every variant of the pair fell
