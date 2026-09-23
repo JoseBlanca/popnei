@@ -383,8 +383,17 @@ pub struct LdFilter {
     /// `None` before the first block.
     before: Option<TheVariantBefore>,
     /// The number of every chromosome the filter has read a variant of,
-    /// which is what says that a chromosome has come back.
-    chroms_read: Vec<u32>,
+    /// which is what says that a chromosome has come back: one value for
+    /// each chromosome of the table of the reader, true for the ones a
+    /// variant has been read of.
+    ///
+    /// The numbers of a [`ChromTable`] are dense, so whether a chromosome
+    /// has been read is one index into this and not a search: a filter that
+    /// searched a list of the chromosomes read, and copied it for every
+    /// block, took 0.11 s over a source of 40000 chromosomes and 2.47 s
+    /// over one of 320000, which grows with the square of them, where a
+    /// fragmented assembly has millions.
+    chroms_read: Vec<bool>,
 }
 
 /// The chromosome and the position of the variant the filter read last,
@@ -402,9 +411,10 @@ struct TheVariantBefore {
 struct TheOrderRead {
     /// The last variant of the block.
     before: Option<TheVariantBefore>,
-    /// Every chromosome the filter has read a variant of, the ones of this
-    /// block among them.
-    chroms_read: Vec<u32>,
+    /// The chromosomes of the block that the filter had not read before and
+    /// marked as read: a block that is refused further on unmarks them, so
+    /// that the filter is as it was.
+    marked: Vec<u32>,
 }
 
 impl LdFilter {
@@ -513,14 +523,24 @@ impl LdFilter {
         // block holds.
         let order = self.the_order_read(chroms, positions)?;
         let settled =
-            the_variants_that_stay(self, block, chroms, positions, THE_VARS_SETTLED_AT_A_TIME)?;
-        block.retain_vars(&settled.keep)?;
-        // Nothing of the filter has changed until here, so an error above
-        // left the window, the counts and the place in the source as they
-        // were: the block was settled against a window of its own.
+            the_variants_that_stay(self, block, chroms, positions, THE_VARS_SETTLED_AT_A_TIME)
+                .and_then(|settled| block.retain_vars(&settled.keep).map(|()| settled));
+        let settled = match settled {
+            Ok(settled) => settled,
+            Err(error) => {
+                // The block is refused, so the chromosomes it was the first
+                // to hold a variant of are unmarked and the filter is as it
+                // was.
+                self.the_chromosomes_unmarked(&order.marked);
+                return Err(error);
+            }
+        };
+        // Nothing of the filter has changed until here but the chromosomes
+        // read, so an error above left the window, the counts and the place
+        // in the source as they were: the block was settled against a
+        // window of its own.
         self.window = settled.window;
         self.before = order.before;
-        self.chroms_read = order.chroms_read;
         // A `usize` is 64 bits on the targets popnei builds natively for
         // and 32 in wasm, so every one of them is a `u64` and neither
         // conversion takes the value it saturates at.
@@ -542,18 +562,47 @@ impl LdFilter {
         self.stats
     }
 
-    /// The variant the block ends at and the chromosomes the filter has
-    /// read once it has read the block, with every variant of it checked
-    /// against the one before it.
+    /// The variant the block ends at once the filter has read the block,
+    /// with every variant of it checked against the one before it and the
+    /// chromosomes of the block marked as read.
+    ///
+    /// What it marked comes back with it, so that a block refused further
+    /// on unmarks those chromosomes and leaves the filter as it was; a
+    /// variant of the block that is refused here unmarks them itself.
     ///
     /// # Errors
     ///
     /// [`Error::LdFilterVariantOutOfOrder`] at the first variant of the
     /// block whose position falls below the position of the variant before
-    /// it on its chromosome, or whose chromosome had already ended.
-    fn the_order_read(&self, chroms: &[u32], positions: &[u64]) -> Result<TheOrderRead> {
+    /// it on its chromosome, or whose chromosome had already ended, and
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the chromosomes read.
+    fn the_order_read(&mut self, chroms: &[u32], positions: &[u64]) -> Result<TheOrderRead> {
+        let mut marked: Vec<u32> = Vec::new();
+        match self.the_order_walked(chroms, positions, &mut marked) {
+            Ok(before) => Ok(TheOrderRead { before, marked }),
+            Err(error) => {
+                self.the_chromosomes_unmarked(&marked);
+                Err(error)
+            }
+        }
+    }
+
+    /// The variant the block ends at, with every variant of it checked
+    /// against the one before it, and the chromosomes the block was the
+    /// first to hold a variant of written into `marked` and marked as read.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`LdFilter::the_order_read`], which unmarks what this
+    /// marked before it gives one on.
+    fn the_order_walked(
+        &mut self,
+        chroms: &[u32],
+        positions: &[u64],
+        marked: &mut Vec<u32>,
+    ) -> Result<Option<TheVariantBefore>> {
         let mut before = self.before;
-        let mut chroms_read = self.chroms_read.clone();
         for (variant, (chrom, pos)) in chroms.iter().zip(positions).enumerate() {
             let out_of_order = match before {
                 Some(before) if before.chrom == *chrom => {
@@ -562,12 +611,13 @@ impl LdFilter {
                         pos_before: before.pos,
                     })
                 }
-                Some(before) => chroms_read.contains(chrom).then_some(
-                    TheOrderOfTheVariants::TheChromosomeCameBack {
-                        pos: *pos,
-                        pos_before: before.pos,
-                    },
-                ),
+                Some(before) => {
+                    self.has_read(*chrom)
+                        .then_some(TheOrderOfTheVariants::TheChromosomeCameBack {
+                            pos: *pos,
+                            pos_before: before.pos,
+                        })
+                }
                 // The first variant the filter reads comes after nothing.
                 None => None,
             };
@@ -582,18 +632,77 @@ impl LdFilter {
                 });
             }
             if before.is_none_or(|before| before.chrom != *chrom) {
-                chroms_read.push(*chrom);
+                self.mark_as_read(*chrom, marked)?;
             }
             before = Some(TheVariantBefore {
                 chrom: *chrom,
                 pos: *pos,
             });
         }
-        Ok(TheOrderRead {
-            before,
-            chroms_read,
-        })
+        Ok(before)
     }
+
+    /// Whether the filter has read a variant of that chromosome.
+    fn has_read(&self, chrom: u32) -> bool {
+        the_place_of(chrom)
+            .and_then(|of_it| self.chroms_read.get(of_it))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Marks a chromosome the filter has read a variant of, and writes it
+    /// into `marked` when it was not marked already.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// one value for each chromosome up to that one.
+    fn mark_as_read(&mut self, chrom: u32, marked: &mut Vec<u32>) -> Result<()> {
+        // A `usize` is 64 bits natively and 32 in WebAssembly, so the
+        // number of a chromosome is one; on a machine whose `usize` is
+        // narrower the vector is asked for a length no machine gives and
+        // the memory is what answers.
+        let of_it = the_place_of(chrom).unwrap_or(usize::MAX);
+        let chroms = of_it.saturating_add(1);
+        if self.chroms_read.len() < chroms {
+            let more = chroms.saturating_sub(self.chroms_read.len());
+            the_room_for(&mut self.chroms_read, more, "the chromosomes read")?;
+            self.chroms_read.resize(chroms, false);
+        }
+        let Some(read) = self.chroms_read.get_mut(of_it) else {
+            // The vector was grown to hold that chromosome, so this is not
+            // reached.
+            return Err(Error::LdNoMemory {
+                what: "the chromosomes read",
+                values: chroms,
+            });
+        };
+        if !*read {
+            *read = true;
+            the_room_for(marked, 1, "the chromosomes of the block")?;
+            marked.push(chrom);
+        }
+        Ok(())
+    }
+
+    /// Unmarks the chromosomes a block marked as read, which is what a
+    /// block that is refused leaves behind.
+    fn the_chromosomes_unmarked(&mut self, marked: &[u32]) {
+        for chrom in marked {
+            if let Some(read) =
+                the_place_of(*chrom).and_then(|of_it| self.chroms_read.get_mut(of_it))
+            {
+                *read = false;
+            }
+        }
+    }
+}
+
+/// Where the chromosome of that number is in the chromosomes read of an
+/// [`LdFilter`], and `None` on a machine whose `usize` does not hold a
+/// `u32`.
+fn the_place_of(chrom: u32) -> Option<usize> {
+    usize::try_from(chrom).ok()
 }
 
 impl fmt::Debug for LdFilter {
