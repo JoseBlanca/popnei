@@ -863,3 +863,126 @@ number of JavaScript holds exactly, and its doc comment says so, so the
 difference that is left is one the language imposes and not one popnei
 chose. The test asserts that a window of that size still keeps the 85
 variants of the row whose window is a whole chromosome.
+
+#### What the review of work packages 2 and 3 found
+
+Six reviewers read them: spec, tests, numbers, errors, api and binding.
+Nineteen findings held, two were refused with evidence the orchestrator
+accepted, and none of them was a wrong number. What the reviewers proved,
+each working without the others, is worth as much as what they found:
+
+- One wrote the filter's rule again from the words of
+  `docs/specs/filters.md` alone, worked out which variants have two
+  dosages from `ld.vcf.gz` itself rather than reading plink2's diagonal,
+  and got kept sets identical, variant by variant, to popnei's at all
+  four settings. It then compared its own implementation of the r²
+  formula with popnei's over 60 random datasets, across ploidies,
+  missing genotypes, repeated positions and five thresholds, with no
+  disagreement.
+- Another wrote the rule again over popnei's own matrix and checked
+  eight generated datasets over one to four chromosomes, repeated
+  positions, variants of one dosage, windows from 1 to a million and six
+  block sizes: no mismatch, and the counts a pass reported equalled the
+  variants that came out of it every time.
+- Python, TypeScript under WebAssembly and plink2 give a matrix that is
+  the same to the bit, and the 500 x 500 one is symmetric to the bit with
+  63376 cells holding no r², which is exactly twice the 31654 pairs
+  without one plus the 68 variants of the diagonal.
+
+So the rule, the matrix and both bindings give the right numbers. What
+the review found is that the code asks too much of a machine, and that
+the checks were thinner than they looked.
+
+**The filter did about eighteen times the work its spec asks for.** "How
+it runs" of the filter item says the variants of a block are compared
+with the window "in one set of the products of `docs/specs/ld.md`, so the
+work that the window bounds is done as matrix products and not one pair
+at a time". The code called the products once for each variant of the
+window. Measured: 2.83 ms for one call of the whole window against a set
+of 256 variants of 1000 individuals, against 50.01 ms for 250 calls; end
+to end, about 20 s for 100000 variants at a window holding 250 of them,
+where a whole pass over that file with no filter takes 0.55 s. Task 3.1
+had judged that the window could not be one set of dosages, because a set
+is built from one block and a window holds variants of several. Work
+package 2 had already solved that same problem for its tiles, in this
+plan, a day earlier.
+
+**Three places took memory in a way that ends the process where the spec
+promises an error.** The window of the filter, the dosages the filter
+builds for a whole block, and the copy the Python binding makes of the
+matrix. The TypeScript binding makes the same copy and asks the machine
+first, saying why: an allocation that fails in WebAssembly is a trap that
+leaves the module unusable. Two subagents met the same problem hours
+apart and one of them solved it. Measured: 44 MB of window for 2500 kept
+variants of 400 individuals, which is about 32 GB at a million; and 240
+MB of dosages for a block of 10000 variants of 1000 individuals, inside a
+filter whose spec says its memory is the window's.
+
+**The check on which the filter's rule rests could not fail.** The three
+properties of the kept set were worked out over the set the same program
+had just built with the same rule, so all three were 0 by construction.
+The demonstrations that they can fail were real, and none of them was in
+the repository. The third property was also asking a weaker question than
+the spec: it took a dropped variant's window from the whole kept set, so
+a variant kept after it could justify the drop. Over a damaged set the
+loose question names 45 variants dropped for no reason and the strict one
+names 64, and over 200 random trials the worst case was 17 against 51.
+The properties are now worked out over the file that was written, and
+three damaged sets are kept beside them, one for each property, which the
+program refuses to write a 0 for.
+
+**The sequential heart of the filter had no test that crossed a block.**
+The five unit tests of the rule all ran one block of five variants or
+fewer, so they exercised only the comparison of a candidate against the
+variants kept inside its own set. Two mutations of the path that carries
+the window from block to block survived the whole suite: a pair exactly
+at the threshold dropping the candidate, and a pair with no r² dropping
+it, the second directly against the spec. The test named for comparing a
+candidate with every variant of its window rather than the last kept one
+did not fail when reduced to the last kept one.
+
+**The two languages differed in seven ways**, which is what four
+subagents building them at the same time without sight of each other
+produces. A TypeScript user was told to change `max_num_vars`, an
+argument that does not exist in their language; the cap on the variants
+of a matrix was documented as 4294967295 and invited 100000 where a
+browser cannot exceed 65535, because a `usize` there is 32 bits; a cap of
+0 was refused in one language and not the other; the arrays of a result
+were read only in one and writable in the other, where the same package
+freezes the names of its distances; and the kinds of a pass's filters had
+gained the new one in Python and not in TypeScript.
+
+Six statements of the two specs no longer matched the code, and in two of
+them the code was right: the memory of the matrix is asked for once the
+pass has counted its variants and not before it, which is the only time
+the number of variants is known. The others were an error case the spec
+did not list, a window said to be trimmed variant by variant where it is
+trimmed once for each set settled, a chain of three filters whose counts
+no test asserted, and a constant documented to change no result with
+nothing varying it.
+
+Two findings were refused by the subagents that had to fix them, with
+evidence the orchestrator checked and accepted. The two limits on a
+number of base pairs in the TypeScript crate are two different limits and
+not one written twice: a position is held exactly by a float64 up to 2 to
+the 53, and a window is checked against the largest whole number
+JavaScript counts in ones, which is one less. And the refusals of a bad
+window and a bad threshold were already tested in TypeScript; only the
+source whose variants do not come in order was not, which is the one
+refusal this filter alone raises in all of popnei.
+
+#### A decision the orchestrator took and took back
+
+A reviewer found that a machine which cannot give the memory for the
+matrix reaches Python as a `ValueError`. That is neither what a user
+wrote nor a defect of popnei, and Python has `MemoryError` for exactly
+it, so the orchestrator ordered the change. It was wrong to.
+`.claude/skills/coding/SKILL.md` records a convention the owner gave on
+21 September 2026 with three exceptions in it, a `ValueError` for a wrong
+input, a `RuntimeError` for a defect of popnei and an `OSError` for a
+file, and adding a fourth changes which exception every user of popnei
+catches. The subagent that made the change found what settles it:
+`Error::DistancesOfTooManyIndividuals` is the same case in another module
+and is a `ValueError`, so the change left popnei answering one question
+two ways. It was put back, and the question is in what this plan asks of
+the owner.
