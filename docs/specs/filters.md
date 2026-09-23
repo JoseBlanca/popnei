@@ -684,16 +684,21 @@ of the set it keeps:
 
 All three are checked in the reference script against the float64 matrix
 that `plink2 --r2-unphased square bin` writes, so every decision of the
-filter is pinned to plink2's numbers and not to popnei's own. They do not
-pin the set by themselves, which the counts of the table below do: the
-first property is what a set that also kept the 68 variants of one dosage
-would fail, since the other two say nothing about those variants, and a
-set that dropped a variant it could have kept would pass all three and
-come out with a count that is too low. On
+filter is pinned to plink2's numbers and not to popnei's own. Each of
+the three catches a different way of being wrong: the first is what a set
+that also kept the 68 variants of one dosage would fail, since the other
+two say nothing about those variants; the second is what a set that kept
+two linked variants would fail; and the third is what a set that dropped
+a variant it could have kept would fail, since such a variant has two
+dosages and nothing above the threshold kept before it in its window,
+which is the negation of what the third property asks. Removing ten
+variants from the kept set of this dataset by hand made the third
+property name 45 variants that had been dropped for no reason. The counts
+of the table below are a check beside them and not the only one. On
 `tests/reference/ld/ld.vcf.gz` of `docs/specs/ld.md`, 500 variants of 100
 individuals on two chromosomes 250000 bp long with 68 variants of one
-dosage, run on 22 September 2026, both properties hold at every setting
-below and the first kept variant of chr2 is always `chr2:1000`:
+dosage, run on 22 September 2026, all three properties hold at every
+setting below and the first kept variant of chr2 is always `chr2:1000`:
 
 | max_dist | max_allowed_r2 | kept of 500 | the first five kept, by position |
 |---|---|---|---|
