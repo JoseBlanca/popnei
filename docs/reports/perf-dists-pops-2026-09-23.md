@@ -313,8 +313,9 @@ the fixed per-population cost of section 4 is this table and little else.
 `count_alleles`, the whole-row counting, already has a two-allele path,
 `the_counts_of_a_variant_of_two_alleles`, which never touches the table;
 `count_alleles_of`, the per-population one, has none, and a pairwise pass
-can never reach the whole-row path. The review of the statistics pass of 22 September
-2026, `docs/reports/perf-stats-2026-09-22.md`, a third report beside this
+can never reach the whole-row path. The review of the statistics pass of
+22 September 2026, `docs/reports/perf-stats-2026-09-22.md`, a third report
+beside this
 one and the Kosman one, which shares both counting functions with this
 module, built the neighbouring change, bounding the clear, the merge and the
 scan to the alleles seen, measured it at 1 and at 4 populations where it
@@ -711,8 +712,8 @@ against deliberately broken code.
 `PopVarCounts`, the three counts of one population at one variant that the
 pass writes over at each variant, now carries beside them that
 population's allele frequencies and the five numbers a pair reads of one
-of its two populations. The pair loop keeps only what is of the pair: the product of
-the two frequencies, its square root and the pooled power.
+of its two populations. The pair loop keeps only what is of the pair: the
+product of the two frequencies, its square root and the pooled power.
 
 The gate was the divisions executed for one biallelic variant at 20
 populations, attributed to their innermost loop in the disassembly of the
