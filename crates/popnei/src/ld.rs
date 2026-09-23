@@ -24,7 +24,7 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::product;
+use popnei_linalg::product_by_transpose;
 
 use crate::block::Block;
 use crate::error::{Error, Result};
@@ -469,14 +469,36 @@ pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
         return Ok(());
     }
     let sums = TheSumsOfThePairs::of(a, b, num_values)?;
+    match &sums.of_the_second_set {
+        TheSumsOfTheSecondSet::OfTheirOwn { of_b, squares_of_b } => {
+            the_r2_of_every_pair(&sums, of_b, squares_of_b, out);
+        }
+        TheSumsOfTheSecondSet::TheOtherWayRound => {
+            the_r2_of_a_set_against_itself(&sums, a.num_vars, out);
+        }
+    }
+    Ok(())
+}
+
+/// Writes into `out` the r² of every pair of two sets of variants, whose
+/// Σy and Σyy lie where the other four sums of the pair do.
+///
+/// All seven buffers hold one value for each pair, in the order of the
+/// pairs.
+fn the_r2_of_every_pair(
+    sums: &TheSumsOfThePairs,
+    of_b: &[f64],
+    squares_of_b: &[f64],
+    out: &mut [f64],
+) {
     let values = out
         .iter_mut()
         .zip(&sums.num_individuals)
         .zip(&sums.products)
         .zip(&sums.of_a)
-        .zip(&sums.of_b)
+        .zip(of_b)
         .zip(&sums.squares_of_a)
-        .zip(&sums.squares_of_b);
+        .zip(squares_of_b);
     for ((((((r2, individuals), products), of_a), of_b), squares_of_a), squares_of_b) in values {
         *r2 = the_r2_of_a_pair(
             *individuals,
@@ -487,7 +509,49 @@ pub fn r2_between(a: &LdDosages, b: &LdDosages, out: &mut [f64]) -> Result<()> {
             *squares_of_b,
         );
     }
-    Ok(())
+}
+
+/// Writes into `out` the r² of every pair of one set of `num_vars`
+/// variants against itself, whose Σy and Σyy are the Σx and Σxx of the
+/// pair of its two variants the other way round.
+///
+/// The pair of the variants i and j holds the same two variants as the
+/// pair of j and i, so Σy of the row i is the column i of Σx, whose
+/// entries lie one row apart, and Σyy of that row is the column i of Σxx.
+/// Every buffer holds `num_vars` rows of `num_vars` values, and `num_vars`
+/// is 1 at least: a set of no variant has no pair, and the caller writes
+/// nothing for it.
+fn the_r2_of_a_set_against_itself(sums: &TheSumsOfThePairs, num_vars: usize, out: &mut [f64]) {
+    let rows = out
+        .chunks_exact_mut(num_vars)
+        .zip(sums.num_individuals.chunks_exact(num_vars))
+        .zip(sums.products.chunks_exact(num_vars))
+        .zip(sums.of_a.chunks_exact(num_vars))
+        .zip(sums.squares_of_a.chunks_exact(num_vars))
+        .enumerate();
+    for (variant, ((((r2_of_the_row, individuals), products), of_a), squares_of_a)) in rows {
+        let of_b = sums.of_a.iter().skip(variant).step_by(num_vars);
+        let squares_of_b = sums.squares_of_a.iter().skip(variant).step_by(num_vars);
+        let values = r2_of_the_row
+            .iter_mut()
+            .zip(individuals)
+            .zip(products)
+            .zip(of_a)
+            .zip(of_b)
+            .zip(squares_of_a)
+            .zip(squares_of_b);
+        for ((((((r2, individuals), products), of_a), of_b), squares_of_a), squares_of_b) in values
+        {
+            *r2 = the_r2_of_a_pair(
+                *individuals,
+                *products,
+                *of_a,
+                *of_b,
+                *squares_of_a,
+                *squares_of_b,
+            );
+        }
+    }
 }
 
 /// How the individuals of the two sets of dosages differ, and `None` when
@@ -527,15 +591,32 @@ struct TheSumsOfThePairs {
     /// Σx, the sum of the dosages of the variant of the first set over
     /// those individuals.
     of_a: Vec<f64>,
-    /// Σy, the sum of the dosages of the variant of the second set over
-    /// them.
-    of_b: Vec<f64>,
     /// Σxx, the sum of the squares of the dosages of the variant of the
     /// first set over them.
     squares_of_a: Vec<f64>,
-    /// Σyy, the sum of the squares of the dosages of the variant of the
-    /// second set over them.
-    squares_of_b: Vec<f64>,
+    /// Where Σy and Σyy of each pair are, which is the sum of the dosages
+    /// of the variant of the second set over those individuals and the sum
+    /// of their squares.
+    of_the_second_set: TheSumsOfTheSecondSet,
+}
+
+/// Where Σy and Σyy of each pair of two sets of variants are.
+enum TheSumsOfTheSecondSet {
+    /// Two products of their own, one value for each pair in the order of
+    /// the pairs, which is what two sets that are not one set against
+    /// itself need.
+    OfTheirOwn {
+        /// Σy, the sum of the dosages of the variant of the second set
+        /// over the individuals both variants of the pair were called in.
+        of_b: Vec<f64>,
+        /// Σyy, the sum of the squares of those dosages.
+        squares_of_b: Vec<f64>,
+    },
+    /// Σx and Σxx of the pair of its two variants the other way round,
+    /// which is what one set of variants against itself has: the pair of
+    /// the variants i and j holds the same two variants as the pair of j
+    /// and i, so two of the six products are not taken.
+    TheOtherWayRound,
 }
 
 impl TheSumsOfThePairs {
@@ -544,79 +625,55 @@ impl TheSumsOfThePairs {
     /// them, the variants of `a` times those of `b`, a number the caller
     /// has counted.
     ///
-    /// A product sums over the columns of its first matrix and the rows of
-    /// its second, and the three matrices of a set of dosages are variants
-    /// x individuals, so the matrices of `b` are transposed to individuals
-    /// x variants before they are multiplied. Each transpose copies 8
-    /// bytes for every variant of `b` and individual, 4.1 MB for 512
-    /// variants of 1000 individuals.
+    /// The three matrices of a set of dosages hold one row for each
+    /// variant and one column for each individual, and the sums of a pair
+    /// run over the individuals, so each product is
+    /// [`product_by_transpose`], which reads the matrix of the second set
+    /// the other way round inside the routine and copies nothing.
     ///
     /// # Errors
     ///
     /// [`Error::LdLinalg`] when a product could not be worked out, and
     /// [`Error::LdNoMemory`] when this machine did not give the memory of
-    /// one of the six sums or of a transpose.
+    /// one of the sums.
     fn of(a: &LdDosages, b: &LdDosages, num_values: usize) -> Result<TheSumsOfThePairs> {
         let (rows, inner, cols) = (a.num_vars, a.num_individuals(), b.num_vars);
-        let called_of_b = the_transpose_of(
-            &b.called,
-            cols,
-            inner,
-            "the transpose of the called genotypes of b",
-        )?;
-        let dosages_of_b =
-            the_transpose_of(&b.dosages, cols, inner, "the transpose of the dosages of b")?;
         let mut num_individuals = a_vector_of(0.0, num_values, &the_memory_for("n", num_values))?;
         let mut products = a_vector_of(0.0, num_values, &the_memory_for("Σxy", num_values))?;
         let mut of_a = a_vector_of(0.0, num_values, &the_memory_for("Σx", num_values))?;
         let mut squares_of_a = a_vector_of(0.0, num_values, &the_memory_for("Σxx", num_values))?;
-        let sum_of = |of_the_variants: &[f64], by_individual: &[f64], into: &mut [f64], sum| {
-            product(of_the_variants, rows, inner, by_individual, cols, into).map_err(|source| {
-                Error::LdLinalg {
+        let sum_of = |of_the_variants: &[f64], of_the_others: &[f64], into: &mut [f64], sum| {
+            product_by_transpose(of_the_variants, rows, inner, of_the_others, cols, into).map_err(
+                |source| Error::LdLinalg {
                     operation: sum,
                     source,
-                }
-            })
+                },
+            )
         };
-        sum_of(&a.called, &called_of_b, &mut num_individuals, "n")?;
-        sum_of(&a.dosages, &dosages_of_b, &mut products, "Σxy")?;
-        sum_of(&a.dosages, &called_of_b, &mut of_a, "Σx")?;
-        sum_of(&a.squares, &called_of_b, &mut squares_of_a, "Σxx")?;
-        let (of_b, squares_of_b) = if std::ptr::eq(a, b) {
+        sum_of(&a.called, &b.called, &mut num_individuals, "n")?;
+        sum_of(&a.dosages, &b.dosages, &mut products, "Σxy")?;
+        sum_of(&a.dosages, &b.called, &mut of_a, "Σx")?;
+        sum_of(&a.squares, &b.called, &mut squares_of_a, "Σxx")?;
+        let of_the_second_set = if std::ptr::eq(a, b) {
             // One set of variants against itself: the pair of the variants
             // i and j holds the two variants of the pair of j and i the
-            // other way round, so Σy and Σyy are the transposes of Σx and
-            // Σxx and two of the six products are not taken.
-            (
-                the_transpose_of(&of_a, rows, cols, "the transpose of Σx")?,
-                the_transpose_of(&squares_of_a, rows, cols, "the transpose of Σxx")?,
-            )
+            // other way round, so Σy and Σyy are Σx and Σxx read that way
+            // and two of the six products are not taken.
+            TheSumsOfTheSecondSet::TheOtherWayRound
         } else {
-            let squares_of_b_by_individual = the_transpose_of(
-                &b.squares,
-                cols,
-                inner,
-                "the transpose of the squares of the dosages of b",
-            )?;
             let mut of_b = a_vector_of(0.0, num_values, &the_memory_for("Σy", num_values))?;
             let mut squares_of_b =
                 a_vector_of(0.0, num_values, &the_memory_for("Σyy", num_values))?;
-            sum_of(&a.called, &dosages_of_b, &mut of_b, "Σy")?;
-            sum_of(
-                &a.called,
-                &squares_of_b_by_individual,
-                &mut squares_of_b,
-                "Σyy",
-            )?;
-            (of_b, squares_of_b)
+            sum_of(&a.called, &b.dosages, &mut of_b, "Σy")?;
+            sum_of(&a.called, &b.squares, &mut squares_of_b, "Σyy")?;
+            TheSumsOfTheSecondSet::OfTheirOwn { of_b, squares_of_b }
         };
         Ok(TheSumsOfThePairs {
             num_individuals,
             products,
             of_a,
-            of_b,
             squares_of_a,
-            squares_of_b,
+            of_the_second_set,
         })
     }
 }
@@ -666,48 +723,6 @@ fn the_r2_of_a_pair(
         return f64::NAN;
     }
     above_the_line * above_the_line / (spread_of_a * spread_of_b)
-}
-
-/// The transpose of `matrix`, which holds `num_rows` rows of `num_cols`
-/// values one after another and whose transpose holds `num_cols` rows of
-/// `num_rows` values.
-///
-/// The three matrices of [`LdDosages`] hold exactly their variants times
-/// their individuals, and so do the sums of a set of pairs: a matrix that
-/// held more values than its rows times its columns would be transposed
-/// up to that many, and one that held fewer would leave the rest of the
-/// transpose at 0.
-///
-/// `what` names the transpose in the error of the memory.
-///
-/// # Errors
-///
-/// [`Error::LdNoMemory`] when this machine did not give the memory of the
-/// transpose.
-fn the_transpose_of(
-    matrix: &[f64],
-    num_rows: usize,
-    num_cols: usize,
-    what: &'static str,
-) -> Result<Vec<f64>> {
-    let values = matrix.len();
-    let mut transposed = a_vector_of(0.0, values, &the_memory_for(what, values))?;
-    if num_rows == 0 || num_cols == 0 {
-        // A matrix with no row or no column has no value to transpose, and
-        // neither of the two runs below is over a chunk of nothing.
-        return Ok(transposed);
-    }
-    for (col, row_of_the_transpose) in transposed.chunks_exact_mut(num_rows).enumerate() {
-        let values = row_of_the_transpose
-            .iter_mut()
-            .zip(matrix.chunks_exact(num_cols));
-        for (value, row) in values {
-            if let Some(found) = row.get(col) {
-                *value = *found;
-            }
-        }
-    }
-    Ok(transposed)
 }
 
 /// `values` copies of `value`, or the error that `not_given` builds when
@@ -874,8 +889,8 @@ mod tests {
 
     use super::{
         LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES,
-        TheIndividualsThatDiffer, TheSumsOfThePairs, a_vector_of, r2_between, the_genotypes_of,
-        the_memory_for, the_values_of,
+        TheIndividualsThatDiffer, TheSumsOfThePairs, TheSumsOfTheSecondSet, a_vector_of,
+        r2_between, the_genotypes_of, the_memory_for, the_values_of,
     };
     use popnei_linalg::Error as LinalgError;
 
@@ -1422,6 +1437,49 @@ mod tests {
         );
     }
 
+    /// The six sums of the pair of the variant `of_a` of the first set and
+    /// the variant `of_b` of the second, n, Σx, Σy, Σxy, Σxx and Σyy, in
+    /// the order of the table of the spec.
+    ///
+    /// The sums have to be those of two sets that are not one set against
+    /// itself, which `the_six_sums_of` builds: a set against itself takes
+    /// Σy and Σyy from Σx and Σxx read the other way round and holds
+    /// neither of its own, and what it gives is the r² the tests of the
+    /// worked example read.
+    fn the_sums_of_the_pair(
+        sums: &TheSumsOfThePairs,
+        num_vars_of_b: usize,
+        of_a: usize,
+        of_b: usize,
+    ) -> [f64; 6] {
+        let TheSumsOfTheSecondSet::OfTheirOwn {
+            of_b: of_the_second,
+            squares_of_b: squares_of_the_second,
+        } = &sums.of_the_second_set
+        else {
+            panic!("the sums are of one set against itself and hold no Σy of their own")
+        };
+        [
+            of_the_pair(&sums.num_individuals, num_vars_of_b, of_a, of_b),
+            of_the_pair(&sums.of_a, num_vars_of_b, of_a, of_b),
+            of_the_pair(of_the_second, num_vars_of_b, of_a, of_b),
+            of_the_pair(&sums.products, num_vars_of_b, of_a, of_b),
+            of_the_pair(&sums.squares_of_a, num_vars_of_b, of_a, of_b),
+            of_the_pair(squares_of_the_second, num_vars_of_b, of_a, of_b),
+        ]
+    }
+
+    /// The six sums of every pair of the variants of `dosages` with
+    /// themselves, taken over two sets that hold the same variants and are
+    /// not one reference, so that Σy and Σyy are two products of their own
+    /// and can be read pair by pair.
+    fn the_six_sums_of(dosages: &LdDosages) -> TheSumsOfThePairs {
+        let num_vars = dosages.num_vars();
+        let of_the_same_variants = dosages.rows(0, num_vars).expect("the same variants");
+        let num_values = num_vars.checked_mul(num_vars).expect("one for each pair");
+        TheSumsOfThePairs::of(&of_the_same_variants, dosages, num_values).expect("the sums")
+    }
+
     /// That the six sums of a pair are the whole numbers of the spec.
     #[expect(
         clippy::float_cmp,
@@ -1520,32 +1578,19 @@ mod tests {
     #[test]
     fn the_six_sums_of_the_worked_example_are_the_whole_numbers_of_the_spec() {
         let dosages = LdDosages::of_block(&the_worked_example(), &[]).expect("the dosages");
-        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 25).expect("the sums");
+        let sums = the_six_sums_of(&dosages);
         for (of_a, of_b, expected, _) in THE_PAIRS_OF_THE_EXAMPLE {
-            let found = [
-                of_the_pair(&sums.num_individuals, 5, of_a, of_b),
-                of_the_pair(&sums.of_a, 5, of_a, of_b),
-                of_the_pair(&sums.of_b, 5, of_a, of_b),
-                of_the_pair(&sums.products, 5, of_a, of_b),
-                of_the_pair(&sums.squares_of_a, 5, of_a, of_b),
-                of_the_pair(&sums.squares_of_b, 5, of_a, of_b),
-            ];
+            let found = the_sums_of_the_pair(&sums, 5, of_a, of_b);
             assert_the_sums_are(
                 &found,
                 &expected,
                 &format!("the pair of the variants {of_a} and {of_b}"),
             );
             // The same pair the other way round has Σx and Σy, and Σxx and
-            // Σyy, the other way round too.
+            // Σyy, the other way round too, which is what lets a set
+            // against itself read Σy and Σyy from Σx and Σxx.
             let [n, of_x, of_y, products, squares_of_x, squares_of_y] = expected;
-            let back = [
-                of_the_pair(&sums.num_individuals, 5, of_b, of_a),
-                of_the_pair(&sums.of_a, 5, of_b, of_a),
-                of_the_pair(&sums.of_b, 5, of_b, of_a),
-                of_the_pair(&sums.products, 5, of_b, of_a),
-                of_the_pair(&sums.squares_of_a, 5, of_b, of_a),
-                of_the_pair(&sums.squares_of_b, 5, of_b, of_a),
-            ];
+            let back = the_sums_of_the_pair(&sums, 5, of_b, of_a);
             assert_the_sums_are(
                 &back,
                 &[n, of_y, of_x, products, squares_of_y, squares_of_x],
@@ -1644,16 +1689,8 @@ mod tests {
             dosages.has_variance(0) && dosages.has_variance(1),
             "a variant of 0/0 and 0/1 has one dosage"
         );
-        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 4).expect("the sums");
         assert_the_sums_are(
-            &[
-                of_the_pair(&sums.num_individuals, 2, 0, 1),
-                of_the_pair(&sums.of_a, 2, 0, 1),
-                of_the_pair(&sums.of_b, 2, 0, 1),
-                of_the_pair(&sums.products, 2, 0, 1),
-                of_the_pair(&sums.squares_of_a, 2, 0, 1),
-                of_the_pair(&sums.squares_of_b, 2, 0, 1),
-            ],
+            &the_sums_of_the_pair(&the_six_sums_of(&dosages), 2, 0, 1),
             &[0.0; 6],
             "the pair of two variants with no individual in common",
         );
@@ -1679,16 +1716,8 @@ mod tests {
             dosages.has_variance(0) && dosages.has_variance(1),
             "one of the two variants has one dosage"
         );
-        let sums = TheSumsOfThePairs::of(&dosages, &dosages, 4).expect("the sums");
         assert_the_sums_are(
-            &[
-                of_the_pair(&sums.num_individuals, 2, 0, 1),
-                of_the_pair(&sums.of_a, 2, 0, 1),
-                of_the_pair(&sums.of_b, 2, 0, 1),
-                of_the_pair(&sums.products, 2, 0, 1),
-                of_the_pair(&sums.squares_of_a, 2, 0, 1),
-                of_the_pair(&sums.squares_of_b, 2, 0, 1),
-            ],
+            &the_sums_of_the_pair(&the_six_sums_of(&dosages), 2, 0, 1),
             &[2.0, 0.0, 1.0, 0.0, 0.0, 1.0],
             "the pair of two individuals of one dosage at the first variant",
         );
