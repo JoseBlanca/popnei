@@ -656,13 +656,17 @@ A pair that counted variants has no value for a measure whose divisor came
 to 0, which the measure's own item below names and which "The Rust
 interface" lists for all seven. Two populations fixed for the same allele
 at every variant that counted for them are the case that reaches three of
-the divisors at once: their sum of H_b and their mean corrected H_T are
-both 0, so F_ST, G_ST and G''_ST are a 0 over 0, while f_2, Jost's D, the
-chord distance and Nei's D_A are 0 there, which is what a pair as near as a
-pair can be deserves. A pair whose mean corrected H_S came to exactly 1 has
-no Jost's D and no G''_ST, both of which divide by 1 - H_S'. The measures
-with no value are NaN in the distance vector, as a pair with no variant is,
-and the measures of the same pair that have one are unaffected.
+the divisors at once. Their sum of H_b is 0, and so is their mean H_T',
+the diversity of the two populations pooled at equal weight, corrected for
+the sample, which "Jost's D" below gives the formula of and which the mean
+H_S', the same diversity within the two populations, goes with. F_ST, G_ST
+and G''_ST divide by one of those two and are a 0 over 0 there, while f_2,
+Jost's D, the chord distance and Nei's D_A are 0, the distance between two
+populations that hold the same one allele everywhere. A pair whose mean
+H_S' came to exactly 1 has no Jost's D and no G''_ST, the two that divide
+by 1 - H_S'. A measure with no value is NaN in the distance vector, as a
+pair with no variant is, and the measures of the same pair that have one
+are unaffected.
 
 A population with no called genotype at a variant has no allele frequency
 at all, so the variant never counts for a pair that population is in. That
@@ -676,8 +680,8 @@ value at all, for any pair and whatever the genotypes. E_P is 1 - sum over
 a of p_Pa^k and H_T is 1 - sum over a of ((p_Aa + p_Ba) / 2)^k, so at
 k = 1 both sums are the frequencies themselves, which add to 1, and a
 haploid genotype is never heterozygous, so H_obs is 0 as well. H_S, H_T
-and the two corrected values are then 0 by their definitions, and what the
-sums hold is the residue of adding frequencies that a f64 does not bring
+and the corrected H_S' and H_T' are then 0 by their definitions, and what
+the sums hold is the residue of adding frequencies that a f64 does not bring
 to exactly 1. The three measures divide that residue by itself and give a
 number that reads like a measurement: on
 `tests/reference/dists/haploid.vcf.gz`, 200 variants of 12 individuals
