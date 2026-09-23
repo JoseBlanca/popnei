@@ -1208,6 +1208,17 @@ it is the square of the chord distance, so both come from the one sum and
 a user picks the one their method expects. Neither is corrected for the
 sampling, and neither goes negative.
 
+The sum of the square roots is at most the variants that counted, so D_A
+is 0 at the least. In a double it can come out above that count by the
+last bits: two populations with the same allele frequencies at every
+variant give a sum of 1 at each of them, and a variant of four alleles at
+the counts 2, 4, 3 and 1 out of 10 called alleles gives 1 + 2.2e-16. Where
+the sum comes out above the count popnei gives 0 for D_A and 0 for the
+chord, and not a D_A of -2.2e-16 and a chord that is NaN. Decided by the
+plan on 23 September 2026, the spec having said that neither measure goes
+negative and not what the arithmetic does when the rounding takes the sum
+past the count.
+
 ### How it is verified
 
 Against `dist.genpop` of adegenet 2.1.11 under R 4.6.1 with `method=2`,
