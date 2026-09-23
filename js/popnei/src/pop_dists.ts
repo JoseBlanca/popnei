@@ -89,6 +89,14 @@ export interface CalcPopDistsOptions {
    * no standard errors, which is the only one of the three that does not
    * need the chromosome and the position of the variants.
    *
+   * A length needs the variants of each chromosome to come together and in
+   * order of position, and a source whose variants go back is an `Error`
+   * that names the chromosome and the two positions: the cut compares the
+   * position of a variant with the first position of the group being
+   * filled, so a variant that goes back joins that group instead of
+   * starting one and the groups are not the stretches that were asked for.
+   * `"variant"` and `null` take a source in any order.
+   *
    * A group has to be longer than the distance over which two variants still
    * carry the same history, because two groups that share it are not the
    * independent draws the standard error takes them for, and there have to

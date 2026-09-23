@@ -906,6 +906,52 @@ pub enum Error {
         at_least: usize,
     },
 
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant whose position is below the position of the variant
+    /// before it on the same chromosome. The groups are stretches of one
+    /// chromosome, cut by comparing the position of a variant with the
+    /// first position of the group being filled, so a variant that goes
+    /// back joins that group instead of starting one and the groups are
+    /// not the stretches the user asked for. "The standard errors" of
+    /// `docs/specs/dists.md` has what it does to the standard error. In
+    /// Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} comes after the variant at {chrom} {before} of the same chromosome: a group is a stretch of one chromosome, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsVariantGoesBack {
+        /// The chromosome of both variants, as the table of the reader
+        /// names it, and as its number where that table has no name for
+        /// it, which only a reader with a defect gives.
+        chrom: String,
+        /// The position of the variant that goes back.
+        pos: u64,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant of a chromosome that an earlier variant had left.
+    /// The variants of a chromosome that comes back are cut into groups of
+    /// their own over the stretch the earlier ones were already cut into,
+    /// so the groups overlap and are not the stretches the user asked for.
+    /// In Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} is of a chromosome that the variant at {before_chrom} {before} had left: the variants of one chromosome have to come together, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsChromComesBack {
+        /// The chromosome that comes back, as the table of the reader
+        /// names it.
+        chrom: String,
+        /// The position of the variant that is on it.
+        pos: u64,
+        /// The chromosome of the variant before it.
+        before_chrom: String,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
     /// The six sums the distances between populations are worked out from
     /// are more than this machine gave room for: popnei keeps them for each
     /// pair of populations and each resampling group, 48 bytes each, and

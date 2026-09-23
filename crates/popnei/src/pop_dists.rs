@@ -48,7 +48,7 @@ use crate::error::{Error, Result};
 use crate::stats::{
     ObsHet, Pops, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of, checked_ploidy, raised,
 };
-use crate::variant::{AlleleCounts, GtCounts, Needs, count_alleles_of, count_gts_of};
+use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts_of};
 
 /// How many populations a pairwise measure is over, the s of the
 /// corrections of H_S and H_T.
@@ -428,6 +428,15 @@ pub(crate) struct JackknifeWalk {
     /// The groups in the order they were started, the one being filled
     /// last.
     groups: Vec<GroupId>,
+    /// The chromosome and the position of the variant before, which say
+    /// whether the variant in hand goes back, and `None` before the first
+    /// variant.
+    the_one_before: Option<(u32, u64)>,
+    /// The chromosomes the variants have been on, in the order they first
+    /// came, which say whether a chromosome comes back after another. A
+    /// genome has a handful of them, and the list is looked at only where
+    /// the chromosome changes.
+    chroms_read: Vec<u32>,
 }
 
 impl JackknifeWalk {
@@ -443,29 +452,48 @@ impl JackknifeWalk {
         Ok(JackknifeWalk {
             how,
             groups: Vec::new(),
+            the_one_before: None,
+            chroms_read: Vec::new(),
         })
     }
 
     /// The group the variant at `chrom` and `pos` falls in, counted from 0,
     /// and `None` when no groups were asked for.
     ///
-    /// The variants are given to it in the order the reader gives them, and
-    /// their positions along a chromosome go up in every source popnei
-    /// reads. A group that is being filled takes the variant when it is of
-    /// its chromosome and its position is less than the length beyond the
-    /// first variant of the group; otherwise the variant starts a group of
-    /// its own.
-    pub(crate) fn group_of(&mut self, chrom: u32, pos: u64) -> Option<usize> {
+    /// The variants are given to it in the order the reader gives them. A
+    /// group that is being filled takes the variant when it is of its
+    /// chromosome and its position is less than the length beyond the first
+    /// variant of the group; otherwise the variant starts a group of its
+    /// own. `chroms` is the table of the reader, which names the chromosome
+    /// of an error.
+    ///
+    /// # Errors
+    ///
+    /// Where the groups are stretches of a chromosome, a variant that goes
+    /// back: one whose position is below the position of the variant before
+    /// it on the same chromosome, and one of a chromosome that the variant
+    /// before it had left.
+    pub(crate) fn group_of(
+        &mut self,
+        chroms: &ChromTable,
+        chrom: u32,
+        pos: u64,
+    ) -> Result<Option<usize>> {
         match self.how {
-            JackknifeGroups::None => return None,
+            JackknifeGroups::None => return Ok(None),
             JackknifeGroups::PerVariant => {}
             JackknifeGroups::OfBasePairs(length) => {
+                self.check_the_order(chroms, chrom, pos)?;
+                // The check above leaves the position of the variant at or
+                // beyond the first position of the group being filled, so
+                // the subtraction is the distance between the two and
+                // saturates at nothing.
                 if let Some(filling) = self.groups.last_mut()
                     && filling.chrom == chrom
                     && pos.saturating_sub(filling.start) < length
                 {
                     filling.end = pos;
-                    return self.groups.len().checked_sub(1);
+                    return Ok(self.groups.len().checked_sub(1));
                 }
             }
         }
@@ -475,7 +503,57 @@ impl JackknifeWalk {
             start: pos,
             end: pos,
         });
-        Some(at)
+        Ok(Some(at))
+    }
+
+    /// It refuses a variant that goes back and keeps it as the variant
+    /// before for the next one.
+    ///
+    /// The cut of a group compares the position of a variant with the first
+    /// position of the group being filled, so a variant whose position is
+    /// below the position of the variant before it on the same chromosome
+    /// joins that group instead of starting one of its own, and a variant
+    /// of a chromosome that the variant before it had left is cut into
+    /// groups over the stretch the earlier variants of that chromosome were
+    /// already cut into. Either way the groups are not the stretches the
+    /// caller asked for. "The standard errors" of `docs/specs/dists.md` has
+    /// what the first of the two does to the standard error of the
+    /// biallelic panel.
+    ///
+    /// Two variants at one position are taken, as they are by the linkage
+    /// disequilibrium filter of `docs/specs/filters.md`, the other part of
+    /// popnei that needs this order.
+    ///
+    /// # Errors
+    ///
+    /// The variant that goes back, and the variant of a chromosome that had
+    /// been left.
+    fn check_the_order(&mut self, chroms: &ChromTable, chrom: u32, pos: u64) -> Result<()> {
+        match self.the_one_before {
+            Some((before_chrom, before)) if before_chrom == chrom => {
+                if pos < before {
+                    return Err(Error::JackknifeGroupsVariantGoesBack {
+                        chrom: named(chroms, chrom),
+                        pos,
+                        before,
+                    });
+                }
+            }
+            Some((before_chrom, before)) => {
+                if self.chroms_read.contains(&chrom) {
+                    return Err(Error::JackknifeGroupsChromComesBack {
+                        chrom: named(chroms, chrom),
+                        pos,
+                        before_chrom: named(chroms, before_chrom),
+                        before,
+                    });
+                }
+                self.chroms_read.push(chrom);
+            }
+            None => self.chroms_read.push(chrom),
+        }
+        self.the_one_before = Some((chrom, pos));
+        Ok(())
     }
 
     /// The groups the variants walked so far were cut into, in the order
@@ -483,6 +561,18 @@ impl JackknifeWalk {
     pub(crate) fn groups(&self) -> &[GroupId] {
         &self.groups
     }
+}
+
+/// The name the table of a reader gives the chromosome `chrom`, which an
+/// error of the groups says the chromosome by.
+///
+/// A number the table has no name for is named by the number itself, which
+/// only a reader with a defect gives: the numbers are the table's own, one
+/// for each name it was given.
+fn named(chroms: &ChromTable, chrom: u32) -> String {
+    chroms
+        .name(chrom)
+        .map_or_else(|| chrom.to_string(), ToOwned::to_owned)
 }
 
 /// Which of the seven measures of how far apart two populations are a
@@ -987,7 +1077,11 @@ pub struct PopDistOptions {
 /// variant, whether its source holds none or its steps kept none of them;
 /// fewer than [`MIN_NUM_JACKKNIFE_GROUPS`] groups where groups were asked
 /// for, with how many the variants fell into; resampling groups of 0 base
-/// pairs; a ploidy of 0 or above the largest one a reader of popnei gives;
+/// pairs; a variant that goes back where the groups are stretches of a
+/// chromosome, which is a position below the position of the variant
+/// before it on that chromosome or a chromosome that the variant before it
+/// had left; a ploidy of 0 or above the largest one a reader of popnei
+/// gives;
 /// the memory of the sums, which grows as the groups appear; what the
 /// reader fails with; a block that holds no genotypes, or no positions
 /// where the groups are cut from them, a block of no variants and a block
@@ -1070,7 +1164,7 @@ pub(crate) fn sums_of_the_pass<R: BlockReader + ?Sized>(
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
         let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
-        cut_the_rows_into_groups(&block, needs, &mut walk, &mut of_the_rows)?;
+        cut_the_rows_into_groups(&block, needs, reader.chroms(), &mut walk, &mut of_the_rows)?;
         // The sums hold every group the variants have fallen into so far,
         // and one run of the pairs when no groups were asked for and every
         // row falls in the same place.
@@ -1126,6 +1220,7 @@ struct OfThePass<'a> {
 fn cut_the_rows_into_groups(
     block: &Block,
     needs: Needs,
+    chroms: &ChromTable,
     walk: &mut JackknifeWalk,
     of_the_rows: &mut Vec<usize>,
 ) -> Result<()> {
@@ -1146,7 +1241,7 @@ fn cut_the_rows_into_groups(
         };
         // The walk gives a group for every variant it is asked about but
         // when it was asked for no groups, which the line above left.
-        of_the_rows.push(walk.group_of(chrom, pos).unwrap_or(0));
+        of_the_rows.push(walk.group_of(chroms, chrom, pos)?.unwrap_or(0));
     }
     Ok(())
 }
@@ -1710,16 +1805,35 @@ mod tests {
 
     /// The groups a walk cuts `vars` into, each variant given as its
     /// chromosome and its position, with the group each variant fell in.
-    fn walk_over(how: JackknifeGroups, vars: &[(u32, u64)]) -> (Vec<Option<usize>>, Vec<GroupId>) {
+    ///
+    /// The chromosomes are numbered as the table of a reader numbers them,
+    /// 0 for `chr1` and 1 for `chr2`, which is what the walk names in an
+    /// error.
+    fn walk_over(
+        how: JackknifeGroups,
+        vars: &[(u32, u64)],
+    ) -> Result<(Vec<Option<usize>>, Vec<GroupId>)> {
+        let chroms = chroms_of_the_tests();
         let mut walk = match JackknifeWalk::new(how) {
             Ok(walk) => walk,
             Err(error) => panic!("{error}"),
         };
-        let of_each_var = vars
-            .iter()
-            .map(|(chrom, pos)| walk.group_of(*chrom, *pos))
-            .collect();
-        (of_each_var, walk.groups().to_vec())
+        let mut of_each_var = Vec::new();
+        for (chrom, pos) in vars {
+            of_each_var.push(walk.group_of(&chroms, *chrom, *pos)?);
+        }
+        Ok((of_each_var, walk.groups().to_vec()))
+    }
+
+    /// The table of chromosome names the tests number their variants by,
+    /// `chr1` to `chr4`, which is what a reader of a VCF of four
+    /// chromosomes would hold.
+    fn chroms_of_the_tests() -> ChromTable {
+        let mut chroms = ChromTable::new();
+        for number in 1..=4 {
+            chroms.intern(&format!("chr{number}"));
+        }
+        chroms
     }
 
     /// The panels and what plink2, R and ADMIXTOOLS 2 give for them live at
@@ -1778,8 +1892,10 @@ mod tests {
                 let (Some(chrom), Some(pos)) = (var.chrom(), var.pos()) else {
                     panic!("the reader gave a variant with no chromosome or no position");
                 };
-                let Some(at) = walk.group_of(chrom, pos) else {
-                    panic!("the variant at {chrom} {pos} fell in no group");
+                let at = match walk.group_of(reader.chroms(), chrom, pos) {
+                    Ok(Some(at)) => at,
+                    Ok(None) => panic!("the variant at {chrom} {pos} fell in no group"),
+                    Err(error) => panic!("{error}"),
                 };
                 if at == num_vars_of_each_group.len() {
                     num_vars_of_each_group.push(0);
@@ -1804,7 +1920,8 @@ mod tests {
     #[test]
     fn a_new_group_starts_at_each_chromosome() {
         let vars = [(0, 1000), (0, 1500), (1, 1600), (1, 2000)];
-        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars);
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars)
+            .expect("the walk over the variants");
 
         assert_eq!(of_each_var, [Some(0), Some(0), Some(1), Some(1)]);
         assert_eq!(
@@ -1835,7 +1952,8 @@ mod tests {
     #[test]
     fn a_group_is_anchored_on_its_own_first_variant() {
         let vars = [(0, 99_999), (0, 100_001), (0, 199_999)];
-        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars);
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars)
+            .expect("the walk over the variants");
 
         assert_eq!(of_each_var, [Some(0), Some(0), Some(1)]);
         assert_eq!(
@@ -1861,7 +1979,8 @@ mod tests {
     #[test]
     fn a_length_of_one_base_pair_groups_the_variants_of_one_position() {
         let vars = [(0, 5), (0, 5), (0, 6)];
-        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(1), &vars);
+        let (of_each_var, groups) =
+            walk_over(JackknifeGroups::OfBasePairs(1), &vars).expect("the walk over the variants");
 
         assert_eq!(of_each_var, [Some(0), Some(0), Some(1)]);
         assert_eq!(groups.len(), 2);
@@ -1873,7 +1992,8 @@ mod tests {
     #[test]
     fn per_variant_gives_one_group_for_each_variant() {
         let vars = [(0, 10), (0, 20), (1, 5)];
-        let (of_each_var, groups) = walk_over(JackknifeGroups::PerVariant, &vars);
+        let (of_each_var, groups) =
+            walk_over(JackknifeGroups::PerVariant, &vars).expect("the walk over the variants");
 
         assert_eq!(of_each_var, [Some(0), Some(1), Some(2)]);
         assert_eq!(
@@ -1904,9 +2024,88 @@ mod tests {
     #[test]
     fn no_groups_leaves_every_variant_in_none() {
         let vars = [(0, 10), (0, 20), (1, 5)];
-        let (of_each_var, groups) = walk_over(JackknifeGroups::None, &vars);
+        let (of_each_var, groups) =
+            walk_over(JackknifeGroups::None, &vars).expect("the walk over the variants");
 
         assert_eq!(of_each_var, [None, None, None]);
+        assert!(groups.is_empty());
+    }
+
+    /// A variant whose position is below the position of the variant
+    /// before it on the same chromosome is refused where the groups are
+    /// stretches of a chromosome: the cut compares its position with the
+    /// first position of the group being filled, so it would join that
+    /// group instead of starting one and the groups would not be the
+    /// stretches the user asked for. The message names the chromosome and
+    /// the two positions.
+    #[test]
+    fn a_variant_whose_position_goes_back_is_refused() {
+        let vars = [(0, 1000), (0, 2000), (0, 1500)];
+        let refused = walk_over(JackknifeGroups::OfBasePairs(5_000), &vars);
+
+        let Err(error) = refused else {
+            panic!("the variant that goes back was taken");
+        };
+        assert!(
+            matches!(&error, Error::JackknifeGroupsVariantGoesBack { chrom, pos, before }
+                if chrom == "chr1" && *pos == 1500 && *before == 2000),
+            "{error:?}"
+        );
+    }
+
+    /// A variant of a chromosome that the variant before it had left is
+    /// refused the same way: its chromosome would be cut into a second run
+    /// of groups over the stretch the first run covered, and the groups
+    /// would overlap. The position check does not catch it, since the two
+    /// positions are of different chromosomes.
+    #[test]
+    fn a_chromosome_that_comes_back_is_refused() {
+        let vars = [(0, 1000), (1, 1000), (0, 2000)];
+        let refused = walk_over(JackknifeGroups::OfBasePairs(5_000), &vars);
+
+        let Err(error) = refused else {
+            panic!("the chromosome that comes back was taken");
+        };
+        assert!(
+            matches!(&error, Error::JackknifeGroupsChromComesBack { chrom, pos, before_chrom, before }
+                if chrom == "chr1" && *pos == 2000 && before_chrom == "chr2" && *before == 1000),
+            "{error:?}"
+        );
+    }
+
+    /// What the order asks for and no more: two variants at one position
+    /// are taken, as they are by the linkage disequilibrium filter of
+    /// `docs/specs/filters.md`, and a chromosome that has not been read
+    /// before starts its groups wherever its first position falls.
+    #[test]
+    fn variants_at_one_position_and_a_new_chromosome_are_taken() {
+        let vars = [(0, 1000), (0, 1000), (1, 500), (1, 500)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(5_000), &vars)
+            .expect("the walk over the variants");
+
+        assert_eq!(of_each_var, [Some(0), Some(0), Some(1), Some(1)]);
+        assert_eq!(groups.len(), 2);
+    }
+
+    /// The order of the variants is asked for where the cut depends on it,
+    /// which is a length of base pairs alone. Each variant is its own group
+    /// with `PerVariant` whatever order they come in, so leaving a group out
+    /// leaves that one variant out; with no groups the pass asks for
+    /// neither the chromosome nor the position. The variants here are the
+    /// ones the length above refuses, one going back and one of a
+    /// chromosome that had been left.
+    #[test]
+    fn per_variant_and_no_groups_take_the_variants_in_any_order() {
+        let vars = [(0, 2000), (0, 1500), (1, 1000), (0, 3000)];
+
+        let (of_each_var, groups) =
+            walk_over(JackknifeGroups::PerVariant, &vars).expect("the walk over the variants");
+        assert_eq!(of_each_var, [Some(0), Some(1), Some(2), Some(3)]);
+        assert_eq!(groups.len(), 4);
+
+        let (of_each_var, groups) =
+            walk_over(JackknifeGroups::None, &vars).expect("the walk over the variants");
+        assert_eq!(of_each_var, [None, None, None, None]);
         assert!(groups.is_empty());
     }
 
@@ -2068,6 +2267,7 @@ mod tests {
         fn of(individuals: Vec<String>, blocks: Vec<Block>, fails_at_the_end: bool) -> GivenBlocks {
             let mut chroms = ChromTable::new();
             chroms.intern("chr1");
+            chroms.intern("chr2");
             let mut left = blocks;
             left.reverse();
             GivenBlocks {
@@ -2649,6 +2849,82 @@ mod tests {
         let on_one = in_a_pool(1);
         assert_eq!(on_one.len(), 87);
         assert_eq!(on_one, in_a_pool(4));
+    }
+
+    /// The biallelic panel with the variant at 600 000 of `chr1` moved in
+    /// front of the variant at 1000, cut into groups of 5000 base pairs:
+    /// the pass refuses it, and the message names the chromosome and the
+    /// two positions.
+    ///
+    /// Before the pass refused such a source, those 1200 variants fell into
+    /// 121 groups where the panel in order gives 240, one of them holding
+    /// every variant of `chr1` with 600 000 as its first position and
+    /// 599 000 as its last, and the standard error of f_2 for p0 and p1 was
+    /// 0.0018968 where the panel in order gives 0.0017814, 6 in 100 higher.
+    /// f_2 itself did not move, which is why no other test of this file
+    /// showed it.
+    #[test]
+    fn a_pass_over_a_source_whose_variants_go_back_is_refused() {
+        let mut of_the_panel = reader_of_the_panel("dists/panel.vcf.gz", Some(1200));
+        of_the_panel.set_needs(Needs::ALL);
+        let block = of_the_panel
+            .next_block()
+            .expect("a block of the panel")
+            .expect("the block of the panel");
+        let individuals = of_the_panel.individuals().to_vec();
+        let pops = pops_of_the_file("stats/panel_pops.txt", &individuals, &["p0", "p1", "p2"]);
+        let mut reader = GivenBlocks::of(
+            individuals,
+            vec![the_block_with_a_variant_moved_first(&block, 599)],
+            false,
+        );
+
+        let error = calc_pop_dist_sums(
+            &mut reader,
+            &pops,
+            &PopDistOptions {
+                min_num_individuals: 20,
+                groups: JackknifeGroups::OfBasePairs(5_000),
+            },
+        )
+        .expect_err("a pass over a source whose variants go back");
+
+        assert!(
+            matches!(&error, Error::JackknifeGroupsVariantGoesBack { chrom, pos, before }
+                if chrom == "chr1" && *pos == 1000 && *before == 600_000),
+            "{error:?}"
+        );
+    }
+
+    /// `block` with the variant at the row `moved` in front of its first
+    /// one, the genotypes, the chromosomes and the positions of every row
+    /// moved together, which is what a source whose variants are not sorted
+    /// gives.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the rows of one block of the panel, 1200 of 200 individuals"
+    )]
+    fn the_block_with_a_variant_moved_first(block: &Block, moved: usize) -> Block {
+        let width = block.num_individuals * block.ploidy;
+        let chrom = block.chrom.clone().expect("the chromosomes of the panel");
+        let pos = block.pos.clone().expect("the positions of the panel");
+        let mut order: Vec<usize> = (0..block.num_vars).collect();
+        let row = order.remove(moved);
+        order.insert(0, row);
+        Block {
+            num_vars: block.num_vars,
+            num_individuals: block.num_individuals,
+            ploidy: block.ploidy,
+            gts: order
+                .iter()
+                .flat_map(|row| block.gts[row * width..(row + 1) * width].to_vec())
+                .collect(),
+            chrom: Some(order.iter().map(|row| chrom[*row]).collect()),
+            pos: Some(order.iter().map(|row| pos[*row]).collect()),
+            id: None,
+            alleles: None,
+            qual: None,
+        }
     }
 
     /// A pass over a source that holds no variant is refused, and the

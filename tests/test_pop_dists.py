@@ -341,6 +341,40 @@ def test_fewer_than_twenty_groups_are_refused_with_how_many_there_were() -> None
     assert "20" in said
 
 
+def test_a_source_whose_variants_go_back_is_refused(write_vcf) -> None:
+    """Three variants of one chromosome at 1000, 3000 and 2000.
+
+    The groups the standard errors are resampled over are stretches of one
+    chromosome, cut by comparing the position of a variant with the first
+    position of the group being filled, so a variant that goes back joins
+    that group instead of starting one and the groups are not the stretches
+    the user asked for. The message names the chromosome and the two
+    positions, and the file they were read from.
+    """
+    path = write_vcf(
+        [
+            "chr1\t1000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+            "chr1\t3000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+            "chr1\t2000\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+        ]
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        calc_pop_dists(
+            open_vcf(path),
+            {"a": ["ind1"], "b": ["ind2", "ind3"]},
+            jackknife_group=1000,
+            measures=("fst",),
+            min_num_individuals=1,
+        )
+
+    said = str(refusal.value)
+    assert "chr1" in said
+    assert "2000" in said
+    assert "3000" in said
+    assert str(path) in said
+
+
 def test_fewer_than_two_populations_are_refused() -> None:
     """One population, which makes no pair.
 
