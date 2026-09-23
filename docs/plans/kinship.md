@@ -203,7 +203,7 @@ both packages, all of which exist.
       of arms for the threads and for WebAssembly, which is a second place
       where the two can drift apart. Needs 1.1. Serves deliverables 2 and 3
       of this work package by keeping one drive over a block.
-- [ ] 2.1 `Kinship` and `calc_kinship` in a new `crates/popnei/src/kinship.rs`:
+- [x] 2.1 `Kinship` and `calc_kinship` in a new `crates/popnei/src/kinship.rs`:
       the one pass, the two accumulators, the per pair denominators and the
       refusals, with the cargo tests of the worked example, the plink2
       literals and the cases. Built from "What it gives", "Missing
