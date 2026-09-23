@@ -1,6 +1,6 @@
 # Plan: the distances between populations
 
-23 September 2026. Draft, not approved. It builds the item "Distances
+23 September 2026. Approved and under way. It builds the item "Distances
 between populations" of `docs/specs/dists.md` and the five items after it,
 Hudson's F_ST, f_2, the chord distance with Nei's D_A, Jost's D, and Nei's
 G_ST with the standardized G''_ST: one pass over the variants that gives
