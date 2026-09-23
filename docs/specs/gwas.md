@@ -248,6 +248,16 @@ what the source gave.
 With `use_grammar_gamma_approx` there is a second pass, which is opened
 first and reads one block. Everything else is one pass.
 
+A pass of the Python binding releases the interpreter while it runs and then
+builds numpy arrays for `stats`, and a Ctrl-C that arrived during the pass
+makes numpy's C API import fail and the numpy crate panic, so the user gets
+a `PanicException` that no `except` of theirs catches. So the binding raises
+a signal that is already pending after the pass and before it builds an
+array, through the helper `crates/popnei-python/src/errors.rs` gives every
+calculation for it. That raises a signal that has arrived; it does not
+interrupt a pass in flight, and a `calc_gwas` over a million variants is not
+interruptible, which is a question of its own and not this module's.
+
 ### How it is verified
 
 Four programs, all run on 23 September 2026 by
