@@ -796,7 +796,7 @@ pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr> {
 /// The two cases carry no value, since the half is all they say, and they
 /// are an enum and not a `bool` because a `bool` at a call site says
 /// nothing about which half it means.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TheHalfThatHoldsTheMatrix {
     /// The entries of column `j` at least `i` of row `i`, the half the
     /// `r` of a thin QR fills, whose diagonal belongs to both halves.
@@ -839,8 +839,11 @@ pub enum TheHalfThatHoldsTheMatrix {
 /// [`Error::Singular`] when the diagonal of `a` holds a 0, with the first
 /// such row: the solve divides by every diagonal entry whichever half it
 /// read, and the two backends part company on a 0 there, faer dividing by
-/// it and answering with an infinity where `dtrtrs` gives an `info`, so
-/// the crate reads that diagonal above them both.
+/// it and answering with a NaN or an infinity, which of the two by the
+/// half and the row, where `dtrtrs` gives an `info`, so the crate reads
+/// that diagonal above them both. Only a 0 is refused, and the spec's
+/// "The errors the seven add" has what a diagonal entry whose reciprocal
+/// overflows gives instead.
 /// [`Error::NoConvergence`] when the routine refused an argument it was
 /// given, which is a defect of popnei.
 ///
@@ -1125,8 +1128,9 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 }
 
 /// The same for the upper half alone of an `n` x `n` matrix, the entries
-/// of column `j` at least `i` of row `i`, which is what the solve against
-/// an upper triangular matrix reads. `n` is 1 at least.
+/// of column `j` at least `i` of row `i`, which is what
+/// [`solve_triangular`] reads when the caller names that half. `n` is 1 at
+/// least.
 ///
 /// # Errors
 ///
@@ -3855,17 +3859,66 @@ mod tests {
         );
     }
 
+    /// The same `r` with the sign the backends give it, rows (-2, -5) and
+    /// (0, -2.23606797749979), and the first right hand side with it,
+    /// (-8, -4.47213595499958). The test of the thin QR takes the sign of
+    /// each column of `q` so that the diagonal of `r` is positive, and
+    /// "How the seven are verified" of `docs/specs/linalg.md` records that
+    /// Accelerate gave -2.0 for the first entry of that `r`: what a caller
+    /// which solves against an `r` as [`thin_qr`] gives it holds is this,
+    /// a diagonal below 0. Turning `r` and `q' y` round together leaves
+    /// the coefficients the fit has, so these are the literals of the fit
+    /// above with their signs turned and no new number.
+    const THE_R_OF_THE_DESIGN_WITH_THE_SIGN_THE_BACKENDS_GIVE: [f64; 4] = [
+        -2.0,
+        -5.0, //
+        0.0,
+        -2.23606797749979,
+    ];
+
+    /// That right hand side, the `q' y` of the trait (1, 3, 5, 7) against
+    /// that `q`, one row.
+    const THE_RIGHT_HAND_SIDE_WITH_THE_SIGN_THE_BACKENDS_GIVE: [f64; 2] = [-8.0, -4.47213595499958];
+
     #[test]
-    fn the_triangular_solve_reads_the_upper_half_of_r_alone() {
+    fn the_triangular_solve_of_an_r_whose_diagonal_is_negative_gives_the_coefficients() {
+        // The diagonal is read for a 0 and for nothing else, and this is
+        // the case that says so: an `r` as a backend gives it, whose
+        // diagonal is negative, and the coefficients (-1, 2) all the same.
+        // A check that refused an entry at most 0, which is what the three
+        // operations that read the `l` of a Cholesky use, would refuse
+        // every least squares fit here with `Singular` and no test of the
+        // twelve would have failed.
+        let mut coefficients = THE_RIGHT_HAND_SIDE_WITH_THE_SIGN_THE_BACKENDS_GIVE;
+        solve_triangular(
+            &THE_R_OF_THE_DESIGN_WITH_THE_SIGN_THE_BACKENDS_GIVE,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut coefficients,
+            1,
+        )
+        .unwrap();
+        assert!(
+            !differ(
+                &coefficients,
+                &THE_COEFFICIENTS_OF_THE_THREE_FITS[..2],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the coefficients are {coefficients:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_reads_the_upper_half_of_a_alone() {
         // A NaN below the diagonal is neither refused nor read: the check
         // for a value that is not finite walks the upper half alone, and
         // the answer is the one the upper half gives.
-        let mut r = THE_R_OF_THE_DESIGN;
-        r[2] = f64::NAN;
+        let mut a = THE_R_OF_THE_DESIGN;
+        a[2] = f64::NAN;
         let mut coefficients = [0.0_f64; 2];
         coefficients.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
         solve_triangular(
-            &r,
+            &a,
             2,
             TheHalfThatHoldsTheMatrix::TheUpperHalf,
             &mut coefficients,
@@ -3884,11 +3937,11 @@ mod tests {
 
     #[test]
     fn the_triangular_solve_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
-        let mut r = THE_R_OF_THE_DESIGN.to_vec();
-        r.push(7.0);
+        let mut a = THE_R_OF_THE_DESIGN.to_vec();
+        a.push(7.0);
         let mut b = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2].to_vec();
         b.push(9.0);
-        solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1).unwrap();
+        solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1).unwrap();
         assert!(
             !differ(
                 &b[..2],
@@ -3905,15 +3958,16 @@ mod tests {
     }
 
     #[test]
-    fn the_triangular_solve_of_an_r_with_a_zero_in_its_diagonal_is_singular_at_that_row() {
+    fn the_triangular_solve_of_an_upper_half_with_a_zero_in_its_diagonal_is_singular_there() {
         // The `r` with rows (2, 5) and (0, 0) of "How the seven are
-        // verified", which faer would divide by and answer an infinity
-        // for, and the same 0 moved to the first row, so that the row the
-        // error names is read and is not the last row of the matrix.
-        for (row, r) in [(1_usize, [2.0, 5.0, 0.0, 0.0]), (0, [0.0, 5.0, 0.0, 2.0])] {
+        // verified", which faer would divide by and answer a NaN or an
+        // infinity for, by the half and the row, and the same 0 moved to
+        // the first row, so that the row the error names is read and is
+        // not the last row of the matrix.
+        for (row, a) in [(1_usize, [2.0, 5.0, 0.0, 0.0]), (0, [0.0, 5.0, 0.0, 2.0])] {
             let mut b = [0.0_f64; 2];
             b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-            let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+            let error = solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
                 .unwrap_err();
             assert!(
                 matches!(error, Error::Singular { argument: "a", at } if at == row),
@@ -3957,10 +4011,10 @@ mod tests {
     }
 
     #[test]
-    fn the_triangular_solve_refuses_an_r_shorter_than_n_times_n() {
-        let r = [0.0_f64; 3];
+    fn the_triangular_solve_refuses_an_a_shorter_than_n_times_n() {
+        let a = [0.0_f64; 3];
         let mut b = [0.0_f64; 2];
-        let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+        let error = solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
             .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "a", .. }),
@@ -4007,15 +4061,15 @@ mod tests {
     }
 
     #[test]
-    fn the_triangular_solve_refuses_a_value_that_is_not_finite_in_the_upper_half_of_r() {
+    fn the_triangular_solve_refuses_a_value_that_is_not_finite_in_the_upper_half_of_a() {
         // The two entries of the diagonal and the one above it, which are
         // the three places of a 2 x 2 that the solve reads.
         for entry in [0_usize, 1, 3] {
-            let mut r = THE_R_OF_THE_DESIGN;
-            r[entry] = f64::INFINITY;
+            let mut a = THE_R_OF_THE_DESIGN;
+            a[entry] = f64::INFINITY;
             let mut b = [0.0_f64; 2];
             b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-            let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+            let error = solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
                 .unwrap_err();
             assert!(
                 matches!(error, Error::NotFinite { argument: "a" }),
@@ -4069,14 +4123,17 @@ mod tests {
     ];
 
     /// What the lower half gives for them, (4, 12, 3) and (2, 0, 0), one
-    /// row each. Every entry is a small whole number, and "How the seven
-    /// are verified" of the spec asks for them exactly, but they are
-    /// asserted within [`THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE`] as every
-    /// other solve of this crate is: measured on 23 September 2026, faer
-    /// gives 11.999999999999998 and 3.0000000000000036 for the second and
-    /// the third entries, 1.8e-16 and 1.2e-15 relative away, since it
-    /// multiplies by the reciprocal of a diagonal entry where Accelerate
-    /// divides and lands on 12 and 3 exactly.
+    /// row each. Every entry is a small whole number, and they are
+    /// compared within [`THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE`] all the
+    /// same and not to the bit, which is what "How the seven are
+    /// verified" of the spec asks for, because the two backends do not
+    /// give the same bits here. Measured on 23 September 2026, `dtrtrs`
+    /// gives exactly 12 and 3 for the second and the third entries and
+    /// faer gives 11.999999999999998 and 3.0000000000000036, 1.5e-16 and
+    /// 1.2e-15 relative away: faer scales each term of a row by the
+    /// reciprocal of the diagonal entry and adds them, where the routine
+    /// subtracts first and divides once, and `40 * (1/3) - 4 * (1/3)` is
+    /// 11.999999999999998 where `(40 - 4) * (1/3)` is 12 exactly.
     const THE_SOLUTIONS_OF_THE_LOWER_HALF: [f64; 6] = [
         4.0, 12.0, 3.0, //
         2.0, 0.0, 0.0,
@@ -4227,10 +4284,10 @@ mod tests {
 
     #[test]
     fn the_triangular_solve_refuses_a_value_that_is_not_finite_in_the_lower_half_of_a() {
-        // The first and the last entries of the diagonal and one below it,
-        // which are three of the six places of a 3 x 3 that the solve
-        // against the lower half reads.
-        for entry in [0_usize, 3, 8] {
+        // Every one of the six places of a 3 x 3 that the solve against
+        // the lower half reads: the three entries of the diagonal and the
+        // three below it, the last row among them.
+        for entry in [0_usize, 3, 4, 6, 7, 8] {
             let mut a = THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT;
             a[entry] = f64::INFINITY;
             let mut b = [0.0_f64; 3];
@@ -4247,10 +4304,18 @@ mod tests {
     #[test]
     fn the_triangular_solve_of_a_lower_half_with_a_zero_in_its_diagonal_is_singular_at_that_row() {
         // The `l` with rows (2, 0) and (5, 0) of "How the seven are
-        // verified", which faer would divide by and answer an infinity
-        // for, and the same 0 moved to the first row, so that the row the
-        // error names is read and is not the last row of the matrix. The
-        // diagonal is read for either half, since it belongs to both.
+        // verified", which faer would divide by and answer a NaN or an
+        // infinity for, by the half and the row, and the same 0 moved to
+        // the first row, so that the row the error names is read and is
+        // not the last row of the matrix. The diagonal is read for either
+        // half, since it belongs to both.
+        //
+        // What guards the crate's own check here is the faer run, `cargo
+        // test -p popnei-linalg --no-default-features`: `dtrtrs` gives an
+        // `info` for this case of its own accord and the BLAS backend maps
+        // it to this same error, so on that backend the test passes with
+        // `refuse_a_diagonal_entry` gone. The review of this work package
+        // measured both on 23 September 2026.
         for (row, a) in [(1_usize, [2.0, 0.0, 5.0, 0.0]), (0, [0.0, 0.0, 5.0, 2.0])] {
             let mut b = [8.0_f64, 40.0];
             let error = solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheLowerHalf, &mut b, 1)

@@ -68,8 +68,9 @@ pub(crate) fn add_self_product_lower(
     // and `a` holds exactly that many; and with `beta` 1 and `ldc` = cols
     // it reads and writes the upper triangle of `g` as a column major
     // matrix of cols x cols, which is cols * cols values, and `g` holds
-    // exactly that many. Neither dimension is 0 and both fit in the `i32`
-    // the routine takes, which `the_i32_of` has just checked.
+    // exactly that many. Neither dimension is 0, which `lib.rs` refuses
+    // above both backends, and both fit in the `i32` the routine takes,
+    // which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -108,8 +109,9 @@ pub(crate) fn product(
     // `beta` 0, writes a column major matrix of cols rows and rows columns
     // with `ldc` = cols, which is the rows * cols values of `c`. Each of
     // the three slices holds exactly the values of its dimensions, no
-    // dimension is 0 and all three fit in the `i32` the routine takes,
-    // which `the_i32_of` has just checked.
+    // dimension is 0, which `lib.rs` refuses above both backends, and all
+    // three fit in the `i32` the routine takes, which `the_i32_of` has
+    // just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -145,14 +147,15 @@ pub(crate) fn product_with_the_second_turned(
     // With `m` = cols, `n` = rows and `k` = inner the routine reads the
     // buffer of `b` as a column major matrix of inner rows and cols
     // columns with `lda` = inner, which `transa` T turns into the cols x
-    // inner first operand and which is the cols * inner values of `b`;
-    // the buffer of `a` as one of inner rows and rows columns with `ldb`
-    // = inner, which is the rows * inner values of `a`; and, with `beta`
-    // 0, writes a column major matrix of cols rows and rows columns with
+    // inner first operand and which is the cols * inner values of `b`; the
+    // buffer of `a` as one of inner rows and rows columns with `ldb` =
+    // inner, which is the rows * inner values of `a`; and, with `beta` 0,
+    // writes a column major matrix of cols rows and rows columns with
     // `ldc` = cols, which is the rows * cols values of `c`. Each of the
     // three slices holds exactly the values of its dimensions, no
-    // dimension is 0 and all three fit in the `i32` the routine takes,
-    // which `the_i32_of` has just checked.
+    // dimension is 0, which `lib.rs` refuses above both backends, and all
+    // three fit in the `i32` the routine takes, which `the_i32_of` has
+    // just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -194,8 +197,9 @@ pub(crate) fn product_with_the_first_turned(
     // values of `a`; and, with `beta` 0, writes a column major matrix of
     // cols rows and rows columns with `ldc` = cols, which is the rows *
     // cols values of `c`. Each of the three slices holds exactly the
-    // values of its dimensions, no dimension is 0 and all three fit in
-    // the `i32` the routine takes, which `the_i32_of` has just checked.
+    // values of its dimensions, no dimension is 0, which `lib.rs` refuses
+    // above both backends, and all three fit in the `i32` the routine
+    // takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -238,8 +242,9 @@ pub(crate) fn product_with_both_turned(
     // `beta` 0, writes a column major matrix of cols rows and rows columns
     // with `ldc` = cols, which is the rows * cols values of `c`. Each of
     // the three slices holds exactly the values of its dimensions, no
-    // dimension is 0 and all three fit in the `i32` the routine takes,
-    // which `the_i32_of` has just checked.
+    // dimension is 0, which `lib.rs` refuses above both backends, and all
+    // three fit in the `i32` the routine takes, which `the_i32_of` has
+    // just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -393,8 +398,9 @@ pub(crate) fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
     // the lower half of `a` in popnei's layout, and overwrites that same
     // triangle with the factorization; both are inside the n * n values of
     // `a`, which is what it holds. It reads and writes nothing else of
-    // `a`, and `info` is one integer. `n` is not 0 and fits in the `i32`
-    // the routine takes, which `the_i32_of` has just checked.
+    // `a`, and `info` is one integer. `n` is not 0, which `lib.rs` refuses
+    // above both backends, and it fits in the `i32` the routine takes,
+    // which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -448,8 +454,9 @@ pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usi
     // values `l` holds; and with `nrhs` = sides and `ldb` = n it reads and
     // writes `b` as a column major matrix of n rows and sides columns,
     // which is the sides * n values `b` holds. It writes nothing else, and
-    // `info` is one integer. Neither dimension is 0 and both fit in the
-    // `i32` the routine takes, which `the_i32_of` has just checked.
+    // `info` is one integer. Neither dimension is 0, which `lib.rs`
+    // refuses above both backends, and both fit in the `i32` the routine
+    // takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -509,12 +516,13 @@ pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> 
     }
     let mut info = 0_i32;
     // SAFETY: with `uplo` U, `n` = n and `lda` = n the routine reads and
-    // writes the upper triangle of `inverse` as a column major matrix of
-    // n x n, which is the lower half of `inverse` in popnei's layout and
-    // is inside the n * n values it holds, the copy of `l` just written
+    // writes the upper triangle of `inverse` as a column major matrix of n
+    // x n, which is the lower half of `inverse` in popnei's layout and is
+    // inside the n * n values it holds, the copy of `l` just written
     // there. It reads and writes nothing else of that buffer and nothing
-    // at all of `l`, and `info` is one integer. `n` is not 0 and fits in
-    // the `i32` the routine takes, which `the_i32_of` has just checked.
+    // at all of `l`, and `info` is one integer. `n` is not 0, which
+    // `lib.rs` refuses above both backends, and it fits in the `i32` the
+    // routine takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -603,11 +611,12 @@ pub(crate) fn thin_qr(
     // the size it wants into the first entry of `work`, which is `asked`
     // and holds one value, and it writes `info`, which is one integer; it
     // reads and writes nothing of `a` and nothing of `tau`. Those two are
-    // still passed as the buffers of the call below, with `m` = rows,
-    // `n` = cols and `lda` = rows: `column_major` holds the rows * cols
-    // values of a column major matrix of rows x cols and `coefficients`
-    // holds the cols of `tau`. Neither dimension is 0 and both fit in the
-    // `i32` the routine takes, which `the_i32_of` has just checked.
+    // still passed as the buffers of the call below, with `m` = rows, `n`
+    // = cols and `lda` = rows: `column_major` holds the rows * cols values
+    // of a column major matrix of rows x cols and `coefficients` holds the
+    // cols of `tau`. Neither dimension is 0, which `lib.rs` refuses above
+    // both backends, and both fit in the `i32` the routine takes, which
+    // `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -1004,14 +1013,14 @@ pub(crate) fn solve_triangular(
     };
     let mut info = 0_i32;
     // SAFETY: with `trans` T, `diag` N, `n` = n and `lda` = n the routine
-    // reads the triangle `uplo` names of `a` as a column major matrix of
-    // n x n, which is the half of `a` the caller named in popnei's layout
+    // reads the triangle `uplo` names of `a` as a column major matrix of n
+    // x n, which is the half of `a` the caller named in popnei's layout
     // and is inside the n * n values `a` holds; and with `nrhs` = sides
     // and `ldb` = n it reads and writes `b` as a column major matrix of n
     // rows and sides columns, which is the sides * n values `b` holds. It
-    // writes nothing else, and `info` is one integer. Neither dimension
-    // is 0 and both fit in the `i32` the routine takes, which
-    // `the_i32_of` has just checked.
+    // writes nothing else, and `info` is one integer. Neither dimension is
+    // 0, which `lib.rs` refuses above both backends, and both fit in the
+    // `i32` the routine takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -1107,18 +1116,19 @@ pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec
     // it was given. It is what `eigh_lower` above asks `dsyevd` and what
     // the thin QR asks its two routines.
     let mut asked = [0.0_f64; 1];
-    // SAFETY: with `lwork` at -1 the routine decomposes nothing. It
-    // writes the size it wants into the first entry of `work`, which is
-    // `asked` and holds one value, and it writes `info`, which is one
-    // integer; it reads and writes nothing of `a`, of `s`, of `u`, of
-    // `vt` or of `iwork`. Those are still passed as the buffers of the
-    // call below, with `jobz` N, `m` = rows, `n` = cols, `lda` = rows and
-    // the two leading dimensions of the vectors 1: `column_major` holds
-    // the rows * cols values of a column major matrix of rows x cols,
-    // `values` holds the min(rows, cols) of `s`, the two buffers of
-    // vectors hold one value each and `integers` holds the 8 *
-    // min(rows, cols) of `iwork`. Neither dimension is 0 and both fit in
-    // the `i32` the routine takes, which `the_i32_of` has just checked.
+    // SAFETY: with `lwork` at -1 the routine decomposes nothing. It writes
+    // the size it wants into the first entry of `work`, which is `asked`
+    // and holds one value, and it writes `info`, which is one integer; it
+    // reads and writes nothing of `a`, of `s`, of `u`, of `vt` or of
+    // `iwork`. Those are still passed as the buffers of the call below,
+    // with `jobz` N, `m` = rows, `n` = cols, `lda` = rows and the two
+    // leading dimensions of the vectors 1: `column_major` holds the rows *
+    // cols values of a column major matrix of rows x cols, `values` holds
+    // the min(rows, cols) of `s`, the two buffers of vectors hold one
+    // value each and `integers` holds the 8 * min(rows, cols) of `iwork`.
+    // Neither dimension is 0, which `lib.rs` refuses above both backends,
+    // and both fit in the `i32` the routine takes, which `the_i32_of` has
+    // just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"

@@ -437,11 +437,16 @@ pub(crate) fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
 ///
 /// None: faer refuses nothing that the checks of `lib.rs` let through.
 /// Either of its two functions divides by a diagonal entry of 0 as it
-/// finds it and answers with an infinity, where `dtrtrs` of the BLAS
-/// backend gives an `info`, which is why `lib.rs` reads that diagonal
-/// before either backend runs. The signature is the one of that backend,
-/// which fails when a dimension is larger than the `i32` its routine
-/// takes.
+/// finds it and answers with a NaN or an infinity, which of the two by
+/// the half and the row, where `dtrtrs` of the BLAS backend gives an
+/// `info`. Measured on faer 0.24.4 on 23 September 2026, on the two
+/// matrices of the tests of `lib.rs` and the right hand sides they use:
+/// the lower half of rows (2, 0) and (5, 0) gives (4, NaN) and the upper
+/// half of rows (2, 5) and (0, 0) gives (-inf, inf), and with the 0 moved
+/// to the row 0 they give (inf, -inf) and (NaN, 2.23606797749979). That is
+/// why `lib.rs` reads that diagonal before either backend runs. The
+/// signature is the one of that backend, which fails when a dimension is
+/// larger than the `i32` its routine takes.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
