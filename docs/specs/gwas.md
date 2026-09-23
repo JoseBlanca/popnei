@@ -224,7 +224,12 @@ columns plus one is refused, since there would be nothing left to estimate
 the uncertainty from.
 
 For a binomial trait, a phenotype that is not 0 or 1 everywhere is a
-`ValueError`, and so is one where every individual has the same value.
+`ValueError`. A trait where every individual has the same value is a
+`ValueError` for **both** kinds, where pyNei refuses it only for a binomial
+one. There is nothing for a constant trait to be associated with, and what
+it gives instead of an error is not an answer: without a kinship the
+residual sum of squares is 0 and every `se` is 0, and with one the genetic
+variance is fitted at 0 and the inverse it feeds returns infinities.
 
 Asking for a test the model does not have is a `ValueError`: the score test
 for a continuous trait with no kinship, since the only test of a linear
@@ -510,14 +515,9 @@ subtracted. The two forms agree wherever pyNei's subtraction has not already
 cancelled, so no literal of this spec moves.
 
 The same subtraction is in the linear mixed model's Wald test, `y' p y`
-minus `num² / den`, and nobody has measured whether it cancels there. The
-residual form is not free in that model: it needs `r' p r` for the residual
-`r` of each variant, a product with the projection matrix per variant, which
-is the cost `use_grammar_gamma_approx` exists to avoid. What it would take
-to reach is a variant explaining nearly all of `y' p y`, which the
-restricted maximum likelihood makes `n - c`, 197 on the panel. That is a far
-stronger association than the linear model's case needs, and it is worth
-measuring before it is worth fixing.
+minus `num² / den`. It has now been measured and it does cancel, which is
+**Open 3**, below: the repair there is not the cheap one, so it is a trade
+and not a defect with one answer.
 
 ### How it is verified
 
@@ -1378,7 +1378,7 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides these two, and until then the implementer follows the
+The owner decides these three, and until then the implementer follows the
 "meanwhile" of each. A third, what the two layers do with a phenotype that
 is not a number, was decided on 23 September 2026 and is in "Its Python
 function, and its TypeScript one" of "What every model shares", with the
@@ -1438,6 +1438,53 @@ threshold of 1.8e-15, while an ordinary variant of the same fixture leaves
 0.43. Nothing plausible sits in the thirteen orders between them. Meanwhile
 the implementer refuses at that threshold and gives the three NaNs; no
 literal of this spec moves, since no variant of either panel reaches it.
+
+**Open 3: the linear mixed model's Wald test cancels too.** `se` there is
+built from `y' p y` minus `num² / den`, the same shape as the linear model's
+subtraction, and the same cancellation reaches it. It is not approached but
+hit exactly: the projection annihilates the design, so any affine image of
+the trait, the trait mapped into dosages between 0 and 2, gives
+`num² / den = y' p y` in exact arithmetic. Measured at the fitted null of
+`panel_called` on 23 September 2026: the difference comes out 8.53e-13 on
+Accelerate and 3.98e-13 on faer where 0 is exact, which is 4.3e-15 and
+2.0e-15 of the 197 that the restricted maximum likelihood makes `y' p y`.
+Both stayed positive, so no NaN appeared, but the sign is whatever the
+rounding chose and the two differ by 46 per cent, so `se` would be 1.93e-8
+on one backend and 1.32e-8 on the other. Adding noise of 1e-6 of the dosage
+scale takes the difference to 2e-4 relative and 1e-4 of noise takes it to
+2e-8, so it bites only where a variant explains essentially the whole trait.
+
+Three options, and the first two cost nothing per variant.
+
+Leave it, and record the measurement. The number is wrong in its last digits
+rather than absent, it needs an association far stronger than the linear
+model's case needed, and a user reading either `se` draws the same
+conclusion.
+
+Refuse the variant, as **Open 2** refuses one the design leaves nothing of:
+here it is the model that is left nothing of, and the test is the same shape
+and the same cost, one comparison. Refuse when `y' p y` minus `num² / den`
+falls to `n` times 2.2e-16 of `y' p y`, which is 8.5e-12 on the panel
+against the 8.53e-13 measured, and give the three NaNs. Both backends then
+refuse the same variant, so the builds agree, and a variant that explains
+the whole of a trait after the covariates and the kinship is the trait
+written as a genotype or a mistake in the data, which is what plink2 says of
+its own version of this by refusing it.
+
+Form `r' p r` for the residual `r` of each variant, which is exact and costs
+a product with the projection matrix per variant, roughly doubling the Wald
+test. That is the cost `use_grammar_gamma_approx` exists to avoid, so the
+fix and the approximation pull against each other.
+
+Recommendation: refuse. It is one comparison, it makes the two builds give
+the same answer rather than two that differ by half, and it is the rule Open
+2 already proposes one level up, so a user meets one rule and not two. What
+it does not fix is the band just above the floor, where the backends differ
+by 2e-4 relative at 1e-6 of noise; only the third option reaches that, and
+it needs a variant explaining 99.9999 per cent of the trait. Meanwhile the
+implementer leaves the Wald test as it is and records the measurement, which
+is what `docs/plans/gwas-linear.md` did; no literal moves, since no variant
+of either panel comes near.
 
 ## Not in this spec
 
