@@ -4,9 +4,7 @@
 "Speed" of `docs/specs/kinship.md` states a target nobody had measured
 popnei against: plink2's 0.23 s over 100000 variants x 1000 individuals.
 This review measures it, says where the time goes, and says which of the
-parts is anybody's to take. It was asked for by the owner, who decided on
-23 September 2026 that the measurements of a plan are made in a session of
-their own once it is merged.
+parts is anybody's to take.
 
 The words this document uses. The **kinship** of two individuals says how
 much more of their genome they share than two individuals drawn at random
@@ -36,11 +34,27 @@ fastest from, as the `.pgen` is plink2's; the three are different files of
 the same variants.
 
 What the arithmetic runs on. **Accelerate** is the linear algebra library
-of macOS, which popnei calls natively and which numpy also calls;
-**faer** is the one written in Rust that runs in a browser tab, where
-there is no Accelerate. The **scan** is the walk `crates/popnei-linalg`
-makes over every value it is given before handing it to either of them,
-refusing an infinity or a NaN, because the two do not treat a NaN alike.
+of macOS, which popnei calls natively and which numpy also calls; it is
+the library the profiles below name `libBLAS.dylib`. **faer** is the
+equivalent written in Rust, which runs in a browser tab, where there is no
+Accelerate. The routine that does the kinship's product is **`dsyrk`**,
+the standard name for multiplying a matrix by its own transpose and adding
+the result into an accumulator; only half of that result is computed,
+since it is the same on both sides of its diagonal. The **scan** is the
+walk `crates/popnei-linalg` makes over every value it is given before
+handing it to either library, refusing an infinity or a NaN, because the
+two do not treat a NaN alike. **rayon** is the library that runs the rows
+of a block on several threads, and **`Reblock`** is the reader popnei puts
+in front of a source so that every block holds the same number of
+variants, since a filter leaves blocks of uneven size and a product wants
+an even one.
+
+Which dataset a number is of. The **panels** of this review are the two of
+100000 variants x 1000 individuals in section 3, on which every timing is
+taken. The **reference panels** are two much smaller ones under
+`tests/reference/`, 1200 variants x 200 individuals, which the tests
+compare against plink2 and pyNei and which the tolerance figures come
+from; they are too small to time anything.
 
 What a measurement here is. A **sampling profile** stops a running
 process a thousand times a second and records where it is; the **self
@@ -54,10 +68,8 @@ that says which line holds a share of the time.
 pass it drives in `crates/popnei/src/variant.rs`, and the two bindings,
 `crates/popnei-python/src/kinship.rs` and `crates/popnei-js/src/kinship.rs`.
 The principal components of a kinship are in scope and are measured in
-section 3. Nine categories were sent, one reviewer each with a fresh
-context: methodology, numbers, allocations, data layout, concurrency, hot
-loops, input and output, the linear algebra with wasm, and the Python
-boundary.
+section 3. Nine reviewers read it, one for each category of the
+performance review skill, each with a fresh context.
 
 **`main` moved ten commits while this review ran, and none of them changes
 what it measures.** It is at `54036d1`, which brought the performance
@@ -126,18 +138,20 @@ variants each individual is missing, plus the variants both are missing —
 and at 3 in 100 missing the pairwise term is about 2.2 million increments
 a block against 5 thousand million floating point operations. Because both
 routes sum whole numbers below 2^53, the denominators come out bit for
-bit the same. That is H1, and it is the one finding of this review with a
-large gain, a matching profile and a proof that it changes no result.
+bit the same. That is H1, and it is **the largest gain this review found**: a matching
+profile, a mechanism, and a proof that it changes no result.
 
 Beside it, the next largest item on the fully-called panel is not
 arithmetic at all: **the file is read on the same thread that then does
 the product, so 0.110 s of reading never overlaps with 0.225 s of
 computing.** `docs/architecture.md` section 3 asks for a read-ahead thread
-one block ahead and there is none in the code. That is H2, it is worth up
-to the whole 0.110 s, it changes no result, and it is the largest change
-this review proposes; it also raises a question only the owner can settle,
-which is whether a run with a reading thread still counts as the "one
-thread" the comparison with `plink2 --threads 1` is made on.
+one block ahead and there is none in the code. That is H2. It is worth up
+to the whole 0.110 s and it changes no result, and **it is the one that
+costs the most to build**: a thread, a channel, a second block alive, and
+a path of its own for a browser, which has no threads. It also raises a
+question only the owner can settle, which is whether a run with a reading
+thread still counts as the "one thread" the comparison with `plink2
+--threads 1` is made on. O5 puts that as a choice with its options.
 
 **Two correctness matters were found by measuring and are in section 5.**
 One is that the rule "no result of popnei depends on the number of
@@ -153,11 +167,12 @@ average between 1.3 and 2.7. Each popnei figure is the best of five timed
 runs after one untimed run, since every other process on the machine can
 only make a run longer, and each command was run twice.
 
-A first set of numbers, taken earlier in the session at a load average of
-11.5 to 16.2 while eight reviewers were reading, came out 4 per 100 high
-on one thread and unusable at 18 threads, where its spread reached 46 per
-100. It was thrown away and everything was taken again. The two
-invocations of each one-thread command now agree to 0.5 per 100.
+The two invocations of each one-thread command agree to 0.5 per 100, and
+what that costs to get is worth knowing for the next review: the same
+commands at a load average of 11.5 to 16.2 give one-thread numbers 4 per
+100 high and 18-thread numbers whose spread reaches 46 per 100, so a
+figure from this benchmark at 18 threads is worth nothing unless the
+machine is quiet.
 
 ### The two panels
 
@@ -170,7 +185,9 @@ called and nothing in the repository could make one: the rate at which
 `crates/popnei/benches/make_big_vcf.py` hid a genotype was a constant of
 0.03. It is now a third argument, and the draw that decides which
 genotypes are missing is made whatever the rate, so the panel of a rate of
-0 is `big.vcf` with its missing genotypes filled in and not another panel.
+0 is `big.vcf` with each of its missing genotypes restored to the value
+the simulation actually drew for it: not another panel, and nothing
+imputed.
 
 | | every genotype called | 3 in 100 missing |
 |---|---|---|
@@ -207,8 +224,9 @@ of them does: popnei its vars file, pyNei its own, plink2 its `.pgen`.
 | plink2 `--make-rel square` | **0.232 s** | **0.805 s** |
 
 popnei is the best of five after one untimed run, and the second
-invocation of each gave 0.401 and 0.716 s. plink2 is the mean over 20 runs
-under `hyperfine` after one warm one, 232.3 ms with a standard deviation
+invocation of each gave 0.401 and 0.716 s. plink2 is the mean over 20 runs of the
+whole command under `hyperfine`, the tool that runs a command again and
+again and reports the spread, after one warm run; 232.3 ms with a standard deviation
 of 6.7 and a range of 229.6 to 256.1, and 804.5 ms with a deviation of 7.4
 and a range of 794.3 to 824.1. pyNei is the best of three, and its runs
 spread by under 2 per 100. The memory is the largest resident the Python
@@ -302,10 +320,11 @@ address each sample fell on: the 182 samples sit at the offset of
 `any_missing`, on the called panel alone, and the 1458 at the offset of
 the loop inside `the_called_genotypes_of`, on the missing panel alone.
 
-**The product is at the machine's floor and is 90 per 100 of plink2's
-whole run.** The symmetric rank-k update of a 5000 x 1000 block into a
-1000 x 1000 accumulator is 5.005e9 floating point operations, so the 20
-blocks are 1.001e11, and 0.225 s of them is 445 billion a second.
+**The product is at the machine's floor and is most of plink2's whole
+run.** Multiplying a 5000 x 1000 block by its own transpose into a
+1000 x 1000 accumulator, computing half of it, is 5.005e9 floating point
+operations, so the 20 blocks are 1.001e11, and 0.225 s of them is 445
+thousand million a second.
 `docs/reports/perf-linalg-2026-09-23.md` puts one thread of Accelerate at
 about 530 billion a second on these products, and
 `crates/popnei-linalg/benches/ops.rs` times that exact call, checks and
@@ -333,7 +352,8 @@ of section 6 in the order they should be run.
 1. **A recipe that shows an experiment did not move the numbers.** Nothing
    in the repository reproduces the four figures the kinship's tolerance
    turns on, and no test varies the number of threads (H4). A script under
-   `tmp/` prints, for both reference panels, the largest difference from
+   `tmp/` prints, for the two small reference panels under
+   `tests/reference/`, the largest difference from
    plink2's f64 matrix as a share of the largest entry, `num_vars`,
    `num_comps`, and the sha256 of the matrix and of the projections. It is
    run on both backends at 1, 3 and 8 threads:
@@ -371,9 +391,10 @@ of section 6 in the order they should be run.
    than 0.10 s from 0.713 s and the fully-called panel does not rise.
 
 4. **Asking whether a block has a missing genotype from the row pass**,
-   H3. Gate on the same profile: `the_denominators_of_the_block` and
-   `memchr_aligned` must fall from 366 of 12832 samples on `bigcalled.vars`
-   to under 20. Keep if the fully-called run falls at all; the site is
+   H3. Gate on the same profile: `the_denominators_of_the_block`, and the byte
+   search of the standard library that it calls and that the profile names
+   `memchr_aligned`, must together fall from 366 of 12832 samples on
+   `bigcalled.vars` to under 20. Keep if the fully-called run falls at all; the site is
    0.012 s of a 0.167 s gap.
 
 5. **Reading one block ahead**, H2. Before building anything, instrument:
@@ -459,11 +480,13 @@ samples, `the_counts_of_the_codes` at 221 and
 fully-called run — so at least one call site of each was not inlined,
 although they are in the same crate as their caller, and 16 code
 generation units is what stops that. The gate is not a wall time, which
-would be under the noise: `objdump -d` the built benchmark and count the
-calls left to those three symbols, stock against
-`--config 'profile.bench.codegen-units=1'`. Only if the count falls is a
-timing worth taking. `cargo asm` cannot answer this, because it appends
-its own `codegen-units=1` to every invocation.
+would be under the noise: disassemble the built benchmark with `objdump
+-d` and count the calls left to those three symbols, as it is built now
+against `--config 'profile.bench.codegen-units=1'`. Only if the count
+falls is a timing worth taking. `cargo asm`, which prints the machine code
+of one named function, cannot answer this: it appends its own
+`codegen-units=1` to every invocation, so it always shows the same
+listing.
 
 **The toolchain is still not pinned**, as the two reviews before this one
 said. Every number here is against an unpinned rustc 1.98.0, and what the
@@ -497,9 +520,10 @@ The options.
   faer is 9 times Accelerate on the same product and the packed path would
   be popnei's own code on both.
 - **Leave it, and record the target as unreachable.** "Speed" of
-  `docs/specs/kinship.md` then says that the product alone is 97 per 100
-  of plink2's whole run on this machine, so the number to compare against
-  is not 0.23 s but what the routine underneath costs.
+  `docs/specs/kinship.md` then says that the product alone is 0.225 s, 97
+  per 100 of plink2's whole 0.232 s on this machine, so what the spec sets
+  popnei against is not 0.23 s but something above 0.225 s plus whatever
+  reading the file costs.
 - **Take the smaller things instead**, H1, H2 and H3, which come to about
   0.31 s on the panel with genotypes missing and about 0.12 s on the other,
   and leave the fully-called panel at about 0.28 s against 0.232 s.
@@ -553,10 +577,54 @@ two projections are tied within 64 times the difference between 1 and the
 next `f64`. Both are invisible on Accelerate and in a browser, which has
 one thread; the exposure is the native build on faer, which is exactly
 where the two faer tolerance figures were measured, at a thread count
-nobody recorded. That review recommended recording the divergence rather
-than paying 4.46 times the wall time at 5000 individuals to pin it. If
-that is the decision, `docs/specs/kinship.md` should say it too, because
-the consequence here is an integer and not a rounding.
+nobody recorded. The options.
+
+- **Record it**, adding to "How it is verified" of `docs/specs/kinship.md`
+  a sentence saying that on faer the count of components is not
+  reproducible across thread counts, and a test that computes a kinship's
+  components at two thread counts on that backend and reports the count.
+  Costs a paragraph and a test.
+- **Pin faer's eigendecomposition**, which makes the count stable and
+  costs what `docs/reports/perf-linalg-2026-09-23.md` measured: 1.43 times
+  the wall time at 1000 individuals, 4.46 at 5000 and 5.80 at 10000.
+- **Leave it silent**, since a browser has one thread and Accelerate is
+  unaffected, so no user popnei has today can see it.
+
+Recommended: record it. That review recommended the same for the last bits
+of the eigenvalues and it is the right answer here too, but for a
+different reason that is worth stating: the two places popnei's users
+actually are, a browser and a native build on Accelerate, are both
+unaffected, and paying two minutes at 10000 individuals to fix a build
+nobody ships is a bad trade. What makes this worth a sentence in the
+kinship's own spec rather than only the linear algebra's is that here the
+consequence is the shape of the result and not its last bits.
+
+**O5. Does a run with a thread that only reads still count as "one
+thread"?** This is what H2 turns on and it cannot be settled here, because
+it is about what popnei's published numbers mean and not about the code.
+
+Every speed figure popnei states for the kinship is on one thread, and it
+is compared against `plink2 --threads 1`. H2 would put the reading of the
+file on a thread of its own, one block ahead. That thread does no
+arithmetic; it waits on the disc and decompresses. The calculation would
+still use one thread and the process would use two.
+
+The options.
+
+- **A reading thread counts as one thread**, on the ground that the second
+  thread computes nothing and that plink2 overlaps its own reading with
+  its own arithmetic within one thread, which popnei cannot do without a
+  thread because its decompression is a library call. Then H2 is worth up
+  to 0.110 s of the 0.399 s and the number stays comparable.
+- **It does not**, and H2's gain is reported only in the figure that uses
+  the threads the machine gives, where it is worth up to 0.110 s of
+  0.283 s. The one-thread figure then stays as it is and the spec says
+  which of the two the target is about.
+- **Do not build it**, and keep the 0.110 s.
+
+Recommended: that it counts, and that "Speed" of `docs/specs/kinship.md`
+say in one sentence that a thread which only reads is not counted and why.
+The alternative measures popnei against a constraint plink2 does not have.
 
 **O4. The kinship has no browser target where the principal components
 have one.** `docs/specs/kinship.md` "Speed". `docs/specs/pca.md` states 5
@@ -568,8 +636,9 @@ which makes H1 worth far more in a browser than it is here. Nothing has
 measured it; item 7 of section 4 is the smallest measurement that would.
 Memory may bind before time does: at 10000 individuals the pass holds an
 800 MB accumulator and, when a genotype is missing, an 800 MB matrix of
-denominators at the same time, 1.6 GB of a tab that has at most 4 GB,
-before the three matrices the eigendecomposition needs.
+denominators at the same time. That is 1.6 GB before the three matrices
+the eigendecomposition needs, in an address space that WebAssembly caps at
+4 GB and that most browsers hold well below.
 
 ### Hot-path
 
@@ -590,8 +659,11 @@ Confidence high.
   missing. Every term is a count of whole things. Today it is 5 thousand
   million floating point operations a block over a matrix of ones and
   zeros that the code first writes as 40 MB of f64. At 3 in 100 missing a
-  variant has about 30 individuals missing, so the pairwise term is about
-  435 increments a variant and 2.2 million a block.
+  variant has about 30 individuals missing, so the pairwise term touches
+  about 435 pairs a variant and 2.2 million a block: **about one operation
+  for every 2300 the product does**, over a quarter of the data. The
+  profile is what sizes the gain, 0.30 s of the 0.713 s run; that ratio
+  only says why it is not close.
 - Measurement plan: item 3 of section 4.
 - Effect on the numbers: none, and provably. Both routes sum exact
   integers below 2^53, so the denominators are bit-identical at any thread
@@ -698,10 +770,13 @@ counts when the two that matter are already in hand.**
 `crates/popnei/src/variant.rs:829-840`. Confidence medium. Evidence: the
 row pass's closure is 1086 samples on the fully-called panel and the
 offsets `sample` prints for it fall inside a 14-instruction scalar loop
-run 128 times, about 1792 instructions a variant. Mechanism: on the fast
-path of `count_alleles`, which is a variant of two alleles, only the
-entries 0 and 1 are not zero and both are held, so the major allele is one
-comparison and the count of distinct alleles is two. Plan: `cargo bench
+run 128 times, about 1792 instructions a variant, inside a closure that holds
+1086 of 12832 samples, 0.034 s of the run; what share of that closure this
+one loop is was not measured, and the benchmark below is what would say.
+Mechanism: on the fast path of `count_alleles`, which is a variant of two
+alleles, only the entries 0 and 1 are not zero and both are held, so the
+major allele is one comparison and the count of distinct alleles is
+two. Plan: `cargo bench
 --features bench-internals --bench standardize_row`; keep if the gap
 between the four passes and the whole row falls by more than 0.5 ms a
 block. Effect on the numbers: none **if the tie rule is kept**, the
@@ -827,7 +902,8 @@ kinship a browser number at all.
   per batch, 133 of 12832 samples, about 1 per 100. Whether a vars file
   needs it belongs to that module.
 - `crates/popnei-js/src/kinship.rs:69-71` gives the matrix to
-  wasm-bindgen, which copies it into a `Float64Array`: 800 MB in wasm and
+  wasm-bindgen, the layer that carries values between Rust and JavaScript,
+  which copies it into an array JavaScript can read: 800 MB in wasm and
   800 MB in the JavaScript heap at once at 10000 individuals, and the
   memory of wasm never gives back what it grew by.
 - The compression of the vars file is already the owner's open decision
