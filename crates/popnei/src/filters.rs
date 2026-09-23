@@ -3524,4 +3524,202 @@ mod tests {
         assert!(message.contains("0.3"), "{message}");
         assert!(message.contains("0.1"), "{message}");
     }
+
+    /// The four rows of the table of "How it is verified" of the item "The
+    /// filter by linkage disequilibrium" of `docs/specs/filters.md`, run on
+    /// `tests/reference/ld/ld.vcf.gz`: the window in base pairs, the
+    /// largest r² a kept variant may have against a variant of its window,
+    /// that threshold as `tests/reference/ld/ld.filtered.tsv` writes it,
+    /// the variants kept of the 500, and the first five kept by position.
+    const THE_TABLE_OF_THE_LD_FILTER: [(u64, f64, &str, u64, [&str; 5]); 4] = [
+        (
+            10_000,
+            0.1,
+            "0.1",
+            84,
+            [
+                "chr1:1000",
+                "chr1:10000",
+                "chr1:16000",
+                "chr1:22000",
+                "chr1:27000",
+            ],
+        ),
+        (
+            10_000,
+            0.3,
+            "0.3",
+            133,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+        (
+            50_000,
+            0.3,
+            "0.3",
+            85,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+        (
+            250_000,
+            0.3,
+            "0.3",
+            85,
+            [
+                "chr1:1000",
+                "chr1:5000",
+                "chr1:7000",
+                "chr1:11000",
+                "chr1:15000",
+            ],
+        ),
+    ];
+
+    /// The chromosome and the position of each variant that a filter
+    /// kept, in the order the blocks gave them.
+    type TheVariantsKept = Vec<(String, u64)>;
+
+    /// `tests/reference/ld/`, where `make_reference.py` writes the dataset
+    /// of `docs/specs/ld.md` and the numbers plink2 gives for it, at the
+    /// root of the repository and not inside this crate.
+    fn the_ld_reference_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/ld")
+            .join(name)
+    }
+
+    /// A reader over `tests/reference/ld/ld.vcf.gz`, the 500 variants of
+    /// 100 diploid individuals on two chromosomes of `docs/specs/ld.md`,
+    /// read as plink2 read them, with the variants that failed their FILTER
+    /// among them, in blocks of `num_vars_per_block` variants.
+    fn the_ld_dataset(num_vars_per_block: Option<usize>) -> VcfReader<BufReader<File>> {
+        let path = the_ld_reference_path("ld.vcf.gz");
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        VcfReader::from_path(&path, options)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()))
+    }
+
+    /// The chromosome and the position of every variant that
+    /// `tests/reference/ld/ld.filtered.tsv` holds for that setting, in the
+    /// order of the file. `make_reference.py` works that set out from the
+    /// r² that plink2 wrote for `ld.vcf.gz` and from the rule of the spec,
+    /// so it says which variants are kept without any arithmetic of popnei,
+    /// and it is where the three properties of "How it is verified" were
+    /// checked, in `tests/reference/ld/ld.filter.properties.txt`.
+    fn the_kept_of_the_reference(max_dist: u64, max_allowed_r2: &str) -> TheVariantsKept {
+        let path = the_ld_reference_path("ld.filtered.tsv");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()));
+        let of_the_dist = max_dist.to_string();
+        let mut kept = Vec::new();
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [dist, r2, chrom, pos] = fields[..] else {
+                panic!("`{line}` has not the four columns of ld.filtered.tsv");
+            };
+            if dist != of_the_dist || r2 != max_allowed_r2 {
+                continue;
+            }
+            let pos = pos
+                .parse()
+                .unwrap_or_else(|error| panic!("`{line}`: {error}"));
+            kept.push((chrom.to_owned(), pos));
+        }
+        assert!(
+            !kept.is_empty(),
+            "ld.filtered.tsv holds no variant of {max_dist} bp and {max_allowed_r2}"
+        );
+        kept
+    }
+
+    /// The chromosome and the position of every variant that the filter by
+    /// linkage disequilibrium keeps of `ld.vcf.gz`, read in blocks of
+    /// `num_vars_per_block` variants, with the counts of the filter after
+    /// the last block.
+    fn the_kept_of_the_ld_dataset(
+        max_allowed_r2: f64,
+        max_dist: u64,
+        num_vars_per_block: Option<usize>,
+    ) -> (TheVariantsKept, Vec<(&'static str, FilteringStats)>) {
+        let filter = LdFilter::new(max_allowed_r2, max_dist).expect("the filter");
+        let mut filtered = LdFilteredReader::new(the_ld_dataset(num_vars_per_block), filter)
+            .expect("the reader over the VCF");
+        filtered.set_needs(Needs::GTS | Needs::CHROM_POS);
+        let blocks = blocks_of(&mut filtered).expect("the blocks");
+        let mut kept = Vec::new();
+        for block in &blocks {
+            assert!(block.num_vars > 0, "a block with no variant was given");
+            assert!(
+                block.check().is_ok(),
+                "a block whose arrays are not of its size"
+            );
+            let chroms = block.chrom.as_ref().expect("the chromosomes of the block");
+            let positions = block.pos.as_ref().expect("the positions of the block");
+            for (number, position) in chroms.iter().zip(positions) {
+                let name = filtered
+                    .chroms()
+                    .name(*number)
+                    .unwrap_or_else(|| panic!("the chromosome {number} has no name"));
+                kept.push((name.to_owned(), *position));
+            }
+        }
+        (kept, filtered.filtering_stats())
+    }
+
+    /// The four rows of the table of the spec, in blocks of 7 variants, of
+    /// 64 and of the size the VCF reader chooses: each keeps the variants
+    /// the table gives, which are the ones the rule of the spec keeps when
+    /// it is run over plink2's r² in `make_reference.py`, and the counts of
+    /// the filter are the 500 variants of the file and the ones it kept.
+    /// The first variant kept of chr2 is `chr2:1000` at every setting,
+    /// which is where the window stops at the end of a chromosome.
+    #[test]
+    fn the_ld_filter_keeps_the_variants_of_ld_vcf_that_the_table_of_the_spec_gives() {
+        for (max_dist, max_allowed_r2, of_the_reference, kept_of_500, first_five) in
+            THE_TABLE_OF_THE_LD_FILTER
+        {
+            let of_the_reference = the_kept_of_the_reference(max_dist, of_the_reference);
+            for num_vars_per_block in [Some(7), Some(64), None] {
+                let (kept, stats) =
+                    the_kept_of_the_ld_dataset(max_allowed_r2, max_dist, num_vars_per_block);
+                let what = format!(
+                    "at {max_dist} bp and {max_allowed_r2}, in blocks of {num_vars_per_block:?}"
+                );
+
+                assert_eq!(
+                    u64::try_from(kept.len()).expect("the variants kept"),
+                    kept_of_500,
+                    "{what}"
+                );
+                let five: Vec<String> = kept
+                    .iter()
+                    .take(5)
+                    .map(|(chrom, pos)| format!("{chrom}:{pos}"))
+                    .collect();
+                assert_eq!(five, first_five.map(String::from).to_vec(), "{what}");
+                assert_eq!(
+                    kept.iter().find(|(chrom, _)| chrom == "chr2"),
+                    Some(&("chr2".to_owned(), 1000)),
+                    "{what}"
+                );
+                assert_eq!(kept, of_the_reference, "{what}");
+                assert_eq!(stats, vec![("ld", pair(500, kept_of_500))], "{what}");
+            }
+        }
+    }
 }

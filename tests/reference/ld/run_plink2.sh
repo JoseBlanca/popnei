@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Writes again the six files of tests/reference/ld/ that a program made,
+# Writes again the eight files of tests/reference/ld/ that a program made,
 # and compares each with the copy stored there: ld.vcf.gz, the linkage
 # disequilibrium dataset; the r2 matrix plink2 gives for it and for the
 # worked example, with the identifiers of the rows of each matrix beside
-# it; and the dosages pyNei gives for tests/reference/vcf/many.vcf.
+# it; the dosages pyNei gives for tests/reference/vcf/many.vcf; the
+# variants that the filter by linkage disequilibrium keeps of ld.vcf at the
+# four settings of the table of docs/specs/filters.md, worked out from
+# plink2's matrix; and the three properties that item asks of the set kept,
+# each as the number of variants or pairs that break it.
 #
 # Run it from the root of the repository with one argument, a directory it
 # works in, which it creates and which has to be empty or not exist:
@@ -88,7 +92,8 @@ if ! gzip -dc "$here/ld.vcf.gz" | diff - "$work/ld.vcf" > /dev/null; then
 fi
 for name in ld.unphased.vcor2.bin ld.unphased.vcor2.bin.vars \
             example.unphased.vcor2.bin example.unphased.vcor2.bin.vars \
-            many.pynei.dosages.tsv; do
+            many.pynei.dosages.tsv ld.filtered.tsv \
+            ld.filter.properties.txt; do
     if ! cmp -s "$here/$name" "$work/$name"; then
         echo "$name"
         differed=1
