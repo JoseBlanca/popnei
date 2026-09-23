@@ -129,11 +129,12 @@ which `docs/objectives.md` asks to be written down:
 - A `Kinship` can still be built by hand, from a matrix and `num_vars`, so
   that a user can bring the one plink2 or a pedigree gave them and pass it
   to `calc_gwas`, and `__post_init__` checks it where pyNei checks nothing:
-  it raises a `ValueError` for a matrix that is not square, whose index and
-  columns name different individuals, that names one individual twice, that
-  holds a value that is not a number, or that is further from its own
-  transpose than 1e-9 of its largest absolute entry. The check for a value
-  that is not finite comes before the one for symmetry, so that a matrix
+  it raises a `ValueError` for a matrix that is not square, that has no row
+  at all, whose index and columns name different individuals, that names one
+  individual twice, that holds a value that is not a number, or that is
+  further from its own transpose than 1e-9 of its largest absolute entry.
+  The check for a value that is not finite comes before the one for
+  symmetry, so that a matrix
   holding a `NaN`, which is what pyNei's own kinship leaves for a pair with
   no variant called in both, is refused for the cell it holds and not
   reported as asymmetric: a matrix can hold a `NaN` and be symmetric, and
@@ -142,7 +143,10 @@ which `docs/objectives.md` asks to be written down:
   23 September 2026 found Python taking one that named an individual twice,
   where `filter_individuals` then gave two rows for the one name asked, and
   TypeScript taking a `NaN` on the diagonal, which its symmetry check never
-  looked at. The fifth place they differed was the labels: Python took a
+  looked at; the review of 24 September 2026 found Python taking a frame of
+  no row, which is square and names nobody twice, so that only
+  `principal_components` complained and everything else a user did with it
+  worked, where TypeScript refuses it in its constructor. The fifth place they differed was the labels: Python took a
   matrix indexed by the numbers 0 and 1, where `calcKinship` of TypeScript
   takes the names as strings and refuses anything else. The owner decided on
   23 September 2026 to refuse it, which is what makes the two packages take
@@ -587,16 +591,23 @@ normalization, and it was not run. What is checked instead:
   and not to 9: popnei is 4e-16 of itself from what numpy gives, and the
   third of them rounded to 9 digits is 8.5e-10 away, which is 85% of that
   bound, so a change that is right and moves an eigenvalue by 1.5e-10 would
-  redden all three suites. No function gives an eigenvalue, so the check is made at
-  `principal_components`, on the sum of the squares of each component's
+  redden all three suites. No function gives an eigenvalue, so the check is
+  made at `principal_components`, on the sum of the squares of each component's
   projections: a component is `u_j * sqrt(lambda_j)` and `u_j` has length 1,
   so that sum is `lambda_j` itself.
 - That asking either panel for 200 components, one for each of its
   individuals, gives 199. A kinship measures a pair against the average pair
-  of the panel, which takes one direction out of it, so the last eigenvalue
-  is 0 or below it: numpy 2.5.3 on 23 September 2026 gives -3.44e-15 on
-  `panel_called` and -0.0321 on `panel`, against a tolerance of 7.67e-13 on
-  both. pyNei gives 200 components there, the last of them the square root
+  of the panel, which takes one direction out of it exactly when no genotype
+  is missing: each variant is centered, so the standardized dosages of every
+  individual sum to 0 at it and `G = Z'Z / m` has `G 1 = 0`, the vector of
+  ones being an eigenvector of eigenvalue 0. With genotypes missing the
+  entries are divided one by one by the per pair denominators and that no
+  longer follows: of 3715 random small panels with genotypes missing, 36 had
+  `1'G1` above 0. What holds in both is measured and not proved: no panel of
+  the 42261 that were generated gave a component for every individual, and
+  the last eigenvalue is 0 or below it here: numpy 2.5.3 on 23 September
+  2026 gives -3.44e-15 on `panel_called` and -0.0321 on `panel`, against a
+  tolerance of 7.67e-13 on both. pyNei gives 200 components there, the last of them the square root
   of the absolute value of that eigenvalue, 0.179 on `panel`, along a
   direction in which the panel does not vary.
 - The worked example of "The matrix" above, taken as a kinship of 4
@@ -711,17 +722,38 @@ pub struct KinshipPcs {
 }
 
 pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<KinshipPcs>;
+
+pub fn principal_components_of(
+    matrix: Vec<f64>,
+    num_individuals: usize,
+    num_pcs: usize,
+) -> Result<KinshipPcs>;
 ```
 
-A kinship of no individual is refused with the error a source with no
+A kinship of no individual is refused with the error a kinship with no
 individual gives, the one `calc_kinship` raises: there is no matrix to
 decompose and no individual to place. A user reaches it from Python with an
-empty frame, which the checks a `Kinship` a user built goes through let
-past, since a matrix of no row is square and names nobody twice. The
-eigendecomposition failing is the error of the linear algebra of a kinship,
-as a product failing is. The matrix is copied before it is decomposed,
-because the eigendecomposition writes the eigenvectors over the matrix it
-was given: 800 MB at 10000 individuals, beside the kinship the caller keeps.
+empty frame, which `__post_init__` refuses, and from a `Kinship` of the core
+built by hand. The eigendecomposition failing is the error of the linear
+algebra of a kinship, as a product failing is.
+
+Every value of the matrix is checked to be finite before it is decomposed,
+the upper half among them although the components read the lower half
+alone, and the error names the row and the column of the first one that is
+not. The frame a Python user holds is not frozen with the `Kinship` that
+holds it: they write a NaN into it after `__post_init__` has checked it, and
+what the linear algebra says of such a matrix is a `RuntimeError` that names
+a matrix `g` of `crates/popnei-linalg` for what is a wrong argument of
+theirs.
+
+The eigendecomposition writes the eigenvectors over the matrix it is given,
+so there are two entries: `principal_components` copies the matrix, 800 MB
+at 10000 individuals, for a caller that keeps its kinship, and
+`principal_components_of` takes a matrix over and copies nothing. A binding
+crate, which holds no `Kinship` of its own and builds one only to call,
+takes the second: measured from Python on a kinship of 5000 individuals,
+whose matrix is 190.73 MB, the peak grew 765.73 MB through the first and
+574.81 MB through the second.
 
 What this module calls in `linalg`: the product of a matrix of `r` rows and
 `c` columns with itself, added to the lower half of a `c` x `c` matrix,
