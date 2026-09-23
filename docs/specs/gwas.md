@@ -160,6 +160,17 @@ value and no value that is not a number; each of the three raises a
 `ValueError`, and the one for a value that is not a number says to code a
 categorical covariate, with `pandas.get_dummies` for instance.
 
+A covariate named `intercept` is refused, in Python and in TypeScript alike,
+with a `ValueError` saying that the name is the intercept's. The effects
+come back keyed by name with the intercept among them, so two of them named
+`intercept` would collide. pyNei does not refuse it and loses the intercept
+without saying anything: `_prepare_samples_and_design` of `pynei/gwas.py`
+builds `["intercept"] + covariate names` and hands it to a pandas `Series`
+as its index, which takes a repeated label, and the frame a user then reads
+keeps whichever of the two came last. Measured on 23 September 2026: a
+series over `intercept`, `intercept` and `cov2` gives two entries, not
+three, and the intercept's own value is the one that is gone.
+
 Two refusals protect the fits. A design whose columns are not independent, a
 covariate that is constant or a copy of another, is a `ValueError` saying
 the covariates are collinear; it is found with the rank of
@@ -385,7 +396,10 @@ that the study finds what was planted: of the 10 variants with the smallest
 p-value under the `lmm`, at least 3 are among the 5 causal ones.
 
 In TypeScript, `calcGwas` is tested under node against the same six literals
-for each model.
+for each model, at a tolerance of its own: WebAssembly has no fused multiply
+and add, so it rounds a sum of products differently from a native build.
+Measured on 23 September 2026 on the worked example, node sits 2.31e-15 from
+pyNei's numbers where native faer sits 1.24e-15.
 
 ## The linear model
 
@@ -446,11 +460,27 @@ frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
 `se` of that variant, for the reason above, which on this panel is between
 1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
 
-Six significant digits round `beta` and `se` by up to 5e-7 absolute here, so
-the printing takes up to 41 per cent of that tolerance and leaves the
-arithmetic the rest. A tolerance is a budget shared between the rounding of
-the number it is compared against and the difference it is meant to catch,
-and the first share is worth computing rather than assumed to be small.
+**A tolerance against a printed reference is the sum of two terms**, not one
+number with the printing hidden inside it: what popnei's arithmetic is
+allowed, against the scale of the estimate, plus the rounding of the value
+it is compared against, which is half a unit in the last digit the program
+printed. For six significant digits that is `0.5 * 10^(floor(log10|v|) - 5)`
+for the value `v` in the file. So the bound for `beta` and for `se` is
+
+    1e-5 * se  +  half a unit in plink2's last printed digit of that value
+
+and the same shape holds for every comparison against a printed reference
+in this spec.
+
+Writing it as one number instead put a bound in this spec that no correct
+implementation could pass, measured on the whole panel on 23 September 2026:
+at `var0482`, `beta` 1.0389 and `se` 0.19, six significant digits round a
+value above 1 by up to 5e-6 where they round one below 1 by 5e-7, while the
+budget `1e-5 * se` is 1.9e-6. The printing alone was 2.6 times the whole
+allowance, and 1198 of the 1200 variants failed. The two that passed were
+the two whose `beta` stayed below 1. The share the printing takes grows with
+the value while the budget grows with `se`, and the two come apart wherever
+an effect is large and its standard error is not.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
