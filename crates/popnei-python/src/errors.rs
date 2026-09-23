@@ -480,18 +480,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
-        // first genotype. The two of `docs/specs/filters.md` are of the
+        // first genotype. The three of `docs/specs/filters.md` are of the
         // same kind: the threshold of a filter that is not a number from 0
-        // to 1, and a second filter of a kind the variants are filtered by
-        // already, which a user gets at the call that adds the filter. What
-        // is wrong with them is wrong whatever file is read, so they name
-        // no file although some of them are refused while one is being
-        // opened.
+        // to 1, a second filter of a kind the variants are filtered by
+        // already, and a window of the filter by linkage disequilibrium
+        // that is no base pairs wide, all three of which a user gets at the
+        // call that adds the filter. What is wrong with them is wrong
+        // whatever file is read, so they name no file although some of them
+        // are refused while one is being opened.
         popnei::Error::BlockOfNoVariants
         | popnei::Error::BlockTooLarge { .. }
         | popnei::Error::VcfPloidyOutOfRange { .. }
         | popnei::Error::VarFilterThresholdOutOfRange { .. }
         | popnei::Error::VarFilterOfAKindThatIsSet { .. }
+        | popnei::Error::LdFilterMaxDistTooSmall { .. }
         // The four of the table of a principal component analysis that a
         // user writes: a value of it that is not finite, a table to be
         // standardized and not centered, one of fewer than 2 rows or of no
