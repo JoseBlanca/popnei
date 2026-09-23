@@ -439,6 +439,17 @@ test("fewer than two populations are refused", () => {
   );
 });
 
+test("pops with no population at all is refused with the rule of the call", () => {
+  // `pops` is a required argument of `calcPopDists`, so the advice the
+  // statistics give for an empty one, to leave it out for one population of
+  // every individual, cannot be followed here: what the user has to do is
+  // name two populations.
+  assert.throws(
+    () => popDistsOf(PANEL_VCF, {}, { jackknifeGroup: null, measures: ["fst"] }),
+    { message: /two/ },
+  );
+});
+
 test("a name that is not an individual of the pass is refused", () => {
   // The names are looked up among the individuals the pass gives, which are
   // those of the source after a filter of individuals when the `Variants`

@@ -395,6 +395,29 @@ def test_fewer_than_two_populations_are_refused() -> None:
     assert str(PANEL) not in said
 
 
+def test_pops_with_no_population_at_all_is_refused_with_the_rule_of_the_call() -> None:
+    """`pops` with nothing in it.
+
+    `pops` is a required argument of `calc_pop_dists`, so the advice the
+    statistics give for an empty one, to leave it out for one population of
+    every individual, cannot be followed here. What the user has to do is
+    name two populations, which is what the message says.
+    """
+    with pytest.raises(ValueError) as refusal:
+        calc_pop_dists(
+            open_vcf(PANEL),
+            {},
+            jackknife_group=None,
+            measures=("fst",),
+        )
+
+    said = str(refusal.value)
+    assert "pops" in said
+    assert "two" in said
+    assert "leave" not in said
+    assert str(PANEL) not in said
+
+
 def test_a_name_that_is_not_an_individual_of_the_pass_is_refused() -> None:
     """A population that names an individual the source does not hold.
 

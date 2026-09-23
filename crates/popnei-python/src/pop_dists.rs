@@ -105,6 +105,15 @@ pub(crate) fn calc_pop_dists<'py>(
     min_num_individuals: &Bound<'py, PyAny>,
 ) -> Result<PopDistsOfAPass<'py>, PyPopneiError> {
     let source = source_of(source)?;
+    // `pops` with no population at all is refused here and not by
+    // `Pops::from_names`, whose message asks the caller to leave `pops` out
+    // for one population of every individual: that is the statistics, where
+    // `pops` is optional, and here it is a required argument. What a user
+    // has to do is name two populations, which is what the core says of one
+    // population as well.
+    if pops.is_empty() {
+        return Err(popnei::Error::PopDistsOfFewerThanTwoPops { num_pops: 0 }.into());
+    }
     let asked_for = the_measures(&measures)?;
     let options = PopDistOptions {
         min_num_individuals: the_min_num_individuals(min_num_individuals)?,

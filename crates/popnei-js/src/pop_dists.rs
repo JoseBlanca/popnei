@@ -206,6 +206,15 @@ pub(crate) fn pop_dists_of(
     steps: &Steps,
     asked: &ArgumentsOfTheDists,
 ) -> Result<PopDistsOfAPass, JsPopneiError> {
+    // `pops` with no population at all is refused here and not by
+    // `Pops::from_names`, whose message asks the caller to leave `pops` out
+    // for one population of every individual: that is the statistics, where
+    // `pops` is optional, and here it is a required argument. What a user
+    // has to do is name two populations, which is what the core says of one
+    // population as well.
+    if asked.pop_names.is_empty() {
+        return Err(popnei::Error::PopDistsOfFewerThanTwoPops { num_pops: 0 }.into());
+    }
     let measures = the_measures(&asked.measures)?;
     let options = PopDistOptions {
         min_num_individuals: asked.min_num_individuals,
