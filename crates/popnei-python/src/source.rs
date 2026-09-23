@@ -449,7 +449,10 @@ pub(crate) fn count_of(
 /// `smallest` is what the messages say and not what they refuse: an
 /// argument that counts something is refused by the core, which says of
 /// each one what is wrong with the number, and a bound written here beside
-/// it would give a user two limits for one argument.
+/// it would give a user two limits for one argument. The one argument the
+/// core has no message for is the `max_num_vars` of
+/// `calc_rogers_huff_r2_matrix`, which it takes and then stops the pass at
+/// the first variant, so `ld.rs` refuses the 0 of that one itself.
 ///
 /// # Errors
 ///

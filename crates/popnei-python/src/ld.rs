@@ -83,6 +83,22 @@ pub(crate) fn calc_rogers_huff_r2_matrix<'py>(
     // conversion of the signature would take `True` as the number 1 and say
     // nothing.
     let max_num_vars = count_of("max_num_vars", max_num_vars)?;
+    // A cap of 0 variants is refused here and not by the core, which takes
+    // it and stops the pass at its first variant: what a user would read
+    // then is "the pass gave 1 variants and `max_num_vars` is 0 ... raise
+    // `max_num_vars` or filter the variants", the message of a dataset too
+    // large for the cap, where what they asked for is a matrix of no
+    // variant. `count_of` leaves the floor of every other count of popnei
+    // to the core, which has a message of its own for each of them and
+    // none for this one, and `calcRogersHuffR2Matrix` of TypeScript refuses
+    // a `maxNumVars` of 0 at the call in the same words.
+    if max_num_vars == 0 {
+        return Err(PyPopneiError::Count {
+            name: "max_num_vars",
+            smallest: 1,
+            value: max_num_vars.to_string(),
+        });
+    }
     let steps = steps.get().of_a_pass()?;
     // A Ctrl-C that was pending when this was called is raised here, before
     // the file is opened.

@@ -338,6 +338,27 @@ def test_a_max_num_vars_whose_matrix_is_not_counted_is_refused() -> None:
     assert not message.startswith(str(REFERENCE_LD_DIR))
 
 
+def test_a_max_num_vars_of_no_variants_is_refused_at_the_call() -> None:
+    """A cap of 0 variants, which is a matrix of no pair.
+
+    The core takes the 0 and stops the pass at its first variant, so what a
+    user would read is the message of a dataset too large for the cap, "the
+    pass gave 1 variants and `max_num_vars` is 0 ... raise `max_num_vars` or
+    filter the variants", where what they asked for is a matrix of no
+    variant. The 0 is refused at the call instead, before the source is
+    read, under the name the user wrote it in and with no file named, as
+    `calcRogersHuffR2Matrix` of the TypeScript package refuses a
+    `maxNumVars` of 0.
+    """
+    with pytest.raises(ValueError) as refusal:
+        calc_rogers_huff_r2_matrix(_the_ld_dataset(), max_num_vars=0)
+
+    assert str(refusal.value) == (
+        "`max_num_vars` is 0, and it says how many of something there are: a "
+        "whole number of 1 or more that this machine can count"
+    )
+
+
 def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
     """A VCF whose header names three individuals and that has no data line.
 

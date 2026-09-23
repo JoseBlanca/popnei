@@ -65,8 +65,9 @@ pub(crate) enum PyPopneiError {
     },
     /// An argument that says how many of something there are, the ploidy or
     /// the variants of a block, and holds a number that counts nothing: a
-    /// negative one, or one above what this machine counts, which in wasm
-    /// is 4295 million.
+    /// negative one, one above what this machine counts, which in wasm is
+    /// 4295 million, or a 0 where the argument takes 1 at least and the
+    /// core has no message of its own for it.
     Count {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
