@@ -43,6 +43,26 @@ create_exception!(
      with no variance. It derives from `ValueError` as well."
 );
 
+create_exception!(
+    popnei._core,
+    KinshipPairWithNoVariantCalled,
+    PyValueError,
+    "Two individuals of a kinship that have no variant called in both of \
+     them, so that the sum of their pair would be divided by no variant at \
+     all. `args[0]` is what the core says, with the file that was read, \
+     which names the two by their position; `args[1]` and `args[2]` are \
+     those positions among the individuals of the kinship, from 0, and are \
+     one position twice when an individual has no called genotype at all; \
+     and `args[3]` and `args[4]` are how many of the variants that were \
+     used are called in each of the two.\n\n\
+     `popnei.calc_kinship` catches it and raises the `ValueError` its user \
+     reads, whose message names the two individuals. The core has their \
+     positions and not their names, and this class is how they reach the \
+     layer that has the names, as it is for the two traits above. It \
+     derives from `ValueError`, so a user who catches that one catches this \
+     one as well."
+);
+
 /// What a function of this crate fails with.
 pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
@@ -101,6 +121,19 @@ pub(crate) enum PyPopneiError {
     ArrayNotContiguous {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
+    },
+    /// An array of two dimensions that is not square, given to a call that
+    /// takes a matrix of the individuals by the individuals, under the name
+    /// of the argument a user wrote it in. The package builds that array
+    /// from the frame of a `Kinship`, which is square by the checks of that
+    /// class, so a user reaches it only through `popnei._core`.
+    MatrixNotSquare {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// How many rows the array has.
+        num_rows: usize,
+        /// How many columns it has.
+        num_columns: usize,
     },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
@@ -232,6 +265,13 @@ impl From<PyPopneiError> for PyErr {
                 "`{name}` does not lie in memory row after row, and popnei reads the \
                  values of an array as they lie: `numpy.ascontiguousarray({name})` \
                  gives one that does"
+            )),
+            PyPopneiError::MatrixNotSquare {
+                name,
+                num_rows,
+                num_columns,
+            } => PyValueError::new_err(format!(
+                "`{name}` is {num_rows} by {num_columns}, and the matrix of a kinship                  is a square one of the individuals by the individuals"
             )),
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
@@ -411,6 +451,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaSecondPassMissing { .. }
         | popnei::Error::PcaSecondPassDiffers { .. }
         | popnei::Error::PcaWeightOutOfPlace { .. }
+        // The one of the kinship that no argument of `calc_kinship` gives:
+        // a product of the linear algebra that did not run, which is the
+        // standardized dosages of a block with themselves or the genotypes
+        // that were called with themselves. Every size of both products is
+        // checked before they are asked for, the individuals at the entry of
+        // the calculation and the variants of the block as it is read, so
+        // what is left is a defect of popnei or a backend that refused the
+        // work, and a user reports it.
+        | popnei::Error::KinshipLinalg { .. }
         // The four of the r² of two sets of variants that no argument of
         // `calc_rogers_huff_r2_matrix` gives, for the same reason as the
         // two of the principal component analysis above: a range of
@@ -461,6 +510,25 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         popnei::Error::PcaTraitOutOfRange { position, problem } => {
             TraitOutOfRange::new_err((message, position, name_of(problem)))
         }
+        // The pair of individuals of a kinship that the layer holding their
+        // names names: the core has where each of the two is among the
+        // individuals of the kinship and not what they are called, and
+        // `popnei.calc_kinship` raises the `ValueError` a user reads, whose
+        // message names them. It carries what the core says as well, with
+        // the file the variants were read from, so that a caller of
+        // `popnei._core` reads a message and not four numbers.
+        popnei::Error::KinshipPairWithNoVariantCalled {
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        } => KinshipPairWithNoVariantCalled::new_err((
+            of_the_file(message, path),
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        )),
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
@@ -540,22 +608,42 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
-        // The five of the principal components of the variants that the
-        // dataset a user gave is wrong for: no variants, which the steps of
-        // a `Variants` can leave; no variant with variance, which one
-        // individual gives; a variant of more than two different alleles
-        // among its called genotypes with `transform_to_biallelic` false; a
+        // The six that the dataset a user gave is wrong for: four of the
+        // principal components of the variants and two of the pass over a
+        // row that those components and the kinship share. Of the
+        // components: no variants, which the steps of a `Variants` can
+        // leave; no variant with variance, which one individual gives; a
         // source of no individual, which is nobody to place on the axes and
         // which no source of popnei is, since one that names no individual
         // is refused when it is opened; and a dataset of a size the
         // analysis cannot count in, which "Errors and the cases pyNei
-        // asserts" of `docs/specs/pca.md` lists. Each names the file the
-        // variants were read from, as every error of a file does.
+        // asserts" of `docs/specs/pca.md` lists. Of the row: a variant of
+        // more than two different alleles among its called genotypes with
+        // `transform_to_biallelic` false, and a ploidy the dosages could
+        // not be written one to a byte at. Each names the file the variants
+        // were read from, as every error of a file does.
         popnei::Error::PcaNoVariants
         | popnei::Error::PcaNoVariantWithVariance
-        | popnei::Error::PcaVariantWithMoreThanTwoAlleles { .. }
+        | popnei::Error::VariantWithMoreThanTwoAlleles { .. }
+        | popnei::Error::VariantPloidyTooLarge { .. }
         | popnei::Error::PcaNoIndividual
         | popnei::Error::PcaVariantsTooLarge { .. }
+        // The three of the kinship that the dataset a user gave is wrong
+        // for, which are of that same kind: no variant with variance among
+        // the individuals it was asked for, which one individual gives and
+        // which pyNei raises for as well; a source with no individual,
+        // which is nobody to give
+        // a kinship of and which no source of popnei is, since one that
+        // names no individual is refused when it is opened; and a dataset
+        // of a size the calculation cannot count in, more individuals than
+        // the matrix of the linear algebra holds or more variants than this
+        // machine counts. `docs/specs/kinship.md` has them in "The Rust
+        // interface", each as the `ValueError` it is here, and the fourth,
+        // a pair with no variant called in both, is the arm above, which
+        // carries the two to the layer that has their names.
+        | popnei::Error::KinshipNoVariantWithVariance
+        | popnei::Error::KinshipNoIndividual
+        | popnei::Error::KinshipVariantsTooLarge { .. }
         // The pass that gave more variants than `max_num_vars`, which is
         // of that same kind, a dataset larger than the calculation takes:
         // the cap a user wrote and the variants the file holds decide it

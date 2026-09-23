@@ -75,6 +75,26 @@ export async function referenceDists(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_DISTS_DIR)));
 }
 
+const REFERENCE_KINSHIP_DIR = new URL(
+  "../../../tests/reference/kinship/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the kinship,
+ * `panel_called.vcf.gz`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/kinship.md`, in
+ * `tests/reference/kinship/`, which
+ * `tests/reference/kinship/make_reference.py` writes: 200 individuals and
+ * 1200 biallelic diploid variants with every genotype called, and beside it
+ * the matrix that plink2 v2.0.0-a.7.7 wrote for it with `--make-rel square`.
+ * The Python tests read the same files.
+ */
+export async function referenceKinship(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_KINSHIP_DIR)));
+}
+
 const REFERENCE_LD_DIR = new URL(
   "../../../tests/reference/ld/",
   import.meta.url,

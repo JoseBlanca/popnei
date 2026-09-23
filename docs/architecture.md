@@ -266,7 +266,7 @@ inputs where they overlap.
 
 | module or crate | what it holds | pyNei functions it replaces |
 |---|---|---|
-| `variant` | `Needs`, `ChromTable`, `MISSING_ALLELE`, `VariantRef`, the view of one variant of a block, and the row helpers over it: dosages, missing and het masks, allele counts | `Genotypes.to_012`, `gt_counts` |
+| `variant` | `Needs`, `ChromTable`, `MISSING_ALLELE`, `VariantRef`, the view of one variant of a block, and the row helpers over it: dosages, missing and het masks, allele counts, and the pass that turns one variant into one standardized dosage per individual, with the divisor its caller gives it, the standard deviation of the dosages for the PCA and the one under Hardy Weinberg for the kinship, and the pass over a whole block that walks that one variant by variant, on the threads of rayon or one after another where there are none, and leaves out the variants with no variance; and the two sizes those passes hold a dataset to, the largest ploidy a genotype is written at and the most individuals a matrix of them by them counts in | `Genotypes.to_012`, `gt_counts` |
 | `io::vcf` | the reader, which parses the lines of a block in parallel, gzip; the writer | `vars_from_vcf`, and a writer pyNei does not have |
 | `io::bgzf` | the reader of the members of a file that bgzip wrote, which `io::vcf` reads such a source through: it cuts each member by the size the member states and checks it | none; pyNei reads a bgzipped VCF with Python's `gzip` |
 | `io::vars` | the arrow file reader, projection by `Needs`, a batch of the file as a block; the writer; a format of popnei's own | `load_vars`, `write_vars` |
@@ -278,7 +278,7 @@ inputs where they overlap.
 | the linalg crate, which the core calls | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares, the rank of a matrix; backends: BLAS and LAPACK natively, faer in wasm and natively with the cargo feature `blas` off | numpy.linalg |
 | `pca` | PCA of a table of numbers, individuals by traits; PCA of the 012 matrix, PCoA of a distance matrix | `do_pca`, `do_pca_from_variants`, `do_pcoa_from_variants` |
 | `ld` | Rogers Huff r2 between blocks of variants, by distance | `calc_rogers_huff_r2_matrix`, `iter_rogers_huff_r2`, `calc_ld_and_dist_per_pop` |
-| `kinship` | the GRM, per pair denominators, principal components of it | `calc_kinship` |
+| `kinship` | the kinship of every pair of individuals, per pair denominators, principal components of it | `calc_kinship` |
 | `gwas` | the four null models, the tests, the distributions erfc and betainc | `calc_gwas` |
 
 The order of the work is the order of the rows: `variant`, `io::vcf`,

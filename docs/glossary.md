@@ -179,6 +179,65 @@ populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
 `dist_vector` in identifiers, as in pyNei. Not used: condensed matrix,
 the name scipy gives the same order.
 
+**standardized dosage.** The dosage of a genotype with the mean dosage of
+its variant taken from it and the result divided by
+`sqrt(ploidy * p * (1 - p))`, where p is the mean dosage over the ploidy:
+the spread the allele frequency of the variant gives it under Hardy
+Weinberg. It is what the kinship is built from, and it is not the dosage
+divided by its own standard deviation, which is what a PCA of the variants
+standardizes with. `z` in the formulas, as in the literature.
+
+**kinship.** The genomic relationship matrix of VanRaden (2008), which GCTA
+and plink2's `--make-rel` also compute: for every pair of individuals, the
+standardized dosages of the two multiplied together and summed over the
+variants, divided by the per pair denominator. An entry off the diagonal is
+twice the coancestry of the pair and one on the diagonal is 1 plus the
+inbreeding of that individual. `docs/specs/kinship.md`. Not used: GRM,
+relationship matrix, K, which is what the formulas call it.
+
+**per pair denominator.** How many variants have a called genotype in both
+individuals of a pair, which is what that pair's entry of the kinship is
+divided by. With no missing genotype it is the same number for every pair.
+`num_vars_per_pair` in pyNei. `docs/specs/kinship.md`.
+
+**trait.** What a user measured on each individual and wants the variants
+tested against: **continuous**, a measurement, or **binomial**, 0 or 1.
+`trait` in the arguments and `TraitType` in the types. The value itself,
+one number per individual, is the **phenotype**, as in pyNei, which is the
+argument a user passes. `docs/specs/gwas.md`.
+
+**covariate.** A number per individual whose effect on the trait has to be
+taken out but is not what is being tested, such as the sex or the field a
+plant grew in. `covariates` in the arguments, a frame indexed by
+individual. Not used: fixed effect, which is R's word and which in a mixed
+model also covers the variant.
+
+**design.** The matrix of one row per tested individual and one column per
+number a model fits: a column of ones for the intercept and one for each
+covariate. `design` in the core crate, and `d` in the formulas.
+
+**null model.** The model of the trait fitted once with the covariates and
+the kinship in it and no variant, which every variant is then tested
+against. `NullModel` in the results. `docs/specs/gwas.md`.
+
+**mixed model.** A model with the kinship in it as the covariance of a
+random effect, so that related individuals are expected to resemble each
+other before any variant is looked at. The two of popnei are the linear
+mixed model, `lmm`, and the logistic one, `glmm`, two of the four values of
+`GWASModel`.
+
+**Wald test.** The test of a variant that fits the model again with the
+variant in it and asks how many of its own standard errors the effect is
+away from 0. `TestType.WALD`.
+
+**score test.** The test of a variant that never fits the model with the
+variant in it: it asks how steeply the fit would improve if the effect were
+let off 0, measured at the null model. `TestType.SCORE`.
+
+**heritability.** The variance of the kinship effect over the sum of it and
+the residual variance: the share of the trait's variance the kinship
+explains. A field of `NullModel`, and only the linear mixed model has one.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`

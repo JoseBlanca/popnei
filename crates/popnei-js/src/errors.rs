@@ -64,6 +64,27 @@ pub enum JsPopneiError {
         /// pair.
         bytes: u64,
     },
+    /// Two individuals of a kinship that have no variant called in both of
+    /// them, under their names: the core refuses the pair and names the
+    /// positions the two have among the individuals the kinship was asked
+    /// for, and what a user has to drop from the panel is a name. With
+    /// `individuals` on the call those positions are not even the file's.
+    ///
+    /// `one` and `other` are the same name when that individual has no
+    /// called genotype at all among the variants that were used, which is a
+    /// sequencing that failed, and the message then says to leave that one
+    /// out instead of one of a pair, as the core's does.
+    PairWithNoVariantCalled {
+        /// The name of the first of the two.
+        one: String,
+        /// The name of the second, which is `one` when the individual has
+        /// no called genotype at all.
+        other: String,
+        /// How many of the variants that were used are called in the first.
+        num_vars_of_one: u64,
+        /// How many of them are called in the second.
+        num_vars_of_other: u64,
+    },
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -92,11 +113,11 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the seven cases are one `Error`, where Python tells a `ValueError`
+    /// the eight cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
-            JsPopneiError::Core(error) => error.to_string(),
+            JsPopneiError::Core(error) => the_message_of_the_core(&error),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and
             // the rule it broke is the core's, which refuses the same
@@ -122,6 +143,16 @@ impl From<JsPopneiError> for JsValue {
                  that number, so its source may hold more variants; raise `maxNumVars` \
                  or filter the variants"
             ),
+            // The two individuals with no variant called in both, which the
+            // core names by their positions among the individuals of the
+            // kinship: what a user drops from the panel is a name, and the
+            // binding is what holds them.
+            JsPopneiError::PairWithNoVariantCalled {
+                one,
+                other,
+                num_vars_of_one,
+                num_vars_of_other,
+            } => a_pair_with_no_variant_called(&one, &other, num_vars_of_one, num_vars_of_other),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::Refused(message)
             | JsPopneiError::NoMemory(message)
@@ -129,6 +160,92 @@ impl From<JsPopneiError> for JsValue {
         };
         JsError::new(&message).into()
     }
+}
+
+/// The message an error of the core has, with the argument it names written
+/// as a TypeScript user writes it.
+///
+/// The owner decided on 24 September 2026 that in TypeScript a message names
+/// the option in TypeScript style. The core writes an argument the way Rust
+/// and Python spell it, `transform_to_biallelic`, and a user of this package
+/// wrote `transformToBiallelic`: what they grep their code for has to be a
+/// name their code holds. The core keeps its spelling, since a Python user
+/// reads the same sentence and writes the same name, and the rewrite is
+/// here, where section 11 of `docs/architecture.md` puts the one place that
+/// turns an error of the core into what JavaScript throws.
+///
+/// It is matched on the error and not on the text: a name is rewritten only
+/// in the message that is known to be about that option, so a `num_bins`
+/// that is a column of a file somewhere else is left alone. The two names an
+/// error carries that this does not reach are `max_num_vars`, which
+/// [`JsPopneiError::TooManyVars`] writes as `maxNumVars`, and
+/// `poly_threshold` and `bin_type`, which `stats.rs` writes as
+/// `polyThreshold` and `binType` before the error gets here.
+///
+/// Three of the eight names the core writes are left as they are.
+/// `num_prin_comps` is in the error of a second pass that was not made,
+/// which `pca.rs` of this crate opens a reader for whenever the weights are
+/// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
+/// cap the machine does not count the pairs of is refused by the package at
+/// the call, against the same number the core checks. And `popnei_batches`
+/// is not an option a user writes but the key popnei puts in the footer of a
+/// vars file, which is spelled that way in the file itself.
+fn the_message_of_the_core(error: &popnei::Error) -> String {
+    let message = error.to_string();
+    // `matches!` and not a `match` over the enum: the errors of the core are
+    // many and the ones that name an option are these, so a new one falls
+    // through to its own message rather than to an arm that guesses.
+    if matches!(error, popnei::Error::VariantWithMoreThanTwoAlleles { .. }) {
+        return message.replace("transform_to_biallelic", "transformToBiallelic");
+    }
+    if matches!(error, popnei::Error::HistWithNoBin) {
+        return message.replace("num_bins", "numBins");
+    }
+    if matches!(
+        error,
+        popnei::Error::BlockTooLarge { .. } | popnei::Error::VarsTextTooLarge { .. }
+    ) {
+        return message.replace("num_vars_per_block", "numVarsPerBlock");
+    }
+    message
+}
+
+/// What [`JsPopneiError::PairWithNoVariantCalled`] says: the two individuals
+/// that have no variant called in both of them, or the one individual that
+/// has no called genotype at all among the variants that were used.
+///
+/// It is the message of `Error::KinshipPairWithNoVariantCalled` of the core
+/// with the names of the two where the core writes their positions. The
+/// entry of a pair is divided by how many variants both of its individuals
+/// were called at, and both cases are that number being 0: a pair reaches it
+/// when each of the two was called somewhere and never together, and one
+/// individual reaches it against itself when its sequencing failed, and then
+/// every pair it is in has no variant either, so what a user has to do is
+/// leave that one out and not one of a pair.
+fn a_pair_with_no_variant_called(
+    one: &str,
+    other: &str,
+    num_vars_of_one: u64,
+    num_vars_of_other: u64,
+) -> String {
+    if one == other {
+        return format!(
+            "the individual `{one}` has no called genotype among the variants that were \
+             used, so its entry of the kinship would be divided by no variant at all; \
+             leave it out"
+        );
+    }
+    format!(
+        "the individuals `{one}` and `{other}` have no variant called in both of them, \
+         so their entry of the kinship would be divided by no variant at all: \
+         {num_vars_of_one} {said} called in the first and {num_vars_of_other} in the \
+         second; leave one of the two out",
+        said = if num_vars_of_one == 1 {
+            "variant is"
+        } else {
+            "variants are"
+        },
+    )
 }
 
 /// `number` written as JavaScript writes it, which is how a user wrote it:

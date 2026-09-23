@@ -311,9 +311,7 @@ const WORKED_PERCENT = [76.74407104469, 21.71669104093, 1.53923791438];
  * variant of three alleles, read with every allele that is not the major one
  * counting the same.
  */
-const WORKED3_ROW_0 = [
-  -0.540318123982, 1.0305897036, 0.564890574265,
-];
+const WORKED3_ROW_0 = [-0.540318123982, 1.0305897036, 0.564890574265];
 
 const WORKED3_PERCENT = [70.7485198149, 26.495544613, 2.75593557214];
 
@@ -395,6 +393,19 @@ test("a variant of three alleles is an Error that names it", () => {
   );
 });
 
+test("the variant of three alleles names the option in TypeScript", () => {
+  // The core tells a user to pass `transform_to_biallelic`, which is what a
+  // Python user writes; a TypeScript user wrote `transformToBiallelic`, and
+  // a name their code does not hold is one they grep for and do not find.
+  assert.throws(
+    () => theVariantsPca(WORKED3_VCF),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("pass `transformToBiallelic`") &&
+      !error.message.includes("transform_to_biallelic"),
+  );
+});
+
 test("every allele that is not the major one counts the same", () => {
   const result = theVariantsPca(WORKED3_VCF, {
     transformToBiallelic: true,
@@ -443,7 +454,8 @@ function vcfOfManyIndividuals(numIndividuals: number): Uint8Array {
   const genotypes = (variant: number) =>
     Array.from(
       { length: numIndividuals },
-      (_unused, individual) => ["0/0", "0/1", "1/1"][(individual + variant) % 3],
+      (_unused, individual) =>
+        ["0/0", "0/1", "1/1"][(individual + variant) % 3],
     ).join("\t");
   return new TextEncoder().encode(
     [
