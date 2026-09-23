@@ -302,10 +302,15 @@ def calc_pop_dists(
         min_num_individuals,
     )
     pops_of_the_pass = tuple(pop_names)
+    # The counts of the one pass go to the result and to every measure of
+    # it, so that a user who takes one measure out of the result keeps the
+    # counts of the pass that gave it.
+    pass_stats = _pass_stats_of(counts)
     of_its_name = {
         measure: Distances(
             dist_vector=values,
             names=pops_of_the_pass,
+            pass_stats=pass_stats,
             standard_errors=standard_errors,
         )
         for measure, (values, standard_errors) in zip(
@@ -315,7 +320,7 @@ def calc_pop_dists(
     return PopDists(
         pops=pops_of_the_pass,
         num_vars=num_vars,
-        pass_stats=_pass_stats_of(counts),
+        pass_stats=pass_stats,
         f2_groups=f2_groups,
         group_ids=tuple(group_ids),
         **of_its_name,

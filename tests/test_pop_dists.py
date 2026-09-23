@@ -554,6 +554,24 @@ def test_the_counts_of_the_pass_hold_the_variants_and_the_filters() -> None:
     assert dists.pass_stats.num_vars == kept.vars_kept
 
 
+def test_each_measure_carries_the_counts_of_the_pass() -> None:
+    """The `Distances` of every measure holds the `pass_stats` the `PopDists`
+    holds: the measures come out of one pass, so a user who takes one of them
+    out of the result keeps the counts of the pass that gave it, as they do
+    with the Kosman distances.
+    """
+    variants = open_vcf(PANEL)
+    variants.filter_by_maf(0.95)
+
+    dists = calc_pop_dists(
+        variants, PANEL_POPS, jackknife_group=None, measures=("fst", "f2")
+    )
+
+    assert dists.fst.pass_stats == dists.pass_stats
+    assert dists.f2.pass_stats == dists.pass_stats
+    assert dists.pass_stats.filtering["maf"].vars_processed == PANEL_NUM_VARS
+
+
 def test_the_variants_are_as_they_were_after_the_call() -> None:
     """The call is a consumer of the `Variants`: it makes one pass over the
     source through the steps the `Variants` has, and the `Variants` is as it
