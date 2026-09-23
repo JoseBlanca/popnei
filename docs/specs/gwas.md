@@ -616,8 +616,12 @@ The score test against R 4.6.1's `anova(glm, test = "Rao")`, one logistic
 regression per variant fitted by R, from `r.panel_called.glm.score.tsv`.
 R reports the score statistic and its p-value at full precision. Over all
 1200 variants the statistic `(beta / se)²` is within 1e-2 absolute and
-`|log10(p / p_R)|` below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
-1e-8 in the deviance, which is what those tolerances are.
+`|log10(p / p_R)|` below 1e-3; the six literals are held to 1e-3 and 1e-3.
+R's glm converges to 1e-8 in the deviance, which is what those tolerances
+are. The one on the statistic is absolute where the reference is exact, so
+on a panel whose statistics are far above this one's 1.5 to 12 it would fail
+a right answer rather than pass a wrong one, which is the safe way round for
+a check to be fragile.
 
 The six literals, the score statistic `(beta / se)²` within 1e-3 absolute
 and the p-value within 1e-3 in `log10`: var0000 4.938245 and
