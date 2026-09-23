@@ -431,6 +431,36 @@ denominator of every pair is 2, and the matrix is 4/3 on the diagonal and
 Run through pyNei at commit ef0ca6e on 23 September 2026, and the cargo test
 asserts it within 1e-12 absolute.
 
+A third worked example, of a ploidy that is not 2, which neither panel nor
+either example above has: 3 individuals, `i0` to `i2`, and 2 tetraploid
+variants.
+
+| variant | genotypes | dosages | kept |
+|---|---|---|---|
+| v0 | 0/0/0/0 0/0/1/1 1/1/1/1 | 0 2 4 | yes |
+| v1 | 0/0/0/0 0/0/0/1 0/0/./. | 0 1 **0.5** | yes |
+
+The ploidy is in the divisor twice, `sqrt(ploidy * p * (1 - p))` with `p` the
+mean dosage over the ploidy, so the two variants are divided by different
+numbers: `v0` has a mean dosage of 2 and `p` of 0.5 and is divided by 1, and
+`v1` has a mean of 0.5 over its two called genotypes, `p` of 0.125 and a
+divisor of `sqrt(4 * 0.125 * 0.875)`, 0.661438. The genotype of `i2` at `v1`
+has two of its four alleles missing, so it is missing whole, takes the mean
+dosage of its variant and is in the denominator of no pair: the pairs with
+`i2` are divided by 1 and the others by 2. `num_vars` is 2 and the matrix is
+
+|  | i0 | i1 | i2 |
+|---|---|---|---|
+| **i0** | 16/7 | -2/7 | -4 |
+| **i1** | -2/7 | 2/7 | 0 |
+| **i2** | -4 | 0 | 4 |
+
+from pyNei at commit ef0ca6e on 23 September 2026, read from an array of
+genotypes and not from a VCF, because pyNei's VCF parser raises an
+`IndexError` in `_parse_var_line` of `pynei/io_vcf.py` on a ploidy above 2.
+The cargo test reads the same genotypes as a VCF, which popnei does read,
+and asserts the nine entries within 1e-12 absolute.
+
 In TypeScript, `calcKinship` is tested under node against the four entries
 of `s000` above on `panel_called.vcf.gz` and against the worked example.
 
