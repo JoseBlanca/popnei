@@ -189,9 +189,13 @@ One pass over the blocks, each block taken as a matrix. Per block, with
 rayon across its rows, every variant is turned into its standardized dosages
 and the ones with no variance are dropped, which is the row pass of
 `pca_of_variants` in `crates/popnei/src/pca.rs` with one number changed, the
-divisor; the codes of the genotypes, the table of allele counts and the
-lookup of one standardized value per code are the same, and the two should
-share them rather than hold two copies. Then two products, both in
+divisor: that pass divides by the standard deviation of the dosages and this
+one by `sqrt(ploidy * p * (1 - p))`. Everything else is the same, the codes
+of the genotypes, the table of allele counts and the lookup of one
+standardized value per code. Whether the two call one helper with the
+divisor as an argument or keep two copies is the implementation plan's to
+decide, and this spec asks only that a change to the dosage rule of
+`docs/specs/pca.md` cannot leave the two disagreeing. Then two products, both in
 `linalg`: the standardized dosages of the block multiplied by themselves
 into an individuals by individuals accumulator, and, when any genotype of
 the block is missing, the same of the matrix of ones and zeros that says
@@ -202,9 +206,10 @@ count, as `_KinshipCalc.calc_for_chunk` skips it.
 What is kept from one block to the next is those two accumulators and the
 count of variants used: individuals by individuals, not growing with the
 variants. At 1000 individuals that is 8 MB each and at 10000 it is 800 MB
-each, which is `docs/rust_core.md`'s open question about the memory in the
-browser and is why the second accumulator is not allocated until a missing
-genotype is seen.
+each, and it is why the second accumulator is not allocated until a missing
+genotype is seen. Section 5 of `docs/rust_core.md` leaves it open how far
+this goes in a browser, where the heap is 32 bit and a kinship of 10000
+individuals is already 800 MB of the 4 GB that addresses.
 
 `reblock` goes before it, as it does before the PCA and for the same two
 reasons: a filter leaves blocks of uneven size, and the sum over blocks is
@@ -459,10 +464,11 @@ Meanwhile the implementer reproduces pyNei and collapses silently, which is
 what the reference panels need.
 
 **Open 2: a pair with no variant called in both.** Its denominator is 0 and
-pyNei puts a NaN in the matrix and says nothing. That NaN reaches the
-Cholesky factorization of a mixed model fit, which refuses it far from here
-with a message about a matrix, or an eigendecomposition, which fills the
-whole result with NaN. The options are to reproduce pyNei, which keeps a
+pyNei puts a NaN in the matrix and says nothing. That NaN travels: the mixed models of
+`docs/specs/gwas.md` factorize the kinship, and a factorization refuses a
+matrix with a NaN in it far from here and with a message about a matrix and
+a row, while an eigendecomposition of one fills every component with NaN
+instead. The options are to reproduce pyNei, which keeps a
 matrix that a user can look at and see the gap in; or to raise an error
 naming the two individuals and how many variants each of them has called,
 which is a dataset popnei refuses and pyNei answers for. Recommendation:
