@@ -19,7 +19,7 @@ use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
 
-use crate::errors::PyPopneiError;
+use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{OpenSource, PassCounts, read_only, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
@@ -66,6 +66,7 @@ pub(crate) fn calc_pairwise_kosman_dists<'py>(
     let calculated = py.detach(|| over_the_source(source, &steps, min_num_vars));
     let (dists, individuals, counts) =
         calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
     // The vector of 10000 individuals is 400 MB, and `into_pyarray` hands
     // the allocation the core filled to numpy without copying it.
     let dists = read_only(dists.into_pyarray(py))?;

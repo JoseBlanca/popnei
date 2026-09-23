@@ -35,7 +35,7 @@ use popnei::pop_dists::{
 };
 use popnei::stats::Pops;
 
-use crate::errors::PyPopneiError;
+use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{OpenSource, PassCounts, read_only, source_of, written_as};
 use crate::stats::{of_a_result, the_min_num_individuals};
 use crate::steps::{Step, Steps, chain_of};
@@ -123,12 +123,7 @@ pub(crate) fn calc_pop_dists<'py>(
     let of_the_pass = py
         .detach(|| over_the_source(source, &steps, &pops, &asked_for, &options))
         .map_err(|error| with_its_file(error, path))?;
-    // A Ctrl-C that arrived while the pass ran is still pending: the
-    // interpreter was released and no bytecode ran to raise it. It is raised
-    // here, before numpy is called, because the first array of a process
-    // imports the C API of numpy, that import fails with the exception that
-    // is pending, and the numpy crate panics when it does.
-    py.check_signals()?;
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
     for_python(py, of_the_pass, path)
 }
 

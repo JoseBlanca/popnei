@@ -161,6 +161,26 @@ impl PyPopneiError {
     }
 }
 
+/// Raises the Ctrl-C that arrived while the interpreter was released, which
+/// is still pending: no bytecode ran to raise it.
+///
+/// It is raised before numpy is called, because the first array of a
+/// process imports the C API of numpy, that import fails with the exception
+/// that is pending, and the numpy crate panics when it does: a user who
+/// asked for a Ctrl-C would get a `PanicException`, which no `except` of
+/// theirs catches and which ends the session.
+///
+/// Every call that releases the interpreter for a whole pass over a source
+/// and then builds an array of what it found calls this between the two.
+///
+/// # Errors
+///
+/// The `KeyboardInterrupt` of that Ctrl-C, on its way back as it is.
+pub(crate) fn raise_a_ctrl_c_before_numpy_is_called(py: Python<'_>) -> Result<(), PyPopneiError> {
+    py.check_signals()?;
+    Ok(())
+}
+
 impl From<popnei::Error> for PyPopneiError {
     fn from(error: popnei::Error) -> PyPopneiError {
         PyPopneiError::Core(error)
