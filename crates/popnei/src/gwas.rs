@@ -2977,11 +2977,25 @@ mod dosages {
     ///
     /// The block is 300 variants of 40 diploid individuals, of which the
     /// 14 whose position is a multiple of 3 are tested, so a pool of four
-    /// shares the rows out in several chunks. The genotype of the
-    /// individual `k` at the variant `v` is `(k + v) % 3 - 1` over
-    /// `(k / 3 + v) % 3 - 1`, so its alleles are the missing one, 0 and 1,
-    /// no two individuals of one variant hold the same genotype and no row
-    /// is the row of its neighbours.
+    /// shares the rows out in several chunks. The alleles of the genotype
+    /// of the individual `k` at the variant `v` are read out of a pattern
+    /// of 5 at `(7k + 3v) % 5` and one of 7 at `(11k + 5v) % 7`, both of
+    /// them the missing allele, 0 and 1, and every fiftieth variant is
+    /// `0/0` in everybody instead.
+    ///
+    /// What that holds, counted over the 14 tested individuals on 23
+    /// September 2026: they take 6 to 8 different genotypes at each of the
+    /// variants that are not the fiftieth, of the 9 the two patterns can
+    /// give, and never fewer, since a tested individual is a multiple of 3
+    /// and the two patterns then run over all of 5 and all of 7; 30.8 per
+    /// cent of their genotypes have an allele missing and no variant is
+    /// missing in all of them; no row is the row of its neighbour, and the
+    /// 300 rows are 36 different ones, so a row read at the place of
+    /// another is seen; and the 6 variants that are `0/0` in everybody
+    /// have no variance among them, so the two runs have to agree about
+    /// which rows are left out of the matrix and where the others moved
+    /// to. The fixture before this one gave the tested individuals 3
+    /// genotypes and 5 of them the same one at every variant.
     ///
     /// The pools are built here and are not rayon's global one, which has
     /// one thread per core of the machine. rayon is a dependency of the
@@ -3008,15 +3022,22 @@ mod dosages {
                     .all(|(one, other)| one.to_bits() == other.to_bits())
         }
 
+        // The missing allele, 0 and 1 in a pattern of 5 and one of 7,
+        // which no two of the tested individuals read at the same place.
+        const OF_THE_FIRST: [i8; 5] = [0, 1, MISSING, 1, 0];
+        const OF_THE_SECOND: [i8; 7] = [0, 1, 0, 1, MISSING, 1, 0];
+        let genotype = |individual: usize, variant: usize| match variant % 50 {
+            0 => [0, 0],
+            _ => [
+                OF_THE_FIRST[(individual * 7 + variant * 3) % 5],
+                OF_THE_SECOND[(individual * 11 + variant * 5) % 7],
+            ],
+        };
         let of_forty = || {
             let rows: Vec<Vec<i8>> = (0..300)
-                .map(|variant: usize| {
+                .map(|variant| {
                     (0..40)
-                        .flat_map(|individual: usize| {
-                            [individual, individual / 3].map(|of_the_allele| {
-                                i8::try_from((of_the_allele + variant) % 3).unwrap_or(-1) - 1
-                            })
-                        })
+                        .flat_map(|individual| genotype(individual, variant))
                         .collect()
                 })
                 .collect();
@@ -3044,9 +3065,10 @@ mod dosages {
 
         assert_eq!(on_one.num_vars(), 300);
         assert_eq!(on_one.num_individuals(), 14);
-        assert!(
-            on_one.num_with_variance() > 0,
-            "there is a block to compare"
+        assert_eq!(
+            on_one.num_with_variance(),
+            294,
+            "the 6 variants that are 0/0 in everybody have no variance"
         );
         assert!(
             the_same_values(on_one.dosages(), on_four.dosages()),
@@ -3104,6 +3126,151 @@ mod dosages {
                 (one_by_one.allele_freq.to_bits(), one_by_one.has_variance),
                 "the variant {var}"
             );
+        }
+    }
+
+    /// The dosages of a study and the standardized row of
+    /// [`crate::variant`] read a variant by the same three rules, and this
+    /// is what fails the day one of them is changed and the other is not.
+    ///
+    /// The two are written separately because a study needs what the other
+    /// one does not give: the mean of the variant, which it reports as
+    /// `allele_freq`, and dosages that are not divided by the deviation of
+    /// the variant, since `beta` is the effect of one more copy of an
+    /// allele in the units of the trait. Everything before that division
+    /// is the same work, and this asserts that it gives the same answers:
+    /// which allele is the major one, and so what every dosage is counted
+    /// from; the mean a genotype with an allele missing takes; whether the
+    /// variant has variance at all; and the refusal of a variant with more
+    /// than two alleles, at the same position and with the same count.
+    ///
+    /// The fixture is the panel of eight over its four tested individuals,
+    /// which holds a variant with no variance among them, two that have
+    /// it, one of which has a genotype that was not called, and one with
+    /// nothing called at all. Each row of it is read both ways, and the
+    /// standardized row is asserted to be this one centered at the mean
+    /// this module gives and divided by the deviation worked out from it,
+    /// which is `docs/specs/pca.md`'s divisor: the root of the mean square
+    /// deviation over all the individuals, the ones whose genotype was not
+    /// called counting as no deviation, since they hold the mean.
+    ///
+    /// The bound is 1e-12 of the largest value of the row, which is the
+    /// scale of what is being compared, and not of each value, which is 0
+    /// for an individual at the mean. The two paths add the same squares
+    /// in a different order, this one over the individuals and the other
+    /// over the dosages with a count on each, so the last bits may differ;
+    /// measured over this fixture on 23 September 2026 the worst distance
+    /// was 0 on Accelerate and on faer, with the bound set to 0.
+    #[test]
+    fn the_dosages_and_the_standardized_row_of_a_variant_agree() {
+        use super::{DosageScratch, MultiallelicVariants, the_dosages_of_a_row};
+        use crate::variant::{DosageOptions, DosageScale, RowScratch, the_standardized_row};
+
+        let options = DosageOptions {
+            transform_to_biallelic: false,
+            scale: DosageScale::OfTheDosages,
+        };
+        let mut block = a_block(8, 2, &OF_EIGHT);
+        block
+            .retain_individuals(&TESTED_OF_EIGHT)
+            .expect("the four tested individuals");
+        let mut mine = DosageScratch::of(4);
+        let mut theirs = RowScratch::of(4);
+        let mut agreed: Vec<bool> = Vec::new();
+
+        for (var, gts) in block.gts.as_chunks::<8>().0.iter().enumerate() {
+            let mut row = [0.0; 4];
+            let read = the_dosages_of_a_row(
+                gts,
+                2,
+                var,
+                MultiallelicVariants::Refused,
+                &mut mine,
+                &mut row,
+            )
+            .expect("the dosages of the row");
+            let mut standardized = [0.0; 4];
+            let used = the_standardized_row(gts, 2, var, &options, &mut theirs, &mut standardized)
+                .expect("the standardized row");
+
+            assert_eq!(
+                read.has_variance, used,
+                "the variant {var} has variance one way and not the other"
+            );
+            agreed.push(used);
+            if !used {
+                continue;
+            }
+            // The mean of the called dosages, which is the frequency times
+            // the ploidy: the two multiply and divide by 2, which is exact.
+            let mean = read.allele_freq * 2.0;
+            let squares: f64 = row
+                .iter()
+                .map(|dosage| (dosage - mean) * (dosage - mean))
+                .sum();
+            let divisor = (squares / 4.0).sqrt();
+            let largest = standardized
+                .iter()
+                .fold(0.0_f64, |largest, value| largest.max(value.abs()));
+            for (position, (theirs, mine)) in standardized.iter().zip(&row).enumerate() {
+                let from_the_dosage = (mine - mean) / divisor;
+                assert!(
+                    (from_the_dosage - theirs).abs() <= 1e-12 * largest,
+                    "the variant {var} of the individual {position}: the dosage {mine} \
+                     centered and divided is {from_the_dosage} and the standardized row \
+                     holds {theirs}"
+                );
+            }
+        }
+
+        assert_eq!(
+            agreed,
+            [false, true, true, false],
+            "the variants of the panel that have variance among the four tested"
+        );
+
+        // A variant of three alleles: one genotype of the individual 0 is
+        // 0/0/2 and the others hold 0 and 1, and both refuse it with its
+        // position among the variants the reader gave and the count.
+        let block = a_block(
+            6,
+            3,
+            &[&[0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]],
+        );
+        let mut mine = DosageScratch::of(6);
+        let mut theirs = RowScratch::of(6);
+        let mut row = [0.0; 6];
+        let mut standardized = [0.0; 6];
+
+        let refused = the_dosages_of_a_row(
+            &block.gts,
+            3,
+            7,
+            MultiallelicVariants::Refused,
+            &mut mine,
+            &mut row,
+        );
+        let refused_there =
+            the_standardized_row(&block.gts, 3, 7, &options, &mut theirs, &mut standardized);
+
+        match (refused, refused_there) {
+            (
+                Err(Error::VariantWithMoreThanTwoAlleles {
+                    position,
+                    num_alleles,
+                }),
+                Err(Error::VariantWithMoreThanTwoAlleles {
+                    position: there,
+                    num_alleles: alleles_there,
+                }),
+            ) => {
+                assert_eq!((position, num_alleles), (7, 3));
+                assert_eq!((there, alleles_there), (7, 3));
+            }
+            (mine, theirs) => panic!(
+                "the variant has three alleles, and the dosages gave {mine:?} and the \
+                 standardized row gave {theirs:?}"
+            ),
         }
     }
 
