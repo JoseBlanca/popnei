@@ -246,10 +246,21 @@ Each of these is a `ValueError` in Python:
   same. The alleles are those the genotypes hold and not those the VCF
   lists: a variant with `ALT` of `C,G` and no `G` called has two.
 - No variants, and no variant with variance, which is what one individual
-  gives. popnei's messages are "there are no variants to do a PCA with"
-  and "every variant has the same genotype in every individual, there is
-  nothing to do a PCA with", pyNei's without its "012 matrix" and its
-  "sample", and starting in lower case as every message of the core does.
+  gives. The message for the first is "there are no variants to do a PCA
+  with", pyNei's without its "012 matrix" and starting in lower case as
+  every message of the core does. The second says the rule, which is about
+  the dosage and not the genotype: "no variant has more than one dosage
+  among its called genotypes, so none of them varies and there is nothing
+  to do a PCA with". pyNei's is "Every variant has the same genotype in
+  every sample", and two datasets reach it and contradict it: one whose
+  every genotype is missing, where no genotype is called at all, and one
+  of three alleles read as biallelic whose genotypes are `0/1`, `0/2` and
+  `0/1`, which are three different genotypes of one dosage. Both libraries
+  drop a variant by its dosages, `std(mat012) > 0` in
+  `_remove_vars_with_no_variance` of `pynei/pca.py` and `dosages_seen < 2`
+  in `crates/popnei/src/variant.rs`, so the wording is pyNei's mistake and
+  not a difference of behaviour. `docs/specs/kinship.md` gives the same
+  sentence to the same rule.
 - A negative `num_prin_comps`.
 - A source of no individual: the components are the axes the individuals
   of a dataset are placed on, and there is nobody to place, and the
