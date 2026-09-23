@@ -1,7 +1,16 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
-//! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr`, `dtrtrs`
-//! and `dgesdd`, the ones numpy calls.
+//! system, `dsyrk` and `dgemm`, which the four products of this module
+//! call, and `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr`,
+//! `dtrtrs` and `dgesdd`, which the other operations call.
+//!
+//! Three of those numpy does not call: `dpotrs`, `dpotri` and `dtrtrs`,
+//! of which `_umath_linalg` of numpy 2.5.3 exports none, checked with
+//! `nm` on 23 September 2026. numpy solves a system and inverts a matrix
+//! through an LU of a general square matrix where this crate goes through
+//! a Cholesky of a symmetric positive definite one, and it solves
+//! `r c = q' y` with that same general solve where this crate has
+//! `dtrtrs`. "Why a Cholesky where numpy uses an LU" of
+//! `docs/specs/linalg.md` says why.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -542,12 +551,15 @@ pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> 
 ///
 /// The buffer of `a` read column after column is the `cols` x `rows`
 /// matrix, the wide one, and the two routines are much slower on it than
-/// on the tall one: a design of 10000 x 5 took 2.98 ms that way and 0.165
-/// ms through the copy below, measured on 23 September 2026 and written
-/// in "What the seven of the GWAS cost" of `docs/specs/linalg.md`. So
-/// this backend writes the transpose of `a` into a buffer of its own,
-/// `rows` x `cols` values and 400 KB at that size, which is `a` held
-/// column after column, and calls them on that.
+/// on the tall one: for a design of 10000 x 5 "What the seven of the GWAS
+/// cost" of `docs/specs/linalg.md` measured the routines at 2.98 ms that
+/// way and 0.165 ms through the copy below, on 23 September 2026. Those
+/// are the routines alone and not this function, which adds the checks of
+/// `lib.rs` and its allocations and which three runs on the same machine
+/// gave 0.1573, 0.1855 and 0.207 ms. So this backend writes the transpose
+/// of `a` into a buffer of its own, `rows` x `cols` values and 400 KB at
+/// that size, which is `a` held column after column, and calls them on
+/// that.
 ///
 /// `dgeqrf` leaves the factorization in that buffer: its upper triangle
 /// is the `r`, and below the diagonal are the vectors that `dorgqr`
@@ -558,9 +570,10 @@ pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> 
 ///
 /// [`Error::Dimension`] when a dimension, or the workspace a routine
 /// asks for, is larger than the `i32` the routines take.
-/// [`Error::NoConvergence`] when a routine refused an argument it was
-/// given, which is a defect of popnei: neither has another reason to give
-/// an `info` other than 0.
+/// [`Error::Memory`] when this machine has not the memory for the column
+/// major copy. [`Error::NoConvergence`] when a routine refused an
+/// argument it was given, which is a defect of popnei: neither has
+/// another reason to give an `info` other than 0.
 pub(crate) fn thin_qr(
     a: &[f64],
     rows: usize,
@@ -570,7 +583,12 @@ pub(crate) fn thin_qr(
 ) -> Result<()> {
     let m = the_i32_of(rows, "rows")?;
     let n = the_i32_of(cols, "cols")?;
-    let mut column_major = the_column_major_copy_of(a, rows, cols);
+    let mut column_major = the_column_major_copy_of(
+        a,
+        rows,
+        cols,
+        "the column major copy of a for dgeqrf and dorgqr",
+    )?;
     // One coefficient for each column, which is what the factorization
     // keeps beside the vectors it leaves in the matrix.
     let mut coefficients = vec![0.0_f64; cols];
@@ -581,13 +599,15 @@ pub(crate) fn thin_qr(
     // asked, and writes that number into the first entry of the workspace
     // it was given. It is what `eigh_lower` above asks `dsyevd`.
     let mut asked = [0.0_f64; 1];
-    // SAFETY: with `lwork` at -1 the routine writes the first entry of
-    // `work` and reads nothing else of it, and `asked` holds one value;
-    // it reads and writes nothing of `a`, of `tau` or of `info` other
-    // than to store that size, and `column_major` holds rows * cols
-    // values, `coefficients` holds cols and `info` is one integer.
-    // Neither dimension is 0 and both fit in the `i32` the routine takes,
-    // which `the_i32_of` has just checked.
+    // SAFETY: with `lwork` at -1 the routine factors nothing. It writes
+    // the size it wants into the first entry of `work`, which is `asked`
+    // and holds one value, and it writes `info`, which is one integer; it
+    // reads and writes nothing of `a` and nothing of `tau`. Those two are
+    // still passed as the buffers of the call below, with `m` = rows,
+    // `n` = cols and `lda` = rows: `column_major` holds the rows * cols
+    // values of a column major matrix of rows x cols and `coefficients`
+    // holds the cols of `tau`. Neither dimension is 0 and both fit in the
+    // `i32` the routine takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -658,12 +678,17 @@ pub(crate) fn thin_qr(
     }
 
     let mut asked = [0.0_f64; 1];
-    // SAFETY: with `lwork` at -1 the routine writes the first entry of
-    // `work` and reads nothing else of it, and `asked` holds one value;
-    // it reads and writes nothing of `a`, of `tau` or of `info` other
-    // than to store that size, and the three slices hold what the call
-    // below says they hold. No dimension is 0 and all three fit in the
-    // `i32` the routine takes, which `the_i32_of` has already checked.
+    // SAFETY: with `lwork` at -1 the routine builds no `q`. It writes the
+    // size it wants into the first entry of `work`, which is `asked` and
+    // holds one value, and it writes `info`, which is one integer; it
+    // reads and writes nothing of `a` and nothing of `tau`. Those two are
+    // still passed as the buffers of the call below, with `m` = rows,
+    // `n` = cols, `k` = cols and `lda` = rows: `column_major` holds the
+    // rows * cols values of a column major matrix of rows x cols and
+    // `coefficients` holds the cols of `tau`. No dimension is 0, `k` is
+    // at most `n` and `n` at most `m` since rows is at least cols, and
+    // all three fit in the `i32` the routine takes, which `the_i32_of`
+    // has already checked.
     #[expect(
         unsafe_code,
         reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
@@ -730,20 +755,47 @@ pub(crate) fn thin_qr(
 
 /// The `rows` x `cols` matrix that the buffer holds row after row, held
 /// column after column instead, which is its transpose written out and
-/// what the routines of the thin QR are fast on. The buffer holds exactly
-/// `rows` x `cols` values and `rows` and `cols` are 1 at least.
+/// what the routines of the thin QR and of the singular values are fast
+/// on. The buffer holds exactly `rows` x `cols` values and `rows` and
+/// `cols` are 1 at least. `what` names the copy in the error, as the
+/// routines that are given it.
 ///
 /// The column `j` of a matrix held row after row is one value in every
 /// `cols` from the value `j`, and those are the values of the column `j`
 /// of the copy, one after another.
-fn the_column_major_copy_of(a: &[f64], rows: usize, cols: usize) -> Vec<f64> {
-    let mut column_major = vec![0.0_f64; a.len()];
+///
+/// The copy is as large as the matrix, 400 KB for a design of 10000 x 5
+/// and 17 GB for the largest matrix this crate takes, so it is asked for
+/// and not taken with `vec!`, which ends the process on a machine that
+/// has not the memory, as the workspaces of the eigendecomposition above
+/// are. A caller that could hold the matrix can usually hold the copy, so
+/// no call the association study makes reaches that error, and
+/// [`thin_qr`] and `rank` are public and nothing bounds what else is
+/// passed to them.
+///
+/// # Errors
+///
+/// [`Error::Memory`] when this machine has not the memory for the copy.
+fn the_column_major_copy_of(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    what: &'static str,
+) -> Result<Vec<f64>> {
+    let mut column_major: Vec<f64> = Vec::new();
+    column_major
+        .try_reserve_exact(a.len())
+        .map_err(|_| Error::Memory {
+            what,
+            values: a.len(),
+        })?;
+    column_major.resize(a.len(), 0.0);
     for (column, into) in column_major.chunks_exact_mut(rows).enumerate() {
         for (into, from) in into.iter_mut().zip(a.iter().skip(column).step_by(cols)) {
             *into = *from;
         }
     }
-    column_major
+    Ok(column_major)
 }
 
 /// Writes into `into`, row after row and `cols` to a row, as many first
@@ -752,8 +804,16 @@ fn the_column_major_copy_of(a: &[f64], rows: usize, cols: usize) -> Vec<f64> {
 /// `rows` x `cols`, and the leading `cols` x `cols` corner for an `r`.
 ///
 /// The row `i` of a matrix held column after column with `rows` rows is
-/// one value in every `rows` from the value `i`, which is what each row
-/// of `into` takes `cols` of.
+/// one value in every `rows` from the value `i`, and there are `cols` of
+/// them for every `i` below `rows`, which is what fills each row of
+/// `into`.
+///
+/// `cols` is at most `rows`, so `into` has no row that the buffer has no
+/// `i` for. Above that the `r` of `cols` x `cols` would have some, the
+/// `zip` below would stop at the shorter side, and those rows would keep
+/// the zeros they were allocated with and nothing would say so.
+/// [`thin_qr`] refuses a matrix of fewer rows than columns before either
+/// of its calls to this.
 fn write_the_rows_of(column_major: &[f64], rows: usize, cols: usize, into: &mut [f64]) {
     for (row, entries) in into.chunks_exact_mut(cols).enumerate() {
         for (entry, from) in entries
@@ -985,13 +1045,15 @@ pub(crate) fn solve_upper_triangular(
 ///
 /// The buffer of `a` read column after column is the `cols` x `rows`
 /// matrix, the wide one, and the routine is much slower on it than on the
-/// tall one: a design of 10000 x 5 took 1.54 ms that way and 0.145 ms
-/// through the copy below, measured on 23 September 2026 and written in
-/// "What the seven of the GWAS cost" of `docs/specs/linalg.md`. So this
-/// backend writes the transpose of `a` into a buffer of its own, which is
-/// `a` held column after column, and calls the routine on that, as the
-/// thin QR above does. The routine overwrites that buffer, and `a` itself
-/// is left as it was.
+/// tall one: for a design of 10000 x 5 "What the seven of the GWAS cost"
+/// of `docs/specs/linalg.md` measured the routine at 1.54 ms that way and
+/// 0.145 ms through the copy below, on 23 September 2026. Those are the
+/// routine alone and not this function, which adds the checks of `lib.rs`
+/// and its allocations and which measured 0.1881 ms on the same machine.
+/// So this backend writes the transpose of `a` into a buffer of its own,
+/// which is `a` held column after column, and calls the routine on that,
+/// as the thin QR above does. The routine overwrites that buffer, and `a`
+/// itself is left as it was.
 ///
 /// `jobz` is `N`, which computes the values and neither of the two
 /// matrices of vectors, so the two buffers they would go in hold one
@@ -1001,13 +1063,15 @@ pub(crate) fn solve_upper_triangular(
 ///
 /// [`Error::Dimension`] when a dimension, or the workspace the routine
 /// asks for, is larger than the `i32` the routine takes.
-/// [`Error::NoConvergence`] when the routine gave an `info` other than 0,
-/// which is either a decomposition that did not come out or an argument
-/// it refused.
+/// [`Error::Memory`] when this machine has not the memory for the column
+/// major copy. [`Error::NoConvergence`] when the routine gave an `info`
+/// other than 0, which is either a decomposition that did not come out or
+/// an argument it refused, the second being a defect of popnei.
 pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>> {
     let m = the_i32_of(rows, "rows")?;
     let n = the_i32_of(cols, "cols")?;
-    let mut column_major = the_column_major_copy_of(a, rows, cols);
+    let mut column_major =
+        the_column_major_copy_of(a, rows, cols, "the column major copy of a for dgesdd")?;
     let smallest = rows.min(cols);
     let mut values = vec![0.0_f64; smallest];
     // The routine asks for 8 integers for each of the smaller dimension.
@@ -1015,9 +1079,9 @@ pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec
     // `lib.rs` has refused every one of more than 2147483647 values, which
     // leaves the smaller dimension at 46340.
     let integers_wanted = smallest.checked_mul(8).ok_or_else(|| Error::Dimension {
-        argument: "rows",
+        argument: the_smaller_dimension_of(rows, cols),
         expected: format!(
-            "small enough for the workspace of integers of dgesdd, 8 for each of the smaller dimension, to fit in this machine, and the dimensions are {rows} and {cols}"
+            "small enough for the workspace of integers of dgesdd, 8 for each of the smaller dimension, to fit in this machine, and the dimensions are {rows} rows and {cols} columns"
         ),
     })?;
     let mut integers = vec![0_i32; integers_wanted];
@@ -1033,13 +1097,17 @@ pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec
     // it was given. It is what `eigh_lower` above asks `dsyevd` and what
     // the thin QR asks its two routines.
     let mut asked = [0.0_f64; 1];
-    // SAFETY: with `lwork` at -1 the routine writes the first entry of
-    // `work` and reads nothing else of it, and `asked` holds one value;
-    // it reads and writes nothing of `a`, of `s`, of `u`, of `vt` or of
-    // `info` other than to store that size, and `column_major` holds rows
-    // * cols values, `values` holds min(rows, cols), the two buffers of
-    // vectors hold one value each, `integers` holds 8 * min(rows, cols)
-    // and `info` is one integer. Neither dimension is 0 and both fit in
+    // SAFETY: with `lwork` at -1 the routine decomposes nothing. It
+    // writes the size it wants into the first entry of `work`, which is
+    // `asked` and holds one value, and it writes `info`, which is one
+    // integer; it reads and writes nothing of `a`, of `s`, of `u`, of
+    // `vt` or of `iwork`. Those are still passed as the buffers of the
+    // call below, with `jobz` N, `m` = rows, `n` = cols, `lda` = rows and
+    // the two leading dimensions of the vectors 1: `column_major` holds
+    // the rows * cols values of a column major matrix of rows x cols,
+    // `values` holds the min(rows, cols) of `s`, the two buffers of
+    // vectors hold one value each and `integers` holds the 8 *
+    // min(rows, cols) of `iwork`. Neither dimension is 0 and both fit in
     // the `i32` the routine takes, which `the_i32_of` has just checked.
     #[expect(
         unsafe_code,
@@ -1072,7 +1140,10 @@ pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec
 
     let floats =
         the_workspace_of_the_singular_values(rows, cols, asked.first().copied().unwrap_or(0.0))?;
-    let lwork = the_length_of_the_workspace_of_the_singular_values(floats)?;
+    let lwork = the_length_of_the_workspace_of_the_singular_values(
+        floats,
+        the_larger_dimension_of(rows, cols),
+    )?;
     let mut work = vec![0.0_f64; floats];
     // SAFETY: with `jobz` N, `m` = rows, `n` = cols and `lda` = rows the
     // routine reads and overwrites `a` as a column major matrix of rows x
@@ -1136,9 +1207,9 @@ pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec
 /// values than this machine can hold.
 fn the_workspace_of_the_singular_values(rows: usize, cols: usize, asked: f64) -> Result<usize> {
     let too_large = || Error::Dimension {
-        argument: "rows",
+        argument: the_larger_dimension_of(rows, cols),
         expected: format!(
-            "small enough for the workspace of dgesdd, 3m + max(M, 7m) floats for the smaller dimension m and the larger M, to fit in this machine, and they are {rows} and {cols}"
+            "small enough for the workspace of dgesdd, 3m + max(M, 7m) floats for the smaller dimension m and the larger M, to fit in this machine, and they are {rows} rows and {cols} columns"
         ),
     };
     let smaller = rows.min(cols);
@@ -1164,20 +1235,27 @@ fn the_workspace_of_the_singular_values(rows: usize, cols: usize, asked: f64) ->
 }
 
 /// The length of the workspace of `dgesdd` as the `i32` the routine takes
-/// it as.
+/// it as. `argument` is the dimension that set it, which is the larger of
+/// the two.
 ///
-/// [`the_workspace_of_the_singular_values`] gives no number above that
-/// `i32` from the query, and the minimum it can give instead is at most
-/// 10 times 46340, since `lib.rs` refuses a matrix of more than 2147483647
-/// values, so this refuses nothing that reaches it: it is how the
-/// conversion is made without an `as` that could truncate in silence.
+/// This one does refuse matrices that reach it. What
+/// [`the_workspace_of_the_singular_values`] takes from the query is at
+/// most that `i32`, but the minimum it gives instead is 3m + max(M, 7m)
+/// for the smaller dimension m and the larger M, and `lib.rs` lets
+/// through every matrix of at most 2147483647 values, the one row of
+/// 2147483647 columns among them, whose minimum is 2147483650 and is
+/// above what the length holds. So the conversion is made here and not
+/// with an `as` that would truncate it in silence.
 ///
 /// # Errors
 ///
 /// [`Error::Dimension`] when the workspace is larger than that.
-fn the_length_of_the_workspace_of_the_singular_values(values: usize) -> Result<i32> {
+fn the_length_of_the_workspace_of_the_singular_values(
+    values: usize,
+    argument: &'static str,
+) -> Result<i32> {
     i32::try_from(values).map_err(|_| Error::Dimension {
-        argument: "rows",
+        argument,
         expected: format!(
             "small enough that the workspace dgesdd asks for, {values} values here, is at most the {largest} its length is passed as",
             largest = i32::MAX
@@ -1185,9 +1263,126 @@ fn the_length_of_the_workspace_of_the_singular_values(values: usize) -> Result<i
     })
 }
 
+/// The name of the larger of the two dimensions of a matrix, which is the
+/// one at fault when the workspace of floats of `dgesdd`, 3m + max(M, 7m),
+/// does not fit: `rows` when the two are equal.
+fn the_larger_dimension_of(rows: usize, cols: usize) -> &'static str {
+    if rows >= cols { "rows" } else { "cols" }
+}
+
+/// The name of the smaller of the two, which is the one at fault when the
+/// workspace of integers of `dgesdd`, 8 for each of it, does not fit:
+/// `rows` when the two are equal.
+fn the_smaller_dimension_of(rows: usize, cols: usize) -> &'static str {
+    if rows <= cols { "rows" } else { "cols" }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::the_workspace_of;
+    use super::{
+        the_workspace_of, the_workspace_of_the_singular_values, the_workspace_of_the_thin_qr,
+    };
+
+    /// The minimum `dgeqrf` and `dorgqr` document for a matrix of 3
+    /// columns, which is those 3 floats.
+    const THE_MINIMUM_OF_THE_THIN_QR_FOR_3: usize = 3;
+
+    #[test]
+    fn a_workspace_of_the_thin_qr_the_query_did_not_give_a_number_for_is_the_minimum() {
+        assert_eq!(
+            the_workspace_of_the_thin_qr(3, f64::NAN),
+            THE_MINIMUM_OF_THE_THIN_QR_FOR_3
+        );
+        assert_eq!(
+            the_workspace_of_the_thin_qr(3, f64::INFINITY),
+            THE_MINIMUM_OF_THE_THIN_QR_FOR_3
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_thin_qr_the_query_gave_a_negative_number_for_is_the_minimum() {
+        assert_eq!(
+            the_workspace_of_the_thin_qr(3, -5.0),
+            THE_MINIMUM_OF_THE_THIN_QR_FOR_3
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_thin_qr_the_query_asked_more_for_is_what_it_asked() {
+        assert_eq!(the_workspace_of_the_thin_qr(3, 100.0), 100);
+    }
+
+    #[test]
+    fn a_workspace_of_the_thin_qr_the_query_gave_a_fraction_for_is_its_whole_part() {
+        assert_eq!(the_workspace_of_the_thin_qr(3, 100.9), 100);
+    }
+
+    #[test]
+    fn a_workspace_of_the_thin_qr_the_query_asked_more_than_a_length_holds_for_is_the_minimum() {
+        let above_the_largest_length = f64::from(i32::MAX) * 2.0;
+        assert_eq!(
+            the_workspace_of_the_thin_qr(3, above_the_largest_length),
+            THE_MINIMUM_OF_THE_THIN_QR_FOR_3
+        );
+    }
+
+    /// The dimensions the workspace of `dgesdd` is asked for at, 4 rows
+    /// and 2 columns, and the minimum it documents for them with `jobz`
+    /// `N`: 3m + max(M, 7m) for m the smaller dimension and M the larger,
+    /// which is 6 + max(4, 14) = 20.
+    const THE_DIMENSIONS_OF_THE_SINGULAR_VALUES: (usize, usize) = (4, 2);
+    const THE_MINIMUM_OF_THE_SINGULAR_VALUES: usize = 20;
+
+    #[test]
+    fn a_workspace_of_the_singular_values_the_query_did_not_give_a_number_for_is_the_minimum() {
+        let (rows, cols) = THE_DIMENSIONS_OF_THE_SINGULAR_VALUES;
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, f64::NAN).unwrap(),
+            THE_MINIMUM_OF_THE_SINGULAR_VALUES
+        );
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, f64::INFINITY).unwrap(),
+            THE_MINIMUM_OF_THE_SINGULAR_VALUES
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_singular_values_the_query_gave_a_negative_number_for_is_the_minimum() {
+        let (rows, cols) = THE_DIMENSIONS_OF_THE_SINGULAR_VALUES;
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, -5.0).unwrap(),
+            THE_MINIMUM_OF_THE_SINGULAR_VALUES
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_singular_values_the_query_asked_more_for_is_what_it_asked() {
+        let (rows, cols) = THE_DIMENSIONS_OF_THE_SINGULAR_VALUES;
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, 100.0).unwrap(),
+            100
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_singular_values_the_query_gave_a_fraction_for_is_its_whole_part() {
+        let (rows, cols) = THE_DIMENSIONS_OF_THE_SINGULAR_VALUES;
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, 100.9).unwrap(),
+            100
+        );
+    }
+
+    #[test]
+    fn a_workspace_of_the_singular_values_the_query_asked_more_than_a_length_holds_for_is_the_minimum()
+     {
+        let (rows, cols) = THE_DIMENSIONS_OF_THE_SINGULAR_VALUES;
+        let above_the_largest_length = f64::from(i32::MAX) * 2.0;
+        assert_eq!(
+            the_workspace_of_the_singular_values(rows, cols, above_the_largest_length).unwrap(),
+            THE_MINIMUM_OF_THE_SINGULAR_VALUES
+        );
+    }
 
     /// The minimum `dsyevd` documents for an n of 3: 1 + 6n + 2n² = 37
     /// floats and 3 + 5n = 18 integers.

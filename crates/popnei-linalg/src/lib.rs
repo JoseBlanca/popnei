@@ -3,14 +3,16 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds eleven: the product of a matrix with
+//! place that has them. It holds thirteen: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
 //! symmetric positive definite one, [`cholesky_lower`], the solve of a
 //! system with the matrix it factored, [`solve_with_cholesky`], the log of
 //! that matrix's determinant, [`log_determinant_with_cholesky`], and its
 //! inverse, [`invert_with_cholesky`]; the thin QR factorization of a
-//! design, [`thin_qr`];
+//! design, [`thin_qr`], the solve of a system against the upper
+//! triangular matrix that factorization gives, [`solve_upper_triangular`],
+//! and how many of a matrix's columns are independent, [`rank`];
 //! and the product of two matrices, [`product`], which is the other four,
 //! because [`TheFirstOperand`] and [`TheSecondOperand`] each say how one
 //! matrix's buffer is laid out and the two together choose among `a b`,
@@ -23,9 +25,10 @@
 //!
 //! Two backends run under that interface and give the same numbers within
 //! the tolerance of "How it is verified" of the spec. One is the BLAS and
-//! LAPACK of the system, the routines numpy calls, which is what runs when
-//! the target is not WebAssembly and the cargo feature `blas` is on, as it
-//! is by default. The other is faer, a linear algebra library written in
+//! LAPACK of the system, the library numpy is built on too, which is what
+//! runs when the target is not WebAssembly and the cargo feature `blas` is
+//! on, as it is by default. Which routines of it popnei calls and which of
+//! those numpy calls is in `blas.rs`. The other is faer, a linear algebra library written in
 //! Rust, which runs on both wasm targets, where there is no BLAS, and
 //! natively when the crate is built with `--no-default-features`, so that
 //! a machine with no BLAS and no Fortran compiler builds popnei. A caller
@@ -744,14 +747,16 @@ pub struct ThinQr {
 /// when `a` holds fewer than `rows` times `cols` values, or when `rows`
 /// times `cols` is more than 2147483647, which is what the routines of
 /// BLAS and LAPACK count in. [`Error::NotFinite`] when `a` holds a value
-/// that is not finite. [`Error::NoConvergence`] when a routine refused an
-/// argument it was given, which is a defect of popnei.
+/// that is not finite. [`Error::Memory`] when this machine has not the
+/// memory for the copy of `a` the BLAS backend writes, which is as large
+/// as `a`; faer is given the buffer as it lies and asks for nothing.
+/// [`Error::NoConvergence`] when a routine refused an argument it was
+/// given, which is a defect of popnei.
 pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr> {
     if cols == 0 {
         return Err(Error::Dimension {
             argument: "cols",
-            expected: "1 at least, since r is the cols x cols matrix of the factorization"
-                .to_owned(),
+            expected: "1 at least, since a is the rows x cols matrix to factor".to_owned(),
         });
     }
     if rows < cols {
@@ -844,12 +849,13 @@ pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) 
 ///
 /// The tolerance is the largest singular value times the larger dimension
 /// times `f64::EPSILON`, the distance from 1 to the next `f64` above it,
-/// which is 2.220446049250313e-16. That is the tolerance of `matrix_rank`
-/// of numpy 2.5.3, read from that function on 23 September 2026, and
-/// popnei takes it so that a design popnei refuses is a design pyNei
-/// refuses. A matrix whose values are all 0 has a largest singular value
-/// of 0 and so a tolerance of 0, and no value is strictly above that, so
-/// its rank is 0.
+/// which is 2.220446049250313e-16, and the last two are multiplied
+/// together first, as numpy does it. That is the tolerance of
+/// `matrix_rank` of numpy 2.5.3, read from that function on 23 September
+/// 2026, and popnei takes it so that a design popnei refuses is a design
+/// pyNei refuses. A matrix whose values are all 0 has a largest singular
+/// value of 0 and so a tolerance of 0, and no value is strictly above
+/// that, so its rank is 0.
 ///
 /// `a` may hold more values than `rows` times `cols`, and then its first
 /// `rows` times `cols` are the matrix. The whole of it is read, both
@@ -861,9 +867,14 @@ pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) 
 /// than `rows` times `cols` values, or when that count, or the workspace
 /// the routine asks for, is more than 2147483647, which is what the
 /// routines of BLAS and LAPACK count in. [`Error::NotFinite`] when `a`
-/// holds a value that is not finite. [`Error::NoConvergence`] when the
-/// decomposition did not come out, which is `dgesdd` with an `info` other
-/// than 0 and faer with its `SvdError::NoConvergence`.
+/// holds a value that is not finite. [`Error::Memory`] when this machine
+/// has not the memory for the copy of `a` the BLAS backend writes, which
+/// is as large as `a`; faer is given the buffer as it lies and asks for
+/// nothing. [`Error::NoConvergence`] when the decomposition did not come
+/// out, which is faer with its `SvdError::NoConvergence` and `dgesdd`
+/// with an `info` above 0, and when the routine refused an argument it
+/// was given, which is `dgesdd` with an `info` below 0 and a defect of
+/// popnei; the two are the one case, with the routine and the `info`.
 pub fn rank(a: &[f64], rows: usize, cols: usize) -> Result<usize> {
     if rows == 0 {
         return Err(Error::Dimension {
@@ -888,7 +899,17 @@ pub fn rank(a: &[f64], rows: usize, cols: usize) -> Result<usize> {
     // them, the smaller dimension of a matrix of 2147483647 values, and
     // the count below fits in a `usize` for the same reason.
     let largest = values.iter().copied().fold(0.0_f64, f64::max);
-    let tolerance = largest * rows.max(cols) as f64 * f64::EPSILON;
+    // The larger dimension is multiplied by the distance from 1 to the
+    // next `f64` first and the largest singular value last, which is
+    // numpy's order. The other order is the same `f64` for every matrix
+    // whose values a study holds, that distance being a power of two, and
+    // it overflows to an infinity once the largest singular value passes
+    // about 1e308 divided by the dimension, where no value is above the
+    // tolerance and the rank comes back 0: measured on 23 September 2026,
+    // the 2 x 2 with 1e308 and 1 on its diagonal is rank 1 this way and 0
+    // the other. This product cannot overflow, the dimension times that
+    // distance being below 1 and exact.
+    let tolerance = largest * (rows.max(cols) as f64 * f64::EPSILON);
     Ok(values.iter().filter(|value| **value > tolerance).count())
 }
 
@@ -3933,7 +3954,7 @@ mod tests {
     ];
 
     /// The 4 x 2 of the same place whose covariate is the constant 5, row
-    /// after row. Its singular values are 10.198039027185569 and 0.
+    /// after row. Its singular values are 10.19803902718557 and 0.
     const THE_DESIGN_OF_A_CONSTANT_COVARIATE: [f64; 8] = [
         1.0, 5.0, //
         1.0, 5.0, //
@@ -4063,5 +4084,193 @@ mod tests {
                 "the error for the entry {entry} is {error}"
             );
         }
+    }
+
+    /// The second design of "How the seven are verified" of
+    /// `docs/specs/linalg.md`, the 4 x 3 with rows (1, 1, 2), (1, 2, 5),
+    /// (1, 3, 1) and (1, 4, 9), row after row. It has three columns, so
+    /// the half of its `r` below the diagonal is three entries and not the
+    /// one the 4 x 2 above has.
+    const THE_DESIGN_OF_THREE_COLUMNS: [f64; 12] = [
+        1.0, 1.0, 2.0, //
+        1.0, 2.0, 5.0, //
+        1.0, 3.0, 1.0, //
+        1.0, 4.0, 9.0,
+    ];
+
+    /// The `r` of that design with the diagonal made positive, rows
+    /// (2, 5, 8.5), (0, 2.23606797749979, 3.801315561749642) and
+    /// (0, 0, 4.9295030175464944).
+    const THE_R_OF_THE_DESIGN_OF_THREE_COLUMNS: [f64; 9] = [
+        2.0,
+        5.0,
+        8.5, //
+        0.0,
+        2.236_067_977_499_79,
+        3.801_315_561_749_642, //
+        0.0,
+        0.0,
+        4.929_503_017_546_494_4,
+    ];
+
+    /// The `q` of that design with the same sign taken, row after row: its
+    /// third column is (0.06085806194501853, 0.3245763303734317,
+    /// -0.8317268465819189, 0.44629245426346875) and its first two are
+    /// those of the 4 x 2 above.
+    const THE_Q_OF_THE_DESIGN_OF_THREE_COLUMNS: [f64; 12] = [
+        0.5,
+        -0.670_820_393_249_936_8,
+        0.060_858_061_945_018_53, //
+        0.5,
+        -0.223_606_797_749_978_94,
+        0.324_576_330_373_431_7, //
+        0.5,
+        0.223_606_797_749_979,
+        -0.831_726_846_581_918_9, //
+        0.5,
+        0.670_820_393_249_936_9,
+        0.446_292_454_263_468_75,
+    ];
+
+    /// The 2 x 2 design of the same place, rows (1, 1) and (1, 2), which
+    /// has as many columns as rows: the smallest matrix `thin_qr` takes
+    /// and the one a check of `rows` below `cols` that read `rows` at most
+    /// `cols` would refuse.
+    const THE_DESIGN_OF_2_BY_2: [f64; 4] = [
+        1.0, 1.0, //
+        1.0, 2.0,
+    ];
+
+    /// The `r` of that design with the diagonal made positive, rows
+    /// (1.4142135623730951, 2.1213203435596424) and
+    /// (0, 0.7071067811865475). numpy 2.5.3 gives the first row with its
+    /// sign the other way round, which is the sign the spec writes it
+    /// with.
+    #[expect(
+        clippy::approx_constant,
+        reason = "these are the entries numpy 2.5.3 gives for the r of that design, which the spec writes out, and two of them land on the f64 of the square root of 2 and of its reciprocal; a test asserts the number the spec has and not a constant that happens to equal it"
+    )]
+    const THE_R_OF_THE_DESIGN_OF_2_BY_2: [f64; 4] = [
+        1.414_213_562_373_095_1,
+        2.121_320_343_559_642_4, //
+        0.0,
+        0.707_106_781_186_547_5,
+    ];
+
+    #[test]
+    fn the_thin_qr_of_a_design_of_three_columns_gives_the_r_and_the_q_of_the_spec() {
+        let factorization = thin_qr(&THE_DESIGN_OF_THREE_COLUMNS, 4, 3).unwrap();
+        let factorization = with_the_diagonal_of_r_positive(&factorization, 3);
+        assert!(
+            !differ(
+                &factorization.r,
+                &THE_R_OF_THE_DESIGN_OF_THREE_COLUMNS,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the r is {r:?}",
+            r = factorization.r
+        );
+        assert!(
+            !differ(
+                &factorization.q,
+                &THE_Q_OF_THE_DESIGN_OF_THREE_COLUMNS,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the q is {q:?}",
+            q = factorization.q
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_of_a_design_of_three_columns_writes_every_entry_below_the_diagonal_as_zero() {
+        // Three entries and not the one a design of two columns has, so a
+        // backend that zeroed the first of them and left the rest fails
+        // here: what `dorgqr` leaves below the diagonal is the vectors of
+        // the `q` and what faer leaves is its own, and the doc comment of
+        // `ThinQr` says that half is 0.
+        let factorization = thin_qr(&THE_DESIGN_OF_THREE_COLUMNS, 4, 3).unwrap();
+        let the_lower_half: Vec<f64> = factorization
+            .r
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .flat_map(|(row, entries)| entries.iter().take(row).copied())
+            .collect();
+        assert_eq!(
+            the_lower_half,
+            vec![0.0, 0.0, 0.0],
+            "the r is {r:?}",
+            r = factorization.r
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_takes_a_design_of_as_many_columns_as_rows() {
+        // `rows` at least `cols` is what `thin_qr` asks for, so the 2 x 2
+        // is taken and not refused: a check that read `rows` above `cols`
+        // would give `Dimension` here.
+        let factorization = thin_qr(&THE_DESIGN_OF_2_BY_2, 2, 2).unwrap();
+        let factorization = with_the_diagonal_of_r_positive(&factorization, 2);
+        assert!(
+            !differ(
+                &factorization.r,
+                &THE_R_OF_THE_DESIGN_OF_2_BY_2,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the r is {r:?}",
+            r = factorization.r
+        );
+    }
+
+    #[test]
+    fn the_rank_takes_the_larger_of_the_two_dimensions_into_its_tolerance() {
+        // The two 2 x 2 matrices above pin the threshold and not which
+        // dimension it comes from, the larger and the smaller being one
+        // number there. These are 4 x 2, where the tolerance is
+        // 8.881784197001252e-16 and the one the smaller dimension would
+        // give is 4.440892098500626e-16: the 6e-16 lies between them, so a
+        // rank that took the smaller gives 2 where numpy 2.5.3 gives 1.
+        for (entry, wanted) in [(6e-16, 1_usize), (1e-15, 2)] {
+            let a = [
+                1.0, 0.0, //
+                0.0, entry, //
+                0.0, 0.0, //
+                0.0, 0.0,
+            ];
+            assert_eq!(
+                rank(&a, 4, 2).unwrap(),
+                wanted,
+                "the rank of the 4 x 2 whose second singular value is {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rank_of_a_matrix_of_more_columns_than_rows_is_3() {
+        // Every other matrix here has at least as many rows as columns,
+        // which is what `thin_qr` asks for and what `rank` does not. The
+        // twelve values of the 4 x 3 above read as a 3 x 4 are rows
+        // (1, 1, 2, 1), (2, 3, 1, 3) and (4, 1, 4, 5), and both backends
+        // and numpy 2.5.3 give 3 for it.
+        assert_eq!(
+            rank(&THE_DESIGN_OF_4_BY_3_OF_A_COLUMN_THAT_REPEATS, 3, 4).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_rank_of_a_matrix_whose_largest_singular_value_is_near_the_largest_f64() {
+        // The tolerance is the largest singular value times the product of
+        // the larger dimension with the distance from 1 to the next `f64`,
+        // and in that order. Multiplying the largest singular value by the
+        // dimension first overflows here to an infinity, above which no
+        // value lies, and the rank comes back 0. Both backends and numpy
+        // 2.5.3 give 1 on 23 September 2026.
+        let a = [
+            1e308, 0.0, //
+            0.0, 1.0,
+        ];
+        assert_eq!(rank(&a, 2, 2).unwrap(), 1);
     }
 }
