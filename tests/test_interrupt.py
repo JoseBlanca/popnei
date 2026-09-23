@@ -204,12 +204,15 @@ def _interrupt_a_calculation(calculation: str) -> str:
 # The Kosman distances of every pair of the three individuals.
 _KOSMAN_DISTANCES = "popnei.calc_pairwise_kosman_dists(variants)"
 
-# Hudson's F_ST of the one pair of two populations of those individuals,
-# which is the other calculation that reads a whole source in one call.
+# Hudson's F_ST of the one pair of two populations of those individuals.
 _POP_DISTANCES = (
     'popnei.calc_pop_dists(variants, {"p1": ["ind1"], "p2": ["ind2", "ind3"]}, '
     'jackknife_group=None, measures=("fst",), min_num_individuals=1)'
 )
+
+# The kinship of every pair of the three individuals, which is the third
+# calculation that reads a whole source in one call.
+_KINSHIP = "popnei.calc_kinship(variants)"
 
 
 def _vcf_of_many_variants(path: Path) -> Path:
@@ -300,7 +303,9 @@ def test_the_block_a_ctrl_c_lost_is_not_among_the_variants_of_the_pass(
 
 
 @pytest.mark.parametrize(
-    "calculation", [_KOSMAN_DISTANCES, _POP_DISTANCES], ids=["kosman", "pop_dists"]
+    "calculation",
+    [_KOSMAN_DISTANCES, _POP_DISTANCES, _KINSHIP],
+    ids=["kosman", "pop_dists", "kinship"],
 )
 def test_a_ctrl_c_while_a_calculation_runs_raises_keyboard_interrupt(
     calculation: str, tmp_path: Path
@@ -315,9 +320,9 @@ def test_a_ctrl_c_while_a_calculation_runs_raises_keyboard_interrupt(
     that import fails with the interrupt still pending and leaves the numpy
     crate panicking.
 
-    Both calculations that read a whole source in one call are run, because
+    Every calculation that reads a whole source in one call is run, because
     each raises the interrupt itself and a missing raise in one of them says
-    nothing about the other.
+    nothing about the others.
     """
     path = _vcf_of_many_variants(tmp_path / "many_variants.vcf")
     read = subprocess.run(
