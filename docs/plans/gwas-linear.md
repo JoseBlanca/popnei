@@ -197,17 +197,30 @@ which is also where the comparison with pyNei is first made.
 
 ### What it stands on
 
-Work package 1, for nothing but the module it lives in. Outside the plan:
-the row pass that work package 1 of the plan `kinship` moved into `variant`,
-which this uses for the dosages.
+Work package 1, for nothing but the module it lives in.
+
+This section said until 23 September 2026 that the dosages use the row pass
+that work package 1 of the plan `kinship` moved into `variant`. They cannot.
+That pass always divides the centered dosages by a scale, either of the
+dosages themselves or of Hardy Weinberg, because the kinship and the
+principal components want a variant standardized; a study wants the dosage
+itself, since `beta` is the effect of one copy of an allele in the units of
+the trait. The worked example of the spec has the dosages 0, 1, 2 and a
+`beta` of 1.5, which the scale would turn into 1.2247. The pass also gives
+no mean back, and a study reports that mean as the `allele_freq` of every
+variant, including the ones it cannot test. So work package 2 has its own
+row, which calls the two vectorized passes of `variant` that do apply,
+`count_alleles` and `the_codes_of_the_genotypes`, and adds the mean and the
+fill for a missing genotype. `ld.rs` is the precedent for a module with its
+own dosage rule.
 
 ### Its tasks
 
-- [ ] 2.1 The tested individuals, the design, its refusals and the rank
+- [x] 2.1 The tested individuals, the design, its refusals and the rank
       check, in `crates/popnei/src/gwas.rs`. Built from "Which individuals
       are tested, and the design" of `docs/specs/gwas.md`. Serves
       deliverables 1 and 2. Needs 1.1.
-- [ ] 2.2 The dosages of a block over the tested individuals, the shape of
+- [x] 2.2 The dosages of a block over the tested individuals, the shape of
       the result, the variants that have no answer, and the choice of model
       and test. Built from "What it gives", "The variants that have no
       answer" and "The Rust interface". Serves deliverables 3 and 4. Needs
