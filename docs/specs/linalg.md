@@ -864,7 +864,25 @@ first column (0.5, 0.5, 0.5, 0.5) and the second (-0.6708203932499368,
 -0.22360679774997894, 0.223606797749979, 0.6708203932499369), which is
 the covariate less its mean, divided by the length of that; both within
 1e-14, because Accelerate gave -2.0 for the first entry of `r` and faer
--1.9999999999999998. At `solve_upper_triangular`, the trait (1, 3, 5,
+-1.9999999999999998.
+
+That design has two columns, so the half of `r` below its diagonal is one
+entry, and a backend that zeroed too few of them would still pass. A second
+design pins it: the 4 x 3 with rows (1, 1, 2), (1, 2, 5), (1, 3, 1) and
+(1, 4, 9), whose `r`, with the diagonal made positive, has rows (2, 5, 8.5),
+(0, 2.23606797749979, 3.801315561749642) and (0, 0, 4.9295030175464944), and
+whose `q` has the columns (0.5, 0.5, 0.5, 0.5), (-0.6708203932499368,
+-0.22360679774997894, 0.223606797749979, 0.6708203932499369) and
+(0.06085806194501853, 0.3245763303734317, -0.8317268465819189,
+0.44629245426346875), within 1e-14. Its three entries below the diagonal of
+`r` are asserted to be 0 exactly: what a backend leaves there is what
+`dorgqr` and faer write, and the crate sets them. That design is rank 3.
+From numpy 2.5.3 on 23 September 2026.
+
+A design of as many columns as rows is the smallest one `thin_qr` takes, and
+it is not refused: the 2 x 2 with rows (1, 1) and (1, 2) gives an `r` of
+(-1.4142135623730951, -2.1213203435596424) and (0, 0.7071067811865475),
+which numpy gives too. At `solve_upper_triangular`, the trait (1, 3, 5,
 7), which is twice the covariate less 1, gives the coefficients (-1, 2)
 from `r c = q' y`, within 1e-14: an exact fit, so a backend that read
 `r` the wrong way round gives something else. The `q' y` of that trait
@@ -899,6 +917,38 @@ with rows (1, 0) and (0, 5e-16) is rank 2 and the one with rows (1, 0) and
 largest singular value is 1, which is 4.440892098500626e-16. numpy 2.5.3
 gives 2 and 1 for them, and both backends were run on them on 23 September
 2026 and gave the same two counts and the same tolerance.
+
+Those two are square, so they pin the tolerance and not which of the two
+dimensions it is taken from: for a 2 x 2 the larger and the smaller are one
+number. A seventh and an eighth pin that, at a shape where the two differ.
+The 4 x 2 with rows (1, 0), (0, 6e-16), (0, 0) and (0, 0) is rank 1, and the
+same matrix with 1e-15 in place of 6e-16 is rank 2. The tolerance of a 4 x 2
+whose largest singular value is 1 is 8.881784197001252e-16, four times the
+distance from 1 to the next `f64`, and the one the smaller dimension would
+give is 4.440892098500626e-16: the 6e-16 lies between them, so a rank that
+took the smaller dimension gives 2 where numpy 2.5.3 gives 1. Both backends
+were run on the pair on 23 September 2026 and gave 1 and 2.
+
+The tolerance is formed as the largest singular value times the product of
+the larger dimension with the distance from 1 to the next `f64`, and in that
+order, which is numpy's. The other order, the largest singular value times
+the dimension first, is the same `f64` for every matrix whose values a study
+holds, that distance being a power of two, and it overflows to an infinity
+when the largest singular value passes about 1e308 divided by the dimension,
+where no value is above the tolerance and the rank comes back 0. Measured on
+23 September 2026 against numpy 2.5.3: the 2 x 2 with 1e308 and 1 on its
+diagonal is rank 1, and taken the other way round it is 0.
+
+Where the two backends part. faer's decomposition is not scaled, and LAPACK's
+is, so for values near the ends of what an `f64` holds the two give different
+counts: measured on 23 September 2026, the 4 x 2 whose every value is 1e154
+is rank 1 on LAPACK and does not converge on faer, and the 2 x 2 with 1e-307
+and 1e-312 on its diagonal is rank 2 on LAPACK and numpy and 1 on faer, and
+with 1e-320 and 1e-323 it is 2 and 0. So the two backends agree on the rank
+of a matrix whose values lie between about 1e-300 and 1e154, which every
+design of dosages and covariates does, and outside that range the rank is
+the backend's. What is not known is whether faer's QR has the same limit; no
+run of it at those values was made.
 
 The sixth is the 3 x 2 whose every value is 0, and it is rank 0: its
 largest singular value is 0, so the tolerance is 0 and no value is
