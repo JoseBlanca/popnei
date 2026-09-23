@@ -1005,6 +1005,52 @@ def test_the_pairs_are_in_the_order_the_populations_were_named_in() -> None:
     )
 
 
+def test_the_pops_keep_the_order_of_the_dict_where_pynei_sorts_them() -> None:
+    """The one difference from pyNei that a user sees in the order of the
+    result: popnei keeps the order of the `pops` dict and pyNei sorts the
+    names of the populations, `sorted(pop_idxs.keys())` in
+    `calc_jost_dest_pop_dists`.
+
+    Both libraries are given the same dict, named p2, p1, p0, which is not in
+    sorted order. popnei's pairs are then p2-p1, p2-p0 and p1-p0 and pyNei's
+    are p0-p1, p0-p2 and p1-p2, so the two vectors hold the same three
+    numbers in opposite orders, and popnei's names say which pair each of
+    its numbers belongs to. No value changes with the order, which is why the
+    spec decides this difference rather than leaving it open.
+
+    Every other comparison with pyNei here is made through a helper that
+    sorts the names, where the two orders are the same one and this
+    difference cannot show.
+    """
+    turned_around = {pop: PANEL_POPS[pop] for pop in ("p2", "p1", "p0")}
+
+    ours = calc_pop_dists(
+        open_vcf(PANEL), turned_around, jackknife_group=None, measures=("dest",)
+    )
+    theirs = calc_jost_dest_pop_dists(vars_from_vcf(PANEL), turned_around)
+
+    assert ours.pops == ("p2", "p1", "p0")
+    assert ours.dest.names == ("p2", "p1", "p0")
+    assert tuple(theirs.names) == ("p0", "p1", "p2")
+    _assert_within(
+        ours.dest.dist_vector,
+        list(theirs.dist_vector)[::-1],
+        DEST_PYNEI_TOLERANCE,
+        True,
+        "Jost's D of the panel named the other way round",
+    )
+    # The same three numbers as the sorted dict gives, each with the pair it
+    # belongs to: the last of popnei's is p1-p0, which is the first of the
+    # three the spec prints for p0-p1.
+    _assert_within(
+        list(ours.dest.dist_vector)[::-1],
+        PANEL_DEST,
+        TEN_DIGITS_TOLERANCE,
+        False,
+        "Jost's D of the panel named the other way round",
+    )
+
+
 def test_the_counts_of_the_pass_hold_the_variants_and_the_filters() -> None:
     """`pass_stats`, the counts every consumer of a `Variants` gives back:
     how many variants the pass took after the steps, and what each filter was

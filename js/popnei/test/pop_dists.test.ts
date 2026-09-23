@@ -1000,7 +1000,12 @@ test("no measure of the seven is refused", () => {
     dists.gstStandardized,
   ];
 
-  assert.equal(ofEveryMeasure.length, EVERY_MEASURE.length);
+  // Seven fields are read, one for each measure of the spec, and each of
+  // them holds a `Distances`: comparing the length of the array above with
+  // the length of the names below would compare two constants and could not
+  // fail.
+  assert.equal(ofEveryMeasure.length, 7);
+  assert.equal(EVERY_MEASURE.length, 7);
   ofEveryMeasure.forEach((values, measure) => {
     assert.ok(values !== null, `the ${EVERY_MEASURE[measure]} of the panel`);
   });
