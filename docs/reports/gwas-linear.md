@@ -22,9 +22,9 @@ statistic into a p-value, which every test of this plan and of
 `gwas-logistic` ends in.
 
 At the commit this branch starts from: 637 tests in the core crate, 369
-pytest, 253 node. Now: 785 in the core crate with 2 ignored, the same 785 on
-the faer backend, 149 in the linear algebra crate, 496 pytest on both
-backends, 323 node. `cargo fmt`, `cargo clippy` with every target and
+pytest, 253 node. Now: 786 in the core crate with 2 ignored, the same 786 on
+the faer backend, 149 in the linear algebra crate, 498 pytest on both
+backends, 325 node. `cargo fmt`, `cargo clippy` with every target and
 warnings denied, `cargo wasm-check` for both wasm targets and ruff are
 clean, and both WebAssembly artifacts build: the npm package through
 `wasm-bindgen` and the pyodide wheel.
@@ -59,6 +59,58 @@ file at once is what this plan was told to avoid. A reviewer read the seams
 and they are clean: the two distributions, the study and its design, the
 dosages, the result, the linear model, the linear mixed model, and the pass
 over the blocks.
+
+## The names this report uses
+
+An association study tests each variant on its own: it fits the trait
+against that variant's dosage, and reports the effect of one more copy of
+the allele, the uncertainty of that effect, and the chance of seeing an
+effect at least that large if the variant had none.
+
+**The two tests.** A *Wald test* divides the fitted effect by its own
+standard error and asks how extreme that ratio is; it needs a fit for every
+variant. A *score test* instead asks how steeply the likelihood would rise
+if the effect moved away from zero, measured at the null fit alone, so it
+needs no fit per variant and is the cheaper of the two. They agree closely
+where the effect is small and part where it is large.
+
+**The mixed model and what it fits.** With a kinship, the model has a second
+source of variance beside the noise: the part of the trait that goes with
+how much genome a pair shares. Fitting it means splitting the trait's
+variance into those two parts, and popnei does it by *restricted maximum
+likelihood*, written REML below: a likelihood with the covariate effects
+integrated out, so that the split is not biased by having estimated those
+effects as well. What the search actually looks for is one number, the ratio
+of the two variances; everything else follows from it. The search is a grid
+of 101 points over that ratio's logarithm, then 60 steps of a golden section
+search, which narrows a bracket by a fixed fraction each step. This is
+pyNei's procedure step for step, and the plan required reproducing it.
+
+**`y' p y`.** A quadratic form: the trait, seen through the projection that
+removes the covariates and the relatedness, multiplied back by itself. It is
+the generalized residual sum of squares of the null model, and REML makes it
+equal to the individuals less the columns of the design — 197 on this panel.
+
+**The three reference programs**, each the standard tool for one of the
+models, run on popnei's own data by `tests/reference/gwas/make_reference.py`:
+plink2's `--glm` for the linear model, rrBLUP's `GWAS` for the mixed model's
+Wald test, and GMMAT's `glmm.score` for its score test. "Checked against X"
+below means popnei and X were run on the same genotypes and the same trait,
+and their columns compared. pyNei is the fourth and is popnei's own oracle.
+
+**Two linear algebra backends.** popnei runs its matrix work through
+Accelerate natively and through faer in WebAssembly, so every number of this
+plan was checked on both; where they differ, the two builds of popnei would
+give a user different digits.
+
+**How a tolerance is written here.** A bound "of `se`" is a multiple of that
+variant's standard error, which is the scale of what the study estimates —
+an effect's own magnitude means nothing for a variant with no effect, so
+nothing is bounded relative to it. A bound "in `log10`" compares the
+logarithms of two p-values, which is the scale a p-value is read on. And
+"the bound is 1.5e-7, breaking at 5.17e-8" means the test passes at 1.5e-7
+and was lowered until it failed, which happened at 5.17e-8: the gap between
+the two is the room the check has.
 
 ## What this report is
 
@@ -279,8 +331,8 @@ individuals has to come back to this function before trusting its p-values,
 and the front factor in logarithms is where to start. Fixing the small `t`
 defect cost about thirteen per cent here, taking the room at 9997 from 2.4
 times to 1.8; the trade was seven orders of magnitude gained against that,
-and it is worth naming because it is the one place in this work package
-where making one number better made another worse.
+and it is the one place in this work package where making one number
+better made another worse.
 
 **The spec's written recipe is now behind the code.** The spec writes the
 symmetry branch as `cf(b, a, 1 - x)` and the front factor's last term as
@@ -301,19 +353,19 @@ either panel reaches the case either way.
 
 ### How the work went
 
-Task 1.1 and task 1.2 each went to one subagent and each came back right the
-first time; the fixes went back to the subagent that wrote task 1.2, which
-had the context. Tokens: task 1.1, 110231; task 1.2, 133005, and 228131 by
-the end including the fixes. The six reviewers used 72312, 70946, 82402,
-92743, 91536 and 105618.
+Nothing in a section with this heading bears on the merge. They are for
+whoever writes or runs the next plan: what a task cost, and what went wrong
+in the running of it rather than in the code. `following-plans` asks for the
+token counts because they are how the right size of a task gets known.
 
-One instruction of the orchestrator's was wrong and had to be corrected
-mid-flight: the fix list told the subagent to leave `chi2_sf_1df`'s NaN
-alone, and the spec settled it the other way while the subagent was working.
-Sending the correction cost nothing because the subagent was still running,
-but a plan that carries a spec's number instead of pointing at the spec has
-this failure mode, which is the same one that the tolerance change earlier
-in this report was about.
+Tasks 1.1 and 1.2 each went to one subagent; the fixes went back to the one
+that wrote 1.2. Tokens: 110231, then 133005 and 228131 by the end with the
+fixes. The six reviewers used 72312, 70946, 82402, 92743, 91536 and 105618.
+
+The orchestrator's fix list told a subagent to leave `chi2_sf_1df`'s NaN
+alone while the spec was settling it the other way, and the correction had
+to chase it mid-task. A plan that repeats a spec's number instead of
+pointing at the spec has this failure mode.
 
 ## Work package 2: what every model shares
 
@@ -343,8 +395,8 @@ September 2026, so the crate that holds every calculation of popnei had
 never been run on it. The `kinship` session found that and put it in the
 `coding` skill; it is in this plan's "What has to be in place" now, and
 every check above was run on both backends. No number of this work package
-differs between them, which was worth establishing rather than assuming,
-since `Design` calls the linear algebra crate for its rank.
+differs between them, and `Design` calls the linear algebra crate for its
+rank, so it could have.
 
 ### What the review found
 
@@ -461,8 +513,7 @@ together until it is decided.
 
 ### How the work went
 
-Task 2.1 and task 2.2 each went to one subagent and each came back right the
-first time; the fixes went back to the subagent that wrote task 2.2. Tokens:
+Tasks 2.1 and 2.2 each went to one subagent; the fixes went back to the subagent that wrote task 2.2. Tokens:
 task 2.1, 182176; task 2.2, 262085, and 389180 by the end including the
 fixes. The six reviewers used 115087, 136959, 158353, 141579, 145226 and
 158028.
@@ -613,8 +664,7 @@ the four items that were unused, so nothing there would ever warn again; and
 the TypeScript enum for which test to make was the one name in the project
 matching no other layer.
 
-One finding did not hold and the subagent refuted it with a reason I accept.
-The review asked that the refusal of a study with too few individuals stop
+One finding did not hold. The review asked that the refusal of a study with too few individuals stop
 naming the file, since it is decided by the phenotype the user wrote. It is
 decided by the phenotype and by the individuals the source has — the same
 phenotype against a file sharing more of them is fine — so by the crate's
@@ -650,14 +700,12 @@ popnei and the spec now lists the difference.
 ### How the work went
 
 Tasks 3.1, 3.2 and 3.3 each went to one subagent; 3.2 and 3.3 ran side by
-side as the plan allows, touching different files, and neither trod on the
-other. The fixes went back to the subagent that wrote 3.2, and a separate
+side, touching different files. The fixes went back to the subagent that wrote 3.2, and a separate
 subagent built the coercion the spec settled last. Tokens: task 3.1, 262508;
 task 3.3, 260240; task 3.2, 326128 and 534153 by the end with the fixes; the
 coercion, 212155. The six reviewers used 140000, 184254, 171173, 190658,
 153020 and 197302.
 
-The orchestrator's own failure this work package is the one worth keeping.
 Two counts about deliverable 1 were relayed from a subagent's report to the
 owner and to the session that owns the spec without being run, and both were
 wrong, one of them by a factor of four hundred. The session that owns the
@@ -683,12 +731,12 @@ associated.
 | 3, the Wald test is rrBLUP's | the same pytest run | over all 1200 variants, worst 1.9973e-5 on Accelerate and 1.9956e-5 on faer at `var0572`, against 1e-4 in `-log10(p)` |
 | 4, the score test is GMMAT's, both panels | the same pytest run | `1/se²` worst 4.4268e-6 and 5.4234e-6 against 1e-5 relative; the p-value 4.6204e-5 and 4.7552e-5 against 1e-4 in `log10` |
 | 5, the study finds what was planted | the same pytest run | 4 of the 5 causal variants among the 10 smallest p-values, on both backends |
-| 6, popnei and pyNei agree, and TypeScript | the same pytest run and `npm test` | the bound 1.5e-7, breaking at 5.173e-8 on Accelerate and 4.648e-8 on faer; 323 node tests |
+| 6, popnei and pyNei agree, and TypeScript | the same pytest run and `npm test` | the bound 1.5e-7, breaking at 5.173e-8 on Accelerate and 4.648e-8 on faer; 325 node tests |
 
-The checks after the fixes: fmt and clippy clean, 785 tests in the core
-crate with 2 ignored and 149 in the linear algebra crate, the same 785 on
-faer, `cargo wasm-check` clean, ruff clean, 496 pytest passed on both
-backends, 323 node tests passed. The plan's own final check passes and both
+The checks after the fixes: fmt and clippy clean, 786 tests in the core
+crate with 2 ignored and 149 in the linear algebra crate, the same 786 on
+faer, `cargo wasm-check` clean, ruff clean, 498 pytest passed on both
+backends, 325 node tests passed. The plan's own final check passes and both
 WebAssembly artifacts build, the npm package through `wasm-bindgen` and the
 pyodide wheel.
 
@@ -827,19 +875,42 @@ rounding. A reviewer perturbed such a kinship by 1e-15 and got a
 all zeros gives 0.99988 and one of all ones 0.99995. `beta` and `p_value`
 are untouched, because they do not depend on the scale, so what is arbitrary
 is `genetic_variance`, `residual_variance` and `heritability` — which is
-what a user reads a heritability off. The spec's recommendation is to give
-the study and leave those three empty rather than refuse the study, since
-the effects and the p-values are valid and are what the user mostly came
-for.
+what a user reads a heritability off.
 
-**The clamp's missing magnitude.** A negative eigenvalue of the kinship is
-clamped at 0 with no test of how negative it is, so a genuinely indefinite
-matrix is treated as a rounding artefact: forcing one eigenvalue of the
-panel's kinship to -5, which is 29 per cent of its largest at 17.27, is
-clamped silently and the fit returns ordinary-looking numbers, and so does
-forcing fifty of them to -2. The two numbers the owner judges the fraction
-on are that -5 and the -3.3 per cent that `docs/specs/kinship.md` measures
-at 50 genotypes missing in 100.
+The branch builds the spec's meanwhile, which is also its recommendation:
+the study is still given, every variant still answered, and those three
+fields come back as nothing. In Python they are `None` and in TypeScript
+`undefined`, which is what the plain linear model already gives for the two
+it does not have, so a user meets one shape and not a new one; none of the
+three is 0 and none is NaN. On the worked example over an identity kinship
+that is now
+
+    genetic_variance: None  residual_variance: None  heritability: None
+
+where the branch gave a `heritability` of 6.8e-5 before, and `beta` is still
+1.5 and the p-value still 0.0880048923827560. The panel's own kinship is not
+flat and reports all three as it did. What is left for the owner is whether
+to refuse the study outright instead; the argument for giving it is that the
+effects and the p-values are valid and are what the user mostly came for.
+
+**The clamp's missing magnitude.** A kinship can have slightly negative
+eigenvalues from rounding alone, and popnei clamps them to 0. There is no
+test of how negative, so a matrix that is genuinely not a covariance is
+treated as a rounding artefact. The question is what fraction of the largest
+eigenvalue still counts as rounding, and the two ends of it, put in the same
+terms:
+
+| case | smallest eigenvalue, as a share of the largest | should be |
+|---|---|---|
+| this plan's panel, every genotype called | -2.0e-16 | clamped |
+| a kinship of a panel with 50 genotypes missing in 100, from `docs/specs/kinship.md` | -0.033 | clamped |
+| a reviewer's matrix with one eigenvalue forced to -5 | -0.29 | refused |
+
+So the line lies between 3.3 per cent and 29 per cent, and the safe
+direction is to refuse: a matrix that far from a covariance is not a
+kinship, and clamping it returns ordinary-looking numbers with nothing to
+say they are wrong. What nobody has measured is where between those two a
+real dataset stops.
 
 ### What the owner should know
 
@@ -876,13 +947,11 @@ refused. The fixes went back to the subagent that wrote 4.3. Tokens: task
 the fixes; the constant trait, 124448. The six reviewers used 209298,
 179770, 135493, 177308, 191305 and 187393.
 
-The measurement that task 4.1 was asked to make and that shaped the rest of
-the work package is worth naming as a method. It was asked to set up the
-cancellation measurement while it had the null fit in hand, and told not to
-act on it. It found that the cancellation is reachable exactly rather than
+Task 4.1 was asked to measure the cancellation while it had the null fit in
+hand, two tasks before anything would act on it, and told not to act on it
+itself. It found that the cancellation is reached exactly rather than
 approached, because the projection annihilates the design, so any affine
-image of the trait gives equality in exact arithmetic. That sentence is what
-let the next reviewer construct the case that produced the NaN, which is
-what removed the option the spec was resting on. A measurement made two
-tasks before it was needed, by someone told not to act on it, is what
-settled the largest question of the plan.
+image of the trait gives equality in exact arithmetic. That is what let a
+later reviewer construct the case that produced the NaN, which is what
+changed the spec. Asking for a measurement early, from whoever has the
+pieces in hand, and separating it from the decision, is worth repeating.
