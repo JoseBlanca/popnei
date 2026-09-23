@@ -24,6 +24,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { Variants } from "popnei";
 import { calcKinship, init, Kinship, openVcf } from "popnei";
 
 import { referenceKinship } from "./reference.ts";
@@ -141,6 +142,23 @@ function kinshipOf(
   }
 }
 
+/**
+ * The kinship of `bytes` over the variants a step leaves, with `filter` put
+ * on the `Variants` before the call.
+ */
+function kinshipAfter(
+  bytes: Uint8Array,
+  filter: (variants: Variants) => void,
+): Kinship {
+  const variants = openVcf(bytes, { onlyPassed: false });
+  try {
+    filter(variants);
+    return calcKinship(variants);
+  } finally {
+    variants.free();
+  }
+}
+
 /** The entry of the individuals `one` and `other` of `kinship`. */
 function entryOf(kinship: Kinship, one: string, other: string): number {
   const row = kinship.individuals.indexOf(one);
@@ -251,11 +269,11 @@ test("a kinship a user builds by hand has no counts of a pass", () => {
   assert.equal(built.individuals.length, 4);
 });
 
-test("a matrix that is not symmetric is refused", () => {
+test("a matrix that is not symmetric is refused, naming the two individuals", () => {
   const notSymmetric = Float64Array.from([1, 0.5, 0.4, 1]);
 
   assert.throws(() => new Kinship(notSymmetric, ["i0", "i1"], 2), {
-    message: /symmetric/,
+    message: /a kinship is symmetric, and the pair of `i0` and `i1` is 0.5/,
   });
 });
 
@@ -282,4 +300,92 @@ test("a variant of more than two alleles is refused unless it is read as biallel
   const read = kinshipOf(threeAlleles, { transformToBiallelic: true });
 
   assert.equal(read.numVars, 2);
+});
+
+test("the counts of the pass are the variants it gave and not the ones used", () => {
+  // `filterByMissingData(0)` drops `v1`, the one with the missing genotype,
+  // so the pass gives `v0`, `v2` and `v3`, of which `v2`, where every
+  // individual is heterozygous, and `v3`, which has one allele, have no
+  // variance. The two counts are 3 and 1: a count that read the variants
+  // that were used would give 1 here, and one that read the source 4, and
+  // on a pass with no filter all three are the same number.
+  const kinship = kinshipAfter(WORKED_EXAMPLE, (variants) => {
+    variants.filterByMissingData(0);
+  });
+
+  assert.equal(kinship.passStats?.numVars, 3);
+  assert.equal(kinship.numVars, 1);
+  assert.deepEqual(kinship.passStats?.filtering, {
+    missing_data: { varsProcessed: 4, varsKept: 3 },
+  });
+});
+
+test("a pair with no variant called in both is refused by their names", () => {
+  // Three individuals and three variants of "Missing genotypes, variants
+  // with no variance, and what pyNei asserts" of the spec: `i0` and `i2`
+  // are never called at the same variant, so their entry of the kinship
+  // would be divided by 0. The core names the positions the two have among
+  // the individuals of the kinship, which with `individuals` on the call
+  // are not even the ones of the file, and a user drops a name.
+  const neverTogether = vcfOf(
+    ["i0", "i1", "i2"],
+    ["0/0\t0/1\t./.", "./.\t0/1\t1/1", "0/0\t1/1\t./."],
+  );
+
+  let thrown = "";
+  try {
+    kinshipOf(neverTogether);
+  } catch (error) {
+    thrown = (error as Error).message;
+  }
+
+  assert.match(
+    thrown,
+    /the individuals `i0` and `i2` have no variant called in both of them/,
+  );
+  assert.match(
+    thrown,
+    /2 variants are called in the first and 1 in the second/,
+  );
+  assert.ok(
+    !thrown.includes("at the positions"),
+    `the message writes a position: ${thrown}`,
+  );
+});
+
+test("an entry that is not a number is refused, naming its cell", () => {
+  // On the diagonal, where the check of the symmetry compares no pair of
+  // cells and would let it through.
+  const withANaN = Float64Array.from([1, 0, 0, NaN]);
+
+  assert.throws(() => new Kinship(withANaN, ["i0", "i1"], 2), {
+    message: /entry of the kinship of `i1` and `i1` is NaN/,
+  });
+});
+
+test("an infinity is refused as a value and not as an asymmetry", () => {
+  const withAnInfinity = Float64Array.from([1, Infinity, Infinity, 1]);
+
+  assert.throws(() => new Kinship(withAnInfinity, ["i0", "i1"], 2), {
+    message: /entry of the kinship of `i0` and `i1` is Infinity/,
+  });
+});
+
+test("a kinship of no individual is refused", () => {
+  assert.throws(() => new Kinship(Float64Array.from([]), [], 2), {
+    message: /no individual was named/,
+  });
+});
+
+test("a numVars that is not a whole number of 0 or more is refused", () => {
+  assert.throws(() => new Kinship(Float64Array.from([1]), ["i0"], -1), {
+    message: /`numVars` is a whole number of 0 or more/,
+  });
+});
+
+test("a matrix that is not a Float64Array says what was given", () => {
+  assert.throws(
+    () => new Kinship([1, 0, 0, 1] as unknown as Float64Array, ["i0", "i1"], 2),
+    { message: /an object of the type `Array` was given/ },
+  );
 });

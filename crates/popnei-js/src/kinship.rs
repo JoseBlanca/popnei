@@ -19,10 +19,9 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::{FilteringStats, resolve_individuals};
+use popnei::block::BlockReader;
+use popnei::filters::resolve_individuals;
 use popnei::kinship::calc_kinship;
-use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
@@ -36,8 +35,6 @@ use crate::steps::{Steps, chain_of};
 /// `i * N + j`, and the value at `j * N + i` is the same one.
 #[wasm_bindgen]
 pub struct KinshipOfVariants {
-    /// How many individuals the matrix has on each of its two sides.
-    num_individuals: usize,
     /// How many variants had variance among these individuals and were
     /// used, which is what the matrix was built from. It is an `f64`, the
     /// number of JavaScript, as every count `PassCounts` carries is: the
@@ -58,12 +55,6 @@ pub struct KinshipOfVariants {
 
 #[wasm_bindgen]
 impl KinshipOfVariants {
-    /// How many individuals the matrix has on each of its two sides.
-    #[must_use]
-    pub fn num_individuals(&self) -> usize {
-        self.num_individuals
-    }
-
     /// How many variants the matrix was built from: those that had variance
     /// among these individuals. A variant whose called genotypes all have
     /// one dosage is in no sum and in no denominator, and the counts of the
@@ -107,10 +98,10 @@ impl KinshipOfVariants {
 ///
 /// The chain of readers of the pass stays here, lent to the core, so that
 /// the counts of its filters can be read when the calculation returns. How
-/// many variants that chain gave is counted here as well, by
-/// [`TheVariantsCounted`]: the core's `Kinship` carries the variants that
-/// were used and not the ones the pass gave, and the counts of a pass are of
-/// what the steps let through.
+/// many variants it gave, used or not, is `Kinship::num_vars_given`, which
+/// is the `num_vars` of those counts; `Kinship::num_vars` is the variants
+/// that had variance and were used, and a variant with none is in no sum and
+/// in no denominator.
 ///
 /// The source is asked for no size of block: the core puts a `reblock` over
 /// the reader and chooses the size there, since the product of a block is
@@ -131,13 +122,12 @@ pub(crate) fn kinship_of_the_variants(
     transform_to_biallelic: bool,
     steps: Steps,
 ) -> Result<KinshipOfVariants, JsPopneiError> {
-    let chain = chain_of(source.reader(None)?, steps.steps())?;
-    let mut counted = TheVariantsCounted::over(chain);
+    let mut chain = chain_of(source.reader(None)?, steps.steps())?;
     // The names the pass gives, which are the source's own when no step is
     // a filter of individuals and the kept ones in the order they were
     // named when one is. They are read before the calculation borrows the
     // chain, so the matrix and the names cannot be of two different passes.
-    let of_the_pass = counted.individuals().to_vec();
+    let of_the_pass = chain.individuals().to_vec();
     // A name that is of nobody is refused before the source is read: the
     // rule and its message are the core's, the one a filter of individuals
     // is given its names by.
@@ -145,14 +135,16 @@ pub(crate) fn kinship_of_the_variants(
         Some(names) => Some(resolve_individuals(names, &of_the_pass)?),
         None => None,
     };
-    let kinship = calc_kinship(&mut counted, positions.as_deref(), transform_to_biallelic)?;
-    let counts = PassCounts::of(counted.num_vars(), &counted.filtering_stats());
     // The names of the matrix are the ones that were asked for, in the
     // order they were asked in, which is the order the core gives the rows
-    // in; with no name at all they are every individual of the pass.
+    // in; with no name at all they are every individual of the pass. They
+    // are built before the call because the pair that has no variant called
+    // in both is named with them.
     let of_the_matrix = individuals.unwrap_or(of_the_pass);
+    let kinship = calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)
+        .map_err(|error| under_the_names_of_the_individuals(error, &of_the_matrix))?;
+    let counts = PassCounts::of(kinship.num_vars_given, &chain.filtering_stats());
     Ok(KinshipOfVariants {
-        num_individuals: kinship.num_individuals,
         num_vars: kinship.num_vars as f64,
         matrix: Some(kinship.matrix),
         individuals: Some(of_the_matrix),
@@ -160,71 +152,40 @@ pub(crate) fn kinship_of_the_variants(
     })
 }
 
-/// The chain of a pass with a count of the variants it gives, which is what
-/// the counts of a pass say and what the kinship of the core does not carry.
+/// `error` with the two individuals that have no variant called in both of
+/// them under their names, and every other error as it is.
 ///
-/// `popnei::kinship::Kinship` has `num_vars`, the variants that had variance
-/// and were used, and a variant with none is in no sum and in no
-/// denominator, so it is not the number the `passStats` of the result holds.
-/// Every other calculation of the core gives that number away with its
-/// result, the principal components of the variants as `num_cols`, and the
-/// kinship gives no block of its pass to this crate for it to be counted
-/// anywhere else.
-///
-/// It reads no block and changes none: every method is the reader's below.
-struct TheVariantsCounted<R: BlockReader> {
-    reader: R,
-    num_vars: u64,
-}
-
-impl<R: BlockReader> TheVariantsCounted<R> {
-    /// The reader with its count at 0.
-    fn over(reader: R) -> TheVariantsCounted<R> {
-        TheVariantsCounted {
-            reader,
-            num_vars: 0,
-        }
-    }
-
-    /// How many variants the reader has given so far.
-    fn num_vars(&self) -> u64 {
-        self.num_vars
-    }
-}
-
-impl<R: BlockReader> BlockReader for TheVariantsCounted<R> {
-    fn next_block(&mut self) -> popnei::Result<Option<Block>> {
-        let block = self.reader.next_block()?;
-        if let Some(block) = block.as_ref() {
-            // A pass of wasm reads a file that is in the memory of the tab,
-            // which addresses 2^32 bytes, so the count is nowhere near what
-            // a `u64` holds; it saturates rather than wrap, because a count
-            // that went round would be a smaller number than the truth and
-            // nothing would say so.
-            self.num_vars = self
-                .num_vars
-                .saturating_add(block.num_vars.try_into().unwrap_or(u64::MAX));
-        }
-        Ok(block)
-    }
-
-    fn individuals(&self) -> &[String] {
-        self.reader.individuals()
-    }
-
-    fn ploidy(&self) -> usize {
-        self.reader.ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        self.reader.chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        self.reader.set_needs(needs);
-    }
-
-    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
-        self.reader.filtering_stats()
+/// The core names the positions the two have among the individuals of the
+/// kinship, which is what it has: a user drops a name from the panel, and
+/// with `individuals` on the call those positions are not even the ones the
+/// file has. A position the names do not reach is left as the core wrote it
+/// rather than named wrongly; the core takes both from the matrix it built
+/// of these names, so none is.
+fn under_the_names_of_the_individuals(
+    error: popnei::Error,
+    individuals: &[String],
+) -> JsPopneiError {
+    let popnei::Error::KinshipPairWithNoVariantCalled {
+        one,
+        other,
+        num_vars_of_one,
+        num_vars_of_other,
+    } = error
+    else {
+        return JsPopneiError::Core(error);
+    };
+    match (individuals.get(one), individuals.get(other)) {
+        (Some(one), Some(other)) => JsPopneiError::PairWithNoVariantCalled {
+            one: one.clone(),
+            other: other.clone(),
+            num_vars_of_one,
+            num_vars_of_other,
+        },
+        _ => JsPopneiError::Core(popnei::Error::KinshipPairWithNoVariantCalled {
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        }),
     }
 }

@@ -21,7 +21,12 @@
 
 import { default_transform_to_biallelic as defaultTransformToBiallelic } from "../wasm/popnei.js";
 
-import { aBoolean, namesOf } from "./arguments.js";
+import {
+  aBoolean,
+  namesOf,
+  whatWasGiven,
+  wholeNumberOfZeroOrMore,
+} from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
@@ -78,12 +83,17 @@ export class Kinship {
    * The kinship of the pairs of `individuals`, which is what `calcKinship`
    * builds and what a user builds from a matrix of their own.
    *
-   * @throws {Error} When `matrix` is not a `Float64Array` of one value for
-   * each pair of `individuals`, which is `individuals.length` squared of
-   * them, when `individuals` is not an array of names or names one twice,
-   * and when the matrix is further from its own transpose than 1e-9 of its
-   * largest absolute entry, which says that its rows and its columns are
-   * not the same individuals in the same order.
+   * @throws {Error} When `individuals` is not an array of names, which one
+   * name written as a string is, when it names one individual twice, and
+   * when it names none: a kinship is the matrix of every pair of a set of
+   * individuals. When `matrix` is not a `Float64Array` of one value for each
+   * pair of `individuals`, which is `individuals.length` squared of them.
+   * When `numVars` is not a whole number of 0 or more. When an entry is a
+   * NaN or an infinity, naming the two individuals of its cell: a value that
+   * is not a number travels into everything a kinship is passed to. And when
+   * the matrix is further from its own transpose than 1e-9 of its largest
+   * absolute entry, which says that its rows and its columns are not the
+   * same individuals in the same order.
    */
   constructor(
     matrix: Float64Array,
@@ -96,10 +106,16 @@ export class Kinship {
       anExample: "ind00",
     });
     const numIndividuals = names.length;
+    if (numIndividuals === 0) {
+      throw new Error(
+        "popnei: a kinship is the matrix of every pair of a set of " +
+          "individuals, and no individual was named",
+      );
+    }
     if (!(matrix instanceof Float64Array)) {
       throw new Error(
         "popnei: the matrix of a kinship is a Float64Array of one value for " +
-          "each pair of its individuals",
+          `each pair of its individuals, and ${whatWasGiven(matrix)} was given`,
       );
     }
     if (matrix.length !== numIndividuals * numIndividuals) {
@@ -116,10 +132,15 @@ export class Kinship {
           `${numIndividuals - named.size} of the names given are there twice`,
       );
     }
-    theMatrixIsSymmetric(matrix, numIndividuals);
+    // The values first: a NaN is neither above nor below the tolerance of
+    // the symmetry, so a matrix checked the other way round is refused for
+    // not being symmetric, or not refused at all when the NaN is on the
+    // diagonal, where no pair of cells is compared.
+    everyValueIsFinite(matrix, names);
+    theMatrixIsSymmetric(matrix, names);
     this.matrix = matrix;
     this.individuals = Object.freeze([...names]);
-    this.numVars = numVars;
+    this.numVars = wholeNumberOfZeroOrMore("numVars", numVars);
     this.passStats = passStats;
   }
 
@@ -137,7 +158,8 @@ export class Kinship {
    * It is pyNei's `Kinship.filter_samples`.
    *
    * @throws {Error} When `individuals` is not an array of names, when a name
-   * is of nobody in the matrix, and when a name is there twice.
+   * is of nobody in the matrix, when a name is there twice, and when it names
+   * none.
    */
   filterIndividuals(individuals: readonly string[]): Kinship {
     const names = namesOf("individuals", individuals, {
@@ -169,17 +191,52 @@ export class Kinship {
 }
 
 /**
- * That `matrix`, `numIndividuals` x `numIndividuals` row after row, is as
- * far from its own transpose as a kinship is allowed to be.
+ * That every value of `matrix`, the individuals of `individuals` x the same
+ * individuals row after row, is a number a calculation can use.
+ *
+ * A NaN travels: the entry of a pair that no variant was called in both of
+ * is one in pyNei, and everything a kinship is passed to, the fit of a mixed
+ * model and the principal components among them, would factorize a matrix
+ * that holds it. The check is here so that what a user reads is the pair it
+ * is at.
+ *
+ * @throws {Error} When a value is a NaN or an infinity, naming the two
+ * individuals of its cell and what the value is.
+ */
+function everyValueIsFinite(
+  matrix: Float64Array,
+  individuals: readonly string[],
+): void {
+  for (const [at, value] of matrix.entries()) {
+    if (!Number.isFinite(value)) {
+      const row = Math.floor(at / individuals.length);
+      const column = at % individuals.length;
+      throw new Error(
+        `popnei: the entry of the kinship of \`${individuals[row]}\` and ` +
+          `\`${individuals[column]}\` is ${value}, and every entry is a ` +
+          "number that the calculations a kinship is passed to can use",
+      );
+    }
+  }
+}
+
+/**
+ * That `matrix`, the individuals of `individuals` x the same individuals row
+ * after row, is as far from its own transpose as a kinship is allowed to be.
+ *
+ * Every value is finite when this runs, which `everyValueIsFinite` is what
+ * says: the comparison below would let a NaN through on the diagonal and
+ * call one off the diagonal an asymmetry.
  *
  * @throws {Error} When two entries that are the same pair differ by more
- * than 1e-9 of the largest absolute entry of the matrix, naming the pair and
- * the two values.
+ * than 1e-9 of the largest absolute entry of the matrix, naming the two
+ * individuals and the two values.
  */
 function theMatrixIsSymmetric(
   matrix: Float64Array,
-  numIndividuals: number,
+  individuals: readonly string[],
 ): void {
+  const numIndividuals = individuals.length;
   let largest = 0;
   for (const entry of matrix) {
     const size = Math.abs(entry);
@@ -192,11 +249,11 @@ function theMatrixIsSymmetric(
     for (let column = row + 1; column < numIndividuals; column += 1) {
       const entry = matrix[row * numIndividuals + column] as number;
       const mirrored = matrix[column * numIndividuals + row] as number;
-      if (!(Math.abs(entry - mirrored) <= allowed)) {
+      if (Math.abs(entry - mirrored) > allowed) {
         throw new Error(
-          `popnei: a kinship is symmetric, and the pair of the individuals ` +
-            `${row} and ${column} is ${entry} in one half of the matrix and ` +
-            `${mirrored} in the other`,
+          "popnei: a kinship is symmetric, and the pair of " +
+            `\`${individuals[row]}\` and \`${individuals[column]}\` is ` +
+            `${entry} in one half of the matrix and ${mirrored} in the other`,
         );
       }
     }
