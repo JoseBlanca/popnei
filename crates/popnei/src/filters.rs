@@ -285,8 +285,15 @@ const THE_KIND_OF_THE_LD_FILTER: &str = "ld";
 /// What one set of the products of `docs/specs/ld.md` gives is the r² of a
 /// set of variants against every variant kept before that set began, and
 /// this is how many variants such a set holds: the r² of 256 variants
-/// against each other is 65536 values, 512 KB, and `docs/specs/ld.md`
-/// measures one product of that shape at 1.9 ms over 1000 individuals.
+/// against each other is 65536 values, 512 KB, whatever the size of the
+/// block.
+///
+/// It is the tile of the matrix of `docs/specs/ld.md`, and no measurement
+/// of the filter has chosen it: the bench that would is work package 4 of
+/// `docs/plans/ld.md`, which measures the tile of the matrix on the
+/// products themselves. A set of more variants takes fewer calls of the
+/// products and holds more candidates whose r² against the window was
+/// worked out before a variant of the same set dropped them.
 ///
 /// It changes no result, which
 /// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`

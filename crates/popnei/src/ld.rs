@@ -97,11 +97,18 @@ pub const MAX_NUM_VARS_OF_THE_MATRIX: usize = 5000;
 ///
 /// It is the smaller of the two sizes the "Speed" table of that spec was
 /// measured at, on the owner's Apple M5 Pro with the products on
-/// Accelerate: one pair of tiles of 256 variants of 1000 individuals took
-/// 1.9 ms against 5.7 ms for one of 512, and a pass over 100000 variants
-/// at a window of that many took 1.5 s against 2.2 s. Neither number is of
-/// `calc_r2_matrix` itself, which work package 4 of `docs/plans/ld.md`
-/// measures. The matrix does not change with it: the tiles cut the
+/// Accelerate, and the two numbers of one pair of tiles do not choose it:
+/// 1.9 ms at 256 variants of 1000 individuals against 5.7 ms at 512 is not
+/// a comparison, since a pair of tiles of 512 covers four times as many
+/// pairs of variants. Per pair of variants the larger tile is the faster
+/// of the two, 30.1 ns against 38.0 ns. What the table does give the
+/// smaller one is the pass beside it, 100000 variants at a window of that
+/// many, 1.5 s at 256 against 2.2 s at 512, where the window is what
+/// bounds the pairs and a wider tile takes in pairs the window does not
+/// ask for. Neither measurement is of `calc_r2_matrix`, whose tiles no
+/// window bounds, so this number is what work package 4 of
+/// `docs/plans/ld.md` settles on a bench of it and 256 is what stands
+/// until then. The matrix does not change with it: the tiles cut the
 /// variants and every sum of a pair runs over the individuals.
 const THE_VARS_OF_A_TILE: usize = 256;
 
