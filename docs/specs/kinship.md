@@ -21,7 +21,9 @@ association study does with a kinship is `docs/specs/gwas.md`.
 
 For two individuals, how much more of their genome they share than two
 individuals drawn at random from the same panel would. It is the matrix of
-VanRaden 2008, which GCTA and plink2's `--make-rel` also compute. An entry
+VanRaden 2008, which plink2's `--make-rel` computes and which GCTA, the
+program that estimates how much of a trait the genotypes explain, is built
+on. An entry
 off the diagonal is twice the coancestry of the pair: about 0.5 for full
 sibs or for a parent and a child, about 0.25 for half sibs, and near 0 for
 two individuals with no recent ancestor in common. An entry on the diagonal
@@ -55,8 +57,11 @@ individual, the entry of the pair `i`, `j` is
 
 where `m[i, j]` is the **per pair denominator**: how many variants have a
 called genotype in both `i` and `j`. With nothing missing that is the same
-number for every pair, the variants that were used, and the matrix is `z'z`
-divided by it.
+number for every pair, the variants that were used, and the whole matrix is
+then one product: `z'z`, the transpose of the standardized dosages
+multiplied by the standardized dosages, individuals by individuals, divided
+by that one number. With genotypes missing it is still that product, divided
+entry by entry by a second matrix of the same shape, the denominators.
 
 Which allele of a variant is the major one changes no entry. Counting the
 dosages from the other allele replaces every dosage by `ploidy - dosage`,
@@ -141,8 +146,9 @@ is `nan` and the rest of the matrix is finite (**Open 2**, below).
 
 When no variant varies among the individuals, pyNei raises
 `ValueError("No variant varies among the samples, there is no kinship")`.
-popnei raises the same, and also refuses a `Variants` whose steps gave no
-variant at all, which is the `PassGaveNoVariant` every consumer already has.
+popnei raises the same. A `Variants` whose steps let no variant through at
+all is a different case, and it raises what every consumer of a `Variants`
+already raises for it, with the counts of each filter in the message.
 
 `test_kinship_matches_plink2` in `test/test_gwas.py` asserts the whole
 matrix of both panels against plink2 and the seven and four entries that
@@ -435,17 +441,20 @@ The owner decides these three, and until then the implementer follows the
 **Open 1: a variant with more than two alleles.** pyNei's kinship reads one
 with every allele that is not the major one counting the same, silently,
 because `to_012` does it for everything. `do_pca_from_variants` refuses such
-a variant unless `transform_to_biallelic` says otherwise, which
-`docs/specs/pca.md` settled, so the same dataset is refused by one function
-of popnei and answered by another. The options are to reproduce pyNei, which
-keeps the kinship of every multiallelic dataset as it is and leaves the two
-functions disagreeing; or to give `calc_kinship` the same
-`transform_to_biallelic` argument, defaulting to false, which makes the two
-agree and refuses datasets pyNei answers for, and which no reference
-verifies since the panels are biallelic. Recommendation: give it the
-argument. A user who meets the error learns that their variants are being
-collapsed, which is what `docs/objectives.md` asks the calculations that
-collapse them to say, and it is one argument in two places instead of one.
+a variant unless its `transform_to_biallelic` argument says otherwise, which
+`docs/specs/pca.md` settled. So a user with a multiallelic dataset would get
+an error from `do_pca_from_variants` and a silent answer from
+`calc_kinship`, for the same reason and on the same variants. The options
+are to reproduce pyNei, which keeps the kinship of every multiallelic
+dataset as it is and leaves the two functions disagreeing; or to give
+`calc_kinship` the same `transform_to_biallelic` argument, defaulting to
+false, which makes the two agree and refuses datasets pyNei answers for, and
+which no reference verifies since both panels are biallelic.
+Recommendation: give it the argument. `docs/objectives.md` asks the
+calculations that collapse a multiallelic variant to the major allele
+against the rest to say so, and an error a user can turn off with one
+argument says it; the cost is that the same argument now appears on two
+functions instead of one.
 Meanwhile the implementer reproduces pyNei and collapses silently, which is
 what the reference panels need.
 
