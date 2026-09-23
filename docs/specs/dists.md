@@ -652,6 +652,18 @@ A pair with no variant at all has no value for any measure, NaN in the
 distance vector, and `num_vars` 0 for it. The pass is not an error: other
 pairs may have values.
 
+A pair that counted variants has no value for a measure whose divisor came
+to 0, which the measure's own item below names and which "The Rust
+interface" lists for all seven. Two populations fixed for the same allele
+at every variant that counted for them are the case that reaches three of
+the divisors at once: their sum of H_b and their mean corrected H_T are
+both 0, so F_ST, G_ST and G''_ST are a 0 over 0, while f_2, Jost's D, the
+chord distance and Nei's D_A are 0 there, which is what a pair as near as a
+pair can be deserves. A pair whose mean corrected H_S came to exactly 1 has
+no Jost's D and no G''_ST, both of which divide by 1 - H_S'. The measures
+with no value are NaN in the distance vector, as a pair with no variant is,
+and the measures of the same pair that have one are unaffected.
+
 A population with no called genotype at a variant has no allele frequency
 at all, so the variant never counts for a pair that population is in. That
 holds at a `min_num_individuals` of 0 as well, which
@@ -842,6 +854,22 @@ a pair with no variant.
 A group with one variant, m_j = 1, has h_j = n and its pseudo-value is
 defined; h_j - 1 is zero only when a group holds every variant of the
 pair, which is the g = 1 case. So the formula never divides by zero.
+
+A group can hold variants of the pair and still leave the measure without a
+value when it is the one taken out, which "Variants that do not count"
+above gives the divisors of. Two populations fixed for the same allele at
+every variant but one, each variant its own group, are the case: with the
+variant where they differ left out, the sum of H_b and the mean corrected
+H_T of the rest are 0, and F_ST, G_ST and G''_ST divide by them. That
+measure of that pair then has no standard error at all, while the measures
+of the same pair that have a t_(j) in every group keep theirs. The
+alternative, a jackknife over the groups that do have a value, moves the
+estimate the variance is taken around: the weights 1/h_j of the g groups
+add to 1, so leaving one of them out drops t_J below t by that group's
+weight and the spread would be measured around a centre no group put
+there. On the 25 variants of "How it is verified" below the three come out
+1 with no standard error, where the other four have one over the same 25
+groups.
 
 How many groups are enough is not something popnei can know before it has
 read the variants, and a standard error from a handful of them is not one
@@ -1037,6 +1065,31 @@ of to the ploidy gives 0.407738 and 0.459077, which is what this variant
 is here to tell apart. It is checked at `PopDistPerVar::of_var`, the
 function that reads the ploidy, and not over a pass: the six sums of a
 pass of one variant are that variant's values.
+
+Two populations fixed for the same allele at every variant but one, the
+case of "Variants that do not count" and of "The standard errors" above:
+25 variants of 4 diploid individuals in two populations of 2, 24 of them
+with every genotype `0/0` and the last with pop1 `0/0 0/0` against pop2
+`1/1 1/1`, at `min_num_individuals` 2 and `jackknife_group` `"variant"`.
+F_ST, G_ST and G''_ST are 1 there and have no standard error, the one
+group where the populations differ having no value with it left out. The
+other four have both: f_2 is 0.04 with a standard error of 0.04, Jost's D
+0.04 with 0.04, Nei's D_A 0.04 with 0.04 and the chord distance 0.2 with
+0.195959. The numbers are exact fractions of the formulas above, worked
+out by hand: every sum but three is 0 over these 25 variants, the sum of
+H_b being 1, the sum of the square roots of the products 24 and the sum of
+the corrected H_T 0.5.
+
+A pair whose mean corrected H_S is exactly 1, which no panel reaches and
+which four individuals in two populations of two do: one variant of four
+alleles, pop1 `0/0 1/1` against pop2 `2/2 3/3`, at `min_num_individuals`
+1. Each population holds two alleles at 0.5 and the two share none, so
+H_S is 0.5, the observed heterozygosity 0 and the harmonic mean of the
+called genotypes 2, which leaves H_S' = 2 (0.5 - 0) = 1 and
+H_T' = 0.75 + 1/4 = 1. Jost's D and G''_ST have no value there, both
+divisors being 0, and G_ST is 0 although the two populations share no
+allele, which is the ceiling of "Jost's D" below at its extreme. F_ST and
+f_2 are 0.333333, the chord distance and Nei's D_A are 1.
 
 ## Hudson's F_ST
 
@@ -1565,12 +1618,14 @@ impl PopDistSums {
     /// is not a pop.
     pub fn num_vars_of(&self, i: usize, j: usize) -> Option<u64>;
     /// The measure for the pair. None where `num_vars_of` is 0 or None,
-    /// and, for Dest alone, where the mean corrected H_S came to exactly
-    /// 1, which its division by 1 - H_S cannot take.
+    /// and where the divisor of the measure came to 0: the sum of H_b for
+    /// Fst, the mean corrected H_T for Gst, 1 - the mean corrected H_S for
+    /// Dest, and the product of those last two for GstStandardized.
     pub fn measure(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64>;
     /// Its jackknife standard error. None where `measure` is None, where
-    /// no groups were asked for, and where every variant of the pair fell
-    /// in one group.
+    /// no groups were asked for, where every variant of the pair fell
+    /// in one group, and where a group that holds variants of the pair
+    /// leaves the measure without a value when it is taken out.
     pub fn standard_error(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64>;
     /// f_2 within one group, which f_3 and f_4 are built from later.
     pub fn f2_of_group(&self, group: usize, i: usize, j: usize) -> Option<f64>;
