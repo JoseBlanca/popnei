@@ -33,10 +33,12 @@ license = "MIT"
 # `default = ["blas"]` of its own, so the default build is unchanged.
 popnei = { path = "crates/popnei", version = "0.1.0", default-features = false }
 popnei-linalg = { path = "crates/popnei-linalg", version = "0.1.0", default-features = false }
-# The three routines of BLAS and LAPACK that crates/popnei-linalg calls
-# natively, dsyrk, dsyevd and dgemm: the product of a matrix with itself,
-# the eigendecomposition of a symmetric matrix and the product of two
-# matrices, which docs/specs/linalg.md names one by one. `blas` and
+# The six routines of BLAS and LAPACK that crates/popnei-linalg calls
+# natively, dsyrk, dsyevd, dgemm, dpotrf, dpotrs and dpotri: the product
+# of a matrix with itself, the eigendecomposition of a symmetric matrix,
+# the product of two matrices, the Cholesky factorization of a symmetric
+# positive definite matrix and the solve and the inverse that come off
+# that factorization, which docs/specs/linalg.md names one by one. `blas` and
 # `lapack` hold the declaration of each routine and nothing else, one
 # `unsafe fn` over slices whose lengths nothing checks against the
 # dimensions, which is why those calls live in a crate of their own and

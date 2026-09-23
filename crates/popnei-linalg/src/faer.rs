@@ -282,10 +282,12 @@ pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usi
 /// faer inverts the triangle into a matrix of its own and multiplies it by
 /// itself into `inverse`, so it asks for a scratch of `n` x `n` values, 8
 /// MB at the 1000 individuals the spec measured it at and 800 MB at the
-/// 10000 of `docs/objectives.md`. That is the one allocation of this crate
-/// that a machine can be without and go on, so it is asked for with
-/// `try_new` and not taken with `MemBuffer::new`, which ends the process
-/// when it fails, and what a caller gets instead is [`Error::Memory`].
+/// 10000 of `docs/objectives.md`. That is the one allocation of this
+/// backend large enough that a machine can be without it and go on, so it
+/// is asked for with `try_new` and not taken with `MemBuffer::new`, which
+/// ends the process when it fails, and what a caller gets instead is
+/// [`Error::Memory`], as it does for the workspaces the BLAS backend asks
+/// for the eigendecomposition.
 ///
 /// # Errors
 ///
@@ -388,9 +390,9 @@ mod tests {
     fn the_scratch_of_inverting_with_the_cholesky_is_the_n_by_n_the_spec_measured() {
         // 8000000 bytes at n = 1000, which is n x n values of the 8 bytes
         // of an `f64` and the number "The inverse of a factorized matrix"
-        // of `docs/specs/linalg.md` records. This is the one allocation of
-        // the crate that is asked for with `try_new`, since at the 10000
-        // individuals of `docs/objectives.md` it is 800 MB, and what
+        // of `docs/specs/linalg.md` records. This is the allocation of
+        // this backend that is asked for with `try_new`, since at the
+        // 10000 individuals of `docs/objectives.md` it is 800 MB, and what
         // `Error::Memory` carries for it is those values and not the
         // bytes.
         let n = THE_SIZE_THE_SPEC_MEASURED_THE_INVERSE_AT;
