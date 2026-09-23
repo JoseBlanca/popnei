@@ -19,10 +19,9 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::{FilteringStats, resolve_individuals};
-use popnei::kinship::calc_kinship;
-use popnei::variant::{ChromTable, Needs};
+use popnei::block::BlockReader;
+use popnei::filters::resolve_individuals;
+use popnei::kinship::{calc_kinship, principal_components_of};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
@@ -36,11 +35,12 @@ use crate::steps::{Steps, chain_of};
 /// `i * N + j`, and the value at `j * N + i` is the same one.
 #[wasm_bindgen]
 pub struct KinshipOfVariants {
-    /// How many individuals the matrix has on each of its two sides.
-    num_individuals: usize,
     /// How many variants had variance among these individuals and were
-    /// used, which is what the matrix was built from.
-    num_vars: usize,
+    /// used, which is what the matrix was built from. It is an `f64`, the
+    /// number of JavaScript, as every count `PassCounts` carries is: the
+    /// core holds it in a `u64` and a count above 2^53 is more variants
+    /// than any source has.
+    num_vars: f64,
     /// The matrix, and `None` once it was given to JavaScript: it leaves
     /// the memory of wasm as it is read, so the copy that crosses is the
     /// only one.
@@ -55,18 +55,12 @@ pub struct KinshipOfVariants {
 
 #[wasm_bindgen]
 impl KinshipOfVariants {
-    /// How many individuals the matrix has on each of its two sides.
-    #[must_use]
-    pub fn num_individuals(&self) -> usize {
-        self.num_individuals
-    }
-
     /// How many variants the matrix was built from: those that had variance
     /// among these individuals. A variant whose called genotypes all have
     /// one dosage is in no sum and in no denominator, and the counts of the
     /// pass say how many variants the steps gave, used or not.
     #[must_use]
-    pub fn num_vars(&self) -> usize {
+    pub fn num_vars(&self) -> f64 {
         self.num_vars
     }
 
@@ -104,10 +98,10 @@ impl KinshipOfVariants {
 ///
 /// The chain of readers of the pass stays here, lent to the core, so that
 /// the counts of its filters can be read when the calculation returns. How
-/// many variants that chain gave is counted here as well, by
-/// [`TheVariantsCounted`]: the core's `Kinship` carries the variants that
-/// were used and not the ones the pass gave, and the counts of a pass are of
-/// what the steps let through.
+/// many variants it gave, used or not, is `Kinship::num_vars_given`, which
+/// is the `num_vars` of those counts; `Kinship::num_vars` is the variants
+/// that had variance and were used, and a variant with none is in no sum and
+/// in no denominator.
 ///
 /// The source is asked for no size of block: the core puts a `reblock` over
 /// the reader and chooses the size there, since the product of a block is
@@ -128,13 +122,12 @@ pub(crate) fn kinship_of_the_variants(
     transform_to_biallelic: bool,
     steps: Steps,
 ) -> Result<KinshipOfVariants, JsPopneiError> {
-    let chain = chain_of(source.reader(None)?, steps.steps())?;
-    let mut counted = TheVariantsCounted::over(chain);
+    let mut chain = chain_of(source.reader(None)?, steps.steps())?;
     // The names the pass gives, which are the source's own when no step is
     // a filter of individuals and the kept ones in the order they were
     // named when one is. They are read before the calculation borrows the
     // chain, so the matrix and the names cannot be of two different passes.
-    let of_the_pass = counted.individuals().to_vec();
+    let of_the_pass = chain.individuals().to_vec();
     // A name that is of nobody is refused before the source is read: the
     // rule and its message are the core's, the one a filter of individuals
     // is given its names by.
@@ -142,86 +135,143 @@ pub(crate) fn kinship_of_the_variants(
         Some(names) => Some(resolve_individuals(names, &of_the_pass)?),
         None => None,
     };
-    let kinship = calc_kinship(&mut counted, positions.as_deref(), transform_to_biallelic)?;
-    let counts = PassCounts::of(counted.num_vars(), &counted.filtering_stats());
     // The names of the matrix are the ones that were asked for, in the
     // order they were asked in, which is the order the core gives the rows
-    // in; with no name at all they are every individual of the pass.
+    // in; with no name at all they are every individual of the pass. They
+    // are built before the call because the pair that has no variant called
+    // in both is named with them.
     let of_the_matrix = individuals.unwrap_or(of_the_pass);
+    let kinship = calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)
+        .map_err(|error| under_the_names_of_the_individuals(error, &of_the_matrix))?;
+    let counts = PassCounts::of(kinship.num_vars_given, &chain.filtering_stats());
     Ok(KinshipOfVariants {
-        num_individuals: kinship.num_individuals,
-        num_vars: kinship.num_vars,
+        num_vars: kinship.num_vars as f64,
         matrix: Some(kinship.matrix),
         individuals: Some(of_the_matrix),
         counts,
     })
 }
 
-/// The chain of a pass with a count of the variants it gives, which is what
-/// the counts of a pass say and what the kinship of the core does not carry.
+/// Where each individual of a kinship falls along the directions in which
+/// the panel varies most, on their way to TypeScript.
 ///
-/// `popnei::kinship::Kinship` has `num_vars`, the variants that had variance
-/// and were used, and a variant with none is in no sum and in no
-/// denominator, so it is not the number the `passStats` of the result holds.
-/// Every other calculation of the core gives that number away with its
-/// result, the principal components of the variants as `num_cols`, and the
-/// kinship gives no block of its pass to this crate for it to be counted
-/// anywhere else.
-///
-/// It reads no block and changes none: every method is the reader's below.
-struct TheVariantsCounted<R: BlockReader> {
-    reader: R,
-    num_vars: u64,
+/// The projections leave the memory of wasm the first time they are asked
+/// for and the call after that gives nothing, as the matrix of
+/// [`KinshipOfVariants`] does: the package reads them once, into the object
+/// a user holds, and frees this.
+#[wasm_bindgen]
+pub struct PcsOfAKinship {
+    /// How many components were given, which is the `num_pcs` that were
+    /// asked for or the components the matrix has when it has fewer.
+    num_comps: usize,
+    /// The individuals x `num_comps` projections, row after row, and `None`
+    /// once they were given to JavaScript.
+    projections: Option<Vec<f64>>,
 }
 
-impl<R: BlockReader> TheVariantsCounted<R> {
-    /// The reader with its count at 0.
-    fn over(reader: R) -> TheVariantsCounted<R> {
-        TheVariantsCounted {
-            reader,
-            num_vars: 0,
-        }
+#[wasm_bindgen]
+impl PcsOfAKinship {
+    /// How many components were given: a kinship measures a pair against
+    /// the average pair of the panel, which takes one direction out of it
+    /// when no genotype is missing, and both reference panels of
+    /// `docs/specs/kinship.md` have 199 components and not 200.
+    #[must_use]
+    pub fn num_comps(&self) -> usize {
+        self.num_comps
     }
 
-    /// How many variants the reader has given so far.
-    fn num_vars(&self) -> u64 {
-        self.num_vars
+    /// Where each individual falls along each component, the individuals x
+    /// `num_comps` row after row, or `undefined` when they were read
+    /// already.
+    pub fn projections(&mut self) -> Option<Vec<f64>> {
+        self.projections.take()
     }
 }
 
-impl<R: BlockReader> BlockReader for TheVariantsCounted<R> {
-    fn next_block(&mut self) -> popnei::Result<Option<Block>> {
-        let block = self.reader.next_block()?;
-        if let Some(block) = block.as_ref() {
-            // A pass of wasm reads a file that is in the memory of the tab,
-            // which addresses 2^32 bytes, so the count is nowhere near what
-            // a `u64` holds; it saturates rather than wrap, because a count
-            // that went round would be a smaller number than the truth and
-            // nothing would say so.
-            self.num_vars = self
-                .num_vars
-                .saturating_add(block.num_vars.try_into().unwrap_or(u64::MAX));
-        }
-        Ok(block)
+/// The principal components of the kinship `matrix`, the individuals of
+/// `num_individuals` x the same individuals row after row, `num_pcs` of them
+/// at most.
+///
+/// With `lambda_j` the eigenvalues of the matrix from the largest and `u_j`
+/// its eigenvectors, the component `j` is `u_j * sqrt(lambda_j)`: where each
+/// individual falls along the direction in which the panel varies the `j`th
+/// most. A component whose eigenvalue is not above the tolerance of
+/// `docs/specs/pca.md` is not given, and in every component the projection
+/// of the largest absolute value is positive, which is the rule that makes
+/// the two backends of the eigendecomposition and the three builds of
+/// popnei give one answer.
+///
+/// The matrix is the one a `Kinship` of the package holds, a calculated one
+/// or one a user built, so the package is what has checked that it is
+/// square, symmetric and finite before this is called.
+///
+/// # Errors
+///
+/// When the matrix holds no individual, and when the eigendecomposition
+/// could not be done.
+#[wasm_bindgen]
+pub fn kinship_principal_components(
+    matrix: Vec<f64>,
+    num_individuals: usize,
+    num_pcs: usize,
+) -> Result<PcsOfAKinship, JsPopneiError> {
+    let num_values = matrix.len();
+    if num_individuals.checked_mul(num_individuals) != Some(num_values) {
+        // The `Kinship` of the package holds one value for each pair of its
+        // individuals, which its constructor is what checks, so a caller
+        // that arrives here wrote the matrix itself. Python says the same
+        // of the same matrix, with a `ValueError`.
+        return Err(JsPopneiError::Refused(format!(
+            "the matrix of a kinship of {num_individuals} individuals holds \
+             one value for each pair of them, and this one holds \
+             {num_values}"
+        )));
     }
+    // The matrix is taken over and the eigendecomposition writes the
+    // eigenvectors over it: a `Kinship` built here would carry two counts
+    // nobody gave and the matrix would be copied to protect a kinship that
+    // is thrown away.
+    let pcs = principal_components_of(matrix, num_individuals, num_pcs)?;
+    Ok(PcsOfAKinship {
+        num_comps: pcs.num_comps,
+        projections: Some(pcs.projections),
+    })
+}
 
-    fn individuals(&self) -> &[String] {
-        self.reader.individuals()
-    }
-
-    fn ploidy(&self) -> usize {
-        self.reader.ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        self.reader.chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        self.reader.set_needs(needs);
-    }
-
-    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
-        self.reader.filtering_stats()
+/// `error` with the two individuals that have no variant called in both of
+/// them under their names, and every other error as it is.
+///
+/// The core names the positions the two have among the individuals of the
+/// kinship, which is what it has: a user drops a name from the panel, and
+/// with `individuals` on the call those positions are not even the ones the
+/// file has. A position the names do not reach is left as the core wrote it
+/// rather than named wrongly; the core takes both from the matrix it built
+/// of these names, so none is.
+fn under_the_names_of_the_individuals(
+    error: popnei::Error,
+    individuals: &[String],
+) -> JsPopneiError {
+    let popnei::Error::KinshipPairWithNoVariantCalled {
+        one,
+        other,
+        num_vars_of_one,
+        num_vars_of_other,
+    } = error
+    else {
+        return JsPopneiError::Core(error);
+    };
+    match (individuals.get(one), individuals.get(other)) {
+        (Some(one), Some(other)) => JsPopneiError::PairWithNoVariantCalled {
+            one: one.clone(),
+            other: other.clone(),
+            num_vars_of_one,
+            num_vars_of_other,
+        },
+        _ => JsPopneiError::Core(popnei::Error::KinshipPairWithNoVariantCalled {
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        }),
     }
 }

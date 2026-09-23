@@ -800,8 +800,16 @@ pub enum Error {
     /// genotypes, or no called genotype at all. There is no direction to
     /// give. One individual gives it, since every variant of one
     /// individual has one dosage. In Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant whose every genotype is missing, and one of
+    /// three alleles read as biallelic whose genotypes are `0/1`, `0/2` and
+    /// `0/1`, both reach it with genotypes that differ. pyNei's "Every
+    /// variant has the same genotype in every sample" is false of the same
+    /// two datasets, and it drops a variant by the same rule.
+    /// [`Error::KinshipNoVariantWithVariance`] says the same first half.
     #[error(
-        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+        "no variant has more than one dosage among its called genotypes, so none of them varies and there is nothing to do a PCA with"
     )]
     PcaNoVariantWithVariance,
 
@@ -880,22 +888,55 @@ pub enum Error {
     /// asked for: every one of them has one dosage among its called
     /// genotypes, or no called genotype at all. A kinship measures a pair
     /// against the average pair of the panel, and a panel whose variants
-    /// all give every individual the same dosage has no such average. It
-    /// is pyNei's "No variant varies among the samples, there is no
-    /// kinship", and in Python it is a `ValueError`.
+    /// give every individual the same dosage has no such average. It is
+    /// pyNei's "No variant varies among the samples, there is no kinship",
+    /// and in Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant where every individual is `0/1`, one where
+    /// every genotype is missing, and one of three alleles read as
+    /// biallelic where the genotypes are `0/1`, `0/2` and `0/1`, all have
+    /// one dosage among their called genotypes and different genotypes.
     #[error(
-        "every variant has the same genotype in every individual, and there is no kinship to take from them"
+        "no variant has more than one dosage among its called genotypes, so none of them varies among these individuals and there is no kinship to take"
     )]
     KinshipNoVariantWithVariance,
 
-    /// The source of a kinship has no individual. A kinship is the matrix
-    /// of every pair of the individuals of a dataset, so there is no pair
-    /// to give, and the pass over a block would read its rows in chunks of
-    /// no allele. Every source of popnei has one individual at least, as
-    /// `docs/specs/block.md` says, so it is a caller of the function of the
-    /// core crate with a reader of its own that reaches it. In Python it is
-    /// a `ValueError`.
-    #[error("the source has no individual, and a kinship is the matrix of every pair of them")]
+    /// A value of the matrix of a kinship is not finite, an infinity or a
+    /// NaN, with the place where it is. There is nothing to give for such a
+    /// matrix: every component would be a NaN. The matrix of a pass is
+    /// never one of these, so it is a matrix a user built and then wrote
+    /// into, since the checks of the one they build are made when they
+    /// build it. In Python it is a `ValueError`.
+    ///
+    /// The whole matrix is read for it and not the lower half alone, which
+    /// is what the components take: a value above the diagonal says the
+    /// matrix is wrong as surely as one below it.
+    #[error(
+        "the value at the row {row}, column {col} of the matrix of the kinship is {value}, and the principal components of a kinship need every value finite"
+    )]
+    KinshipValueNotFinite {
+        /// Which row of the matrix holds it, from 0 among the individuals
+        /// of the kinship.
+        row: usize,
+        /// Which column of it holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A kinship of no individual. A kinship is the matrix of every pair of
+    /// a set of individuals, so there is no pair to give. In Python it is a
+    /// `ValueError`.
+    ///
+    /// Three callers reach it. A pass asked for none of the individuals of
+    /// its reader, which is an `individuals` of no position; its
+    /// components, of a matrix with no row, which is what a user who built
+    /// a kinship by hand from an empty frame has; and a pass over a source
+    /// that has no individual, which no reader of popnei gives, as
+    /// `docs/specs/block.md` says, so that one is a caller of the core
+    /// crate with a reader of its own.
+    #[error("the kinship has no individual, and a kinship is the matrix of every pair of them")]
     KinshipNoIndividual,
 
     /// Two individuals of a kinship have no variant called in both of them,
@@ -904,8 +945,14 @@ pub enum Error {
     /// which a user can drop from the panel. The positions are among the
     /// individuals the kinship was asked for, in the order it has them. In
     /// Python it is a `ValueError`.
+    ///
+    /// The two are the same individual when it has no called genotype at
+    /// all among the variants that were used, which is an ordinary
+    /// sequencing that failed, and the message then names that one
+    /// individual instead of telling a user to drop one of the two.
     #[error(
-        "the individuals at the positions {one} and {other} have no variant called in both of them, so their entry of the kinship would be divided by no variant at all: {num_vars_of_one} variants are called in the first and {num_vars_of_other} in the second; leave one of the two out"
+        "{said}",
+        said = a_pair_with_no_variant_called(*one, *other, *num_vars_of_one, *num_vars_of_other)
     )]
     KinshipPairWithNoVariantCalled {
         /// Where the first of the two is among the individuals of the
@@ -933,14 +980,18 @@ pub enum Error {
     /// The linear algebra of a kinship failed. The products of a kinship
     /// are the standardized dosages of a block with themselves and the
     /// genotypes that were called with themselves, both individuals x
-    /// individuals. In Python it is a `RuntimeError`: every size was
-    /// checked before the product was asked for, so what is left is a
-    /// defect of popnei or a backend that refused the work.
+    /// individuals, and its principal components are the
+    /// eigendecomposition of the matrix. In Python it is a `RuntimeError`:
+    /// every size was checked before the work was asked for, so what is
+    /// left is a defect of popnei, a matrix whose products are not finite
+    /// or a machine with too little memory for the workspace of the
+    /// eigendecomposition.
     #[error("the {operation} of the kinship could not be done: {source}")]
     KinshipLinalg {
         /// What was being computed: the product of a block of variants
-        /// with itself, or the product of the genotypes that were called
-        /// with themselves.
+        /// with itself, the product of the genotypes that were called with
+        /// themselves, or the eigendecomposition that gives the principal
+        /// components.
         operation: &'static str,
         /// What the linear algebra said.
         source: popnei_linalg::Error,
@@ -1462,6 +1513,176 @@ pub enum Error {
         what: &'static str,
     },
 
+    /// A user asked for a measure of how far apart two populations are
+    /// under a name that is of none of the seven. The names are those of
+    /// the fields of the result, and they are
+    /// `pop_dists::PopDistMeasure::NAMES`, which the message lists. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`{name}` is not one of the measures of how far apart two populations are, which are {the_seven}",
+        the_seven = the_seven_measures()
+    )]
+    PopDistMeasureOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// The variants were asked to be cut into resampling groups of 0 base
+    /// pairs. A group is a stretch of one chromosome and holds one base
+    /// pair at least. A caller who wants each variant in a group of its own
+    /// asks for that, and one who wants no standard error asks for no
+    /// groups; neither is a length.
+    #[error(
+        "the variants were asked to be cut into resampling groups of 0 base pairs, and a group is a stretch of one chromosome 1 base pair long at least"
+    )]
+    JackknifeGroupOfNoBasePairs,
+
+    /// The distances between populations were asked for fewer than two
+    /// populations. Every one of the seven measures is of a pair, so one
+    /// population makes no pair and there is nothing to give. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the distances between populations are calculated for each pair of populations, and `pops` names {num_pops}: name two populations at least"
+    )]
+    PopDistsOfFewerThanTwoPops {
+        /// How many populations the caller named, which is 1: `Pops`
+        /// refuses a `pops` that names none.
+        num_pops: usize,
+    },
+
+    /// The variants of a pass fell into fewer resampling groups than a
+    /// standard error is built from. Each group is left out in turn and the
+    /// measure calculated again, so a handful of groups gives a number that
+    /// says more about where the cuts fell than about the populations, and
+    /// a user who chose a length too long for their data is told rather
+    /// than handed it. In Python it is a `ValueError`.
+    #[error(
+        "the variants fell into {num_groups} resampling groups, and a standard error is built from {at_least} at least: cut them into shorter groups, or ask for no standard error"
+    )]
+    TooFewJackknifeGroups {
+        /// How many groups the variants of the pass fell into.
+        num_groups: usize,
+        /// How many the standard errors need,
+        /// [`MIN_NUM_JACKKNIFE_GROUPS`](crate::pop_dists::MIN_NUM_JACKKNIFE_GROUPS).
+        at_least: usize,
+    },
+
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant whose position is below the position of the variant
+    /// before it on the same chromosome. The groups are stretches of one
+    /// chromosome, cut by comparing the position of a variant with the
+    /// first position of the group being filled, so a variant that goes
+    /// back joins that group instead of starting one and the groups are
+    /// not the stretches the user asked for. "The standard errors" of
+    /// `docs/specs/dists.md` has what it does to the standard error. In
+    /// Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} comes after the variant at {chrom} {before} of the same chromosome: a group is a stretch of one chromosome, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsVariantGoesBack {
+        /// The chromosome of both variants, as the table of the reader
+        /// names it, and as its number where that table has no name for
+        /// it, which only a reader with a defect gives.
+        chrom: String,
+        /// The position of the variant that goes back.
+        pos: u64,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant of a chromosome that an earlier variant had left.
+    /// The variants of a chromosome that comes back are cut into groups of
+    /// their own over the stretch the earlier ones were already cut into,
+    /// so the groups overlap and are not the stretches the user asked for.
+    /// In Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} is of a chromosome that the variant at {before_chrom} {before} had left: the variants of one chromosome have to come together, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsChromComesBack {
+        /// The chromosome that comes back, as the table of the reader
+        /// names it.
+        chrom: String,
+        /// The position of the variant that is on it.
+        pos: u64,
+        /// The chromosome of the variant before it.
+        before_chrom: String,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
+    /// The six sums the distances between populations are worked out from
+    /// are more than this machine gave room for: popnei keeps them for each
+    /// pair of populations and each resampling group, 48 bytes each, and
+    /// either the pairs and the groups are more than a `usize` counts or
+    /// the machine did not give their memory. The groups appear while the
+    /// variants are read, so it is raised where the sums grow. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the six sums popnei keeps for each pair of {num_pops} populations within each of the {num_groups} resampling groups the variants have fallen into, 48 bytes each, are more than this machine gave room for: calculate over fewer populations, or cut the variants into longer groups"
+    )]
+    PopDistSumsTooLarge {
+        /// How many populations the pairs are of.
+        num_pops: usize,
+        /// How many groups the variants read so far have fallen into, and 1
+        /// when no standard errors were asked for, since the sums are then
+        /// one run of the pairs.
+        num_groups: usize,
+    },
+
+    /// The populations the distances were asked for make more pairs than
+    /// this machine counts, which takes about 93000 of them where a
+    /// `usize` is 32 bits, as it is in wasm, and 4294967296 where it is 64.
+    /// It is found before a variant is read, so the resampling groups are
+    /// none yet and have no part in it, which is what tells it from
+    /// [`Error::PopDistSumsTooLarge`]. In Python it is a `ValueError`.
+    #[error(
+        "{num_pops} populations make more pairs than this machine counts, and every measure of how far apart two populations are is of a pair: calculate over fewer populations"
+    )]
+    PopDistsOfTooManyPops {
+        /// How many populations were given.
+        num_pops: usize,
+    },
+
+    /// The reader of a pass over the variants says its genotypes hold 0
+    /// alleles, or more than the largest ploidy a reader of popnei gives.
+    /// The allele frequencies of a population are raised to that ploidy,
+    /// and a ploidy of 0 would turn the `min_num_individuals` test off as
+    /// well, since it asks for 0 called alleles. The VCF reader refuses
+    /// both when it is opened, and the vars file reader refuses a file
+    /// whose genotypes hold no allele, so what is left here is a vars file
+    /// that says its genotypes hold more alleles than popnei reads. In
+    /// Python it is a `ValueError`, and it names the file the variants were
+    /// read from.
+    #[error(
+        "the variants were read at a ploidy of {ploidy}, and the distances between populations are calculated over genotypes of 1 allele at least and {largest} at most: the allele frequencies of a population are raised to the ploidy"
+    )]
+    PopDistsPloidyOutOfRange {
+        /// The ploidy the reader of the pass gives.
+        ploidy: usize,
+        /// The largest one popnei reads, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// The sums of one resampling group do not hold one place for each pair
+    /// of the populations the variants are being counted over. Every
+    /// variant of a block is added into them pair by pair, so the pairs
+    /// after the last place would be counted at no variant while the others
+    /// were counted at every one, and each measure of them would come out
+    /// of sums of different variants. In Python it is a `RuntimeError`:
+    /// nothing a user asks for gives it.
+    #[error(
+        "the sums of one resampling group hold {num_pairs} pairs, and {num_pops} populations make more; a variant is added into the sums of every pair it counts for"
+    )]
+    PopDistSumsOfAnotherSize {
+        /// How many populations the variants are counted over.
+        num_pops: usize,
+        /// How many pairs the sums of one group hold.
+        num_pairs: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
@@ -1942,17 +2163,64 @@ fn a_pass_that_gave_no_variant(
     )
 }
 
+/// The seven measures of how far apart two populations are under the names
+/// a user writes them, for the message that refuses a name that is of none
+/// of them: "`fst`, `f2`, `chord`, `da`, `dest`, `gst` and
+/// `gst_standardized`".
+fn the_seven_measures() -> String {
+    listed(&crate::pop_dists::PopDistMeasure::NAMES)
+}
+
+/// What [`Error::KinshipPairWithNoVariantCalled`] says: the two individuals
+/// that have no variant called in both of them, or the one individual that
+/// has no called genotype at all among the variants that were used.
+///
+/// The entry of a pair is divided by how many variants both of its
+/// individuals were called at, and both cases are that number being 0. A
+/// pair reaches it when each of the two was called somewhere and never
+/// together; one individual reaches it, against itself, when its sequencing
+/// failed, and then every pair it is in has no variant either, so what a
+/// user has to do is leave that one out and not one of a pair.
+fn a_pair_with_no_variant_called(
+    one: usize,
+    other: usize,
+    num_vars_of_one: u64,
+    num_vars_of_other: u64,
+) -> String {
+    if one == other {
+        return format!(
+            "the individual at the position {one} has no called genotype among the \
+             variants that were used, so its entry of the kinship would be divided by \
+             no variant at all; leave it out"
+        );
+    }
+    format!(
+        "the individuals at the positions {one} and {other} have no variant called in \
+         both of them, so their entry of the kinship would be divided by no variant at \
+         all: {num_vars_of_one} {said} called in the first and {num_vars_of_other} in \
+         the second; leave one of the two out",
+        said = if num_vars_of_one == 1 {
+            "variant is"
+        } else {
+            "variants are"
+        },
+    )
+}
+
 /// The five statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
 fn the_five_statistics() -> String {
-    let named: Vec<String> = crate::stats::PerVarStat::NAMES
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect();
+    listed(&crate::stats::PerVarStat::NAMES)
+}
+
+/// `names` in one sentence, each in backticks, the last one after an "and":
+/// "`maf` and `obs_het`".
+fn listed(names: &[&'static str]) -> String {
+    let named: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
     match named.split_last() {
         Some((last, before)) => format!("{} and {last}", before.join(", ")),
-        // `NAMES` holds five names, so it has a last one.
+        // Every table of names this is called with holds names.
         None => String::new(),
     }
 }

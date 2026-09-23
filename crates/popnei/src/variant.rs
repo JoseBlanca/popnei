@@ -421,17 +421,13 @@ fn num_individuals_of(gts: &[i8], ploidy: usize) -> Result<usize> {
 ///
 /// The `stats` module counts it for one individual over the variants of a
 /// pass, as [`count_gts`] counts it for one variant over the individuals,
-/// so what a missing and a heterozygous genotype are is written here alone.
+/// so the reading of a genotype, which says whether an allele of it was
+/// not called and whether its alleles are all one allele, is written here
+/// alone, and what those two make of the counts is in [`count_a_genotype`].
 ///
 /// # Errors
 ///
 /// An allele below [`MISSING_ALLELE`], which no reader of popnei gives.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "each count is raised by one at most once for each genotype counted, and \
-              each caller checks first that the genotypes it counts are a number a u32 \
-              holds"
-)]
 pub(crate) fn count_the_genotype(genotype: &[i8], counts: &mut GtCounts) -> Result<()> {
     let mut alleles = genotype.iter().copied();
     // A genotype holds the ploidy, which is 1 at least, so it has a first
@@ -451,20 +447,76 @@ pub(crate) fn count_the_genotype(genotype: &[i8], counts: &mut GtCounts) -> Resu
         missing |= allele == MISSING_ALLELE;
         all_the_same &= allele == first;
     }
-    if missing {
-        counts.missing += 1;
-    } else {
-        counts.called += 1;
-        if !all_the_same {
-            counts.het += 1;
-        }
-    }
+    count_a_genotype(
+        GenotypeAsRead {
+            missing,
+            all_the_same,
+        },
+        counts,
+    );
     Ok(())
+}
+
+/// What counting one genotype needs to know of it, which is all it needs
+/// to know.
+#[derive(Debug, Clone, Copy)]
+struct GenotypeAsRead {
+    /// An allele of the genotype was not called.
+    missing: bool,
+    /// The alleles of the genotype are all one allele, which a genotype of
+    /// one allele and a genotype nobody called are.
+    all_the_same: bool,
+}
+
+/// It counts one genotype that has been read into `counts`.
+///
+/// Which of the three counts a genotype is counted in is written here and
+/// nowhere else. [`count_the_genotype`] reads the alleles of a genotype to
+/// know the two things of [`GenotypeAsRead`], and
+/// [`the_counts_of_a_pop_of_two_alleles_with_its_gts`] knows them from the
+/// counting it has just done of a genotype of the missing allele, 0 and 1.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each count is raised by one at most once for each genotype counted, and \
+              each caller checks first that the genotypes it counts are a number a u32 \
+              holds"
+)]
+fn count_a_genotype(of_the_genotype: GenotypeAsRead, counts: &mut GtCounts) {
+    let called = !of_the_genotype.missing;
+    counts.missing += u32::from(of_the_genotype.missing);
+    counts.called += u32::from(called);
+    // `&` and not `&&`: the two are known and the second is not a question
+    // the first decides whether to ask, so this is three counts raised by
+    // a number and not a branch on the genotype. The individuals of a
+    // population are wherever the file put them among the individuals of
+    // the reader, and a branch here, taken or not with the genotype, was
+    // 0.245 s against 0.178 s over the 100000 variants of 1000 diploid
+    // individuals cut into the 3 populations of
+    // `docs/reports/perf-dists-pops-2026-09-23.md`, whose individuals lie
+    // in 181 runs of the row.
+    counts.het += u32::from(called & !of_the_genotype.all_the_same);
 }
 
 /// One count for each allele a genotype can hold, from 0 to
 /// [`MAX_ALLELE`], which [`count_alleles`] fills.
 pub type AlleleCounts = [u32; 128];
+
+/// What [`count_alleles_of`] counted of one population at one variant.
+///
+/// The two are given together because the counting has both of them in
+/// hand and neither can be got back from the counts without reading all
+/// 128 entries of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountedAlleles {
+    /// How many alleles the population called at the variant, the sum of
+    /// the counts, which is the n_P the frequencies are over.
+    pub called_alleles: u32,
+    /// One past the largest allele the population called, so that a caller
+    /// walks the alleles the variant holds and not the 128 a count of them
+    /// has room for. It is 0 when no allele was called, and every entry of
+    /// the counts from it up holds 0.
+    pub num_alleles: usize,
+}
 
 /// How many arrays of counters the alleles of one variant are counted into
 /// at once.
@@ -721,8 +773,9 @@ pub fn count_gts_of(gts: &[i8], ploidy: usize, individuals: &[usize]) -> Result<
 
 /// It writes into `counts[a]` how often the allele a was called in the
 /// genotypes of one variant that belong to the individuals of one
-/// population, and gives how many alleles it counted, the called alleles of
-/// the population.
+/// population, and gives the [`CountedAlleles`] of that population: the
+/// alleles it counted, and one past the largest of them, from which every
+/// entry of `counts` holds 0.
 ///
 /// `gts` is the genotypes of one variant, `ploidy` alleles for each
 /// individual of the reader, and `individuals` the index of each individual
@@ -740,14 +793,40 @@ pub fn count_gts_of(gts: &[i8], ploidy: usize, individuals: &[usize]) -> Result<
 /// individual at or beyond the ones the variant holds the genotypes of,
 /// which is a defect of popnei: the indices of a population are resolved
 /// before any variant is read.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the alleles 0 and 1 of the population are alleles of its genotypes counted \
+              once each, and the individuals times the ploidy was checked above to be a \
+              number a u32 holds, so their sum is one too"
+)]
 pub fn count_alleles_of(
     gts: &[i8],
     ploidy: usize,
     individuals: &[usize],
     counts: &mut AlleleCounts,
-) -> Result<u32> {
+) -> Result<CountedAlleles> {
     let num_individuals = num_individuals_of(gts, ploidy)?;
     refuse_more_alleles_than_a_count_holds(individuals.len(), ploidy)?;
+    // A population whose alleles at this variant are the missing one, 0 and
+    // 1 is counted without the table, as `count_alleles` counts such a
+    // variant: two counters instead of the 2048 bytes of the lanes zeroed,
+    // the 2048 read back and the 512 written over them. The entries above
+    // the two alleles keep the 0 they are cleared to here, which is what
+    // lets a caller read the counts of an allele it was not told of and
+    // still read this variant's. A population that holds anything else is
+    // counted by the lanes below.
+    if let Some((zeros, ones)) =
+        the_counts_of_a_pop_of_two_alleles(gts, ploidy, individuals, num_individuals)
+    {
+        counts.fill(0);
+        for (entry, count) in counts.iter_mut().zip([zeros, ones]) {
+            *entry = count;
+        }
+        return Ok(CountedAlleles {
+            called_alleles: zeros + ones,
+            num_alleles: if ones > 0 { 2 } else { usize::from(zeros > 0) },
+        });
+    }
     let mut lanes: LaneCounts = [[0; 128]; COUNTING_LANES];
     let mut called_alleles = 0_u32;
     for &individual in individuals {
@@ -755,7 +834,220 @@ pub fn count_alleles_of(
         count_the_alleles(genotype, &mut lanes, &mut called_alleles)?;
     }
     merge_the_lanes(&lanes, counts);
-    Ok(called_alleles)
+    Ok(CountedAlleles {
+        called_alleles,
+        num_alleles: one_past_the_largest_allele(counts),
+    })
+}
+
+/// It writes into `counts[a]` how often the allele a was called in the
+/// genotypes of one variant that belong to the individuals of one
+/// population, and gives both the [`CountedAlleles`] of that population and
+/// how many of its genotypes were called, missing and heterozygous, out of
+/// one walk over its individuals.
+///
+/// The arguments and the two results are those of [`count_alleles_of`] and
+/// of [`count_gts_of`], and it gives of every input what the two of them
+/// give: the same counts, by the same rules, and the same first error. What
+/// it does not do is look up the genotype of each individual twice, which a
+/// caller that wants both of a population at every variant pays for at
+/// every individual of it. The two of them are what a caller that wants one
+/// of the counts alone calls, and the `stats` module wants one alone: the
+/// observed heterozygosity reads the genotypes and the four measures of a
+/// frequency read the alleles, and a pass is asked for some of them and not
+/// others.
+///
+/// # Errors
+///
+/// Those of [`count_alleles_of`], which over the genotypes of one
+/// population are also those of [`count_gts_of`]: genotypes that are not a
+/// whole number of genotypes of the ploidy, a population of more alleles
+/// than a count of them holds, an allele below [`MISSING_ALLELE`], which no
+/// reader of popnei gives, and an individual at or beyond the ones the
+/// variant holds the genotypes of, which is a defect of popnei.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the alleles 0 and 1 of the population are alleles of its genotypes counted \
+              once each, and the individuals times the ploidy was checked above to be a \
+              number a u32 holds, so their sum is one too"
+)]
+pub fn count_alleles_and_gts_of(
+    gts: &[i8],
+    ploidy: usize,
+    individuals: &[usize],
+    counts: &mut AlleleCounts,
+) -> Result<(CountedAlleles, GtCounts)> {
+    let num_individuals = num_individuals_of(gts, ploidy)?;
+    refuse_more_alleles_than_a_count_holds(individuals.len(), ploidy)?;
+    // The alleles of a population of the missing allele, 0 and 1 are
+    // counted without the table, as they are in `count_alleles_of`, and
+    // its genotypes are counted in the same walk, by `count_the_genotype`,
+    // which is where what a missing and a heterozygous genotype are is
+    // written.
+    let mut counted_gts = GtCounts::default();
+    if let Some((zeros, ones)) = the_counts_of_a_pop_of_two_alleles_with_its_gts(
+        gts,
+        ploidy,
+        individuals,
+        num_individuals,
+        &mut counted_gts,
+    ) {
+        counts.fill(0);
+        for (entry, count) in counts.iter_mut().zip([zeros, ones]) {
+            *entry = count;
+        }
+        return Ok((
+            CountedAlleles {
+                called_alleles: zeros + ones,
+                num_alleles: if ones > 0 { 2 } else { usize::from(zeros > 0) },
+            },
+            counted_gts,
+        ));
+    }
+    // That path stopped at the individual whose genotype it could not
+    // count, with the genotypes before that one counted, so the walk below
+    // counts the population again from nothing.
+    let mut counted_gts = GtCounts::default();
+    let mut lanes: LaneCounts = [[0; 128]; COUNTING_LANES];
+    let mut called_alleles = 0_u32;
+    for &individual in individuals {
+        let genotype = genotype_of(gts, ploidy, individual, num_individuals)?;
+        count_the_alleles(genotype, &mut lanes, &mut called_alleles)?;
+        count_the_genotype(genotype, &mut counted_gts)?;
+    }
+    merge_the_lanes(&lanes, counts);
+    Ok((
+        CountedAlleles {
+            called_alleles,
+            num_alleles: one_past_the_largest_allele(counts),
+        },
+        counted_gts,
+    ))
+}
+
+/// How often the alleles 0 and 1 were called in the genotypes of one
+/// variant that belong to `individuals`, and `None` when those genotypes
+/// hold anything else.
+///
+/// It stops at the first individual whose genotype holds an allele that is
+/// not the missing one, 0 or 1, and at the first individual the variant has
+/// no genotype for, having read nothing beyond them. So the caller that
+/// falls back to the lanes walks twice only the individuals up to that one,
+/// and the lanes raise the error, at the same allele and the same
+/// individual, since the two walk the individuals in their order.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each of the four counts is raised once for an allele of the genotypes of \
+              the population, whose number the caller checked to be one a u32 holds"
+)]
+fn the_counts_of_a_pop_of_two_alleles(
+    gts: &[i8],
+    ploidy: usize,
+    individuals: &[usize],
+    num_individuals: usize,
+) -> Option<(u32, u32)> {
+    let alleles_of_a_genotype = u32::try_from(ploidy).ok()?;
+    let mut zeros = 0_u32;
+    let mut ones = 0_u32;
+    let mut missing = 0_u32;
+    let mut walked = 0_u32;
+    for &individual in individuals {
+        let genotype = genotype_of(gts, ploidy, individual, num_individuals).ok()?;
+        for &allele in genotype {
+            zeros += u32::from(allele == 0);
+            ones += u32::from(allele == 1);
+            missing += u32::from(allele == MISSING_ALLELE);
+        }
+        walked += alleles_of_a_genotype;
+        // The three alleles counted are different, so an allele of the
+        // genotype is counted in one of the three at most, and the three
+        // come to the alleles walked exactly when every one of them is one
+        // of the three. The test is made once for each individual and not
+        // once for each allele, so that the loop over the alleles branches
+        // on nothing and the walk still stops where the allele is.
+        if zeros + ones + missing != walked {
+            return None;
+        }
+    }
+    Some((zeros, ones))
+}
+
+/// One past the largest allele `counts` counted, which is 0 when it counted
+/// none: every entry of `counts` from it up holds 0.
+/// What [`the_counts_of_a_pop_of_two_alleles`] gives, with the genotypes
+/// of the population counted into `counted_gts` in the same walk.
+///
+/// It stops where that one stops and reads no further, so `counted_gts`
+/// holds the genotypes up to the individual it stopped at and the caller
+/// that falls back to the lanes counts them again from nothing.
+///
+/// The genotypes are counted out of the counting of the alleles and not by
+/// a second walk over them: a genotype of the missing allele, 0 and 1 is
+/// missing exactly when it holds a missing allele and heterozygous exactly
+/// when it holds both of the two, and [`count_a_genotype`] is what turns
+/// those two into the counts, for this and for [`count_the_genotype`]
+/// alike.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each of the four counts is raised once for an allele of the genotypes of \
+              the population, whose number the caller checked to be one a u32 holds"
+)]
+fn the_counts_of_a_pop_of_two_alleles_with_its_gts(
+    gts: &[i8],
+    ploidy: usize,
+    individuals: &[usize],
+    num_individuals: usize,
+    counted_gts: &mut GtCounts,
+) -> Option<(u32, u32)> {
+    let alleles_of_a_genotype = u32::try_from(ploidy).ok()?;
+    let mut zeros = 0_u32;
+    let mut ones = 0_u32;
+    for &individual in individuals {
+        let genotype = genotype_of(gts, ploidy, individual, num_individuals).ok()?;
+        let mut of_the_genotype_zeros = 0_u32;
+        let mut of_the_genotype_ones = 0_u32;
+        let mut of_the_genotype_missing = 0_u32;
+        for &allele in genotype {
+            of_the_genotype_zeros += u32::from(allele == 0);
+            of_the_genotype_ones += u32::from(allele == 1);
+            of_the_genotype_missing += u32::from(allele == MISSING_ALLELE);
+        }
+        // The three alleles counted are different, so an allele of the
+        // genotype is counted in one of the three at most, and the three
+        // come to the alleles of the genotype exactly when every one of
+        // them is one of the three. The test is made once for each
+        // genotype and not once for each allele, so that the loop over the
+        // alleles branches on nothing and the walk still stops at the
+        // individual whose allele it cannot count.
+        if of_the_genotype_zeros + of_the_genotype_ones + of_the_genotype_missing
+            != alleles_of_a_genotype
+        {
+            return None;
+        }
+        zeros += of_the_genotype_zeros;
+        ones += of_the_genotype_ones;
+        // Every allele of the genotype is the missing one, 0 or 1, which
+        // the test above has just shown, so an allele that was not called
+        // is one of the missing ones, and the alleles are all one allele
+        // exactly when the genotype holds no 0 or holds no 1. A genotype
+        // nobody called holds neither and is counted as missing, as
+        // `count_the_genotype` counts it.
+        count_a_genotype(
+            GenotypeAsRead {
+                missing: of_the_genotype_missing > 0,
+                all_the_same: of_the_genotype_zeros == 0 || of_the_genotype_ones == 0,
+            },
+            counted_gts,
+        );
+    }
+    Some((zeros, ones))
+}
+
+fn one_past_the_largest_allele(counts: &AlleleCounts) -> usize {
+    counts
+        .iter()
+        .rposition(|count| *count > 0)
+        .map_or(0, |largest| largest.saturating_add(1))
 }
 
 /// The genotype of one individual at one variant: the ploidy alleles of
@@ -965,6 +1257,21 @@ const _: () = {
 /// vectorizes. A ploidy of 255 has 256 dosages, and those with the code of
 /// a genotype with an allele missing are one value more than a byte holds.
 pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
+
+/// The most individuals a calculation that builds a matrix of them by them
+/// takes: the largest number whose square is at most the 2147483647 values
+/// that the routines of BLAS and LAPACK count a matrix in, which
+/// `crates/popnei-linalg` gives as
+/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX).
+///
+/// The individuals x individuals matrix of that many holds 2147395600
+/// values, 17 GB, which no browser tab gives and few machines do. It is a
+/// size of a dataset and belongs to no one calculation: the principal
+/// components of the variants and the kinship each re-export it and check
+/// it at their own entry, since the pass over a row reads one variant and
+/// knows nothing of a matrix.
+pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize =
+    popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX.isqrt();
 
 /// The code of a genotype with an allele missing, which is not a dosage:
 /// [`MAX_PLOIDY_OF_THE_VARIANTS`] is what keeps the dosages below it.
@@ -1346,6 +1653,26 @@ pub(crate) fn the_standardized_block(
     if !missing.is_empty() {
         return Err(Error::FieldsNotInTheBlock { fields: missing });
     }
+    // The rows of the block are cut by what the block says its size is and
+    // the values they are written into by what the caller says it is, and
+    // `chunks_exact` gives the rows of whichever of the two is the shorter:
+    // a block of 5 individuals of the ploidy 2 read as 5 individuals of the
+    // ploidy 5 has 10 alleles, one row of genotypes and no row of values,
+    // so no row runs and the pass gives back that no variant was used. That
+    // is what a block of variants with no variance gives too, so the loss
+    // would wear the costume of an ordinary result. A reader whose ploidy
+    // or whose individuals are not those of the blocks it gives has a
+    // defect, which `docs/specs/block.md` names; `Reblock` refuses such a
+    // block, and this pass is the one place a caller with no `Reblock`
+    // before it would lose the variants in silence.
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
     let alleles_per_var = block.alleles_per_var()?;
     // The block holds its genotypes, so its rows hold one genotype of the
     // ploidy for each individual: `reblock` checked that the genotypes are
@@ -1684,18 +2011,81 @@ pub mod bench_internals {
 #[cfg(test)]
 mod tests {
     use super::{
-        AlleleCounts, ChromTable, DosageOptions, DosageScale, GtCounts, MAX_ALLELE,
+        AlleleCounts, ChromTable, CountedAlleles, DosageOptions, DosageScale, GtCounts, MAX_ALLELE,
         MAX_PLOIDY_OF_THE_VARIANTS, MISSING_ALLELE, Needs, RowScratch, count_alleles,
-        count_alleles_of, count_gts, count_gts_of, the_major_allele, the_major_allele_frequency,
+        count_alleles_and_gts_of, count_alleles_of, count_gts, count_gts_of,
+        one_past_the_largest_allele, the_major_allele, the_major_allele_frequency,
         the_standardized_row,
     };
     use crate::error::Error;
+
+    /// A block whose individuals or whose ploidy are not the ones the pass
+    /// was given is refused, and its variants are not lost in silence.
+    ///
+    /// The rows of the block are cut by the size the block states and the
+    /// values by the size the caller states, and the shorter of the two is
+    /// what runs: a block of 5 individuals of the ploidy 2, which holds 10
+    /// alleles, read as 5 individuals of the ploidy 5 gives one row of
+    /// genotypes and no row of values, so the pass ran no row and gave back
+    /// `Ok([])`, which is what a block whose every variant has no variance
+    /// gives. The kinship would then have counted no variant used where its
+    /// reader gave one, and nothing would have said so.
+    #[test]
+    fn a_block_of_other_individuals_or_another_ploidy_than_the_pass_is_refused() {
+        for (num_individuals, ploidy) in [(5, 5), (2, 2)] {
+            let block = crate::block::Block {
+                num_vars: 1,
+                num_individuals: 5,
+                ploidy: 2,
+                gts: vec![0, 0, 0, 1, 1, 1, 0, 1, 1, 1],
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+            };
+            let mut standardized: Vec<f64> = Vec::new();
+
+            let refused = super::the_standardized_block(
+                &block,
+                num_individuals,
+                ploidy,
+                &OF_THE_DOSAGES,
+                THE_FIRST_POSITIONS,
+                &mut standardized,
+            );
+
+            let error = match refused {
+                Ok(used) => panic!("the pass used {used:?} of the variants of the block"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::BlocksDoNotFitTogether {
+                        found_num_individuals: 5,
+                        found_ploidy: 2,
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+    }
 
     /// How close a standardized dosage has to be to the literal it is
     /// asserted against. The literals below are written with 12
     /// significant digits and none of them is above 2, so each is within
     /// 1e-11 of the number it stands for.
     const TOLERANCE: f64 = 1e-11;
+
+    /// Where a block of a test sits among the variants a reader has given,
+    /// with the error of a reader that gave more variants than a `usize`
+    /// counts: no test of this module reaches that error.
+    const THE_FIRST_POSITIONS: super::RowPositions = super::RowPositions {
+        first: 0,
+        too_many: || Error::PcaNoVariants,
+    };
 
     /// What the principal components of the variants of `docs/specs/pca.md`
     /// ask of a row: the centered dosages divided by their own standard
@@ -2145,7 +2535,18 @@ mod tests {
         individuals: &[usize],
     ) -> (Vec<(usize, u32)>, u32) {
         let mut counts: AlleleCounts = [0; 128];
-        let called_alleles = count_alleles_of(gts, ploidy, individuals, &mut counts).unwrap();
+        let counted = count_alleles_of(gts, ploidy, individuals, &mut counts).unwrap();
+        let called_alleles = counted.called_alleles;
+        // One past the largest allele is what the counts say it is, at
+        // every variant of every population any test here counts, and the
+        // counts from it up are 0.
+        assert_eq!(counted.num_alleles, one_past_the_largest_allele(&counts));
+        assert!(
+            counts
+                .iter()
+                .skip(counted.num_alleles)
+                .all(|count| *count == 0)
+        );
         let counted = counts
             .iter()
             .enumerate()
@@ -2191,6 +2592,194 @@ mod tests {
         assert_eq!(
             alleles_counted_of(&THE_SIX_VARIANTS[0], 2, &POP2),
             (vec![(0, 5)], 5)
+        );
+    }
+
+    /// The two counts of one walk are the counts of "How it is verified"
+    /// of the counts of one variant over a population of
+    /// `docs/specs/stats.md`, on variant 1 of the worked example,
+    /// `0/0 0/1 0/0 0/0 0/.`, over its two populations: the same numbers
+    /// that `count_gts_of` and `count_alleles_of` are asserted to give
+    /// above, and the half called genotype of i5 gives its called allele
+    /// to pop2 and is missing among its genotypes.
+    #[test]
+    fn count_alleles_and_gts_of_variant_1_over_the_two_populations_of_the_worked_example() {
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(
+            count_alleles_and_gts_of(&THE_SIX_VARIANTS[0], 2, &POP1, &mut counts).unwrap(),
+            (
+                CountedAlleles {
+                    called_alleles: 4,
+                    num_alleles: 2,
+                },
+                GtCounts {
+                    called: 2,
+                    missing: 0,
+                    het: 1,
+                }
+            )
+        );
+        assert_eq!(counts[0], 3);
+        assert_eq!(counts[1], 1);
+        assert_eq!(
+            count_alleles_and_gts_of(&THE_SIX_VARIANTS[0], 2, &POP2, &mut counts).unwrap(),
+            (
+                CountedAlleles {
+                    called_alleles: 5,
+                    num_alleles: 1,
+                },
+                GtCounts {
+                    called: 2,
+                    missing: 1,
+                    het: 0,
+                }
+            )
+        );
+        assert_eq!(counts[0], 5);
+        assert_eq!(counts[1], 0);
+    }
+
+    /// A population of four alleles is counted by the lanes, the path that
+    /// the two alleles of the variant above do not take, and the two
+    /// counts of one walk are the same there: variant 3 of the worked
+    /// example is `0/1 2/3 0/1 2/3 ./.`, so pop2 holds `0/1`, `2/3` and
+    /// `./.`.
+    #[test]
+    fn count_alleles_and_gts_of_counts_a_population_of_four_alleles_by_the_lanes() {
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(
+            count_alleles_and_gts_of(&THE_SIX_VARIANTS[2], 2, &POP2, &mut counts).unwrap(),
+            (
+                CountedAlleles {
+                    called_alleles: 4,
+                    num_alleles: 4,
+                },
+                GtCounts {
+                    called: 2,
+                    missing: 1,
+                    het: 2,
+                }
+            )
+        );
+        for (allele, count) in counts.iter().enumerate().take(5) {
+            assert_eq!(*count, u32::from(allele < 4), "the allele {allele}");
+        }
+    }
+
+    /// One walk gives what the two walks give, of every variant of the
+    /// worked example over every population of it, the empty one and the
+    /// one of every individual among them, and whatever the counts held
+    /// before. The six variants hold a population of one allele, of two, of
+    /// four and of none, half called genotypes and a variant nobody called.
+    #[test]
+    fn count_alleles_and_gts_of_gives_what_count_alleles_of_and_count_gts_of_give() {
+        let pops: [&[usize]; 5] = [&POP1, &POP2, &[0, 1, 2, 3, 4], &[], &[4, 0]];
+        let mut of_one_walk: AlleleCounts = [0; 128];
+        let mut of_two_walks: AlleleCounts = [0; 128];
+        for gts in &THE_SIX_VARIANTS {
+            for individuals in pops {
+                let counted = count_alleles_and_gts_of(gts, 2, individuals, &mut of_one_walk)
+                    .expect("the counts of one walk");
+                let alleles = count_alleles_of(gts, 2, individuals, &mut of_two_walks)
+                    .expect("the counts of the alleles");
+                let of_the_gts = count_gts_of(gts, 2, individuals).expect("the counts of the gts");
+
+                assert_eq!(
+                    counted,
+                    (alleles, of_the_gts),
+                    "{gts:?} over {individuals:?}"
+                );
+                assert_eq!(of_one_walk, of_two_walks, "{gts:?} over {individuals:?}");
+            }
+        }
+    }
+
+    /// The genotypes a population of the missing allele, 0 and 1 is
+    /// counted by out of the counting of its alleles are the genotypes
+    /// `count_gts_of` counts by reading them: over every genotype of one
+    /// and of two individuals that can be built out of the missing allele,
+    /// 0, 1 and 2, at ploidy 1, 2 and 3, which is 4452 populations, the two
+    /// give the same counts. The 2 is there so that a population that
+    /// leaves the counting of the two alleles is counted too, and a
+    /// population of the missing allele alone, which is all one allele and
+    /// is missing, is among them.
+    #[test]
+    fn the_genotypes_taken_out_of_the_counting_of_the_alleles_are_the_genotypes_read() {
+        let alleles = [MISSING_ALLELE, 0, 1, 2];
+        let mut counts: AlleleCounts = [0; 128];
+        let mut populations = 0_usize;
+        for ploidy in 1_usize..=3 {
+            for individuals in 1_usize..=2 {
+                let num_alleles = ploidy * individuals;
+                for drawn in 0..alleles
+                    .len()
+                    .pow(u32::try_from(num_alleles).expect("the alleles of the variant"))
+                {
+                    let mut gts = Vec::with_capacity(num_alleles);
+                    let mut left = drawn;
+                    for _ in 0..num_alleles {
+                        gts.push(alleles[left % alleles.len()]);
+                        left /= alleles.len();
+                    }
+                    let of_the_pop: Vec<usize> = (0..individuals).collect();
+
+                    let (_, of_one_walk) =
+                        count_alleles_and_gts_of(&gts, ploidy, &of_the_pop, &mut counts)
+                            .expect("the counts of one walk");
+
+                    assert_eq!(
+                        of_one_walk,
+                        count_gts_of(&gts, ploidy, &of_the_pop).expect("the counts of the gts"),
+                        "{gts:?} at a ploidy of {ploidy}"
+                    );
+                    populations += 1;
+                }
+            }
+        }
+        assert_eq!(populations, 4452);
+    }
+
+    /// One walk refuses what the two walks refuse, and names the same
+    /// allele and the same individual: the allele below the missing one of
+    /// the population, which the individuals the walk stops before hide
+    /// from it as they do from `count_alleles_of`, and an individual the
+    /// variant holds no genotype for.
+    #[test]
+    fn count_alleles_and_gts_of_refuses_the_allele_and_the_individual_the_two_functions_refuse() {
+        let gts = [0, 0, -2, 1];
+        let mut counts: AlleleCounts = [0; 128];
+        let error = count_alleles_and_gts_of(&gts, 2, &[1], &mut counts).unwrap_err();
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+            "{error:?}"
+        );
+        let error = count_alleles_and_gts_of(&gts, 2, &[0, 1], &mut counts).unwrap_err();
+        assert!(
+            matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+            "{error:?}"
+        );
+        let error =
+            count_alleles_and_gts_of(&THE_SIX_VARIANTS[0], 2, &[0, 5], &mut counts).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::IndividualBeyondTheVariant {
+                    individual: 5,
+                    num_individuals: 5,
+                }
+            ),
+            "{error:?}"
+        );
+        let error = count_alleles_and_gts_of(&[0, 0, 0, 1, 0], 2, &[0], &mut counts).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::GtsNotWholeGenotypes {
+                    num_alleles: 5,
+                    ploidy: 2,
+                }
+            ),
+            "{error:?}"
         );
     }
 
@@ -2329,7 +2918,10 @@ mod tests {
         let mut counts: AlleleCounts = [0; 128];
         assert_eq!(
             count_alleles_of(&gts, 2, &[0, 1, 2], &mut counts).unwrap(),
-            4
+            CountedAlleles {
+                called_alleles: 4,
+                num_alleles: 3,
+            }
         );
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
@@ -2347,7 +2939,10 @@ mod tests {
         let mut counts: AlleleCounts = [0; 128];
         assert_eq!(
             count_alleles_of(&THE_SIX_VARIANTS[2], 2, &POP2, &mut counts).unwrap(),
-            4
+            CountedAlleles {
+                called_alleles: 4,
+                num_alleles: 4,
+            }
         );
         assert_eq!(counts[0], 1);
         assert_eq!(counts[1], 1);
@@ -2356,12 +2951,84 @@ mod tests {
 
         assert_eq!(
             count_alleles_of(&THE_SIX_VARIANTS[4], 2, &POP1, &mut counts).unwrap(),
-            4
+            CountedAlleles {
+                called_alleles: 4,
+                num_alleles: 1,
+            }
         );
         assert_eq!(counts[0], 4);
         assert_eq!(counts[1], 0);
         assert_eq!(counts[2], 0);
         assert_eq!(counts[3], 0);
+    }
+
+    /// A population counted after one that called a high allele holds none
+    /// of that allele's count: the entries above the alleles of this
+    /// variant are 0, whichever of the two ways the population was counted,
+    /// and a pair of populations that reads them reads this variant's.
+    ///
+    /// Four diploid individuals. The first two call the allele 100, which
+    /// is counted by the table of counters, and the other two call the
+    /// alleles 0 and 1 alone, which is counted without it.
+    #[test]
+    fn count_alleles_of_leaves_no_count_of_the_population_before_it() {
+        let gts = [100, 100, 100, -1, 0, 1, 0, 0];
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[0, 1], &mut counts).unwrap(),
+            CountedAlleles {
+                called_alleles: 3,
+                num_alleles: 101,
+            }
+        );
+        assert_eq!(counts[100], 3);
+
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[2, 3], &mut counts).unwrap(),
+            CountedAlleles {
+                called_alleles: 4,
+                num_alleles: 2,
+            }
+        );
+        assert_eq!(counts[0], 3);
+        assert_eq!(counts[1], 1);
+        assert_eq!(counts[100], 0);
+        assert!(counts.iter().skip(2).all(|count| *count == 0));
+    }
+
+    /// One past the largest allele of a population that called the allele 1
+    /// and no 0 is 2, of one that called the allele 0 alone is 1, and of
+    /// one that called nothing is 0.
+    ///
+    /// Three diploid individuals, `1/1`, `0/0` and `./.`, which is the
+    /// population of the second one whose counts the entry of the allele 1
+    /// would be read above if the largest allele were taken from the called
+    /// alleles instead of from the alleles counted.
+    #[test]
+    fn one_past_the_largest_allele_of_a_population_that_called_the_allele_1_alone_is_2() {
+        let gts = [1, 1, 0, 0, -1, -1];
+        let mut counts: AlleleCounts = [0; 128];
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[0], &mut counts).unwrap(),
+            CountedAlleles {
+                called_alleles: 2,
+                num_alleles: 2,
+            }
+        );
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[1], &mut counts).unwrap(),
+            CountedAlleles {
+                called_alleles: 2,
+                num_alleles: 1,
+            }
+        );
+        assert_eq!(
+            count_alleles_of(&gts, 2, &[2], &mut counts).unwrap(),
+            CountedAlleles {
+                called_alleles: 0,
+                num_alleles: 0,
+            }
+        );
     }
 
     /// The two variants that the worked example of "How it is verified" of

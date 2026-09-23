@@ -961,23 +961,40 @@ impl KosmanSums {
     /// individuals from i on: two triangles of pairs, each of them the
     /// pairs of a number of individuals.
     fn index_of_the_pair(&self, first: usize, second: usize) -> Option<usize> {
-        let (first, second) = if first < second {
-            (first, second)
-        } else {
-            (second, first)
-        };
-        if first == second || second >= self.num_individuals {
-            return None;
-        }
-        let from_first_on = num_pairs_of(self.num_individuals.checked_sub(first)?)?;
-        let before_first = num_pairs_of(self.num_individuals)?.checked_sub(from_first_on)?;
-        before_first.checked_add(second.checked_sub(first)?.checked_sub(1)?)
+        index_of_the_pair(self.num_individuals, first, second)
     }
 }
 
+/// Where the pair of the things `first` and `second` is in the vector of
+/// the pairs of `num_things` things, in either order, and `None` when the
+/// two are one thing or either of them is not one of them.
+///
+/// The pairs of the thing i start after those of the things before it,
+/// which are all the pairs of the source but those of the things from i on:
+/// two triangles of pairs, each of them the pairs of a number of things.
+///
+/// The individuals of this module and the populations of
+/// [`pop_dists`](crate::pop_dists) make their pairs in the same order, (0,
+/// 1), (0, 2), ..., (1, 2), ..., which is the order of the distance vector,
+/// so both find a pair with this.
+pub(crate) fn index_of_the_pair(num_things: usize, first: usize, second: usize) -> Option<usize> {
+    let (first, second) = if first < second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if first == second || second >= num_things {
+        return None;
+    }
+    let from_first_on = num_pairs_of(num_things.checked_sub(first)?)?;
+    let before_first = num_pairs_of(num_things)?.checked_sub(from_first_on)?;
+    before_first.checked_add(second.checked_sub(first)?.checked_sub(1)?)
+}
+
 /// How many pairs `num_individuals` individuals make, `n (n - 1) / 2`, and
-/// `None` when that is more than a `usize` holds.
-fn num_pairs_of(num_individuals: usize) -> Option<usize> {
+/// `None` when that is more than a `usize` holds. The pairs of the
+/// populations of [`pop_dists`](crate::pop_dists) are counted with it too.
+pub(crate) fn num_pairs_of(num_individuals: usize) -> Option<usize> {
     let Some(others) = num_individuals.checked_sub(1) else {
         // No individual makes no pair, which the subtraction below cannot
         // give.

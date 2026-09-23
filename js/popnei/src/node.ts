@@ -18,7 +18,7 @@ export { calcPairwiseKosmanDists, Distances } from "./dists.js";
 export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
 export type { FilteringStats, Step } from "./filters.js";
 export { calcKinship, Kinship } from "./kinship.js";
-export type { CalcKinshipOptions } from "./kinship.js";
+export type { CalcKinshipOptions, KinshipPcsResult } from "./kinship.js";
 export { calcRogersHuffR2Matrix } from "./ld.js";
 export type { CalcRogersHuffR2MatrixOptions, R2Matrix } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
@@ -32,6 +32,13 @@ export type {
   PcaResult,
   VariantsPcaResult,
 } from "./pca.js";
+export { calcPopDists } from "./pop_dists.js";
+export type {
+  CalcPopDistsOptions,
+  PopDistGroup,
+  PopDistMeasure,
+  PopDists,
+} from "./pop_dists.js";
 export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
 export type {
   BinType,

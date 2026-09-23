@@ -8,32 +8,34 @@
 //! released, and reads the counts of the filters from that chain when the
 //! call is over, since no block of the pass reaches this crate.
 //!
-//! Two things are counted here that the core does not give back. One is how
-//! many variants the pass gave, used or not, which is the `num_vars` of the
-//! counts of a pass and which [`CountedVars`] counts as the blocks go by:
-//! the `num_vars` of the core's result is how many variants had variance
-//! and were used, which is the other number and which the `Kinship` of the
-//! package carries under that name. The other is the names of the
+//! What this module adds to the result of the core is the names of the
 //! individuals of the matrix, which the package puts on both sides of its
 //! frame: they are those the pass gives, in its order, or the ones a user
-//! named, in theirs.
+//! named, in theirs. The two counts are the core's, `num_vars`, the
+//! variants that had variance and were used, and `num_vars_given`, the
+//! variants the pass gave, which is the `num_vars` of the counts of a pass.
 //!
 //! The names a user names are turned into their places among the
 //! individuals of the pass here, with `popnei::filters::resolve_individuals`,
 //! which is what the filter of individuals is given as well: the core takes
 //! the places and knows nothing of the names.
+//!
+//! [`kinship_principal_components`] is the other half of the module: it
+//! places each individual along the directions in which the panel varies
+//! most, out of a matrix alone. It reads no source, since the matrix a user
+//! holds is the whole input, and a user who built that matrix by hand gets
+//! its components as one of a pass does.
 
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2};
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods as _};
 use pyo3::prelude::*;
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::{FilteringStats, resolve_individuals};
+use popnei::block::BlockReader;
+use popnei::filters::resolve_individuals;
 use popnei::kinship::Kinship;
-use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
-use crate::source::{OpenSource, PassCounts, source_of};
+use crate::source::{OpenSource, PassCounts, count_of_at_least, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What one pass gives: the kinship the core calculated, the names of the
@@ -96,19 +98,11 @@ pub(crate) fn calc_kinship<'py>(
     // of numpy, that import fails with the exception that is pending, and
     // the numpy crate panics when it does, which a user cannot catch.
     py.check_signals()?;
-    // The variants that were used go to Python as the `u64` every count of
-    // popnei is there: a `usize` is 32 bits in WebAssembly and 64 natively,
-    // and what a user reads does not depend on that.
-    let num_vars = u64::try_from(kinship.num_vars).map_err(|_| {
-        PyPopneiError::broken_of_the_file(
-            format!(
-                "the kinship was taken from {num_vars} variants, which is more than a \
-                 count holds",
-                num_vars = kinship.num_vars
-            ),
-            &path,
-        )
-    })?;
+    // The variants that were used go to Python as the `u64` the core counts
+    // them in, which is what every count of popnei is there: a `usize` is 32
+    // bits in WebAssembly and 64 natively, and what a user reads does not
+    // depend on that.
+    let num_vars = kinship.num_vars;
     // The matrix of 10000 individuals is 800 MB, and `into_pyarray` hands
     // the allocation the core filled to numpy without copying it.
     let matrix = the_square_of(py, kinship.num_individuals, kinship.matrix)?;
@@ -143,97 +137,86 @@ fn over_the_source(
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let chain = chain_of(reader, steps)?;
-    let mut counted = CountedVars::over(chain);
+    let mut chain = chain_of(reader, steps)?;
     // The names of the individuals of the matrix, which the package puts on
     // both sides of its frame: those the pass gives, in its order, or the
     // ones the user named, in theirs, which is the order the core has them
     // in.
     let (positions, names) = match individuals {
         Some(named) => (
-            Some(resolve_individuals(named, counted.individuals())?),
+            Some(resolve_individuals(named, chain.individuals())?),
             named.to_vec(),
         ),
-        None => (None, counted.individuals().to_vec()),
+        None => (None, chain.individuals().to_vec()),
     };
     let kinship =
-        popnei::kinship::calc_kinship(&mut counted, positions.as_deref(), transform_to_biallelic)?;
-    let num_vars = counted.num_vars();
+        popnei::kinship::calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)?;
+    // How many variants the pass gave, used or not, which the core counts
+    // and which is the `num_vars` of the counts of the pass.
+    let num_vars_given = kinship.num_vars_given;
     Ok((
         kinship,
         names,
-        (num_vars, filtering_of(counted.of_the_pass())),
+        (num_vars_given, filtering_of(chain.as_ref())),
     ))
 }
 
-/// The chain of readers of a pass with how many variants it has given
-/// counted, which is the `num_vars` of the counts of the pass.
-///
-/// The kinship gives back how many variants had variance and were used, and
-/// a user reads that under `num_vars` of the result. How many the steps let
-/// through, which is what the counts of a pass hold, is no number of the
-/// core's result, so it is counted here, where the chain is built and lent:
-/// the blocks of the pass go through this reader on their way to the core.
-struct CountedVars {
-    /// The chain the pass reads, this reader's source.
-    chain: Box<dyn BlockReader>,
-    /// How many variants that chain has given so far.
-    num_vars: u64,
-}
-
-impl CountedVars {
-    /// The chain with its variants counted, before the pass starts.
-    fn over(chain: Box<dyn BlockReader>) -> Self {
-        Self { chain, num_vars: 0 }
+// The principal components of the kinship `matrix`, an individuals x
+// individuals float64 array that lies row after row, `num_pcs` of them at
+// most. What it gives back is where each individual falls along each
+// component, individuals x the components that were given, and how many
+// those are: a component whose eigenvalue is not above the tolerance of
+// `docs/specs/pca.md` is not given, so a kinship with fewer components than
+// were asked for gives the ones it has. A `///` comment here would become
+// the `__doc__` of `popnei._core.kinship_principal_components`, and what a
+// Python user reads belongs to the package, which is the API.
+#[pyfunction]
+#[pyo3(signature = (matrix, num_pcs))]
+pub(crate) fn kinship_principal_components<'py>(
+    py: Python<'py>,
+    matrix: PyReadonlyArray2<'py, f64>,
+    num_pcs: &Bound<'_, PyAny>,
+) -> Result<(Bound<'py, PyArray2<f64>>, usize), PyPopneiError> {
+    // A `num_pcs` of 0 is no components and is no error, as asking a
+    // principal component analysis for none is not, so 0 is the fewest.
+    let num_pcs = count_of_at_least("num_pcs", 0, num_pcs)?;
+    let (num_rows, num_columns) = matrix.as_array().dim();
+    if num_rows != num_columns {
+        return Err(PyPopneiError::MatrixNotSquare {
+            name: "matrix",
+            num_rows,
+            num_columns,
+        });
     }
-
-    /// How many variants the chain has given, which after the pass is how
-    /// many the steps let through.
-    fn num_vars(&self) -> u64 {
-        self.num_vars
+    // The layout is asked of the array itself and not of `as_slice`, which
+    // takes an array that lies column after column as well: the core would
+    // read the upper half of the matrix as its lower half, which for a
+    // matrix that is symmetric only within a tolerance is other numbers.
+    if !matrix.is_c_contiguous() {
+        return Err(PyPopneiError::ArrayNotContiguous { name: "matrix" });
     }
-
-    /// The chain itself, whose filters are read when the pass is over.
-    fn of_the_pass(&self) -> &dyn BlockReader {
-        self.chain.as_ref()
-    }
-}
-
-impl BlockReader for CountedVars {
-    fn next_block(&mut self) -> popnei::Result<Option<Block>> {
-        let block = self.chain.next_block()?;
-        if let Some(ref block) = block {
-            // A pass would have to give 18446744073709551615 variants to
-            // reach the largest count, which at one variant a nanosecond is
-            // 585 years of reading: the count is saturated rather than
-            // carried back as an error of its own, which the error type of
-            // the core has no case for, and no run of popnei arrives there.
-            self.num_vars = self
-                .num_vars
-                .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-        }
-        Ok(block)
-    }
-
-    fn individuals(&self) -> &[String] {
-        self.chain.individuals()
-    }
-
-    fn ploidy(&self) -> usize {
-        self.chain.ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        self.chain.chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        self.chain.set_needs(needs);
-    }
-
-    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
-        self.chain.filtering_stats()
-    }
+    let values = matrix
+        .as_slice()
+        .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "matrix" })?;
+    // The values are copied while the interpreter is held, since the array
+    // they are in belongs to Python and the closure below has to own what
+    // it reads. That one copy is what the components work in: they take the
+    // matrix over, and the eigendecomposition writes the eigenvectors over
+    // it. A `Kinship` built here would carry two counts nobody gave and the
+    // matrix would be copied a second time to protect a kinship that is
+    // thrown away.
+    let matrix = values.to_vec();
+    // The eigendecomposition of a matrix of thousands of individuals takes
+    // seconds and the interpreter is of no use to it.
+    let pcs = py.detach(|| popnei::kinship::principal_components_of(matrix, num_rows, num_pcs))?;
+    // The Ctrl-C that arrived while the interpreter was released is raised
+    // before numpy is called: the first array of a process imports the C API
+    // of numpy, that import fails with the exception that is pending, and
+    // the numpy crate panics when it does, which a user cannot catch.
+    py.check_signals()?;
+    let num_comps = pcs.num_comps;
+    let projections = the_projections_of(py, pcs.projections, num_rows, num_comps)?;
+    Ok((projections, num_comps))
 }
 
 /// The matrix of the kinship as a numpy array of individuals x individuals.
@@ -264,6 +247,33 @@ fn the_square_of(
             }
         })?;
     Ok(square.into_pyarray(py))
+}
+
+/// The projections as a numpy array of individuals x components, which
+/// takes the allocation of the core without copying it.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when the core gave projections that are not
+/// its individuals times its components, which is a defect of popnei: a
+/// user reports it instead of looking for what they typed wrong.
+fn the_projections_of(
+    py: Python<'_>,
+    values: Vec<f64>,
+    num_individuals: usize,
+    num_comps: usize,
+) -> Result<Bound<'_, PyArray2<f64>>, PyPopneiError> {
+    let num_values = values.len();
+    let table = Array2::from_shape_vec((num_individuals, num_comps), values).map_err(|error| {
+        PyPopneiError::Broken {
+            message: format!(
+                "the {num_comps} principal components of a kinship of \
+                 {num_individuals} individuals hold {num_values} values: {error}"
+            ),
+            path: None,
+        }
+    })?;
+    Ok(table.into_pyarray(py))
 }
 
 /// What each filter of a chain was given and kept, the outermost filter

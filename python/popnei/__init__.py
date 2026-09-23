@@ -16,6 +16,7 @@ from popnei.io_vcf import open_vcf
 from popnei.kinship import Kinship, calc_kinship
 from popnei.ld import R2Matrix, calc_rogers_huff_r2_matrix
 from popnei.pca import PCAResult, do_pca, do_pca_from_variants
+from popnei.pop_dists import PopDistMeasure, PopDists, calc_pop_dists
 from popnei.stats import (
     PerIndividualStats,
     PerVarDistribs,
@@ -46,6 +47,8 @@ __all__ = [
     "PerVarDistribs",
     "PerVarStat",
     "PolyVarsStats",
+    "PopDistMeasure",
+    "PopDists",
     "R2Matrix",
     "StatsDistrib",
     "Step",
@@ -56,6 +59,7 @@ __all__ = [
     "calc_pairwise_kosman_dists",
     "calc_per_individual_stats",
     "calc_per_var_distribs",
+    "calc_pop_dists",
     "calc_rogers_huff_r2_matrix",
     "do_pca",
     "do_pca_from_variants",

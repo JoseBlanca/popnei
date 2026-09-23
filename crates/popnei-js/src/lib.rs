@@ -24,6 +24,7 @@ pub mod errors;
 pub mod kinship;
 pub mod ld;
 pub mod pca;
+pub mod pop_dists;
 pub mod source;
 pub mod stats;
 pub mod steps;

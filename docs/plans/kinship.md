@@ -1,7 +1,9 @@
 # Plan: the kinship
 
-23 September 2026. State: under way since 23 September 2026, when the owner
-approved it. It builds
+23 September 2026. State: done. The owner approved it on 23 September 2026
+and it was carried out the same day; every task is ticked, every deliverable
+was checked, and the branch `plan/kinship` waits on the owner to merge it.
+The report of the work is `docs/reports/kinship.md`. It builds
 `docs/specs/kinship.md`, which went through its first reader and its review
 and whose four open points the owner decided on 23 September 2026, so it has
 none left. It is the first of three plans that together build the
@@ -279,13 +281,13 @@ Work package 2, whole, since the work packages run in order. Of its tasks
 
 ### Its tasks
 
-- [ ] 3.1 `principal_components` and `KinshipPcs` in the core, the
+- [x] 3.1 `principal_components` and `KinshipPcs` in the core, the
       eigendecomposition, the tolerance and the sign rule, with the cargo
       tests of the eigenvalues, the sign and the cut. Built from "The
       principal components of the kinship" of `docs/specs/kinship.md` and
       the sign rule of `docs/specs/pca.md`. Serves deliverables 1, 2 and 3.
       Needs 2.1.
-- [ ] 3.2 The Python method and the TypeScript one, on both bindings and in
+- [x] 3.2 The Python method and the TypeScript one, on both bindings and in
       both packages, with the pytest tests against pyNei and for the
       subpopulations and the node test. Built from "Its Python function, and
       its TypeScript one" of that item. Serves deliverables 1, 4 and 5.

@@ -9,12 +9,16 @@ genotype called as a gzipped VCF, and, for it and for the panel of
 that `plink2 --make-rel square` wrote for it with the individuals of that
 matrix in its order.
 
-The two checks the spec asks for are against plink2 v2.0.0-a.7.7, within
-1e-5 absolute, which is one unit of the last of the six significant digits
-plink2 prints for an entry near 1; and against pyNei at commit ef0ca6e,
-which `pyproject.toml` names, within 1e-12 relative, because the two
-libraries add the variants of a pair in different orders. pyNei reads the
-same VCFs, so both libraries are given the same genotypes.
+The two checks the spec asks for are against plink2 v2.0.0-a.7.7 and against
+pyNei at commit ef0ca6e, which `pyproject.toml` names. pyNei reads the same
+VCFs, so both libraries are given the same genotypes. Each entry is held
+within a share of the largest absolute entry of the matrix it is compared
+with, the rule of "How it is verified" of the spec: an entry of a kinship is
+a sum of products that cancel, so it can be as near 0 as the data makes it
+while the rounding of its sum stays where it was, and a bound relative to
+the entry asks the smallest entries for an accuracy no arithmetic gives. The
+one entry read from the digits plink2 prints is held to 1e-5 absolute, which
+is what six significant digits of an entry near 1 allow.
 
 The datasets that no file holds are written here as small VCFs: the worked
 example of the spec, the pair of individuals that were never called
@@ -34,6 +38,7 @@ from pynei.gwas import calc_kinship as pynei_kinship
 
 REFERENCE_KINSHIP_DIR = Path(__file__).parent / "reference" / "kinship"
 REFERENCE_DISTS_DIR = Path(__file__).parent / "reference" / "dists"
+REFERENCE_GWAS_DIR = Path(__file__).parent / "reference" / "gwas"
 
 # The two panels of "How it is verified" of the spec, the same 200
 # individuals and 1200 biallelic diploid variants twice: `panel_called` with
@@ -44,11 +49,22 @@ PANELS = ("panel_called", "panel")
 PANEL_NUM_VARS = 1200
 PANEL_NUM_INDIVIDUALS = 200
 
-# What the tests compare within, and why: plink2 writes six significant
-# digits, so an entry near 1 is rounded by up to 5e-6, and pyNei adds the
-# same products in another order.
-OF_PLINK2 = 1e-5
-OF_PYNEI = 1e-12
+# What the tests compare within, and why. Each entry of a matrix is held to
+# a share of the largest absolute entry of the matrix it is compared with,
+# 1.23 on both panels: the rule and the reason for it are in "How it is
+# verified" of the spec, and the cargo tests of the core hold their entries
+# to the same one. Measured over the 40000 entries of each panel on 24
+# September 2026, the largest difference as a share of that entry is 3.6e-16
+# and 4.5e-16 from plink2 with the linear algebra on Accelerate and 3.3e-15
+# and 2.3e-15 on faer, which `maturin develop --no-default-features` and the
+# wheel of pyodide build; from pyNei it is 0 on both panels on Accelerate,
+# where the two libraries give the same bits, and 3.3e-15 and 2.5e-15 on
+# faer. The bound is thirty times the worst of those. The one entry read
+# from the text plink2 prints is held to 1e-5 absolute, which is what six
+# significant digits of an entry near 1 allow.
+OF_PLINK2 = 1e-13
+OF_PYNEI = 1e-13
+OF_THE_PRINTED_DIGITS = 1e-5
 
 # The individuals 10 to 49 of the panel with every genotype called, the 40
 # of "Its Python function, and its TypeScript one", and what their kinship
@@ -100,6 +116,9 @@ NEVER_CALLED_TOGETHER_GTS = [
     [[0, 0], [1, 1], [-1, -1]],
     [[-1, -1], [0, 0], [1, 1]],
 ]
+# Their names, which tell a message that names the individuals from one that
+# names the places they are at: `first` is at the place 0 and `third` at 2.
+NEVER_CALLED_TOGETHER_INDIVIDUALS = ("first", "second", "third")
 
 # Two variants of three individuals of which the second has three alleles
 # among its called genotypes, `0/1`, `1/2` and `2/2`.
@@ -107,6 +126,10 @@ THREE_ALLELES_GTS = [
     [[0, 0], [0, 1], [1, 1]],
     [[0, 1], [1, 2], [2, 2]],
 ]
+
+# One more individual than the 46340 a kinship is taken of, whose square is
+# the 2147483647 values the linear algebra counts in.
+TOO_MANY_INDIVIDUALS = 46341
 
 _NUCLEOTIDES = "ACGT"
 
@@ -179,11 +202,28 @@ def _panel(name: str) -> Path:
     return REFERENCE_KINSHIP_DIR / f"{name}.vcf.gz"
 
 
+def _assert_the_values_are(ours, theirs, share: float) -> None:
+    """Every value of `ours` within `share` of the largest absolute value of
+    `theirs`, which is the rule of "How it is verified" of the spec."""
+    numpy.testing.assert_allclose(
+        ours, theirs, rtol=0, atol=share * numpy.abs(theirs).max()
+    )
+
+
 def _plink2_matrix(name: str) -> numpy.ndarray:
-    """The matrix `plink2 --make-rel square` wrote for a panel, 200 lines of
-    200 numbers separated by tabs."""
-    with gzip.open(REFERENCE_KINSHIP_DIR / f"{name}.plink2.rel.gz", "rt") as stored:
-        return numpy.loadtxt(stored, delimiter="\t")
+    """The 40000 entries of a panel as plink2 holds them, the little endian
+    float64 of `--make-rel square bin`, row after row.
+
+    The `<name>.plink2.rel.gz` beside it is the same matrix as text of six
+    significant digits, which is what the table of literals of the spec is
+    read from and what one entry of it is asserted against here. The whole
+    of the matrix is compared with these bits: six digits round an entry
+    near 1 by up to 5e-6, so a comparison with the text within 1e-5 passes
+    an error of up to 5e-6 and has no room left to find one in.
+    """
+    with gzip.open(REFERENCE_KINSHIP_DIR / f"{name}.plink2.rel.bin.gz", "rb") as stored:
+        entries = numpy.frombuffer(stored.read(), dtype="<f8")
+    return entries.reshape(PANEL_NUM_INDIVIDUALS, PANEL_NUM_INDIVIDUALS)
 
 
 def _plink2_individuals(name: str) -> tuple[str, ...]:
@@ -195,12 +235,12 @@ def _plink2_individuals(name: str) -> tuple[str, ...]:
 
 @pytest.mark.parametrize("name", PANELS)
 def test_every_entry_of_a_panel_is_the_one_plink2_wrote(name: str) -> None:
-    """The 40000 entries of each panel against `plink2 --make-rel square`.
+    """The 40000 entries of each panel against the bits of plink2's matrix.
 
     The individuals are compared with the ones plink2 wrote beside its
     matrix, so that the entries are matched pair by pair and not by their
     place alone, and the entry of the two full sibs `s000` and `s001` is
-    looked up by name.
+    looked up by name in the digits the spec's table prints.
     """
     kinship = calc_kinship(open_vcf(_panel(name)))
     of_plink2 = _plink2_matrix(name)
@@ -209,11 +249,10 @@ def test_every_entry_of_a_panel_is_the_one_plink2_wrote(name: str) -> None:
     assert kinship.individuals == _plink2_individuals(name)
     assert kinship.matrix.shape == (PANEL_NUM_INDIVIDUALS, PANEL_NUM_INDIVIDUALS)
     assert of_plink2.shape == kinship.matrix.shape
-    furthest = numpy.abs(kinship.matrix.to_numpy() - of_plink2).max()
-    assert furthest < OF_PLINK2, f"{name} is {furthest} from what plink2 wrote"
+    _assert_the_values_are(kinship.matrix.to_numpy(), of_plink2, OF_PLINK2)
     if name == "panel_called":
         assert kinship.matrix.loc["s000", "s001"] == pytest.approx(
-            OF_TWO_FULL_SIBS, abs=OF_PLINK2
+            OF_TWO_FULL_SIBS, abs=OF_THE_PRINTED_DIGITS
         )
 
 
@@ -229,9 +268,7 @@ def test_every_entry_of_a_panel_is_pyneis(name: str) -> None:
 
     assert ours.num_vars == theirs.num_vars
     assert ours.individuals == tuple(theirs.samples)
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_the_kinship_of_40_individuals_is_not_the_40_rows_of_the_whole_panel() -> None:
@@ -265,9 +302,7 @@ def test_the_kinship_of_40_individuals_is_pyneis() -> None:
 
     assert ours.num_vars == theirs.num_vars
     assert ours.individuals == tuple(theirs.samples)
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_the_individuals_are_taken_in_the_order_they_were_named(vcf_of) -> None:
@@ -385,9 +420,7 @@ def test_a_variant_of_three_alleles_is_refused_and_transformed_when_asked(
     theirs = pynei_kinship(vars_from_vcf(path))
 
     assert ours.num_vars == theirs.num_vars
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_a_pair_with_no_variant_called_in_both_names_the_two(vcf_of) -> None:
@@ -395,13 +428,63 @@ def test_a_pair_with_no_variant_called_in_both_names_the_two(vcf_of) -> None:
     never called together.
 
     Their entry would be divided by no variant at all. popnei raises a
-    `ValueError` naming the two and how many variants each of them has
-    called, where pyNei divides and leaves a NaN in the matrix.
+    `ValueError` naming the two individuals, and not the places they are at,
+    and how many variants each of them has called, where pyNei divides and
+    leaves a NaN in the matrix. The file is named as it is in every error of
+    one.
     """
-    variants = open_vcf(vcf_of(NEVER_CALLED_TOGETHER_GTS))
+    path = vcf_of(NEVER_CALLED_TOGETHER_GTS, NEVER_CALLED_TOGETHER_INDIVIDUALS)
 
-    with pytest.raises(ValueError, match="no variant called in both of them"):
-        calc_kinship(variants)
+    with pytest.raises(ValueError) as refused:
+        calc_kinship(open_vcf(path))
+
+    said = str(refused.value)
+    assert "'first' and 'third'" in said
+    assert "1 variant is called in the first and 1 in the second" in said
+    assert str(path) in said
+    assert "position" not in said
+
+
+def test_the_two_of_the_pair_are_named_as_the_individuals_argument_named_them(
+    vcf_of,
+) -> None:
+    """The same three individuals, with `individuals` naming them in another
+    order.
+
+    The core says where the two are among the individuals of the kinship,
+    which with `individuals` given is the order of that argument and not the
+    order of the file, so a message built from the file's order would name
+    the wrong individuals.
+    """
+    path = vcf_of(NEVER_CALLED_TOGETHER_GTS, NEVER_CALLED_TOGETHER_INDIVIDUALS)
+
+    with pytest.raises(ValueError) as refused:
+        calc_kinship(open_vcf(path), individuals=("third", "second", "first"))
+
+    assert "'third' and 'first'" in str(refused.value)
+
+
+def test_an_individual_with_no_called_genotype_is_named_on_its_own(vcf_of) -> None:
+    """One individual of three whose genotype is missing at every variant.
+
+    Its own entry would be divided by no variant at all, so the two of the
+    pair are one individual, and the message names that one instead of
+    telling the user to leave one of the two out.
+    """
+    path = vcf_of(
+        [
+            [[-1, -1], [0, 0], [1, 1]],
+            [[-1, -1], [0, 0], [1, 1]],
+        ],
+        NEVER_CALLED_TOGETHER_INDIVIDUALS,
+    )
+
+    with pytest.raises(ValueError) as refused:
+        calc_kinship(open_vcf(path))
+
+    said = str(refused.value)
+    assert "'first' has no called genotype" in said
+    assert "leave it out" in said
 
 
 def test_a_dataset_in_which_no_variant_varies_is_refused(vcf_of) -> None:
@@ -514,3 +597,432 @@ def test_filter_individuals_names_an_individual_that_is_not_in_the_matrix() -> N
 
     with pytest.raises(ValueError, match="'c'"):
         kinship.filter_individuals(["a", "c"])
+
+
+def test_a_matrix_that_is_no_frame_names_the_type_it_was_given() -> None:
+    """The entries as a numpy array, which has no index to read the names of
+    the individuals from."""
+    with pytest.raises(TypeError, match="ndarray"):
+        Kinship(matrix=numpy.zeros((2, 2)), num_vars=10)
+
+
+def test_a_matrix_that_holds_what_is_no_number_names_the_argument() -> None:
+    """A frame of text, which numpy refuses with words that name neither the
+    argument nor the kinship."""
+    matrix = pandas.DataFrame(
+        [["x", "y"], ["y", "x"]], index=["a", "b"], columns=["a", "b"]
+    )
+
+    with pytest.raises(ValueError, match="`matrix` holds what is no number"):
+        Kinship(matrix=matrix, num_vars=10)
+
+
+def test_an_individual_that_is_in_the_matrix_twice_is_refused() -> None:
+    """One name on two rows, which makes `filter_individuals` and every
+    lookup by that name give two rows where one was asked for."""
+    with pytest.raises(ValueError, match="'a' is named twice"):
+        _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "a"])
+
+
+def test_filter_individuals_refuses_a_name_it_was_given_twice() -> None:
+    """One name written twice in the call, which would give a 2 x 2 matrix
+    for one individual asked for."""
+    kinship = _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "b"])
+
+    with pytest.raises(ValueError, match="'a' is named twice"):
+        kinship.filter_individuals(["a", "a"])
+
+
+def test_a_matrix_holding_a_value_that_is_not_finite_names_its_cell() -> None:
+    """A NaN in the cell of a pair, which is what a matrix of pyNei holds for
+    a pair with no variant called in both of its individuals.
+
+    The matrix is symmetric, NaN in both cells of the pair, so a check that
+    took the NaN for an asymmetry would say that the two cells differ by
+    `nan` and name no cause a user can act on.
+    """
+    with pytest.raises(ValueError) as refused:
+        _kinship_of(
+            [[1.0, numpy.nan], [numpy.nan, 1.0]],
+            ["a", "b"],
+        )
+
+    said = str(refused.value)
+    assert "the cell of the row 'a' and the column 'b' holds nan" in said
+    assert "differ by" not in said
+
+
+def test_a_matrix_holding_an_infinity_is_refused_as_well() -> None:
+    """An infinity on the diagonal, which is a number no kinship holds and
+    which every value of the matrix would be compared against."""
+    with pytest.raises(ValueError, match="holds inf"):
+        _kinship_of([[numpy.inf, 0.5], [0.5, 1.0]], ["a", "b"])
+
+
+def test_a_matrix_of_no_row_is_refused() -> None:
+    """A frame with no row at all, which is square and names nobody twice,
+    so every other check of the class lets it past.
+
+    TypeScript refuses it in its constructor and the two packages refuse the
+    same matrices; before this it was `principal_components` alone that
+    complained, and everything else a user did with it worked."""
+    with pytest.raises(ValueError, match="no row"):
+        Kinship(matrix=pandas.DataFrame(), num_vars=10)
+
+
+def test_a_value_written_into_the_matrix_after_it_was_built_is_refused() -> None:
+    """The frame of a frozen `Kinship` is not frozen, so the checks made
+    when it was built hold only then: the components make them again.
+
+    Without that, the linear algebra is what refuses the matrix, with a
+    `RuntimeError` that calls a wrong matrix a defect of popnei and names
+    `g`, which is a matrix of `crates/popnei-linalg`."""
+    kinship = _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "b"])
+    kinship.matrix.iloc[1, 0] = numpy.nan
+
+    with pytest.raises(ValueError, match="row 1, column 0"):
+        kinship.principal_components(2)
+
+
+def test_filter_individuals_refuses_a_call_that_names_no_individual() -> None:
+    """An empty list, which would give a kinship of nobody carrying the
+    `num_vars` of the panel it came from."""
+    kinship = _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "b"])
+
+    with pytest.raises(ValueError, match="names no individual"):
+        kinship.filter_individuals([])
+
+
+def test_one_name_where_a_sequence_of_them_is_meant_is_refused() -> None:
+    """A string, which is a sequence of its letters: `filter_individuals("ab")`
+    asks for the individuals `a` and `b`, and for a name of one letter it
+    would give a kinship of that individual and say nothing."""
+    kinship = _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "b"])
+
+    with pytest.raises(TypeError, match='individuals=\\("a",\\)'):
+        kinship.filter_individuals("a")
+
+
+def test_one_name_where_a_sequence_of_them_is_meant_is_refused_by_calc_kinship(
+    vcf_of,
+) -> None:
+    """The same string given to `calc_kinship`, which without the refusal
+    asked the core for the individuals `i`, `0`."""
+    variants = open_vcf(vcf_of(WORKED_EXAMPLE_GTS, WORKED_EXAMPLE_INDIVIDUALS))
+
+    with pytest.raises(TypeError, match='individuals=\\("i0",\\)'):
+        calc_kinship(variants, individuals="i0")
+
+
+def test_individuals_that_are_no_sequence_of_names_are_refused(vcf_of) -> None:
+    """A whole number where the names are meant, which Python refuses with
+    `'int' object is not iterable` and names neither the argument nor the
+    call."""
+    variants = open_vcf(vcf_of(WORKED_EXAMPLE_GTS, WORKED_EXAMPLE_INDIVIDUALS))
+
+    with pytest.raises(TypeError, match="`individuals` is a sequence"):
+        calc_kinship(variants, individuals=4)
+
+
+def test_calc_kinship_refuses_a_call_that_names_no_individual(vcf_of) -> None:
+    """An empty sequence of individuals, which is a kinship of nobody."""
+    variants = open_vcf(vcf_of(WORKED_EXAMPLE_GTS, WORKED_EXAMPLE_INDIVIDUALS))
+
+    with pytest.raises(ValueError, match="names no individual"):
+        calc_kinship(variants, individuals=())
+
+
+def test_a_ploidy_above_254_is_refused(vcf_of) -> None:
+    """Two individuals whose genotypes hold 255 alleles, which the VCF reader
+    takes, its largest ploidy being 255, and which the pass that turns a
+    variant into dosages refuses: it writes the genotype of an individual as
+    one byte, a dosage from 0 to the ploidy or the code of a genotype with an
+    allele missing."""
+    genotypes = numpy.zeros((1, 2, 255), dtype=int)
+    genotypes[0, 1, :] = 1
+
+    with pytest.raises(ValueError, match="at a ploidy of 255"):
+        calc_kinship(open_vcf(vcf_of(genotypes), ploidy=255))
+
+
+def test_more_individuals_than_the_matrix_counts_in_are_refused(vcf_of) -> None:
+    """46341 individuals, one more than the 46340 whose square is inside the
+    2147483647 values the linear algebra counts in.
+
+    The check is at the entry of the calculation, before a block is read, so
+    the file holds one variant and is 500 kB of text.
+    """
+    genotypes = numpy.zeros((1, TOO_MANY_INDIVIDUALS, 2), dtype=int)
+    genotypes[0, :, 1] = 1
+
+    with pytest.raises(ValueError, match=f"it has {TOO_MANY_INDIVIDUALS} individuals"):
+        calc_kinship(open_vcf(vcf_of(genotypes)))
+
+
+def test_a_matrix_labelled_with_numbers_is_refused() -> None:
+    """A frame built as `pandas.DataFrame(matrix)`, which pandas labels with
+    the numbers 0 to N-1.
+
+    It is the way a user meets this, so the message says to write `index`
+    and `columns` with the names and not only that a number is no name.
+    """
+    matrix = pandas.DataFrame(numpy.array([[1.0, 0.5], [0.5, 1.0]]))
+
+    with pytest.raises(TypeError) as refused:
+        Kinship(matrix=matrix, num_vars=10)
+
+    said = str(refused.value)
+    assert "the row 0 of the matrix is labelled 0, of the type `int`" in said
+    assert "index=individuals, columns=individuals" in said
+
+
+def test_a_matrix_whose_columns_are_no_names_is_refused() -> None:
+    """The rows named and the columns left as numbers, which names the side
+    a user has to write."""
+    matrix = pandas.DataFrame(
+        numpy.array([[1.0, 0.5], [0.5, 1.0]]), index=["a", "b"], columns=[0, 1]
+    )
+
+    with pytest.raises(TypeError, match="the column 0 of the matrix"):
+        Kinship(matrix=matrix, num_vars=10)
+
+
+def test_the_kinship_of_a_calculation_passes_the_checks_of_a_matrix(vcf_of) -> None:
+    """What `calc_kinship` gives, built again as a `Kinship`.
+
+    The names come from the reader and are strings, so no check of a matrix
+    a user built fires on a matrix popnei built: a user who takes one apart
+    and puts it together again, which is what `filter_individuals` does,
+    gets it back.
+    """
+    kinship = calc_kinship(
+        open_vcf(vcf_of(WORKED_EXAMPLE_GTS, WORKED_EXAMPLE_INDIVIDUALS))
+    )
+
+    assert all(isinstance(name, str) for name in kinship.individuals)
+    again = Kinship(
+        matrix=kinship.matrix,
+        num_vars=kinship.num_vars,
+        pass_stats=kinship.pass_stats,
+    )
+    assert again.individuals == WORKED_EXAMPLE_INDIVIDUALS
+    assert again.num_vars == kinship.num_vars
+    assert again.pass_stats == kinship.pass_stats
+
+
+# The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on 23
+# September 2026, which "How it is verified" of the spec gives. No function
+# gives an eigenvalue, so they are read from the projections: a component is
+# `u_j * sqrt(lambda_j)` and `u_j` has length 1, so the sum of the squares of
+# a component's projections is its eigenvalue.
+#
+# They are written to 15 digits and not to the 9 they had: popnei is 4e-16
+# of itself from what numpy gives, and the third eigenvalue rounded to 9
+# digits is 8.5e-10 away, which is 85% of the 1e-9 they are held to. A
+# change that is right and moves an eigenvalue by 1.5e-10 would have
+# reddened this.
+EIGENVALUES_OF_PANEL_CALLED = (17.2691411554575, 12.4473152358509, 3.35871257714136)
+
+# How many components a panel of 200 individuals has. A kinship measures a
+# pair against the average pair of the panel, which takes one direction out
+# of it, so the last eigenvalue is 0 or below: numpy gives -3.44e-15 on
+# `panel_called` and -0.0321 on `panel`, against a tolerance of 7.67e-13.
+COMPONENTS_OF_A_PANEL = 199
+
+# The comparison with pyNei is over every component a panel has, 199 of
+# them, and not over the first ten alone: two components past the tenth can
+# be swapped for each other and nothing else of either suite notices.
+#
+# Each projection is held within a share of the largest absolute projection
+# of pyNei's, as the entries of the matrix are and for the same reason: the
+# smallest projection of the 199 components is 1.7e-06 and a bound relative
+# to it would ask of it what no arithmetic gives. Measured on 24 September
+# 2026, the worst projection is 1.3e-13 of the largest away from pyNei's on
+# both panels with numpy and popnei both on Accelerate, and 5.1e-13 and
+# 1.7e-12 with popnei on faer, where the last components, whose eigenvalues
+# are close together, are what differs. The bound is six times the worst of
+# those.
+#
+# pyNei takes the square root of the absolute value of an eigenvalue below
+# 0 and popnei does not, so the two agree on the components above the
+# tolerance alone, which is why this asks for the 199 a panel has and not
+# for 200.
+COMPONENTS_OF_PYNEI = 199
+OF_THE_PROJECTIONS_OF_PYNEI = 1e-11
+
+# The kinship of two individuals called at one variant, `0/0` and `1/1`,
+# which "How it is verified" gives: its matrix is 2 on the diagonal and -2
+# off it, its first component is 1.41421356 and -1.41421356, and its second
+# eigenvalue is 0, so asking it for 2 components gives 1. The two
+# projections are one number with opposite signs and the rule gives the first
+# of the two the positive one, which is the rule itself and not its
+# tolerance: both backends give the two coordinates with identical bits, so
+# the comparison of their absolute values decides and the 64 units in the
+# last place the rule allows are never consulted. The cargo test
+# `the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size`
+# is where they are.
+OF_TWO_INDIVIDUALS = [[2.0, -2.0], [-2.0, 2.0]]
+ITS_FIRST_COMPONENT = (1.41421356, -1.41421356)
+OF_THE_SPECS_DIGITS = 1e-8
+
+
+def _the_pops() -> pandas.Series:
+    """Which of the three subpopulations each individual of the panel
+    belongs to, the `pop` column of `tests/reference/gwas/phenotypes.csv`."""
+    phenotypes = pandas.read_csv(REFERENCE_GWAS_DIR / "phenotypes.csv")
+    return phenotypes.set_index("IID")["pop"]
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_every_component_of_a_panel_is_pyneis(name: str) -> None:
+    """Both libraries on the same panel, projection by projection, over
+    every one of the 199 components a panel has.
+
+    The absolute value of each of them is what is compared: the sign of a
+    component is popnei's own rule and pyNei gives whatever LAPACK gave, and
+    a component multiplied by -1 is the same component.
+
+    All 199 and not the first ten: two components past the tenth can be
+    swapped for each other with every other test of every suite still
+    passing, and a user who asks for 60 gets two of them in the wrong order.
+    """
+    ours = calc_kinship(open_vcf(_panel(name))).principal_components(
+        COMPONENTS_OF_PYNEI
+    )
+    theirs = pynei_kinship(vars_from_vcf(_panel(name))).principal_components(
+        COMPONENTS_OF_PYNEI
+    )
+
+    assert ours.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_PYNEI)
+    assert list(ours.index) == list(theirs.index)
+    _assert_the_values_are(
+        numpy.abs(ours.to_numpy()),
+        numpy.abs(theirs.to_numpy()),
+        OF_THE_PROJECTIONS_OF_PYNEI,
+    )
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_every_component_of_a_panel_obeys_the_sign_rule(name: str) -> None:
+    """The projection of the largest absolute value is positive in every one
+    of the 199 components of a panel.
+
+    Without the rule the sign of each component is whatever the
+    eigendecomposition gave, which is not the same in the two backends of
+    popnei nor in its three builds.
+    """
+    components = calc_kinship(open_vcf(_panel(name))).principal_components(
+        PANEL_NUM_INDIVIDUALS
+    )
+    projections = components.to_numpy()
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_A_PANEL)
+    furthest = numpy.abs(projections).argmax(axis=0)
+    largest = projections[furthest, numpy.arange(projections.shape[1])]
+    assert (largest > 0).all(), f"{int((largest <= 0).sum())} components are turned"
+
+
+def test_the_eigenvalues_of_the_panel_are_the_sums_of_the_squares() -> None:
+    """The three largest eigenvalues of `panel_called`, read from the
+    projections, which no function of popnei gives on its own."""
+    components = calc_kinship(open_vcf(_panel("panel_called"))).principal_components(3)
+
+    eigenvalues = (components**2).sum().to_numpy()
+    numpy.testing.assert_allclose(
+        eigenvalues, numpy.array(EIGENVALUES_OF_PANEL_CALLED), rtol=1e-9, atol=0
+    )
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_a_panel_has_one_component_fewer_than_its_individuals(name: str) -> None:
+    """200 components asked of a panel of 200 individuals gives 199.
+
+    The last eigenvalue is 0 or below it, since the matrix is measured
+    against the average pair of the panel, and a component whose eigenvalue
+    is not above the tolerance is not given. pyNei gives 200 there, the last
+    of them the square root of the absolute value of that eigenvalue, 0.179
+    on the panel with genotypes missing, along a direction in which the panel
+    does not vary.
+    """
+    components = calc_kinship(open_vcf(_panel(name))).principal_components(
+        PANEL_NUM_INDIVIDUALS
+    )
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_A_PANEL)
+    assert list(components.index) == [f"s{at:03d}" for at in range(200)]
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_the_first_component_tells_the_subpopulations_of_the_panel_apart(
+    name: str,
+) -> None:
+    """The three subpopulations of the panel, which the `pop` column of the
+    phenotypes names.
+
+    The standard deviation of the mean of `PC0` over the three is above the
+    standard deviation of `PC0` itself, which is what says that the component
+    separates them: it is `test_kinship_of_some_samples_and_threads` of
+    pyNei. Measured on 23 September 2026, 0.336 against 0.295 on both panels.
+    """
+    first = calc_kinship(open_vcf(_panel(name))).principal_components(1)["PC0"]
+    pops = _the_pops()
+
+    assert set(pops) == {0, 1, 2}
+    of_the_pops = first.groupby(pops.reindex(first.index)).mean()
+    assert len(of_the_pops) == 3
+    assert of_the_pops.std() > first.std()
+
+
+def test_the_columns_are_the_components_with_zeros_on_the_left() -> None:
+    """Ten components are `PC00` to `PC09`, and three are `PC0` to `PC2`:
+    the number has zeros on its left to the width of how many there are, as
+    the principal components of a table are named."""
+    kinship = calc_kinship(open_vcf(_panel("panel_called")))
+
+    assert list(kinship.principal_components(10).columns) == [
+        f"PC0{at}" for at in range(10)
+    ]
+    assert list(kinship.principal_components(3).columns) == ["PC0", "PC1", "PC2"]
+
+
+def test_no_component_asked_for_is_a_frame_of_no_columns() -> None:
+    """A `num_pcs` of 0, which is no error, as asking a principal component
+    analysis for no components is not."""
+    components = calc_kinship(open_vcf(_panel("panel_called"))).principal_components(0)
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, 0)
+    assert list(components.index) == [f"s{at:03d}" for at in range(200)]
+
+
+def test_the_components_of_a_kinship_a_user_built() -> None:
+    """The kinship of two individuals called at one variant, `0/0` and
+    `1/1`, whose matrix is 2 on the diagonal and -2 off it.
+
+    Its first component is 1.41421356 and -1.41421356, two projections of
+    one absolute value, and the sign rule gives the first of the two the
+    positive sign. Its second eigenvalue is 0, so asking it for 2 components
+    gives 1.
+    """
+    kinship = _kinship_of(OF_TWO_INDIVIDUALS, ["a", "b"], num_vars=1)
+
+    components = kinship.principal_components(2)
+
+    assert components.shape == (2, 1)
+    assert list(components.columns) == ["PC0"]
+    numpy.testing.assert_allclose(
+        components["PC0"].to_numpy(),
+        numpy.array(ITS_FIRST_COMPONENT),
+        rtol=0,
+        atol=OF_THE_SPECS_DIGITS,
+    )
+
+
+def test_a_num_pcs_that_counts_no_components_is_refused() -> None:
+    """A negative number of components, and what is no whole number of
+    them, both named by the argument a user wrote."""
+    kinship = _kinship_of(OF_TWO_INDIVIDUALS, ["a", "b"], num_vars=1)
+
+    with pytest.raises(ValueError, match="num_pcs"):
+        kinship.principal_components(-1)
+    with pytest.raises(TypeError, match="num_pcs"):
+        kinship.principal_components(2.5)

@@ -20,6 +20,7 @@ use crate::errors::JsPopneiError;
 use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
 use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
+use crate::pop_dists::{ArgumentsOfTheDists, PopDistsOfAPass, pop_dists_of};
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
 use crate::stats::{
     ArgumentsOfThePass, PerIndividualStats, PerVarDistribs, per_individual_stats_of,
@@ -251,6 +252,64 @@ impl VcfSource {
         steps: Steps,
     ) -> Result<R2Matrix, JsPopneiError> {
         r2_matrix_of(self, max_num_vars, steps)
+    }
+
+    /// Every measure of `measures` for every pair of the populations that
+    /// were named, over one pass over the VCF through the steps of
+    /// `steps`.
+    ///
+    /// The arguments are those of `calcPopDists` of `docs/specs/dists.md`,
+    /// as the package checked them and flat: the populations are their
+    /// names, the names of the individuals of every one of them one after
+    /// another, and how many individuals each of them holds; `measures`
+    /// holds the name of each measure to calculate; `group_per_variant` and
+    /// `group_base_pairs` are the `jackknifeGroup` the user wrote, each
+    /// variant its own group or a length in base pairs, and neither of them
+    /// is no standard error; and `min_num_individuals` is how many called
+    /// genotypes a population needs at a variant for that variant to count
+    /// for a pair.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`pop_dists_of`]: a name that is of no measure, a length of
+    /// the resampling groups that is no whole number of base pairs of 1 or
+    /// more, a population that names an individual the pass does not give,
+    /// names one twice or names none, fewer than two populations, a pass
+    /// that gives no variant, fewer resampling groups than a standard error
+    /// is built from, sums the memory of the tab does not take, a group
+    /// whose chromosome or positions JavaScript cannot hold, a pair of more
+    /// variants than a JavaScript array of counts holds, and a source that
+    /// cannot be read.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the arguments of `calcPopDists` of `docs/specs/dists.md`, each one as \
+                  the package checked it, and the populations flat: an array of arrays \
+                  is not one of the types wasm-bindgen carries"
+    )]
+    pub fn calc_pop_dists(
+        &self,
+        steps: Steps,
+        pop_names: Vec<String>,
+        pop_individuals: Vec<String>,
+        num_individuals_per_pop: Vec<u32>,
+        measures: Vec<String>,
+        group_per_variant: bool,
+        group_base_pairs: Option<f64>,
+        min_num_individuals: u32,
+    ) -> Result<PopDistsOfAPass, JsPopneiError> {
+        pop_dists_of(
+            self,
+            &steps,
+            &ArgumentsOfTheDists {
+                pop_names,
+                pop_individuals,
+                num_individuals_per_pop,
+                measures,
+                group_per_variant,
+                group_base_pairs,
+                min_num_individuals,
+            },
+        )
     }
 }
 

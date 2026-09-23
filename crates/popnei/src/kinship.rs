@@ -23,21 +23,32 @@
 //! the two agree only when the genotypes are in Hardy Weinberg proportions;
 //! the pass over a row that both calculations make, of
 //! [`crate::variant`], takes the divisor from its caller.
+//!
+//! [`principal_components`] places each individual along the directions in
+//! which the panel varies most, from the eigenvectors of that matrix, which
+//! is what a user gives an association study as covariates when they
+//! account for the structure of the panel without a mixed model.
 
 use std::fmt;
 
-use popnei_linalg::add_self_product_lower;
+use popnei_linalg::{add_self_product_lower, eigh_lower};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::pca::MAX_INDIVIDUALS_OF_THE_VARIANTS;
+use crate::pca::{fix_the_sign_of, the_components_with_variance, the_projections_of};
 use crate::variant::{
     DosageOptions, DosageScale, MISSING_ALLELE, Needs, RowPositions, the_standardized_block,
 };
 
+/// The most individuals a kinship is taken of, which is the most any
+/// calculation of popnei builds a matrix of the individuals by the
+/// individuals for, of [`crate::variant`]. This module checks it at its own
+/// entry, before the first block is read.
+pub use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
+
 /// The kinship of every pair of a set of individuals, which the pass gives
-/// away so that a binding crate hands it to numpy or to a `Float64Array`
-/// without copying it.
+/// away so that the Python binding hands the matrix to numpy without
+/// copying it; the wasm binding copies it into a `Float64Array`.
 #[derive(Debug, Clone)]
 pub struct Kinship {
     /// How many individuals the matrix has on each of its two sides.
@@ -46,7 +57,14 @@ pub struct Kinship {
     /// used. A variant whose called genotypes all have one dosage, and one
     /// with no called genotype, are in neither the sum of a pair nor its
     /// denominator.
-    pub num_vars: usize,
+    pub num_vars: u64,
+    /// How many variants the reader gave, used or not, which is the
+    /// `num_vars` of the pass stats.
+    ///
+    /// It is counted after `reblock`, which is where this pass sees the
+    /// variants; `reblock` gives every variant it is given, so it is the
+    /// count a reader between the pass and its source would make.
+    pub num_vars_given: u64,
     /// `num_individuals` x `num_individuals`, row after row, symmetric.
     pub matrix: Vec<f64>,
 }
@@ -62,6 +80,13 @@ pub enum KinshipTooLarge {
     Individuals(usize),
     /// The reader gave more variants than a `usize` counts, which is
     /// 4294967295 in WebAssembly, where a `usize` is 32 bits.
+    ///
+    /// No test reaches it and none can reach it natively: a reader would
+    /// have to give 18446744073709551616 variants, one for every value of
+    /// a `u64` and one more. It is here for the browser, where a dataset of
+    /// 4295 million variants is a file of that many lines and not a size of
+    /// this world either, and for the rule that a count popnei cannot hold
+    /// is an error and never a number that wrapped.
     Variants,
 }
 
@@ -184,8 +209,153 @@ pub fn calc_kinship<R: BlockReader>(
     Ok(Kinship {
         num_individuals,
         num_vars,
+        num_vars_given,
         matrix: gram,
     })
+}
+
+/// Where each individual falls along the directions in which a panel
+/// varies most, taken from the kinship of its individuals.
+///
+/// A user gives these to an association study as covariates, which is how
+/// the structure of a panel is accounted for without a mixed model.
+#[derive(Debug, Clone)]
+pub struct KinshipPcs {
+    /// How many components were given: the `num_pcs` that were asked for,
+    /// or the components the kinship has above the tolerance when it has
+    /// fewer of them.
+    pub num_comps: usize,
+    /// The individuals x [`Self::num_comps`] matrix of where each
+    /// individual falls along each component, row after row, with the
+    /// individuals in the order the kinship has them.
+    pub projections: Vec<f64>,
+}
+
+/// The principal components of a kinship, `num_pcs` of them at most.
+///
+/// With `lambda_j` the eigenvalues of the matrix from the largest and
+/// `u_j` its eigenvectors, the component `j` is `u_j * sqrt(lambda_j)`:
+/// where each individual falls along the direction in which the panel
+/// varies the `j`th most.
+///
+/// A component whose eigenvalue is not above the largest eigenvalue times
+/// the individuals times the difference between 1 and the next number an
+/// `f64` holds is not given, so a kinship with fewer components than were
+/// asked for gives the ones it has and [`KinshipPcs::num_comps`] says how
+/// many. The per pair denominators of a dataset with genotypes missing put
+/// eigenvalues below 0, which are the length of nothing: pyNei gives
+/// `num_pcs` components whatever the eigenvalue, taking the square root of
+/// its absolute value. The sign of each component is fixed by the rule of
+/// `docs/specs/pca.md`, the projection of the largest absolute value
+/// positive, so that the two backends of the eigendecomposition and the
+/// three builds of popnei give one answer.
+///
+/// These are close to the principal components of the variants the kinship
+/// was calculated from and they are not the same: a kinship divides each
+/// variant by `sqrt(ploidy * p * (1 - p))`, with `p` its allele frequency,
+/// and [`crate::pca::pca_of_variants`] by the standard deviation of its
+/// dosages, and the two agree only when the genotypes are in Hardy
+/// Weinberg proportions.
+///
+/// The matrix is copied here, since the eigendecomposition writes the
+/// eigenvectors over the matrix it is given and the caller keeps its
+/// kinship: 800 MB at 10000 individuals.
+/// [`principal_components_of`] takes a matrix by value and copies nothing,
+/// which is what a caller that does not keep a [`Kinship`] calls.
+///
+/// # Errors
+///
+/// [`Error::KinshipNoIndividual`] when the kinship has no individual,
+/// which leaves nobody to place along anything,
+/// [`Error::KinshipValueNotFinite`] when a value of the matrix is an
+/// infinity or a NaN, and [`Error::KinshipLinalg`] when the
+/// eigendecomposition could not be done.
+pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<KinshipPcs> {
+    principal_components_of(kinship.matrix.clone(), kinship.num_individuals, num_pcs)
+}
+
+/// The same components, of a matrix this takes over.
+///
+/// `matrix` is `num_individuals` x `num_individuals`, row after row, and
+/// its lower half is what is read: the eigendecomposition writes the
+/// eigenvectors over it, so nothing is copied here and the memory of one
+/// matrix is what the components cost besides the decomposition's own. A
+/// caller that keeps its kinship calls [`principal_components`], which
+/// copies.
+///
+/// Every value is checked to be finite before the decomposition, the upper
+/// half among them, although only the lower half is read: a matrix a user
+/// built and then wrote a NaN into is a wrong argument, and what the
+/// linear algebra would say of it names a matrix `g` and a row of it.
+///
+/// # Errors
+///
+/// [`Error::KinshipNoIndividual`] when `num_individuals` is 0, which
+/// leaves nobody to place along anything,
+/// [`Error::KinshipValueNotFinite`] when a value of the matrix is an
+/// infinity or a NaN, with where it is, and [`Error::KinshipLinalg`] when
+/// the matrix does not hold one value for each pair of the individuals or
+/// the eigendecomposition could not be done.
+pub fn principal_components_of(
+    matrix: Vec<f64>,
+    num_individuals: usize,
+    num_pcs: usize,
+) -> Result<KinshipPcs> {
+    if num_individuals == 0 {
+        return Err(Error::KinshipNoIndividual);
+    }
+    the_values_are_finite(&matrix, num_individuals)?;
+    // The eigendecomposition reads the lower half of the matrix and writes
+    // the eigenvectors over it, so the matrix this was given is what it
+    // works in.
+    let eigen = eigh_lower(matrix, num_individuals).map_err(|source| Error::KinshipLinalg {
+        operation: "eigendecomposition",
+        source,
+    })?;
+    // The matrix is the individuals by the individuals, so the tolerance
+    // of `docs/specs/pca.md`, the largest eigenvalue times the larger side
+    // of the matrix times the difference between 1 and the next number an
+    // `f64` holds, takes the individuals on both sides.
+    let num_comps =
+        the_components_with_variance(&eigen.values, num_individuals, num_individuals).min(num_pcs);
+    let mut projections = the_projections_of(&eigen, num_individuals, num_comps);
+    for component in 0..num_comps {
+        // Whether the component was turned round is for a caller that
+        // holds the weight of each trait in it, which the principal
+        // components of a table do and a kinship does not.
+        fix_the_sign_of(&mut projections, component, num_comps);
+    }
+    Ok(KinshipPcs {
+        num_comps,
+        projections,
+    })
+}
+
+/// That every value of the matrix of a kinship is finite, with where the
+/// first one that is not is.
+///
+/// The whole matrix is read and not the lower half alone: a user who wrote
+/// a value into a frame after it was checked wrote it somewhere, and an
+/// infinity or a NaN above the diagonal says the matrix is wrong as surely
+/// as one below it.
+///
+/// # Errors
+///
+/// [`Error::KinshipValueNotFinite`] with the row and the column of the
+/// value, counted from 0 among the individuals of the kinship.
+fn the_values_are_finite(matrix: &[f64], num_individuals: usize) -> Result<()> {
+    for (row, of_the_row) in matrix.chunks(num_individuals.max(1)).enumerate() {
+        for (col, value) in of_the_row.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(Error::KinshipValueNotFinite {
+                    row,
+                    col,
+                    value: *value,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How many variants each pair of individuals had called in both of them,
@@ -210,9 +380,9 @@ struct ThePass {
     /// How many variants each pair had called in both.
     denominators: Denominators,
     /// How many variants had variance and were used.
-    num_vars: usize,
+    num_vars: u64,
     /// How many variants the reader gave, used or not.
-    num_vars_given: usize,
+    num_vars_given: u64,
 }
 
 /// The one pass over the blocks: each block is standardized into a buffer
@@ -246,8 +416,8 @@ fn the_pass_over_the_blocks<R: BlockReader>(
 ) -> Result<ThePass> {
     let mut gram = vec![0.0; the_values_of(num_individuals)];
     let mut denominators = Denominators::OfEveryPair;
-    let mut num_vars = 0_usize;
-    let mut num_vars_given = 0_usize;
+    let mut num_vars = 0_u64;
+    let mut num_vars_given = 0_u64;
     // The two buffers of one block, kept from one block to the next so that
     // a pass over a million variants asks for them once. The rows that were
     // not used are left as they were and nothing reads them.
@@ -266,7 +436,12 @@ fn the_pass_over_the_blocks<R: BlockReader>(
             ploidy,
             options,
             RowPositions {
-                first: num_vars_given,
+                // Where the first variant of this block is among those the
+                // reader has given, which the error of a variant with more
+                // than two alleles names. A pass of more variants than a
+                // `usize` counts is the error of a pass too large, and in
+                // WebAssembly, where a `usize` is 32 bits, it is reachable.
+                first: usize::try_from(num_vars_given).map_err(|_| the_variants_are_too_many())?,
                 too_many: the_variants_are_too_many,
             },
             &mut standardized,
@@ -290,10 +465,10 @@ fn the_pass_over_the_blocks<R: BlockReader>(
             )?;
         }
         num_vars = num_vars
-            .checked_add(kept)
+            .checked_add(the_count_of(kept))
             .ok_or_else(the_variants_are_too_many)?;
         num_vars_given = num_vars_given
-            .checked_add(block.num_vars)
+            .checked_add(the_count_of(block.num_vars))
             .ok_or_else(the_variants_are_too_many)?;
     }
     Ok(ThePass {
@@ -329,7 +504,7 @@ fn the_denominators_of_the_block(
     used: &[bool],
     kept: usize,
     num_individuals: usize,
-    num_vars_before: usize,
+    num_vars_before: u64,
     called: &mut Vec<f64>,
     denominators: &mut Denominators,
 ) -> Result<()> {
@@ -459,7 +634,7 @@ fn the_entries_of(
     gram: &mut [f64],
     num_individuals: usize,
     denominators: &Denominators,
-    num_vars: usize,
+    num_vars: u64,
 ) -> Result<()> {
     match *denominators {
         Denominators::OfEveryPair => {
@@ -605,6 +780,17 @@ fn the_values_of_the_rows(num_vars: usize, num_individuals: usize) -> usize {
     num_vars * num_individuals
 }
 
+/// A count of the variants of one block as the count over the whole dataset
+/// it is added to.
+///
+/// A `usize` is 64 bits natively and 32 in WebAssembly, and both of them fit
+/// in a `u64`. A platform where one did not would give the largest `u64`
+/// here, which the sum of the pass refuses as more variants than it counts
+/// instead of wrapping.
+fn the_count_of(num_vars: usize) -> u64 {
+    u64::try_from(num_vars).unwrap_or(u64::MAX)
+}
+
 /// The error of a pass that gave more variants than a `usize` counts, which
 /// is 4294967295 in WebAssembly.
 fn the_variants_are_too_many() -> Error {
@@ -618,11 +804,96 @@ mod tests {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
-    use super::{Denominators, Kinship, calc_kinship, the_denominators_of_the_block};
+    use super::{
+        Denominators, Kinship, KinshipTooLarge, MAX_INDIVIDUALS_OF_THE_VARIANTS, ThePass,
+        calc_kinship, the_denominators_of_the_block, the_pass_over_the_blocks,
+    };
     use crate::block::{Block, BlockReader};
-    use crate::error::Error;
+    use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::MISSING_ALLELE as MISSING;
+    use crate::variant::{
+        ChromTable, DosageOptions, DosageScale, MISSING_ALLELE as MISSING, Needs,
+    };
+
+    /// What the kinship asks of the pass over a row: the divisor its allele
+    /// frequency gives a variant under Hardy Weinberg, and a variant of more
+    /// than two alleles refused.
+    const THE_DOSAGES: DosageOptions = DosageOptions {
+        transform_to_biallelic: false,
+        scale: DosageScale::OfHardyWeinberg,
+    };
+
+    /// A reader over blocks a test built, of `num_individuals` individuals
+    /// named `ind0` and on.
+    ///
+    /// It is how the pass is driven over more than one block: `calc_kinship`
+    /// puts `Reblock` before it, and `Reblock` joins anything under 10000
+    /// variants into one block, so no VCF small enough for a test reaches
+    /// the second block of a pass.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks it has not given yet, the next one last.
+        left: Vec<Block>,
+    }
+
+    impl GivenBlocks {
+        fn of(blocks: Vec<Block>, num_individuals: usize, ploidy: usize) -> GivenBlocks {
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (0..num_individuals).map(|at| format!("ind{at}")).collect(),
+                ploidy,
+                chroms: ChromTable::new(),
+                left,
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, _needs: Needs) {}
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The pass over the blocks of a reader of the tests, over every
+    /// individual of it.
+    fn the_pass_over(blocks: &mut GivenBlocks, num_individuals: usize, ploidy: usize) -> ThePass {
+        match the_pass_over_the_blocks(blocks, None, num_individuals, ploidy, &THE_DOSAGES) {
+            Ok(pass) => pass,
+            Err(error) => panic!("the pass over the blocks: {error}"),
+        }
+    }
+
+    /// The denominators the pass left, or a panic when it left a count.
+    fn the_denominators_of(pass: ThePass) -> Vec<f64> {
+        match pass.denominators {
+            Denominators::OfThePair(of_the_pairs) => of_the_pairs,
+            Denominators::OfEveryPair => {
+                panic!("the block with a genotype missing left the denominators a count")
+            }
+        }
+    }
 
     /// A block of the genotypes given, `num_individuals` individuals of the
     /// ploidy `ploidy`, variant after variant, with no column but the
@@ -647,10 +918,30 @@ mod tests {
         }
     }
 
-    /// The entries of the two reference panels are plink2's within one unit
-    /// of the last digit it prints for an entry of that size: it writes six
-    /// significant digits, so an entry near 1 is rounded by up to 5e-6.
+    /// What the table of literals of `docs/specs/kinship.md` is held to, one
+    /// unit of the last digit plink2 prints for an entry near 1: its text
+    /// holds six significant digits, so it rounds such an entry by up to
+    /// 5e-6. It is the bound of those eleven numbers and of nothing else;
+    /// the whole of each matrix is compared with the `f64` plink2 holds,
+    /// where there is room to find an error of the arithmetic.
     const OF_PLINK2: f64 = 1e-5;
+
+    /// What each of the 40000 entries of a panel is held to against the
+    /// `f64` of plink2, as a share of the largest absolute entry of that
+    /// matrix, which is 1.23 on both panels.
+    ///
+    /// It is a share of the matrix and not of the entry because an entry is
+    /// a sum of products that cancel: it can be as near 0 as the data makes
+    /// it while the rounding of its sum stays where it was, so a bound
+    /// relative to the entry asks the smallest entries for an accuracy that
+    /// no arithmetic has. Measured over the 40000 entries of each panel on
+    /// 24 September 2026, the largest difference as a share of the largest
+    /// entry is 3.6e-16 and 4.5e-16 with the linear algebra on Accelerate,
+    /// and 3.3e-15 and 2.3e-15 on faer, which `--no-default-features` and
+    /// both wasm targets build. This bound is thirty times the worst of the
+    /// four, and it allows 1.2e-13 at the largest entry where a bound of
+    /// 1e-12 relative to the entry, which failed on faer, allowed 1.2e-12.
+    const OF_THE_BITS_OF_PLINK2: f64 = 1e-13;
 
     /// The worked example is whole numbers, which pyNei gives within
     /// 4.4e-16, so nothing of it is near this.
@@ -721,6 +1012,19 @@ mod tests {
         }
     }
 
+    /// A reader over the bytes of a VCF of that ploidy, which the reader is
+    /// told and does not read from the file.
+    fn reader_of_the_ploidy(vcf: &[u8], ploidy: usize) -> VcfReader<Cursor<Vec<u8>>> {
+        let options = VcfOptions {
+            ploidy,
+            ..VcfOptions::default()
+        };
+        match VcfReader::new(Cursor::new(vcf.to_vec()), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("the reader was not built: {error}"),
+        }
+    }
+
     /// The kinship of every individual of a VCF held in memory, with a
     /// variant of more than two alleles refused.
     pub(super) fn the_kinship_of(vcf: &[u8], num_vars_per_block: Option<usize>) -> Kinship {
@@ -773,20 +1077,100 @@ mod tests {
     }
 
     /// The panel every genotype of which is called.
-    fn the_panel_called() -> (Vec<String>, Kinship) {
+    pub(super) fn the_panel_called() -> (Vec<String>, Kinship) {
         the_kinship_of_the_panel(&the_reference_path("panel_called.vcf.gz"))
     }
 
     /// The same panel with 3 in 100 of its genotypes missing whole.
-    fn the_panel_with_genotypes_missing() -> (Vec<String>, Kinship) {
+    pub(super) fn the_panel_with_genotypes_missing() -> (Vec<String>, Kinship) {
         the_kinship_of_the_panel(&the_dists_path("panel.vcf.gz"))
     }
 
+    /// The kinship of that panel with the reader giving `num_vars_per_block`
+    /// variants at a time, where `the_panel_with_genotypes_missing` lets the
+    /// reader choose the size.
+    fn the_kinship_of_the_panel_in_blocks_of(num_vars_per_block: usize) -> Kinship {
+        let options = VcfOptions {
+            ploidy: 2,
+            num_vars_per_block: Some(num_vars_per_block),
+            ..VcfOptions::default()
+        };
+        let path = the_dists_path("panel.vcf.gz");
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => kinship,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        }
+    }
+
     /// Where the individual of that name is in the file.
-    fn individual_at(individuals: &[String], name: &str) -> usize {
+    pub(super) fn individual_at(individuals: &[String], name: &str) -> usize {
         match individuals.iter().position(|held| held == name) {
             Some(at) => at,
             None => panic!("{name} is not an individual of the file"),
+        }
+    }
+
+    /// The 40000 entries of one of the panels as plink2 holds them, the
+    /// little endian `f64` of `--make-rel square bin`, row after row.
+    ///
+    /// The text of `--make-rel square` beside it holds six significant
+    /// digits, which rounds an entry near 1 by up to 5e-6: it is what the
+    /// table of literals of `docs/specs/kinship.md` is read from, and these
+    /// are what the whole of the matrix is compared with.
+    fn the_bits_of_plink2(name: &str) -> Vec<f64> {
+        use std::io::Read;
+
+        let path = the_reference_path(&format!("{name}.plink2.rel.bin.gz"));
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let mut bytes = Vec::new();
+        if let Err(error) = flate2::read::GzDecoder::new(file).read_to_end(&mut bytes) {
+            panic!("{path}: {error}", path = path.display());
+        }
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|eight| f64::from_le_bytes(*eight))
+            .collect()
+    }
+
+    /// Every entry of the matrix is plink2's within
+    /// [`OF_THE_BITS_OF_PLINK2`] of the largest absolute entry of it, and
+    /// the individuals are `s000` to `s199` in the order plink2 wrote them
+    /// in, which is the order of the VCF and what `<name>.plink2.rel.id`
+    /// says.
+    fn assert_the_matrix_is_plink2s(panel: &(Vec<String>, Kinship), name: &str) {
+        let (individuals, kinship) = panel;
+        for (at, individual) in individuals.iter().enumerate() {
+            assert_eq!(individual, &format!("s{at:03}"), "the individual at {at}");
+        }
+        let of_plink2 = the_bits_of_plink2(name);
+        assert_eq!(
+            of_plink2.len(),
+            kinship.matrix.len(),
+            "the entries of {name}"
+        );
+        // The largest absolute entry of the matrix, which every entry of it
+        // is held to a share of: the diagonal of a panel is near 1, and the
+        // entries near 0 are differences of sums that cancel and carry the
+        // rounding of those sums and not of themselves.
+        let largest = of_plink2
+            .iter()
+            .fold(0.0_f64, |so_far, value| so_far.max(value.abs()));
+        let allowed = OF_THE_BITS_OF_PLINK2 * largest;
+        for (at, (entry, expected)) in kinship.matrix.iter().zip(&of_plink2).enumerate() {
+            let apart = (entry - expected).abs();
+            assert!(
+                apart <= allowed,
+                "the entry {at} of {name} is {entry} and plink2 has {expected}, {apart} apart, where {allowed} is allowed of the largest entry {largest}"
+            );
         }
     }
 
@@ -810,7 +1194,7 @@ mod tests {
     /// individual is heterozygous and the one with a single allele have no
     /// variance and are left out. The genotype `./.` of `i2` at `v1` takes
     /// the mean dosage of its variant and is in the denominator of no pair.
-    fn the_worked_example() -> Vec<Vec<String>> {
+    pub(super) fn the_worked_example() -> Vec<Vec<String>> {
         vec![
             variant(&["0/0", "0/1", "1/1", "0/1"]),
             variant(&["0/0", "0/1", "./.", "1/1"]),
@@ -831,7 +1215,8 @@ mod tests {
     /// Every entry of the matrix is the one the table of the spec gives.
     fn assert_it_is_the_worked_example(kinship: &Kinship) {
         assert_eq!(kinship.num_individuals, 4);
-        assert_eq!(kinship.num_vars, 2);
+        assert_eq!(kinship.num_vars, 2, "the variants that were used");
+        assert_eq!(kinship.num_vars_given, 4, "the variants the reader gave");
         for (at, (entry, expected)) in kinship
             .matrix
             .iter()
@@ -951,6 +1336,66 @@ mod tests {
         }
     }
 
+    /// What the blocks before the first one with a genotype missing put in
+    /// every entry of the denominators is the variants they **used** and not
+    /// the variants they gave.
+    ///
+    /// The pass is driven over two blocks here, since `calc_kinship` puts
+    /// `Reblock` before it and no dataset a test builds reaches a second
+    /// block through that. The first block gives two variants of three
+    /// individuals and uses one, its first having one allele; the second
+    /// gives one variant that `ind2` is not called at. Every pair had the
+    /// one variant of the first block, and the pair without `ind2` had the
+    /// variant of the second too.
+    #[test]
+    fn the_denominators_carry_the_variants_the_blocks_used_and_not_the_ones_they_gave() {
+        let dropped_and_used = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        let missing = block_of(3, 2, &[0, 0, 1, 1, MISSING, MISSING]);
+        let mut blocks = GivenBlocks::of(vec![dropped_and_used, missing], 3, 2);
+
+        let pass = the_pass_over(&mut blocks, 3, 2);
+
+        assert_eq!(pass.num_vars, 2, "the variants that were used");
+        assert_eq!(pass.num_vars_given, 3, "the variants the reader gave");
+        let of_the_pairs = the_denominators_of(pass);
+        for (at, expected) in [(0, 2.0), (3, 2.0), (4, 2.0), (6, 1.0), (7, 1.0), (8, 1.0)] {
+            let count = of_the_pairs[at];
+            assert!(
+                (count - expected).abs() < OF_THE_WORKED_EXAMPLE,
+                "the entry {at} of the denominators is {count} and the variants called in both are {expected}"
+            );
+        }
+    }
+
+    /// The error of a variant with more than two alleles names its place
+    /// among the variants the reader gave, and not among the ones that were
+    /// used: a user looks for it in their file, where the variants that were
+    /// dropped are too. The first block here uses one of its two variants
+    /// and the variant of three alleles is the first of the second block, so
+    /// the two places are 2 and 1.
+    #[test]
+    fn a_variant_of_more_than_two_alleles_is_named_by_its_place_among_those_given() {
+        let dropped_and_used = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        let three_alleles = block_of(3, 2, &[0, 0, 1, 2, 1, 1]);
+        let mut blocks = GivenBlocks::of(vec![dropped_and_used, three_alleles], 3, 2);
+
+        let error = match the_pass_over_the_blocks(&mut blocks, None, 3, 2, &THE_DOSAGES) {
+            Ok(pass) => panic!("the pass used {} variants", pass.num_vars),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(
+                error,
+                Error::VariantWithMoreThanTwoAlleles {
+                    position: 2,
+                    num_alleles: 3
+                }
+            ),
+            "{error}"
+        );
+    }
+
     /// The frequencies, the means and the denominators are of the
     /// individuals the kinship was asked for: `v0` has a mean dosage of 0.5
     /// over `i0` and `i3` where it has 1 over the four, so the two entries
@@ -981,6 +1426,49 @@ mod tests {
         }
     }
 
+    /// The third worked example of "How it is verified" of
+    /// `docs/specs/kinship.md`, the one of a ploidy that is not 2: 3
+    /// individuals and 2 tetraploid variants, where the ploidy is in the
+    /// divisor of each variant twice and the genotype of `i2` at `v1` has
+    /// two of its four alleles missing, so it is missing whole and is in the
+    /// denominator of no pair. The numbers are pyNei's, read from an array
+    /// of genotypes because its VCF parser refuses a ploidy above 2.
+    #[test]
+    fn the_worked_example_of_four_alleles_to_a_genotype_gives_the_numbers_of_pynei() {
+        let vcf = vcf_of(
+            3,
+            &[
+                variant(&["0/0/0/0", "0/0/1/1", "1/1/1/1"]),
+                variant(&["0/0/0/0", "0/0/0/1", "0/0/./."]),
+            ],
+        );
+        let mut reader = reader_of_the_ploidy(&vcf, 4);
+
+        let kinship = match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => kinship,
+            Err(error) => panic!("the kinship was not taken: {error}"),
+        };
+
+        assert_eq!(kinship.num_vars, 2);
+        let of_pynei = [
+            16.0 / 7.0,
+            -2.0 / 7.0,
+            -4.0,
+            -2.0 / 7.0,
+            2.0 / 7.0,
+            0.0,
+            -4.0,
+            0.0,
+            4.0,
+        ];
+        for (at, (entry, expected)) in kinship.matrix.iter().zip(of_pynei).enumerate() {
+            assert!(
+                (entry - expected).abs() < OF_THE_WORKED_EXAMPLE,
+                "the entry {at} of the matrix is {entry} and pyNei gives {expected}"
+            );
+        }
+    }
+
     #[test]
     fn the_variants_used_of_both_panels_are_the_1200_of_the_files() {
         let (_, called) = the_panel_called();
@@ -990,6 +1478,20 @@ mod tests {
         assert_eq!(missing.num_vars, 1200);
         assert_eq!(called.num_individuals, 200);
         assert_eq!(missing.num_individuals, 200);
+    }
+
+    /// The whole of the matrix, all 40000 entries, against the `f64` plink2
+    /// wrote, which is the check of the arithmetic; the eleven tests below
+    /// are of the eleven literals of the spec and of the six digits its
+    /// table holds.
+    #[test]
+    fn the_whole_matrix_with_every_genotype_called_is_plink2s() {
+        assert_the_matrix_is_plink2s(&the_panel_called(), "panel_called");
+    }
+
+    #[test]
+    fn the_whole_matrix_with_genotypes_missing_is_plink2s() {
+        assert_the_matrix_is_plink2s(&the_panel_with_genotypes_missing(), "panel");
     }
 
     #[test]
@@ -1062,8 +1564,14 @@ mod tests {
         );
     }
 
-    /// The matrix is the same whichever of them is the major allele, so the
-    /// two halves of the matrix hold the same number for a pair.
+    /// Every entry above the diagonal holds the entry below it.
+    ///
+    /// The two halves are not worked out twice: the linear algebra writes
+    /// the lower half of the products and the pass copies it into the upper
+    /// one, so what this reads is that the copy reached every entry. A
+    /// matrix given away with the upper half as it was allocated would hold
+    /// 40000 zeros there and fail here, and a copy that missed a row or a
+    /// column would fail at its first entry.
     #[test]
     fn the_matrix_of_the_panel_is_symmetric() {
         let (_, kinship) = the_panel_with_genotypes_missing();
@@ -1081,34 +1589,33 @@ mod tests {
         }
     }
 
-    /// The blocks are joined and cut to one size before the pass, so the
-    /// size the reader gave does not change the variants; the sum over the
-    /// blocks is in floating point and the boundaries decide its last bits,
-    /// which is why this is compared within the tolerance of plink2 and not
-    /// bit by bit.
+    /// The size of block the reader gave changes no bit of the matrix,
+    /// because `reblock` joins and cuts the blocks to one size before the
+    /// pass: the panel is 1200 variants and the size for 200 individuals is
+    /// 10000, so the pass reads one block whether the reader gave 37
+    /// variants at a time or the size it chooses.
+    ///
+    /// The two are compared bit for bit and not within a tolerance. The sum
+    /// over the blocks is in floating point, so a pass that saw the blocks
+    /// of the reader as they came would give other last bits here, and that
+    /// is the whole of what this reads: 0 of the 40000 entries differ.
     #[test]
-    fn the_panel_read_in_blocks_of_37_variants_gives_the_same_entries() {
-        let options = VcfOptions {
-            ploidy: 2,
-            num_vars_per_block: Some(37),
-            ..VcfOptions::default()
-        };
-        let path = the_dists_path("panel.vcf.gz");
-        let mut reader = match VcfReader::from_path(&path, options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{path}: {error}", path = path.display()),
-        };
-        let individuals = reader.individuals().to_vec();
-        let kinship = match calc_kinship(&mut reader, None, false) {
-            Ok(kinship) => kinship,
-            Err(error) => panic!("{path}: {error}", path = path.display()),
-        };
+    fn the_panel_read_in_blocks_of_37_variants_gives_the_matrix_bit_for_bit() {
+        let of_37 = the_kinship_of_the_panel_in_blocks_of(37);
+        let of_the_default = the_panel_with_genotypes_missing().1;
 
-        let panel = (individuals, kinship);
-        assert_eq!(panel.1.num_vars, 1200);
-        assert_the_entry_is(&panel, "s000", "s000", 1.09626);
-        assert_the_entry_is(&panel, "s000", "s001", 0.650379);
-        assert_the_entry_is(&panel, "s100", "s101", 0.604119);
+        assert_eq!(of_37.num_vars, of_the_default.num_vars);
+        assert_eq!(of_37.num_vars_given, of_the_default.num_vars_given);
+        assert_eq!(of_37.matrix.len(), of_the_default.matrix.len());
+        for (at, (entry, of_the_default)) in
+            of_37.matrix.iter().zip(&of_the_default.matrix).enumerate()
+        {
+            assert_eq!(
+                entry.to_bits(),
+                of_the_default.to_bits(),
+                "the entry {at} is {entry} in blocks of 37 and {of_the_default} in the size popnei chooses"
+            );
+        }
     }
 
     /// A variant with three alleles among its called genotypes is an error,
@@ -1183,6 +1690,60 @@ mod tests {
         };
 
         assert!(matches!(error, Error::KinshipNoIndividual), "{error}");
+    }
+
+    /// More individuals than the individuals x individuals matrix holds
+    /// values for are refused at the entry, before a block is read: the
+    /// matrix of 46341 would hold more than the 2147483647 values the
+    /// linear algebra counts in. The reader here has four individuals and
+    /// is never asked for a block.
+    #[test]
+    fn more_individuals_than_a_matrix_of_them_counts_in_are_refused_at_the_entry() {
+        let too_many = MAX_INDIVIDUALS_OF_THE_VARIANTS
+            .checked_add(1)
+            .expect("one individual more than the largest matrix holds");
+        let mut reader = reader_over(&vcf_of(4, &the_worked_example()), None);
+
+        let error = match calc_kinship(&mut reader, Some(&vec![0; too_many]), false) {
+            Ok(kinship) => panic!("the kinship was taken over {} variants", kinship.num_vars),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::KinshipVariantsTooLarge {
+                    problem: KinshipTooLarge::Individuals(num_individuals),
+                } if num_individuals == too_many
+            ),
+            "{message}"
+        );
+        assert!(message.contains("46341 individuals"), "{message}");
+    }
+
+    /// A ploidy above the 254 a dosage is written at is refused by the pass
+    /// over a row, which this one gets the error from and writes none of its
+    /// own: the message names no calculation, since the two that walk that
+    /// pass both raise it.
+    #[test]
+    fn a_ploidy_above_what_a_dosage_is_written_at_is_refused_by_the_row() {
+        let of_255_alleles = ["0"; 255].join("/");
+        let vcf = vcf_of(2, &[variant(&[&of_255_alleles, &of_255_alleles])]);
+        let mut reader = reader_of_the_ploidy(&vcf, 255);
+
+        let error = match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => panic!("the kinship was taken over {} variants", kinship.num_vars),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VariantPloidyTooLarge { ploidy: 255 }),
+            "{message}"
+        );
+        assert!(!message.contains("kinship"), "{message}");
+        assert!(!message.contains("principal component"), "{message}");
     }
 
     /// An individual that is not in the dataset is refused by the block,
@@ -1273,6 +1834,10 @@ mod cases {
     /// Two individuals with no variant called in both are refused, with
     /// their positions and how many variants each of them has called. pyNei
     /// divides by 0 and leaves the NaN in the matrix.
+    ///
+    /// `i0` is called at two of the three variants and `i2` at one, so the
+    /// two counts of the message are different numbers and the one that
+    /// belongs to each of the two is read.
     #[test]
     fn a_pair_with_no_variant_called_in_both_is_refused_naming_the_two() {
         let error = the_kinship_refused(&vcf_of(
@@ -1280,6 +1845,7 @@ mod cases {
             &[
                 variant(&["0/0", "0/1", "./."]),
                 variant(&["./.", "0/1", "1/1"]),
+                variant(&["0/0", "1/1", "./."]),
             ],
         ));
 
@@ -1290,12 +1856,53 @@ mod cases {
                 Error::KinshipPairWithNoVariantCalled {
                     one: 0,
                     other: 2,
-                    num_vars_of_one: 1,
+                    num_vars_of_one: 2,
                     num_vars_of_other: 1,
                 }
             ),
             "{message}"
         );
+        assert!(
+            message.contains("2 variants are called in the first and 1 in the second"),
+            "{message}"
+        );
+    }
+
+    /// An individual with no called genotype at all, which is a sequencing
+    /// that failed, is named on its own: every pair it is in has no variant
+    /// called in both, and what a user has to do is leave that one
+    /// individual out, not one of a pair. It is the entry of that individual
+    /// with itself that has no variant, and for `i0` it is the first entry
+    /// of the matrix that is read.
+    #[test]
+    fn an_individual_with_no_called_genotype_is_named_on_its_own() {
+        let error = the_kinship_refused(&vcf_of(
+            3,
+            &[
+                variant(&["./.", "0/1", "1/1"]),
+                variant(&["./.", "0/0", "1/1"]),
+            ],
+        ));
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::KinshipPairWithNoVariantCalled {
+                    one: 0,
+                    other: 0,
+                    num_vars_of_one: 0,
+                    num_vars_of_other: 0,
+                }
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("has no called genotype among the variants that were used"),
+            "{message}"
+        );
+        assert!(message.contains("leave it out"), "{message}");
+        assert!(!message.contains("one of the two"), "{message}");
     }
 
     /// A dataset in which no variant varies is refused: every variant has
@@ -1343,5 +1950,501 @@ mod cases {
             matches!(error, Error::KinshipNoVariantWithVariance),
             "{error}"
         );
+    }
+}
+
+/// The principal components of a kinship, "The principal components of the
+/// kinship" of `docs/specs/kinship.md`.
+#[cfg(test)]
+mod components {
+    use super::tests::{
+        individual_at, the_kinship_of, the_panel_called, the_panel_with_genotypes_missing,
+        the_worked_example, variant, vcf_of,
+    };
+    use super::{
+        Kinship, KinshipPcs, fix_the_sign_of, principal_components, the_components_with_variance,
+    };
+    use crate::error::Error;
+
+    /// What the eigenvalues and the projections of numpy 2.5.3 are held to,
+    /// relative for an eigenvalue and absolute for a projection, which is
+    /// what "How it is verified" of `docs/specs/kinship.md` asks. The
+    /// projections of the worked example are between 0.2 and 1.5, so the two
+    /// bounds are of the same size there.
+    const OF_NUMPY: f64 = 1e-9;
+
+    /// The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on
+    /// 23 September 2026, written to 15 digits.
+    ///
+    /// They had 9, and popnei is 4e-16 of itself from what numpy gives
+    /// while the third of them rounded to 9 digits is 8.5e-10 away, 85% of
+    /// the 1e-9 they are held to: a change that is right and moves an
+    /// eigenvalue by 1.5e-10 would have reddened this and the two suites
+    /// that assert the same three numbers.
+    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] = [
+        17.269_141_155_457_5,
+        12.447_315_235_850_9,
+        3.358_712_577_141_36,
+    ];
+
+    /// The projections of the two components of the worked example of "How
+    /// it is verified" of `docs/specs/kinship.md`, from numpy 2.5.3 on 23
+    /// September 2026, with the sign of the rule: 4 individuals x 2
+    /// components, row after row. The two of `i1` are 0, since its
+    /// standardized dosage is 0 at both variants that were used.
+    const THE_COMPONENTS_OF_THE_WORKED_EXAMPLE: [f64; 8] = [
+        1.45989777643,
+        -0.212872996577, //
+        0.0,
+        0.0, //
+        -1.34910400096,
+        -0.550866821327, //
+        -0.461372751067,
+        0.937211435408,
+    ];
+
+    /// The components of a kinship, or a panic with what they failed with.
+    fn the_components_of(kinship: &Kinship, num_pcs: usize) -> KinshipPcs {
+        match principal_components(kinship, num_pcs) {
+            Ok(pcs) => pcs,
+            Err(error) => panic!("the components were not taken: {error}"),
+        }
+    }
+
+    /// Where one individual falls along one component.
+    fn the_projection_of(pcs: &KinshipPcs, individual: usize, component: usize) -> f64 {
+        let at = individual
+            .checked_mul(pcs.num_comps)
+            .and_then(|row| row.checked_add(component))
+            .expect("the place of the projection");
+        pcs.projections[at]
+    }
+
+    /// The sum of the squares of the projections of one component, which is
+    /// its eigenvalue: a component is `u_j sqrt(lambda_j)` and the
+    /// eigenvector `u_j` has length 1. No function of popnei gives an
+    /// eigenvalue, so this is how the eigenvalues are read.
+    fn the_sum_of_the_squares_of(
+        pcs: &KinshipPcs,
+        component: usize,
+        num_individuals: usize,
+    ) -> f64 {
+        (0..num_individuals)
+            .map(|individual| the_projection_of(pcs, individual, component).powi(2))
+            .sum()
+    }
+
+    /// The projection of a component that decides its sign: the one of the
+    /// largest absolute value, and the first of them when two are exactly of
+    /// one size.
+    ///
+    /// The rule of `docs/specs/pca.md` takes two projections within 64 units
+    /// in the last place of each other for one absolute value, which this
+    /// does not. No dataset of this module reaches that tolerance: neither
+    /// panel has such a pair, the two largest absolute values of a component
+    /// being 2.5e-3 of each other at the closest on `panel_called` and
+    /// 4.2e-4 on `panel`, measured with numpy 2.5.3 over the 199 components
+    /// of each; and the two projections of the kinship of two individuals
+    /// below are one number with opposite signs, which both backends give
+    /// with identical bits, so their absolute values are compared and found
+    /// equal without it.
+    /// `the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size`
+    /// is where the tolerance decides.
+    fn the_projection_that_fixes_the_sign_of(
+        pcs: &KinshipPcs,
+        component: usize,
+        num_individuals: usize,
+    ) -> f64 {
+        let mut largest = 0.0_f64;
+        for individual in 0..num_individuals {
+            let projection = the_projection_of(pcs, individual, component);
+            if projection.abs() > largest.abs() {
+                largest = projection;
+            }
+        }
+        largest
+    }
+
+    /// Every component of a kinship has the projection that decides its sign
+    /// above 0, which is the rule of `docs/specs/pca.md`.
+    fn assert_every_component_obeys_the_sign_rule(kinship: &Kinship, pcs: &KinshipPcs, of: &str) {
+        assert!(pcs.num_comps > 0, "the components of {of}");
+        for component in 0..pcs.num_comps {
+            let largest =
+                the_projection_that_fixes_the_sign_of(pcs, component, kinship.num_individuals);
+            assert!(
+                largest > 0.0,
+                "the component {component} of {of} has {largest} as the projection of its largest absolute value"
+            );
+        }
+    }
+
+    /// The kinship of the worked example of `docs/specs/kinship.md`: 4
+    /// individuals, of which `i1` is 0 against everyone, and 2 variants with
+    /// variance of the 4 the reader gives.
+    fn the_kinship_of_the_worked_example() -> Kinship {
+        the_kinship_of(&vcf_of(4, &the_worked_example()), None)
+    }
+
+    /// Two individuals and one variant, `0/0` and `1/1`: the standardized
+    /// dosages are -sqrt(2) and sqrt(2) over a denominator of 1, so the
+    /// matrix is 2 on the diagonal and -2 off it, and its one component has
+    /// two projections of one absolute value.
+    fn the_kinship_of_two_individuals() -> Kinship {
+        the_kinship_of(&vcf_of(2, &[variant(&["0/0", "1/1"])]), None)
+    }
+
+    /// The sum of the squares of the projections of a component is its
+    /// eigenvalue, and the three largest of `panel_called` are
+    /// 17.2691411554575, 12.4473152358509 and 3.35871257714136 from numpy
+    /// 2.5.3.
+    #[test]
+    fn the_first_three_components_of_the_panel_hold_the_eigenvalues_numpy_gives() {
+        let (_, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, 3);
+
+        assert_eq!(pcs.num_comps, 3, "the components asked for");
+        assert_eq!(pcs.projections.len(), 600, "the individuals x components");
+        for (component, eigenvalue) in THE_EIGENVALUES_OF_THE_PANEL.into_iter().enumerate() {
+            let sum = the_sum_of_the_squares_of(&pcs, component, kinship.num_individuals);
+            assert!(
+                (sum - eigenvalue).abs() <= OF_NUMPY * eigenvalue,
+                "the squares of the component {component} add up to {sum} and numpy gives {eigenvalue}"
+            );
+        }
+    }
+
+    /// The panel with every genotype called, over every component it has.
+    #[test]
+    fn every_component_of_the_panel_called_obeys_the_sign_rule() {
+        let (_, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, kinship.num_individuals);
+
+        assert_every_component_obeys_the_sign_rule(&kinship, &pcs, "panel_called");
+    }
+
+    /// The panel with 3 in 100 of its genotypes missing, whose per pair
+    /// denominators put an eigenvalue below 0.
+    #[test]
+    fn every_component_of_the_panel_with_genotypes_missing_obeys_the_sign_rule() {
+        let (_, kinship) = the_panel_with_genotypes_missing();
+
+        let pcs = the_components_of(&kinship, kinship.num_individuals);
+
+        assert_every_component_obeys_the_sign_rule(&kinship, &pcs, "panel");
+    }
+
+    /// The rule of `docs/specs/pca.md` gives the first of two projections of
+    /// one absolute value the positive sign. The two individuals of one
+    /// variant have projections of sqrt(2) and -sqrt(2), the same number
+    /// with opposite signs, so which of the two the eigendecomposition
+    /// leaves the larger by a bit is what would decide the sign of the
+    /// component without the tolerance of the rule.
+    #[test]
+    fn the_first_of_two_projections_of_one_absolute_value_is_the_positive_one() {
+        let kinship = the_kinship_of_two_individuals();
+
+        let pcs = the_components_of(&kinship, 2);
+
+        assert_eq!(pcs.num_comps, 1, "the second eigenvalue is 0");
+        let first = the_projection_of(&pcs, 0, 0);
+        let second = the_projection_of(&pcs, 1, 0);
+        assert!(
+            (first - std::f64::consts::SQRT_2).abs() < OF_NUMPY,
+            "the first individual is at {first} and sqrt(2) is asked for"
+        );
+        assert!(
+            (second + std::f64::consts::SQRT_2).abs() < OF_NUMPY,
+            "the second individual is at {second} and -sqrt(2) is asked for"
+        );
+    }
+
+    /// The worked example has 4 individuals and eigenvalues 4.16424794,
+    /// 1.22713444, -3.2e-16 and -0.39138238 from numpy 2.5.3, so two of them
+    /// are above the tolerance and 6 components asked for give 2. pyNei
+    /// gives the 6 that were asked for and raises out of pandas above the
+    /// individuals.
+    #[test]
+    fn a_kinship_asked_for_more_components_than_it_has_gives_the_ones_above_the_tolerance() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 6);
+
+        assert_eq!(pcs.num_comps, 2, "the components above the tolerance");
+        assert_eq!(pcs.projections.len(), 8, "4 individuals x 2 components");
+    }
+
+    /// The threshold a component has to be above grows with the side of the
+    /// matrix: it is the largest eigenvalue times the side times the
+    /// epsilon of an `f64`, so a kinship of 200 individuals cuts at
+    /// 4.44e-14 of the largest eigenvalue and one of 5 cuts at 1.11e-15 of
+    /// it. An eigenvalue of 1.5e-15 of the largest is a component of the
+    /// second and of no component of the first.
+    ///
+    /// The threshold is `crate::pca`'s, which the components of a kinship
+    /// take unchanged, and the side of it had no test: taking it out leaves
+    /// every test of the principal components and of the kinship green,
+    /// where a threshold of 0 reddens ten of them. It is read here and not
+    /// beside the threshold because the 47 tests of `pca.rs` are the
+    /// evidence that this plan changed no number of the principal
+    /// components, and they keep their names and their count.
+    #[test]
+    fn the_threshold_of_a_component_grows_with_the_side_of_the_matrix() {
+        // From the largest, as an eigendecomposition gives them: one
+        // eigenvalue of 1.5e-15 of the largest and one below 0.
+        let values = [1.0, 1.5e-15, -2e-16];
+
+        assert_eq!(
+            the_components_with_variance(&values, 200, 200),
+            1,
+            "of 200 individuals, whose threshold is 4.44e-14 of the largest eigenvalue"
+        );
+        assert_eq!(
+            the_components_with_variance(&values, 5, 5),
+            2,
+            "of 5 individuals, whose threshold is 1.11e-15 of it"
+        );
+    }
+
+    /// Each projection of the two components of the worked example is the
+    /// one numpy 2.5.3 gives, with the sign of the rule, which is what says
+    /// that a component is the eigenvector times the square root of its
+    /// eigenvalue and that the matrix is individuals x components.
+    #[test]
+    fn the_components_of_the_worked_example_are_the_ones_numpy_gives() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 2);
+
+        assert_eq!(pcs.num_comps, 2);
+        for (at, (projection, expected)) in pcs
+            .projections
+            .iter()
+            .zip(THE_COMPONENTS_OF_THE_WORKED_EXAMPLE)
+            .enumerate()
+        {
+            assert!(
+                (projection - expected).abs() < OF_NUMPY,
+                "the projection {at} is {projection} and numpy gives {expected}"
+            );
+        }
+    }
+
+    /// A kinship gives the components that were asked for when it has more
+    /// of them: the worked example has 2 above the tolerance, and 1 asked
+    /// for is 1, the first of them.
+    #[test]
+    fn a_kinship_asked_for_fewer_components_than_it_has_gives_that_many() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 1);
+
+        assert_eq!(pcs.num_comps, 1, "the components asked for");
+        assert_eq!(pcs.projections.len(), 4, "4 individuals x 1 component");
+        for (at, (projection, expected)) in pcs
+            .projections
+            .iter()
+            .zip(THE_COMPONENTS_OF_THE_WORKED_EXAMPLE.into_iter().step_by(2))
+            .enumerate()
+        {
+            assert!(
+                (projection - expected).abs() < OF_NUMPY,
+                "the projection {at} of the first component is {projection} and numpy gives {expected}"
+            );
+        }
+    }
+
+    /// A kinship measures each pair against the average pair of the panel,
+    /// which takes one direction out of it exactly when no genotype is
+    /// missing, since each variant is centered; with the per pair
+    /// denominators it is measured and not proved, which
+    /// `docs/specs/kinship.md` says. The last eigenvalue is 0 or below it
+    /// on both panels: -3.44e-15 on `panel_called` and -0.0321 on `panel`
+    /// from numpy 2.5.3, against a tolerance of 7.67e-13 on both.
+    /// pyNei gives 200 components on either, the last of them the square
+    /// root of the absolute value of that eigenvalue.
+    #[test]
+    fn both_panels_asked_for_a_component_for_each_individual_give_one_fewer() {
+        let (_, called) = the_panel_called();
+        let (_, missing) = the_panel_with_genotypes_missing();
+
+        let of_the_called = the_components_of(&called, 200);
+        let of_the_missing = the_components_of(&missing, 200);
+
+        assert_eq!(of_the_called.num_comps, 199, "panel_called");
+        assert_eq!(of_the_missing.num_comps, 199, "panel");
+    }
+
+    /// The projection of `s000` and of `s199` on the first component of
+    /// `panel_called`, from numpy 2.5.3 on 24 September 2026 with the sign
+    /// rule applied: 0.0506331222853770 and -0.2797284741269570.
+    ///
+    /// They say which individual each row of the matrix of projections
+    /// belongs to, which nothing else of this crate reads: the two tests of
+    /// a panel above it are a sum over the rows and the sign of the largest
+    /// of them, and both are the same numbers when two individuals are
+    /// swapped for each other. Swapping the rows 0 and 1 of the
+    /// eigenvectors leaves every other test of the crate passing.
+    #[test]
+    fn the_first_component_of_the_panel_places_two_named_individuals_where_numpy_does() {
+        let (individuals, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, 10);
+
+        assert_eq!(pcs.num_comps, 10);
+        for (name, of_numpy) in [
+            ("s000", 0.050_633_122_285_377),
+            ("s199", -0.279_728_474_126_957),
+        ] {
+            let at = individual_at(&individuals, name);
+            // The projections are the individuals x the components, row
+            // after row, so the first component of an individual is where
+            // its row starts.
+            let projection = pcs.projections[at * pcs.num_comps];
+            assert!(
+                (projection - of_numpy).abs() < OF_NUMPY,
+                "the first component of {name} is {projection} and numpy gives {of_numpy}"
+            );
+        }
+    }
+
+    /// The rule that fixes the sign of a component calls two projections
+    /// one absolute value when they are within 64 units in the last place
+    /// of each other, and keeps the first of the two: here the second is 32
+    /// units above the first in absolute value, so without that tolerance
+    /// the second would decide and the component would be left as it is.
+    ///
+    /// No kinship of this module reaches the tolerance, so nothing else
+    /// here reads it: setting it to 0 leaves every test of the kinship
+    /// green. It is the rule of `docs/specs/pca.md`, which the components
+    /// of a kinship take unchanged, and it is read here because the 47
+    /// tests of `pca.rs` are the evidence that this plan changed no number
+    /// of the principal components and they keep their names and their
+    /// count.
+    #[test]
+    fn the_tolerance_of_the_sign_rule_keeps_the_first_of_two_that_are_of_one_size() {
+        // One component of two individuals: -1 and one number 32 units in
+        // the last place above 1.
+        let mut projections = [-1.0, 1.0 + 32.0 * f64::EPSILON];
+
+        let turned = fix_the_sign_of(&mut projections, 0, 1);
+
+        assert!(
+            turned,
+            "the component is turned round by the first of the two"
+        );
+        assert!(
+            projections[0] > 0.0,
+            "the projections are {projections:?} and the first of them decides the sign"
+        );
+    }
+
+    /// The components come in the order of their eigenvalues, from the
+    /// largest, which is what makes `PC0` the direction the panel varies
+    /// most along.
+    ///
+    /// The eigenvalue of a component is the sum of the squares of its
+    /// projections, since a component is `u_j * sqrt(lambda_j)` and `u_j`
+    /// has length 1. All 199 of a panel are read: two components past the
+    /// tenth can be swapped for each other with every literal of every
+    /// suite still asserting what it did, and a user who asks for 60
+    /// components gets two of them in the wrong order.
+    #[test]
+    fn the_components_of_a_panel_come_in_the_order_of_their_eigenvalues() {
+        let (_, called) = the_panel_called();
+        let (_, missing) = the_panel_with_genotypes_missing();
+
+        for (name, kinship) in [("panel_called", called), ("panel", missing)] {
+            let pcs = the_components_of(&kinship, 200);
+            let mut of_the_component: Vec<f64> = vec![0.0; pcs.num_comps];
+            for of_the_individual in pcs.projections.chunks_exact(pcs.num_comps) {
+                for (sum, projection) in of_the_component.iter_mut().zip(of_the_individual) {
+                    *sum += projection * projection;
+                }
+            }
+            for (at, pair) in of_the_component.windows(2).enumerate() {
+                let (this, next) = (pair[0], pair[1]);
+                assert!(
+                    this >= next,
+                    "the eigenvalue of the component {at} of {name} is {this} and the one after it {next}"
+                );
+            }
+        }
+    }
+
+    /// Asking for no component is not an error and gives none, as asking a
+    /// principal component analysis of the variants for none is not.
+    #[test]
+    fn a_kinship_asked_for_no_component_gives_none() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 0);
+
+        assert_eq!(pcs.num_comps, 0);
+        assert!(pcs.projections.is_empty(), "{:?}", pcs.projections);
+    }
+
+    /// A kinship of no individual leaves nobody to place along a component.
+    /// A user reaches it from Python with an empty frame, which the checks
+    /// of a kinship built by hand let past, since a matrix of no row is
+    /// square and names nobody twice.
+    #[test]
+    fn a_kinship_of_no_individual_is_refused() {
+        let kinship = Kinship {
+            num_individuals: 0,
+            num_vars: 0,
+            num_vars_given: 0,
+            matrix: Vec::new(),
+        };
+
+        let error = match principal_components(&kinship, 3) {
+            Ok(pcs) => panic!("{} components were given", pcs.num_comps),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, Error::KinshipNoIndividual), "{error}");
+    }
+
+    /// A value of the matrix that is not finite is a wrong matrix, and the
+    /// message names the row and the column it is at. The frame of a
+    /// `Kinship` is checked when the object is built and a user can write
+    /// into it afterwards, so this is where such a value arrives; without
+    /// the check the linear algebra refuses it and names a matrix `g`, an
+    /// internal name of `crates/popnei-linalg`, and Python calls a wrong
+    /// matrix a defect of popnei.
+    #[test]
+    fn a_value_of_the_matrix_that_is_not_finite_is_refused_with_where_it_is() {
+        // The matrix is 4 x 4: the entry 4 is the row 1 and the column 0,
+        // below the diagonal and read by the eigendecomposition, and the
+        // entry 1 is the row 0 and the column 1, above it and read by
+        // nothing.
+        for (at, row, col) in [(4, 1, 0), (1, 0, 1)] {
+            let mut kinship = the_kinship_of_the_worked_example();
+            kinship.matrix[at] = f64::NAN;
+
+            let error = match principal_components(&kinship, 2) {
+                Ok(pcs) => panic!("{} components were given", pcs.num_comps),
+                Err(error) => error,
+            };
+
+            let message = error.to_string();
+            assert!(
+                matches!(
+                    error,
+                    Error::KinshipValueNotFinite {
+                        row: found_row,
+                        col: found_col,
+                        value,
+                    } if found_row == row && found_col == col && value.is_nan()
+                ),
+                "{message}"
+            );
+            assert!(
+                message.contains("not finite") || message.contains("finite"),
+                "{message}"
+            );
+        }
     }
 }

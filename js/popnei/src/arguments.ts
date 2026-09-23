@@ -368,6 +368,50 @@ export function namesOf(
 }
 
 /**
+ * The populations of `value` as the flat arrays the binding crate takes:
+ * their names in the order the keys iterate in, the names of the individuals
+ * of every one of them one after another, and how many individuals each of
+ * them holds.
+ *
+ * An array of arrays is not one of the types wasm-bindgen carries, so every
+ * calculation that takes populations sends them flat, and the binding crate
+ * cuts them back into the populations.
+ *
+ * The names of the individuals are not looked up here: they are resolved
+ * against the individuals the pass gives, which are those of the source
+ * after a filter of individuals when the `Variants` has one, and only the
+ * pass knows them.
+ *
+ * @throws {Error} When `value` is not an object of names to arrays of names.
+ */
+export function popsOfTheObject(value: unknown): {
+  names: string[];
+  individuals: string[];
+  numIndividualsPerPop: Uint32Array;
+} {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(
+      "popnei: `pops` is an object of the name of a population to the names " +
+        `of its individuals, {pop1: ["ind00", "ind01"]}, and ` +
+        `${whatWasGiven(value)} was given`,
+    );
+  }
+  const pops = value as Record<string, unknown>;
+  const names = Object.keys(pops);
+  const individuals: string[] = [];
+  const numIndividualsPerPop = new Uint32Array(names.length);
+  for (const [which, pop] of names.entries()) {
+    const ofThePop = namesOf(`pops.${pop}`, pops[pop], {
+      oneOfThem: "individual",
+      anExample: "ind00",
+    });
+    individuals.push(...ofThePop);
+    numIndividualsPerPop[which] = ofThePop.length;
+  }
+  return { names, individuals, numIndividualsPerPop };
+}
+
+/**
  * What was given, for the message of an argument that was refused.
  *
  * The name of the class of an object goes inside the words `of the type`,

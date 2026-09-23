@@ -204,3 +204,53 @@ export async function referenceTable(name: string): Promise<Table> {
     numCols,
   };
 }
+
+const REFERENCE_POP_DISTS_DIR = new URL(
+  "../../../tests/reference/pop_dists/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the distances between
+ * populations, `micro.vcf.gz` or `micro_pops.txt`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/dists.md`, in
+ * `tests/reference/pop_dists/`, which
+ * `tests/reference/pop_dists/make_reference.py` writes: the multiallelic
+ * panel of 120 microsatellite loci with the populations of its individuals,
+ * and, for it and for the biallelic panel of `tests/reference/dists/`, what
+ * plink2, adegenet, mmod and ADMIXTOOLS 2 printed. The Python tests read the
+ * same files.
+ */
+export async function referencePopDists(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_POP_DISTS_DIR)));
+}
+
+/**
+ * The populations of a file of `IID` and `popcat` columns, which is what
+ * plink2 reads them from, under their names in order.
+ *
+ * popnei keeps the order of the keys of `pops`, so the pairs come out in the
+ * order of the names here, which is the order the reference programs print
+ * their pairs in. The individuals of the biallelic panel are interleaved in
+ * its file, p0 first, then p2, then p1, so reading them in the order they
+ * appear would give the pairs in another order than those files.
+ */
+export function popsOfTheFile(bytes: Uint8Array): Record<string, string[]> {
+  const ofEachName = new Map<string, string[]>();
+  const lines = new TextDecoder().decode(bytes).trimEnd().split("\n");
+  for (const line of lines.slice(1)) {
+    const [individual, pop] = line.split("\t");
+    if (individual === undefined || pop === undefined) {
+      throw new Error(`the line \`${line}\` is no individual and population`);
+    }
+    const ofThePop = ofEachName.get(pop) ?? [];
+    ofThePop.push(individual);
+    ofEachName.set(pop, ofThePop);
+  }
+  const pops: Record<string, string[]> = {};
+  for (const pop of [...ofEachName.keys()].sort()) {
+    pops[pop] = ofEachName.get(pop) as string[];
+  }
+  return pops;
+}

@@ -282,15 +282,10 @@ pub const DEFAULT_NUM_PRIN_COMPS: usize = 10;
 pub use crate::variant::MAX_PLOIDY_OF_THE_VARIANTS;
 
 /// The most individuals the principal components of the variants are taken
-/// on: the largest number whose square is at most the 2147483647 values
-/// that the routines of BLAS and LAPACK count a matrix in, which
-/// `crates/popnei-linalg` gives as
-/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX).
-///
-/// The individuals x individuals matrix of that many holds 2147395600
-/// values, 17 GB, which no browser tab gives and few machines do.
-pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize =
-    popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX.isqrt();
+/// on, which is the most any calculation of popnei builds a matrix of the
+/// individuals by the individuals for, of [`crate::variant`]. This analysis
+/// checks it at its own entry.
+pub use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// Which size of a dataset is beyond what the principal components of its
 /// variants are taken on.
@@ -976,7 +971,10 @@ enum Layout {
 /// [`pca_of_variants`] refuses above [`MAX_INDIVIDUALS_OF_THE_VARIANTS`],
 /// whose square is 2147395600, but for the weights, whose values
 /// [`the_weights_of_a_second_pass`] takes with `checked_mul` before it
-/// builds either of the two buffers that hold them.
+/// builds either of the two buffers that hold them. The components of a
+/// kinship call this too, over a matrix of the individuals by the
+/// individuals whose values `eigh_lower` refuses above the 2147483647 the
+/// linear algebra counts in before this is reached.
 #[expect(
     clippy::arithmetic_side_effects,
     reason = "for a table one side is its smaller side or a count of components, at most that side, and the other is at most the other side, so the product is at most the values of the table; for the variants both sides are at most the 46340 individuals the analysis takes, but for the weights, whose values the second pass took with checked_mul and which are more than the buffer of one block of them holds"
@@ -1007,7 +1005,7 @@ fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
 ///
 /// `eigen` holds the eigenvectors of G as its rows, `num_rows` values
 /// each, and their eigenvalues from the largest.
-fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
+pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
     let mut projections = vec![0.0; num_values_of(num_rows, num_comps)];
     // A matrix of no component has no value to write, and this keeps
     // `step_by` below off a step of 0, which panics.
@@ -1228,7 +1226,11 @@ fn the_standardized_table(
 /// eigenvalue near the largest `f64`, which a table of values of 2.5e153
 /// gives, does not become an infinity on the way to a threshold that is a
 /// small part of it.
-fn the_components_with_variance(values: &[f64], num_rows: usize, num_cols: usize) -> usize {
+pub(crate) fn the_components_with_variance(
+    values: &[f64],
+    num_rows: usize,
+    num_cols: usize,
+) -> usize {
     let Some(largest) = values.first() else {
         return 0;
     };
@@ -1372,35 +1374,56 @@ fn fix_the_signs(
     num_cols: usize,
 ) {
     for component in 0..num_comps {
-        // The projection of the largest absolute value, and the first of
-        // them when two are of one size, which a value that has to be
-        // above the one kept by more than the tolerance keeps.
-        let largest = projections
-            .iter()
-            .skip(component)
-            .step_by(num_comps)
-            .copied()
-            .fold(0.0_f64, |largest: f64, value| {
-                if of_one_size(value, largest) == Ordering::Greater {
-                    value
-                } else {
-                    largest
-                }
-            });
-        if largest < 0.0 {
-            for projection in projections.iter_mut().skip(component).step_by(num_comps) {
-                *projection = -*projection;
-            }
-            // The weights are given for the first components alone, so
-            // there are none for a component after them and there is
-            // nothing to turn round: it is not a weight that went missing.
-            if let Some(weights) = princomps.chunks_exact_mut(num_cols).nth(component) {
-                for weight in weights {
-                    *weight = -*weight;
-                }
+        if !fix_the_sign_of(projections, component, num_comps) {
+            continue;
+        }
+        // The weights are given for the first components alone, so there
+        // are none for a component after them and there is nothing to turn
+        // round: it is not a weight that went missing.
+        if let Some(weights) = princomps.chunks_exact_mut(num_cols).nth(component) {
+            for weight in weights {
+                *weight = -*weight;
             }
         }
     }
+}
+
+/// Gives one component of the projections the sign of the rule of
+/// `docs/specs/pca.md`, and says whether it was turned round, so that a
+/// caller holding the weights of that component turns them round with it.
+///
+/// `projections` is the individuals x `num_comps` matrix, row after row,
+/// and `component` is below `num_comps`. The kinship of
+/// `crate::kinship::principal_components` takes the same rule, over
+/// projections that have no weights beside them.
+pub(crate) fn fix_the_sign_of(projections: &mut [f64], component: usize, num_comps: usize) -> bool {
+    // A matrix of no component has no projection of a component to read,
+    // and this keeps `step_by` below off a step of 0, which panics.
+    if num_comps == 0 {
+        return false;
+    }
+    // The projection of the largest absolute value, and the first of them
+    // when two are of one size, which a value that has to be above the one
+    // kept by more than the tolerance keeps.
+    let largest = projections
+        .iter()
+        .skip(component)
+        .step_by(num_comps)
+        .copied()
+        .fold(0.0_f64, |largest: f64, value| {
+            if of_one_size(value, largest) == Ordering::Greater {
+                value
+            } else {
+                largest
+            }
+        });
+    if largest >= 0.0 {
+        return false;
+    }
+    for projection in projections.iter_mut().skip(component).step_by(num_comps) {
+        *projection = -*projection;
+    }
+    true
 }
 
 /// How the absolute value of `value` compares with that of `largest` for

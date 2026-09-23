@@ -344,7 +344,7 @@ fn the_pops(
 /// `3.1`, `"twenty"` or a truth value, which is a `TypeError`: `True` and
 /// `False` say nothing about how much data a population needs, and asking
 /// for one called genotype is not what whoever wrote one meant.
-fn the_min_num_individuals(value: &Bound<'_, PyAny>) -> Result<u32, PyPopneiError> {
+pub(crate) fn the_min_num_individuals(value: &Bound<'_, PyAny>) -> Result<u32, PyPopneiError> {
     // A truth value is a whole number in Python, so it converts to 1 or 0
     // and has to be refused before the conversion is asked for.
     if value.is_instance_of::<PyBool>() {
@@ -502,7 +502,7 @@ fn poly_counts_of<'py>(
 ///
 /// When the count is above 9223372036854775807, which is more variants than
 /// a file holds: a variant is a row of a file.
-fn of_a_result(count: u64) -> Result<i64, PyPopneiError> {
+pub(crate) fn of_a_result(count: u64) -> Result<i64, PyPopneiError> {
     i64::try_from(count).map_err(|_| PyPopneiError::Broken {
         message: format!("one count of the pass is {count}, more than a result holds"),
         path: None,

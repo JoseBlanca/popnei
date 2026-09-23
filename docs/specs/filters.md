@@ -759,18 +759,21 @@ chromosome and the position besides the genotypes, whatever its consumer
 asked for, and the blocks it gives hold all three.
 
 The window of a variant is the variants kept *behind* it, so this filter
-is the one part of popnei that needs the variants of each chromosome to
-come together and in order of position. Two variants at one position are
-allowed and are 0 apart, so each is in the other's window. A variant
-whose position is below the one before it on the same chromosome, and a
-variant on a chromosome that had already ended, are an error that names
-the variant, its position and the one before it. The rest of popnei reads
-a source in any order, and `docs/specs/io_vars.md` has a test that writes
-a block of four variants that are not sorted, so this is the one reader
-that refuses what the others take. Decided here: the alternative is to
-subtract two positions that can run backwards, which on a `u64` wraps to
-a distance of 18 million million million and puts the pair outside every
-window without a word.
+needs the variants of each chromosome to come together and in order of
+position. Two variants at one position are allowed and are 0 apart, so
+each is in the other's window. A variant whose position is below the one
+before it on the same chromosome, and a variant on a chromosome that had
+already ended, are an error that names the variant, its position and the
+one before it. The other part of popnei that needs the same order is the
+cutting of the variants into the resampling groups of the standard errors
+of the distances between populations, `docs/specs/dists.md`, which
+refuses the same two cases where the groups are stretches of a
+chromosome. Everything else reads a source in any order, and
+`docs/specs/io_vars.md` has a test that writes a block of four variants
+that are not sorted, so these two refuse what the rest of popnei takes.
+Decided here: the alternative is to subtract two positions that can run
+backwards, which on a `u64` wraps to a distance of 18 million million
+million and puts the pair outside every window without a word.
 
 ### What pyNei does that is odd
 

@@ -21,7 +21,7 @@ use pyo3::prelude::*;
 use popnei::block::BlockReader;
 use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
-use crate::errors::PyPopneiError;
+use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{PassCounts, count_of_at_least, source_of};
 use crate::steps::{Steps, chain_of};
 
@@ -220,23 +220,6 @@ fn counted_for_python<T: TryFrom<usize>>(
             path,
         )
     })
-}
-
-/// Raises the Ctrl-C that arrived while the interpreter was released, which
-/// is still pending: no bytecode ran to raise it.
-///
-/// It is raised before numpy is called, because the first array of a
-/// process imports the C API of numpy, that import fails with the exception
-/// that is pending, and the numpy crate panics when it does: a user who
-/// asked for a Ctrl-C would get a `PanicException`, which no `except` of
-/// theirs catches and which ends the session.
-///
-/// # Errors
-///
-/// The `KeyboardInterrupt` of that Ctrl-C, on its way back as it is.
-fn raise_a_ctrl_c_before_numpy_is_called(py: Python<'_>) -> Result<(), PyPopneiError> {
-    py.check_signals()?;
-    Ok(())
 }
 
 /// The values of a table of the result as a numpy array of `rows` x `cols`,

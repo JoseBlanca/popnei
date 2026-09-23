@@ -14,6 +14,7 @@ mod errors;
 mod kinship;
 mod ld;
 mod pca;
+mod pop_dists;
 mod source;
 mod stats;
 mod steps;
@@ -79,6 +80,13 @@ mod _core {
         module.add(
             "TraitOutOfRange",
             py.get_type::<super::errors::TraitOutOfRange>(),
+        )?;
+        // The pair of individuals of a kinship that have no variant called
+        // in both of them, which `popnei.calc_kinship` catches to name the
+        // two as the user knows them.
+        module.add(
+            "KinshipPairWithNoVariantCalled",
+            py.get_type::<super::errors::KinshipPairWithNoVariantCalled>(),
         )
     }
 
@@ -98,11 +106,13 @@ mod _core {
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]
-    use super::kinship::calc_kinship;
+    use super::kinship::{calc_kinship, kinship_principal_components};
     #[pymodule_export]
     use super::ld::calc_rogers_huff_r2_matrix;
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
+    #[pymodule_export]
+    use super::pop_dists::{calc_pop_dists, pop_dist_measures_that_have_a_value};
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

@@ -37,6 +37,83 @@ pub const MIN_NUM_VARS_PER_BLOCK: usize = 100;
 /// `MAX_NUM_VARS_PER_CHUNK`, measured for popnei by nobody.
 pub const MAX_NUM_VARS_PER_BLOCK: usize = 10_000;
 
+/// How many rows of a block one chunk of a pass reads, in the statistics of
+/// [`stats`](crate::stats) and in the pass over the populations of
+/// [`pop_dists`](crate::pop_dists).
+///
+/// The rows of a block are added up chunk by chunk and the chunks are added
+/// together in the order of the block, so the sum of a statistic does not
+/// depend on how many threads read the block, which rayon's own `sum` would
+/// make it: it joins the parts in an order it chooses at run time. The
+/// number is fixed for the same reason, and 64 rows of 1000 diploid
+/// individuals are 128000 genotypes, enough work for one task of rayon.
+pub(crate) const ROWS_PER_CHUNK: usize = 64;
+
+/// How many alleles one variant of a block holds, its individuals times its
+/// ploidy, which is how the rows of the block are cut, after the checks
+/// that the passes of [`stats`](crate::stats) and the pass over the
+/// populations of [`pop_dists`](crate::pop_dists) make of every block their
+/// reader gives them.
+///
+/// `num_individuals` and `ploidy` are what the reader says its source has.
+/// A pass reads the rows of every block as rows of one run over the
+/// variants, so each block has to be of those individuals and of that
+/// ploidy: a block of others is read one individual at the place of
+/// another, or counted whole for a population of every individual of the
+/// reader, and the numbers that come out say nothing about themselves.
+///
+/// # Errors
+///
+/// An array of the block that is not of the size the block states; a block
+/// of no variant; a block that holds the genotypes of no individual,
+/// because it has no individual or because its ploidy is 0, which is told
+/// apart from the genotypes that nobody asked the reader for, since a block
+/// is empty of them in the same way; a block the genotypes are not in,
+/// which a pass asked its reader for; and a block of other individuals or
+/// of another ploidy than the reader says its source has. Each of them is a
+/// defect of the reader that gave the block.
+pub(crate) fn alleles_per_var_of(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<usize> {
+    // The rows are cut out of the genotypes by the sizes the block states,
+    // so those sizes are checked before anything is read.
+    block.check()?;
+    if block.num_vars == 0 {
+        return Err(Error::ReaderGaveABlockOfNoVariants);
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    if alleles_per_var == 0 {
+        return Err(Error::BlockWithNoGenotypeOfAVariant {
+            num_individuals: block.num_individuals,
+            ploidy: block.ploidy,
+        });
+    }
+    if block.gts.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: Needs::GTS });
+    }
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
+    Ok(alleles_per_var)
+}
+
+/// How many alleles one chunk of a pass holds: [`ROWS_PER_CHUNK`] rows of
+/// `alleles_per_var` alleles, and one allele at least, because a cut of 0
+/// is what the standard library refuses with a panic.
+pub(crate) fn alleles_of_a_chunk(alleles_per_var: usize) -> usize {
+    // A block of more alleles than a `usize` counts is refused before this,
+    // and a chunk that saturated would be the whole block, which is a
+    // chunking that gives the right numbers and no threads.
+    ROWS_PER_CHUNK.saturating_mul(alleles_per_var).max(1)
+}
+
 /// Which of the three sizes of a block a reader is working with.
 ///
 /// What a caller does about a block the machine cannot give the memory for
