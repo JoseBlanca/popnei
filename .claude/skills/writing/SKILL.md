@@ -167,6 +167,18 @@ are both. They stay where the next person will look for them, the document
 or the issue about that subject. A trap of the wasm build does not belong
 in a reply about which linear algebra library to use.
 
+A few texts have a second reader as well as their own, and then the form
+says so. The work report of a plan is read by the owner, to decide whether
+to merge it and to learn what the work found, and by whoever next revises a
+skill or writes a plan. What the second reader needs goes in one place at
+the end, its heading says who it is for, and the first reader is told there
+that they can stop. Naming the second reader is what separates this from
+keeping the story of the work: material that serves nobody in particular
+still goes out, and every rule of this skill holds inside that section as
+it does everywhere else, so a number there carries what it is measured
+against like any other number. A section that a reader cannot use and that
+does not say who it is for is a fault of the text, whichever reader met it.
+
 ### Everything at its true strength
 
 A choice is written as a choice, with the goals it serves and what would
