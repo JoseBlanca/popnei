@@ -1,14 +1,18 @@
 # Plan: the association study of a continuous trait
 
-23 September 2026. State: draft, not yet approved by the owner. It builds
+23 September 2026. State: under way since 23 September 2026. It builds
 the parts of `docs/specs/gwas.md` that a continuous trait needs: the two
 distributions, everything `calc_gwas` shares whatever the model, the linear
 model and the linear mixed model. It is the second of three plans; `kinship`
 comes before it and `gwas-logistic` after.
 
 It is carried out in the worktree `.claude/worktrees/gwas-linear` on the
-branch `plan/gwas-linear`, which starts from `main` with the plan `kinship`
-merged into it. The report is `docs/reports/gwas-linear.md`.
+branch `plan/gwas-linear`. It was to start from `main` with the plan
+`kinship` merged into it; the owner decided on 23 September 2026 that it
+starts from `b387def` of `plan/kinship` instead, which is that plan's work
+packages 1 and 2 and is not yet on `main`, and that `plan/kinship` is merged
+in again before work package 4, the first that uses the kinship matrix. The
+report is `docs/reports/gwas-linear.md` and gives the reason.
 
 The work packages run in order, and so do the tasks inside each one,
 except where a task says it can run beside another. What a task says it
@@ -48,14 +52,18 @@ plan.
 
 ## What has to be in place
 
-The plan `kinship` merged into `main`, for the matrix the linear mixed model
-takes and for the row pass its work package 1 moved. The linear algebra this
-plan calls, the Cholesky with its solve and log determinant, the thin QR,
-the rank and the eigendecomposition, is on `main` already.
+The work packages 1 and 2 of the plan `kinship`, for the matrix the linear
+mixed model takes and for the row pass its work package 1 moved. The linear
+algebra this plan calls, the Cholesky with its solve and log determinant,
+the thin QR, the rank and the eigendecomposition, is on `main` already.
 
-Measured on 23 September 2026 on `main` with `spec/gwas` merged in, which is
-this plan's starting commit but for the plan `kinship`, whose work adds to
-these counts and takes none away:
+The counts below were measured on 23 September 2026 on `main` with
+`spec/gwas` merged in, before any kinship work existed. What this plan
+actually starts from, `b387def` of `plan/kinship`, gives 637 tests in the
+core crate with 2 ignored, 149 in the linear algebra crate, 369 pytest and
+253 node tests, higher as this section says they would be, with every other
+check clean and `cargo test -p popnei --lib gwas -- --list` printing
+`0 tests`:
 
 - `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --
   -D warnings`: clean.
@@ -199,9 +207,15 @@ standard error and its p-value.
 
 1. The whole study is plink2's. The check: a pytest test reads
    `tests/reference/kinship/panel_called.vcf.gz`, runs `calc_gwas` with
-   `cov1` and `cov2`, and over all 1200 variants `allele_freq` is within
-   1e-6 absolute, `beta` and `se` within 1e-5 absolute and `p_value` within
-   1e-5 relative of `plink2.panel_called.glm.linear.tsv`.
+   `cov1` and `cov2`, and over all 1200 variants agrees with
+   `plink2.panel_called.glm.linear.tsv` as "How it is verified" of "The
+   linear model" of the spec asks: `allele_freq` within 1e-6 absolute, and
+   `beta`, `se` and `p_value` within 1e-5 relative. plink2 prints that file
+   to six significant digits, which round a value by up to 5e-6 of itself,
+   so this check has at most twofold headroom and says that popnei computes
+   the same quantity. Deliverables 2 and 3, the worked example at 1e-12
+   relative and pyNei at 1e-9 relative, are the ones that would catch a
+   wrong digit.
 2. The worked example and the six literals are cargo tests. The check:
    `cargo test -p popnei --lib gwas::lm -- --list` names them, where today
    it prints `0 tests`; the worked example of "The worked example" asserts
