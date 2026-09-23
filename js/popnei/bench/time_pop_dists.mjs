@@ -171,6 +171,30 @@ function theReadingAlone(variants) {
   return [`${alleles} alleles`, blocks.passStats.numVars];
 }
 
+/**
+ * The same pass with nothing read out of the block at all, which is the
+ * baseline to subtract.
+ *
+ * `theReadingAlone` above reads `block.gts`, and a column of a block in
+ * wasm is copied when it crosses: over the dataset of "Speed" that is
+ * 200 million bytes into fresh typed arrays, and reaching the block at all
+ * builds a string for the chromosome of every variant, 100000 of them.
+ * `calcPopDists` copies none of that: no block of it leaves the core, and
+ * it makes one string for each resampling group, 100 of them. So
+ * subtracting `theReadingAlone` takes out more than the reader and leaves
+ * the calculation looking faster than it is. This pass reads only what the
+ * reader counted, so the bytes stay in wasm, and it is the honest
+ * subtrahend. The performance review of 23 September 2026 found this.
+ */
+function theReadingWithNothingRead(variants) {
+  const blocks = variants.iterBlocks({ fields: ["chrom", "pos"] });
+  let numBlocks = 0;
+  for (const _block of blocks) {
+    numBlocks += 1;
+  }
+  return [`${numBlocks} blocks`, blocks.passStats.numVars];
+}
+
 /** The best, the median and the worst of `times`, in seconds. */
 function saidAbout(what, times) {
   const sorted = [...times].sort((one, other) => one - other);
@@ -228,9 +252,11 @@ console.log(
     `${theCalculation(variants, pops, groupBasePairs, numPairsOfThePops)}`,
 );
 theReadingAlone(variants);
+theReadingWithNothingRead(variants);
 
 const calculations = [];
 const readings = [];
+const bareReadings = [];
 for (let run = 1; run <= runs; run += 1) {
   for (const [what, passOfTheRun, times] of [
     [
@@ -239,6 +265,11 @@ for (let run = 1; run <= runs; run += 1) {
       calculations,
     ],
     ["the reading alone", () => theReadingAlone(variants), readings],
+    [
+      "the reading with nothing read",
+      () => theReadingWithNothingRead(variants),
+      bareReadings,
+    ],
   ]) {
     started = performance.now();
     const [counted, numVars] = passOfTheRun();
@@ -251,10 +282,14 @@ for (let run = 1; run <= runs; run += 1) {
 }
 console.log(saidAbout("the calculation", calculations));
 console.log(saidAbout("the reading alone", readings));
-const difference = Math.min(...calculations) - Math.min(...readings);
+console.log(saidAbout("the reading with nothing read", bareReadings));
+const difference = Math.min(...calculations) - Math.min(...bareReadings);
 console.log(
   `the calculation with the reading taken out, on the bests: ` +
-    `${difference.toFixed(3)} s`,
+    `${difference.toFixed(3)} s, which subtracts the reading with nothing ` +
+    `read: subtracting the reading alone instead would give ` +
+    `${(Math.min(...calculations) - Math.min(...readings)).toFixed(3)} s, ` +
+    `and that one takes out the copies out of wasm as well as the reader`,
 );
 console.log(
   `reading the vars file into a Uint8Array, which is in neither: ` +

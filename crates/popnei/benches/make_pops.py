@@ -25,10 +25,25 @@ The 20 populations are runs of 50 individuals in the order of the file,
 the same individuals into more groups, which is what the growth with the
 pairs is measured over.
 
-    uv run --no-project --with numpy python make_pops.py <directory>
+    uv run --no-project --with numpy python make_pops.py <directory> [n ...]
+    uv run --no-project --with numpy python make_pops.py <directory> <n>x<m>
 
-It writes `pops3.tsv` and `pops20.tsv` there, and refuses to write over a
-file that is already one of the two.
+With no number it writes `pops3.tsv` and `pops20.tsv` there. With numbers
+it writes `pops<n>.tsv` for each of them, the individuals cut into n runs
+of the order of the file, which is what `pops20.tsv` is: the performance
+review of 23 September 2026 asked for 6 and for 10 as well, to tell the
+cost of one more population apart from the cost of one more pair. A number
+of 3 would give a `pops3.tsv` of runs and not the simulated populations,
+and the file is there already, which is refused.
+
+`<n>x<m>` writes `pops<n>of<m>.tsv`, n populations of m individuals each,
+the first n times m individuals of the file and no other. Every file above
+names all 1000, so the populations and their sizes move together and what
+each costs cannot be told apart; a file that names fewer individuals holds
+the populations still and changes only how many genotypes are counted,
+which is what separates them.
+
+It refuses to write over a file that is there.
 """
 
 import pathlib
@@ -62,11 +77,38 @@ def the_simulated_pops() -> list[str]:
     return [f"pop{pop}" for pop in numpy.repeat(family_pops, FAMILY_SIZE)]
 
 
-def the_many_pops() -> list[str]:
+def the_pops_of_runs(num_pops: int) -> list[str]:
     """The population of each individual when the 1000 of the file are cut
-    into 20 runs of 50 in the order the file gives them."""
-    per_pop = NUM_INDIVIDUALS // NUM_MANY_POPS
-    return [f"pop{number // per_pop:02d}" for number in range(NUM_INDIVIDUALS)]
+    into `num_pops` runs of the order the file gives them.
+
+    The runs are as near the same size as 1000 individuals divided that way
+    allow: `num_pops` of them is 50 individuals each, and 6 is four runs of
+    167 and two of 166.
+    """
+    digits = len(str(num_pops - 1))
+    return [
+        f"pop{number * num_pops // NUM_INDIVIDUALS:0{digits}d}"
+        for number in range(NUM_INDIVIDUALS)
+    ]
+
+
+def some_of_the_pops(num_pops: int, per_pop: int) -> tuple[list[str], list[str]]:
+    """`num_pops` populations of `per_pop` individuals each, taken from the
+    front of the file, as the individuals named and their populations.
+
+    The individuals of the file that are not among the first `num_pops`
+    times `per_pop` are in no population and take no part in the pass.
+    """
+    wanted = num_pops * per_pop
+    if wanted > NUM_INDIVIDUALS:
+        raise SystemExit(
+            f"{num_pops} populations of {per_pop} are {wanted} individuals, "
+            f"and the file has {NUM_INDIVIDUALS}"
+        )
+    individuals = names_of_the_individuals()[:wanted]
+    digits = len(str(num_pops - 1))
+    pops = [f"pop{number // per_pop:0{digits}d}" for number in range(wanted)]
+    return individuals, pops
 
 
 def write_the_file(path: pathlib.Path, individuals: list[str], pops: list[str]) -> None:
@@ -85,18 +127,33 @@ def write_the_file(path: pathlib.Path, individuals: list[str], pops: list[str]) 
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         print(__doc__)
         return 1
     where = pathlib.Path(sys.argv[1])
     individuals = names_of_the_individuals()
-    for name, pops in (
-        ("pops3.tsv", the_simulated_pops()),
-        ("pops20.tsv", the_many_pops()),
-    ):
-        write_the_file(where / name, individuals, pops)
+    if len(sys.argv) > 2:
+        wanted = []
+        for arg in sys.argv[2:]:
+            if "x" in arg:
+                num_pops, per_pop = (int(part) for part in arg.split("x", 1))
+                some, their_pops = some_of_the_pops(num_pops, per_pop)
+                wanted.append((f"pops{num_pops}of{per_pop}.tsv", their_pops, some))
+                continue
+            num_pops = int(arg)
+            wanted.append((f"pops{num_pops}.tsv", the_pops_of_runs(num_pops), individuals))
+    else:
+        wanted = [
+            ("pops3.tsv", the_simulated_pops(), individuals),
+            ("pops20.tsv", the_pops_of_runs(NUM_MANY_POPS), individuals),
+        ]
+    for name, pops, of_the_file in wanted:
+        write_the_file(where / name, of_the_file, pops)
         counts = {pop: pops.count(pop) for pop in sorted(set(pops))}
-        print(f"{where / name}: {len(counts)} populations, {counts}")
+        print(
+            f"{where / name}: {len(counts)} populations, "
+            f"{len(of_the_file)} individuals, {counts}"
+        )
     return 0
 
 
