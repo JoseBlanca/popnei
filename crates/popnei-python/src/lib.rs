@@ -79,6 +79,13 @@ mod _core {
         module.add(
             "TraitOutOfRange",
             py.get_type::<super::errors::TraitOutOfRange>(),
+        )?;
+        // The pair of individuals of a kinship that have no variant called
+        // in both of them, which `popnei.calc_kinship` catches to name the
+        // two as the user knows them.
+        module.add(
+            "KinshipPairWithNoVariantCalled",
+            py.get_type::<super::errors::KinshipPairWithNoVariantCalled>(),
         )
     }
 

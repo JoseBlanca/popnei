@@ -43,6 +43,26 @@ create_exception!(
      with no variance. It derives from `ValueError` as well."
 );
 
+create_exception!(
+    popnei._core,
+    KinshipPairWithNoVariantCalled,
+    PyValueError,
+    "Two individuals of a kinship that have no variant called in both of \
+     them, so that the sum of their pair would be divided by no variant at \
+     all. `args[0]` is what the core says, with the file that was read, \
+     which names the two by their position; `args[1]` and `args[2]` are \
+     those positions among the individuals of the kinship, from 0, and are \
+     one position twice when an individual has no called genotype at all; \
+     and `args[3]` and `args[4]` are how many of the variants that were \
+     used are called in each of the two.\n\n\
+     `popnei.calc_kinship` catches it and raises the `ValueError` its user \
+     reads, whose message names the two individuals. The core has their \
+     positions and not their names, and this class is how they reach the \
+     layer that has the names, as it is for the two traits above. It \
+     derives from `ValueError`, so a user who catches that one catches this \
+     one as well."
+);
+
 /// What a function of this crate fails with.
 pub(crate) enum PyPopneiError {
     /// Something the core crate refused: an argument it takes, or what it
@@ -443,6 +463,25 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         popnei::Error::PcaTraitOutOfRange { position, problem } => {
             TraitOutOfRange::new_err((message, position, name_of(problem)))
         }
+        // The pair of individuals of a kinship that the layer holding their
+        // names names: the core has where each of the two is among the
+        // individuals of the kinship and not what they are called, and
+        // `popnei.calc_kinship` raises the `ValueError` a user reads, whose
+        // message names them. It carries what the core says as well, with
+        // the file the variants were read from, so that a caller of
+        // `popnei._core` reads a message and not four numbers.
+        popnei::Error::KinshipPairWithNoVariantCalled {
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        } => KinshipPairWithNoVariantCalled::new_err((
+            of_the_file(message, path),
+            one,
+            other,
+            num_vars_of_one,
+            num_vars_of_other,
+        )),
         // The arguments a user writes: how many variants a block holds,
         // and how many alleles a genotype of the file has, which the reader
         // is given when the file is opened because it needs it to read the
@@ -542,22 +581,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VariantPloidyTooLarge { .. }
         | popnei::Error::PcaNoIndividual
         | popnei::Error::PcaVariantsTooLarge { .. }
-        // The four of the kinship that the dataset a user gave is wrong
+        // The three of the kinship that the dataset a user gave is wrong
         // for, which are of that same kind: no variant with variance among
         // the individuals it was asked for, which one individual gives and
-        // which pyNei raises for as well; a pair of individuals with no
-        // variant called in both of them, whose entry would be divided by
-        // no variant at all and which names the two so that the user can
-        // leave one of them out, where pyNei divides and leaves a NaN in
-        // the matrix; a source with no individual, which is nobody to give
+        // which pyNei raises for as well; a source with no individual,
+        // which is nobody to give
         // a kinship of and which no source of popnei is, since one that
         // names no individual is refused when it is opened; and a dataset
         // of a size the calculation cannot count in, more individuals than
         // the matrix of the linear algebra holds or more variants than this
-        // machine counts. `docs/specs/kinship.md` has the four in "The Rust
-        // interface", each as the `ValueError` it is here.
+        // machine counts. `docs/specs/kinship.md` has them in "The Rust
+        // interface", each as the `ValueError` it is here, and the fourth,
+        // a pair with no variant called in both, is the arm above, which
+        // carries the two to the layer that has their names.
         | popnei::Error::KinshipNoVariantWithVariance
-        | popnei::Error::KinshipPairWithNoVariantCalled { .. }
         | popnei::Error::KinshipNoIndividual
         | popnei::Error::KinshipVariantsTooLarge { .. }
         // The pass that gave more variants than `max_num_vars`, which is

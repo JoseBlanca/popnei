@@ -8,15 +8,12 @@
 //! released, and reads the counts of the filters from that chain when the
 //! call is over, since no block of the pass reaches this crate.
 //!
-//! Two things are counted here that the core does not give back. One is how
-//! many variants the pass gave, used or not, which is the `num_vars` of the
-//! counts of a pass and which [`CountedVars`] counts as the blocks go by:
-//! the `num_vars` of the core's result is how many variants had variance
-//! and were used, which is the other number and which the `Kinship` of the
-//! package carries under that name. The other is the names of the
+//! What this module adds to the result of the core is the names of the
 //! individuals of the matrix, which the package puts on both sides of its
 //! frame: they are those the pass gives, in its order, or the ones a user
-//! named, in theirs.
+//! named, in theirs. The two counts are the core's, `num_vars`, the
+//! variants that had variance and were used, and `num_vars_given`, the
+//! variants the pass gave, which is the `num_vars` of the counts of a pass.
 //!
 //! The names a user names are turned into their places among the
 //! individuals of the pass here, with `popnei::filters::resolve_individuals`,
@@ -27,10 +24,9 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2};
 use pyo3::prelude::*;
 
-use popnei::block::{Block, BlockReader};
-use popnei::filters::{FilteringStats, resolve_individuals};
+use popnei::block::BlockReader;
+use popnei::filters::resolve_individuals;
 use popnei::kinship::Kinship;
-use popnei::variant::{ChromTable, Needs};
 
 use crate::errors::PyPopneiError;
 use crate::source::{OpenSource, PassCounts, source_of};
@@ -135,97 +131,28 @@ fn over_the_source(
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let chain = chain_of(reader, steps)?;
-    let mut counted = CountedVars::over(chain);
+    let mut chain = chain_of(reader, steps)?;
     // The names of the individuals of the matrix, which the package puts on
     // both sides of its frame: those the pass gives, in its order, or the
     // ones the user named, in theirs, which is the order the core has them
     // in.
     let (positions, names) = match individuals {
         Some(named) => (
-            Some(resolve_individuals(named, counted.individuals())?),
+            Some(resolve_individuals(named, chain.individuals())?),
             named.to_vec(),
         ),
-        None => (None, counted.individuals().to_vec()),
+        None => (None, chain.individuals().to_vec()),
     };
     let kinship =
-        popnei::kinship::calc_kinship(&mut counted, positions.as_deref(), transform_to_biallelic)?;
-    let num_vars = counted.num_vars();
+        popnei::kinship::calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)?;
+    // How many variants the pass gave, used or not, which the core counts
+    // and which is the `num_vars` of the counts of the pass.
+    let num_vars_given = kinship.num_vars_given;
     Ok((
         kinship,
         names,
-        (num_vars, filtering_of(counted.of_the_pass())),
+        (num_vars_given, filtering_of(chain.as_ref())),
     ))
-}
-
-/// The chain of readers of a pass with how many variants it has given
-/// counted, which is the `num_vars` of the counts of the pass.
-///
-/// The kinship gives back how many variants had variance and were used, and
-/// a user reads that under `num_vars` of the result. How many the steps let
-/// through, which is what the counts of a pass hold, is no number of the
-/// core's result, so it is counted here, where the chain is built and lent:
-/// the blocks of the pass go through this reader on their way to the core.
-struct CountedVars {
-    /// The chain the pass reads, this reader's source.
-    chain: Box<dyn BlockReader>,
-    /// How many variants that chain has given so far.
-    num_vars: u64,
-}
-
-impl CountedVars {
-    /// The chain with its variants counted, before the pass starts.
-    fn over(chain: Box<dyn BlockReader>) -> Self {
-        Self { chain, num_vars: 0 }
-    }
-
-    /// How many variants the chain has given, which after the pass is how
-    /// many the steps let through.
-    fn num_vars(&self) -> u64 {
-        self.num_vars
-    }
-
-    /// The chain itself, whose filters are read when the pass is over.
-    fn of_the_pass(&self) -> &dyn BlockReader {
-        self.chain.as_ref()
-    }
-}
-
-impl BlockReader for CountedVars {
-    fn next_block(&mut self) -> popnei::Result<Option<Block>> {
-        let block = self.chain.next_block()?;
-        if let Some(ref block) = block {
-            // A pass would have to give 18446744073709551615 variants to
-            // reach the largest count, which at one variant a nanosecond is
-            // 585 years of reading: the count is saturated rather than
-            // carried back as an error of its own, which the error type of
-            // the core has no case for, and no run of popnei arrives there.
-            self.num_vars = self
-                .num_vars
-                .saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
-        }
-        Ok(block)
-    }
-
-    fn individuals(&self) -> &[String] {
-        self.chain.individuals()
-    }
-
-    fn ploidy(&self) -> usize {
-        self.chain.ploidy()
-    }
-
-    fn chroms(&self) -> &ChromTable {
-        self.chain.chroms()
-    }
-
-    fn set_needs(&mut self, needs: Needs) {
-        self.chain.set_needs(needs);
-    }
-
-    fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
-        self.chain.filtering_stats()
-    }
 }
 
 /// The matrix of the kinship as a numpy array of individuals x individuals.
