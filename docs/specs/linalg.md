@@ -14,9 +14,10 @@ symmetric matrix, which `docs/specs/pca.md` calls. Four are the product
 of two matrices, one for each way round the two can be laid out, of which
 `docs/specs/pca.md` and the r² of `docs/specs/ld.md` call two and the
 genome wide association study calls a third: "The product with its first
-operand turned" is the one that adds them. The last seven are what the
-association study calls besides, read from pyNei, and they are under "The
-seven operations of the GWAS": a Cholesky factorization and the solve,
+operand turned" is the one that adds them. The last eight are what the
+association study calls besides, seven functions of which one does two
+operations, read from pyNei, and they are under "The seven operations of
+the GWAS": a Cholesky factorization and the solve,
 the log determinant and the inverse that come off it, the thin QR of the
 design, the solve against a triangular matrix, which is two operations
 because either half may be the one that holds it, and the rank of a
@@ -601,9 +602,11 @@ backend which chose the other one would pass.
 **The solve against a triangular matrix.** For the triangular `a` of n x
 n, the `x` of `a x = b`, with `b` laid out as for the Cholesky solve. The
 caller says which half holds the matrix, and the other half is not read.
-It is `dtrtrs` in LAPACK, whose `uplo` is that half, and
-`solve_upper_triangular_in_place` or `solve_lower_triangular_in_place` of
-faer.
+It is `dtrtrs` in LAPACK, whose `uplo` is that half turned by the layout,
+`L` for popnei's upper half and `U` for its lower, since the buffer read
+column after column is the transpose, as "Layout, half and the backends"
+has it; and `solve_upper_triangular_in_place` or
+`solve_lower_triangular_in_place` of faer.
 
 The upper half is what line 378 asks for, the `r` of the QR of the design.
 The lower half is what the fit of the null model of the logistic mixed
@@ -629,9 +632,10 @@ It is one function and not two, and which half holds the matrix is an
 argument of it, for the reason "The product with its first operand turned"
 gives for `product`: two functions over the same arguments would each take
 the other's call and give a different answer with no error, no length
-telling them apart. The same `l` of "How the seven are verified", rows
-(2, 0, 0), (1, 3, 0) and (0, 2, 1), against the right hand side
-(8, 40, 27) gives (4, 12, 3) read as the lower half and
+telling them apart. Take the symmetric buffer with rows (2, 1, 0),
+(1, 3, 2) and (0, 2, 1), whose lower half is the `l` of "How the seven are
+verified" and whose upper half is that `l` mirrored: against the right
+hand side (8, 40, 27) it gives (4, 12, 3) read as the lower half and
 (6.333333333333333, -4.666666666666666, 27) read as the upper, both of
 them answers a caller could believe. The option not taken was
 `solve_upper_triangular` beside a `solve_lower_triangular`, which is what
@@ -802,10 +806,11 @@ iterations, and it is not a defect of the caller either: it is what the
 data was.
 
 ```rust
-/// A matrix that could not be factored at the row the value names, ///
-counting from 0: the Cholesky reached a diagonal entry that is not ///
-above 0 there, or the solve against an upper triangular matrix ///
-reached one that is 0. Singular { argument: &'static str, at: usize },
+/// A matrix that could not be factored at the row the value names,
+/// counting from 0: the Cholesky reached a diagonal entry that is not
+/// above 0 there, or the solve against a triangular matrix reached one
+/// that is 0, in whichever half the caller named.
+Singular { argument: &'static str, at: usize },
 ```
 
 Its message is "the matrix a is singular: the factorization stopped at its
@@ -953,14 +958,20 @@ infinity.
 At `solve_triangular` with the lower half named, on the `l` of the
 Cholesky above, rows (2, 0, 0), (1, 3, 0) and (0, 2, 1), whose upper half
 holds values that are nothing of the matrix so that a call which read that
-half instead gives something else: the right hand side (8, 40, 27) gives
+half instead gives something else, and once more with that upper half
+holding the mirror of the lower one, rows (2, 1, 0), (1, 3, 2) and
+(0, 2, 1), which is the buffer the contrast below needs: the right hand
+side (8, 40, 27) gives
 (4, 12, 3) and the two right hand sides (8, 40, 27) and (4, 2, 0), one row
 each, give (4, 12, 3) and (2, 0, 0), with `sides` of 2 against an `n` of 3
-so that the two cannot be exchanged. The same `l` and the same first right
-hand side read as the upper half give (6.333333333333333,
+so that the two cannot be exchanged. The mirrored buffer and the same
+first right hand side read as the upper half give (6.333333333333333,
 -4.666666666666666, 27), which the test asserts as well: it is what a
 caller that named the wrong half would get, and asserting both is what
-says the argument is read. A third right hand side, (2, 6, 1), gives
+says the argument is read. It has to be the mirrored buffer: the `l`
+itself, read as its upper half, is the diagonal 2, 3, 1 with nothing
+above it and solves to (4, 13.333333333333332, 27), which is a third
+answer again. A third right hand side, (2, 6, 1), gives
 (1, 1.6666666666666665, -2.333333333333333). And the `l` with rows (2, 0)
 and (5, 0) is `Singular` at the row 1, as the upper half's own case is.
 
@@ -968,10 +979,13 @@ Every one of those is compared within 1e-14 and none of them to the bit,
 although each entry of the first two is a small whole number. The two
 backends do not give the same bits here: measured on 23 September 2026,
 `dtrtrs` gives exactly 4, 12 and 3 and faer gives 4, 11.999999999999998
-and 3.0000000000000036, because faer multiplies by the reciprocal of a
-diagonal entry where the routine divides by it, and 1/3 is not an `f64`;
-and the contrast above comes out 6.333333333333333 on `dtrtrs` and
-6.333333333333334 on faer. An earlier draft of this section asked for the
+and 3.0000000000000036, because faer scales each term of a row by the
+reciprocal of the diagonal entry and adds them, where the routine
+subtracts first and divides once: `(40 - 4) / 3` and `(40 - 4) * (1/3)`
+are both exactly 12, while `40 * (1/3) - 4 * (1/3)` is
+11.999999999999998, and 3.0000000000000036 follows from it. The contrast
+above comes out 6.333333333333333 on `dtrtrs` and 6.333333333333334 on
+faer for the same reason. An earlier draft of this section asked for the
 first two exactly, which no run supports. From numpy 2.5.3 for the values
 and from both backends for the tolerance.
 
@@ -1335,8 +1349,8 @@ describes.
 ```rust
     /// A matrix that could not be factored at the row the value names,
     /// counting from 0: the Cholesky reached a diagonal entry that is
-    /// not above 0 there, or the solve against an upper triangular
-    /// matrix reached one that is 0.
+    /// not above 0 there, or the solve against a triangular matrix
+    /// reached one that is 0, in whichever half the caller named.
     Singular {
         /// The name of the argument, as this section spells it.
         argument: &'static str,
