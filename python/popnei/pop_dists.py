@@ -218,6 +218,15 @@ def calc_pop_dists(
     microsatellite loci scattered over a genome have no linkage to speak of
     and take ``"variant"``; a panel of linked variants must not use it.
 
+    ``"variant"`` is also what the memory of the pass grows with. popnei
+    keeps six numbers, 48 bytes, for each pair of populations and each
+    group, so a group of each variant makes that 48 bytes for each pair and
+    each variant: 1200 variants of 20 populations, which are 190 pairs, are
+    10.9 MB, and a million variants are 144 MB for 3 populations and 9.1 GB
+    for 20. A length in base pairs, whose groups are as many as the stretches
+    of the chromosomes, does not grow with the variants. A machine that has
+    not the memory is a ``ValueError`` and not a wrong number.
+
     `measures` says which of the seven of :class:`PopDistMeasure` to
     calculate, and ``None`` is all of them, since the pass is what costs and
     each measure is a division at the end of it. Five of the seven are not
