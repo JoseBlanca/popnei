@@ -98,9 +98,12 @@ plan, and this plan chooses one helper.
 1. `the_standardized_row`, `RowScratch` and the two helpers they call live in
    `crates/popnei/src/variant.rs`, which section 9 of
    `docs/architecture.md` gives the row helpers over a variant, and take the
-   divisor from their caller. The check: `grep -c "fn the_standardized_row"
-   crates/popnei/src/*.rs` gives 1 in `variant.rs` and 0 in `pca.rs`, where
-   today it is 0 and 1.
+   divisor from their caller. The check: `grep -rn "fn the_standardized_row("
+   crates/popnei/src/*.rs` names `variant.rs` and does not name `pca.rs`,
+   where today it names `pca.rs` at the function itself and at the wrapper
+   the `bench-internals` feature exposes, and does not name `variant.rs`.
+   `the_standardized_rows`, which drives a whole block of variants for the
+   PCA on the threads it has, stays in `pca.rs`.
 2. The PCA computes what it computed. The check: `cargo test -p popnei --lib
    pca -- --list` still prints `47 tests` and `cargo test --workspace`
    passes with 604 in the core crate, with no assertion of `pca.rs` changed;
