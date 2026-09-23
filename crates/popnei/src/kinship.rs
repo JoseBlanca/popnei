@@ -1899,7 +1899,7 @@ mod components {
         the_kinship_of, the_panel_called, the_panel_with_genotypes_missing, the_worked_example,
         variant, vcf_of,
     };
-    use super::{Kinship, KinshipPcs, principal_components};
+    use super::{Kinship, KinshipPcs, principal_components, the_components_with_variance};
     use crate::error::Error;
 
     /// What the eigenvalues and the projections of numpy 2.5.3 are held to,
@@ -2094,6 +2094,38 @@ mod components {
 
         assert_eq!(pcs.num_comps, 2, "the components above the tolerance");
         assert_eq!(pcs.projections.len(), 8, "4 individuals x 2 components");
+    }
+
+    /// The threshold a component has to be above grows with the side of the
+    /// matrix: it is the largest eigenvalue times the side times the
+    /// epsilon of an `f64`, so a kinship of 200 individuals cuts at
+    /// 4.44e-14 of the largest eigenvalue and one of 5 cuts at 1.11e-15 of
+    /// it. An eigenvalue of 1.5e-15 of the largest is a component of the
+    /// second and of no component of the first.
+    ///
+    /// The threshold is `crate::pca`'s, which the components of a kinship
+    /// take unchanged, and the side of it had no test: taking it out leaves
+    /// every test of the principal components and of the kinship green,
+    /// where a threshold of 0 reddens ten of them. It is read here and not
+    /// beside the threshold because the 47 tests of `pca.rs` are the
+    /// evidence that this plan changed no number of the principal
+    /// components, and they keep their names and their count.
+    #[test]
+    fn the_threshold_of_a_component_grows_with_the_side_of_the_matrix() {
+        // From the largest, as an eigendecomposition gives them: one
+        // eigenvalue of 1.5e-15 of the largest and one below 0.
+        let values = [1.0, 1.5e-15, -2e-16];
+
+        assert_eq!(
+            the_components_with_variance(&values, 200, 200),
+            1,
+            "of 200 individuals, whose threshold is 4.44e-14 of the largest eigenvalue"
+        );
+        assert_eq!(
+            the_components_with_variance(&values, 5, 5),
+            2,
+            "of 5 individuals, whose threshold is 1.11e-15 of it"
+        );
     }
 
     /// Each projection of the two components of the worked example is the
