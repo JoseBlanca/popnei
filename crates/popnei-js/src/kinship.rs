@@ -39,8 +39,11 @@ pub struct KinshipOfVariants {
     /// How many individuals the matrix has on each of its two sides.
     num_individuals: usize,
     /// How many variants had variance among these individuals and were
-    /// used, which is what the matrix was built from.
-    num_vars: usize,
+    /// used, which is what the matrix was built from. It is an `f64`, the
+    /// number of JavaScript, as every count `PassCounts` carries is: the
+    /// core holds it in a `u64` and a count above 2^53 is more variants
+    /// than any source has.
+    num_vars: f64,
     /// The matrix, and `None` once it was given to JavaScript: it leaves
     /// the memory of wasm as it is read, so the copy that crosses is the
     /// only one.
@@ -66,7 +69,7 @@ impl KinshipOfVariants {
     /// one dosage is in no sum and in no denominator, and the counts of the
     /// pass say how many variants the steps gave, used or not.
     #[must_use]
-    pub fn num_vars(&self) -> usize {
+    pub fn num_vars(&self) -> f64 {
         self.num_vars
     }
 
@@ -150,7 +153,7 @@ pub(crate) fn kinship_of_the_variants(
     let of_the_matrix = individuals.unwrap_or(of_the_pass);
     Ok(KinshipOfVariants {
         num_individuals: kinship.num_individuals,
-        num_vars: kinship.num_vars,
+        num_vars: kinship.num_vars as f64,
         matrix: Some(kinship.matrix),
         individuals: Some(of_the_matrix),
         counts,

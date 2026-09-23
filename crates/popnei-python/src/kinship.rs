@@ -96,19 +96,11 @@ pub(crate) fn calc_kinship<'py>(
     // of numpy, that import fails with the exception that is pending, and
     // the numpy crate panics when it does, which a user cannot catch.
     py.check_signals()?;
-    // The variants that were used go to Python as the `u64` every count of
-    // popnei is there: a `usize` is 32 bits in WebAssembly and 64 natively,
-    // and what a user reads does not depend on that.
-    let num_vars = u64::try_from(kinship.num_vars).map_err(|_| {
-        PyPopneiError::broken_of_the_file(
-            format!(
-                "the kinship was taken from {num_vars} variants, which is more than a \
-                 count holds",
-                num_vars = kinship.num_vars
-            ),
-            &path,
-        )
-    })?;
+    // The variants that were used go to Python as the `u64` the core counts
+    // them in, which is what every count of popnei is there: a `usize` is 32
+    // bits in WebAssembly and 64 natively, and what a user reads does not
+    // depend on that.
+    let num_vars = kinship.num_vars;
     // The matrix of 10000 individuals is 800 MB, and `into_pyarray` hands
     // the allocation the core filled to numpy without copying it.
     let matrix = the_square_of(py, kinship.num_individuals, kinship.matrix)?;
