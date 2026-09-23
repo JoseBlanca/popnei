@@ -8,6 +8,9 @@
 //! for the routine, so `uplo` is `U`; `a'a` is `a a'` of the transposed
 //! view, so `trans` is `N`; and `c = a b` is `c' = b' a'`, so `dgemm` gets
 //! the buffer of `b` as its first operand and that of `a` as its second.
+//! `c = a b'` is `c' = b a'` the same way, and there the first operand is
+//! the transpose of what the buffer of `b` is in the routine's view, so
+//! that call is the one whose `transa` is `T`.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -93,6 +96,49 @@ pub(crate) fn product(
     )]
     unsafe {
         ::blas::dgemm(b'N', b'N', m, n, k, 1.0, b, m, a, k, 0.0, c, m);
+    }
+    Ok(())
+}
+
+/// Writes `a b'` into `c`, with `a` of exactly `rows` x `inner` values,
+/// `b` of `cols` x `inner` and `c` of `rows` x `cols`, all row after row
+/// and every dimension 1 at least.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when a dimension is larger than the `i32` the
+/// routine takes.
+pub(crate) fn product_by_transpose(
+    a: &[f64],
+    rows: usize,
+    inner: usize,
+    b: &[f64],
+    cols: usize,
+    c: &mut [f64],
+) -> Result<()> {
+    let m = the_i32_of(cols, "cols")?;
+    let n = the_i32_of(rows, "rows")?;
+    let k = the_i32_of(inner, "inner")?;
+    // SAFETY: `c = a b'` in popnei's layout is `c' = b a'` in the layout
+    // the routine reads, where `b` is the transpose of the column major
+    // matrix the buffer of `b` is, so `transa` is T and `transb` is N.
+    // With `m` = cols, `n` = rows and `k` = inner the routine reads the
+    // buffer of `b` as a column major matrix of inner rows and cols
+    // columns with `lda` = inner, which `transa` T turns into the cols x
+    // inner first operand and which is the cols * inner values of `b`;
+    // the buffer of `a` as one of inner rows and rows columns with `ldb`
+    // = inner, which is the rows * inner values of `a`; and, with `beta`
+    // 0, writes a column major matrix of cols rows and rows columns with
+    // `ldc` = cols, which is the rows * cols values of `c`. Each of the
+    // three slices holds exactly the values of its dimensions, no
+    // dimension is 0 and all three fit in the `i32` the routine takes,
+    // which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of BLAS are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::blas::dgemm(b'T', b'N', m, n, k, 1.0, b, k, a, k, 0.0, c, m);
     }
     Ok(())
 }

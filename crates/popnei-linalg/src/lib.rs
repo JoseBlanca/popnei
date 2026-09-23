@@ -3,10 +3,12 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds three: the product of a matrix with
+//! place that has them. It holds four: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
-//! symmetric matrix, [`eigh_lower`]; and the product of two matrices,
-//! [`product`]. `docs/specs/linalg.md` says what each one gives.
+//! symmetric matrix, [`eigh_lower`]; the product of two matrices,
+//! [`product`]; and the product of a matrix with the transpose of
+//! another, [`product_by_transpose`]. `docs/specs/linalg.md` says what
+//! each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
 //! the layout of the blocks and of everything the core crate holds, with
@@ -249,6 +251,65 @@ pub fn product(
     backend::product(a, rows, inner, b, cols, c)
 }
 
+/// The product `c = a b'`, where `a` is `rows` x `inner`, `b` is `cols` x
+/// `inner` and `c`, which is overwritten, is `rows` x `cols`, all row
+/// after row.
+///
+/// The two operands hold their `inner` values the same way round, one row
+/// for each of the `rows` and the `cols` things they describe, and the
+/// entry i, j of the result is the sum over the `inner` columns of the row
+/// i of `a` times the row j of `b`. It is [`product`] with its second
+/// operand read the other way round, which both backends do inside the
+/// routine and neither pays a copy for, so a caller whose two matrices are
+/// both laid out by the thing they describe writes no transpose of its
+/// own.
+///
+/// Giving one slice for `a` and for `b` with `rows` equal to `cols` is the
+/// product of a matrix with its own transpose.
+///
+/// `rows` may be 0, and then `c` holds no rows and nothing is written.
+/// `inner` and `cols` are 1 at least, as in [`product`]. A buffer may hold
+/// more values than its rows times its columns, and then its first rows
+/// times columns are the matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `inner` or `cols` is 0, when a buffer holds
+/// fewer values than its rows times its columns, or when a matrix would
+/// hold more than 2147483647 values, which is what the routines of BLAS
+/// and LAPACK count in. [`Error::NotFinite`] when `a` or `b` holds a value
+/// that is not finite.
+pub fn product_by_transpose(
+    a: &[f64],
+    rows: usize,
+    inner: usize,
+    b: &[f64],
+    cols: usize,
+    c: &mut [f64],
+) -> Result<()> {
+    if inner == 0 {
+        return Err(Error::Dimension {
+            argument: "inner",
+            expected: "1 at least, since it is the dimension the product sums over".to_owned(),
+        });
+    }
+    if cols == 0 {
+        return Err(Error::Dimension {
+            argument: "cols",
+            expected: "1 at least, since it is the number of columns of the product".to_owned(),
+        });
+    }
+    let a = the_matrix_of(a, rows, inner, "a")?;
+    let b = the_matrix_of(b, cols, inner, "b")?;
+    let c = the_matrix_of_mut(c, rows, cols, "c")?;
+    refuse_a_value_that_is_not_finite(a, "a")?;
+    refuse_a_value_that_is_not_finite(b, "b")?;
+    if rows == 0 {
+        return Ok(());
+    }
+    backend::product_by_transpose(a, rows, inner, b, cols, c)
+}
+
 /// The eigendecomposition of the symmetric `g` of `n` x `n`, given by its
 /// lower half.
 ///
@@ -463,7 +524,10 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 
 #[cfg(test)]
 mod tests {
-    use super::{Eigen, Error, add_self_product_lower, eigh_lower, product, reverse_the_rows};
+    use super::{
+        Eigen, Error, add_self_product_lower, eigh_lower, product, product_by_transpose,
+        reverse_the_rows,
+    };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
     /// rows (1, 2, 0) and (0, 1, 3), row after row.
@@ -481,6 +545,15 @@ mod tests {
     /// The third B, 3 x 1, rows (1), (0) and (2). With it the three
     /// dimensions of the product are all different.
     const B_OF_3_BY_1: [f64; 3] = [1.0, 0.0, 2.0];
+
+    /// The B of the first case of `product_by_transpose` of the same
+    /// place, 2 x 3, rows (1, 1, 0) and (0, 2, 1). A times its transpose
+    /// is not symmetric.
+    const B_OF_2_BY_3: [f64; 6] = [1.0, 1.0, 0.0, 0.0, 2.0, 1.0];
+
+    /// The B of its second case, 1 x 3, the row (2, 0, 1). With it the
+    /// three dimensions of the product are all different.
+    const B_OF_1_BY_3: [f64; 3] = [2.0, 0.0, 1.0];
 
     /// The 3 x 3 symmetric matrix of "How it is verified", rows (4, 1, 0),
     /// (1, 3, 0) and (0, 0, 1), with only its lower half given and the
@@ -640,6 +713,97 @@ mod tests {
         let mut c = vec![7.0, 7.0];
         product(&[], 0, 3, &B_OF_3_BY_2, 2, &mut c).unwrap();
         assert_eq!(c, vec![7.0, 7.0]);
+    }
+
+    #[test]
+    fn the_product_by_transpose_of_two_matrices_whose_result_is_not_symmetric() {
+        // C holds other values first, so a product that added to C instead
+        // of overwriting it would leave them in the result. The result is
+        // not symmetric, so a backend that wrote the transpose of C would
+        // fail this.
+        let mut c = vec![7.0; 4];
+        product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 2, &mut c).unwrap();
+        assert_eq!(c, vec![3.0, 4.0, 1.0, 5.0]);
+    }
+
+    #[test]
+    fn the_product_by_transpose_of_matrices_whose_three_dimensions_are_all_different() {
+        let mut c = vec![7.0; 2];
+        product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_1_BY_3, 1, &mut c).unwrap();
+        assert_eq!(c, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn the_product_by_transpose_of_a_matrix_with_itself_is_the_product_of_the_two_layouts() {
+        // A A', which is the first case of `product` above written the
+        // other way round: the B of 3 x 2 there is this A. The two
+        // functions are asserted to give it alike, which is what catches
+        // one of them reading an operand the way the other does.
+        let mut c = vec![7.0; 4];
+        product_by_transpose(&A_OF_2_BY_3, 2, 3, &A_OF_2_BY_3, 2, &mut c).unwrap();
+        assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0]);
+        let mut of_the_product = vec![7.0; 4];
+        product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 2, &mut of_the_product).unwrap();
+        assert_eq!(c, of_the_product);
+    }
+
+    #[test]
+    fn the_product_by_transpose_of_an_a_of_no_rows_writes_nothing() {
+        let mut c = vec![7.0, 7.0];
+        product_by_transpose(&[], 0, 3, &B_OF_2_BY_3, 2, &mut c).unwrap();
+        assert_eq!(c, vec![7.0, 7.0]);
+    }
+
+    #[test]
+    fn the_product_by_transpose_refuses_the_dimensions_the_product_refuses() {
+        // A `b` that does not hold its cols rows of inner values, a `c`
+        // shorter than its rows times its columns, and the two dimensions
+        // that are 1 at least.
+        let mut c = vec![0.0; 4];
+        let error =
+            product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3[..4], 2, &mut c).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "b", .. }),
+            "the error is {error}"
+        );
+        let mut short = vec![0.0; 3];
+        let error =
+            product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 2, &mut short).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "c", .. }),
+            "the error is {error}"
+        );
+        let error = product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 0, &mut c).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "cols",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+        let error = product_by_transpose(&[], 2, 0, &[], 2, &mut c).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "inner",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+        let mut with_one_that_is_not_finite = B_OF_2_BY_3;
+        with_one_that_is_not_finite[3] = f64::NAN;
+        let error =
+            product_by_transpose(&A_OF_2_BY_3, 2, 3, &with_one_that_is_not_finite, 2, &mut c)
+                .unwrap_err();
+        assert!(
+            matches!(error, Error::NotFinite { argument: "b" }),
+            "the error is {error}"
+        );
     }
 
     #[test]

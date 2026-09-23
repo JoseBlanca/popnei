@@ -1,11 +1,14 @@
-//! The faer backend: the three operations on faer, a linear algebra
+//! The faer backend: the four operations on faer, a linear algebra
 //! library written in Rust, which runs where there is no BLAS to link and
 //! natively when the crate is built with `--no-default-features`.
 //!
 //! faer reads a matrix the way it is told to, so here the buffers are
 //! given to it as what they are, row after row, and its functions are
 //! called as written: no transpose and no turn of the halves, which is
-//! what the BLAS backend beside this file needs.
+//! what the BLAS backend beside this file needs. The one transpose here
+//! is the operand of `a b'` that the caller asked to be read the other
+//! way round, which is a matrix reference over the same values and not a
+//! copy.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -93,6 +96,35 @@ pub(crate) fn product(
     let b = MatRef::from_row_major_slice(b, inner, cols);
     let c = MatMut::from_row_major_slice_mut(c, rows, cols);
     matmul(c, Accum::Replace, a, b, 1.0, the_threads());
+    Ok(())
+}
+
+/// Writes `a b'` into `c`, with `a` of exactly `rows` x `inner` values,
+/// `b` of `cols` x `inner` and `c` of `rows` x `cols`, all row after row
+/// and every dimension 1 at least.
+///
+/// # Errors
+///
+/// None, as for the two products above.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
+)]
+pub(crate) fn product_by_transpose(
+    a: &[f64],
+    rows: usize,
+    inner: usize,
+    b: &[f64],
+    cols: usize,
+    c: &mut [f64],
+) -> Result<()> {
+    let a = MatRef::from_row_major_slice(a, rows, inner);
+    let b = MatRef::from_row_major_slice(b, cols, inner);
+    let c = MatMut::from_row_major_slice_mut(c, rows, cols);
+    // The transpose of a matrix reference is another reference over the
+    // same values, read the other way round: faer walks them as they lie
+    // and nothing is copied.
+    matmul(c, Accum::Replace, a, b.transpose(), 1.0, the_threads());
     Ok(())
 }
 
