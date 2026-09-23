@@ -415,3 +415,194 @@ after another and has no rayon at all. Both are the same failure as work
 package 1's: a plan written before the work asserting how the code would be
 shaped, in a sentence confident enough that a subagent would have followed
 it.
+
+## Work package 3: the linear model
+
+It finished as planned, in three tasks and a round of fixes, and its five
+deliverables hold. What exists now that did not: `calc_gwas` in Python and
+`calcGwas` in TypeScript, testing every variant of a dataset against a
+continuous trait with covariates and giving the effect of each variant, its
+standard error and its p-value. This is the first work package of the plan
+that gives a user anything.
+
+| deliverable | the command | what it gave |
+|---|---|---|
+| 1, the whole study is plink2's | `uv run pytest tests/test_gwas.py` | over 1200 variants, worst `beta` 3.69e-6 against a bound of 6.90e-6, worst `se` 4.90e-7 against 1.65e-6, `allele_freq` exact |
+| 2, the worked example and the six literals in cargo | `cargo test -p popnei --lib gwas::lm -- --list` | 7 tests, where the starting commit printed `0 tests` |
+| 3, popnei and pyNei agree | the same pytest run | worst `beta` 5.83e-15 of `se` against a bound of 1.5e-14; the p-value 3.80e-12 in `log10` against 1e-11 |
+| 4, the blocks change nothing | the same pytest run and a cargo test | the two studies equal to the bit; a study of 10100 variants answers the same in its second block as in its first |
+| 5, TypeScript gives the same numbers | `npm run build && npm test` in `js/popnei` | 319 pass, 0 fail |
+
+The checks after the fixes: fmt and clippy clean, 769 tests in the core
+crate with 2 ignored and 149 in the linear algebra crate, the same 769 on
+faer, `cargo wasm-check` clean, ruff clean, 478 pytest passed, 319 node
+tests passed.
+
+### The two deliverables that had to be rewritten before they meant anything
+
+**Deliverable 1 could not be passed by any correct implementation.** It
+asked for `beta` and `se` within 1e-5 times that variant's `se` against a
+file plink2 prints to six significant digits. At `var0482`, whose `beta` is
+1.0389 and whose `se` is 0.190445, the budget is 1e-5 x 0.190445 = 1.9e-6
+absolute while six significant digits round a value above 1 by up to 5e-6:
+the bound was smaller than the rounding of the file it compared against.
+Three of the 1200 variants fail it, `var0398`, `var0482` and `var1001`, and
+the worst difference is 1.938e-5 of an `se`. The bound now carries half a
+unit in plink2's last printed digit beside the 1e-5 of `se`, and with that
+term none of the 1200 fails.
+
+What decides a failure is not whether `beta` passes 1 but whether half a
+unit in the last printed digit passes 1e-5 times that variant's `se`, which
+for a `beta` between 1 and 10 means an `se` below 0.5. Six variants meet
+that and three of them fail, because the printing error is at most half a
+digit and usually less.
+
+Two counts were written into the plan on 24 September 2026 and both were
+wrong: that 1198 of the 1200 failed, and that the two which passed were the
+two whose `beta` passes 1. Both came from a subagent's report and were
+carried into the plan and into the spec without being run. The orchestrator
+ran them and they are three and six. The plan records both wrong counts
+rather than replacing them quietly, because the next reader meets the
+reasoning and not only its conclusion.
+
+**Deliverable 4 named one test where it needed two.** Every pass puts a
+`Reblock` over its reader, so a panel read from a vars file in 16 batches of
+77 is joined into the single block the study reads and the study's own loop
+runs once either way: the measured difference was exactly 0 because it was
+the same computation, and its 1e-12 tolerance bounded nothing. It also
+passed under an arithmetic mutation, the null model's degrees of freedom
+substituted for the variant's, that fails the three other value tests. It
+now asserts exact equality and says it shows the vars reader gives what the
+VCF reader gives. The check that runs the study's loop twice is a cargo test
+of 10100 variants, which the deliverable now names beside it.
+
+### What the review found
+
+Six reviewers ran: spec, tests, numbers, errors, api and binding, the last
+of these for the first time in this plan, since this is the first work
+package with a Python and a TypeScript layer. About twenty-five findings
+held.
+
+**The two builds of popnei disagreed about whether a variant has an answer.**
+The variant's residual sum of squares was computed as the null model's
+residual sum of squares minus `beta` times the numerator, a subtraction of
+two quantities that agree to the last bits once a variant explains most of
+the residual. Measured on six individuals with one covariate and a trait of
+`1 + 2*cov + 3*dosage + delta*e`: at delta 1e-8 the subtraction gives
+-7.1054e-15, hence an `se` of NaN, where forming the sum from the variant's
+residuals gives 6.6836e-17 and an `se` of 2.36e-9; at delta 1e-7 the
+subtraction gives exactly 0 and an `se` of 0, which is not a standard error
+either. On the same input Accelerate gives NaN where faer gives 0.0, and
+faer gives NaN where Accelerate gives a usable number. The variant came back
+with a finite `beta` beside a NaN `se` and `p_value`, which is not the
+all-NaN row the spec reserves for a variant with no answer, so a user
+filtering on a missing `beta` would keep it. The spec now specifies the
+residual form and says plainly that it departs from pyNei's arithmetic to
+keep digits pyNei loses, that the two agree wherever the subtraction has not
+cancelled, and that it costs one more pass over the block's dosages. No
+literal moved.
+
+**A variant in the span of the design got a large answer instead of no
+answer**, with the sign depending on the backend: `beta` 5.9e13 on
+Accelerate and -3.0e13 on faer, with a p-value near 1, where plink2 reports
+nothing and says the correlation is too high. pyNei computes popnei's
+numbers to the bit, so this was inherited from the oracle. It is the same
+cancellation one level up, and the spec covers both under its second open
+point with a threshold that was measured rather than judged: on an
+eight-individual fixture the collinear variant leaves 6.47e-32 of its
+squared length once the design is taken out and an ordinary variant leaves
+0.432, thirteen orders apart, so the line is not a fine choice. The
+threshold is `num_individuals` times 2.2e-16 of the squared length before,
+which is the shape `docs/specs/pca.md` uses for a component with no variance
+and the design's rank check uses for a covariate that is not independent, so
+all three agree rather than each having its own number.
+
+**A legal argument was refused with an untrue reason.** `test="wald"` was
+refused in both layers although the Wald test is the linear model's own
+test; the core accepts it and refuses only the score test of a linear model,
+as the spec says. So `Error::GwasScoreTestOfALinearModel` was unreachable
+from either user-facing layer, and a user passing back the `test` they were
+given in the result was told it belongs to a model they were not using.
+
+**Nothing checked that the two layers refuse the same things.** Each suite
+checked itself against its own copy of the literals. That is what let
+through a phenotype of strings which Python accepted and TypeScript refused,
+and a `{kinship: undefined}` which TypeScript refused and Python accepted.
+There is now `tests/reference/gwas/refusals_of_both_layers.json`, which both
+suites walk; writing it immediately caught two messages about a covariate
+named `intercept` that disagreed between the layers.
+
+**A whole-genome study could have given every variant the first
+chromosome's name.** The chromosome column is built up block by block and
+nothing tested it across blocks, the only multi-block test having all 10100
+variants on one chromosome. A reviewer rewrote the code so every later
+variant took the first block's chromosome and the whole suite passed, while
+the same mutation on the identifiers fails three tests. The multi-block test
+now puts the second block on a second chromosome.
+
+The rest were smaller: the degrees of freedom were clamped with a saturating
+subtraction where the bound should be stated; two covariates of the same
+name gave a result a user cannot index by name, the defect the `intercept`
+refusal exists to prevent; the comparison with pyNei never ran on the panel
+with missing genotypes, so the rule that fills a missing genotype with its
+variant's mean was exercised at scale by nothing; the four trait, test and
+model names were written once in each binding crate where the core has the
+pattern for it; a dead-code expectation covered a whole block rather than
+the four items that were unused, so nothing there would ever warn again; and
+the TypeScript enum for which test to make was the one name in the project
+matching no other layer.
+
+One finding did not hold and the subagent refuted it with a reason I accept.
+The review asked that the refusal of a study with too few individuals stop
+naming the file, since it is decided by the phenotype the user wrote. It is
+decided by the phenotype and by the individuals the source has — the same
+phenotype against a file sharing more of them is fine — so by the crate's
+own rule it names the file, and a user reading a directory needs to know
+which one.
+
+### What the owner should know
+
+**The one thing to carry into work package 4.** The same cancelling
+subtraction is in the linear mixed model's Wald test, `y' p y` minus `num`
+squared over `den`, and nobody has measured whether it cancels there. The
+residual form is not free in that model: it would want a product with the
+projection matrix for every variant, which is exactly the cost the
+GRAMMAR-Gamma approximation exists to avoid. Reaching it needs a far
+stronger association than the linear model's case, because the restricted
+maximum likelihood fixes `y' p y` at `n - c`, which is 197 on this panel.
+The spec says measure before fixing, and work package 4 will.
+
+**A divergence from plink2 that this plan's panels cannot show.**
+`allele_freq` can exceed one half, because the major allele is the most
+frequent among the called alleles, which counts the called half of a
+half-called genotype, while the mean that becomes `allele_freq` is over
+whole called genotypes. popnei and pyNei agree exactly. One panel has every
+genotype called and the other is missing whole genotypes rather than halves,
+so neither shows it.
+
+**A difference in a dtype that a user could be bitten by.** `stats["pos"]`
+is an unsigned 64-bit column, as `Block.pos` and `R2Matrix.poss` are, where
+pyNei's is signed. Subtracting from it wraps: `stats["pos"] - 2000` gives
+18446744073709550616 for a variant at position 1000. The type is right for
+popnei and the spec now lists the difference.
+
+### How the work went
+
+Tasks 3.1, 3.2 and 3.3 each went to one subagent; 3.2 and 3.3 ran side by
+side as the plan allows, touching different files, and neither trod on the
+other. The fixes went back to the subagent that wrote 3.2, and a separate
+subagent built the coercion the spec settled last. Tokens: task 3.1, 262508;
+task 3.3, 260240; task 3.2, 326128 and 534153 by the end with the fixes; the
+coercion, 212155. The six reviewers used 140000, 184254, 171173, 190658,
+153020 and 197302.
+
+The orchestrator's own failure this work package is the one worth keeping.
+Two counts about deliverable 1 were relayed from a subagent's report to the
+owner and to the session that owns the spec without being run, and both were
+wrong, one of them by a factor of four hundred. The session that owns the
+spec made the same shape of mistake one layer up, measuring the printing's
+share on six literals and generalising it to 1200. Neither was a lapse of
+care; both were trust standing in for a measurement, and in both cases what
+fixed it was somebody running the thing. Four findings of this work package
+came from a reviewer that ran something where reading it had missed the
+point, and the plan's own sentences were wrong twice for the same reason.
