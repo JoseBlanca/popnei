@@ -122,3 +122,55 @@ The spec's "The standard errors" and its f_2 item carry the second run and
 the seventeen digits the 1e-12 comparison needs, in `0dccb3a`, a commit
 before the code. The f_2 of the two runs differ in their last two digits,
 since ADMIXTOOLS takes f_2 as a weighted mean over its blocks.
+
+### Task 1.4, the pass over a reader
+
+Two commits: `a32de6e`, the spec, and `f89d1dd`, the code. 240 065
+tokens. `cargo test -p popnei --lib pop_dists::` gives `37 passed; 0
+failed` and the workspace `558 passed; 0 failed; 2 ignored`. The other
+checks were run again by the orchestrator on `f89d1dd` and all pass.
+
+Deliverable 4 is met, and each of its cases is a test of its own: the
+panel read in blocks of 100 and of 10000 and in pools of 1 and 4 threads,
+a pass over a source with no variant, fewer than two populations, fewer
+than 20 groups with their number in the message, and an error of the
+reader given on as it is.
+
+The reduction that the plan called the likeliest silent failure of this
+work package: each chunk of 64 rows sums into its own run of pairs per
+group, and the chunks are added into the pass in block order, so the
+threads never join a float total in an order rayon chooses. Pools of 1 and
+4 threads give the same bits, not merely the same number within the
+tolerance. The test can fail: cutting the chunks by
+`rayon::current_num_threads` instead makes it fail at the 15th digit.
+
+The sums of a pair are 48 bytes and not the 44 the spec's "How it runs"
+claimed: five f64 and a count, with padding after a u32. The count is now
+a u64, which costs nothing since the padding paid for it, and the spec's
+three figures are corrected to 48 bytes, 72 KB for 3 populations and 500
+groups and 29 MB for 50 populations, in `a32de6e`.
+
+### Task 1.4b, added to the plan: a third reference run
+
+`calc_pop_dists` refuses a pass that gives fewer than 20 resampling
+groups, which the spec asks for so that nobody is handed a standard error
+built from three groups. The two ADMIXTOOLS runs the plan had cut the
+biallelic panel into 12 and 6 groups, so neither could be asserted through
+the Python or the TypeScript package, which deliverables 5 and 6 ask for.
+
+So `make_reference.py` runs ADMIXTOOLS a third time, at `blgsize = 55000`,
+which cuts the panel into 22 groups, ten of 55 variants and one of 50 on
+each of its two chromosomes: above the minimum, and still of two sizes, so
+the estimator for unequal m is told apart at the Python level too. Its
+standard errors are 0.0020502481330704485, 0.0016837006366670754 and
+0.0019859616713111257, in `tests/reference/pop_dists/panel.f2.min20.tsv`
+and in the spec, commit `9fad153`. That ADMIXTOOLS really cut 22 groups
+was checked by asking it for the array, whose third dimension is 22 and
+whose names are ten `l55` and one `l50` per chromosome.
+
+The other two runs came out byte for byte the same files, which is what
+says the script and the versions it refuses still give the numbers the
+spec carries. The task was added by the orchestrator rather than put to
+the owner because it keeps deliverables 5 and 6 as the plan wrote them;
+the alternative was to drop the standard errors from both, which would
+have made a deliverable's check weaker.

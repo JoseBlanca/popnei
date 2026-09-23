@@ -157,12 +157,19 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
   the variance. Serves deliverable 3. Needs 1.1 and 1.2. Its failure would
   be silent too, so it has a commit of its own and the worked example and
   the ADMIXTOOLS numbers guard it.
-- [ ] 1.4 `calc_pop_dist_sums`, `PopDistSums` and `PopDistOptions`: the
+- [x] 1.4 `calc_pop_dist_sums`, `PopDistSums` and `PopDistOptions`: the
   loop over the blocks of a reader, the rows on rayon natively and one
   after another in wasm as `calc_per_var_distribs` of `stats` does it, the
   accumulator of six numbers for each pair and each group, the errors, and
   the cargo tests of deliverable 4. From "How it runs" and "The Rust
   interface". Serves deliverables 3 and 4. Needs 1.1, 1.2 and 1.3.
+- [x] 1.4b A third run of ADMIXTOOLS 2, at a block size of 55 000 base
+  pairs, which cuts the biallelic panel into 22 groups of two sizes, into
+  `tests/reference/pop_dists/panel.f2.min20.tsv`, with its numbers in the
+  spec. Added by the orchestrator on 23 September 2026: the two runs the
+  plan had cut 12 and 6 groups, and `calc_pop_dists` refuses a pass of
+  fewer than 20, so neither could be asserted through the packages, which
+  deliverables 5 and 6 ask for. Serves deliverables 5 and 6. Needs 1.4.
 - [ ] 1.5 The Python side: the function of `crates/popnei-python` that
   builds the chain with `chain_of`, runs the pass and gives back the
   measures, the standard errors, the counts and `f2_groups`, as the Kosman
