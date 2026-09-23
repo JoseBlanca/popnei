@@ -1416,13 +1416,27 @@ different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
 
-**Open 2: a variant there is nothing left to test.** One rule in three
-places, so it is one decision. In the linear model the quantity is `xx`,
-what is left of a variant's dosages once the covariates are taken out. In
-both score tests it is `x' p x`. And in the linear mixed model's Wald test
-it is `y' p y` minus `num² / den`, what the variant leaves of the trait
-rather than what the design leaves of the variant. In each, the number can
-round to 0 or below and `beta` is then something divided by noise.
+**Open 2: a variant there is nothing left to test.** One rule in four
+places, so it is one decision. Each place has a quantity that is what is
+left, and a scale that is what there was before the covariates were taken
+out; the rule is that the first falls to `n` times 2.2e-16 of the second,
+with `n` the tested individuals.
+
+| where | what is left | the scale it is against |
+|---|---|---|
+| the linear model | `xx`, the variant's dosages with the covariates taken out | the variant's squared length before that |
+| the logistic model's score test | `x' w x` minus `(x' w d) (d' w d)⁻¹ (d' w x)` | `x' w x`, the weighted squared length |
+| both mixed models' score tests | `x' p x` | the scale `docs/plans/gwas-linear.md` chose for it, which the logistic mixed model uses too so that the two agree |
+| the linear mixed model's Wald test | `y' p y` minus `num² / den` | `y' p y` |
+
+The third row is the only one where the exact "before" is not free: for
+`x' p x` it would be `x' V⁻¹ x`, the same quantity before the covariates,
+and an upper bound of it serves. The fourth row is the odd one and worth
+naming as such: it is what the variant leaves of the trait, where the other
+three are what the design leaves of the variant.
+
+In each, the number can round to 0 or below and `beta` is then something
+divided by noise.
 
 All three are reachable and all three were measured on 23 and 24 September
 2026.
