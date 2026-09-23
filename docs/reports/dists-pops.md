@@ -248,3 +248,95 @@ check` `All checks passed!`, and `uv run maturin develop && uv run
 pytest` `335 passed`.
 
 All six deliverables are met.
+
+## The review of work package 1
+
+Seven reviewers, one for each category the `code-review` skill has, each
+with a fresh context, over `6704347..c8e1285`. Two of them, `spec` and
+`tests`, worked in worktrees of their own, as that skill asks, because
+they change code to see what happens.
+
+Two of them rebuilt the arithmetic from the spec on their own and compared
+it with popnei: the `spec` reviewer over F_ST, f_2 and the f_2 standard
+error of the three pairs of both panels at three group lengths and at a
+`min_num_individuals` of 47, and the `numbers` reviewer over the same and
+the jackknife's three formulas. Both agree with popnei to 1e-14 relative
+or better. The measures themselves are right, and what the review found is
+of another kind: one silent wrong result, two tests that could not fail,
+and a set of messages and doc comments that say what is not so.
+
+### What was found and what was decided
+
+**A source whose positions go back gives wrong groups and says nothing.**
+Four reviewers found it, from four sides. The walk that cuts the groups
+decides with `pos.saturating_sub(filling.start) < length`, which is true
+for every variant at or before the group's first, so such a variant joins
+the group it is far from instead of starting one. The orchestrator ran it:
+the biallelic panel with one variant moved out of order gives 122
+resampling groups where the sorted file gives 240, a group whose recorded
+end, 599 000, is before its start, 600 000, and a standard error for one
+pair of 0.0020831 against 0.0017755, 17 in 100 higher. The f_2 themselves
+do not move, which is why nothing else catches it.
+
+It is reachable. `docs/specs/filters.md` says the linkage disequilibrium
+filter "is the one part of popnei that needs the variants of each
+chromosome to come together and in order of position. The rest of popnei
+reads a source in any order", and `docs/specs/dists.md` said nothing about
+order. So the resampling groups are a second part that needs it, and the
+spec did not say so.
+
+The fix is to refuse such a source, not to accept it. Sorting would mean
+holding the whole dataset, against the streaming the objectives ask for,
+and a standard error resampled over groups that are not the stretches the
+user asked for is a number nobody should quote. That is also what the
+linkage disequilibrium filter already does, so popnei has the pattern. It
+is written into the spec first, in a commit of its own.
+
+**The test of the threads could not fail.** The plan named this the
+likeliest silent failure of the work package, and the test written for it
+does not guard it. The `tests` reviewer replaced the ordered reduction
+with rayon's own `par_chunks().reduce()` and all 39 cargo tests still
+passed, while showing that the numbers do move: f_2 for one pair is
+`3fa515b0b9944282` on one thread and `3fa515b0b994427b` on four. The
+fixture cuts the panel into groups of 50 variants and a chunk is 64 rows,
+so each group is built from at most two chunks and any order of two terms
+gives the same bits. The report's earlier claim that the test fails when
+the chunks are cut by the number of threads is true but is about another
+property: that mutation moves the chunk boundaries, not the order they are
+joined in.
+
+**The corrected diversities are pinned only where nothing can tell them
+apart.** All four variants of the worked example give the two populations
+the same number of called genotypes, and every test is at a ploidy of 2.
+The `tests` reviewer showed three wrong formulas that pass all 39 tests:
+the harmonic mean of the called genotypes replaced by the arithmetic mean,
+the pooled diversity weighted by the population sizes instead of equally,
+and the ploidy ignored altogether. Work package 2 reads exactly these two
+sums, so a defect in them is silent until the comparison with pyNei at the
+end of it. The plan's deliverable 1 claimed "nothing of this task goes
+unchecked until work package 2", and that was false for these three.
+
+**Smaller findings that hold.** A pair with no variant has code and no
+test. An empty `pops` is refused with a message telling the user to leave
+out an argument that has no default. Python leaves `pass_stats` empty on
+each measure's distances where TypeScript fills it, and the docstring of
+that field says it is empty only for distances no pass gave, which is now
+untrue. Four ways of giving `jackknife_group` wrongly are tested in
+TypeScript and not in Python. Several doc comments state a bound or a
+number that is not the code's: a count said to be limited by a `u32` that
+is a `u64`, and a standard error quoted from a different run than the test
+uses. The map of the modules in `docs/architecture.md` still has no row
+for this module and gives its old one pyNei's function name.
+
+**One finding not taken.** The `errors` reviewer asked for a check on a
+`saturating_mul` that could make a chunk's sums be skipped. The `numbers`
+reviewer had checked the same line and showed the product is already
+bounded by a `checked_mul` in the function that grows the sums, so it
+cannot saturate. The evidence settles it and the line stays.
+
+**One the plan was wrong about, not the code.** Work package 1's "What it
+gives" says a user calling `calc_pop_dists` without naming measures gets
+F_ST and f_2. That call raises, because the default is all seven and five
+of them are not written until work package 3. The plan's sentence is
+corrected rather than the default changed twice, since nothing is merged
+until the plan is done and the default is right at the end of it.
