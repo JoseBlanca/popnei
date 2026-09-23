@@ -28,31 +28,15 @@
 use numpy::{
     IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods as _,
 };
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use popnei::block::BlockReader;
-use popnei::gwas::{Gwas, GwasInput, GwasModel, TestType, TraitType};
+use popnei::gwas::{Gwas, GwasInput, TestType, TraitType};
 
 use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{ChromColumn, OpenSource, PassCounts, chrom_column, id_column, source_of};
 use crate::steps::{Step, Steps, chain_of};
-
-/// The name a user writes for a trait that is a measurement, one number per
-/// individual, which without a kinship is fitted by a linear model.
-const CONTINUOUS: &str = "continuous";
-
-/// The name a user writes for a trait that is 0 or 1, an individual that has
-/// a condition and one that has not.
-const BINOMIAL: &str = "binomial";
-
-/// The name of the test that fits the model again with the variant in it.
-const WALD: &str = "wald";
-
-/// The name of the test that measures at the null model how steeply the fit
-/// would improve if the variant's effect were let off 0.
-const SCORE: &str = "score";
 
 /// The null model on its way to Python: which of the four models was
 /// fitted, which test was made of every variant, the effect of each column
@@ -107,7 +91,7 @@ type FilteringCounts = Vec<(&'static str, u64, u64)>;
 // comment here would become the `__doc__` of `popnei._core.calc_gwas`, and
 // what a Python user reads belongs to the package, which is the API.
 #[pyfunction]
-#[pyo3(signature = (source, individuals, phenotype, design, trait_name, transform_to_biallelic, steps))]
+#[pyo3(signature = (source, individuals, phenotype, design, trait_name, test_name, transform_to_biallelic, steps))]
 #[expect(
     clippy::too_many_arguments,
     reason = "what a study is given in `docs/specs/gwas.md`: the source and its steps, \
@@ -122,11 +106,18 @@ pub(crate) fn calc_gwas<'py>(
     phenotype: PyReadonlyArray1<'py, f64>,
     design: PyReadonlyArray2<'py, f64>,
     trait_name: &str,
+    test_name: Option<String>,
     transform_to_biallelic: bool,
     steps: &Bound<'_, Steps>,
 ) -> Result<GwasForPython<'py>, PyPopneiError> {
     let source = source_of(source)?;
-    let trait_type = the_trait(trait_name)?;
+    // The two names of a trait and the two of a test are the core's, which
+    // is where a name that is of neither is refused: one list of them
+    // serves both packages, and the message a user reads is the same in
+    // each. Which tests the model of the study has is the core's too, and
+    // it is `the_model_and_the_test` that answers it.
+    let trait_type = TraitType::of_name(trait_name)?;
+    let test = test_name.as_deref().map(TestType::of_name).transpose()?;
     let tested = the_positions(&individuals)?;
     let trait_values = the_values("phenotype", &phenotype)?;
     // The columns of the design are its second dimension, so the core is
@@ -155,10 +146,12 @@ pub(crate) fn calc_gwas<'py>(
         trait_type,
         design: &design_values,
         num_coefs,
-        // The kinship, the test and the GRAMMAR-Gamma approximation reach
-        // the core with the linear mixed model, which is being written.
+        // The kinship and the GRAMMAR-Gamma approximation reach the core
+        // with the linear mixed model, which is being written. The test
+        // does not wait for it: the Wald test is the linear model's own,
+        // and the core is what refuses the score test of it.
         kinship: None,
-        test: None,
+        test,
         use_grammar_gamma_approx: false,
         individuals: &tested,
         transform_to_biallelic,
@@ -223,8 +216,8 @@ pub(crate) fn calc_gwas<'py>(
         p_value.into_pyarray(py),
     );
     let null_model = (
-        the_name_of_the_model(null_model.model),
-        the_name_of_the_test(null_model.test),
+        null_model.model.name(),
+        null_model.test.name(),
         null_model.covariate_effects.into_pyarray(py),
         null_model.residual_variance,
         null_model.genetic_variance,
@@ -276,26 +269,6 @@ fn over_the_source(
     Ok((result, filtering))
 }
 
-/// What was measured, out of the name a user wrote for it.
-///
-/// # Errors
-///
-/// A `ValueError` when the name is of neither of the two traits, with both
-/// of them in the message: the package checks that `trait` is a string and
-/// the two names are the core's, so this is the one place that knows them.
-fn the_trait(name: &str) -> Result<TraitType, PyPopneiError> {
-    match name {
-        CONTINUOUS => Ok(TraitType::Continuous),
-        BINOMIAL => Ok(TraitType::Binomial),
-        _ => Err(PyValueError::new_err(format!(
-            "`trait` is `{CONTINUOUS}`, a measurement of each individual, or `{BINOMIAL}`, \
-             0 for an individual that has not a condition and 1 for one that has, and \
-             `{name}` was given"
-        ))
-        .into()),
-    }
-}
-
 /// The positions of the tested individuals as the core counts them.
 ///
 /// They cross as an array of whole numbers, which is what one value per
@@ -344,24 +317,4 @@ fn the_values(
         .as_slice()
         .map_err(|_| PyPopneiError::ArrayNotContiguous { name })?
         .to_vec())
-}
-
-/// The name of each of the four models, which is the `model` of the null
-/// model a Python user reads.
-const fn the_name_of_the_model(model: GwasModel) -> &'static str {
-    match model {
-        GwasModel::Lm => "lm",
-        GwasModel::Lmm => "lmm",
-        GwasModel::Glm => "glm",
-        GwasModel::Glmm => "glmm",
-    }
-}
-
-/// The name of each of the two tests, which is the `test` a Python user
-/// reads and the one they write to ask for it.
-const fn the_name_of_the_test(test: TestType) -> &'static str {
-    match test {
-        TestType::Wald => WALD,
-        TestType::Score => SCORE,
-    }
 }

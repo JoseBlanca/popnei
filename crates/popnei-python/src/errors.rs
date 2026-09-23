@@ -645,7 +645,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasScoreTestOfALinearModel
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
         | popnei::Error::GwasGrammarGammaWithoutAKinship
-        | popnei::Error::GwasModelNotBuilt { .. } => PyValueError::new_err(message),
+        | popnei::Error::GwasModelNotBuilt { .. }
+        // The name of a trait and the name of a test that are of neither
+        // of the two, which a user writes in `trait` and in `test`.
+        | popnei::Error::GwasTraitOfAnUnknownName { .. }
+        | popnei::Error::GwasTestOfAnUnknownName { .. } => PyValueError::new_err(message),
         // The six that the dataset a user gave is wrong for: four of the
         // principal components of the variants and two of the pass over a
         // row that those components and the kinship share. Of the

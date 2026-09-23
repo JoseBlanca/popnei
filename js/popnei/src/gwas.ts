@@ -13,12 +13,17 @@
  * the variant has none.
  *
  * What `calcGwas` fits is the linear model, a continuous trait with no
- * kinship, which is what plink2's `--glm` computes, and its test is the t
- * test of the effect. The linear mixed model, which takes a kinship so that
- * a variant that only marks the ancestry of a panel does not look
- * associated, and the two logistic models of a binomial trait are being
- * written; asking for one is an `Error` that says so. `docs/specs/gwas.md`
- * has the four of them.
+ * kinship, which is what plink2's `--glm` computes. Its test is the t test
+ * of the effect: the effect divided by its standard error, which under the
+ * hypothesis that the variant has none follows a Student t distribution
+ * with as many degrees of freedom as there are individuals left once the
+ * covariates and the variant have been fitted, and `pValue` is the chance
+ * that such a t falls further from 0 than this one did, either way.
+ *
+ * The linear mixed model, which takes a kinship so that a variant that only
+ * marks the ancestry of a panel does not look associated, and the two
+ * logistic models of a binomial trait are being written; asking for one is
+ * an `Error` that says so. `docs/specs/gwas.md` has the four of them.
  */
 
 import {
@@ -27,6 +32,7 @@ import {
 
 import { aBoolean, aString, whatWasGiven } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
+import type { Kinship } from "./kinship.js";
 import { theValuesOf } from "./pca.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
@@ -42,20 +48,35 @@ const INTERCEPT = "intercept";
 
 /**
  * The options of `calcGwas` that the linear mixed model brings and that this
- * build has not: a kinship, which model with it, and the approximation that
- * a mixed model can take instead of a fit per variant.
+ * build has not: a kinship, and the approximation that a mixed model can
+ * take instead of a fit per variant.
  *
  * They are refused by name rather than ignored: a call that gave a kinship
  * and got a study without one would be a linear model reported as a mixed
- * one, with nothing to show it.
+ * one, with nothing to show it. `test` is not among them: the Wald test is
+ * the linear model's own, and the core is what refuses the score test of it.
+ *
+ * An option that is written and left `undefined` is not given, which is what
+ * spreading an object of options over a call leaves behind, so what is
+ * refused is a value and not a key.
  */
-const OF_THE_MIXED_MODEL = ["kinship", "test", "useGrammarGammaApprox"];
+const OF_THE_MIXED_MODEL = ["kinship", "useGrammarGammaApprox"] as const;
 
 /** What was measured on each individual. */
 export type TraitType = "continuous" | "binomial";
 
-/** Which test is made of every variant. */
-export type GwasTestType = "wald" | "score";
+/**
+ * Which test is made of every variant: `wald` fits the model again with the
+ * variant in it and measures its effect in its own standard errors away
+ * from 0, and `score` never fits it again and measures at the null model
+ * how steeply the fit would improve if the variant's effect were let off 0.
+ *
+ * Under the hypothesis that the variant has no effect the two have the same
+ * distribution in large samples; they differ in what they cost. The linear
+ * model has the Wald test alone, which for it is the t test of the effect,
+ * and asking it for the score test is an `Error`.
+ */
+export type TestType = "wald" | "score";
 
 /**
  * Which of the four models a study fits, which the trait and the kinship
@@ -150,7 +171,7 @@ export interface GwasResult {
   /** What was measured. */
   readonly trait: TraitType;
   /** Which test was made of every variant. */
-  readonly test: GwasTestType;
+  readonly test: TestType;
   /**
    * The names of the individuals that were tested, in the order the source
    * has them, which is the order their phenotype and their design were read
@@ -195,11 +216,29 @@ export interface CalcGwasOptions {
    */
   covariates?: Readonly<Record<string, Readonly<Record<string, number>>>>;
   /**
+   * Which test is made of every variant, and the default of the model when
+   * it is not given. What `calcGwas` fits is the linear model, whose only
+   * test is `wald`, so `score` is an `Error` that says so.
+   */
+  test?: TestType;
+  /**
    * Whether every allele that is not the major one counts the same, which is
    * what gives a variant of more than two alleles a dosage. False when it is
    * not given, and such a variant is then an `Error`.
    */
   transformToBiallelic?: boolean;
+  /**
+   * The relatedness of every pair of individuals, which the linear mixed
+   * model takes as the covariance of a random effect. It is being written,
+   * and giving one is an `Error` that says so; until then the structure of
+   * a panel goes in as the top principal components among the covariates.
+   */
+  kinship?: Kinship;
+  /**
+   * Whether the GRAMMAR-Gamma approximation is made, which only a mixed
+   * model has to make. It is being written, and giving it is an `Error`.
+   */
+  useGrammarGammaApprox?: boolean;
 }
 
 /**
@@ -227,14 +266,16 @@ export interface CalcGwasOptions {
  *
  * It is pyNei's `calc_gwas`, whose `samples` is `individuals` here.
  *
- * @throws {Error} When `variants` is not a `Variants` or was freed; when
- * `phenotype` is not an object of a name to a number; when a name of it is
- * of nobody the pass gives; when `trait` is not one of the two names; when a
+ * @throws {Error} When `variants` is not a `Variants` or was freed; when the
+ * options are not given at all; when `phenotype` is not an object of a name
+ * to a number; when a name of it is of nobody the pass gives; when `trait`
+ * is not one of the two names and when `test` is not one of the two; when a
  * covariate is not an object of a name to a number, does not cover a tested
  * individual, or holds a value that is missing or is not a number; when a
  * covariate is named `intercept`, which is the name the effect of the column
- * of ones comes back under; when `kinship`, `test` or `useGrammarGammaApprox`
- * is given, which the linear mixed model brings; when no individual is
+ * of ones comes back under; when `kinship` or `useGrammarGammaApprox` holds
+ * a value, which the linear mixed model brings; when the score test is asked
+ * for, which a linear model has not; when no individual is
  * tested or they are fewer than the columns of the design plus two; when a
  * phenotype or a covariate is not a finite number; when the columns of the
  * design are not independent; when the trait is binomial, which is a
@@ -250,8 +291,11 @@ export function calcGwas(
 ): GwasResult {
   theWasmHasToBeLoaded();
   const { source, steps } = sourceOfTheVariants("variants", variants);
+  theOptions(options);
   theOptionsOfTheMixedModel(options);
   const trait = aString("trait", options.trait);
+  const test =
+    options.test === undefined ? undefined : aString("test", options.test);
   const transformToBiallelic =
     options.transformToBiallelic === undefined
       ? defaultTransformToBiallelic()
@@ -279,6 +323,7 @@ export function calcGwas(
     design,
     numCoefs,
     trait,
+    test,
     transformToBiallelic,
     steps.of_a_pass(),
   );
@@ -310,7 +355,7 @@ export function calcGwas(
         numIndividuals: calculated.num_individuals(),
       },
       trait: trait as TraitType,
-      test: calculated.test() as GwasTestType,
+      test: calculated.test() as TestType,
       individuals: Object.freeze(names),
       usedGrammarGammaApprox: calculated.used_grammar_gamma_approx(),
       passStats: passStatsOf(calculated.pass_stats()),
@@ -478,6 +523,17 @@ function theValuesOfTheCovariate(
           "them, 1 for the individuals of that value and 0 for the others",
       );
     }
+    // An infinity is a number to JavaScript and not to a fit, and this is
+    // the layer that has the name of the covariate and of the individual:
+    // the core refuses it as well, by their places among the columns and
+    // the rows, which is what a caller of the core crate reads.
+    if (!Number.isFinite(value)) {
+      throw new Error(
+        `popnei: the value of the covariate \`${name}\` at \`${individual}\` ` +
+          `is ${value}, and a study is fitted on numbers: it would carry ` +
+          "through the null model into the effect of every variant",
+      );
+    }
     return value;
   });
 }
@@ -530,22 +586,50 @@ function theEffects(
 }
 
 /**
+ * Refuses a call with no options at all.
+ *
+ * `calcGwas(variants)` is what a user writes who has read the signature of
+ * `calcKinship`, and what it gave was the `TypeError` of `Object.keys` on
+ * `undefined`, which names neither popnei nor what is missing.
+ *
+ * @throws {Error} When `options` is not an object.
+ */
+function theOptions(options: CalcGwasOptions): void {
+  if (
+    typeof options !== "object" ||
+    options === null ||
+    Array.isArray(options)
+  ) {
+    throw new Error(
+      "popnei: a study is asked for with the trait of the individuals and " +
+        "what was measured, calcGwas(variants, {phenotype, trait: " +
+        `"continuous"}), and ${whatWasGiven(options)} was given`,
+    );
+  }
+}
+
+/**
  * Refuses the options that the linear mixed model brings, which this build
  * has not.
  *
- * @throws {Error} When `kinship`, `test` or `useGrammarGammaApprox` is
- * given.
+ * What is refused is a value and not a key: an option written as
+ * `undefined`, which is what spreading an object of options leaves for the
+ * ones that were not filled in, is an option that was not given, and a user
+ * who writes the documented default explicitly is not asking for anything.
+ *
+ * @throws {Error} When `kinship` or `useGrammarGammaApprox` holds a value.
  */
 function theOptionsOfTheMixedModel(options: CalcGwasOptions): void {
-  const given = Object.keys(options).filter((option) =>
-    OF_THE_MIXED_MODEL.includes(option),
+  const given = OF_THE_MIXED_MODEL.filter(
+    (option) => options[option] !== undefined,
   );
   if (given.length > 0) {
+    const belongs = given.length === 1 ? "belongs" : "belong";
     throw new Error(
-      `popnei: \`${given.join("`, `")}\` belongs to the linear mixed model, ` +
-        "which accounts for the relatedness of a panel and is being written; " +
-        "what calcGwas fits is the linear model, a continuous trait with no " +
-        "kinship",
+      `popnei: \`${given.join("`, `")}\` ${belongs} to the linear mixed ` +
+        "model, which accounts for the relatedness of a panel and is being " +
+        "written; what calcGwas fits is the linear model, a continuous trait " +
+        "with no kinship",
     );
   }
 }

@@ -607,23 +607,91 @@ def test_a_trait_that_is_no_name_is_refused_by_its_type(
     ("argument", "value"),
     [
         ("kinship", "a matrix"),
-        ("test", "wald"),
         ("use_grammar_gamma_approx", True),
     ],
 )
 def test_what_the_linear_mixed_model_brings_is_refused_by_name(
     worked_example: pathlib.Path, argument: str, value: object
 ) -> None:
-    """A kinship, a test and the approximation are refused by name.
+    """A kinship and the approximation are refused by name.
 
     A call that gave a kinship and got a study without one would be a linear
     model reported as a mixed one, with nothing to show it, so they are
     refused and not ignored while the linear mixed model is being written.
+    `test` is not one of them: it is the argument below.
     """
     with pytest.raises(
         ValueError, match=rf"`{argument}` belongs to the linear mixed model"
     ):
         _the_worked_example(worked_example, **{argument: value})
+
+
+def test_the_wald_test_is_the_linear_models_own_and_the_score_test_is_refused(
+    worked_example: pathlib.Path,
+) -> None:
+    """`test="wald"` is the test a linear model makes, and asking for it
+    gives the study that asking for nothing gives.
+
+    What a user reads in `result.test` is what they may write back into the
+    call: a `calc_gwas` that refused `test` refused the value it had just
+    given them. The score test is the one a linear model has not, and the
+    core is what says so.
+    """
+    asked = _the_worked_example(worked_example, test=popnei.TestType.WALD)
+    by_default = _the_worked_example(worked_example)
+
+    assert by_default.test == popnei.TestType.WALD
+    assert asked.test == popnei.TestType.WALD
+    numpy.testing.assert_allclose(
+        asked.stats["beta"].to_numpy(),
+        by_default.stats["beta"].to_numpy(),
+        rtol=0,
+        atol=0,
+    )
+    with pytest.raises(
+        ValueError, match="only test is the t test of the effect it fitted"
+    ):
+        _the_worked_example(worked_example, test="score")
+
+
+def test_a_test_of_another_name_is_refused_with_the_two_names(
+    worked_example: pathlib.Path,
+) -> None:
+    """A name that is of neither test is refused with both of them, which
+    the core holds beside the two names of a trait."""
+    with pytest.raises(ValueError, match="`wald`.*`score`.*`rao`"):
+        _the_worked_example(worked_example, test="rao")
+
+
+def test_a_test_that_is_no_name_is_refused_by_its_type(
+    worked_example: pathlib.Path,
+) -> None:
+    """What is written for `test` and is not a name is refused by its type,
+    as a trait that is no name is."""
+    with pytest.raises(TypeError, match="`test` is"):
+        _the_worked_example(worked_example, test=1)
+
+
+def test_a_covariate_named_twice_is_refused(
+    worked_example: pathlib.Path,
+) -> None:
+    """Two covariates of one name are refused, naming the two columns.
+
+    The effects come back under the names of the columns of the design, so
+    two of one name would be one entry of `covariate_effects` and a user who
+    asked for that name would read one of the two without knowing which. A
+    frame takes a repeated column label, and the two columns here hold
+    different values, so nothing else of the study refuses them: the design
+    has three independent columns.
+    """
+    covariates = pandas.DataFrame(
+        numpy.column_stack([WORKED_EXAMPLE_COVARIATE, [0.0, 0.0, 1.0, 1.0, 0.0, 0.0]]),
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+        columns=["cov", "cov"],
+    )
+
+    with pytest.raises(ValueError, match="the covariate 'cov' is named twice"):
+        _the_worked_example(worked_example, covariates=covariates)
 
 
 def test_an_individual_of_the_phenotype_that_the_dataset_has_not_is_refused(
@@ -724,22 +792,40 @@ def test_a_covariate_that_is_a_copy_of_another_is_refused_as_collinear(
         _the_worked_example(worked_example, covariates=covariates)
 
 
-def test_a_covariate_that_is_not_finite_is_refused_by_its_place(
+def test_a_covariate_that_is_not_finite_is_refused_by_its_name(
     worked_example: pathlib.Path,
 ) -> None:
-    """An infinity is a number to pandas and not to a fit, and the core names
-    the column of the design and the individual it is in.
+    """An infinity is a number to pandas and not to a fit, and it is refused
+    in this layer, which has the name of the covariate and of the individual.
 
     It is what a covariate that came out of the user's own arithmetic as an
-    infinity gives, a division by 0 among the causes, and it names no file:
-    what is wrong is wrong whatever variants are read.
+    infinity gives, a division by 0 among the causes. The core refuses it
+    too, by the column of the design and the place of the individual, which
+    is what a caller of `popnei._core` reads; neither message names a file,
+    since what is wrong is wrong whatever variants are read.
     """
     covariates = _the_covariate()
     covariates.loc["i1", "cov"] = numpy.inf
 
-    with pytest.raises(ValueError, match="tested individual 1 is inf") as refused:
+    with pytest.raises(ValueError, match="covariate 'cov' at 'i1' is inf") as refused:
         _the_worked_example(worked_example, covariates=covariates)
-    assert str(refused.value).startswith("the value of the column 1")
+    assert str(refused.value).startswith("the value of the covariate")
+
+
+def test_a_phenotype_that_is_not_finite_is_refused_by_its_individual(
+    worked_example: pathlib.Path,
+) -> None:
+    """An infinite trait is refused where the individual has a name.
+
+    A missing phenotype is an individual that is not tested, and an infinity
+    is not that: it would carry through the null model into the effect of
+    every variant, so the user is told which individual to leave out.
+    """
+    trait = _the_trait()
+    trait["i4"] = numpy.inf
+
+    with pytest.raises(ValueError, match="the phenotype of 'i4' is inf"):
+        _the_worked_example(worked_example, phenotype=trait)
 
 
 def test_a_study_of_too_few_individuals_is_refused(

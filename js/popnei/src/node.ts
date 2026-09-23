@@ -24,7 +24,7 @@ export type {
   GwasNullModel,
   GwasResult,
   GwasStats,
-  GwasTestType,
+  TestType,
   TraitType,
 } from "./gwas.js";
 export { calcKinship, Kinship } from "./kinship.js";

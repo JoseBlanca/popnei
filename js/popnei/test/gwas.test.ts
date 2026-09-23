@@ -575,8 +575,104 @@ test("the options of the linear mixed model are refused by name", () => {
       gwasOf(WORKED_EXAMPLE, {
         phenotype: THE_TRAIT,
         trait: "continuous",
-        test: "wald",
-      } as Parameters<typeof calcGwas>[1]),
-    { message: /`test` belongs to the linear mixed model/ },
+        kinship: undefined as unknown as Parameters<
+          typeof calcGwas
+        >[1]["kinship"],
+        useGrammarGammaApprox: true,
+      }),
+    { message: /`useGrammarGammaApprox` belongs to the linear mixed model/ },
+  );
+});
+
+test("an option of the mixed model written as undefined is not given", () => {
+  // Spreading an object of options over a call leaves `undefined` for every
+  // one that was not filled in, and a user who writes the documented
+  // default explicitly is asking for nothing.
+  const result = gwasOf(WORKED_EXAMPLE, {
+    phenotype: THE_TRAIT,
+    trait: "continuous",
+    covariates: THE_COVARIATE,
+    kinship: undefined,
+    useGrammarGammaApprox: undefined,
+  });
+
+  assert.equal(result.nullModel.model, "lm");
+  assert.equal(result.usedGrammarGammaApprox, false);
+});
+
+test("the wald test is the linear model's own and the score test is refused", () => {
+  const asked = gwasOf(WORKED_EXAMPLE, {
+    phenotype: THE_TRAIT,
+    trait: "continuous",
+    covariates: THE_COVARIATE,
+    test: "wald",
+  });
+  const byDefault = theWorkedExample();
+
+  // What a user reads in the result is what they may write back into the
+  // call, which is the one thing a refusal of `test` broke.
+  assert.equal(byDefault.test, "wald");
+  assert.equal(asked.test, "wald");
+  assert.deepEqual([...asked.stats.beta], [...byDefault.stats.beta]);
+  assert.throws(
+    () =>
+      gwasOf(WORKED_EXAMPLE, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        covariates: THE_COVARIATE,
+        test: "score",
+      }),
+    { message: /only test is the t test of the effect it fitted/ },
+  );
+});
+
+test("a test of another name is refused with the two names", () => {
+  assert.throws(
+    () =>
+      gwasOf(WORKED_EXAMPLE, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        covariates: THE_COVARIATE,
+        test: "rao" as "wald",
+      }),
+    { message: /`wald`.*`score`.*`rao`/s },
+  );
+});
+
+test("a study asked for with no options at all says what to write", () => {
+  const variants: Variants = openVcf(WORKED_EXAMPLE, { onlyPassed: false });
+  try {
+    assert.throws(
+      () => (calcGwas as (variants: Variants) => GwasResult)(variants),
+      { message: /^popnei: a study is asked for with the trait/ },
+    );
+  } finally {
+    variants.free();
+  }
+});
+
+test("a covariate that is not finite is refused by its name", () => {
+  assert.throws(
+    () =>
+      gwasOf(WORKED_EXAMPLE, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        covariates: {
+          cov: { ...THE_COVARIATE["cov"], i2: Number.POSITIVE_INFINITY },
+        },
+      }),
+    { message: /the covariate `cov` at `i2` is Infinity/ },
+  );
+});
+
+test("a covariate named intercept is refused with the name it collides with", () => {
+  assert.throws(
+    () =>
+      gwasOf(WORKED_EXAMPLE, {
+        phenotype: THE_TRAIT,
+        trait: "continuous",
+        covariates: { intercept: THE_COVARIATE["cov"] as Record<string, number> },
+      }),
+    { message: /a covariate is not named `intercept`/ },
   );
 });

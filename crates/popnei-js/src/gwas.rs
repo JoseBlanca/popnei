@@ -31,26 +31,11 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::gwas::{Gwas, GwasInput, GwasModel, TestType, TraitType, calc_gwas};
+use popnei::gwas::{Gwas, GwasInput, TestType, TraitType, calc_gwas};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts, positions_of};
 use crate::steps::{Steps, chain_of};
-
-/// The name a user writes for a trait that is a measurement, one number per
-/// individual, which without a kinship is fitted by a linear model.
-const CONTINUOUS: &str = "continuous";
-
-/// The name a user writes for a trait that is 0 or 1, an individual that has
-/// a condition and one that has not.
-const BINOMIAL: &str = "binomial";
-
-/// The name of the test that fits the model again with the variant in it.
-const WALD: &str = "wald";
-
-/// The name of the test that measures at the null model how steeply the fit
-/// would improve if the variant's effect were let off 0.
-const SCORE: &str = "score";
 
 /// What a study is asked for, as the package checked it: the individuals to
 /// test, their trait, their design and how a variant of more than two
@@ -70,8 +55,11 @@ pub(crate) struct ArgumentsOfTheStudy {
     /// How many columns the design has: the intercept and one for each
     /// covariate.
     pub(crate) num_coefs: usize,
-    /// What was measured, [`CONTINUOUS`] or [`BINOMIAL`].
+    /// What was measured, one of the names of `popnei::gwas::TraitType`.
     pub(crate) trait_name: String,
+    /// Which test is made of every variant, one of the names of
+    /// `popnei::gwas::TestType`, and `None` for the default of the model.
+    pub(crate) test_name: Option<String>,
     /// Whether a variant of more than two alleles among its called genotypes
     /// is read with every allele that is not the major one counting the
     /// same.
@@ -234,9 +222,11 @@ impl GwasOfVariants {
 ///
 /// # Errors
 ///
-/// When the name of the trait is of neither of the two; when the study needs
-/// one of the three models that are not written, the two logistic ones and
-/// the linear mixed one; when the individuals to test are not in the order
+/// When the name of the trait is of neither of the two and when the name of
+/// the test is of neither; when the study needs one of the three models that
+/// are not written, the two logistic ones and the linear mixed one; when the
+/// score test is asked of a linear model, whose only test is the t test of
+/// the effect it fitted; when the individuals to test are not in the order
 /// the source has them, one of them is there twice, one of them is not in
 /// the source, or they are fewer than the columns of the design plus two;
 /// when a value of the phenotype or of the design is not a finite number;
@@ -251,17 +241,29 @@ pub(crate) fn gwas_of_the_variants(
     study: &ArgumentsOfTheStudy,
     steps: Steps,
 ) -> Result<GwasOfVariants, JsPopneiError> {
-    let trait_type = the_trait(&study.trait_name)?;
+    // The two names of a trait and the two of a test are the core's, which
+    // is where a name that is of neither is refused: one list of them
+    // serves both packages, and the message a user reads is the same in
+    // each. Which tests the model of the study has is the core's too, and
+    // it is `the_model_and_the_test` that answers it.
+    let trait_type = TraitType::of_name(&study.trait_name)?;
+    let test = study
+        .test_name
+        .as_deref()
+        .map(TestType::of_name)
+        .transpose()?;
     let individuals = the_positions(&study.individuals)?;
     let input = GwasInput {
         phenotype: &study.phenotype,
         trait_type,
         design: &study.design,
         num_coefs: study.num_coefs,
-        // The kinship, the test and the GRAMMAR-Gamma approximation reach
-        // the core with the linear mixed model, which is being written.
+        // The kinship and the GRAMMAR-Gamma approximation reach the core
+        // with the linear mixed model, which is being written. The test
+        // does not wait for it: the Wald test is the linear model's own,
+        // and the core is what refuses the score test of it.
         kinship: None,
-        test: None,
+        test,
         use_grammar_gamma_approx: false,
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
@@ -278,8 +280,8 @@ pub(crate) fn gwas_of_the_variants(
     let chroms = the_names_of_the_chromosomes(&result)?;
     let poss = result.poss.as_deref().map(positions_of).transpose()?;
     Ok(GwasOfVariants {
-        model: the_name_of_the_model(result.null_model.model).to_owned(),
-        test: the_name_of_the_test(result.null_model.test).to_owned(),
+        model: result.null_model.model.name().to_owned(),
+        test: result.null_model.test.name().to_owned(),
         covariate_effects: Some(result.null_model.covariate_effects),
         residual_variance: result.null_model.residual_variance,
         genetic_variance: result.null_model.genetic_variance,
@@ -295,25 +297,6 @@ pub(crate) fn gwas_of_the_variants(
         ids: result.ids,
         counts,
     })
-}
-
-/// What was measured, out of the name a user wrote for it.
-///
-/// # Errors
-///
-/// When the name is of neither of the two traits, with both of them in the
-/// message: the package checks that `trait` is a string and the two names
-/// are the core's, so this is the one place that knows them.
-fn the_trait(name: &str) -> Result<TraitType, JsPopneiError> {
-    match name {
-        CONTINUOUS => Ok(TraitType::Continuous),
-        BINOMIAL => Ok(TraitType::Binomial),
-        _ => Err(JsPopneiError::Refused(format!(
-            "`trait` is `{CONTINUOUS}`, a measurement of each individual, or `{BINOMIAL}`, \
-             0 for an individual that has not a condition and 1 for one that has, and \
-             `{name}` was given"
-        ))),
-    }
 }
 
 /// The positions of the tested individuals as the core counts them.
@@ -340,26 +323,6 @@ fn the_positions(individuals: &[u32]) -> Result<Vec<usize>, JsPopneiError> {
             })
         })
         .collect()
-}
-
-/// The name of each of the four models, which is the `model` of the null
-/// model a TypeScript user reads.
-const fn the_name_of_the_model(model: GwasModel) -> &'static str {
-    match model {
-        GwasModel::Lm => "lm",
-        GwasModel::Lmm => "lmm",
-        GwasModel::Glm => "glm",
-        GwasModel::Glmm => "glmm",
-    }
-}
-
-/// The name of each of the two tests, which is the `test` a TypeScript user
-/// reads and the one they write to ask for it.
-const fn the_name_of_the_test(test: TestType) -> &'static str {
-    match test {
-        TestType::Wald => WALD,
-        TestType::Score => SCORE,
-    }
 }
 
 /// The name of the chromosome of each variant of `result`, read through the

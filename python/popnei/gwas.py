@@ -24,6 +24,7 @@ a ``ValueError`` that says so.
 what popnei does differently from pyNei.
 """
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -40,13 +41,13 @@ from popnei.variant import PassStats, Variants, _pass_stats_of
 # would be one row of it.
 _INTERCEPT = "intercept"
 
-# The arguments the linear mixed model brings, which this build has not:
-# which matrix of relatedness, which test with it, and the approximation a
-# mixed model can take instead of a fit per variant. They are refused by
-# name rather than ignored: a call that gave a kinship and got a study
-# without one would be a linear model reported as a mixed one, with nothing
-# to show it.
-_OF_THE_MIXED_MODEL = ("kinship", "test", "use_grammar_gamma_approx")
+# The arguments the linear mixed model brings, which this build has not: the
+# matrix of relatedness, and the approximation a mixed model can take
+# instead of a fit per variant. They are refused rather than ignored: a call
+# that gave a kinship and got a study without one would be a linear model
+# reported as a mixed one, with nothing to show it. `test` is not among
+# them: the Wald test is the linear model's own, and the core is what
+# refuses the score test of it.
 
 
 class TraitType(StrEnum):
@@ -194,7 +195,14 @@ def calc_gwas(
     covariates: pandas.DataFrame | None = None,
     kinship: Kinship | None = None,
     test: TestType | str | None = None,
-    use_grammar_gamma_approx: bool = _core.DEFAULT_USE_GRAMMAR_GAMMA_APPROX,
+    # The default is written here and not taken from the core's
+    # `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can
+    # make the approximation takes when the user says nothing: this build
+    # refuses the approximation, so a core whose default became true would
+    # turn every plain call into a refusal. The linear mixed model is what
+    # will read that constant, and until then this default changes no
+    # result, since the approximation is refused whatever is written here.
+    use_grammar_gamma_approx: bool = False,
     transform_to_biallelic: bool = _core.DEFAULT_TRANSFORM_TO_BIALLELIC,
 ) -> GWASResult:
     """Which of the variants of `variants` are associated with `phenotype`.
@@ -276,8 +284,26 @@ def calc_gwas(
             f"`open_vcf` or `open_vars` gives, "
             f"calc_gwas(open_vcf(vcf_path), phenotype, 'continuous')"
         )
-    _refuse_what_the_mixed_model_brings(kinship, test, use_grammar_gamma_approx)
-    trait_name = _the_name_of_the_trait(trait)
+    _refuse_what_the_mixed_model_brings(kinship, use_grammar_gamma_approx)
+    trait_name = _a_name_written_in(
+        "trait",
+        trait,
+        "it says what was measured: write trait='continuous' for a "
+        "measurement of each individual and trait='binomial' for 0 and 1, "
+        "which are the two members of `TraitType`",
+    )
+    test_name = (
+        None
+        if test is None
+        else _a_name_written_in(
+            "test",
+            test,
+            "it says which test is made of every variant: write test='wald', "
+            "which is the one a linear model has, or leave it out for the "
+            "default of the model, and the two of them are the members of "
+            "`TestType`",
+        )
+    )
     tested = _the_tested_individuals(_the_phenotype(phenotype), variants.individuals)
     names = [name for name, _, _ in tested]
     covariate_names, columns = _the_covariates(covariates, names)
@@ -293,6 +319,7 @@ def calc_gwas(
         ),
         _the_design(columns, len(names)),
         trait_name,
+        test_name,
         transform_to_biallelic,
         variants._steps,
     )
@@ -316,7 +343,7 @@ def calc_gwas(
 
 
 def _refuse_what_the_mixed_model_brings(
-    kinship: Kinship | None, test: TestType | str | None, use_grammar_gamma_approx: bool
+    kinship: Kinship | None, use_grammar_gamma_approx: bool
 ) -> None:
     """The arguments of the linear mixed model, which this build has not,
     refused by name.
@@ -329,12 +356,11 @@ def _refuse_what_the_mixed_model_brings(
     """
     given = [
         name
-        for name, value in zip(
-            _OF_THE_MIXED_MODEL,
-            (kinship, test, use_grammar_gamma_approx or None),
-            strict=True,
+        for name, asked_for in (
+            ("kinship", kinship is not None),
+            ("use_grammar_gamma_approx", bool(use_grammar_gamma_approx)),
         )
-        if value is not None
+        if asked_for
     ]
     if not given:
         return
@@ -349,27 +375,24 @@ def _refuse_what_the_mixed_model_brings(
     )
 
 
-def _the_name_of_the_trait(trait: TraitType | str) -> str:
-    """The name of the trait as the core reads it.
+def _a_name_written_in(argument: str, value: object, says: str) -> str:
+    """The name a user wrote in `argument`, as the core reads it.
 
-    The two names are the core's, which is where a name that is of neither
-    trait is refused, so what this makes sure of is that a name and not
-    something else was written: `trait` has no default, and what a user
+    Which names there are is the core's, which is where a name that is of
+    none of them is refused, so what this makes sure of is that a name and
+    not something else was written: `trait` has no default, and what a user
     writes there instead is usually the covariates.
 
     # Raises
 
-    ``TypeError`` when `trait` is not a string. A member of
-    :class:`TraitType` is one.
+    ``TypeError`` when what was written is not a string, with `says` telling
+    what the argument is for. A member of a ``StrEnum`` is a string.
     """
-    if not isinstance(trait, str):
+    if not isinstance(value, str):
         raise TypeError(
-            f"`trait` is {trait!r}, a {type(trait).__name__}, and it says "
-            f"what was measured: write trait='continuous' for a measurement "
-            f"of each individual and trait='binomial' for 0 and 1, which are "
-            f"the two members of `TraitType`"
+            f"`{argument}` is {value!r}, a {type(value).__name__}, and {says}"
         )
-    return str(trait)
+    return str(value)
 
 
 def _the_phenotype(phenotype: pandas.Series) -> pandas.Series:
@@ -450,6 +473,16 @@ def _the_tested_individuals(
                 f"that is 0 and 1 is written as those numbers with "
                 f"trait='binomial'"
             ) from None
+        # An infinity is refused here, where the individual has a name: it
+        # would carry through the null model into the effect of every
+        # variant, and the core, which refuses it too, has the place of the
+        # individual and not its name.
+        if not math.isfinite(number):
+            raise ValueError(
+                f"the phenotype of {name!r} is {number}, and a study is "
+                f"fitted on numbers: leave that individual out of the "
+                f"phenotype, which is what a missing value does"
+            )
         tested.append((name, position, number))
     return tested
 
@@ -485,6 +518,7 @@ def _the_covariates(
                 f"under in `null_model.covariate_effects`: the two would be "
                 f"one row of that series, so give the covariate another name"
             )
+    _refuse_a_covariate_that_is_there_twice(names)
     _refuse_an_individual_that_is_there_twice(list(covariates.index))
     of_the_frame = dict(
         zip(covariates.index, range(len(covariates.index)), strict=True)
@@ -534,7 +568,7 @@ def _the_value_of_the_covariate(
             f"fill the value in"
         )
     try:
-        return float(value)
+        number = float(value)
     except TypeError, ValueError:
         raise ValueError(
             f"the value of the covariate {name!r} at {individual!r} is "
@@ -543,6 +577,42 @@ def _the_value_of_the_covariate(
             f"for each of them, 1 for the individuals of that value and 0 "
             f"for the others, which is what `pandas.get_dummies` writes"
         ) from None
+    # An infinity is a number to pandas and not to a fit, and this is the
+    # layer that has the name of the covariate and of the individual: the
+    # core refuses it as well, by their places among the columns and the
+    # rows, which is what a caller of `popnei._core` reads.
+    if not math.isfinite(number):
+        raise ValueError(
+            f"the value of the covariate {name!r} at {individual!r} is "
+            f"{number}, and a study is fitted on numbers: it would carry "
+            f"through the null model into the effect of every variant"
+        )
+    return number
+
+
+def _refuse_a_covariate_that_is_there_twice(names: list[str]) -> None:
+    """The first covariate whose name another column has too, refused.
+
+    # Raises
+
+    ``ValueError`` naming it and the two columns it is in. The effects of
+    the null model come back under the names of the columns of the design,
+    so two covariates of one name would be one entry of
+    ``covariate_effects``, and a user who asked for that name would read one
+    of the two without knowing which. It is what a covariate named
+    ``intercept`` is refused for, one column over.
+    """
+    first_at: dict = {}
+    for column, name in enumerate(names):
+        if name in first_at:
+            raise ValueError(
+                f"the covariate {name!r} is named twice, at the columns "
+                f"{first_at[name]} and {column}, and the effect of every "
+                f"covariate comes back under its name in "
+                f"`null_model.covariate_effects`: the two would be one row "
+                f"of that series, so give one of them another name"
+            )
+        first_at[name] = column
 
 
 def _the_design(columns: list[list[float]], num_individuals: int) -> numpy.ndarray:

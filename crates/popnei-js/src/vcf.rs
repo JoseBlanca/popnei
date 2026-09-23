@@ -254,6 +254,7 @@ impl VcfSource {
         design: Vec<f64>,
         num_coefs: usize,
         trait_name: String,
+        test_name: Option<String>,
         transform_to_biallelic: bool,
         steps: Steps,
     ) -> Result<GwasOfVariants, JsPopneiError> {
@@ -265,6 +266,7 @@ impl VcfSource {
                 design,
                 num_coefs,
                 trait_name,
+                test_name,
                 transform_to_biallelic,
             },
             steps,
