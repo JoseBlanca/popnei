@@ -62,10 +62,9 @@ variants of more than two alleles and 257 half called genotypes.
 
 ## The matrices plink2 gives
 
-`--r2-unphased` writes r², and `--r-unphased` the correlation itself with
-its sign; `square bin` writes the whole matrix as float64, row after row,
-where the text plink2 writes by default has six digits. The four the
-scripts read:
+`--r2-unphased` writes r²; `square bin` writes the whole matrix as
+float64, row after row, where the text plink2 writes by default has six
+digits. The four the scripts read:
 
     python tests/reference/ld/make_reference.py
 
@@ -76,21 +75,29 @@ scripts read:
            --r2-unphased square bin --out $LD_WORK/ex
 
     plink2 --vcf tests/reference/dists/panel.vcf.gz --double-id \
-           --allow-extra-chr --r-unphased square bin --out $LD_WORK/panel_rb
+           --allow-extra-chr --r2-unphased square bin --out $LD_WORK/panel_r2
 
     plink2 --vcf tests/reference/vcf/many.vcf --double-id --allow-extra-chr \
            --vcf-half-call m --r2-unphased square bin --out $LD_WORK/many
 
 The file plink2 writes is named for what it holds, `.unphased.vcor2.bin`
-for r² and `.unphased.vcor1.bin` for r.
+for r². Putting `--r-unphased` in the place of `--r2-unphased` gives the
+correlation itself, with the sign that says whether the major alleles of
+the two variants go together, in `.unphased.vcor1.bin`; that is what the
+sentence of `docs/specs/ld.md` about the sign of variant 856 of the panel
+is read from, and no script here reads it.
 
 ## What each script measures
 
 `missing_rules.py` is the table of "Missing genotypes" of
-`docs/specs/ld.md`: over the 1.4 million pairs of the panel it compares
-plink2's r with three rules, the individual left out of the pair, the
-missing genotype given the mean dosage of its variant, and pyNei's, which
-leaves it in as a dosage of -1. It needs `panel_rb`.
+`docs/specs/ld.md`: over the 1.4 million pairs off the diagonal of the
+panel it compares plink2's r² with what three rules for a missing
+genotype give, the individual left out of the pair, the missing genotype
+given the mean dosage of its variant, and pyNei's, which leaves it in as
+a dosage of -1. It prints one line per rule, the median, the 99th
+percentile and the largest of the difference from plink2, and the median
+r² of the panel beneath them. pyNei's `_calc_rogers_huff_r2` returns r
+and not r², so the script squares what it gives. It needs `panel_r2`.
 
 `half_called.py` is the measurement of **Open 2** of that spec: on
 `many.vcf` it compares plink2's r² with popnei's two possible rules for
