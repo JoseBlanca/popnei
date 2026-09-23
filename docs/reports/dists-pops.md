@@ -548,3 +548,58 @@ and the two cannot be told apart from the page. The case needs the mean
 corrected H_S to be exactly 1.0 and the task had to construct a fixture to
 reach it, so nothing of the plan rests on the answer and the work goes on.
 The two options are at the end of this report.
+
+### Task 2.2, the three measures through both packages
+
+One commit, `a54033a`. 153 655 tokens. `uv run pytest
+tests/test_pop_dists.py` gives `33 passed` against 30, `npm test` `tests
+233, pass 233, fail 0` against 230, and the whole Python suite `347
+passed`.
+
+Neither binding crate nor either package needed new code. The three
+measures arrived the moment task 2.1 added them to the one list in the
+core of which measures have a value, because the review of work package 1
+had already made both bindings take that list, the order of the pairs and
+the arrays from the core instead of deriving them. That finding was
+recorded as a hazard of a future defect, and this is what it bought: the
+work the plan gave two layers turned out to be tests and doc comments.
+
+**The exact comparison, which is the strongest check popnei has for this
+measure.** popnei's Jost's D against a live pyNei, worst of the three
+pairs: 5.6e-15 relative on the biallelic panel at a `min_num_individuals`
+of 20, 5.1e-15 at 47 where the pairs part, and 8.5e-15 on the
+multiallelic panel. The bound asserted is 1e-12. The counts at 47 are
+688, 688 and 1200, which is what pins `num_vars` being per pair.
+
+Three things were done beyond the deliverables, all of them additive.
+pyNei is run on the multiallelic panel as well as the biallelic one, since
+the spec prints its numbers for both and the TypeScript suite asserts them
+as literals without a pyNei of its own. Both suites also assert popnei's
+own ten digit G_ST and G''_ST from the spec, because 5e-4 against mmod
+would let a change of 1e-5 pass unnoticed.
+
+And the docstring of the standardized measure, in both packages, described
+it as G_ST divided by the largest value it could reach. That is Hedrick's
+G'_ST, a different measure, which the spec says popnei does not give. Both
+now describe Meirmans and Hedrick's G''_ST, with the two numbers that tell
+them apart on the biallelic panel, 0.1620 against 0.1155 for one pair, and
+how a user who wants G'_ST gets it from `gst`.
+
+**The order of the work could not be followed as written**, and the
+subagent said so rather than pretending otherwise: the code paths already
+existed, so its new tests passed the first time they ran. It checked
+instead that each can fail, by moving one literal at a time and seeing the
+named test fail, and reverted both.
+
+## Work package 2 is done
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1 and 2, the core | `cargo test -p popnei --lib pop_dists::` | `53 passed; 0 failed`, against 49 |
+| 3, Python | `uv run pytest tests/test_pop_dists.py` | `33 passed`, against 30 |
+| 4, TypeScript | `npm test` in `js/popnei` | `tests 233, pass 233, fail 0` |
+
+It is reviewed together with work package 3, which the `code-review` skill
+allows when two work packages are one piece of code: neither adds a count
+or a sum, both add ratios of sums work package 1 already accumulates, and
+both touch the same function.

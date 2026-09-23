@@ -248,7 +248,7 @@ no sum.
   "What pyNei does that is odd, and what popnei does instead". Serves
   deliverables 1 and 2. Needs work package 1. Its failure would be silent,
   so it has a commit of its own.
-- [ ] 2.2 The three measures through both binding crates and both
+- [x] 2.2 The three measures through both binding crates and both
   packages, with the doc comment of `dest` that "What it gives" of Jost's D
   asks for, which names the estimator and gives the two differences from
   mmod; and the tests of deliverables 3 and 4. From "Its Python function"
