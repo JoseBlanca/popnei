@@ -120,7 +120,7 @@ Nothing of this plan.
 
 ### Its tasks
 
-- [ ] 1.1 `libm` in the workspace and in the core crate, `chi2_sf_1df` in a
+- [x] 1.1 `libm` in the workspace and in the core crate, `chi2_sf_1df` in a
       new `crates/popnei/src/gwas.rs`, and the wasm checks. Built from "The
       two distributions" of `docs/specs/gwas.md`. Serves deliverables 1 and
       2. Needs nothing.
