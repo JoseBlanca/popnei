@@ -750,3 +750,22 @@ negation of what the third property asks of every dropped variant, and
 the deliberate break above named 45 of them. The spec now says what each
 of the three catches, and the counts of the table are a check beside them
 rather than the only one. Commit 6d127ad.
+
+Task 3.5, the TypeScript step, commit 098a251. `variants.filterByLd` is
+there with its binding, and `npm test` in `js/popnei` goes from 180 tests
+to 200.
+
+Its test asserts all four rows of the table and not only the one
+deliverable 6 asks for: 84, 133, 85 and 85 kept of 500, the five
+positions of each row, chr2:1000 first of its chromosome, and blocks of 7
+keeping the same 133. Every one matched on the first run with no
+expectation adjusted, which is the third independent route to those
+counts after the Python rule over plink2's matrix and popnei's own
+reader. It also asserts the step with both its arguments, the refusals of
+seven bad values of `maxAllowedR2` and four of `maxDist`, a second filter
+of the kind, and a call after the memory is given back.
+
+One decision: `maxDist` crosses as a `u32`, and the package refuses what
+is not a whole number of 1 or more before it crosses, as it already does
+for the variants of a block, rather than letting the core say it. A
+negative number would otherwise arrive as 4294967295.

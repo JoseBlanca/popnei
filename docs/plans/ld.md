@@ -317,7 +317,7 @@ and `js/popnei/src/ld.ts`.
       `Step`, the counts and every refusal of "In Python and in
       TypeScript" of the item, and the pytest tests it names. Serves
       deliverable 5. Needs 3.2.
-- [ ] 3.5 The TypeScript step: the binding in `crates/popnei-js` and
+- [x] 3.5 The TypeScript step: the binding in `crates/popnei-js` and
       `js/popnei/src/filters.ts`, with its test under node. Serves
       deliverable 6. Needs 3.2, and can run beside 3.4.
 
