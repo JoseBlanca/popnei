@@ -198,9 +198,10 @@ impl PopDistsOfAPass {
 /// fall into fewer resampling groups than a standard error is built from;
 /// when the memory of the tab does not take the six sums of every pair and
 /// group; when a group has no name for its chromosome or holds a position
-/// above 2^53, which JavaScript does not hold; when a pair counted more
-/// variants than a JavaScript array of counts holds; and when the source
-/// cannot be read, a wrong line of a VCF among the causes.
+/// above 2^53, which JavaScript does not hold; when the pass has no count of
+/// the variants of a pair, which is a defect of popnei; when a pair counted
+/// more variants than a JavaScript array of counts holds; and when the
+/// source cannot be read, a wrong line of a VCF among the causes.
 pub(crate) fn pop_dists_of(
     source: &dyn OpenSource,
     steps: &Steps,
@@ -257,9 +258,21 @@ pub(crate) fn pop_dists_of(
             }));
         }
     }
+    // A pair with no count is not a pair that counted no variant, which is
+    // a 0 the core gives: it is a pair the core does not have, and the
+    // count of a pair of the distance vector is a count of another pair
+    // from there on.
     let num_vars = pairs
         .iter()
-        .map(|(first, second)| for_javascript(sums.num_vars_of(*first, *second).unwrap_or(0)))
+        .map(|(first, second)| {
+            let counted = sums.num_vars_of(*first, *second).ok_or_else(|| {
+                JsPopneiError::Broken(format!(
+                    "the pass counted the variants of no pair of the populations \
+                     {first} and {second}"
+                ))
+            })?;
+            for_javascript(counted)
+        })
         .collect::<Result<Vec<i32>, JsPopneiError>>()?;
     // The core gives no group at all when no standard errors were asked
     // for, so this is 0 there and the three arrays below are empty.

@@ -78,8 +78,11 @@ struct OfThePass {
     /// The values of each measure that was asked for and its standard
     /// errors, in the order the measures were asked for.
     of_each_measure: Vec<(Vec<f64>, Option<Vec<f64>>)>,
-    /// How many variants counted for each pair.
-    num_vars_of_each_pair: Vec<u64>,
+    /// How many variants counted for each pair, in the order of the
+    /// distance vector, and `None` where the core has no count for a pair,
+    /// which is a defect: the pairs are built from the populations the core
+    /// itself counted over.
+    num_vars_of_each_pair: Vec<Option<u64>>,
     /// The f_2 of every pair within every group, the pairs of one group
     /// together, with how many groups there are.
     f2_groups: Option<(usize, Vec<f64>)>,
@@ -200,9 +203,13 @@ fn over_the_source(
         .iter()
         .map(|measure| of_the_measure(&sums, &pairs, *measure, groups_were_asked_for))
         .collect();
+    // A pair with no count is not a pair that counted no variant, which is
+    // a 0 the core gives: it is a pair the core does not have, and the
+    // count of a pair of the distance vector is a count of another pair
+    // from there on.
     let num_vars_of_each_pair = pairs
         .iter()
-        .map(|(first, second)| sums.num_vars_of(*first, *second).unwrap_or(0))
+        .map(|(first, second)| sums.num_vars_of(*first, *second))
         .collect();
     let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums, &pairs));
     let group_ids = sums
@@ -284,10 +291,10 @@ fn named_group(chroms: &popnei::variant::ChromTable, group: GroupId) -> (Option<
 ///
 /// # Errors
 ///
-/// When a group has no name for its chromosome and when a count of the
-/// variants of a pair is above what an array of a result holds, which are
-/// both a defect of popnei; and when an array of numpy cannot be made read
-/// only.
+/// When a group has no name for its chromosome, when a pair of the distance
+/// vector has no count of its variants and when a count of the variants of
+/// a pair is above what an array of a result holds, which are all three a
+/// defect of popnei; and when an array of numpy cannot be made read only.
 fn for_python<'py>(
     py: Python<'py>,
     of_the_pass: OfThePass,
@@ -315,7 +322,17 @@ fn for_python<'py>(
         .collect::<Result<Vec<_>, PyPopneiError>>()?;
     let num_vars = num_vars_of_each_pair
         .into_iter()
-        .map(of_a_result)
+        .enumerate()
+        .map(|(pair, counted)| match counted {
+            Some(counted) => of_a_result(counted),
+            None => Err(PyPopneiError::broken_of_the_file(
+                format!(
+                    "the pass counted the variants of no pair at the place {pair} of the \
+                     distance vector"
+                ),
+                path,
+            )),
+        })
         .collect::<Result<Vec<i64>, PyPopneiError>>()?;
     let f2_groups = f2_groups
         .map(|(num_groups, values)| the_table_of_the_groups(py, num_groups, num_pairs, values))

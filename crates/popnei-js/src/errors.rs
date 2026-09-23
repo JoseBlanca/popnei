@@ -58,8 +58,10 @@ pub enum JsPopneiError {
     /// it, a variant with more alleles than a JavaScript array of counts
     /// holds, populations the pass was not given the name or the
     /// individuals of every one of, a histogram that does not hold one
-    /// count for each bin of its distribution, or a pass that gave a
-    /// different number of names of individuals and of rates.
+    /// count for each bin of its distribution, a pass that gave a
+    /// different number of names of individuals and of rates, or a pass
+    /// with no count of the variants of a pair of the populations it
+    /// counted over.
     Broken(String),
 }
 
