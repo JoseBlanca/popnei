@@ -800,8 +800,16 @@ pub enum Error {
     /// genotypes, or no called genotype at all. There is no direction to
     /// give. One individual gives it, since every variant of one
     /// individual has one dosage. In Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant whose every genotype is missing, and one of
+    /// three alleles read as biallelic whose genotypes are `0/1`, `0/2` and
+    /// `0/1`, both reach it with genotypes that differ. pyNei's "Every
+    /// variant has the same genotype in every sample" is false of the same
+    /// two datasets, and it drops a variant by the same rule.
+    /// [`Error::KinshipNoVariantWithVariance`] says the same first half.
     #[error(
-        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+        "no variant has more than one dosage among its called genotypes, so none of them varies and there is nothing to do a PCA with"
     )]
     PcaNoVariantWithVariance,
 
