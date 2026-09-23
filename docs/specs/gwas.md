@@ -204,7 +204,24 @@ between 0 and 1.
 ### How it runs
 
 One pass over the blocks. The null model is fitted before the pass, from the
-trait, the design and the kinship alone, and no block is read for it. Then
+trait, the design and the kinship alone, and no block is read for it.
+
+Before its rows are read, every block is checked against the reader that
+gave it: a block with no variants, and one whose individuals or ploidy
+disagree with the reader's, are the two reader defects `docs/specs/block.md`
+names, and this pass refuses both with the errors that spec gives them. The
+check is not a formality. The drive over the rows pairs the genotypes cut
+into one chunk per variant with the output buffer cut into one row per
+individual, and a buffer sized from a ploidy that is not the block's comes
+out with fewer rows than there are variants; the pairing then truncates to
+the shorter of the two, so the variants past that point are not read at all
+and the pass returns as though the block had held only the ones it managed.
+Read on 23 September 2026 in `the_standardized_rows` of
+`crates/popnei/src/variant.rs`: one variant of five individuals at a block
+ploidy of 2, with a caller passing a ploidy of 5, gives 1 chunk of genotypes
+against 0 rows of buffer, so no row runs, no error is raised, and the
+variant is gone. A study that lost variants that way would report a count
+the user could mistake for variants that had no variance. Then
 each block is turned into its dosages, with rayon across the rows, and the
 variants that vary are tested together as a matrix, because every test but
 the logistic Wald one is a product of the block with something the null
