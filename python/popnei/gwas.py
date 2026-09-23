@@ -14,11 +14,17 @@ and the top principal components of the panel go in as covariates so that a
 variant which only marks ancestry does not look associated.
 
 What is built is the linear model, a continuous trait with no kinship, which
-is what plink2's ``--glm`` computes, and its test is the t test of the
-effect. The linear mixed model, which takes a kinship instead of the
-principal components and is what a panel with families in it needs, and the
-two logistic models of a binomial trait are being written; asking for one is
-a ``ValueError`` that says so.
+is what plink2's ``--glm`` computes. Its test is the t test of the effect:
+the effect divided by its standard error, which under the hypothesis that
+the variant has none follows a Student t distribution with as many degrees
+of freedom as there are individuals left once the covariates and the variant
+have been fitted, and the p-value is the chance that such a t falls further
+from 0 than this one did, either way.
+
+The linear mixed model, which takes a kinship instead of the principal
+components and is what a panel with families in it needs, and the two
+logistic models of a binomial trait are being written; asking for one is a
+``ValueError`` that says so.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
 what popnei does differently from pyNei.
@@ -157,6 +163,10 @@ class GWASResult:
 
     The columns are ``chrom``, ``pos`` and ``id`` when the source carries
     them, and then ``allele_freq``, ``beta``, ``se`` and ``p_value``.
+    ``pos`` is unsigned, as ``Block.pos`` and ``R2Matrix.poss`` are, where
+    pyNei's is signed: taking one position from another wraps instead of
+    going below 0, so a user who wants the distance between two variants
+    casts the column first, ``stats['pos'].astype('int64')``.
     ``allele_freq`` is the frequency of the alleles that are not the major
     one over the tested individuals, ``beta`` the effect of one more copy of
     such an allele, in the units of the trait, ``se`` the standard error of
@@ -180,7 +190,15 @@ class GWASResult:
     phenotype and their design were read in."""
 
     used_grammar_gamma_approx: bool
-    """Whether the GRAMMAR-Gamma approximation was used."""
+    """Whether the GRAMMAR-Gamma approximation was used, which only a mixed
+    model can use and which this build has not.
+
+    It stands in for the denominator of a mixed model's test, which is a
+    product with the covariance of the random effect and costs one such
+    product for every variant: the approximation computes one factor from
+    the first variants of the pass and reuses it, which makes the test
+    linear in the individuals per variant instead of quadratic, at the cost
+    of accuracy where a panel is strongly structured."""
 
     pass_stats: PassStats
     """The counts of the pass the study made: how many variants it was given,
@@ -243,11 +261,16 @@ def calc_gwas(
     columns of its design plus one, which would leave nothing to measure the
     uncertainty of a variant's effect from.
 
-    `kinship`, `test` and `use_grammar_gamma_approx` belong to the linear
-    mixed model, which accounts for the relatedness of a panel and is being
-    written. Giving any of them is a ``ValueError`` that names it. Until then
-    the structure of a panel is accounted for with the top principal
-    components of :meth:`popnei.Kinship.principal_components` or of
+    `test` is ``"wald"`` or ``"score"``, the two values of
+    :class:`TestType`, and ``None`` takes the default of the model. The
+    linear model's only test is the t test of the effect it fitted, which is
+    the Wald test, so ``"score"`` is a ``ValueError`` that says so.
+
+    `kinship` and `use_grammar_gamma_approx` belong to the linear mixed
+    model, which accounts for the relatedness of a panel and is being
+    written. Giving either is a ``ValueError`` that names it. Until then the
+    structure of a panel is accounted for with the top principal components
+    of :meth:`popnei.Kinship.principal_components` or of
     :func:`popnei.do_pca_from_variants` as covariates, which is enough for
     individuals that are not close relatives.
 

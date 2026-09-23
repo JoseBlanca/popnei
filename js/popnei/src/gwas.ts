@@ -471,9 +471,10 @@ function theCovariates(
   for (const [name, values] of Object.entries(covariates)) {
     if (name === INTERCEPT) {
       throw new Error(
-        "popnei: a covariate is not named `intercept`, which is the name the " +
+        "popnei: a covariate is named `intercept`, which is the name the " +
           "effect of the column of ones every design has comes back under in " +
-          "`nullModel.covariateEffects`",
+          "`nullModel.covariateEffects`: the two would be one entry of it, " +
+          "so give the covariate another name",
       );
     }
     if (

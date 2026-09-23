@@ -41,7 +41,10 @@ await init();
  * lowered until it fails and then set two or three times above where it
  * broke. It was, under node on 23 September 2026: it breaks at 2e-15, where
  * the `beta` of `v1` is 2.31e-15 away, and that is the worst of the twelve
- * numbers. So this is 3 times the worst measured.
+ * numbers it holds there, the three of the null model and the nine of the
+ * three rows. So this is 3 times the worst measured. It holds one more
+ * number in another test, the frequency of `v0` over five individuals,
+ * which is 0.4 exactly in both libraries.
  *
  * The cargo test of the same twelve numbers measures 1.24e-15 on faer and
  * 7.4e-16 on Accelerate and is set at 3e-15. This build is faer as well,
@@ -665,6 +668,77 @@ test("a covariate that is not finite is refused by its name", () => {
   );
 });
 
+/**
+ * The call of each case of `refusals_of_both_layers.json`, over the worked
+ * example.
+ *
+ * The Python suite holds the same cases under the same names, and each
+ * suite writes the call in its own language: the names of the options
+ * differ between the two.
+ */
+function theCallsThatAreRefused(): Record<string, () => GwasResult> {
+  const cov = THE_COVARIATE["cov"] as Record<string, number>;
+  const { i5: _withoutI5, ...ofFive } = cov;
+  const { i5: _alsoWithoutI5, ...ofThree } = THE_TRAIT;
+  const study = (options: Record<string, unknown>) => () =>
+    gwasOf(WORKED_EXAMPLE, {
+      phenotype: THE_TRAIT,
+      trait: "continuous",
+      covariates: THE_COVARIATE,
+      ...options,
+    } as Parameters<typeof calcGwas>[1]);
+  return {
+    "a kinship": study({ kinship: "a matrix" }),
+    "the grammar gamma approximation": study({ useGrammarGammaApprox: true }),
+    "the score test": study({ test: "score" }),
+    "a test of another name": study({ test: "rao" }),
+    "a trait of another name": study({ trait: "quantitative" }),
+    "a binomial trait": study({
+      phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
+      trait: "binomial",
+    }),
+    "a covariate named intercept": study({ covariates: { intercept: cov } }),
+    "a covariate that has no value for a tested individual": study({
+      covariates: { cov: ofFive },
+    }),
+    "a covariate that is not finite": study({
+      covariates: { cov: { ...cov, i2: Number.POSITIVE_INFINITY } },
+    }),
+    "a covariate that is a copy of another": study({
+      covariates: { cov, twice: cov },
+    }),
+    "an individual of the phenotype that the variants have not": study({
+      phenotype: { ...THE_TRAIT, i9: 5 },
+    }),
+    "fewer individuals than the design has columns plus two": study({
+      phenotype: { i0: 2, i1: 3, i2: 5 },
+    }),
+  };
+}
+
+test("both layers refuse the same calls", async () => {
+  const listed = JSON.parse(
+    await referenceGwas("refusals_of_both_layers.json"),
+  ) as { refusals: { case: string; match: string }[] };
+  const calls = theCallsThatAreRefused();
+
+  assert.ok(listed.refusals.length > 0, "the file lists no refusal");
+  for (const { case: name, match } of listed.refusals) {
+    const call = calls[name];
+    assert.ok(
+      call !== undefined,
+      `\`${name}\` is in refusals_of_both_layers.json and this suite has no ` +
+        "call for it: a refusal both layers make is written in both",
+    );
+    assert.throws(call, new RegExp(match), name);
+  }
+  assert.deepEqual(
+    Object.keys(calls).sort(),
+    listed.refusals.map(({ case: name }) => name).sort(),
+    "this suite makes a call that the file does not list",
+  );
+});
+
 test("a covariate named intercept is refused with the name it collides with", () => {
   assert.throws(
     () =>
@@ -673,6 +747,6 @@ test("a covariate named intercept is refused with the name it collides with", ()
         trait: "continuous",
         covariates: { intercept: THE_COVARIATE["cov"] as Record<string, number> },
       }),
-    { message: /a covariate is not named `intercept`/ },
+    { message: /a covariate is named `intercept`/ },
   );
 });

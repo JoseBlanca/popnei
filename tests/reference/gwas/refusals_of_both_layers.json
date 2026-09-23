@@ -1,0 +1,67 @@
+{
+  "what_it_is": [
+    "The calls of an association study that Python and TypeScript both",
+    "refuse, and what both messages have to say. It is the one file of this",
+    "directory that no reference program wrote: the others are what plink2,",
+    "GMMAT and rrBLUP answered, and this is a list the two test suites read",
+    "so that neither layer can refuse something the other accepts.",
+    "",
+    "`case` is the call, which each suite writes in its own language over",
+    "the worked example of `docs/specs/gwas.md`; a case that a suite has no",
+    "call for fails that suite, which is what makes the file bind. `match`",
+    "is a regular expression that the message of both layers has to hold, so",
+    "it is written out of the words the two share and not out of one of",
+    "them: the names of the arguments differ between the two languages, and",
+    "so does the quoting of a name in a message."
+  ],
+  "refusals": [
+    {
+      "case": "a kinship",
+      "match": "`kinship` belongs to the linear mixed model"
+    },
+    {
+      "case": "the grammar gamma approximation",
+      "match": "belongs to the linear mixed model"
+    },
+    {
+      "case": "the score test",
+      "match": "only test is the t test of the effect it fitted"
+    },
+    {
+      "case": "a test of another name",
+      "match": "`wald`.*`score`.*`rao`"
+    },
+    {
+      "case": "a trait of another name",
+      "match": "`continuous`.*`binomial`.*`quantitative`"
+    },
+    {
+      "case": "a binomial trait",
+      "match": "logistic regression, which is being written"
+    },
+    {
+      "case": "a covariate named intercept",
+      "match": "a covariate is named .intercept."
+    },
+    {
+      "case": "a covariate that has no value for a tested individual",
+      "match": "the covariate .cov. has no value for .i5."
+    },
+    {
+      "case": "a covariate that is not finite",
+      "match": "the value of the covariate .cov. at .i2. is \\S+, and a study is fitted on numbers"
+    },
+    {
+      "case": "a covariate that is a copy of another",
+      "match": "3 columns, the intercept among them, and only 2 of them are"
+    },
+    {
+      "case": "an individual of the phenotype that the variants have not",
+      "match": ".i9. has a phenotype and is not one of the 6 individuals"
+    },
+    {
+      "case": "fewer individuals than the design has columns plus two",
+      "match": "individuals are tested and the design has"
+    }
+  ]
+}

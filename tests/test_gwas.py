@@ -25,13 +25,22 @@ variants `beta` is what the rounding of a sum of cancelling products left,
 and a bound relative to it asks for an accuracy no arithmetic has.
 """
 
+import json
 import pathlib
 
 import numpy
 import pandas
 import popnei
 import pytest
-from popnei import GWASModel, TraitType, calc_gwas, open_vars, open_vcf, write_vars
+from popnei import (
+    GWASModel,
+    TraitType,
+    _core,
+    calc_gwas,
+    open_vars,
+    open_vcf,
+    write_vars,
+)
 from pynei import vars_from_vcf
 from pynei.gwas import calc_gwas as pynei_gwas
 
@@ -43,6 +52,15 @@ REFERENCE_KINSHIP_DIR = pathlib.Path(__file__).parent / "reference" / "kinship"
 PANEL = REFERENCE_KINSHIP_DIR / "panel_called.vcf.gz"
 PANEL_NUM_VARS = 1200
 PANEL_NUM_INDIVIDUALS = 200
+
+# The same 200 individuals and 1200 variants with 3 in 100 of the genotypes
+# missing whole, which is the panel of `docs/specs/dists.md` and the one
+# where a genotype takes the mean dosage of its variant. plink2 was not run
+# on it, so it is compared with pyNei alone.
+PANEL_WITH_MISSING = (
+    pathlib.Path(__file__).parent / "reference" / "dists" / "panel.vcf.gz"
+)
+PANELS = (PANEL, PANEL_WITH_MISSING)
 
 # How far a `beta` or an `se` of the panel may be from plink2's, as a share
 # of the `se` plink2 printed for that variant. It is the 1e-5 of "How it is
@@ -60,39 +78,26 @@ OF_PLINK2_FREQUENCY = 1e-6
 # half a unit in that last place.
 PLINK2_DIGITS = 6
 
-# How far a `beta` or an `se` of the panel may be from pyNei's, as a share of
+# How far a `beta` or an `se` of a panel may be from pyNei's, as a share of
 # the `se` pyNei gives for that variant, and how far a p-value may be, as the
 # distance between the two in log10.
 #
 # "How it is verified" of "What every model shares" asks for 1e-9 relative
 # and says that such a number is lowered until it fails and set two or three
-# times above where it broke. Both were, on 24 September 2026 over all 1200
-# variants on both backends. The `beta` breaks at 5.8e-15: the furthest from
-# pyNei is `var0482`, 1.11e-15 away with an `se` of 0.190, which is
-# 5.8296e-15 of it, the same variant and the same difference on Accelerate
-# and on faer. So `OF_PYNEI` is 2.6 times the worst measured, where the
-# spec's 1e-9 had 170000 times it. The `se` of every variant is nearer than
-# that, 8.28e-16 of its own `se` at worst on Accelerate and 8.40e-16 on
-# faer. The p-value breaks at 3.79e-12, at `var0216`, whose p-value of
-# 0.99961 the two libraries give 8.74e-12 apart as a share of it, and
-# `OF_PYNEI_P_VALUE` is 2.6 times that.
+# times above where it broke. Both were, on 24 September 2026 over the 1200
+# variants of each panel on both backends. The `beta` breaks at 6.8e-15: the
+# furthest from pyNei is `var0671` of the panel with genotypes missing, on
+# faer, 6.796e-15 of its `se`, and the worst on Accelerate is `var0482` of
+# `panel_called`, 1.11e-15 away with an `se` of 0.190, 5.830e-15 of it. So
+# `OF_PYNEI` is 2.2 times the worst measured, where the spec's 1e-9 had
+# 150000 times it. Every `se` is nearer than that, 1.24e-15 of its own `se`
+# at worst. The p-value breaks at 3.94e-12, at `var0717` of the panel with
+# genotypes missing, and `OF_PYNEI_P_VALUE` is 2.5 times that.
 OF_PYNEI = 1.5e-14
 OF_PYNEI_P_VALUE = 1e-11
 
-# How far a column of the study of the panel read in blocks of 77 may be
-# from the same column of the study of the panel read in one block, as a
-# share of the value.
-#
-# The spec asks for 1e-12 and, as above, for the number to be lowered until
-# it fails. This one fails at no number: the two studies give the same bits,
-# a difference of 0 over all four columns and all 1200 variants on both
-# backends on 24 September 2026. Nothing of the linear model is summed
-# across the variants, so a variant's four numbers are the same whichever
-# block it was read in, and the bound stays the spec's.
-OF_THE_BLOCKS = 1e-12
-
 # How many variants a batch of the vars file the panel is written to holds,
-# which is what the pass over it reads at a time.
+# which is what the reader of that file gives the pass at a time.
 VARS_PER_BLOCK = 77
 
 # The worked example of "The worked example" of the spec: six diploid
@@ -256,20 +261,33 @@ def test_every_variant_of_the_panel_is_plink2s() -> None:
     )
 
 
-def test_every_variant_of_the_panel_is_pyneis() -> None:
-    """Both libraries on the same VCF, over all 1200 variants and the null
-    model they were tested against.
+@pytest.mark.parametrize("panel", PANELS)
+def test_every_variant_of_a_panel_is_pyneis(panel: pathlib.Path) -> None:
+    """Both libraries on the same VCF, over all 1200 variants of each panel
+    and the null model they were tested against.
 
     pyNei gives no counts of the pass, so what is compared is the four
     columns, the individuals that were tested, the coefficients of the null
     model and its residual variance. The variants that have no answer are
-    asserted to be the same ones, which on this panel is none of them: every
-    variant of it varies among the 200 individuals.
+    asserted to be the same ones, which on both panels is none of them.
+
+    Both panels are here because the rule that gives a genotype with any
+    allele missing the mean dosage of its variant runs at scale on one of
+    them and on no other test of this file: `panel_called` has every
+    genotype called, and `panel` has 3 in 100 of them missing whole.
+    Measured on 24 September 2026, the worst `beta` of `panel_called` is
+    `var0482` at 5.830e-15 of its `se` on both backends, and of `panel` it
+    is `var0482` at 5.804e-15 on Accelerate and `var0671` at 6.796e-15 on
+    faer. Neither panel has a variant that popnei or pyNei leaves without an
+    answer, so the two sets of NaN are both empty and the check that they
+    are the same ones is the weakest of the three; the five individuals of
+    `test_a_frequency_of_half_called_genotypes_can_pass_a_half` are where a
+    variant with no answer is asserted.
     """
-    ours = _the_study_of_the_panel()
+    ours = _the_study_of_the_panel(open_vcf(panel))
     phenotypes = _phenotypes()
     theirs = pynei_gwas(
-        vars_from_vcf(PANEL),
+        vars_from_vcf(panel),
         phenotypes["cont"],
         "continuous",
         covariates=phenotypes[["cov1", "cov2"]],
@@ -311,44 +329,44 @@ def test_every_variant_of_the_panel_is_pyneis() -> None:
     )
 
 
-def test_the_blocks_the_source_gives_change_nothing(tmp_path: pathlib.Path) -> None:
-    """The panel read in blocks of 77 gives the study of the panel read in
-    one block.
+def test_the_vars_reader_gives_the_study_the_vcf_reader_gives(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The panel written to a vars file of 77 variants a batch is the study
+    the VCF gives, to the bit.
 
-    The VCF of 1200 variants is one block, since popnei reads 10000 of 200
-    individuals at a time, and the same variants written to a vars file with
-    77 variants a batch are 16 batches, 15 of 77 and one of 45, which is what
-    the pass over that file reads at a time: the reader of a vars file builds
-    a batch whole whatever size its blocks are asked for. Read with pyarrow
-    on 24 September 2026, and it cannot be read through popnei, since every
-    pass puts a `reblock` over its reader and gives the blocks that one
-    makes.
+    This is not a test of the size of the blocks the study reads, although
+    it was written as one. Every pass puts a `reblock` over its reader, so
+    the 16 batches of the file, 15 of 77 and one of 45, are joined into the
+    one block of 1200 that the study reads, and the VCF gives that block
+    whole; the two runs are the same arithmetic over the same values, and
+    anything else would be a defect of one of the two readers rather than a
+    digit moved. What runs the study's loop over more than one block is the
+    cargo test of 10100 variants, which is where the size of a block is
+    asserted.
 
-    What the pass does with those 16 is join them into the block the study
-    reads, so what this says is that a source which gives its variants a few
-    at a time is studied as one that gives them all at once. That the study's
-    own loop over its blocks adds the rows of each one after the rows of the
-    ones before, and that a variant has the same answer in the second block
-    as in the first, is the cargo test of 10100 variants, which is the size
-    at which that loop runs twice.
-
-    Measured on 24 September 2026 on both backends: the two agree to the bit
-    over all four columns and all 1200 variants, a difference of 0.
+    So what is compared is the bits, with no tolerance: a difference of 0
+    over the four columns and all 1200 variants, measured on both backends
+    on 24 September 2026. A tolerance here would pass a study that had read
+    the file wrongly.
     """
     of_the_vcf = _the_study_of_the_panel()
     path = tmp_path / "panel.vars"
     written = write_vars(open_vcf(PANEL), path, num_vars_per_block=VARS_PER_BLOCK)
-    of_the_blocks = _the_study_of_the_panel(open_vars(path))
+    of_the_vars_file = _the_study_of_the_panel(open_vars(path))
 
     assert written.pass_stats.num_vars == PANEL_NUM_VARS
-    assert of_the_blocks.pass_stats.num_vars == PANEL_NUM_VARS
-    assert list(of_the_blocks.stats["id"]) == list(of_the_vcf.stats["id"])
+    assert of_the_vars_file.pass_stats.num_vars == PANEL_NUM_VARS
+    assert list(of_the_vars_file.stats["id"]) == list(of_the_vcf.stats["id"])
+    assert list(of_the_vars_file.stats["chrom"]) == list(of_the_vcf.stats["chrom"])
+    assert list(of_the_vars_file.stats["pos"]) == list(of_the_vcf.stats["pos"])
     for column in ("allele_freq", "beta", "se", "p_value"):
-        numpy.testing.assert_allclose(
-            of_the_blocks.stats[column].to_numpy(),
-            of_the_vcf.stats[column].to_numpy(),
-            rtol=OF_THE_BLOCKS,
-            atol=0,
+        ours = of_the_vars_file.stats[column].to_numpy()
+        theirs = of_the_vcf.stats[column].to_numpy()
+        assert (ours == theirs).all(), (
+            f"{column} is not the same bits read from a vars file of "
+            f"{VARS_PER_BLOCK} variants a batch as read from the VCF: the "
+            f"worst is {numpy.abs(ours - theirs).max()}"
         )
 
 
@@ -840,6 +858,181 @@ def test_a_study_of_too_few_individuals_is_refused(
         ValueError, match="3 individuals are tested and the design has 2 columns"
     ):
         _the_worked_example(worked_example, phenotype=trait)
+
+
+def test_a_frequency_of_half_called_genotypes_can_pass_a_half(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`allele_freq` is a mean dosage over the ploidy and not the frequency
+    of the allele the dosages count, so it can pass a half.
+
+    The case is the spec's, in "How it is verified" of "The linear model":
+    five individuals at `0/. 0/. 0/. 0/. 1/1`. The major allele is the one
+    that is most frequent among the called **alleles**, which counts the
+    called half of a half called genotype, so it is `0`, on four halves
+    against two; the mean that becomes `allele_freq` is over the whole
+    called **genotypes**, and `1/1` is the only one, so the mean dosage is 2
+    and the frequency is 1.0. Every dosage of the variant is that mean, so
+    it has no variance and no answer either.
+
+    It is a divergence from plink2 and not from pyNei, which agrees; neither
+    reference panel shows it, one having every genotype called and the other
+    having them missing whole.
+    """
+    path = tmp_path / "half_called.vcf"
+    individuals = ("h0", "h1", "h2", "h3", "h4")
+    path.write_text(
+        "\n".join(
+            [
+                "##fileformat=VCFv4.4",
+                '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+                "\t".join(
+                    [
+                        "#CHROM",
+                        "POS",
+                        "ID",
+                        "REF",
+                        "ALT",
+                        "QUAL",
+                        "FILTER",
+                        "INFO",
+                        "FORMAT",
+                        *individuals,
+                    ]
+                ),
+                "chr1\t1000\thalf\tA\tT\t.\tPASS\t.\tGT\t0/.\t0/.\t0/.\t0/.\t1/1",
+            ]
+        )
+        + "\n"
+    )
+    trait = pandas.Series([1.0, 2.0, 3.0, 4.0, 5.0], index=list(individuals))
+
+    result = calc_gwas(open_vcf(path, only_passed=False), trait, "continuous")
+
+    assert result.stats["allele_freq"][0] == 1.0
+    assert numpy.isnan(result.stats["beta"][0])
+    assert numpy.isnan(result.stats["se"][0])
+    assert numpy.isnan(result.stats["p_value"][0])
+
+
+def test_the_private_module_names_a_design_that_is_not_contiguous(
+    worked_example: pathlib.Path,
+) -> None:
+    """What a user who calls `popnei._core` themselves reads.
+
+    The package builds the design itself and it lies row after row, so
+    nothing a user writes reaches this message. When it is read it names the
+    argument and what makes an array the core can take, as it does for the
+    table of a principal component analysis: the core reads the design one
+    row of covariates for each individual, and an array that lies column
+    after column holds the same numbers in another matrix.
+    """
+    variants = open_vcf(worked_example, only_passed=False)
+    by_columns = numpy.asfortranarray(
+        numpy.column_stack([numpy.ones(6), WORKED_EXAMPLE_COVARIATE])
+    )
+
+    with pytest.raises(ValueError, match="ascontiguousarray") as refusal:
+        _core.calc_gwas(
+            variants._source,
+            numpy.arange(6, dtype=numpy.uint64),
+            numpy.asarray(WORKED_EXAMPLE_TRAIT, dtype=numpy.float64),
+            by_columns,
+            "continuous",
+            None,
+            False,
+            variants._steps,
+        )
+
+    assert "`design`" in str(refusal.value)
+
+
+def _the_calls_that_are_refused(
+    worked_example: pathlib.Path,
+) -> dict:
+    """The call of each case of `refusals_of_both_layers.json`, over the
+    worked example, as a function that makes it.
+
+    The TypeScript suite holds the same cases under the same names, and each
+    suite is what writes the call in its own language: the names of the
+    arguments differ between the two.
+    """
+    covariates = _the_covariate()
+    a_copy = covariates.assign(twice=covariates["cov"])
+    not_finite = covariates.copy()
+    not_finite.loc["i2", "cov"] = numpy.inf
+    of_five = covariates.drop(index="i5")
+    of_three = _the_trait()
+    of_three[["i3", "i4", "i5"]] = numpy.nan
+    named = _the_trait()
+    named["i9"] = 5.0
+    binomial = pandas.Series(
+        [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
+    )
+    return {
+        "a kinship": lambda: _the_worked_example(worked_example, kinship="a matrix"),
+        "the grammar gamma approximation": lambda: _the_worked_example(
+            worked_example, use_grammar_gamma_approx=True
+        ),
+        "the score test": lambda: _the_worked_example(worked_example, test="score"),
+        "a test of another name": lambda: _the_worked_example(
+            worked_example, test="rao"
+        ),
+        "a trait of another name": lambda: _the_worked_example(
+            worked_example, trait="quantitative"
+        ),
+        "a binomial trait": lambda: _the_worked_example(
+            worked_example, phenotype=binomial, trait="binomial"
+        ),
+        "a covariate named intercept": lambda: _the_worked_example(
+            worked_example, covariates=covariates.rename(columns={"cov": "intercept"})
+        ),
+        "a covariate that has no value for a tested individual": lambda: (
+            _the_worked_example(worked_example, covariates=of_five)
+        ),
+        "a covariate that is not finite": lambda: _the_worked_example(
+            worked_example, covariates=not_finite
+        ),
+        "a covariate that is a copy of another": lambda: _the_worked_example(
+            worked_example, covariates=a_copy
+        ),
+        "an individual of the phenotype that the variants have not": lambda: (
+            _the_worked_example(worked_example, phenotype=named)
+        ),
+        "fewer individuals than the design has columns plus two": lambda: (
+            _the_worked_example(worked_example, phenotype=of_three)
+        ),
+    }
+
+
+def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None:
+    """Every call of `tests/reference/gwas/refusals_of_both_layers.json` is
+    a `ValueError` whose message holds what that file says.
+
+    The TypeScript suite walks the same file, so a refusal that one layer
+    has and the other has not is a case in the file that one of the two
+    suites cannot make a call for, and that suite fails. Nothing else says
+    that the two layers refuse the same things: each of them checks itself
+    against its own copy of the literals, which is how they came to refuse
+    `test` differently for a day.
+    """
+    listed = json.loads(
+        (REFERENCE_GWAS_DIR / "refusals_of_both_layers.json").read_text()
+    )["refusals"]
+    calls = _the_calls_that_are_refused(worked_example)
+
+    assert listed, "the file lists no refusal"
+    for refusal in listed:
+        case = refusal["case"]
+        assert case in calls, (
+            f"`{case}` is in refusals_of_both_layers.json and this suite has "
+            f"no call for it: a refusal both layers make is written in both"
+        )
+        with pytest.raises(ValueError, match=refusal["match"]):
+            calls[case]()
+    assert sorted(calls) == sorted(refusal["case"] for refusal in listed), (
+        "this suite makes a call that the file does not list"
+    )
 
 
 def test_what_is_not_a_variants_is_refused_by_its_type() -> None:

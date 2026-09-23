@@ -21,9 +21,10 @@
 //! The three arrays are copied into memory of Rust before the pass starts,
 //! and not read where numpy holds them: the interpreter is released for the
 //! whole pass, and what goes into that closure has to be owned by it. The
-//! copy is one number per tested individual and one row of the design each,
-//! 80 KB of a panel of 10000 individuals with three covariates, against the
-//! variants x individuals the pass itself reads.
+//! copy is one position and one trait for each tested individual and one row
+//! of the design for each, which for a panel of 10000 individuals with three
+//! covariates is 80 KB, 80 KB and 320 KB, against the variants x individuals
+//! the pass itself reads.
 
 use numpy::{
     IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods as _,

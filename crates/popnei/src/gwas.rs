@@ -4365,10 +4365,11 @@ mod lm {
     /// number be lowered until it fails and then set two or three times
     /// above where it broke. It was, on 23 September 2026 on both
     /// backends: it breaks at 1e-15, where the `beta` of `v1` on faer is
-    /// 1.24e-15 away, and the worst difference of the twelve numbers is
-    /// that 1.24e-15 on faer and 7.4e-16 on Accelerate, the `se` of `v0`.
-    /// So this is 2.4 times the worst measured, and the spec's 1e-12 had
-    /// about 800 times it.
+    /// 1.24e-15 away, and the worst difference of the thirteen numbers it
+    /// holds, the four of the null model and the nine of the three rows,
+    /// is that 1.24e-15 on faer and 7.4e-16 on Accelerate, the `se` of
+    /// `v0`. So this is 2.4 times the worst measured, and the spec's 1e-12
+    /// had about 800 times it.
     ///
     /// No number of the example is near 0: the smallest is the `beta` of
     /// `v1`, 0.3125, against an `se` of 1.3, so a share of the number and

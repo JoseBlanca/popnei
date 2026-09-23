@@ -110,6 +110,11 @@ const REFERENCE_GWAS_DIR = new URL(
  * `tests/reference/kinship/`, the five causal variants, and what plink2
  * v2.0.0-a.7.7, GMMAT 1.5.0 and rrBLUP 4.6.3 answered on them. The Python
  * tests read the same files.
+ *
+ * `refusals_of_both_layers.json` is the one file there that no reference
+ * program wrote: it lists the calls that this package and the Python one
+ * both refuse, with what both messages have to say, and each suite writes
+ * the call of each case in its own language.
  */
 export async function referenceGwas(name: string): Promise<string> {
   return readFile(new URL(name, REFERENCE_GWAS_DIR), "utf8");
