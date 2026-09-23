@@ -353,7 +353,11 @@ difference from the text plink2 prints is 4.95e-06 and 4.93e-06 over the
 40000 entries, and `num_vars` is 1200 in both. Those two numbers are the
 rounding of the six digits and not a difference of the arithmetic: against
 the bits, popnei is 4.44e-16 from plink2 on the panel with every genotype
-called and 5.55e-16 on the one with genotypes missing.
+called and 5.55e-16 on the one with genotypes missing. As a ratio, every
+entry of both is within 4e-13 of plink2 and one is not within 3e-13, an
+entry of 4.88e-05 that is 1.59e-17 away: the largest ratios are all at the
+smallest entries, where the two add the same products in a different order.
+The 1e-12 the tests hold them to is between two and three times that.
 
 The cargo tests read the two VCFs with the VCF reader, call `calc_kinship`
 of "The Rust interface", and compare the whole of each matrix, all 40000
