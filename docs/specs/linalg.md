@@ -829,12 +829,34 @@ data was.
 Singular { argument: &'static str, at: usize },
 ```
 
-Its message is "the matrix a is singular: the factorization stopped at its
-row 3, counting from 0". The core crate wraps it and the module that
-called it decides what it means, because the same error is two different
-things to a user: a design whose covariates are not independent, which the
-rank of line 841 is meant to catch before any model is fitted, and a
-variant whose fit has run away, which the GWAS gives NaN for.
+Its message is "the matrix a failed at its row 3, counting from 0", and it
+says where and not why. Five operations raise this error and only
+`cholesky_lower` factors anything: for the three that take a
+factorization the matrix was handed in as one, and for the solve against a
+triangular matrix nothing factored it at all, an `r` from a QR being the
+result of a factorization and not a factorization of the matrix named. So
+the message states the row it failed at, which is true of all five, and
+draws no conclusion about the caller's data, which would be wrong wherever
+the matrix that failed is not the one the user gave.
+
+The owner decided this on 23 September 2026, at the request of the session
+writing `docs/specs/gwas.md`, which catches this error in two places that
+mean different things to a user: the fit of a mixed model null whose
+kinship missing genotypes have made indefinite, where that spec raises a
+`ValueError` naming the kinship and will not let the word "singular" reach
+the user, because the matrix that failed was built from theirs and not
+given by them; and the per variant fit of the logistic Wald test, where
+the message is never shown and the variant gets NaN for its effect, its
+standard error and its p-value. Both want the argument and the row, which
+the two fields carry, and neither wants more. The option not taken was
+"the factorization of a stopped at its row 3", which that session
+proposed and which is true of four of the five.
+
+The core crate wraps it and the module that called it decides what it
+means, because the same error is two different things to a user: a design
+whose covariates are not independent, which the rank of line 841 is meant
+to catch before any model is fitted, and a variant whose fit has run away,
+which the GWAS gives NaN for.
 
 Both backends give the row, and both count it from 0 once the crate has
 turned LAPACK's round: `dpotrf` gives an `info` of k for the leading k x k
