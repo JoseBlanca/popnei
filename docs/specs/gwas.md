@@ -254,10 +254,10 @@ all there is. Six significant digits round a value by up to 5e-6 of itself,
 so a comparison against one of those two can have at most twofold headroom
 at a tolerance of 1e-5 relative: it says that popnei computes the same
 quantity, and it would not catch an arithmetic error smaller than the
-printing. That rounding is relative, so the tolerances against those two are
-relative too. An absolute tolerance would hold on this panel, whose values
-are small, and break on data whose values are larger, for an implementation
-that is right.
+printing. That rounding is relative, so an absolute tolerance
+would hold on this panel, whose values are small, and break on data whose
+values are larger, for an implementation that is right. A tolerance relative
+to each value breaks the other way, and the next paragraph is that.
 
 The other three are full precision: rrBLUP's `GWAS`, R's `anova(glm, test =
 "Rao")` and GMMAT's `glmmkin` null models, which the reference script writes
@@ -270,17 +270,40 @@ nothing rounded away. Those two are what would catch a wrong digit that the
 printed references could not. No work package rests on a printed reference
 alone.
 
-Those two numbers are where to start and not where to stop. 1e-9 and 1e-12
-were chosen here for being small, which is not evidence of anything: a
-tolerance says something only once somebody knows how far it is from the
-difference it is allowing. So each of them is lowered until it fails and
-then set two or three times above where it broke, and the implementation
-plan records both numbers. The kinship found on 23 September 2026 what
-happens without that: its matrix matches plink2's binary output to 4.44e-16
-absolute, which reads as a wide margin, while the worst entry as a **ratio**
-is 3.31e-13, so a 1e-12 relative bound has two to three times the worst case
-and not the thousandfold the absolute figure suggests. An absolute agreement
-is not a relative one, and the smallest entries are where they part.
+**A tolerance is against the scale of what is estimated, not against each
+value.** An association study is mostly null: for the great majority of
+variants the effect is 0, and what comes out is whatever the rounding of a
+sum of cancelling products left, a number whose own magnitude means nothing.
+Asking two implementations to agree to a share of *that* asks for accuracy
+no arithmetic has, at exactly the variants where the null is true, which is
+most of the genome. So `beta` and `se` are compared within a tolerance times
+`se`, the scale of what the study is measuring, and never within a tolerance
+times `beta`; `p_value` is compared in `log10`, which is already a scale;
+and a check over a vector of numbers is against the largest of them and not
+each one.
+
+The kinship met this on 23 September 2026 and it is why the rule is here.
+Its first bound was 1e-12 relative to each entry of the matrix, which looked
+sound: the worst entry as a ratio was 3.31e-13. It broke on the second
+backend, and not at a large entry. faer missed at an entry of 1.29e-05 whose
+difference from plink2 was 1.9e-17, a smaller difference than the ones at
+entries a hundred times larger, every one of which passed. Its rule now is
+that each entry is within 1e-13 of the **largest** entry of the matrix, at
+which the worst of four measurements is 3.6e-16 and 4.5e-16 on Accelerate
+and 3.3e-15 and 2.3e-15 on faer.
+
+**A tolerance is chosen against both backends of `docs/specs/linalg.md` and
+not one.** faer sits about seven times further from plink2 than Accelerate
+does on the same data, which is well inside what the order and the blocking
+of the sums allow and is not a defect. The faer build is what runs in a
+browser, so a bound fixed on Accelerate alone is a bound the wasm package
+fails. `cargo test -p popnei --no-default-features` is the run that says so,
+and it is in the `coding` skill since 23 September 2026.
+
+And the numbers are where to start and not where to stop: 1e-9 and 1e-12
+were chosen here for being small, which is not evidence of anything. Each is
+lowered until it fails and set two or three times above where it broke, on
+both backends, and the implementation plan records both numbers.
 
 Each model item says what it is checked against and how closely. Three
 checks are common to all four:
@@ -352,8 +375,10 @@ with `cov1` and `cov2` as covariates, which writes
 are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
-frequency and lies between 0 and 1, and `beta`, `se` and `p_value` within
-1e-5 relative, which is twice the 5e-6 that six significant digits round by.
+frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
+`se` of that variant, for the reason above, which on this panel is between
+1.2e-6 and 3.2e-6 absolute and is comparable with the 5e-6 that six
+significant digits round `beta` by; and `p_value` within 1e-5 relative.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
@@ -613,8 +638,8 @@ the odds ratio, so `beta` is compared with its logarithm.
 The one variant plink2 fell back to Firth for is left out of the comparison,
 and instead a test asserts that popnei's NaNs are exactly the variants
 plink2 marked `FIRTH?` `Y`, which is `var0006` and no other. Over the other
-1199: `beta` and `se` within 1e-4 relative and `p_value` within 5e-3
-relative. All three are wider than plink2's printing, which rounds by 5e-6,
+1199: `beta` and `se` within 1e-4 times the `se` of that variant and
+`p_value` within 5e-3 relative. All three are wider than plink2's printing, which rounds by 5e-6,
 because plink2 stops its logistic fit earlier than popnei does; the
 difference between the two fits is what these measure, and the printing is
 not what limits them. The six literals below are held to 1e-5 on `beta`,
