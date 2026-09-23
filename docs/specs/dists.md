@@ -689,7 +689,7 @@ counts.
 
 What is kept from one block to the next, and what the threads reduce
 into, is, for each pair of populations and each resampling group, five
-f64 and one u32:
+f64 and one u64:
 
     sum of H_b, sum of H_w, sum of sqrt(p_Aa * p_Ba) over the alleles,
     sum of the corrected H_S, sum of the corrected H_T, and the variants
@@ -704,10 +704,13 @@ its sum of H_w over the variants of the pair that fell in it.
 
 Every measure is a ratio of those six, so the divisions happen once, at
 the end, and the result does not depend on where the block boundaries
-fell nor on how many threads ran. The memory is 44 bytes for each pair
-and each group: 66 KB for 3 populations and 500 groups, and 27 MB for 50
+fell nor on how many threads ran. The memory is 48 bytes for each pair
+and each group: 72 KB for 3 populations and 500 groups, and 29 MB for 50
 populations, which is 1225 pairs, and the same 500. It does not grow with
-the variants or with the individuals.
+the variants or with the individuals. The count is a u64, which is what
+popnei counts a whole dataset with, and it takes no room of its own: the
+five f64 align the six numbers to 8 bytes, so a u32 count would leave 4
+of them unused and the six would be 48 bytes either way.
 
 The cost of the pass grows with the square of the populations: per
 variant it is one pass over the genotypes for the counts, P of them for P
