@@ -1,6 +1,7 @@
 # Plan: the kinship
 
-23 September 2026. State: draft, not yet approved by the owner. It builds
+23 September 2026. State: under way since 23 September 2026, when the owner
+approved it. It builds
 `docs/specs/kinship.md`, which went through its first reader and its review
 and whose four open points the owner decided on 23 September 2026, so it has
 none left. It is the first of three plans that together build the
