@@ -1,7 +1,7 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr` and
-//! `dtrtrs`, the ones numpy calls.
+//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr`, `dtrtrs`
+//! and `dgesdd`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -17,10 +17,11 @@
 //! has `transa` `N` and `transb` `T`; and `c = a' b'` is `c' = b a`,
 //! whose two flags are both `T`. None of the four copies a buffer.
 //!
-//! The thin QR is the one function here that does copy: `dgeqrf` and
-//! `dorgqr` are much slower on the wide matrix that the buffer of a design
-//! is in their view than on the tall one it is, so it writes the transpose
-//! of that buffer into one of its own and calls them on that.
+//! The thin QR and the singular values are the two functions here that do
+//! copy: `dgeqrf`, `dorgqr` and `dgesdd` are much slower on the wide
+//! matrix that the buffer of a design is in their view than on the tall
+//! one it is, so each writes the transpose of that buffer into one of its
+//! own and calls them on that.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -976,6 +977,212 @@ pub(crate) fn solve_upper_triangular(
             info,
         }),
     }
+}
+
+/// The singular values of `a`, of exactly `rows` x `cols` values row after
+/// row and both dimensions 1 at least, from the largest: as many as the
+/// smaller dimension.
+///
+/// The buffer of `a` read column after column is the `cols` x `rows`
+/// matrix, the wide one, and the routine is much slower on it than on the
+/// tall one: a design of 10000 x 5 took 1.54 ms that way and 0.145 ms
+/// through the copy below, measured on 23 September 2026 and written in
+/// "What the seven of the GWAS cost" of `docs/specs/linalg.md`. So this
+/// backend writes the transpose of `a` into a buffer of its own, which is
+/// `a` held column after column, and calls the routine on that, as the
+/// thin QR above does. The routine overwrites that buffer, and `a` itself
+/// is left as it was.
+///
+/// `jobz` is `N`, which computes the values and neither of the two
+/// matrices of vectors, so the two buffers they would go in hold one
+/// value each and are never written.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when a dimension, or the workspace the routine
+/// asks for, is larger than the `i32` the routine takes.
+/// [`Error::NoConvergence`] when the routine gave an `info` other than 0,
+/// which is either a decomposition that did not come out or an argument
+/// it refused.
+pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>> {
+    let m = the_i32_of(rows, "rows")?;
+    let n = the_i32_of(cols, "cols")?;
+    let mut column_major = the_column_major_copy_of(a, rows, cols);
+    let smallest = rows.min(cols);
+    let mut values = vec![0.0_f64; smallest];
+    // The routine asks for 8 integers for each of the smaller dimension.
+    // The multiplication overflows for no matrix that reaches here:
+    // `lib.rs` has refused every one of more than 2147483647 values, which
+    // leaves the smaller dimension at 46340.
+    let integers_wanted = smallest.checked_mul(8).ok_or_else(|| Error::Dimension {
+        argument: "rows",
+        expected: format!(
+            "small enough for the workspace of integers of dgesdd, 8 for each of the smaller dimension, to fit in this machine, and the dimensions are {rows} and {cols}"
+        ),
+    })?;
+    let mut integers = vec![0_i32; integers_wanted];
+    // `jobz` N writes neither matrix of vectors, and their two leading
+    // dimensions are passed as 1, the smallest the routine takes.
+    let mut no_left_vectors = [0.0_f64; 1];
+    let mut no_right_vectors = [0.0_f64; 1];
+    let mut info = 0_i32;
+
+    // The routine says how much it wants to work in when it is called
+    // with the length of its workspace at -1, which is how LAPACK is
+    // asked, and writes that number into the first entry of the workspace
+    // it was given. It is what `eigh_lower` above asks `dsyevd` and what
+    // the thin QR asks its two routines.
+    let mut asked = [0.0_f64; 1];
+    // SAFETY: with `lwork` at -1 the routine writes the first entry of
+    // `work` and reads nothing else of it, and `asked` holds one value;
+    // it reads and writes nothing of `a`, of `s`, of `u`, of `vt` or of
+    // `info` other than to store that size, and `column_major` holds rows
+    // * cols values, `values` holds min(rows, cols), the two buffers of
+    // vectors hold one value each, `integers` holds 8 * min(rows, cols)
+    // and `info` is one integer. Neither dimension is 0 and both fit in
+    // the `i32` the routine takes, which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dgesdd(
+            b'N',
+            m,
+            n,
+            &mut column_major,
+            m,
+            &mut values,
+            &mut no_left_vectors,
+            1,
+            &mut no_right_vectors,
+            1,
+            &mut asked,
+            -1,
+            &mut integers,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dgesdd",
+            info,
+        });
+    }
+
+    let floats =
+        the_workspace_of_the_singular_values(rows, cols, asked.first().copied().unwrap_or(0.0))?;
+    let lwork = the_length_of_the_workspace_of_the_singular_values(floats)?;
+    let mut work = vec![0.0_f64; floats];
+    // SAFETY: with `jobz` N, `m` = rows, `n` = cols and `lda` = rows the
+    // routine reads and overwrites `a` as a column major matrix of rows x
+    // cols, which is the rows * cols values `column_major` holds; it
+    // writes the min(rows, cols) singular values into `s`, which holds
+    // that many; it writes neither `u` nor `vt`, whose leading dimensions
+    // are 1 and whose buffers hold one value each; and it works in the
+    // first `lwork` values of `work`, which holds exactly that many, and
+    // in the 8 * min(rows, cols) of `iwork`, which is what `integers`
+    // holds. It writes nothing else, and `info` is one integer. Neither
+    // dimension is 0 and all three lengths fit in the `i32` the routine
+    // takes, which `the_i32_of` and
+    // `the_length_of_the_workspace_of_the_singular_values` have just
+    // checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dgesdd(
+            b'N',
+            m,
+            n,
+            &mut column_major,
+            m,
+            &mut values,
+            &mut no_left_vectors,
+            1,
+            &mut no_right_vectors,
+            1,
+            &mut work,
+            lwork,
+            &mut integers,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dgesdd",
+            info,
+        });
+    }
+    Ok(values)
+}
+
+/// How many floats `dgesdd` works in for a matrix of `rows` x `cols` with
+/// `jobz` `N`: the larger of what the query asked for and the minimum the
+/// routine documents, 3m + max(M, 7m) for m the smaller dimension and M
+/// the larger.
+///
+/// The query writes its number as an `f64`. An infinity, a NaN, a
+/// negative number and one above the `i32` the length is passed as are
+/// left out, and the minimum stands; a value that is a count is taken by
+/// its whole part, the fraction that the routine cannot have meant being
+/// dropped. It is what `the_workspace_of` below does with the query of
+/// `dsyevd`.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when the minimum for those dimensions is more
+/// values than this machine can hold.
+fn the_workspace_of_the_singular_values(rows: usize, cols: usize, asked: f64) -> Result<usize> {
+    let too_large = || Error::Dimension {
+        argument: "rows",
+        expected: format!(
+            "small enough for the workspace of dgesdd, 3m + max(M, 7m) floats for the smaller dimension m and the larger M, to fit in this machine, and they are {rows} and {cols}"
+        ),
+    };
+    let smaller = rows.min(cols);
+    let larger = rows.max(cols);
+    let at_least = 3_usize
+        .checked_mul(smaller)
+        .and_then(|values| values.checked_add(larger.max(7_usize.checked_mul(smaller)?)))
+        .ok_or_else(too_large)?;
+
+    let the_most_a_length_holds = f64::from(i32::MAX);
+    let asked = if asked.is_finite() && asked >= 0.0 && asked <= the_most_a_length_holds {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the line above has checked that the value is finite, is not negative and is at most i32::MAX, so it is a count this machine holds; what the cast drops is the fraction, which the routine cannot have meant, and the minimum below stands when what is left is smaller than it"
+        )]
+        let asked = asked as usize;
+        asked
+    } else {
+        0
+    };
+    Ok(asked.max(at_least))
+}
+
+/// The length of the workspace of `dgesdd` as the `i32` the routine takes
+/// it as.
+///
+/// [`the_workspace_of_the_singular_values`] gives no number above that
+/// `i32` from the query, and the minimum it can give instead is at most
+/// 10 times 46340, since `lib.rs` refuses a matrix of more than 2147483647
+/// values, so this refuses nothing that reaches it: it is how the
+/// conversion is made without an `as` that could truncate in silence.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when the workspace is larger than that.
+fn the_length_of_the_workspace_of_the_singular_values(values: usize) -> Result<i32> {
+    i32::try_from(values).map_err(|_| Error::Dimension {
+        argument: "rows",
+        expected: format!(
+            "small enough that the workspace dgesdd asks for, {values} values here, is at most the {largest} its length is passed as",
+            largest = i32::MAX
+        ),
+    })
 }
 
 #[cfg(test)]

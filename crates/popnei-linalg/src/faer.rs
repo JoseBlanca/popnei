@@ -26,6 +26,7 @@ use faer::linalg::cholesky::llt::solve::{solve_in_place_scratch, solve_in_place_
 use faer::linalg::evd::EvdError;
 use faer::linalg::matmul::matmul;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as triangular_matmul};
+use faer::linalg::svd::SvdError;
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Accum, Conj, MatMut, MatRef, Par, Side};
 
@@ -447,6 +448,36 @@ pub(crate) fn solve_upper_triangular(
     let b = MatMut::from_row_major_slice_mut(b, sides, n).transpose_mut();
     solve_upper_triangular_in_place(r, b, the_threads());
     Ok(())
+}
+
+/// The singular values of `a`, of exactly `rows` x `cols` values row after
+/// row and both dimensions 1 at least, from the largest: as many as the
+/// smaller dimension.
+///
+/// faer is given the buffer as it lies and copies nothing of it, where the
+/// BLAS backend writes the transpose of `a` into a buffer of its own
+/// because its routine is much slower on the wide matrix that the buffer
+/// is in its view. faer asks for the scratch of its decomposition itself,
+/// with `MemBuffer::new`, and the spec gives `Error::Memory` to the
+/// scratch of the inverse alone.
+///
+/// It runs on the threads faer's own default takes, the global pool of
+/// rayon natively and one thread in WebAssembly, as the thin QR above and
+/// the eigendecomposition below do: none of the three takes an argument
+/// for them.
+///
+/// # Errors
+///
+/// [`Error::NoConvergence`] when faer reached its limit of iterations.
+pub(crate) fn singular_values(a: &[f64], rows: usize, cols: usize) -> Result<Vec<f64>> {
+    MatRef::from_row_major_slice(a, rows, cols)
+        .singular_values()
+        .map_err(|error| match error {
+            SvdError::NoConvergence => Error::NoConvergence {
+                routine: "faer",
+                info: 0,
+            },
+        })
 }
 
 #[cfg(test)]

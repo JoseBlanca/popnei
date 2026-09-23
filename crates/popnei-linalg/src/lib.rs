@@ -831,6 +831,67 @@ pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) 
     backend::solve_upper_triangular(r, n, b, sides)
 }
 
+/// The rank of `a` of `rows` x `cols`, row after row: how many of its
+/// singular values are strictly above the tolerance numpy takes.
+///
+/// The singular values of a matrix are the factors by which it stretches
+/// space along as many directions at right angles to each other as it has
+/// columns, from the largest, and one of them is 0 exactly when a column
+/// of the matrix is a combination of the others. So the rank is how many
+/// of its columns are independent, at most the smaller of the two
+/// dimensions, and it is what refuses a design whose covariates repeat
+/// each other before any model is fitted.
+///
+/// The tolerance is the largest singular value times the larger dimension
+/// times `f64::EPSILON`, the distance from 1 to the next `f64` above it,
+/// which is 2.220446049250313e-16. That is the tolerance of `matrix_rank`
+/// of numpy 2.5.3, read from that function on 23 September 2026, and
+/// popnei takes it so that a design popnei refuses is a design pyNei
+/// refuses. A matrix whose values are all 0 has a largest singular value
+/// of 0 and so a tolerance of 0, and no value is strictly above that, so
+/// its rank is 0.
+///
+/// `a` may hold more values than `rows` times `cols`, and then its first
+/// `rows` times `cols` are the matrix. The whole of it is read, both
+/// halves, a design being no more triangular than any other matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `rows` or `cols` is 0, when `a` holds fewer
+/// than `rows` times `cols` values, or when that count, or the workspace
+/// the routine asks for, is more than 2147483647, which is what the
+/// routines of BLAS and LAPACK count in. [`Error::NotFinite`] when `a`
+/// holds a value that is not finite. [`Error::NoConvergence`] when the
+/// decomposition did not come out, which is `dgesdd` with an `info` other
+/// than 0 and faer with its `SvdError::NoConvergence`.
+pub fn rank(a: &[f64], rows: usize, cols: usize) -> Result<usize> {
+    if rows == 0 {
+        return Err(Error::Dimension {
+            argument: "rows",
+            expected: "1 at least, since a is the rows x cols matrix to take the rank of"
+                .to_owned(),
+        });
+    }
+    if cols == 0 {
+        return Err(Error::Dimension {
+            argument: "cols",
+            expected: "1 at least, since a is the rows x cols matrix to take the rank of"
+                .to_owned(),
+        });
+    }
+    let a = the_matrix_of(a, rows, cols, "a")?;
+    refuse_a_value_that_is_not_finite(a, "a")?;
+    let values = backend::singular_values(a, rows, cols)?;
+    // Both backends give the values from the largest, and the largest is
+    // taken here as the largest and not as the first, so that the
+    // tolerance does not turn on that order. There are at most 46340 of
+    // them, the smaller dimension of a matrix of 2147483647 values, and
+    // the count below fits in a `usize` for the same reason.
+    let largest = values.iter().copied().fold(0.0_f64, f64::max);
+    let tolerance = largest * rows.max(cols) as f64 * f64::EPSILON;
+    Ok(values.iter().filter(|value| **value > tolerance).count())
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -1067,7 +1128,7 @@ mod tests {
     use super::{
         Eigen, Error, TheFirstOperand, TheSecondOperand, ThinQr, add_self_product_lower,
         cholesky_lower, eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product,
-        reverse_the_rows, solve_upper_triangular, solve_with_cholesky, thin_qr,
+        rank, reverse_the_rows, solve_upper_triangular, solve_with_cholesky, thin_qr,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -3853,6 +3914,152 @@ mod tests {
             let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 3).unwrap_err();
             assert!(
                 matches!(error, Error::NotFinite { argument: "b" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    /// The 4 x 3 of "How the seven are verified" of
+    /// `docs/specs/linalg.md`, rows (1, 1, 2), (1, 2, 3), (1, 3, 4) and
+    /// (1, 4, 5), whose third column is the sum of the first two, row
+    /// after row. Its singular values are 9.344132686098556,
+    /// 0.8289658283575813 and 3.651382431893325e-17, against a tolerance
+    /// of 8.299257002607302e-15.
+    const THE_DESIGN_OF_4_BY_3_OF_A_COLUMN_THAT_REPEATS: [f64; 12] = [
+        1.0, 1.0, 2.0, //
+        1.0, 2.0, 3.0, //
+        1.0, 3.0, 4.0, //
+        1.0, 4.0, 5.0,
+    ];
+
+    /// The 4 x 2 of the same place whose covariate is the constant 5, row
+    /// after row. Its singular values are 10.198039027185569 and 0.
+    const THE_DESIGN_OF_A_CONSTANT_COVARIATE: [f64; 8] = [
+        1.0, 5.0, //
+        1.0, 5.0, //
+        1.0, 5.0, //
+        1.0, 5.0,
+    ];
+
+    #[test]
+    fn the_rank_of_the_design_of_an_intercept_and_one_covariate_is_2() {
+        assert_eq!(rank(&THE_DESIGN_OF_4_BY_2, 4, 2).unwrap(), 2);
+    }
+
+    #[test]
+    fn the_rank_of_a_design_whose_third_column_is_the_sum_of_the_first_two_is_2() {
+        // A 4 x 3 and not a square matrix, so the two dimensions are told
+        // apart: the same twelve values read as the 3 x 4 have rank 3,
+        // from numpy 2.5.3 on 23 September 2026.
+        assert_eq!(
+            rank(&THE_DESIGN_OF_4_BY_3_OF_A_COLUMN_THAT_REPEATS, 4, 3).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn the_rank_of_a_design_whose_covariate_is_constant_is_1() {
+        assert_eq!(rank(&THE_DESIGN_OF_A_CONSTANT_COVARIATE, 4, 2).unwrap(), 1);
+    }
+
+    #[test]
+    fn the_rank_counts_a_singular_value_above_the_tolerance_and_not_one_below_it() {
+        // The pair that pins the tolerance itself, which for a 2 x 2 whose
+        // largest singular value is 1 is 4.440892098500626e-16: the three
+        // designs above give their counts at a wrong threshold too, and
+        // these two do not. numpy 2.5.3 gave 2 and 1 for them on 23
+        // September 2026.
+        for (entry, wanted) in [(5e-16, 2_usize), (4e-16, 1)] {
+            let a = [1.0, 0.0, 0.0, entry];
+            assert_eq!(
+                rank(&a, 2, 2).unwrap(),
+                wanted,
+                "the rank of the 2 x 2 whose second singular value is {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rank_of_a_matrix_of_zeros_is_0() {
+        // The largest singular value is 0, so the tolerance is 0 and no
+        // value is strictly above it. numpy 2.5.3 gives 0 for the same
+        // matrix.
+        let a = [0.0_f64; 6];
+        assert_eq!(rank(&a, 3, 2).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_rank_reads_the_first_values_of_an_a_that_holds_more() {
+        let mut a = THE_DESIGN_OF_A_CONSTANT_COVARIATE.to_vec();
+        // A ninth value that would make the covariate no longer constant
+        // if it were read.
+        a.push(7.0);
+        assert_eq!(rank(&a, 4, 2).unwrap(), 1);
+    }
+
+    #[test]
+    fn the_rank_refuses_a_rows_of_zero() {
+        let error = rank(&[], 0, 2).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "rows",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_rank_refuses_a_cols_of_zero() {
+        let error = rank(&[], 4, 0).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "cols",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_rank_refuses_an_a_shorter_than_rows_times_cols() {
+        let a = [0.0_f64; 11];
+        let error = rank(&a, 4, 3).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_rank_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 2^31 rows of one column, one value more than the largest an i32
+        // holds. The check comes before the one of the length of the
+        // buffer, so an empty slice reaches it, and it is made whichever
+        // backend would run.
+        let error = rank(&[], 1 << 31, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_rank_refuses_a_value_that_is_not_finite_anywhere_in_a() {
+        // The whole of the matrix is read, so the first value and the last
+        // are both refused.
+        for entry in [0_usize, 11] {
+            let mut a = THE_DESIGN_OF_4_BY_3_OF_A_COLUMN_THAT_REPEATS;
+            a[entry] = f64::NAN;
+            let error = rank(&a, 4, 3).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "a" }),
                 "the error for the entry {entry} is {error}"
             );
         }
