@@ -277,13 +277,9 @@ pub const DEFAULT_TRANSFORM_TO_BIALLELIC: bool = false;
 pub const DEFAULT_NUM_PRIN_COMPS: usize = 10;
 
 /// The largest ploidy the principal components of the variants are taken
-/// at, which is one less than the largest the VCF reader takes.
-///
-/// The first pass writes the genotype of each individual as one byte, its
-/// dosage or the missing genotype, which is the loop the compiler
-/// vectorizes. A ploidy of 255 has 256 dosages, and those with the missing
-/// genotype are one value more than a byte holds.
-pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
+/// at, which is the largest the pass over a row of
+/// [`crate::variant`] writes the dosages of a genotype at.
+pub use crate::variant::MAX_PLOIDY_OF_THE_VARIANTS;
 
 /// The most individuals the principal components of the variants are taken
 /// on: the largest number whose square is at most the 2147483647 values

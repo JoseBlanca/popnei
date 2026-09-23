@@ -513,22 +513,24 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
-        // The five that the dataset a user gave is wrong for, four of the
-        // principal components of the variants and one of the pass over a
-        // row that every calculation which turns a variant into dosages
-        // walks: no variants, which the steps of a `Variants` can leave; no
-        // variant with variance, which one individual gives; a variant of
-        // more than two different alleles among its called genotypes with
-        // `transform_to_biallelic` false, which is the one of the row; a
+        // The six that the dataset a user gave is wrong for: four of the
+        // principal components of the variants and two of the pass over a
+        // row that those components and the kinship share. Of the
+        // components: no variants, which the steps of a `Variants` can
+        // leave; no variant with variance, which one individual gives; a
         // source of no individual, which is nobody to place on the axes and
         // which no source of popnei is, since one that names no individual
         // is refused when it is opened; and a dataset of a size the
         // analysis cannot count in, which "Errors and the cases pyNei
-        // asserts" of `docs/specs/pca.md` lists. Each names the file the
-        // variants were read from, as every error of a file does.
+        // asserts" of `docs/specs/pca.md` lists. Of the row: a variant of
+        // more than two different alleles among its called genotypes with
+        // `transform_to_biallelic` false, and a ploidy the dosages could
+        // not be written one to a byte at. Each names the file the variants
+        // were read from, as every error of a file does.
         popnei::Error::PcaNoVariants
         | popnei::Error::PcaNoVariantWithVariance
         | popnei::Error::VariantWithMoreThanTwoAlleles { .. }
+        | popnei::Error::VariantPloidyTooLarge { .. }
         | popnei::Error::PcaNoIndividual
         | popnei::Error::PcaVariantsTooLarge { .. }
         // The pass that gave more variants than `max_num_vars`, which is

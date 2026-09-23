@@ -121,6 +121,22 @@ pub enum Error {
         num_alleles: usize,
     },
 
+    /// A variant was to be turned into one dosage per individual at a
+    /// ploidy that the dosages cannot be written at. The pass over a row
+    /// writes the genotype of each individual as one byte, its dosage or
+    /// the code of a genotype with an allele missing, so a ploidy of 255,
+    /// the largest the VCF reader takes, has one dosage more than a byte
+    /// holds. No organism of this world reaches it: the largest ploidy of
+    /// one is a dozen. In Python it is a `ValueError`.
+    #[error(
+        "a variant cannot be turned into dosages at a ploidy of {ploidy}: the pass writes the genotype of each individual as one byte, its dosage or the code of a genotype with an allele missing, which takes a ploidy of {largest} at most",
+        largest = crate::variant::MAX_PLOIDY_OF_THE_VARIANTS
+    )]
+    VariantPloidyTooLarge {
+        /// How many alleles each genotype of the variant holds.
+        ploidy: usize,
+    },
+
     /// A reader that takes a size was asked for blocks of 0 variants. A
     /// block holds one variant at least, and the caller that wants the
     /// size popnei chooses asks for none instead of asking for 0.

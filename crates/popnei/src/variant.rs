@@ -25,7 +25,6 @@ use std::ops::{BitOr, BitOrAssign};
 
 use crate::block::AllelesColumn;
 use crate::error::{Error, Result};
-use crate::pca::{MAX_PLOIDY_OF_THE_VARIANTS, VariantsTooLarge};
 
 /// An allele that was not called, `.` in a VCF.
 pub const MISSING_ALLELE: i8 = -1;
@@ -916,6 +915,15 @@ pub(crate) struct RowScratch {
     values: [f64; 256],
 }
 
+/// The largest ploidy a variant is turned into dosages at, which is one
+/// less than the largest the VCF reader takes.
+///
+/// The pass over a row writes the genotype of each individual as one byte,
+/// its dosage or [`MISSING_CODE`], which is the loop the compiler
+/// vectorizes. A ploidy of 255 has 256 dosages, and those with the code of
+/// a genotype with an allele missing are one value more than a byte holds.
+pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
+
 /// The code of a genotype with an allele missing, which is not a dosage:
 /// [`MAX_PLOIDY_OF_THE_VARIANTS`] is what keeps the dosages below it.
 pub(crate) const MISSING_CODE: u8 = u8::MAX;
@@ -962,10 +970,16 @@ impl RowScratch {
 ///
 /// # Errors
 ///
+/// [`Error::VariantPloidyTooLarge`] when `ploidy` is above
+/// [`MAX_PLOIDY_OF_THE_VARIANTS`], which the dosages could not be written
+/// one to a byte at. [`Error::GtsNotWholeGenotypes`] when `ploidy` is 0 or
+/// `gts` does not hold one genotype of it for each value of `row`.
 /// [`Error::VariantWithMoreThanTwoAlleles`] when the variant has more
 /// than two different alleles among its called genotypes and
-/// `transform_to_biallelic` is false, and whatever the counts of the
-/// alleles of one variant refuse.
+/// `transform_to_biallelic` is false. And whatever the counts of the
+/// alleles of one variant refuse, which is
+/// [`Error::AlleleBelowTheMissingOne`] and
+/// [`Error::MoreAllelesThanACountHolds`].
 pub(crate) fn the_standardized_row(
     gts: &[i8],
     ploidy: usize,
@@ -975,9 +989,7 @@ pub(crate) fn the_standardized_row(
     row: &mut [f64],
 ) -> Result<bool> {
     if ploidy > MAX_PLOIDY_OF_THE_VARIANTS {
-        return Err(Error::PcaVariantsTooLarge {
-            problem: VariantsTooLarge::Ploidy(ploidy),
-        });
+        return Err(Error::VariantPloidyTooLarge { ploidy });
     }
     let num_individuals = row.len();
     // One genotype of the ploidy for each individual, which is what a row
@@ -1348,9 +1360,10 @@ pub mod bench_internals {
 #[cfg(test)]
 mod tests {
     use super::{
-        AlleleCounts, ChromTable, DosageOptions, DosageScale, GtCounts, MAX_ALLELE, MISSING_ALLELE,
-        Needs, RowScratch, count_alleles, count_alleles_of, count_gts, count_gts_of,
-        the_major_allele, the_major_allele_frequency, the_standardized_row,
+        AlleleCounts, ChromTable, DosageOptions, DosageScale, GtCounts, MAX_ALLELE,
+        MAX_PLOIDY_OF_THE_VARIANTS, MISSING_ALLELE, Needs, RowScratch, count_alleles,
+        count_alleles_of, count_gts, count_gts_of, the_major_allele, the_major_allele_frequency,
+        the_standardized_row,
     };
     use crate::error::Error;
 
@@ -2159,6 +2172,52 @@ mod tests {
             &[-1.0, -1.0, 1.0, 1.0],
             "the standardized dosages of a haploid variant",
         );
+    }
+
+    /// A ploidy above [`MAX_PLOIDY_OF_THE_VARIANTS`] is refused by the row
+    /// pass itself, and the message names neither the principal components
+    /// of the variants nor any other calculation: the pass writes the
+    /// genotype of each individual as one byte, its dosage or the code of a
+    /// genotype with an allele missing, and a ploidy of 255 has one dosage
+    /// more than a byte holds.
+    ///
+    /// The largest ploidy the VCF reader takes is 255, so 255 is the
+    /// smallest ploidy a dataset of popnei can carry that this refuses.
+    #[test]
+    fn a_ploidy_the_dosages_cannot_be_written_at_is_refused_by_the_row_pass() {
+        let one_genotype = vec![0_i8; 255];
+        let mut scratch = RowScratch::of(1);
+        let mut row = vec![0.0; 1];
+        match the_standardized_row(
+            &one_genotype,
+            255,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        ) {
+            Err(Error::VariantPloidyTooLarge { ploidy }) => {
+                assert_eq!(ploidy, 255);
+                let message = Error::VariantPloidyTooLarge { ploidy }.to_string();
+                assert!(message.contains("a ploidy of 255"), "{message}");
+                assert!(message.contains("254 at most"), "{message}");
+                assert!(!message.contains("principal component"), "{message}");
+            }
+            other => panic!("a ploidy of 255 was turned into dosages: {other:?}"),
+        }
+
+        // The largest ploidy the pass takes is not refused.
+        let one_genotype = vec![0_i8; MAX_PLOIDY_OF_THE_VARIANTS];
+        let used = the_standardized_row(
+            &one_genotype,
+            MAX_PLOIDY_OF_THE_VARIANTS,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        )
+        .expect("the standardizing of the row");
+        assert!(!used, "one individual has one dosage and no variance");
     }
 
     /// A variant with more than two different alleles among its called
