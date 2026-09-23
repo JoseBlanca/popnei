@@ -135,7 +135,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
 
 ### Its tasks
 
-- [ ] 1.1 The counts of one variant in one population and the sums of one
+- [x] 1.1 The counts of one variant in one population and the sums of one
   pair, in a new `crates/popnei/src/pop_dists.rs`: the allele frequencies
   over the called alleles, H_b, H_w, the sum of the square roots of the
   products, the corrected H_S and H_T, and the test that says whether the
@@ -148,7 +148,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
   no measure reads them until work package 2, so that the sums of a pair
   are written once. Deliverable 1 asserts them, so nothing of this task
   goes unchecked until work package 2.
-- [ ] 1.2 The resampling groups: `JackknifeGroups`, `GroupId` and the walk
+- [x] 1.2 The resampling groups: `JackknifeGroups`, `GroupId` and the walk
   that cuts them, in the same file. From "The standard errors". Serves
   deliverable 2. Can run side by side with 1.1.
 - [ ] 1.3 F_ST, f_2 and the delete-m jackknife out of the six sums, in the

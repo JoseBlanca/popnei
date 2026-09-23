@@ -31,3 +31,51 @@ other of, so the literals in the tests are of the data in the repository.
 The last three rows are the baseline the plan's checks are written
 against: a cargo selector alone passes on an empty crate, which is why
 each check names how many tests have to run.
+
+## Work package 1, as it goes
+
+### Tasks 1.1 and 1.2, the counts of a variant and the resampling groups
+
+Both went to one subagent, in one prompt, because both write
+`crates/popnei/src/pop_dists.rs` and one tree has one writer per file.
+Three commits came back: `f310edd`, an addition to the spec, `2fc9b0a`,
+task 1.1, and `f732cf3`, task 1.2. 185 497 tokens.
+
+`crates/popnei/src/pop_dists.rs` now holds the counts of one variant in
+one population, the five values a pair makes of them, and the walk that
+cuts the variants into the groups the standard errors are resampled over.
+`cargo test -p popnei --lib pop_dists::` gives `16 passed; 0 failed`,
+against `0 tests` when the branch started, and the whole workspace gives
+`537 passed; 0 failed; 2 ignored`. The other checks of the `coding` skill
+were run again by the orchestrator on `f732cf3`: `cargo fmt --all
+--check` no output, `cargo clippy --workspace --all-targets -- -D
+warnings` and `cargo wasm-check` both `Finished`.
+
+Deliverable 1 is met: the tests assert the spec's counts table and its per
+variant table for all four variants of the worked example, the literals
+read from the spec, variant 3 where both populations are fixed and H_b is
+0 and variant 4 where f_2 is -0.1 among them, and the corrected H_S and
+H_T that no measure reads until work package 2. Deliverable 2 is met: the
+test that cuts the biallelic panel reads the file itself and asserts the
+12 groups of 100 variants over its two chromosomes, with the anchoring, a
+group for each variant, no group at all, and a length of 0 as an error.
+
+### What the spec did not say, and now does
+
+A population that has called one allele at a variant has no within
+population heterozygosity there: the correction is n_P / (n_P - 1) times
+1 - sum over a of p_Pa^2, which is 0 over 0 at n_P = 1, and the variant
+would have added a NaN to every sum of every pair that population is in.
+The spec said what the six sums do when a population has little data and
+not what they do with one called allele. The variant now counts for no
+pair that population is in, which is the rule the spec already had for two
+populations of one called genotype each, and it is written into the item
+in `f310edd`, a commit of its own before the code.
+
+It takes a haploid dataset and a `min_num_individuals` of 1 to reach,
+since a genotype of two alleles or more that was called whole gives two
+called alleles or more, so no value of either panel changes. The
+orchestrator took it as a small choice made and written down rather than
+an open point for the owner, as the `coding` skill allows: the spec had
+defined nothing here, so nothing the owner decided was overturned, and the
+alternative was a silent NaN.
