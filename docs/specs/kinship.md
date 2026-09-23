@@ -129,6 +129,14 @@ which `docs/objectives.md` asks to be written down:
   field the user filled. The tolerance costs a real user nothing: both
   matrices plink2 wrote for the panels are symmetric to the bit, largest
   `|m - m'|` of 0, so a matrix that came from a tool is nowhere near it.
+  A `matrix` that is no frame, a numpy array of the entries among them, is
+  a `TypeError` naming the type that was given, as
+  `Distances.from_square_dists` of `docs/specs/dists.md` raises for one:
+  the three checks read the index and the columns of a frame, and without
+  it a user reads an `AttributeError` about an attribute they never wrote.
+  Written here on 23 September 2026, while the Python function was built,
+  since the spec said what the three `ValueError` are and not what anything
+  else is.
 - `transform_to_biallelic` is new. pyNei's kinship reads a variant with
   more than two alleles among its called genotypes with every allele that
   is not the major one counting the same, silently, because `to_012` does
