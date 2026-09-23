@@ -287,7 +287,24 @@ compiler drop the bounds checks.
 ## The binding crate and the Python package
 
 The binding crate translates and holds no logic. If a function there has
-an `if` about genetics, it is in the wrong crate. Before touching it read
+an `if` about genetics, it is in the wrong crate. A binding that works out
+a number for itself is a sign the core threw one away: put it on what the
+core returns instead. The kinship counted the variants its reader gave,
+read the count once to refuse a pass that gave none, and left it out of its
+result; both bindings then wrapped the reader chain in a `BlockReader` of
+their own to count the same variants again, about 60 lines each, written at
+the same time without sight of each other. The duplication was the half
+that showed. The other half is that the core counted with `checked_add` and
+raised where the count would not fit, and both wrappers used
+`saturating_add` and stopped counting in silence, so the three layers
+refused different datasets and nobody had decided that. Before writing a
+counter in a binding crate, or a reader that wraps the chain to work one
+out, look for the number in the core's result, and if it is not there, add
+it there. A reader that wraps the chain for something other than a number,
+to notice that the user pressed Ctrl-C between two blocks, is a different
+thing and belongs where it is.
+
+Before touching it read
 `pyo3.md`, beside this file: the current names of pyo3, which are not the
 ones of a year ago, how arrays cross without a copy, releasing the
 interpreter around long work with `py.detach`, classes that are `frozen`,
