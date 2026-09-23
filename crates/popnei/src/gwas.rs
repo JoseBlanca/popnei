@@ -3335,16 +3335,22 @@ mod dosages {
     /// says its source has is refused, naming both shapes.
     ///
     /// The ploidy is the one no other check catches. The rows of a block
-    /// are cut at its own individuals times its own ploidy and its values
-    /// are read at the pass's ploidy, and when the two disagree the rows
-    /// that come out are not the variants of the block: the haploid
-    /// variant of four individuals below, read at the ploidy 2, gives no
-    /// row at all, so before this refusal the block went by with every one
-    /// of its variants gone and no error; and the diploid block of eight,
-    /// read at the ploidy 6, gives one row where it holds four. The
-    /// frequency of a variant is its mean dosage over the pass's ploidy,
-    /// so even a block that came out whole would be read into frequencies
-    /// of nothing.
+    /// are cut at its own individuals times its own ploidy, and the buffer
+    /// they are read into is sized at the pass's ploidy, so when the two
+    /// disagree the rows and the buffer do not line up. Both of these were
+    /// run against the commit before this one on 23 September 2026: the
+    /// haploid variant of five individuals below, read at the ploidy 2,
+    /// gave `Ok` with every variant of the block gone and nothing to show
+    /// it, because the buffer came out shorter than one row and the two
+    /// zipped to nothing, so no row ran at all; the diploid block of eight
+    /// read at the ploidy 6 got as far as cutting a row and stopped there,
+    /// with an error about genotypes that are not whole, which names the
+    /// genotypes of the block and not the ploidy the pass was reading at.
+    /// Which of the two a block gets turns on how far the sizes are apart
+    /// and on how many individuals are tested, and neither is an answer.
+    /// The frequency of a variant is its mean dosage over the pass's
+    /// ploidy, so even a block that came out whole would be read into
+    /// frequencies of nothing.
     #[test]
     fn a_block_of_another_ploidy_or_of_other_individuals_than_the_readers_is_refused() {
         let (phenotype, design) = the_phenotype_and_the_design_of(&TESTED_OF_EIGHT);
