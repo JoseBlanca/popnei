@@ -83,12 +83,13 @@ class Kinship:
 
         # Raises
 
-        ``TypeError`` when `matrix` is not a pandas frame. ``ValueError``
-        when it holds what is no number; when it is not square; when its
-        index and its columns are not the same individuals in the same
-        order; when an individual is named twice; when an entry is not
-        finite; and when it is further from its own transpose than 1e-9 of
-        its largest absolute entry.
+        ``TypeError`` when `matrix` is not a pandas frame and when a row or
+        a column of it is labelled with what is no name, which are the two
+        faults of a type. ``ValueError`` when it holds what is no number;
+        when it is not square; when its index and its columns are not the
+        same individuals in the same order; when an individual is named
+        twice; when an entry is not finite; and when it is further from its
+        own transpose than 1e-9 of its largest absolute entry.
         """
         if not isinstance(self.matrix, pandas.DataFrame):
             raise TypeError(
@@ -106,7 +107,10 @@ class Kinship:
                 f"column for each of them"
             )
         names = list(self.matrix.index)
-        _refuse_two_sides_that_differ(names, list(self.matrix.columns))
+        columns_of = list(self.matrix.columns)
+        _refuse_a_label_that_is_no_name(names, "row")
+        _refuse_a_label_that_is_no_name(columns_of, "column")
+        _refuse_two_sides_that_differ(names, columns_of)
         _refuse_an_individual_that_is_there_twice(names)
         _refuse_a_matrix_that_is_no_kinship(self.matrix, names)
 
@@ -312,6 +316,39 @@ def _the_names_of(individuals: Sequence[str]) -> list:
             "individual at least: name the ones it is of"
         )
     return named
+
+
+def _refuse_a_label_that_is_no_name(labels: list, side: str) -> None:
+    """The first label of one side of the matrix that is no name, refused.
+
+    `side` is ``"row"`` or ``"column"``, the one the labels are of, so that
+    a user reads which of the two to write.
+
+    # Raises
+
+    ``TypeError`` naming the label, what type it is of and what to write:
+    what is wrong with a label of 0 is its type, as it is for a `matrix`
+    that is no frame, and a bare string where a sequence of names is meant
+    is a ``TypeError`` for the same reason.
+    A frame built as ``pandas.DataFrame(matrix)`` is labelled with the
+    numbers 0 to N-1, which is how a user meets this, and a kinship whose
+    rows are numbers cannot be matched to the phenotypes of the association
+    study later. It is also what makes both packages take the same
+    matrices: ``calcKinship`` of TypeScript takes the names as strings.
+    """
+    for place, label in enumerate(labels):
+        if not isinstance(label, str):
+            raise TypeError(
+                f"the {side} {place} of the matrix is labelled {label!r}, of "
+                f"the type `{type(label).__name__}`, and the individuals of a "
+                f"kinship are named by strings: a frame written as "
+                f"`pandas.DataFrame(matrix)`, with no index and no columns of "
+                f"its own, is labelled with the numbers 0 to N-1, and a "
+                f"kinship whose {side}s are numbers cannot be matched to the "
+                f"phenotypes of `calc_gwas` later. Write "
+                f"`pandas.DataFrame(matrix, index=individuals, "
+                f"columns=individuals)` with the names of the individuals"
+            )
 
 
 def _refuse_two_sides_that_differ(index: list, columns: list) -> None:

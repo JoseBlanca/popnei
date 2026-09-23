@@ -722,3 +722,54 @@ def test_more_individuals_than_the_matrix_counts_in_are_refused(vcf_of) -> None:
 
     with pytest.raises(ValueError, match=f"it has {TOO_MANY_INDIVIDUALS} individuals"):
         calc_kinship(open_vcf(vcf_of(genotypes)))
+
+
+def test_a_matrix_labelled_with_numbers_is_refused() -> None:
+    """A frame built as `pandas.DataFrame(matrix)`, which pandas labels with
+    the numbers 0 to N-1.
+
+    It is the way a user meets this, so the message says to write `index`
+    and `columns` with the names and not only that a number is no name.
+    """
+    matrix = pandas.DataFrame(numpy.array([[1.0, 0.5], [0.5, 1.0]]))
+
+    with pytest.raises(TypeError) as refused:
+        Kinship(matrix=matrix, num_vars=10)
+
+    said = str(refused.value)
+    assert "the row 0 of the matrix is labelled 0, of the type `int`" in said
+    assert "index=individuals, columns=individuals" in said
+
+
+def test_a_matrix_whose_columns_are_no_names_is_refused() -> None:
+    """The rows named and the columns left as numbers, which names the side
+    a user has to write."""
+    matrix = pandas.DataFrame(
+        numpy.array([[1.0, 0.5], [0.5, 1.0]]), index=["a", "b"], columns=[0, 1]
+    )
+
+    with pytest.raises(TypeError, match="the column 0 of the matrix"):
+        Kinship(matrix=matrix, num_vars=10)
+
+
+def test_the_kinship_of_a_calculation_passes_the_checks_of_a_matrix(vcf_of) -> None:
+    """What `calc_kinship` gives, built again as a `Kinship`.
+
+    The names come from the reader and are strings, so no check of a matrix
+    a user built fires on a matrix popnei built: a user who takes one apart
+    and puts it together again, which is what `filter_individuals` does,
+    gets it back.
+    """
+    kinship = calc_kinship(
+        open_vcf(vcf_of(WORKED_EXAMPLE_GTS, WORKED_EXAMPLE_INDIVIDUALS))
+    )
+
+    assert all(isinstance(name, str) for name in kinship.individuals)
+    again = Kinship(
+        matrix=kinship.matrix,
+        num_vars=kinship.num_vars,
+        pass_stats=kinship.pass_stats,
+    )
+    assert again.individuals == WORKED_EXAMPLE_INDIVIDUALS
+    assert again.num_vars == kinship.num_vars
+    assert again.pass_stats == kinship.pass_stats
