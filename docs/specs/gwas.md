@@ -762,6 +762,16 @@ With genotypes missing, GMMAT gives a missing genotype the mean of its
 variant, which it calls `impute2mean` and which is popnei's rule too; that
 is why the two agree on the second panel.
 
+The comparison with pyNei for this model is the one place the common 1e-9
+relative does not simply apply, and it is measured rather than assumed. The
+criterion is flat at its minimum, so an eigenvalue moving in its last bits
+moves `delta` by about the square root of that, and the two backends put the
+genetic variance 9.7e-9 apart in relative terms on the same kinship,
+measured on 23 September 2026. `se` scales with the square root of the
+genetic variance, so the bound for this model's columns is set where it
+breaks on both backends and written into the plan's report, which every
+bound of this spec is now asked to be; 1e-9 sits at the noise and is not it.
+
 The null model against GMMAT's `glmmkin`, from `gmmat.null_models.tsv`,
 which the reference script writes at full precision, within 1e-5 absolute,
 which is how far two restricted maximum likelihood searches land apart: `genetic_variance` 1.221617, `residual_variance`
