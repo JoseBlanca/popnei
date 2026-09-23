@@ -867,20 +867,32 @@ mod tests {
     /// that size is 10000 variants for a dataset of few individuals, so a
     /// pass over a dataset this small is one block and the denominators of
     /// one block never meet those of another in it. The three ways a block
-    /// adds to them are read here instead: a block with nothing missing
-    /// before the first one that has a genotype missing, which is a count
-    /// and no matrix; the first block with a genotype missing, which makes
-    /// the matrix with the variants of the blocks before it in every entry;
-    /// and a block with nothing missing after it, which adds its variants
-    /// to every pair alike.
+    /// adds to them are read here instead, and each of the three blocks
+    /// holds a variant that was dropped for having no variance, since a
+    /// denominator that grew by every variant of a block and not by the
+    /// ones that were used moves every entry of the matrix with nothing to
+    /// show it:
+    ///
+    /// - a block with nothing missing before the first one that has a
+    ///   genotype missing, which is a count and no matrix;
+    /// - the first block with a genotype missing, which makes the matrix
+    ///   with the variants of the blocks before it in every entry. Its
+    ///   variant that was dropped is the first of the two and is called in
+    ///   everyone, so a pass that read the rows of the block as they lie
+    ///   and not the ones that were used would count that variant in the
+    ///   pairs of `i2` and give them 3;
+    /// - a block with nothing missing after it, which adds the variants it
+    ///   used to every pair alike.
     #[test]
     fn the_denominators_of_the_blocks_carry_the_blocks_before_them() {
-        // Three individuals of two alleles each. The first two variants are
-        // called in all of them, the third is not called in `i2`, and the
-        // fourth is called in all of them again.
-        let called = block_of(3, 2, &[0, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1]);
-        let missing = block_of(3, 2, &[0, 0, 1, 1, MISSING, MISSING]);
-        let called_again = block_of(3, 2, &[0, 0, 0, 1, 1, 1]);
+        // Three individuals of two alleles each, and two variants in each
+        // block. Every genotype of the first block is called and both of
+        // its variants are used; the second block drops its first variant
+        // and its second is not called in `i2`; the third block drops its
+        // second variant and is called in everyone.
+        let called = block_of(3, 2, &[0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1]);
+        let missing = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, MISSING, MISSING]);
+        let called_again = block_of(3, 2, &[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
         let mut of_the_blocks = Denominators::OfEveryPair;
         let mut buffer = Vec::new();
 
@@ -899,11 +911,19 @@ mod tests {
             "a block with nothing missing before the first one that has a genotype missing is a count"
         );
 
-        the_denominators_of_the_block(&missing, &[true], 1, 3, 2, &mut buffer, &mut of_the_blocks)
-            .expect("the denominators of the second block");
+        the_denominators_of_the_block(
+            &missing,
+            &[false, true],
+            1,
+            3,
+            2,
+            &mut buffer,
+            &mut of_the_blocks,
+        )
+        .expect("the denominators of the second block");
         the_denominators_of_the_block(
             &called_again,
-            &[true],
+            &[true, false],
             1,
             3,
             3,
@@ -912,9 +932,10 @@ mod tests {
         )
         .expect("the denominators of the third block");
 
-        // The four variants are called in both of `i0` and `i1`, and the
-        // three that are called in `i2` are called in both of it and any
-        // other: the entry of a pair with `i2` is 3 and of the others 4.
+        // Four variants were used. All four are called in both of `i0` and
+        // `i1`, and the three that are called in `i2` are called in both of
+        // it and any other: the entry of a pair with `i2` is 3 and of the
+        // others 4.
         let of_the_pairs = match of_the_blocks {
             Denominators::OfThePair(of_the_pairs) => of_the_pairs,
             Denominators::OfEveryPair => {
