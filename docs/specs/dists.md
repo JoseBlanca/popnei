@@ -676,8 +676,11 @@ position is `jackknife_group` or more beyond the first variant of the group
 being filled. So a group is anchored on its own first variant and not on a
 grid of multiples: cutting at multiples of the length instead leaves a
 group of one variant wherever a variant sits just past a multiple, and one
-such group is enough to move the standard error, 0.00242 against 0.00180
-for p0 and p1 of the biallelic panel below. It is also the rule ADMIXTOOLS
+such group is enough to move the standard error: on the biallelic panel
+below, cut into groups of 100 000 base pairs, the anchored rule gives 12
+groups of 100 variants and a standard error of f_2 for p0 and p1 of
+0.00180, and cutting at the multiples gives 14 groups, two of them holding
+one variant, and 0.00242. It is also the rule ADMIXTOOLS
 2 uses, which is what lets the numbers be compared. With `"variant"` each
 variant is its own group, which is what a dataset of a few hundred
 microsatellite loci scattered over a genome wants, and which a dataset of
