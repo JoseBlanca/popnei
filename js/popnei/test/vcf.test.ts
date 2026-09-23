@@ -113,7 +113,9 @@ function rowsOf(
 ): Row[] {
   const rows: Row[] = [];
   for (const block of variants.iterBlocks(options)) {
-    rows.push(...rowsOfTheBlock(block, variants.numIndividuals * variants.ploidy));
+    rows.push(
+      ...rowsOfTheBlock(block, variants.numIndividuals * variants.ploidy),
+    );
   }
   return rows;
 }
@@ -210,7 +212,10 @@ test("the genotypes alone leave every other column out", async () => {
   assert.equal(block.id, null);
   assert.equal(block.alleles, null);
   assert.equal(block.qual, null);
-  assert.deepEqual([...block.gts], [0, 0, 0, 1, 1, 1, 1, 2, 2, 1, 2, 2, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(
+    [...block.gts],
+    [0, 0, 0, 1, 1, 1, 1, 2, 2, 1, 2, 2, 0, 0, 0, 0, 0, 0],
+  );
   variants.free();
 });
 
@@ -223,7 +228,10 @@ test("a block carries the individuals and the ploidy its genotypes are read with
   // The alleles of the individual 1 of the variant 1, the `2|1` of chr1
   // 300, found with the two numbers of the block alone.
   const first = (1 * block.numIndividuals + 1) * block.ploidy;
-  assert.deepEqual([...block.gts.subarray(first, first + block.ploidy)], [2, 1]);
+  assert.deepEqual(
+    [...block.gts.subarray(first, first + block.ploidy)],
+    [2, 1],
+  );
   variants.free();
 });
 
@@ -300,6 +308,35 @@ test("blocks of no variant are refused at the call", async () => {
     name: "Error",
     message: /`numVarsPerBlock` is a whole number of 1 or more/,
   });
+  variants.free();
+});
+
+test("a block the memory of wasm does not take names the option in TypeScript", () => {
+  // 170000 individuals of the ploidy 255: popnei chooses 100 variants to a
+  // block for that many, and their 4335000000 genotypes are more than the
+  // 4294967295 a whole number of WebAssembly counts. The header alone
+  // reaches it, since the size is looked at before a variant is read, and
+  // the way out the core writes is `num_vars_per_block`, which is what a
+  // Python user passes to `iter_blocks`; a TypeScript user writes
+  // `numVarsPerBlock`.
+  const names = Array.from({ length: 170_000 }, (_unused, at) => `i${at}`);
+  const header = new TextEncoder().encode(
+    [
+      "##fileformat=VCFv4.4",
+      `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+      "",
+    ].join("\n"),
+  );
+  const variants = openVcf(header, { ploidy: 255 });
+
+  assert.throws(
+    () => [...variants.iterBlocks()],
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("ask for the blocks with a `numVarsPerBlock`") &&
+      !error.message.includes("num_vars_per_block"),
+  );
+
   variants.free();
 });
 
@@ -421,10 +458,10 @@ test("a ploidy that is not a whole number of 1 or more is refused", () => {
 
 test("an onlyPassed that is not a boolean is refused", () => {
   const bytes = vcfOf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"]);
-  assert.throws(
-    () => openVcf(bytes, { onlyPassed: 0 as unknown as boolean }),
-    { name: "Error", message: /`onlyPassed` is true or false/ },
-  );
+  assert.throws(() => openVcf(bytes, { onlyPassed: 0 as unknown as boolean }), {
+    name: "Error",
+    message: /`onlyPassed` is true or false/,
+  });
 });
 
 test("a numVarsPerBlock that is not a whole number of 1 or more is refused", async () => {

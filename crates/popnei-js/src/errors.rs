@@ -115,7 +115,7 @@ impl From<JsPopneiError> for JsValue {
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
-            JsPopneiError::Core(error) => error.to_string(),
+            JsPopneiError::Core(error) => the_message_of_the_core(&error),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and
             // the rule it broke is the core's, which refuses the same
@@ -158,6 +158,54 @@ impl From<JsPopneiError> for JsValue {
         };
         JsError::new(&message).into()
     }
+}
+
+/// The message an error of the core has, with the argument it names written
+/// as a TypeScript user writes it.
+///
+/// The owner decided on 24 September 2026 that in TypeScript a message names
+/// the option in TypeScript style. The core writes an argument the way Rust
+/// and Python spell it, `transform_to_biallelic`, and a user of this package
+/// wrote `transformToBiallelic`: what they grep their code for has to be a
+/// name their code holds. The core keeps its spelling, since a Python user
+/// reads the same sentence and writes the same name, and the rewrite is
+/// here, where section 11 of `docs/architecture.md` puts the one place that
+/// turns an error of the core into what JavaScript throws.
+///
+/// It is matched on the error and not on the text: a name is rewritten only
+/// in the message that is known to be about that option, so a `num_bins`
+/// that is a column of a file somewhere else is left alone. The two names an
+/// error carries that this does not reach are `max_num_vars`, which
+/// [`JsPopneiError::TooManyVars`] writes as `maxNumVars`, and
+/// `poly_threshold` and `bin_type`, which `stats.rs` writes as
+/// `polyThreshold` and `binType` before the error gets here.
+///
+/// Three of the eight names the core writes are left as they are.
+/// `num_prin_comps` is in the error of a second pass that was not made,
+/// which `pca.rs` of this crate opens a reader for whenever the weights are
+/// asked for, so no call of TypeScript reaches it. The `max_num_vars` of a
+/// cap the machine does not count the pairs of is refused by the package at
+/// the call, against the same number the core checks. And `popnei_batches`
+/// is not an option a user writes but the key popnei puts in the footer of a
+/// vars file, which is spelled that way in the file itself.
+fn the_message_of_the_core(error: &popnei::Error) -> String {
+    let message = error.to_string();
+    // `matches!` and not a `match` over the enum: the errors of the core are
+    // many and the ones that name an option are these, so a new one falls
+    // through to its own message rather than to an arm that guesses.
+    if matches!(error, popnei::Error::VariantWithMoreThanTwoAlleles { .. }) {
+        return message.replace("transform_to_biallelic", "transformToBiallelic");
+    }
+    if matches!(error, popnei::Error::HistWithNoBin) {
+        return message.replace("num_bins", "numBins");
+    }
+    if matches!(
+        error,
+        popnei::Error::BlockTooLarge { .. } | popnei::Error::VarsTextTooLarge { .. }
+    ) {
+        return message.replace("num_vars_per_block", "numVarsPerBlock");
+    }
+    message
 }
 
 /// What [`JsPopneiError::PairWithNoVariantCalled`] says: the two individuals

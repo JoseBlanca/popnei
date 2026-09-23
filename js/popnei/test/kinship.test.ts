@@ -302,6 +302,28 @@ test("a variant of more than two alleles is refused unless it is read as biallel
   assert.equal(read.numVars, 2);
 });
 
+test("the variant of more than two alleles names the option in TypeScript", () => {
+  // The core tells a user to pass `transform_to_biallelic`, which is what a
+  // Python user writes; a TypeScript user wrote `transformToBiallelic`, and
+  // a name their code does not hold is one they grep for and do not find.
+  const threeAlleles = new TextEncoder().encode(
+    [
+      "##fileformat=VCFv4.4",
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3",
+      "chr1\t100\t.\tA\tC,G\t.\tPASS\t.\tGT\t0/0\t0/1\t1/2\t0/1",
+      "",
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () => kinshipOf(threeAlleles),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("pass `transformToBiallelic`") &&
+      !error.message.includes("transform_to_biallelic"),
+  );
+});
+
 test("the counts of the pass are the variants it gave and not the ones used", () => {
   // `filterByMissingData(0)` drops `v1`, the one with the missing genotype,
   // so the pass gives `v0`, `v2` and `v3`, of which `v2`, where every
