@@ -8,12 +8,17 @@ calls, and in WebAssembly, where there is none, on faer, a linear
 algebra library written in Rust. There is no code. This spec develops the
 row `linalg` of the table in section 9 of `docs/architecture.md` and
 decision 5 of `docs/rust_core.md`, which chose the two backends. It
-covers the crate, its backends, the builds, and four operations: the
-three that `docs/specs/pca.md` calls, which are the product of a matrix
-with itself, the eigendecomposition of a symmetric matrix and the
-product of two matrices, and the one that the r² of `docs/specs/ld.md`
-calls, the product of a matrix with the transpose of another. The
-operations of the GWAS are later items.
+covers the crate, its backends, the builds, and eleven operations. Four
+are called by calculations that are specified: the three of
+`docs/specs/pca.md`, which are the product of a matrix with itself, the
+eigendecomposition of a symmetric matrix and the product of two
+matrices, and the one of the r² of `docs/specs/ld.md`, the product of a
+matrix with the transpose of another. The other seven are what the
+genome wide association study calls, read from pyNei, and they are under
+"The seven operations of the GWAS": a Cholesky factorization and the
+solve, the log determinant and the inverse that come off it, the thin QR
+of the design, the solve against an upper triangular matrix, and the
+rank of a matrix.
 
 The routines of BLAS and LAPACK are reached through the crates `blas`
 0.23 and `lapack` 0.20, and each is an `unsafe fn` over slices whose
@@ -336,6 +341,402 @@ that leave the 64, and the number is `(s >> 11) / 2^53 - 0.5`.
 The checks at the level above, that a PCA made from these operations
 gives the numbers of R, are in `docs/specs/pca.md`.
 
+## The seven operations of the GWAS
+
+The genome wide association study fits one model of the trait to the
+covariates alone, the null model, and then tests every variant against
+what that model left unexplained. pyNei fits four null models, one for
+each pairing of a continuous or a binomial trait with and without a
+kinship, and `src/pynei/gwas.py` at commit ef0ca6e calls five functions
+of `numpy.linalg` that this crate has not, at fifteen places: `qr` at
+376, `solve` at 378, 412, 483, 512, 556, 639, 646, 692 and 693,
+`slogdet` at 418, `inv` at 586, 666 and 689, and `matrix_rank` at 841.
+This section says which operations those become and what each one gives. It
+says nothing about which of the four models calls what, nor about the
+order in which a model calls them, which is for `docs/specs/gwas.md`.
+
+What the GWAS works on, before the list. The **design**, `d` below, is
+the matrix of the covariates with one row for each individual and one
+column for each number the model fits, its **coefficients**: a column of
+ones for the intercept and one column for each covariate the user gave.
+For the datasets of `docs/objectives.md` it has up to 10000 rows and a
+handful of columns. A **right hand side** is one of the vectors `b` of a
+system `a x = b`, and one matrix `a` is often solved against many of them
+at once. A symmetric matrix `a` is **positive definite** when `v' a v` is
+above 0 for every vector `v` that is not 0, which for the matrices here
+means that the columns of the design are independent; every such matrix,
+and no other, has a **Cholesky factorization**, the lower triangular `l`
+with `l l' = a`.
+
+### What the GWAS calls of numpy, and where
+
+The lines are of `src/pynei/gwas.py` at commit ef0ca6e, and n is the
+individuals.
+
+| what pyNei calls | at | the matrix, and how large |
+|---|---|---|
+| `solve` | 556 | the design multiplied by itself with one weight for each individual, `d' w d`, coefficients square; one right hand side |
+| `solve` | 412, 512 | the same, of the design turned by the eigenvectors of the kinship, `u' w u` for `u = e' d` with `e` those eigenvectors; one right hand side |
+| `solve` | 483 | `d' V⁻¹ d`, where `V` is n x n and dense, the variance of the trait under the mixed model; one right hand side for each individual |
+| `solve` | 692, 693 | `d' Σ⁻¹ d`, where `Σ` is the n x n of line 689; one right hand side at 692 and one for each individual at 693 |
+| `solve` | 639, 646 | one matrix for each variant of a block, of the coefficients plus one, square |
+| `solve` | 378 | the `r` of the QR of the design, coefficients square and upper triangular; one right hand side |
+| `slogdet` | 418 | the matrix that line 412 solves against |
+| `inv` | 586 | `d' w d`, coefficients square |
+| `inv` | 666 | one matrix for each variant, as at 639, of which one entry of each inverse is read |
+| `inv` | 689 | n x n, a number not below 0 times the kinship, plus a positive number on each diagonal entry |
+| `qr` | 376 | the design, n x coefficients |
+| `matrix_rank` | 841 | the design |
+
+Of the square matrices in that table, all but two are symmetric positive
+definite by construction. `d' w d` and `u' w u` have a positive weight for
+each individual, so they are positive definite whenever the columns of `d`
+are independent, which line 841 refuses a design without; and `d' V⁻¹ d`
+and `d' Σ⁻¹ d` are positive definite for the same reason whenever `V` and
+`Σ` are.
+
+The two that are not. The `r` of line 378 is upper triangular and not
+symmetric at all, and it gets a solve of its own below. And `Σ` itself,
+the matrix of line 689, is a number that is not below 0 times the kinship
+plus a positive number on each diagonal entry, which is positive definite
+only while the kinship never makes `v' k v` negative. A kinship of
+genotypes none of which is missing never does, being a matrix multiplied
+by itself. pyNei's does, because `_KinshipCalc` of `gwas.py` divides that
+product entry by entry by the variants called in both individuals of each
+pair, at lines 208 and 228, and an entry by entry division does not keep a
+matrix positive semidefinite. Simulated on 23 September 2026 on 200
+individuals and 2000 variants, with allele frequencies drawn between 0.05
+and 0.5 and genotypes missing at random: the smallest eigenvalue of that
+kinship is 0 with nothing missing, -0.02 at 2 per cent missing, -0.11 at
+10 per cent and -1.00 at 50 per cent, against a largest of 1.7 to 2.4.
+What that costs is **Open 4**.
+
+The sizes are of two kinds. Everything but lines 689, 483 and 693 is a
+matrix of the size of the coefficients, a handful square, and the cost of
+a call is the cost of the call and not of the arithmetic. Lines 689, 483
+and 693 grow with the individuals, and they are paid while a null model is
+fitted and not once for each variant.
+
+### What the seven give
+
+Each entry says what the operation gives and then names the routine of
+LAPACK and the entry point of faer 0.24.4 that runs it, which the
+implementer needs and a reader deciding whether these are the right
+operations can pass over. Every one of the named routines and entry
+points was called on both backends and on both wasm targets before this
+was written.
+
+**The Cholesky factorization.** For the symmetric positive definite `a`
+of n x n, read by its lower half, the lower triangular `l` with `l l' =
+a`, which overwrites the lower half of `a`; the upper half is left as it
+was. It is `dpotrf` in LAPACK and `cholesky_in_place` of faer's
+`linalg::cholesky::llt::factor`, which is given a scratch of n values
+and the regularization faer calls its default. That default is the one
+that refuses: told to regularize, faer patches a pivot that is not
+positive and factors on, and `Singular` would never be raised. A matrix
+that is not positive definite gives the error `Singular` of "The errors
+the seven add", and this factorization is the test for it: it stops at
+the first row whose diagonal entry, once the rows above it have been
+taken out, is not above 0.
+
+**The solve of a factorized matrix.** For the `l` above, the `x` of `a x
+= b`. `b` is `sides` x n, one row for each right hand side, and it comes
+back holding the solutions the same way. It is `dpotrs` in LAPACK and
+`solve_in_place_with_conj` of faer's `linalg::cholesky::llt::solve`.
+
+That layout, one row for each right hand side, is what the caller of
+lines 483 and 693 already has, and it was chosen for it. There the right
+hand sides are the columns of a matrix of n rows and one column for each
+coefficient. A buffer of n rows and c columns held row after row, which
+is how popnei holds every matrix, is the same buffer as one of c rows and
+n columns held row after row, which is that matrix turned the other way
+round: so the caller passes the buffer it has, as c right hand sides of n
+numbers each, and nothing is copied and nothing is moved. The solutions
+come back the same way, one row for each column of the matrix the next
+product needs, so that product is `product` with its second operand
+`ByTheColumnsOfTheResult`.
+
+**The log of the determinant.** For the `l` above, twice the sum of the
+logs of its diagonal, which is the log of the determinant of `a`. It is
+arithmetic over n numbers and neither library is called for it. Line 418
+takes the second value of numpy's `slogdet` and throws the first, the
+sign, away; the determinant of a positive definite matrix is above 0, so
+that sign is always 1 and nothing is lost.
+
+**The inverse of a factorized matrix.** For the `l` above, the lower half
+of the inverse of `a`, written into a buffer of n x n that the caller
+gives; its upper half is left as it was. It is `dpotri` in LAPACK, which
+the crate calls on a copy of `l` in that buffer and which needs no
+workspace, and `inverse` of faer's `linalg::cholesky::llt::inverse`,
+which writes into the buffer and asks for a scratch of n x n of its own,
+8 bytes to a value, which faer 0.24.4 says and which it was asked for at
+n = 1000, where it wanted 8000000 bytes. So an inverse at 10000
+individuals needs the two buffers the caller gives, 800 MB each, and in
+faer 800 MB more, which is `docs/rust_core.md`'s open question about the
+memory in the browser, where a kinship of 10000 individuals is already
+800 MB. The crate asks for
+faer's scratch with `try_new` of `dyn_stack`, so that a machine without
+the memory gets `Memory` and not the end of the process.
+
+**The thin QR of the design.** For `a` of `rows` x `cols` with `rows` at
+least `cols`, the `q` of `rows` x `cols` whose columns are of length 1
+and at right angles to each other, and the upper triangular `r` of
+`cols` x `cols`, with `a = q r`. It is `dgeqrf` and then `dorgqr` in
+LAPACK, the two routines numpy's `qr` calls, and `qr` of faer with
+`compute_thin_Q` and `thin_R`. The BLAS backend gives the two routines a
+column major copy of `a`, which is its transpose written out, because in
+their view the buffer as it lies is the wide matrix and they are much
+slower on it than on the tall one; "Speed" has the two numbers. The GWAS
+keeps both: `r` for the coefficients of the plain linear model, and `q`
+for every variant of every block, whose dosages line 391 takes the
+covariates out of with `q q'`.
+
+The sign of a column of `q`, and of the row of `r` that goes with it, is
+whatever the backend gave, as it is for an eigenvector. Nothing downstream
+sees it: line 391 and the residuals of line 379 use `q` only as `q q'`,
+and the coefficients of line 378 are the `c` of `r c = q' y`, and
+flipping the sign of column j of `q` flips row j of `r` and entry j of
+`q' y` with it, which leaves `c` alone. Measured on 23 September 2026:
+LAPACK, faer and numpy 2.5.3 all gave the negative diagonal of `r` for the
+design of "How the seven are verified" below, so no case has yet been
+found that makes them differ, and the test still fixes the sign so that a
+backend which chose the other one would pass.
+
+**The solve against an upper triangular matrix.** For the upper triangular
+`r` of n x n, whose lower half is not read, the `x` of `r x = b`, with
+`b` laid out as for the Cholesky solve. It is `dtrtrs` in LAPACK and
+`solve_upper_triangular_in_place` of faer. It exists for line 378 alone.
+
+**The rank.** For `a` of `rows` x `cols`, how many of its singular
+values are strictly above the tolerance `s * max(rows, cols) *
+2.220446049250313e-16`, where `s` is the largest singular value and the
+last number is the distance from 1 to the next `f64` above it. That is
+numpy's tolerance, read from `matrix_rank` of numpy 2.5.3, and popnei
+takes it so that a design popnei refuses is a design pyNei refuses. The
+singular values of a matrix are the factors by which it stretches space
+along as many directions at right angles to each other as it has
+columns, from the largest, and one of them is 0 exactly when a column of
+the matrix is a combination of the others, so the rank is the columns
+that are independent. It is `dgesdd` with `jobz` `N`, which computes the
+values and no vectors, in LAPACK, and `singular_values` of faer, and the
+BLAS backend copies the transpose for it too.
+
+The options not taken were a QR with column pivoting, which takes the
+columns of the design in the order of how much of them is left once the
+columns before have been taken out and so brings the nearly dependent
+ones last, and whose diagonal of `r` is then a cheaper stand-in for the
+singular values but is not them, so that its rank at the same tolerance
+can differ from numpy's on a design whose columns are nearly dependent; and a
+test the caller makes, trying the Cholesky of the design multiplied by
+itself, which is cheaper and refuses a band of designs that pyNei accepts,
+measured in **Open 2**. Neither is worth taking for its speed: the rank of
+a design of 10000 x 5 took 0.145 ms on Accelerate and 0.159 ms on faer,
+once for a whole study.
+
+### Why a Cholesky where numpy uses an LU
+
+numpy's `solve`, `inv` and `slogdet` all factor a general square matrix
+into a lower and an upper triangular one with row exchanges, an LU, which
+works for any matrix that can be solved against. Every argument in the
+table above but the `r` of line 378 is symmetric positive definite, and
+for those a Cholesky is the factorization to make: it is half the
+arithmetic of an LU, it gives the log of the determinant of line 418 from
+the same factorization the solve of line 412 uses, and, unlike an LU, it
+fails on exactly the matrices that are not positive definite instead of
+carrying on with a tiny pivot. It is also 2.1 times faster than numpy's
+`inv` at 5000 individuals, which "What the seven of the GWAS cost" has
+the two numbers of.
+
+What that changes for a user is the subject of **Open 2**: a Cholesky
+refuses matrices an LU solves against, and the GWAS spec says what each
+refusal becomes.
+
+### The systems of one block, and what the fallback becomes
+
+Line 639 solves a stack of systems at once, one for each variant of a
+block that is still iterating, each of the size of the coefficients plus
+one; line 666 inverts the same stack and reads one entry of each inverse,
+the last of the diagonal. numpy solves a stack by looping over it, and no
+routine of LAPACK and no entry point of faer takes a stack, so an
+operation of this crate for it would be a loop over the two operations
+above and nothing more. It is a loop in the caller: the crate gives the
+factorization and the solve of one matrix, and the core crate runs them
+over the variants of the block. Measured on 23 September 2026: one system
+of 7 x 7 factored and solved takes 0.173 µs on Accelerate and 0.159 µs on
+faer, so 5000 of them, a block, take 0.9 ms and 0.8 ms, for one iteration
+of the fit.
+
+The fallback of lines 642 to 648 goes away. It is there because numpy's
+stacked `solve` raises on the whole stack when any one matrix of it is
+singular, so pyNei catches that and solves the stack again one matrix at a
+time, keeping the answers of the good ones and leaving NaN for the bad.
+Checked on 23 September 2026 with numpy 2.5.3 on a stack of two matrices
+of which one was singular: the stacked call raised `LinAlgError` and gave
+nothing, and the two calls one at a time gave the answer for the good
+matrix and raised for the other. A loop over a function that gives a
+`Result` has nothing to fall back from: the variants whose system is
+refused are the ones the loop gets an error for, and the caller gives them
+the step of 0 and the mark of having diverged that lines 649 to 651 give
+them, which line 670 turns into the NaN a user sees.
+
+The last entry of the diagonal of the inverse, line 666, needs no
+inverse: for `v` the vector that is 1 in its last entry and 0 everywhere
+else, that entry is `v'` times the inverse of `a` times `v`, which is the
+solution of `a x = v` read at its last entry. So it is one solve, or it is
+the inverse and one read of it. Which of the two the GWAS takes is for its
+spec; the operations here give either.
+
+### The errors the seven add
+
+Every one of the seven adds its own cases of `Dimension`, a buffer that
+does not hold the values of the dimensions it was given or a dimension of
+0, and of `NotFinite`, checked over the values the operation reads and
+over the lower half alone where only the lower half is read. The rank adds
+`NoConvergence`: `dgesdd` gives an `info` other than 0 and faer gives
+`SvdError::NoConvergence`, which is the case the crate already has for the
+eigendecomposition, with the routine and the `info`. The inverse adds
+`Memory`, for faer's scratch of n x n. The log of the determinant reads
+the diagonal of `l` alone, so `NotFinite` and the `Singular` below are
+what it checks that diagonal for, and it is the same `Singular` a
+`cholesky_lower` that gave that `l` would have given first.
+
+One case is new. A matrix that cannot be factored is neither a wrong
+dimension nor a value that is not finite nor a routine that ran out of
+iterations, and it is not a defect of the caller either: it is what the
+data was.
+
+```rust
+/// A matrix that could not be factored at the row the value names,
+/// counting from 0: the Cholesky reached a diagonal entry that is not
+/// above 0 there, or the solve against an upper triangular matrix
+/// reached one that is 0.
+Singular { argument: &'static str, at: usize },
+```
+
+Its message is "the matrix a is singular: the factorization stopped at its
+row 3, counting from 0". The core crate wraps it and the module that
+called it decides what it means, because the same error is two different
+things to a user: a design whose covariates are not independent, which the
+rank of line 841 is meant to catch before any model is fitted, and a
+variant whose fit has run away, which the GWAS gives NaN for.
+
+Both backends give the row, and both count it from 0 once the crate has
+turned LAPACK's round: `dpotrf` gives an `info` of k for the leading k x k
+corner, counting from 1, and faer gives `LltError::NonPositivePivot` with
+an index from 0. Checked on 23 September 2026 on the 3 x 3 with rows (4,
+2, 0), (2, 1, 0) and (0, 0, 1), whose leading 2 x 2 has a determinant of
+0: both gave the row 1. numpy's `cholesky` raises `LinAlgError` on the
+same matrix, and its eigenvalues are 0, 1 and 5: none below 0 and one
+exactly 0, which is the case a factorization has to catch and an LU does
+not.
+
+faer's `solve_upper_triangular_in_place` gives no error and divides by a
+diagonal entry of 0 as it finds it, giving an infinity, while `dtrtrs`
+gives an `info`. So the diagonal of `r` is read for a 0 in the crate,
+above the backends, where it holds for both, as the check for a value that
+is not finite already is.
+
+### How the seven are verified
+
+The reference outside the project is numpy 2.5.3 on Accelerate, the same
+one the four operations above use. Every number below was taken from it on
+23 September 2026 and every one was then run on both backends, `cargo test
+-p popnei-linalg` and the same with `--no-default-features`, in a trial
+crate that is not in git. Each check is made at the function of "The Rust
+interface" that it names. That a GWAS made from these operations gives
+the numbers of GMMAT and of rrBLUP, the two programs `docs/objectives.md`
+names as the reference outside the project for an association study, is
+for `docs/specs/gwas.md`, as the checks of the PCA are for its own spec:
+no function of this crate is reached from Python.
+
+The small matrix the Cholesky and what comes off it are checked on is the
+3 x 3 with rows (4, 2, 0), (2, 10, 6) and (0, 6, 5), whose factorization is
+the lower triangular with rows (2, 0, 0), (1, 3, 0) and (0, 2, 1), every
+entry a small integer, and whose determinant is 36.
+
+At `cholesky_lower`, that factorization exactly. At
+`log_determinant_with_cholesky`, 3.58351893845611, which is the log of 36
+and the number numpy's `slogdet` gives for the same matrix, exactly: the
+sum of the logs of 2, 3 and 1, doubled, lands on the same `f64`. At
+`solve_with_cholesky`, the right hand side (8, 40, 27) gives (1, 2, 3),
+and the two right hand sides (8, 40, 27) and (4, 2, 0), one row each, give
+(1, 2, 3) and (1, 0, 0), both within 1e-14, which is what catches a
+backend that read the rows of `b` as its columns. At
+`invert_with_cholesky`, the lower half is 7/18, -5/18, 5/9, 1/3, -2/3 and
+1, within 1e-15 relative. Those are the exact values, and the literals are
+they and not numpy's, because numpy's `inv` goes through an LU and gives
+0.38888888888888884 where 7/18 is 0.3888888888888889 and
+0.9999999999999998 for the entry that is 1, up to 2 units in the last
+place away from the number a Cholesky gives.
+
+At `cholesky_lower` again, the 3 x 3 with rows (4, 2, 0), (2, 1, 0) and
+(0, 0, 1) is `Singular` at the row 1, as above.
+
+Then a matrix too large to write down, so that the two backends are
+checked at a size they will run at, and it is the G of the
+eigendecomposition above: `G = ZZ'` for Z of 1000 rows and 1200 columns
+built with the xorshift generator of "How it is verified" of "The four
+operations", started at 7, whose trace is 99996.3873081677. Its
+eigenvalues are between 0.79 and 361.9, so it is positive definite. The
+literals, from numpy 2.5.3: the first and the last entries of the
+diagonal of its factorization, 10.135944716832457 and 4.115426436421405,
+within 1e-12 relative; its log determinant, 3963.7986384485084, within
+1e-13, which numpy's `slogdet` gives as 3963.7986384485057 through its
+LU; the solution of `G x = v` for `v` the vector of 1000 ones, of which
+the test asserts the first three entries, -0.3054837936349659,
+-0.04576083734778211 and -0.21314634692119025, and their sum over the
+1000, 73.9565335781636, within 1e-11 relative; and of its inverse the
+first and last entries of the diagonal, 0.06230734831937398 and
+0.059043258015696806, and the trace, 59.78707893196584, within 1e-11.
+What the two backends were measured to be away from those numbers on 23
+September 2026 is 5.7e-16 and 8.0e-16 relative on the log determinant,
+1.8e-14 and 1.1e-14 on the four numbers of the solve, and 5.4e-15 and
+4.9e-15 on the three of the inverse, Accelerate first and faer second,
+so each tolerance above has at least two orders of room.
+
+The design the QR, the triangular solve and the rank are checked on is
+the 4 x 2 of an intercept and one covariate, with rows (1, 1), (1, 2),
+(1, 3) and (1, 4). At `thin_qr`, with the sign of each column of `q`
+taken so that the diagonal of `r` is positive, `r` has rows (2, 5) and (0,
+2.23606797749979), which is the square root of 5, and `q` has the first
+column (0.5, 0.5, 0.5, 0.5) and the second (-0.6708203932499368,
+-0.22360679774997894, 0.223606797749979, 0.6708203932499369), which is
+the covariate less its mean, divided by the length of that; both within
+1e-14, because
+Accelerate gave -2.0 for the first entry of `r` and faer
+-1.9999999999999998. At `solve_upper_triangular`, the trait (1, 3, 5, 7),
+which is twice the covariate less 1, gives the coefficients (-1, 2) from
+`r c = q' y`, within 1e-14: an exact fit, so a backend that read `r` the
+wrong way round gives something else. And at `solve_upper_triangular`
+again, the `r` with rows (2, 5) and (0, 0) is `Singular` at the row 1,
+which is the case the crate reads the diagonal for, since faer would
+divide by that 0 and give an infinity.
+
+At `rank`, five matrices and their ranks, which is all `rank` gives: it
+returns a count, so its singular values cannot be asserted at it, and the
+five are chosen so that the count alone pins both the values and the
+tolerance. The 4 x 2 above is rank 2. The 4 x 3 with rows (1, 1, 2),
+(1, 2, 3), (1, 3, 4) and (1, 4, 5), whose third column is the sum of the
+first two, is rank 2. The 4 x 2 whose covariate is the constant 5 is rank
+1. Those last two are the two designs line 841 refuses, the collinear one
+and the constant one.
+
+The other two pin the tolerance itself, since a rank that counted at the
+wrong threshold would still give 2, 2 and 1 for the three above: the 2 x 2
+with rows (1, 0) and (0, 5e-16) is rank 2 and the one with rows (1, 0) and
+(0, 4e-16) is rank 1, either side of the tolerance for a 2 x 2 whose
+largest singular value is 1, which is 4.440892098500626e-16. numpy 2.5.3
+gives 2 and 1 for them, and both backends were run on them on 23 September
+2026 and gave the same two counts and the same tolerance.
+
+The singular values themselves, from numpy 2.5.3, are 5.779378813233887
+and 0.773809106397227 for the first; 9.344132686098556,
+0.8289658283575813 and 3.651382431893325e-17 against a tolerance of
+8.299257002607302e-15 for the second; and 10.19803902718557 and 0 for the
+third. They are here so that a reader can see where each count comes from,
+and no test asserts them. The last two are the
+two designs line 841 refuses, the collinear one and the constant one.
+
 ## The Rust interface
 
 The lower half of `g += a'a`; `a` is `rows` x `cols`, and `g` is `cols`
@@ -413,6 +814,91 @@ pub enum Error {
 }
 ```
 
+### The signatures of the seven of the GWAS
+
+The Cholesky factorization of the symmetric positive definite `a` of `n`
+x `n`, read by its lower half: the lower triangular `l` with `l l' = a`,
+which overwrites that lower half. The upper half is left as it was, and a
+caller that needs `a` afterwards copies it first.
+
+```rust
+pub fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()>;
+```
+
+The `x` of `a x = b`, where `l` of `n` x `n` is the factorization above.
+`b` is `sides` x `n`, row after row, one row for each right hand side,
+and it comes back holding the solutions the same way. `sides` is 1 at
+least.
+
+```rust
+pub fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()>;
+```
+
+The log of the determinant of the `a` whose factorization is `l`. There
+is no sign to give: the determinant of a positive definite matrix is
+above 0.
+
+```rust
+pub fn log_determinant_with_cholesky(l: &[f64], n: usize) -> Result<f64>;
+```
+
+The lower half of the inverse of that same `a`, into `inverse` of `n` x
+`n`, whose upper half is left as it was. `l` and `inverse` are two
+buffers and not one.
+
+```rust
+pub fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<()>;
+```
+
+The thin QR of `a` of `rows` x `cols`, with `rows` at least `cols` and
+`cols` 1 at least. It and `solve_upper_triangular` below are the "least
+squares" that the `linalg` row of section 9 of `docs/architecture.md`
+names: fitting a linear model to more individuals than coefficients is
+`thin_qr` of the design and then `solve_upper_triangular` of its `r`.
+
+```rust
+pub struct ThinQr {
+    /// `rows` x `cols`, row after row: the columns are of length 1 and at
+    /// right angles to each other. The sign of a column is the backend's.
+    pub q: Vec<f64>,
+    /// `cols` x `cols`, row after row: upper triangular, its lower half
+    /// 0, with `a = q r`.
+    pub r: Vec<f64>,
+}
+
+pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr>;
+```
+
+The `x` of `r x = b` for the upper triangular `r` of `n` x `n`, whose
+lower half is not read. `b` is laid out as it is for the Cholesky solve.
+
+```rust
+pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()>;
+```
+
+How many singular values of `a` of `rows` x `cols` are above numpy's
+tolerance: its rank, which is at most the smaller of the two dimensions.
+
+```rust
+pub fn rank(a: &[f64], rows: usize, cols: usize) -> Result<usize>;
+```
+
+The error enum gains one case, which "The errors the seven add"
+describes.
+
+```rust
+    /// A matrix that could not be factored at the row the value names,
+    /// counting from 0: the Cholesky reached a diagonal entry that is
+    /// not above 0 there, or the solve against an upper triangular
+    /// matrix reached one that is 0.
+    Singular {
+        /// The name of the argument, as this section spells it.
+        argument: &'static str,
+        /// The row the factorization stopped at, counting from 0.
+        at: usize,
+    },
+```
+
 ## Speed
 
 Measured on 22 September 2026 on the owner's Apple M5 Pro, rustc 1.98,
@@ -469,10 +955,72 @@ that one backend turns into an error and the other into a result, and
 because a block the PCA standardized cannot be checked once for the
 whole pass: each block is a new matrix.
 
+### What the seven of the GWAS cost
+
+Measured on 23 September 2026 on the owner's Apple M5 Pro, rustc 1.98,
+release, from a trial crate
+kept in `tmp/linalg_gwas_trial/`, not in git, the best of 3 runs at 5000
+and above and of 5 below. The matrix of each size is `ZZ'` for Z of n rows
+and as many columns of the xorshift generator, 200 at n = 1000 and 20
+above it, with n added to each of its diagonal entries, which makes it
+positive definite; its rank before the addition does not change the cost,
+since both routines reduce the whole matrix. Accelerate takes the threads it
+finds, and faer is given twice, once for each of its two rules: the global
+pool of rayon, which is what it runs on natively, and one thread, which is
+what it runs on in the browser.
+
+| operation | n | Accelerate | faer, the pool | faer, one thread |
+|---|---|---|---|---|
+| `cholesky_lower` | 1000 | 0.0012 s | 0.0029 s | 0.0073 s |
+| | 2000 | 0.0089 s | 0.0114 s | 0.0523 s |
+| | 5000 | 0.135 s | 0.118 s | 0.762 s |
+| | 10000 | 1.02 s | 0.816 s | 5.93 s |
+| `invert_with_cholesky` | 1000 | 0.0025 s | 0.0041 s | 0.0140 s |
+| | 2000 | 0.0148 s | 0.0182 s | 0.1020 s |
+| | 5000 | 0.205 s | 0.183 s | 1.51 s |
+| | 10000 | 2.05 s | 1.29 s | 11.8 s |
+
+numpy 2.5.3 on the same machine and day took 0.723 s for `inv` of the
+5000 x 5000, against the 0.340 s of `cholesky_lower` and
+`invert_with_cholesky` together on Accelerate. The two numbers are what
+each library takes from the matrix to its inverse: numpy's `inv` makes
+its own LU inside the call and is one call, not two. numpy's `cholesky`
+of the same matrix, which factors and stops, took 0.192 s, against the
+0.135 s of `cholesky_lower`.
+
+Those two together are line 689, which the fit of the logistic mixed model
+runs a few dozen times, and they are what the open question of
+`docs/rust_core.md` about that fit at many individuals is about: at 5000
+individuals a few dozen turns of 0.34 s is a few tens of seconds, beside
+the 25 s that document measured for pyNei there, and no backend of this
+crate changes that.
+
+Everything else is paid once for a whole study or once for a block.
+`log_determinant_with_cholesky` reads n numbers. One system of the size of
+the coefficients, `cholesky_lower` and then `solve_with_cholesky` with one
+right hand side, took 0.060, 0.173 and 0.320 µs for systems of 3, 7 and 11
+on Accelerate and 0.060, 0.159 and 0.277 µs on faer, so the 5000 systems
+of a block at 7 take 0.9 ms and 0.8 ms, for one iteration of a fit.
+`solve_with_cholesky` on a 5 x 5 with one right hand side for each of
+10000 individuals took 0.070 ms on Accelerate and 0.140 ms on faer. On a
+design of 10000 x 5, `thin_qr` took 0.165 ms on
+Accelerate, 0.256 ms on faer and 0.209 ms on faer at one thread, and
+`rank` 0.145 ms, 0.159 ms and 0.130 ms; numpy took 0.229 ms and 0.136 ms
+for the same two.
+
+Two of the LAPACK routines are much slower on the wide matrix than on the
+tall one, so the BLAS backend writes the transpose of the design into a
+buffer of its own, `rows` x `cols` values, 400 KB at 10000 x 5, and calls
+them on that. Measured on the same day at 10000 x 5: `thin_qr` takes 0.165
+ms that way and 2.98 ms called on the buffer as it lies, through `dgelqf`
+and `dorglq`, which give the same `q` and `r` to 1e-13; and `rank` takes
+0.145 ms against 1.54 ms. faer is given the buffer as it lies and copies
+nothing.
+
 ## Open points
 
-The owner decides this one. Until then the implementer follows its
-"meanwhile".
+The owner decides these four. Until then the implementer follows the
+"meanwhile" of each.
 
 **Open 1: `simd128` in the two wasm builds.** With the flag and the
 feature of `gemm`, the product of a block takes 187 ms in wasm instead
@@ -497,15 +1045,155 @@ Recommendation: leave the flag off, since it changes no file, and keep
 the feature of `gemm` on, which is what the speed comes from.
 Meanwhile the flag is not set and the feature of `gemm` is.
 
+**Open 2: a Cholesky where numpy uses an LU.** Every square matrix the
+GWAS solves against, except the `r` of the QR, is symmetric positive
+definite, and this spec factors them with a Cholesky, which "Why a
+Cholesky where numpy uses an LU" gives the reasons for. What that changes
+for a user is which inputs are refused. An LU carries on with a pivot that
+rounding made tiny and gives a number; a Cholesky stops. So popnei refuses
+some inputs pyNei answers for, and there are two of them.
+
+The first is a design whose covariates are independent on paper and nearly
+not in the numbers, which the rank of line 841 lets through and the
+Cholesky then refuses. The band was measured on 23 September 2026 with
+numpy 2.5.3 on a design of 10000 rows and 4 columns built with its
+smallest singular value at a chosen fraction of its largest:
+`matrix_rank` gave 4 down to a fraction of 1e-11 and 3 at 1e-12, which is
+where its tolerance of `max(rows, cols)` times 2.2e-16 lies, while the
+Cholesky of that design multiplied by itself succeeded down to 1e-8 and
+refused at 1e-9, the fractions in between going either way as rounding
+decided. So the band is about three orders wide, between 1e-9 and 1e-12.
+A design that falls in it has its largest singular value between 1e9 and
+1e12 times its smallest, and the relative error of a solve is about that
+ratio times 2.2e-16, so the coefficients numpy gives for such a design
+keep roughly between seven and four of the sixteen digits an `f64` holds.
+
+The second is a variant of the logistic Wald test, the test that fits the
+model again with the variant in it and asks how many of its own
+uncertainties the variant's effect is away from 0, whose fit is running
+away and whose matrix goes flat as the weights of the individuals go to
+0. pyNei reaches those variants by another road and gives them the same
+answer: lines 649 to 651 mark a variant whose step is not finite and line
+658 one whose coefficient passes 30, and line 670 gives both NaN.
+
+The options are to factor with a Cholesky and let the GWAS spec say what
+each `Singular` becomes, which is the recommendation; or to factor with an
+LU, `dgesv` and faer's `partial_piv_lu`, which matches numpy input for
+input at twice the arithmetic, gives no log determinant off the same
+factorization, and is no test for a design whose columns are not
+independent. Meanwhile the Cholesky is what is built.
+
+**Open 3: a product that reads its first operand by the values summed
+over.** pyNei's GWAS writes `a.T @ b`, a matrix multiplied by another
+that has one row for each of the same individuals, at fourteen places of
+`gwas.py`, and `product` cannot do any of them: its first operand is read
+as one row for each row of the result, and the four operations give no
+way to read it the other way round.
+
+Four of the fourteen are the design multiplied by itself with one weight
+for each individual, `d' w d`, at 411, 511, 554 and 586, and those the
+crate already gives: the weights are above 0, so the caller multiplies
+each row of the design by the square root of its weight and calls
+`add_self_product_lower` on that, and the result is the same matrix. The
+other ten are not, and they are `q' y` at 378 and 379, the design by the
+weighted trait at 412 and 512, the design by the projected design at 482
+and 691, the eigenvectors of the kinship by the trait and by the design
+at 507 and 508, the design by the residuals at 555, and the projected
+design by the working trait at 692.
+
+The options. Give the first operand a type as the fourth operation above
+gave the second, so that `product` takes a `TheFirstOperand` of two
+cases and covers all four combinations, of which three have a caller;
+the two calls of the PCA and the three of the LD are rewritten, none of
+them changing what they compute. Or add one function for `c = a' b`
+alone and leave `product` as it is, which brings back what the typed
+operand was for: two functions over the same four numbers, either of
+which takes the other's call and gives a different matrix with no error.
+Or leave it out and have the caller write the transpose of one operand
+into a buffer of its own.
+
+The recommendation is the typed first operand. Neither backend pays for
+it: measured on 23 September 2026 on the machine of "Speed", a 1000 x
+1000 by a 1000 x 5 took 0.102 ms as `a b` and 0.030 ms as `a' b` on
+Accelerate and 0.069 ms and 0.091 ms on faer, and the two gave the same
+matrix to the bit, `a'` in the second being the transpose of `a` written
+out. Writing the transpose of that 1000 x 1000 into a buffer instead
+took 0.361 ms, three to twelve times the product it would feed, and it
+is a matrix operation in a crate that is not this one, which is the
+reason "What they give" gives for the fourth operation above. Meanwhile
+the implementer builds the seven above and not this one, since no code
+calls it until the GWAS does.
+
+**Open 4: a kinship with missing genotypes is not positive semidefinite,
+and the logistic mixed model does not clamp it.** The matrix `Σ` of line
+689, which the fit of that model factors a few dozen times, is positive
+definite only while the kinship makes `v' k v` never negative. "What the
+GWAS calls of numpy, and where" measures that pyNei's kinship does not,
+once genotypes are missing: its smallest eigenvalue is -0.02 at 2 per cent
+missing and -1.00 at 50 per cent, because `_KinshipCalc` divides the
+product of the standardized dosages entry by entry by the variants called
+in both individuals of each pair. `Σ` is that eigenvalue times the
+variance component the fit is searching over, plus one over the weight of
+each individual on the diagonal, and a weight is at most 0.25, so the
+diagonal adds at least 4: `Σ` goes indefinite when the variance component
+passes about 4 divided by the size of that negative eigenvalue, which is
+about 200 at 2 per cent missing and 4 at 50 per cent.
+
+pyNei does not meet this because its LU factors an indefinite matrix
+without complaining and gives an inverse that is an inverse. A Cholesky
+refuses, so popnei would stop where pyNei gave a fit. pyNei clamps the
+kinship's negative eigenvalues at 0 at line 506, calling them rounding,
+but only in the continuous mixed model, which eigendecomposes the kinship
+anyway; the logistic one never does.
+
+The options. Clamp the kinship's eigenvalues at 0 before the logistic
+mixed model uses it, as line 506 does for the continuous one, which costs
+an eigendecomposition of n x n per fit, 0.035 s at 1000 individuals and
+6.3 s at 5000 from "Speed", and changes the fit for every dataset with
+missing genotypes, in a direction nothing here has measured. Or give the
+kinship a per pair denominator that keeps it positive semidefinite, which
+is `docs/specs/kinship.md`'s decision and not this one. Or leave the
+kinship as pyNei computes it and let the fit fail with `Singular`, telling
+the user that the kinship is not one, which is what the seven operations
+do today.
+
+The recommendation is the third, with the second raised in
+`docs/specs/kinship.md`: the failure is loud, it happens only for a
+variance component far above what a real trait gives at the missing rates
+a user should be running at, and clamping is a change to the numbers pyNei
+produces that `docs/objectives.md` would have written down. What is not
+known is how often a real dataset reaches it; no run of pyNei's logistic
+mixed model on missing genotypes was made for this spec. Meanwhile the
+seven are built as they are, and the GWAS spec records what it does.
+
 ## Not in this spec
 
-- What `pynei/gwas.py` calls besides the four operations here:
-  `solve`, `inv`, `qr`, `slogdet` and `matrix_rank` of `numpy.linalg`.
-  They are later items of this spec, written with `docs/specs/gwas.md`,
-  which says which the four null models of the GWAS need and how each is
-  computed.
+- Which of the four null models of the GWAS calls which of the seven
+  operations, in what order, and what a `Singular` means where it is
+  caught: `docs/specs/gwas.md`, which is not written. The seven are here
+  because they are operations of linear algebra; the models are not.
+- Two things this spec assumed about the GWAS so that it could name the
+  seven, which the GWAS spec can contradict without changing any of them.
+  That the four null models stay as pyNei fits them: another way of
+  fitting the logistic mixed model, which `docs/rust_core.md`'s open
+  question about that fit at many individuals invites, would want other
+  operations, most likely fewer of them. And that the one system for each
+  variant of a block is a loop in the caller, which holds while those
+  matrices are of the size of the coefficients; a model with many
+  coefficients would make a routine that takes a whole stack worth
+  looking for, and neither LAPACK nor faer has one.
+- The two functions the GWAS turns a statistic into a p-value with: the
+  complementary error function, which gives how much of a normal
+  distribution lies past a point, and the incomplete beta function, which
+  gives the same for the t distribution the tests with an estimated
+  variance use. Both are arithmetic over one number and not linear
+  algebra: `docs/specs/gwas.md`.
+- Whether the logistic mixed model can be fitted without inverting an n
+  x n matrix a few dozen times, which is an algorithmic question and not
+  one of this crate: the open question of `docs/rust_core.md` about that
+  fit at many individuals.
 - Which routines the kinship calls: the product above;
-  `docs/specs/kinship.md`.
+  `docs/specs/kinship.md`, which is not written.
 - The threads of popnei, which no argument sets: `docs/specs/dists.md`.
 - The Linux and Windows builds of OpenBLAS: the plan that first makes
   them.
