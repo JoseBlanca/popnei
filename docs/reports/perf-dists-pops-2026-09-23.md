@@ -789,6 +789,17 @@ of one and two individuals at ploidies 1, 2 and 3.
   now be measured against N1's checksum rather than against a timing,
   since the pass is smaller than it was.
 
+### The numbers after `main` was merged in
+
+`main` moved a long way while this review ran, and among what it brought
+is the pass that standardizes a row, which now lives in the same file as
+the counting this review changed. The headline timings were taken again on
+the merged tree, on a quiet machine, and they hold: 0.167 s and 0.250 s on
+one thread against the 0.171 s and 0.248 s above, 0.018 s and 0.025 s on
+18 threads, and 0.272 s and 0.354 s over the vars file. Every number the
+spec asks for is met. The whole suite passes on the merged tree: 729 tests
+of the core, 443 of Python and 300 of TypeScript.
+
 ### What the numbers look like now
 
 The cost model, refitted on the same five cuts of the same 1000
