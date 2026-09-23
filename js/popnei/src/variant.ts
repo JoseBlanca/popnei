@@ -62,8 +62,8 @@ export interface PassStats {
 
   /**
    * How many variants each filter of the pass was given and kept, under the
-   * kind of the filter, `"missing_data"`, `"maf"` or `"obs_het"`, in the
-   * order of the steps. It is empty for a pass with no filter.
+   * kind of the filter, `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`,
+   * in the order of the steps. It is empty for a pass with no filter.
    */
   filtering: Record<string, FilteringStats>;
 }
