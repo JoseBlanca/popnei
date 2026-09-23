@@ -1126,7 +1126,15 @@ divided by how many there were, and D comes from the two means:
     D = (s / (s - 1)) * (mean H_T' - mean H_S') / (1 - mean H_S')
 
 These are `_calc_pairwise_dest` and `_calc_jost_from_ht_hs` of
-`pynei/dists.py`, and popnei reproduces them.
+`pynei/dists.py`, and popnei reproduces them. The owner decided on 23
+September 2026 to keep pyNei's estimator, so that every D pyNei ever gave
+still holds; the option not taken was mmod's, which leaves the observed
+heterozygosity term out and which an R user comparing will get, 7.3e-5
+away on the biallelic panel and 3.5e-4 on the multiallelic one, "How it is
+verified" below. The doc comment of `dest`, in all three layers, names the
+estimator as the Nei and Chesser correction that GenAlEx prints and gives
+those two differences, so that a user who finds another number in R knows
+which they are holding.
 
 ### What pyNei does that is odd, and what popnei does instead
 
@@ -1173,7 +1181,7 @@ NaN made and nothing printed.
 
 Against `pairwise_D` of mmod 1.3.3 under R 4.6.1, on the same genotypes
 read by `df2genind`. mmod computes a different estimator of the same
-quantity (**Open 1**, below): its `HsHt` leaves the observed
+quantity: its `HsHt` leaves the observed
 heterozygosity term out of both corrections and uses 2n/(2n - 1) where the
 formula above uses n/(n - 1) and subtracts H_obs/(2n). So the check is an agreement and not an
 equality, and the spec states both formulas so that the next reader knows
@@ -1216,9 +1224,12 @@ share no allele, whatever their diversity. It is Meirmans and Hedrick's
 Hedrick's earlier G'_ST (2005) divides G_ST by the largest value it could
 take, (1 - H_S)/(1 + H_S) for two populations. The two are different
 numbers, 0.1155 against 0.1620 for p0 and p1 of the biallelic panel, and
-popnei gives the later one because it is what a reader of the
-microsatellite literature now sees and the only one of the two that a
-program outside the project computes (**Open 2**, below).
+popnei gives the later one, which the owner decided on 23 September 2026:
+it is what a reader of the microsatellite literature now sees, and it is
+the only one of the two that a program outside the project computes, so it
+is the only one whose literals are not popnei's own arithmetic against
+nothing. The option not taken was Hedrick's G'_ST, which a user who wants
+it gets from `gst` with one division, G_ST * (1 + H_S) / (1 - H_S).
 
 Neither is Hudson's F_ST, although all three are called fixation measures.
 They differ in what they correct for and in how the variants are combined:
@@ -1232,7 +1243,7 @@ Against `pairwise_Gst_Nei` and `pairwise_Gst_Hedrick` of mmod 1.3.3. The
 second computes the G''_ST above and not the G'_ST its name suggests: its
 `Gst_Hedrick` is `n * (Ht - Hs) / ((n * Ht - Hs) * (1 - Hs))`, which is
 Meirmans and Hedrick's formula. Both carry the same difference of
-estimator as Jost's D, Open 1, so the check is an agreement within 5e-4,
+estimator as Jost's D, so the check is an agreement within 5e-4,
 the same tolerance.
 
 On the biallelic panel mmod gives 0.0553896690, 0.0541614926 and
@@ -1247,9 +1258,8 @@ apart at the furthest. pyNei has neither measure, so there is no
 comparison with it.
 
 Hedrick's G'_ST has no reference program: mmod does not compute it and
-nothing else on the owner's machine does. If Open 2 is answered for it, its
-literals are popnei's own arithmetic and the spec says so, which is what
-the objectives ask to be written down.
+nothing else on the owner's machine does, which is why popnei does not
+give it.
 
 The worked example: G_ST = 0.081597/0.425347 = 0.191837, and with
 2 mean H_T' - mean H_S' = 0.506944 and 1 - mean H_S' = 0.656250,
@@ -1448,48 +1458,19 @@ first and writes the numbers to reach into this section.
 
 ## Open points
 
-The owner decides these two. Until then the implementer follows the
-"meanwhile" of each.
-
-**Open 1: which estimator of Jost's D.** popnei reproduces pyNei's, the
-Nei and Chesser correction as GenAlEx prints it, which subtracts the
-observed heterozygosity term. mmod, the R package a user is likeliest to
-check against, leaves that term out and uses 2n/(2n - 1) where pyNei uses
-n/(n - 1). The two are 7.3e-5 apart on the biallelic panel, with 48 to 84
-individuals a population, and 3.5e-4 apart on the multiallelic one, with
-30. The options are to reproduce pyNei, which keeps every number pyNei's
-users have and leaves popnei a few units of the fourth decimal from what R
-prints; to compute mmod's instead, which changes every D pyNei ever gave
-and has no name in the literature of its own; or to give both, as `dest`
-and a second field, which costs one more pair of sums for each pair and
-each group and one more name in the result. Recommendation: reproduce
-pyNei, and say in the doc comment of `dest` which estimator it is and by
-how much mmod's differs on these two panels. Meanwhile the implementer
-reproduces pyNei.
-
-The Kosman item above has none of its own. The two the first version of this spec had, whether the function
-takes `num_threads` and whether ploidies other than 2 are taken, the
-owner decided on 22 September 2026, and both are written under "Its
-Python function" with the option not taken. The threads: no calculation
-of popnei has the argument. The ploidies: every one is taken, since the
-paper's formula 2 is for any ploidy and `gd.kosman` computes it, which
-the tetraploid and the haploid datasets of "How it is verified" show.
-
-**Open 2: which standardized G_ST.** G_ST cannot reach 1 when the
-populations are diverse, and there are two ways of rescaling it so that it
-can. Hedrick's G'_ST (2005) divides G_ST by the largest value it could
-take. Meirmans and Hedrick's G''_ST (2011) rescales it so that it reaches 1
-with any number of populations and corrects for the number sampled. They
-are different numbers: 0.1155 against 0.1620 for p0 and p1 of the
-biallelic panel. The spec gives G''_ST. The options are to keep it, which
-mmod checks within 4.7e-4 and which is what the microsatellite literature
-now prints; to give Hedrick's G'_ST instead, which no program on the
-owner's machine computes, so its literals would be popnei's own arithmetic
-against nothing; or to give both, which costs one more name in the result
-and no new sum, since both come from the same two means. Recommendation:
-keep G''_ST. It is the one with a reference program, and the earlier form
-is a division away for a user who wants it. Meanwhile the implementer
-writes G''_ST alone, under the name `gst_standardized`.
+None. The two this spec had while it was written, which estimator of
+Jost's D and which standardized G_ST, the owner decided on 23 September
+2026, and both are under the item they belong to with the option that was
+not taken. The two the Kosman item had, whether the function takes
+`num_threads` and whether ploidies other than 2 are taken, the owner
+decided on 22 September 2026, and both are under "Its Python function" of
+that item. The threads: no calculation of popnei has the argument. The
+ploidies: every one is taken, since the paper's formula 2 is for any
+ploidy and `gd.kosman` computes it, which the tetraploid and the haploid
+datasets of its "How it is verified" show. The default of `jackknife_group` was
+open too, and on 23 September 2026 the owner decided there is none and
+that the call fails without it, which is under "Its Python function" of
+the population distances.
 
 ## Not in this spec
 
