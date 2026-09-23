@@ -13,6 +13,7 @@ from popnei.dists import Distances, calc_pairwise_kosman_dists
 from popnei.filters import FilteringStats, Step
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
+from popnei.ld import R2Matrix, calc_rogers_huff_r2_matrix
 from popnei.pca import PCAResult, do_pca, do_pca_from_variants
 from popnei.variant import Blocks, PassStats, Variants
 
@@ -30,11 +31,13 @@ __all__ = [
     "FilteringStats",
     "PCAResult",
     "PassStats",
+    "R2Matrix",
     "Step",
     "Variants",
     "VarsWritten",
     "__version__",
     "calc_pairwise_kosman_dists",
+    "calc_rogers_huff_r2_matrix",
     "do_pca",
     "do_pca_from_variants",
     "open_vars",

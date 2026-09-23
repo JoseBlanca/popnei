@@ -518,7 +518,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdIndividualAskedForTwice { .. }
         | popnei::Error::LdDosagesTooLarge { .. }
         | popnei::Error::LdTooManyAllelesInAVariant { .. }
-        | popnei::Error::LdNoMemory { .. } => PyValueError::new_err(message),
+        | popnei::Error::LdNoMemory { .. }
+        // The two of the `max_num_vars` of the matrix of every pair, which
+        // is the one number a user writes at that call: a pass that gave
+        // more variants than it, and a cap of more variants than this
+        // machine counts the pairs of. Both are found while a file is being
+        // read, and neither is about the file: what a user does about the
+        // first is raise the cap or filter the variants, whichever file
+        // they read.
+        | popnei::Error::LdTooManyVars { .. }
+        | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
         // The five of the principal components of the variants that the
         // dataset a user gave is wrong for: no variants, which the steps of
         // a `Variants` can leave; no variant with variance, which one

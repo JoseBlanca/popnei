@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 
 mod dists;
 mod errors;
+mod ld;
 mod pca;
 mod source;
 mod steps;
@@ -63,6 +64,13 @@ mod _core {
         )
     }
 
+    // The cap of `calc_rogers_huff_r2_matrix`, which is the constant of the
+    // core: the matrix holds one r² for each pair of the variants of the
+    // pass, so a pass of more than this many is refused instead of the
+    // machine being asked for the memory of their square.
+    #[pymodule_export]
+    const DEFAULT_MAX_NUM_VARS: usize = popnei::ld::MAX_NUM_VARS_OF_THE_MATRIX;
+
     // The two of `do_pca_from_variants`, from the core as well.
     #[pymodule_export]
     const DEFAULT_TRANSFORM_TO_BIALLELIC: bool = popnei::pca::DEFAULT_TRANSFORM_TO_BIALLELIC;
@@ -71,6 +79,8 @@ mod _core {
 
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::ld::calc_rogers_huff_r2_matrix;
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
     #[pymodule_export]

@@ -69,6 +69,7 @@ impl Step {
 const MAX_ALLOWED_MISSING_RATE: &str = "max_allowed_missing_rate";
 const MAX_ALLOWED_MAF: &str = "max_allowed_maf";
 const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
+const MAX_ALLOWED_R2: &str = "max_allowed_r2";
 
 /// The name a Python user writes the threshold of `criterion` under.
 fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
@@ -76,6 +77,13 @@ fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
         VarFilteringCriterion::MaxMissingRate(_) => MAX_ALLOWED_MISSING_RATE,
         VarFilteringCriterion::MaxMaf(_) => MAX_ALLOWED_MAF,
         VarFilteringCriterion::MaxObsHet(_) => MAX_ALLOWED_OBS_HET,
+        // The filter by linkage disequilibrium, whose step the package does
+        // not add yet: task 3.4 of `docs/plans/ld.md` is the one that gives
+        // a user `filter_by_ld`, with its second argument, the window, which
+        // no step of this list carries yet. The arm is here because a
+        // criterion the core added has to be named, and a wildcard would
+        // name the next one wrong.
+        VarFilteringCriterion::MaxLdR2 { .. } => MAX_ALLOWED_R2,
     }
 }
 

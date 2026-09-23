@@ -568,23 +568,33 @@ pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, P
     Ok(array)
 }
 
-/// The chromosomes of the variants of one block: the name of each
-/// chromosome the block holds, once, and which of those names each variant
-/// has.
-struct ChromColumn {
+/// The chromosomes of a run of variants, of one block or of a whole pass:
+/// the name of each chromosome they hold, once, and which of those names
+/// each variant has.
+pub(crate) struct ChromColumn {
     names: Vec<String>,
     /// One index into `names` for each variant of the block.
     of_each_variant: Vec<usize>,
 }
 
 impl ChromColumn {
-    /// The chromosomes that `numbers`, the column of a block, names in
-    /// `chroms`, the table of the reader that filled it.
+    /// The chromosomes that `numbers`, the column of a block or the
+    /// chromosome of each variant of a result, names in `chroms`, the table
+    /// of the reader that filled it.
     ///
     /// The table of a de novo assembly holds 10^4 scaffolds or more and a
     /// block holds a few of them, so what is copied is the name of every
-    /// chromosome of the block and not the table.
-    fn of(numbers: &[u32], chroms: &ChromTable, path: &Path) -> Result<ChromColumn, PyPopneiError> {
+    /// chromosome those variants are on and not the table.
+    ///
+    /// # Errors
+    ///
+    /// [`PyPopneiError::Broken`] when a number is not in the table, which is
+    /// a defect of whatever filled the column.
+    pub(crate) fn of(
+        numbers: &[u32],
+        chroms: &ChromTable,
+        path: &Path,
+    ) -> Result<ChromColumn, PyPopneiError> {
         let mut names = Vec::new();
         let mut of_each_variant = Vec::with_capacity(numbers.len());
         let mut where_each_number_went: HashMap<u32, usize> = HashMap::new();
@@ -616,8 +626,14 @@ impl ChromColumn {
     }
 }
 
-/// The name of the chromosome of every variant of a block.
-fn chrom_column<'py>(
+/// The name of the chromosome of every variant of a block or of a result.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when a variant holds a chromosome that
+/// [`ChromColumn::of`] found no name for, and what Python raised when the
+/// tuple could not be built.
+pub(crate) fn chrom_column<'py>(
     py: Python<'py>,
     chroms: &ChromColumn,
     path: &Path,
