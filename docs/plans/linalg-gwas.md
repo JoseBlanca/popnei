@@ -273,7 +273,7 @@ the plan.
       in `lib.rs`. Built from "The Cholesky factorization" of "What the
       seven give", "The errors the seven add" and "How the seven are
       verified". Serves deliverables 1 and 5. Needs nothing.
-- [ ] 2.2 `solve_with_cholesky` and `log_determinant_with_cholesky`. The
+- [x] 2.2 `solve_with_cholesky` and `log_determinant_with_cholesky`. The
       solve is `dpotrs` and `llt::solve::solve_in_place_with_conj`, with
       `b` of `sides` rows of `n`, one row for each right hand side, which
       is the layout the callers of lines 483 and 693 of pyNei's `gwas.py`

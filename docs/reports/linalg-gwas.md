@@ -15,7 +15,7 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is under way with task 2.1 done.
+reviewed and fixed, and work package 2 is under way with tasks 2.1 and 2.2 done.
 Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
@@ -237,6 +237,39 @@ not finite there is let through by both backends and stays where it was,
 since only the lower half is read.
 
 That subagent used 176640 tokens.
+
+### Task 2.2, the solve and the log of the determinant
+
+`a5d431c`. `solve_with_cholesky`, `dpotrs` with `uplo` `U` in the BLAS
+backend and faer's `solve_in_place_with_conj` with the matrix reference of
+`b` turned the other way round, `b` holding one row for each right hand
+side; and `log_determinant_with_cholesky`, twice the sum of the logs of
+the diagonal, which calls neither library and which reads that diagonal
+for a value that is not finite and for the `Singular` a `cholesky_lower`
+would have given first. 19 tests, every number a literal of the spec.
+
+Checked by the orchestrator: fmt, clippy with the warnings denied, `cargo
+wasm-check` and ruff clean; `cargo test --workspace` `472 passed` with 2
+ignored in the core crate and `74 passed` in the linear algebra crate;
+`cargo test -p popnei-linalg --no-default-features` `70 passed`; `uv run
+maturin develop && uv run pytest` `257 passed`. `--lib solve_with --
+--list` names 12 tests and `determinant` 7, where both filters gave `0
+tests` before.
+
+**The measurement the plan asked for, and it closes the risk.** "What
+could go wrong" of this work package said that nobody had measured how
+large a scratch faer wants for the solve at the size the association study
+works at, and that if it grew with the right hand sides then whether the
+solve should also give `Memory` would be a point for the owner. It does
+not grow: `solve_in_place_scratch` of faer 0.24.4 asks for **0 bytes**, at
+`n` of 5 with 10000 right hand sides and at `n` of 1000 alike, because the
+solve walks the two triangles in place. So the spec is right to give
+`Memory` to the inverse alone, nothing is asked of the owner, and the task
+added a test in the faer backend that asserts the scratch is 0, so that a
+later faer which wanted memory fails a test instead of ending the process.
+That test is why the faer build has 70 tests and not 69.
+
+That subagent used 155982 tokens.
 
 ## What is waiting on the owner
 
