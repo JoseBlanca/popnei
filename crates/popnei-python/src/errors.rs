@@ -406,7 +406,14 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // it goes, so nothing a user writes reaches it.
         | popnei::Error::PcaSecondPassMissing { .. }
         | popnei::Error::PcaSecondPassDiffers { .. }
-        | popnei::Error::PcaWeightOutOfPlace { .. } => {
+        | popnei::Error::PcaWeightOutOfPlace { .. }
+        // The one of the distances between populations that no argument of
+        // `calc_pop_dists` gives: the sums of a resampling group that do
+        // not hold one place for each pair of the populations, which every
+        // variant of a block is added into. The places are made from the
+        // populations the pass counts over, so a user who gets it reports
+        // it instead of looking for what they typed wrong.
+        | popnei::Error::PopDistSumsOfAnotherSize { .. } => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -492,7 +499,30 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaNoVariantWithVariance
         | popnei::Error::PcaVariantWithMoreThanTwoAlleles { .. }
         | popnei::Error::PcaNoIndividual
-        | popnei::Error::PcaVariantsTooLarge { .. } => {
+        | popnei::Error::PcaVariantsTooLarge { .. }
+        // The nine of the distances between populations, which "The Rust
+        // interface" of `docs/specs/dists.md` lists. Four are of what a
+        // user wrote and name no file, since what is wrong with them is
+        // wrong whatever file is read: a measure under a name that is of
+        // none of the seven, resampling groups of 0 base pairs, fewer than
+        // two populations, and populations that make more pairs than this
+        // machine counts. The other five are of the variants that were
+        // read: fewer resampling groups than a standard error is built
+        // from, a variant whose position goes back and one of a chromosome
+        // that the variants before it had left, the six sums of every pair
+        // and group that the machine has not the memory for, and a source
+        // whose genotypes hold more alleles than popnei reads. Which of the
+        // two a case is, `with_its_file` of `pop_dists.rs` decides: it is
+        // the call that knows whether a file was being read.
+        | popnei::Error::PopDistMeasureOfAnUnknownName { .. }
+        | popnei::Error::JackknifeGroupOfNoBasePairs
+        | popnei::Error::PopDistsOfFewerThanTwoPops { .. }
+        | popnei::Error::PopDistsOfTooManyPops { .. }
+        | popnei::Error::TooFewJackknifeGroups { .. }
+        | popnei::Error::JackknifeGroupsVariantGoesBack { .. }
+        | popnei::Error::JackknifeGroupsChromComesBack { .. }
+        | popnei::Error::PopDistSumsTooLarge { .. }
+        | popnei::Error::PopDistsPloidyOutOfRange { .. } => {
             PyValueError::new_err(of_the_file(message, path))
         }
         // Everything else is a wrong input of a function, which a file

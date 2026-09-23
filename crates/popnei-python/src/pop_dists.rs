@@ -142,15 +142,23 @@ pub(crate) fn calc_pop_dists<'py>(
 /// What the pass failed with, with the file it was reading where that file
 /// is part of what went wrong.
 ///
-/// A `pops` that names one population is wrong whatever file is read, so it
-/// names none, which is what "Errors, and no panics" of
-/// `.claude/skills/coding/SKILL.md` asks of an argument that is refused.
+/// Three of the errors of the pass are of what a user wrote and are wrong
+/// whatever file is read, so they name none, which is what "Errors, and no
+/// panics" of `.claude/skills/coding/SKILL.md` asks of an argument that is
+/// refused: a `pops` that names one population, one that names more than
+/// this machine counts the pairs of, and resampling groups of 0 base pairs.
 /// Every other error of the pass is of the variants it read: which file
 /// they came from is what a user needs in order to see whether it is the
-/// file or the steps that left the calculation with nothing, or what a
-/// length that gave too few resampling groups has to become.
+/// file or the steps that left the calculation with nothing, what a length
+/// that gave too few resampling groups has to become, or which file holds
+/// the ploidy popnei does not read.
 fn with_its_file(error: popnei::Error, path: &Path) -> PyPopneiError {
-    if matches!(error, popnei::Error::PopDistsOfFewerThanTwoPops { .. }) {
+    if matches!(
+        error,
+        popnei::Error::PopDistsOfFewerThanTwoPops { .. }
+            | popnei::Error::PopDistsOfTooManyPops { .. }
+            | popnei::Error::JackknifeGroupOfNoBasePairs
+    ) {
         return PyPopneiError::Core(error);
     }
     PyPopneiError::of_the_file(error, path)
