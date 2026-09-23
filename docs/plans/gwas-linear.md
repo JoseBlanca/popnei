@@ -124,7 +124,7 @@ Nothing of this plan.
       new `crates/popnei/src/gwas.rs`, and the wasm checks. Built from "The
       two distributions" of `docs/specs/gwas.md`. Serves deliverables 1 and
       2. Needs nothing.
-- [ ] 1.2 The regularized incomplete beta and `t_sf_two_sided`, from the
+- [x] 1.2 The regularized incomplete beta and `t_sf_two_sided`, from the
       recurrence the spec writes out, with the script that prints scipy's
       numbers and the three tests. Built from the same section. Serves
       deliverables 2 and 3. Needs 1.1.
@@ -224,6 +224,16 @@ standard error and its p-value.
 3. popnei and pyNei agree. The check: a pytest test runs both on the panel
    and `beta`, `se` and `p_value` agree within 1e-9 relative and the NaN
    variants are the same.
+
+   The 1e-9 of deliverable 3 and the 1e-12 of deliverable 2 are where to
+   start and not where to stop, as "How it is verified" of "What every
+   model shares" of the spec now says. Each is lowered until it fails, set
+   two or three times above where it broke, and both numbers go in the
+   report. The spec's reason: the kinship's matrix matched plink2's binary
+   output to 4.44e-16 absolute, which reads as a wide margin, while its
+   worst entry as a ratio was 3.31e-13, so its 1e-12 relative bound had two
+   to three times the worst case and not the thousandfold the absolute
+   figure suggested.
 4. The block size changes nothing. The check: a pytest test reads the same
    panel in blocks of 77 and gets `stats` equal within 1e-12 relative.
 5. `calcGwas` under node gives the same numbers. The check: `npm test` in
@@ -289,7 +299,9 @@ so that a variant that only marks ancestry does not look associated.
    3 of the 5 variants of `causal_vars.csv` among the 10 smallest p-values.
 6. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
    the pytest comparison of work package 3 with a kinship, and `npm test`
-   asserting the six score test literals.
+   asserting the six score test literals. The comparison with pyNei is
+   lowered until it fails and set two or three times above, as in
+   deliverable 3 of work package 3, and the report carries both numbers.
 
 ### What it stands on
 
