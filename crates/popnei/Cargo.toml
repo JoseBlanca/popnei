@@ -18,13 +18,16 @@ license.workspace = true
 [features]
 default = ["blas"]
 blas = ["popnei-linalg/blas"]
-# What the benchmark `standardize_row` needs to time the four passes over
-# a row of the principal component analysis one by one: it turns on the
-# module `pca::bench_internals`, which re-exports them, and nothing else.
-# They are private functions and a benchmark is a crate of its own, so
-# without it nothing outside `pca` can call them. It is off by default and
-# no build popnei ships turns it on: `cargo bench --bench standardize_row`
-# does, through the `required-features` of that benchmark.
+# What two benchmarks need to call a private function of the library: the
+# modules `pca::bench_internals`, which re-exports the four passes over a
+# row of the principal component analysis so that `standardize_row` times
+# them one by one, and `ld::bench_internals`, which re-exports the matrix
+# of r² with the size of its tiles given, so that `r2_matrix` times the
+# matrix at a tile the library does not choose. Both are private and a
+# benchmark is a crate of its own, so without this nothing outside those
+# two modules can call them. It is off by default and no build popnei ships
+# turns it on: `cargo bench` does, through the `required-features` of those
+# two benchmarks.
 bench-internals = []
 
 [dependencies]
@@ -115,5 +118,18 @@ harness = false
 # above do, and it needs the cargo feature that makes the four reachable.
 [[bench]]
 name = "standardize_row"
+harness = false
+required-features = ["bench-internals"]
+
+# How long the matrix of r² of every pair of a set of variants takes, of
+# work package 4 of docs/plans/ld.md, deferred there to a performance
+# review, against the 0.50 s of "Speed" of docs/specs/ld.md for 5000
+# variants of 1000 individuals. It takes the path of a vars file, the runs,
+# how many variants the matrix is of and how many variants a tile of the
+# products holds, and prints one wall time per run, so it runs without a
+# harness, as the seven above do. The tile is the private constant that
+# review settles, and the cargo feature is what makes it reachable.
+[[bench]]
+name = "r2_matrix"
 harness = false
 required-features = ["bench-internals"]

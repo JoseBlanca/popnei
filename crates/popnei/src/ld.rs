@@ -1624,6 +1624,49 @@ fn the_dosage_of(value: f64) -> u8 {
     value as u8
 }
 
+/// What the benchmark `r2_matrix` calls to take the matrix with a tile of
+/// its own choosing.
+///
+/// How many variants a tile holds is [`THE_VARS_OF_A_TILE`], which is
+/// private and which [`calc_r2_matrix`] passes on: nothing outside this
+/// module names another, and a benchmark is a crate of its own. The
+/// performance review of `docs/plans/ld.md` is what settles that number,
+/// and it settles it by timing the matrix at several tiles over one file,
+/// so this module is behind the cargo feature `bench-internals`, which is
+/// off by default and which nothing of popnei's own builds turn on, as
+/// `pca::bench_internals` is.
+///
+/// It holds one wrapper, over the private function [`calc_r2_matrix`]
+/// itself calls, so that what the benchmark times is the code the library
+/// runs.
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod bench_internals {
+    use super::{R2Matrix, the_r2_matrix_in_tiles_of as r2_matrix_in_tiles_of};
+    use crate::block::BlockReader;
+    use crate::error::Result;
+
+    /// The r² of every pair of the variants `reader` gives, with the
+    /// products taken in tiles of `vars_per_tile` variants, which is
+    /// `the_r2_matrix_in_tiles_of` of this module.
+    ///
+    /// [`calc_r2_matrix`](super::calc_r2_matrix) is this with the tile the
+    /// library chooses, and the matrix is the same whatever the tile: the
+    /// tiles cut the variants and every sum of a pair runs over the
+    /// individuals.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`calc_r2_matrix`](super::calc_r2_matrix).
+    pub fn the_r2_matrix_in_tiles_of<R: BlockReader + ?Sized>(
+        reader: &mut R,
+        max_num_vars: usize,
+        vars_per_tile: usize,
+    ) -> Result<R2Matrix> {
+        r2_matrix_in_tiles_of(reader, max_num_vars, vars_per_tile)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
