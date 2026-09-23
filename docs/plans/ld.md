@@ -312,7 +312,7 @@ and `js/popnei/src/ld.ts`.
       added to `tests/reference/ld/make_reference.py` with their output
       stored, and the cargo test of the four rows of the table. Serves
       deliverables 2 and 3. Needs 1.1 and 3.2.
-- [ ] 3.4 The Python step: the binding and
+- [x] 3.4 The Python step: the binding and
       `Variants.filter_by_ld` in `python/popnei/filters.py`, with the
       `Step`, the counts and every refusal of "In Python and in
       TypeScript" of the item, and the pytest tests it names. Serves

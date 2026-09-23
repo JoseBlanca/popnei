@@ -769,3 +769,43 @@ One decision: `maxDist` crosses as a `u32`, and the package refuses what
 is not a whole number of 1 or more before it crosses, as it already does
 for the variants of a block, rather than letting the core say it. A
 negative number would otherwise arrive as 4294967295.
+
+Task 3.4, the Python step, commit 17c76ad. `Variants.filter_by_ld` is
+there with its binding, and `uv run pytest` goes from 257 tests to 276,
+19 of them this task's.
+
+The four counts and the eight positions matched on the first run with no
+expectation adjusted, which is the fourth route to them. The `filtering`
+of a pass with a maf filter before the ld one reads `maf` 500 of 500 then
+`ld` 84 of 500.
+
+The method is on `Variants` in `python/popnei/variant.py` and not in
+`python/popnei/filters.py`, where the plan puts it: `Variants` lives in
+`variant.py` and `filters.py` holds `Step` and `FilteringStats` alone. The
+plan named the wrong file.
+
+The step's arguments stopped being two floats. A window is a whole number
+of base pairs, and a user who wrote 10000 was getting `10000.0` back in
+the `args` of their `Step`; the arguments now carry a threshold or a
+distance and the distance stays whole.
+
+### The table of the spec regenerates again
+
+The repair of `docs/reports/ld-method/missing_rules.py`, commit 084dd4c.
+The program reads plink2's r² for the panel now, works the first rule out
+from the six whole numbers itself, and squares what pyNei returns, since
+`_calc_rogers_huff_r2` gives r whatever its name says. The orchestrator
+ran it from an empty directory with the plink2 command the README now
+gives:
+
+| the rule | what the program prints | what the table says |
+|---|---|---|
+| the individual is left out of the pair | 0, 0, 0 | 0, 0, 0 |
+| the genotype takes the mean dosage of its variant | 0.000354, 0.00782, 0.0422 | 0.00035, 0.0078, 0.042 |
+| pyNei: the genotype is a dosage of -1 | 0.00369, 0.0468, 0.194 | 0.0037, 0.047, 0.194 |
+
+and "plink2 r2 of the panel: median 0.0071, NaN in 0 of the 1438800
+pairs", which is the 0.0071 the text beside the table quotes. The first
+row is 0 over all 1438800 pairs and not a rounding, as the spec claims.
+So the table was right all along and is now reproducible from the program
+kept beside it.
