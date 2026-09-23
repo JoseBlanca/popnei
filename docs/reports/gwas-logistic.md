@@ -62,6 +62,19 @@ threshold goes and those two tests are replaced by the exact quantity; no
 literal of either panel is near the threshold, so the six literals do not
 move either way.
 
+Two of the four places have a dataset behind them and two do not. The linear
+model's was reached on a fixture of eight individuals with a variant fixed
+one way in each of two subpopulations, and the linear mixed model's Wald
+test on six individuals with an identity kinship; both were reproduced
+before the rule was written. **Neither score test has been reached on any
+data.** The case for guarding them is that the arithmetic is the same
+cancellation in another denominator, which is an argument and not a
+reproduction. So each of the two tasks that builds one also builds a fixture
+that reaches it, and this report records what that fixture leaves against
+the threshold it is judged by, the way the linear model's test records
+6.47e-32 against a threshold of 1.78e-15. A guard whose case has never been
+seen is a guard that can be wrong in the direction of never firing.
+
 **Open 3, a kinship that does not identify the two variances.** Meanwhile:
 give the study with `genetic_variance`, `residual_variance` and
 `heritability` set to `None`. What it does to the logistic mixed model is
