@@ -1,8 +1,8 @@
 # Plan: r² between variants, the matrix of it, and the filter by linkage disequilibrium
 
-22 September 2026. State: work packages 1, 2 and 3 done on the branch
-`plan/ld`, and being merged into `main` on 23 September 2026. Work
-package 4, the measurements, is not built: the owner decided that day to take the speed of both calculations
+22 September 2026. State: work packages 1, 2 and 3 done and merged into
+`main` on 23 September 2026. Work package 4, the measurements, is not
+built: the owner decided that day to take the speed of both calculations
 in a performance review of its own rather than inside this plan, so the
 three tasks below are deferred and the "Speed" sections of the two specs
 still say that they are to be filled. It builds

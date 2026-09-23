@@ -18,8 +18,12 @@ the list of criteria it built from before. `main` was merged into
 `plan/ld` on 23 September 2026, as this project has merged its others,
 into the branch first, so that `main` is never left unable to build. What
 the merge had to reconcile, and the three numbers it did not move, are in
-the message of that commit. The three work packages are still on `plan/ld`
-and nowhere else until the owner orders `plan/ld` into `main`.
+the message of that commit. `main` was then moved to `plan/ld`, which by
+then was a fast forward, and the seven checks were run again on `main`
+itself: 603 tests in the core crate and 42 in the linalg crate, 603 and
+37 with the other backend of the linear algebra, 347 under pytest, 242
+under node, `cargo fmt`, `cargo clippy` and `cargo wasm-check` clean, and
+`tests/reference/ld/run_plink2.sh` into an empty directory exiting 0.
 
 ## What exists now that did not
 
