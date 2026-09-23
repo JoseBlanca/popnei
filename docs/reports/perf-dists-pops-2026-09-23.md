@@ -37,8 +37,8 @@ and `count_gts_of` counts the genotypes that are called whole, missing and
 heterozygous; both are called from `count_the_var`, and `count_alleles`
 without the `_of` is the different function that counts a whole row rather
 than one population. A **resampling group** is a stretch of a chromosome
-that the standard errors leave out in turn. The **reader** is what turns a file
-into blocks of genotypes, and it is outside every number called "the
+that the standard errors leave out in turn. The **reader** is what turns a
+file into blocks of genotypes, and it is outside every number called "the
 calculation" below.
 
 ## 1. The scope and its limits
