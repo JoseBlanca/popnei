@@ -328,6 +328,30 @@ def test_the_f2_of_the_panel_and_its_standard_error_are_admixtools() -> None:
     assert all(0 < error < 0.01 for error in dists.fst.standard_errors)
 
 
+def test_every_measure_has_a_standard_error_of_the_same_jackknife() -> None:
+    """Every one of the seven measures of the biallelic panel has a standard
+    error over the 22 groups of 55 000 base pairs, and each is above 0 and
+    below a tenth of the measure beside it.
+
+    No program prints one but for f_2, which the test above compares with
+    ADMIXTOOLS: what is asked of the other six is that the jackknife gives
+    them a number of the size a standard error of that measure has. Every
+    one of the twenty-one is between 2 and 6 in 100 of its measure, which
+    "The standard errors" of the spec states.
+    """
+    dists = calc_pop_dists(
+        open_vcf(PANEL), PANEL_POPS, jackknife_group=PANEL_JACKKNIFE_GROUP
+    )
+
+    for measure in EVERY_MEASURE:
+        values = getattr(dists, measure)
+        assert values.standard_errors is not None, measure
+        for pair, (value, error) in enumerate(
+            zip(values.dist_vector, values.standard_errors, strict=True)
+        ):
+            assert 0 < error < value / 10, f"the {measure} of {PAIRS[pair]}"
+
+
 def test_the_chord_and_the_da_of_both_panels_are_adegenets() -> None:
     """The chord distance of the three pairs of each panel against
     `dist.genpop(method = 2)` of adegenet 2.1.11, and Nei's D_A against the

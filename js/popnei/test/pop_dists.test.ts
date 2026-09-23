@@ -386,6 +386,40 @@ test("the f_2 of the panel and its standard error are the ones ADMIXTOOLS gives"
   assert.ok([...ofTheFst].every((error) => error > 0 && error < 0.01));
 });
 
+test("every measure has a standard error of the same jackknife", () => {
+  // No program prints a standard error of the other six, so what is asked of
+  // each of the seven is that the jackknife gives it a number of the size a
+  // standard error of that measure has: above 0 and below a tenth of the
+  // measure beside it, every one of the twenty-one being between 2 and 6 in
+  // 100 of its measure, which "The standard errors" of the spec states.
+  const dists = popDistsOf(PANEL_VCF, PANEL_POPS, {
+    jackknifeGroup: PANEL_JACKKNIFE_GROUP,
+  });
+  const ofEachMeasure = [
+    dists.fst,
+    dists.f2,
+    dists.chord,
+    dists.da,
+    dists.dest,
+    dists.gst,
+    dists.gstStandardized,
+  ];
+
+  ofEachMeasure.forEach((values, measure) => {
+    const named = EVERY_MEASURE[measure] as string;
+    assert.ok(values !== null, `the ${named} of the panel`);
+    const errors = values.standardErrors;
+    assert.ok(errors !== null, `the standard errors of the ${named}`);
+    values.distVector.forEach((value, pair) => {
+      const error = errors[pair] as number;
+      assert.ok(
+        error > 0 && error < value / 10,
+        `the ${named} of ${PAIRS[pair] as string} is ${value} with a standard error of ${error}`,
+      );
+    });
+  });
+});
+
 test("the chord and the da of both panels are adegenet's", () => {
   // popnei gives the form adegenet gives, the chord of the sphere of radius 1
   // divided by the square root of 2: a number 1.414 times one of these is the

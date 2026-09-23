@@ -3663,14 +3663,16 @@ mod tests {
         );
     }
 
-    /// The standard error of the F_ST of the same panel and the same
-    /// groups, which no program prints: what is checked here is that it
-    /// comes out of the same jackknife as the f_2 above and is a small part
-    /// of the measure, 0.004197 of a F_ST of 0.104962 for p0 and p1 over
-    /// the 12 groups of 100 000 base pairs. Its arithmetic is the one
-    /// ADMIXTOOLS checks.
+    /// The standard error of each of the seven measures of the same panel
+    /// and the same groups, which no program prints but for f_2: what is
+    /// checked here is that each comes out of the same jackknife as the
+    /// f_2 above and is a small part of its measure, above 0 and below a
+    /// tenth of it, which is what "The standard errors" of
+    /// `docs/specs/dists.md` asks. The F_ST of p0 and p1 is 0.104962 over
+    /// the 12 groups of 100 000 base pairs and its standard error 0.004197.
+    /// The arithmetic is the one ADMIXTOOLS checks.
     #[test]
-    fn the_fst_has_a_standard_error_of_the_same_jackknife() {
+    fn every_measure_has_a_standard_error_of_the_same_jackknife() {
         let sums = sums_of_the_panel(
             "dists/panel.vcf.gz",
             "stats/panel_pops.txt",
@@ -3679,13 +3681,19 @@ mod tests {
             None,
         );
 
-        let standard_error = sums
-            .standard_error(PopDistMeasure::Fst, 0, 1)
-            .expect("the standard error of the F_ST of p0 and p1");
-        assert!(
-            standard_error > 0.0 && standard_error < 0.01,
-            "the standard error of the F_ST of p0 and p1 is {standard_error}"
-        );
+        for measure in PopDistMeasure::THAT_HAVE_A_VALUE {
+            let named = measure.name();
+            let value = sums
+                .measure(measure, 0, 1)
+                .unwrap_or_else(|| panic!("the {named} of p0 and p1"));
+            let standard_error = sums
+                .standard_error(measure, 0, 1)
+                .unwrap_or_else(|| panic!("the standard error of the {named} of p0 and p1"));
+            assert!(
+                standard_error > 0.0 && standard_error < value / 10.0,
+                "the standard error of the {named} of p0 and p1 is {standard_error} beside a value of {value}"
+            );
+        }
     }
 
     /// A pair whose variants all fell in one group has no standard error,
