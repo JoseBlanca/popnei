@@ -8,10 +8,12 @@ calls, and in WebAssembly, where there is none, on faer, a linear
 algebra library written in Rust. There is no code. This spec develops the
 row `linalg` of the table in section 9 of `docs/architecture.md` and
 decision 5 of `docs/rust_core.md`, which chose the two backends. It
-covers the crate, its backends, the builds, and the three operations that
-`docs/specs/pca.md` calls: the product of a matrix with itself, the
-eigendecomposition of a symmetric matrix, and the product of two
-matrices. The operations of the GWAS are later items.
+covers the crate, its backends, the builds, and four operations: the
+three that `docs/specs/pca.md` calls, which are the product of a matrix
+with itself, the eigendecomposition of a symmetric matrix and the
+product of two matrices, and the one that the r² of `docs/specs/ld.md`
+calls, the product of a matrix with the transpose of another. The
+operations of the GWAS are later items.
 
 The routines of BLAS and LAPACK are reached through the crates `blas`
 0.23 and `lapack` 0.20, and each is an `unsafe fn` over slices whose
@@ -156,12 +158,17 @@ second operand is to be read the other way round, which both libraries do
 inside the routine and neither pays a copy for. Without it a caller whose
 two matrices are both laid out with one row for each thing has to write
 the transpose of one of them into a buffer of its own, which is a matrix
-operation in a crate that is not this one and a copy of the whole matrix:
-0.422 ms for 512 x 1000 on the machine of "Speed", measured on 22
-September 2026. The r² of `docs/specs/ld.md` is the caller: its three
-matrices hold one row for each variant and one column for each
-individual, and the product of one set of variants with another sums over
-the individuals.
+operation in a crate that is not this one and a copy of the whole
+matrix, 4.1 MB for 512 x 1000. What that copy costs was timed four ways
+on the machine of "Speed" on 23 September 2026 and came out between 0.14
+and 0.47 ms, a spread too wide to quote a figure from; what was measured
+end to end is that the r² of one pair of 512 variants of 1000
+individuals went from 8.25 ms to 7.40 ms when the three copies it made
+were dropped for this operation, and from 5.97 ms to 5.02 ms for a set
+of variants against itself. The r² of `docs/specs/ld.md` is the caller:
+its three matrices hold one row for each variant and one column for each
+individual, and the product of one set of variants with another sums
+over the individuals.
 
 ### Layout, half and the backends
 
@@ -185,13 +192,13 @@ since they are defects of the caller: a dimension that does not match,
 a `g` that is not c x c for the product nor n x n for the
 eigendecomposition, or an `a`, a `b` or a `c` shorter than its rows times
 its columns, a longer one being taken by its first rows times columns
-values; a c or an n of 0, and in `product` an `inner` of 0 as well, while
-the rows of either product may be 0; a dimension, or a number of values
-of a matrix, above 2147483647, which is what the routines of BLAS and
-LAPACK count in, checked for both backends so that the two refuse the
-same calls; and a value that is not finite in a matrix. The last is
-checked here because the backends do not agree on it: `dsyevd` on a
-matrix with a NaN gives NaN eigenvalues and an `info` of 0, measured
+values; a c or an n of 0, and in the two products an `inner` of 0 as
+well, while the rows of a product may be 0; a dimension, or a number of
+values of a matrix, above 2147483647, which is what the routines of
+BLAS and LAPACK count in, checked for both backends so that the two
+refuse the same calls; and a value that is not finite in a matrix. The
+last is checked here because the backends do not agree on it: `dsyevd`
+on a matrix with a NaN gives NaN eigenvalues and an `info` of 0, measured
 through numpy 2.5 on 22 September 2026, and faer's `self_adjoint_eigen`
 gives its error of no convergence. A routine of LAPACK that stops,
 `info` other than 0, which for `dsyevd` is an eigendecomposition that
@@ -476,7 +483,7 @@ Meanwhile the flag is not set and the feature of `gemm` is.
 
 ## Not in this spec
 
-- What `pynei/gwas.py` calls besides the three operations here:
+- What `pynei/gwas.py` calls besides the four operations here:
   `solve`, `inv`, `qr`, `slogdet` and `matrix_rank` of `numpy.linalg`.
   They are later items of this spec, written with `docs/specs/gwas.md`,
   which says which the four null models of the GWAS need and how each is
