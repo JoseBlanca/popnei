@@ -118,13 +118,10 @@ impl PopVarCounts {
         ploidy: usize,
         individuals: &[usize],
     ) -> Result<()> {
-        self.called_alleles = count_alleles_of(gts, ploidy, individuals, &mut self.allele_counts)?;
+        let counted = count_alleles_of(gts, ploidy, individuals, &mut self.allele_counts)?;
+        self.called_alleles = counted.called_alleles;
+        self.num_alleles = counted.num_alleles;
         self.gts = count_gts_of(gts, ploidy, individuals)?;
-        self.num_alleles = self
-            .allele_counts
-            .iter()
-            .rposition(|count| *count > 0)
-            .map_or(0, |largest| largest.saturating_add(1));
         Ok(())
     }
 
