@@ -858,7 +858,9 @@ is why pyNei wrote both.
 - `t_sf_two_sided(t, df)`, the chance that a Student t with `df` degrees of
   freedom is further from 0 than `t`, which the linear model and the linear
   mixed model's Wald test need. It is the regularized incomplete beta
-  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`.
+  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`, and it hands the
+  incomplete beta `t² / (df + t²)` beside it as `one_minus_x`, for the
+  reason that section gives.
 
 popnei takes `erfc` from the `libm` crate, a pure Rust port of musl's math
 library with no C in it, which builds for both wasm targets, checked as a
@@ -877,18 +879,28 @@ Lentz's method, which builds a continued fraction from its front rather than
 from its far end, so it can stop as soon as a term no longer changes the
 value instead of needing its depth fixed in advance.
 
-`x` at or below 0 gives 0 and at or above 1 gives 1. Otherwise, with
+It takes **both** `x` and `one_minus_x` from its caller and never subtracts
+one from the other. `t_sf_two_sided` has them for nothing, `df / (df + t²)`
+and `t² / (df + t²)`, and computing the second as `1 - x` instead throws
+away every digit of it once `x` has rounded to 1: at 197 degrees of freedom
+and `t` of 1e-7 that returned exactly 1.0 where the answer is
+0.9999999203127337. Measured on 23 September 2026, taking `one_minus_x` from
+the caller moved the worst relative error over `t` in [1e-7, 1e-3] from
+7.97e-8 to 5.34e-17 at 197 degrees of freedom, and from 6.34e-7 to 3.83e-15
+at 9997.
+
+An `x` at or below 0 gives 0 and a `one_minus_x` at or below 0 gives 1.
+Otherwise, with
 
     front = exp(lgamma(a + b) - lgamma(a) - lgamma(b)
-                + a * ln(x) + b * ln_1p(-x))
+                + a * ln(x) + b * ln(one_minus_x))
 
-`ln_1p(-x)` is the logarithm of one plus its argument, computed as one
-operation, which keeps the digits that `ln(1 - x)` loses when `x` is small;
-pyNei uses it at `src/pynei/gwas.py:329` and the difference is below 1e-17
-in the exponent. The answer is `front * cf(a, b, x) / a` while `x` is below
-`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, 1 - x) / b` at or above
-it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where the
-fraction converges slowly. `cf` is the continued fraction, with `tiny` at
+the answer is `front * cf(a, b, x) / a` while `x` is below
+`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, one_minus_x) / b` at or
+above it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where
+the fraction converges slowly. pyNei writes both of those from `x` alone,
+`numpy.log1p(-xi)` at `src/pynei/gwas.py:329` and `1 - xi` at 337, and
+`log1p` recovers the logarithm but not the fraction's argument. `cf` is the continued fraction, with `tiny` at
 1e-300, `eps` at 1e-15 and at most 500 rounds:
 
     qab = a + b;  qap = a + 1;  qam = a - 1
@@ -933,9 +945,10 @@ became not finite and the worst value moved by 2.3e-13 relative. The
 fraction took at most 52 rounds of its 500, over a sweep of 116802 calls.
 
 So no test of either guard can fail on a value, and the only assertion with
-anything behind it is one on the number of rounds. A reader who finds two
-lines no test covers should stop looking for the argument that reaches them:
-for `tiny` there is none, and the line above says why.
+anything behind it is one on the number of rounds. A reader who finds the five lines that read
+`tiny`, and the one that reads `eps`, covered by no test should stop looking
+for the argument that reaches them: for `tiny` there is none, and the bound
+above says why.
 
 ### How it is verified
 
@@ -956,15 +969,15 @@ the 10000 individuals `docs/objectives.md` names, less the coefficients and
 the variant. The error grows with the degrees of freedom and its worst point
 is not spread over `t`: it sits at `t` near 1.73, where the branch of the
 incomplete beta switches. Measured against mpmath at 60 digits on 23
-September 2026: 3.7e-13 relative at 197 degrees of freedom, 4.1e-11 at 9997,
-1.4e-10 at 20000 and 3.3e-9 at 500000. So the bound has 512 times the room
-at the degrees of freedom the other cases use, 2.4 times at 9997, and is
+September 2026: 4.7e-13 relative at 197 degrees of freedom, 7.7e-13 at 997,
+5.5e-11 at 9997, 1.5e-10 at 20000 and 3.5e-9 at 500000. So the bound has 213
+times the room at 197 degrees of freedom, 1.8 times at 9997, and is
 already untrue at 20000 individuals. It is the cancellation in
 `lgamma(a + b) - lgamma(a)`, amplified by the `1 -` of the symmetry branch,
 and not the stopping rule: setting `eps` to 0 moves the worst point from
 3.3326e-9 to 3.3324e-9.
 
-That 2.4 is the one bound of this spec sitting near its failure, and it is
+That 1.8 is the one bound of this spec sitting near its failure, and it is
 stated rather than widened because widening it would catch less at the sizes
 popnei actually runs. Whoever first wants popnei past 10000 individuals has
 to come back to this function before they can trust its p-values, and the
@@ -976,7 +989,7 @@ How far those three bounds are from the differences they allow, measured on
 23 September 2026 on a built implementation: the chi square's worst is
 1.8e-14 relative, 57 times inside its bound; the incomplete beta's worst is
 8.5e-15 absolute at the pair `(98.5, 0.5)`, 117 times inside; and the
-Student t's worst is 3.7e-13 relative at 197 degrees of freedom, 512 times
+Student t's worst is 4.7e-13 relative at 197 degrees of freedom, 213 times
 inside, at `t` near 1.73 where the branch switches. So these three are not
 the round numbers that
 "How it is verified" of "What every model shares" warns about, and they do
