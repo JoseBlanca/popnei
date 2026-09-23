@@ -443,3 +443,75 @@ The subagent answered that the counter is bounded by the groups, which the
 memory already bounds, so it cannot overflow, and that raising there would
 change the `Option<f64>` the spec fixes for that method. The orchestrator
 weighed that as it weighs a reviewer and took it: the bound holds.
+
+### The fixes, third round: the two packages, the doc comments and the tidying
+
+Eleven commits, `4a1d8fc` to `b0dbdb1`, 238 297 tokens.
+
+**The two packages now give the same thing.** Python left the counts of
+the pass empty on each measure's distances where TypeScript filled them,
+and the docstring of that field said it is empty only for distances no
+pass gave. Python fills it, which makes the sentence true again.
+
+**Three tests where there were none.** A pair with no variant, which the
+spec describes and nothing exercised, reached at a `min_num_individuals`
+of 50 where the largest count of called genotypes in the smallest
+population is 48: `num_vars` comes out 0, 0 and 1200 and the third pair
+still carries ADMIXTOOLS' number. The four ways of giving
+`jackknife_group` wrongly that TypeScript tested and Python did not. And
+the two branches of the Python that reads `measures`.
+
+**The doc comments that were wrong.** A count said to be bounded by a
+`u32` that is a `u64`; a method said to give no value where the pair's
+measure has none, which it never consults; and a standard error quoted in
+a test's comment as 0.0032 where the test's own group length gives
+0.004197 — 0.0032 is the value at the other group length. The subagent
+measured both before writing either.
+
+**What `"variant"` costs, which nothing said.** The spec said the
+accumulator does not grow with the variants, and under `"variant"` a group
+is a variant, so it grows exactly with them. Measured on the biallelic
+panel cut into 20 populations, which is 190 pairs and 1200 variants: the
+sums are 10 944 000 bytes and `f2_groups` 1 824 000. Both the spec and the
+docstring of `jackknife_group` in the two packages now say it, which is
+where a user choosing `"variant"` will read it.
+
+**Three pieces of tidying for the work packages to come.** The order of
+the pairs was derived three times, once in the core and once in each
+binding crate, so a change to the core's order would have left the values
+and their standard errors mismatched inside one result without a word; the
+bindings now take it from the core. Which measures have a value was known
+in the two packages and not in the core, so work package 2 would have had
+to change three places and dropping one refusal without the other would
+hand a user NaN read as a distance; it is now one list in the core that
+both packages read. And the three helpers that cut a block into chunks,
+which this work had borrowed from the statistics module, are in the block
+module, which is where section 9 of `docs/architecture.md` puts block
+handling.
+
+`docs/architecture.md` now has a row for this module, and its `dists` row
+no longer names a pyNei function the spec says popnei deliberately does
+not have.
+
+## Work package 1 is done
+
+Its six deliverables, run again after the three rounds of fixes, on
+`b0dbdb1`:
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, 2, 3 and 4 | `cargo test -p popnei --lib pop_dists::` | `49 passed; 0 failed`, against 39 before the review and 0 when the branch started |
+| 4, that they exist | `cargo test -p popnei --lib pop_dists:: -- --list` | `49 tests, 0 benchmarks`, where the plan asks for 20 or more |
+| 5, Python | `uv run pytest tests/test_pop_dists.py` | `30 passed`, against 23 before the review |
+| 6, TypeScript | `npm test` in `js/popnei` | `tests 230, pass 230, fail 0` |
+
+And every check of the `coding` skill on the same commit: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` `Finished` with no warning, `cargo test --workspace` `570
+passed; 0 failed; 2 ignored` and `35 passed`, `cargo wasm-check`
+`Finished`, `ruff format --check` `27 files already formatted`, `ruff
+check` `All checks passed!`, and `uv run maturin develop && uv run
+pytest` `344 passed`.
+
+The review added 10 cargo tests and 7 Python tests to this work package
+and changed the spec in five more places.
