@@ -151,7 +151,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
 - [x] 1.2 The resampling groups: `JackknifeGroups`, `GroupId` and the walk
   that cuts them, in the same file. From "The standard errors". Serves
   deliverable 2. Can run side by side with 1.1.
-- [ ] 1.3 F_ST, f_2 and the delete-m jackknife out of the six sums, in the
+- [x] 1.3 F_ST, f_2 and the delete-m jackknife out of the six sums, in the
   same file. From "What it gives" of Hudson's F_ST and of f_2, and from
   "The standard errors" for the pseudo-values, the jackknife estimate and
   the variance. Serves deliverable 3. Needs 1.1 and 1.2. Its failure would

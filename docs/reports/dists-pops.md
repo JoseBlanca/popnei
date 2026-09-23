@@ -79,3 +79,46 @@ orchestrator took it as a small choice made and written down rather than
 an open point for the owner, as the `coding` skill allows: the spec had
 defined nothing here, so nothing the owner decided was overturned, and the
 alternative was a silent NaN.
+
+### Task 1.3, the two measures and the standard error
+
+Two commits: `0dccb3a`, the spec and the reference data, and `b56f402`,
+the code. 188 529 tokens. `cargo test -p popnei --lib pop_dists::` gives
+`27 passed; 0 failed`, and the workspace `548 passed; 0 failed; 2
+ignored`. The other checks were run again by the orchestrator on
+`b56f402` and all pass.
+
+Deliverable 3 is met: the worked example's F_ST of 0.276712 and f_2 of
+0.140278, the per variant F_ST of `var0000` of 0.332322 over a pass of
+that one variant, plink2's three F_ST on each panel within 1e-6 absolute,
+and ADMIXTOOLS 2's three f_2 and three standard errors within 1e-12
+relative, are all asserted as literals.
+
+### A test that could not have failed, and the run that fixes it
+
+The 12 groups that a length of 100 000 base pairs cuts the biallelic panel
+into all hold exactly 100 variants. The estimator the spec asks for, the
+delete-m jackknife for unequal m, weights each group by h_j, the variants
+of the pair over the variants of the group, and on 12 equal groups h_j is
+12 for every one of them. An estimator written for groups that are all the
+same size reproduces ADMIXTOOLS' three standard errors on that fixture to
+the last bits of a double, so the check the plan named could not have told
+the two apart.
+
+So `make_reference.py` now runs ADMIXTOOLS 2.0.10 a second time, at
+`blgsize = 250000`, which cuts the panel into 6 groups holding 250, 250
+and 100 variants on each of its two chromosomes, and writes
+`panel.f2.uneven.tsv` beside `panel.f2.tsv`. On those groups the spec's
+formula is 9.8e-17 from the furthest of ADMIXTOOLS' three standard errors,
+5.7e-14 of it, and the estimator that takes the groups as equal is 1.5e-4
+from the first, which is 1.2e8 times the tolerance the tests compare
+within. The 100 000 run came out byte for byte the same file, which is
+what says the script and the versions it refuses are the ones the earlier
+numbers were taken with.
+
+This is a change to the plan, and it makes deliverable 3's check stronger
+rather than weaker: the deliverable now has two fixtures where it had one.
+The spec's "The standard errors" and its f_2 item carry the second run and
+the seventeen digits the 1e-12 comparison needs, in `0dccb3a`, a commit
+before the code. The f_2 of the two runs differ in their last two digits,
+since ADMIXTOOLS takes f_2 as a weighted mean over its blocks.
