@@ -809,3 +809,57 @@ pairs", which is the 0.0071 the text beside the table quotes. The first
 row is 0 over all 1438800 pairs and not a rounding, as the spec claims.
 So the table was right all along and is now reproducible from the program
 kept beside it.
+
+### Work packages 2 and 3 as a whole
+
+Both finished as planned, and two of their deliverables came out stronger
+than the plan asked. The orchestrator ran every check below itself.
+
+Work package 2, the matrix of every pair:
+
+| Deliverable | What it gave |
+| --- | --- |
+| 1, `calc_r2_matrix` in the core | the five pairs of the table with their `n`; all 250000 cells of `ld.vcf.gz` against plink2's matrix; the 68 variants of one dosage NaN in their row, their column and their diagonal cell and the other 432 at exactly 1 against themselves; the same matrix to the bit for every one of the sixteen pairings of blocks and tiles of 7, 64, 256 and 500 variants, where the plan asked for four block sizes; and the same matrix in a rayon pool of 1 thread and of 4 |
+| 2, the Python function | `uv run pytest tests/test_ld.py` 15 passed, where the file did not exist |
+| 3, the comparison with pyNei | within 1e-12 with the missing genotypes out; with them in, the median 0.00369, 99th percentile 0.04680 and largest 0.19374 of the spec's table |
+| 4, the refusals | a cap below the variants of the pass, a cap the machine cannot count, a source with no variant, and steps that kept none |
+| 5, the TypeScript function | `npm test` in `js/popnei` 202 passing, where `js/popnei/src/ld.ts` did not exist |
+
+Work package 3, the filter by linkage disequilibrium:
+
+| Deliverable | What it gave |
+| --- | --- |
+| 1, `LdFilter` and `LdFilteredReader` | both in `filters.rs`, with the window, the rule, the counts and the refusal of a position that does not rise |
+| 2, the four rows of the table | a cargo test asserting popnei's kept variants are exactly the stored set, chromosome and position, at the four settings and at blocks of 7, of 64 and of the default size, where the plan asked for the counts and five positions |
+| 3, the three properties | stored in `tests/reference/ld/ld.filter.properties.txt`, nothing violating any of the three at any of the four settings, and each shown able to fail |
+| 4, the criterion and the chain | `cargo test -p popnei --lib filters:: -- --list` 64 tests, from the 34 the plan started with |
+| 5, the Python step | every test the spec names, including the source whose positions go backwards; `uv run pytest` 276 passed, from 242 |
+| 6, the TypeScript step | all four rows of the table, where the deliverable asked for one |
+
+The seven checks of the `coding` skill on the last commit: `cargo fmt
+--all --check` no output; `cargo clippy --workspace --all-targets -- -D
+warnings` no warning; `cargo test --workspace` `473 passed` in the core
+crate and `42 passed` in the linalg crate; the same with
+`--no-default-features` `473 passed` and `37 passed`; `cargo wasm-check`
+finished; ruff `All checks passed!`; `uv run maturin develop && uv run
+pytest` `276 passed`; and `npm run build && npm test` in `js/popnei` 202
+passing. `tests/reference/ld/run_plink2.sh` into an empty directory exits
+0, so the dataset every literal rests on is unchanged.
+
+Four routes now reach the filter's four counts, and they share no
+arithmetic: the rule of the spec written again in Python over plink2's
+stored r², popnei's reader in Rust, the same compiled to WebAssembly and
+run under node, and the Python binding. All four give 84, 133, 85 and 85
+of 500 with the same five positions each.
+
+Two things were put right that no deliverable asked for.
+`js/popnei/README.md` named three consumers of a `Variants` and neither
+`doPca`, which the previous plan added, nor `calcRogersHuffR2Matrix`,
+which this one did; it now names all five with what each gives. And the
+two languages took different windows: Python up to the 2^64 - 1 the spec
+fixes, TypeScript up to 2^32 - 1 because its binding took a `u32`.
+TypeScript now takes up to 9007199254740991, the largest whole number a
+number of JavaScript holds exactly, and its doc comment says so, so the
+difference that is left is one the language imposes and not one popnei
+chose. The test asserts that a window of that size still keeps the 85
+variants of the row whose window is a whole chromosome.
