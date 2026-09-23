@@ -166,7 +166,9 @@ function popsOf(text: string): Map<string, string[]> {
     }
     const [individual, pop] = line.split("\t");
     if (individual === undefined || pop === undefined) {
-      throw new Error(`the line \`${line}\` is not an individual and a population`);
+      throw new Error(
+        `the line \`${line}\` is not an individual and a population`,
+      );
     }
     const individuals = pops.get(pop) ?? [];
     individuals.push(individual);
@@ -199,7 +201,9 @@ function panel(): Variants {
 function oneVariantOfThePanel(): Uint8Array {
   const lines = gunzipSync(PANEL).toString("utf8").split("\n");
   const header = lines.filter((line) => line.startsWith("#"));
-  const firstVariant = lines.find((line) => line !== "" && !line.startsWith("#"));
+  const firstVariant = lines.find(
+    (line) => line !== "" && !line.startsWith("#"),
+  );
   if (firstVariant === undefined || firstVariant.split("\t")[2] !== "var0000") {
     throw new Error("the first data line of the panel is not `var0000`");
   }
@@ -369,7 +373,10 @@ test("the polymorphism counts of the panel in p0 are plink2's", () => {
   }
   assert.deepEqual(poly.numPoly, Uint32Array.of(POLY_OF_P0));
   assert.deepEqual(poly.numVariable, Uint32Array.of(VARIABLE_OF_P0));
-  assert.deepEqual(poly.totNumVariantsWithData, Uint32Array.of(WITH_DATA_OF_P0));
+  assert.deepEqual(
+    poly.totNumVariantsWithData,
+    Uint32Array.of(WITH_DATA_OF_P0),
+  );
   assertValue(
     ofThePop(poly.polyRatio, distribs.pops, "p0"),
     POLY_RATIO_OF_P0,
@@ -417,7 +424,10 @@ test("a pass with no pops has one population of the individuals its steps give",
   }
   assert.deepEqual(poly.numPoly, Uint32Array.of(POLY_OF_P0));
   assert.deepEqual(poly.numVariable, Uint32Array.of(VARIABLE_OF_P0));
-  assert.deepEqual(poly.totNumVariantsWithData, Uint32Array.of(WITH_DATA_OF_P0));
+  assert.deepEqual(
+    poly.totNumVariantsWithData,
+    Uint32Array.of(WITH_DATA_OF_P0),
+  );
   variants.free();
 });
 
@@ -475,7 +485,12 @@ test("a variant with fewer called genotypes than minNumIndividuals has no value"
   });
 
   assertValue(
-    meanOf(atTheThreshold, atTheThreshold.obsHet, "observed heterozygosity", "p0"),
+    meanOf(
+      atTheThreshold,
+      atTheThreshold.obsHet,
+      "observed heterozygosity",
+      "p0",
+    ),
     OBS_HET_OF_P0,
     OF_A_PRINTED_VALUE,
     "the observed heterozygosity of var0000 in p0 at a threshold of 48",
@@ -561,7 +576,12 @@ test("logarithmic bins of equal ratio span the range they were given", () => {
   for (const [edge, expected] of [...edges].map(
     (found, bin) => [found, [0.01, 0.1, 1, 10, 100][bin]] as const,
   )) {
-    assertValue(edge, expected ?? Number.NaN, OF_A_RATIO, "an edge of the bins");
+    assertValue(
+      edge,
+      expected ?? Number.NaN,
+      OF_A_RATIO,
+      "an edge of the bins",
+    );
   }
   variants.free();
 });
@@ -669,6 +689,46 @@ test("a kind of bins that is neither of the two is refused under its name", () =
   variants.free();
 });
 
+test("a histogram of no bin is refused under the name of the option", () => {
+  // The core names the argument `num_bins`, which is what a Python user
+  // writes; a TypeScript user wrote `numBins` in `histKwargs`. 0 passes the
+  // check of the package, which takes a whole number of 0 or more, and the
+  // rule that a histogram has one bin at least is the core's.
+  const variants = theFirstVariant();
+
+  assert.throws(
+    () =>
+      calcPerVarDistribs(variants, {
+        pops: { p0: P0 },
+        histKwargs: { numBins: 0 },
+      }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("`numBins` is how many bins") &&
+      !error.message.includes("num_bins"),
+  );
+
+  variants.free();
+});
+
+test("a polymorphism threshold that is no frequency is refused under its name", () => {
+  // The core names that number by what it is for and not by an argument;
+  // the call a TypeScript user has to look at is the `polyThreshold` they
+  // wrote, and the rule that it runs from 0 to 1 is the core's.
+  const variants = theFirstVariant();
+
+  assert.throws(
+    () =>
+      calcPerVarDistribs(variants, { pops: { p0: P0 }, polyThreshold: 1.5 }),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("`polyThreshold` is 1.5") &&
+      !error.message.includes("poly_threshold"),
+  );
+
+  variants.free();
+});
+
 test("a pass that calculates no statistic at all is refused", () => {
   // A result holds the statistics that were asked for, and one that holds
   // none is a pass over the whole file for nothing.
@@ -676,7 +736,8 @@ test("a pass that calculates no statistic at all is refused", () => {
 
   assert.throws(
     () => calcPerVarDistribs(variants, { stats: [], pops: { p0: P0 } }),
-    (error: unknown) => error instanceof Error && error.message.includes("stats"),
+    (error: unknown) =>
+      error instanceof Error && error.message.includes("stats"),
   );
 
   variants.free();

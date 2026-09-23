@@ -102,6 +102,42 @@ pub enum Error {
         num_individuals: usize,
     },
 
+    /// A variant that was being turned into one dosage per individual has
+    /// more than two different alleles among its called genotypes, and
+    /// `transform_to_biallelic` is false. The dosage of a genotype is how
+    /// many of its alleles are not the major one, which has a meaning for
+    /// two alleles; with the argument true every allele that is not the
+    /// major one counts the same. The alleles are those the genotypes
+    /// hold and not those the source lists. It is the pass over a row that
+    /// refuses it, so every calculation that walks that pass raises it and
+    /// takes that argument; the principal components of the variants are
+    /// the one that does so far. In Python it is a `ValueError`.
+    #[error(
+        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
+    )]
+    VariantWithMoreThanTwoAlleles {
+        /// Which variant of those the reader gave it is, from 0.
+        position: usize,
+        /// How many different alleles it has among its called genotypes.
+        num_alleles: usize,
+    },
+
+    /// A variant was to be turned into one dosage per individual at a
+    /// ploidy that the dosages cannot be written at. The pass over a row
+    /// writes the genotype of each individual as one byte, its dosage or
+    /// the code of a genotype with an allele missing, so a ploidy of 255,
+    /// the largest the VCF reader takes, has one dosage more than a byte
+    /// holds. No organism of this world reaches it: the largest ploidy of
+    /// one is a dozen. In Python it is a `ValueError`.
+    #[error(
+        "a variant cannot be turned into dosages at a ploidy of {ploidy}: the pass writes the genotype of each individual as one byte, its dosage or the code of a genotype with an allele missing, which takes a ploidy of {largest} at most",
+        largest = crate::variant::MAX_PLOIDY_OF_THE_VARIANTS
+    )]
+    VariantPloidyTooLarge {
+        /// How many alleles each genotype of the variant holds.
+        ploidy: usize,
+    },
+
     /// A reader that takes a size was asked for blocks of 0 variants. A
     /// block holds one variant at least, and the caller that wants the
     /// size popnei chooses asks for none instead of asking for 0.
@@ -764,28 +800,18 @@ pub enum Error {
     /// genotypes, or no called genotype at all. There is no direction to
     /// give. One individual gives it, since every variant of one
     /// individual has one dosage. In Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant whose every genotype is missing, and one of
+    /// three alleles read as biallelic whose genotypes are `0/1`, `0/2` and
+    /// `0/1`, both reach it with genotypes that differ. pyNei's "Every
+    /// variant has the same genotype in every sample" is false of the same
+    /// two datasets, and it drops a variant by the same rule.
+    /// [`Error::KinshipNoVariantWithVariance`] says the same first half.
     #[error(
-        "every variant has the same genotype in every individual, there is nothing to do a PCA with"
+        "no variant has more than one dosage among its called genotypes, so none of them varies and there is nothing to do a PCA with"
     )]
     PcaNoVariantWithVariance,
-
-    /// A variant of a principal component analysis of the variants has
-    /// more than two different alleles among its called genotypes, and
-    /// `transform_to_biallelic` is false. The dosage of a genotype is how
-    /// many of its alleles are not the major one, which has a meaning for
-    /// two alleles; with the argument true every allele that is not the
-    /// major one counts the same. The alleles are those the genotypes
-    /// hold and not those the source lists. In Python it is a
-    /// `ValueError`.
-    #[error(
-        "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
-    )]
-    PcaVariantWithMoreThanTwoAlleles {
-        /// Which variant of those the reader gave it is, from 0.
-        position: usize,
-        /// How many different alleles it has among its called genotypes.
-        num_alleles: usize,
-    },
 
     /// The weights of a principal component analysis of the variants were
     /// asked for and no second pass over the variants was made. The weight
@@ -856,6 +882,119 @@ pub enum Error {
     PcaVariantsTooLarge {
         /// Which of the four sizes it is, with the number the dataset has.
         problem: crate::pca::VariantsTooLarge,
+    },
+
+    /// No variant of a kinship has variance among the individuals it was
+    /// asked for: every one of them has one dosage among its called
+    /// genotypes, or no called genotype at all. A kinship measures a pair
+    /// against the average pair of the panel, and a panel whose variants
+    /// give every individual the same dosage has no such average. It is
+    /// pyNei's "No variant varies among the samples, there is no kinship",
+    /// and in Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant where every individual is `0/1`, one where
+    /// every genotype is missing, and one of three alleles read as
+    /// biallelic where the genotypes are `0/1`, `0/2` and `0/1`, all have
+    /// one dosage among their called genotypes and different genotypes.
+    #[error(
+        "no variant has more than one dosage among its called genotypes, so none of them varies among these individuals and there is no kinship to take"
+    )]
+    KinshipNoVariantWithVariance,
+
+    /// A value of the matrix of a kinship is not finite, an infinity or a
+    /// NaN, with the place where it is. There is nothing to give for such a
+    /// matrix: every component would be a NaN. The matrix of a pass is
+    /// never one of these, so it is a matrix a user built and then wrote
+    /// into, since the checks of the one they build are made when they
+    /// build it. In Python it is a `ValueError`.
+    ///
+    /// The whole matrix is read for it and not the lower half alone, which
+    /// is what the components take: a value above the diagonal says the
+    /// matrix is wrong as surely as one below it.
+    #[error(
+        "the value at the row {row}, column {col} of the matrix of the kinship is {value}, and the principal components of a kinship need every value finite"
+    )]
+    KinshipValueNotFinite {
+        /// Which row of the matrix holds it, from 0 among the individuals
+        /// of the kinship.
+        row: usize,
+        /// Which column of it holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A kinship of no individual. A kinship is the matrix of every pair of
+    /// a set of individuals, so there is no pair to give. In Python it is a
+    /// `ValueError`.
+    ///
+    /// Three callers reach it. A pass asked for none of the individuals of
+    /// its reader, which is an `individuals` of no position; its
+    /// components, of a matrix with no row, which is what a user who built
+    /// a kinship by hand from an empty frame has; and a pass over a source
+    /// that has no individual, which no reader of popnei gives, as
+    /// `docs/specs/block.md` says, so that one is a caller of the core
+    /// crate with a reader of its own.
+    #[error("the kinship has no individual, and a kinship is the matrix of every pair of them")]
+    KinshipNoIndividual,
+
+    /// Two individuals of a kinship have no variant called in both of them,
+    /// so the sum of their pair would be divided by 0. pyNei divides all
+    /// the same and leaves the NaN in the matrix; popnei names the two,
+    /// which a user can drop from the panel. The positions are among the
+    /// individuals the kinship was asked for, in the order it has them. In
+    /// Python it is a `ValueError`.
+    ///
+    /// The two are the same individual when it has no called genotype at
+    /// all among the variants that were used, which is an ordinary
+    /// sequencing that failed, and the message then names that one
+    /// individual instead of telling a user to drop one of the two.
+    #[error(
+        "{said}",
+        said = a_pair_with_no_variant_called(*one, *other, *num_vars_of_one, *num_vars_of_other)
+    )]
+    KinshipPairWithNoVariantCalled {
+        /// Where the first of the two is among the individuals of the
+        /// kinship, from 0.
+        one: usize,
+        /// Where the second of the two is, from 0.
+        other: usize,
+        /// How many of the variants that were used are called in the
+        /// first.
+        num_vars_of_one: u64,
+        /// How many of them are called in the second.
+        num_vars_of_other: u64,
+    },
+
+    /// A dataset a kinship cannot be taken on, because one of its sizes is
+    /// beyond what the calculation counts in.
+    /// [`crate::kinship::KinshipTooLarge`] says which of the two it is. In
+    /// Python it is a `ValueError`.
+    #[error("the kinship cannot be taken on this dataset: {problem}")]
+    KinshipVariantsTooLarge {
+        /// Which of the two sizes it is, with the number the dataset has.
+        problem: crate::kinship::KinshipTooLarge,
+    },
+
+    /// The linear algebra of a kinship failed. The products of a kinship
+    /// are the standardized dosages of a block with themselves and the
+    /// genotypes that were called with themselves, both individuals x
+    /// individuals, and its principal components are the
+    /// eigendecomposition of the matrix. In Python it is a `RuntimeError`:
+    /// every size was checked before the work was asked for, so what is
+    /// left is a defect of popnei, a matrix whose products are not finite
+    /// or a machine with too little memory for the workspace of the
+    /// eigendecomposition.
+    #[error("the {operation} of the kinship could not be done: {source}")]
+    KinshipLinalg {
+        /// What was being computed: the product of a block of variants
+        /// with itself, the product of the genotypes that were called with
+        /// themselves, or the eigendecomposition that gives the principal
+        /// components.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
     },
 
     /// The distances of that many individuals need more memory than the
@@ -1775,6 +1914,42 @@ fn a_pass_that_gave_no_variant(
 /// `gst_standardized`".
 fn the_seven_measures() -> String {
     listed(&crate::pop_dists::PopDistMeasure::NAMES)
+}
+
+/// What [`Error::KinshipPairWithNoVariantCalled`] says: the two individuals
+/// that have no variant called in both of them, or the one individual that
+/// has no called genotype at all among the variants that were used.
+///
+/// The entry of a pair is divided by how many variants both of its
+/// individuals were called at, and both cases are that number being 0. A
+/// pair reaches it when each of the two was called somewhere and never
+/// together; one individual reaches it, against itself, when its sequencing
+/// failed, and then every pair it is in has no variant either, so what a
+/// user has to do is leave that one out and not one of a pair.
+fn a_pair_with_no_variant_called(
+    one: usize,
+    other: usize,
+    num_vars_of_one: u64,
+    num_vars_of_other: u64,
+) -> String {
+    if one == other {
+        return format!(
+            "the individual at the position {one} has no called genotype among the \
+             variants that were used, so its entry of the kinship would be divided by \
+             no variant at all; leave it out"
+        );
+    }
+    format!(
+        "the individuals at the positions {one} and {other} have no variant called in \
+         both of them, so their entry of the kinship would be divided by no variant at \
+         all: {num_vars_of_one} {said} called in the first and {num_vars_of_other} in \
+         the second; leave one of the two out",
+        said = if num_vars_of_one == 1 {
+            "variant is"
+        } else {
+            "variants are"
+        },
+    )
 }
 
 /// The five statistics of a variant under the names a user writes them, for

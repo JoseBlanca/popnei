@@ -1,7 +1,14 @@
 //! What every other module of popnei says about a variant, one site of the
 //! genome with the genotype of every individual at it: which of its fields
 //! a consumer wants, the table that turns the name of a chromosome into a
-//! number, the missing allele, and the view of one variant of a block.
+//! number, the missing allele, the view of one variant of a block, and the
+//! row helpers over it: the counts of its alleles and its genotypes, its
+//! major allele, and the pass that turns it into one standardized dosage
+//! per individual, which the principal components of the variants and the
+//! kinship both walk with their own divisor, with the pass over a whole
+//! block that walks it variant by variant, on the threads of rayon or one
+//! after another where there are none, and leaves out the variants with
+//! no variance.
 //!
 //! The variants flow in blocks, which [`crate::block`] holds, and a
 //! calculation that works variant by variant walks the [`VariantRef`] of
@@ -16,9 +23,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::block::AllelesColumn;
+use crate::block::{AllelesColumn, Block};
 use crate::error::{Error, Result};
 
 /// An allele that was not called, `.` in a VCF.
@@ -853,13 +861,978 @@ pub fn the_major_allele_frequency(counts: &AlleleCounts, called_alleles: u32) ->
     Some(f64::from(largest) / f64::from(called_alleles))
 }
 
+/// What a caller of [`the_standardized_row`] chooses about it: whether a
+/// variant of more than two alleles is read, and what the centered dosages
+/// of a variant are divided by.
+///
+/// The two calculations that standardize a variant differ in the divisor
+/// and in nothing else: the principal components of the variants of
+/// `docs/specs/pca.md` take the standard deviation of the dosages
+/// themselves and the kinship of `docs/specs/kinship.md` the one the allele
+/// frequency gives under Hardy Weinberg. The codes of the genotypes, the
+/// counts of the alleles and the lookup of one value per code are the
+/// same, so both call this one pass with their own [`DosageScale`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DosageOptions {
+    /// Whether every allele that is not the major one counts the same. A
+    /// variant with more than two different alleles among its called
+    /// genotypes is an error without it.
+    pub transform_to_biallelic: bool,
+    /// What the centered dosages of a variant are divided by.
+    pub scale: DosageScale,
+}
+
+/// What the centered dosages of a variant are divided by.
+///
+/// The two agree only when the genotypes of the variant are in Hardy
+/// Weinberg proportions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DosageScale {
+    /// The standard deviation of the dosages of the variant themselves,
+    /// which `docs/specs/pca.md` standardizes with. Its divisor is all the
+    /// individuals and not the called genotypes, because the genotypes
+    /// with an allele missing are in the column with a deviation of 0.
+    OfTheDosages,
+    /// `sqrt(ploidy * p * (1 - p))`, the standard deviation the allele
+    /// frequency of the variant gives it under Hardy Weinberg, where `p`
+    /// is the mean dosage over the ploidy. It is what makes an entry of
+    /// the kinship of `docs/specs/kinship.md` twice a coancestry, and it
+    /// is what plink2 and GCTA divide by.
+    OfHardyWeinberg,
+}
+
+/// The buffers one thread keeps while it standardizes the rows of a block,
+/// so that nothing is allocated for a variant.
+pub(crate) struct RowScratch {
+    /// The code of the genotype of each individual: its dosage, 0 to the
+    /// ploidy, or [`MISSING_CODE`] for a genotype with an allele missing.
+    codes: Vec<u8>,
+    /// How often each allele was called in the variant, which gives the
+    /// major allele and how many different alleles the variant has.
+    allele_counts: AlleleCounts,
+    /// How many called genotypes have each dosage, 0 to the ploidy.
+    dosage_counts: [u32; DOSAGES_OF_A_ROW],
+    /// The standardized value of each code, which the second pass over
+    /// the row looks up: one entry for each value of a byte, so that the
+    /// lookup has no bound to check.
+    values: [f64; VALUES_OF_A_ROW],
+}
+
+/// How many counters the dosage counts of a row hold, one for each dosage
+/// a variant of [`MAX_PLOIDY_OF_THE_VARIANTS`] can have.
+const DOSAGES_OF_A_ROW: usize = 255;
+
+/// How many values the lookup of a row holds, one for each of the 256
+/// values of a byte, so that every code has an entry and the lookup has no
+/// bound to check.
+const VALUES_OF_A_ROW: usize = 256;
+
+/// The two buffers above are sized for the dosages of
+/// [`MAX_PLOIDY_OF_THE_VARIANTS`] and nothing compares that limit with
+/// them while the pass runs, so the three are compared when this compiles.
+///
+/// A limit raised above what they hold is silently wrong and not a panic:
+/// a dosage would be written where [`MISSING_CODE`] is read, and a
+/// genotype with an allele missing would be given a value of its own in
+/// place of the mean of its variant, with no error to show it. The three
+/// `#[expect(clippy::arithmetic_side_effects)]` of the passes over a row
+/// rest on the same bound.
+const _: () = {
+    // A dosage is 0 to the ploidy, so the largest ploidy has one dosage
+    // more than itself, and each of them needs a counter.
+    assert!(
+        MAX_PLOIDY_OF_THE_VARIANTS < DOSAGES_OF_A_ROW,
+        "the dosages of the largest ploidy, which are the ploidy and one more, each need a counter"
+    );
+    // What is left of the values of a byte once the dosages have taken
+    // theirs is what the code of a genotype with an allele missing is one
+    // of.
+    assert!(
+        DOSAGES_OF_A_ROW < VALUES_OF_A_ROW,
+        "the code of a genotype with an allele missing needs a value of its own beside the dosages"
+    );
+    assert!(
+        MISSING_CODE == u8::MAX,
+        "the code of a genotype with an allele missing is the last value of a byte, above every dosage"
+    );
+};
+
+/// The largest ploidy a variant is turned into dosages at, which is one
+/// less than the largest the VCF reader takes.
+///
+/// The pass over a row writes the genotype of each individual as one byte,
+/// its dosage or [`MISSING_CODE`], which is the loop the compiler
+/// vectorizes. A ploidy of 255 has 256 dosages, and those with the code of
+/// a genotype with an allele missing are one value more than a byte holds.
+pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
+
+/// The most individuals a calculation that builds a matrix of them by them
+/// takes: the largest number whose square is at most the 2147483647 values
+/// that the routines of BLAS and LAPACK count a matrix in, which
+/// `crates/popnei-linalg` gives as
+/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX).
+///
+/// The individuals x individuals matrix of that many holds 2147395600
+/// values, 17 GB, which no browser tab gives and few machines do. It is a
+/// size of a dataset and belongs to no one calculation: the principal
+/// components of the variants and the kinship each re-export it and check
+/// it at their own entry, since the pass over a row reads one variant and
+/// knows nothing of a matrix.
+pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize =
+    popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX.isqrt();
+
+/// The code of a genotype with an allele missing, which is not a dosage:
+/// [`MAX_PLOIDY_OF_THE_VARIANTS`] is what keeps the dosages below it.
+pub(crate) const MISSING_CODE: u8 = u8::MAX;
+
+/// How many genotypes are counted with one byte of counters at a time. A
+/// counter of a byte holds 255, so a run of 255 genotypes is the longest
+/// one whose codes a byte counts without wrapping.
+const GENOTYPES_PER_RUN: usize = 255;
+
+/// A run longer than what a byte counts would wrap the counters of
+/// [`the_counts_of_the_codes`] with nothing to show it, so the length of a
+/// run is checked against the largest number a `u8` holds when this
+/// compiles.
+const _: () = assert!(GENOTYPES_PER_RUN <= 255, "a byte counts to 255");
+
+impl RowScratch {
+    /// The buffers of one thread, for the rows of `num_individuals`
+    /// individuals.
+    pub(crate) fn of(num_individuals: usize) -> RowScratch {
+        RowScratch {
+            codes: vec![0; num_individuals],
+            allele_counts: [0; 128],
+            dosage_counts: [0; DOSAGES_OF_A_ROW],
+            // A genotype with an allele missing takes the mean of the
+            // dosages of its variant, which is 0 once the variant is
+            // centered, and this entry is never written again.
+            values: [0.0; VALUES_OF_A_ROW],
+        }
+    }
+}
+
+/// One row of a block standardized into `row`, and whether the variant was
+/// used: a variant whose called genotypes all have one dosage, and one
+/// with no called genotype, have no variance and are left out, and `row`
+/// is then left as it was.
+///
+/// `gts` is the genotypes of one variant, `ploidy` alleles for each
+/// individual, and `row` holds one value for each individual. `position`
+/// is which variant of those the reader gave this one is, which the error
+/// of a variant with more than two alleles names. `options` says what the
+/// centered dosages are divided by, which is the one thing the principal
+/// components of the variants and the kinship differ in, and whether a
+/// variant of more than two alleles is read.
+///
+/// # Errors
+///
+/// [`Error::VariantPloidyTooLarge`] when `ploidy` is above
+/// [`MAX_PLOIDY_OF_THE_VARIANTS`], which the dosages could not be written
+/// one to a byte at. [`Error::GtsNotWholeGenotypes`] when `ploidy` is 0 or
+/// `gts` does not hold one genotype of it for each value of `row`.
+/// [`Error::VariantWithMoreThanTwoAlleles`] when the variant has more
+/// than two different alleles among its called genotypes and
+/// `transform_to_biallelic` is false. And whatever the counts of the
+/// alleles of one variant refuse, which is
+/// [`Error::AlleleBelowTheMissingOne`] and
+/// [`Error::MoreAllelesThanACountHolds`].
+pub(crate) fn the_standardized_row(
+    gts: &[i8],
+    ploidy: usize,
+    position: usize,
+    options: &DosageOptions,
+    scratch: &mut RowScratch,
+    row: &mut [f64],
+) -> Result<bool> {
+    if ploidy > MAX_PLOIDY_OF_THE_VARIANTS {
+        return Err(Error::VariantPloidyTooLarge { ploidy });
+    }
+    let num_individuals = row.len();
+    // One genotype of the ploidy for each individual, which is what a row
+    // of the genotypes of a block holds. The ploidy of 0 that
+    // `NonZeroUsize` refuses is among these: it would be a genotype of no
+    // allele for every individual.
+    let of_a_genotype = match NonZeroUsize::new(ploidy) {
+        Some(of_a_genotype) if gts.len() == num_individuals.saturating_mul(ploidy) => of_a_genotype,
+        _ => {
+            return Err(Error::GtsNotWholeGenotypes {
+                num_alleles: gts.len(),
+                ploidy,
+            });
+        }
+    };
+    let RowScratch {
+        codes,
+        allele_counts,
+        dosage_counts,
+        values,
+    } = scratch;
+    let called_alleles = count_alleles(gts, allele_counts)?;
+    if called_alleles == 0 {
+        // A variant with no called genotype has no dosage at all, so it
+        // has no variance and is left out, as Open 2 of
+        // `docs/specs/pca.md` has it meanwhile; pyNei makes it an error
+        // and leaves a variant with one allele out in silence.
+        return Ok(false);
+    }
+    let num_alleles = allele_counts.iter().filter(|count| **count > 0).count();
+    if num_alleles > 2 && !options.transform_to_biallelic {
+        return Err(Error::VariantWithMoreThanTwoAlleles {
+            position,
+            num_alleles,
+        });
+    }
+    // The buffer of the codes belongs to the thread and is as long as the
+    // rows it has read so far, which are all of the individuals of the
+    // source: this asks the machine for nothing after the first row.
+    codes.resize(num_individuals, 0);
+    the_codes_of_the_genotypes(gts, of_a_genotype, the_major_allele(allele_counts), codes);
+    // The dosages of a genotype are 0 to the ploidy, and the counts have
+    // one entry for each of them.
+    let num_dosages = ploidy.saturating_add(1);
+    the_counts_of_the_codes(codes, num_dosages, dosage_counts);
+    let Some((mean, divisor)) = the_center_and_the_scale_of_the_dosages(
+        dosage_counts,
+        ploidy,
+        num_individuals,
+        options.scale,
+    ) else {
+        return Ok(false);
+    };
+    // What each code is worth, which the pass over the row below looks up.
+    // The entry of a genotype with an allele missing is the 0 the buffer
+    // was built with and is never written: a dosage is below 255, which
+    // the ploidy of 254 at most is what keeps.
+    for (value, dosage) in values.iter_mut().take(num_dosages).zip(0_u32..) {
+        *value = (f64::from(dosage) - mean) / divisor;
+    }
+    for (target, code) in row.iter_mut().zip(codes.iter()) {
+        // The values have an entry for each of the 256 values of a byte,
+        // so every code has one and the 0.0 is never taken; it is also
+        // what lets the compiler drop the bound of the lookup.
+        *target = values.get(usize::from(*code)).copied().unwrap_or(0.0);
+    }
+    Ok(true)
+}
+
+/// The code of the genotype of each individual: its dosage, how many of
+/// its alleles are not the major one, or [`MISSING_CODE`] when one allele
+/// of it at least was not called.
+///
+/// `gts` holds one genotype of `of_a_genotype` alleles for each individual
+/// and `codes` one byte for each. It is the first of the two passes over a
+/// row that `docs/specs/pca.md` writes for the compiler to turn into
+/// vector instructions.
+///
+/// The ploidies 1 to 4 each get the loop with the length of a genotype
+/// written into it, because with that length a constant the compiler reads
+/// the alleles of several genotypes at once, and with it a number the
+/// dataset carries it reads one allele at a time. Every other ploidy takes
+/// the loop that reads the length from the dataset. The arms give the same
+/// codes: the dosage is a count of alleles and the missing flag is a
+/// boolean, and [`the_codes_of_any_ploidy`] is the same body with the same
+/// length.
+pub(crate) fn the_codes_of_the_genotypes(
+    gts: &[i8],
+    of_a_genotype: NonZeroUsize,
+    major: i8,
+    codes: &mut [u8],
+) {
+    match of_a_genotype.get() {
+        1 => the_codes_of_a_ploidy_of::<1>(gts, major, codes),
+        2 => the_codes_of_a_ploidy_of::<2>(gts, major, codes),
+        3 => the_codes_of_a_ploidy_of::<3>(gts, major, codes),
+        4 => the_codes_of_a_ploidy_of::<4>(gts, major, codes),
+        of_a_genotype => the_codes_of_any_ploidy(gts, of_a_genotype, major, codes),
+    }
+}
+
+/// The codes of the genotypes of a row whose genotypes hold `OF_A_GENOTYPE`
+/// alleles, which is the body of [`the_codes_of_the_genotypes`] with the
+/// length of a genotype known when the code is compiled.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
+)]
+fn the_codes_of_a_ploidy_of<const OF_A_GENOTYPE: usize>(gts: &[i8], major: i8, codes: &mut [u8]) {
+    let (genotypes, _) = gts.as_chunks::<OF_A_GENOTYPE>();
+    for (code, genotype) in codes.iter_mut().zip(genotypes) {
+        let mut dosage = 0_u8;
+        let mut missing = 0_u8;
+        for allele in genotype {
+            dosage += u8::from(*allele != major);
+            missing |= u8::from(*allele == MISSING_ALLELE);
+        }
+        *code = if missing == 0 { dosage } else { MISSING_CODE };
+    }
+}
+
+/// The codes of the genotypes of a row whose genotypes hold
+/// `of_a_genotype` alleles, a length the dataset carries.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and the caller refused a ploidy above 254"
+)]
+pub(crate) fn the_codes_of_any_ploidy(
+    gts: &[i8],
+    of_a_genotype: usize,
+    major: i8,
+    codes: &mut [u8],
+) {
+    for (code, genotype) in codes.iter_mut().zip(gts.chunks_exact(of_a_genotype)) {
+        let mut dosage = 0_u8;
+        let mut missing = 0_u8;
+        for allele in genotype {
+            dosage += u8::from(*allele != major);
+            missing |= u8::from(*allele == MISSING_ALLELE);
+        }
+        *code = if missing == 0 { dosage } else { MISSING_CODE };
+    }
+}
+
+/// How many genotypes have each dosage, 0 to the ploidy, written into the
+/// first `num_dosages` entries of `counts`. A genotype with an allele
+/// missing has no dosage and is counted in none of them.
+///
+/// The codes are counted in runs of [`GENOTYPES_PER_RUN`] genotypes with
+/// counters of one byte, one for each dosage: a counter of a byte counts a
+/// run whole without wrapping, and each pass over a run compares the code
+/// with one dosage and adds, which is what the compiler turns into vector
+/// instructions.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "a run holds 255 codes at most, so a counter of one byte counts it without wrapping, and each total counts the genotypes of the variant, which the counts of its alleles checked to be a number a u32 holds"
+)]
+fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; DOSAGES_OF_A_ROW]) {
+    for total in counts.iter_mut().take(num_dosages) {
+        *total = 0;
+    }
+    for run in codes.chunks(GENOTYPES_PER_RUN) {
+        for (total, dosage) in counts.iter_mut().take(num_dosages).zip(0_u8..) {
+            let mut count = 0_u8;
+            for code in run {
+                count += u8::from(*code == dosage);
+            }
+            *total += u32::from(count);
+        }
+    }
+}
+
+/// The mean of the called dosages of a variant and what each of them is
+/// divided by once it is centered, which `scale` chooses, or `None` when
+/// its called genotypes all have one dosage and it has no variance.
+///
+/// With [`DosageScale::OfTheDosages`] the divisor is the standard
+/// deviation of the dosages themselves. Its own divisor is all the
+/// individuals and not the called genotypes, because the genotypes with an
+/// allele missing are in the column with a deviation of 0: a variant with
+/// much missing data has a smaller deviation for the same frequencies, and
+/// its called genotypes weigh more. It is the individuals and not the
+/// individuals less one, which is pyNei's `data.std(axis=0)`.
+///
+/// With [`DosageScale::OfHardyWeinberg`] it is `sqrt(ploidy * p * (1 - p))`,
+/// where `p` is the mean dosage over the ploidy, and the genotypes count in
+/// it through the mean and in no other way.
+///
+/// A variant that has variance gets a divisor that is finite and above 0
+/// under either rule, so the values of the buffer a block is standardized
+/// into are finite, which is what the product of that buffer with itself
+/// asks for. The dosages are whole numbers from 0 to 254, so their sum is
+/// exact in an `f64` and the squares of their deviations are at most 64516
+/// times the individuals; and two dosages that differ by 1, the least a
+/// variant with variance has, give squares of 1 over the called genotypes
+/// at least. Under Hardy Weinberg a variant with variance has two dosages
+/// among its called genotypes at least, so its mean is above 0 and below
+/// the ploidy, `p` is above 0 and below 1, and the product under the root
+/// is above 0.
+///
+/// `counts` holds how many genotypes have each dosage, which
+/// [`the_counts_of_the_codes`] wrote, `ploidy` is the alleles of one
+/// genotype, 1 to [`MAX_PLOIDY_OF_THE_VARIANTS`], and `num_individuals` is
+/// 1 or more. The ploidy is an argument of its own because the divisor
+/// under Hardy Weinberg reads it: taken from the count of the dosages,
+/// which bounds the loops, it would be wrong for a caller that passed
+/// anything but the ploidy and one more, and nothing would say so.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the called genotypes are at most the individuals of the variant, which the counts of its alleles checked to be a number a u32 holds, and each dosage is 254 at most, so the sum of the dosages is below 2^53"
+)]
+fn the_center_and_the_scale_of_the_dosages(
+    counts: &[u32; DOSAGES_OF_A_ROW],
+    ploidy: usize,
+    num_individuals: usize,
+    scale: DosageScale,
+) -> Option<(f64, f64)> {
+    // The dosages of a genotype are 0 to the ploidy, which is what bounds
+    // the two loops over the counts.
+    let num_dosages = ploidy.saturating_add(1);
+    let mut called = 0_u64;
+    let mut total = 0_u64;
+    let mut dosages_seen = 0_usize;
+    for (count, dosage) in counts.iter().take(num_dosages).zip(0_u64..) {
+        if *count == 0 {
+            continue;
+        }
+        dosages_seen += 1;
+        called += u64::from(*count);
+        total += dosage * u64::from(*count);
+    }
+    // One dosage among the called genotypes is a variant with no variance:
+    // one with one allele, and one where every individual is heterozygous,
+    // whose major allele frequency is 0.5 and which no filter by frequency
+    // would catch. It is decided on the counts, with no float in it, where
+    // `_remove_vars_with_no_variance` of pyNei tests `std > 0`.
+    if dosages_seen < 2 {
+        return None;
+    }
+    let mean = total as f64 / called as f64;
+    let divisor = match scale {
+        DosageScale::OfTheDosages => {
+            let mut squares = 0.0_f64;
+            for (count, dosage) in counts.iter().take(num_dosages).zip(0_u64..) {
+                let deviation = dosage as f64 - mean;
+                squares += f64::from(*count) * deviation * deviation;
+            }
+            (squares / num_individuals as f64).sqrt()
+        }
+        DosageScale::OfHardyWeinberg => {
+            // A ploidy of 0 does not reach here: `the_standardized_row`
+            // refuses it before it counts anything, so the frequency is a
+            // division by a number above 0.
+            let ploidy = ploidy as f64;
+            let frequency = mean / ploidy;
+            (ploidy * frequency * (1.0 - frequency)).sqrt()
+        }
+    };
+    Some((mean, divisor))
+}
+
+/// Where a block sits among the variants a reader has given, and the error
+/// the calculation that is driving the block raises when the reader gives
+/// more of them than a `usize` counts.
+///
+/// A row is standardized with the position of its variant among those the
+/// reader gave, which is what the error of a variant with more than two
+/// alleles names, so the count is from the first variant of the reader and
+/// not from the first of the block. Which error a count above `usize::MAX`
+/// raises belongs to the calculation, whose message names it: the pass
+/// over the rows knows only that there is no position left.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RowPositions {
+    /// Which variant of those the reader has given the first row of the
+    /// block is, counted from 0.
+    pub first: usize,
+    /// The error of a position beyond what a `usize` counts, which is
+    /// 4294967295 in WebAssembly, where a `usize` is 32 bits.
+    pub too_many: fn() -> Error,
+}
+
+/// The rows of one block standardized into `standardized`, with the rows
+/// of the variants that have variance at its start, in the order of the
+/// block; it gives whether each variant of the block was used.
+///
+/// The rows that were left out are not in those first rows, so the product
+/// of a block is over its variants that have variance alone. The buffer is
+/// the caller's and is kept from one block to the next: it is made as long
+/// as the block needs and the rows that are left out keep whatever they
+/// held, which nothing reads.
+///
+/// `options` says what the centered dosages are divided by, which is the
+/// one thing the principal components of the variants and the kinship
+/// differ in, and whether a variant of more than two alleles is read;
+/// `positions` where the block sits among the variants the reader has
+/// given.
+///
+/// # Errors
+///
+/// [`Error::FieldsNotInTheBlock`] when the block holds no genotypes, what
+/// the standardizing of a row refuses, and [`RowPositions::too_many`] when
+/// the position of a variant is beyond what a `usize` counts.
+pub(crate) fn the_standardized_block(
+    block: &Block,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut Vec<f64>,
+) -> Result<Vec<bool>> {
+    let missing = Needs::GTS.difference(block.fields());
+    if !missing.is_empty() {
+        return Err(Error::FieldsNotInTheBlock { fields: missing });
+    }
+    // The rows of the block are cut by what the block says its size is and
+    // the values they are written into by what the caller says it is, and
+    // `chunks_exact` gives the rows of whichever of the two is the shorter:
+    // a block of 5 individuals of the ploidy 2 read as 5 individuals of the
+    // ploidy 5 has 10 alleles, one row of genotypes and no row of values,
+    // so no row runs and the pass gives back that no variant was used. That
+    // is what a block of variants with no variance gives too, so the loss
+    // would wear the costume of an ordinary result. A reader whose ploidy
+    // or whose individuals are not those of the blocks it gives has a
+    // defect, which `docs/specs/block.md` names; `Reblock` refuses such a
+    // block, and this pass is the one place a caller with no `Reblock`
+    // before it would lose the variants in silence.
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
+    let alleles_per_var = block.alleles_per_var()?;
+    // The block holds its genotypes, so its rows hold one genotype of the
+    // ploidy for each individual: `reblock` checked that the genotypes are
+    // the variants of the block times those alleles, so this division is
+    // exact, and it is `None` only for a ploidy of 0, which such a block
+    // does not have.
+    let Some(num_values) = block.gts.len().checked_div(ploidy) else {
+        return Err(Error::GtsNotWholeGenotypes {
+            num_alleles: block.gts.len(),
+            ploidy,
+        });
+    };
+    standardized.resize(num_values, 0.0);
+    let used = the_standardized_rows(
+        &block.gts,
+        alleles_per_var,
+        num_individuals,
+        ploidy,
+        options,
+        positions,
+        standardized,
+    )?;
+    // The rows that were used are moved to the start of the buffer. A
+    // block with no row to leave out moves nothing.
+    for (to, (var, _)) in used
+        .iter()
+        .enumerate()
+        .filter(|(_, was_used)| **was_used)
+        .enumerate()
+    {
+        if to != var {
+            let from = the_row_of(var, num_individuals);
+            let start = the_row_of(to, num_individuals).start;
+            standardized.copy_within(from, start);
+        }
+    }
+    Ok(used)
+}
+
+/// The rows of a block standardized into `standardized`, and whether each
+/// variant was used, in the order of the block.
+///
+/// The rows are read on the threads of rayon, as section 3 of
+/// `docs/architecture.md` asks: no row reads another and each one writes
+/// its own values, so neither the values nor the variants that are left
+/// out depend on how many threads there are. The threads are those of the
+/// pool the caller is running in, and rayon's global pool only when the
+/// caller is in none. Each thread keeps the buffers of one row and
+/// allocates nothing per variant.
+///
+/// `gts` holds the rows of the block, `alleles_per_var` alleles each, and
+/// `alleles_per_var` is 1 or more; `standardized` holds one value for each
+/// individual of each of those rows, and a row that is not used is left as
+/// it was. `options` says what the centered dosages are divided by and
+/// whether a variant of more than two alleles is read, and `positions`
+/// where the block sits among the variants the reader has given.
+///
+/// The error is the one of the first row of the block that has one,
+/// wherever the threads found it: each row gives its own result and they
+/// are read in the order of the block, so a user who reports a file gets
+/// the same message every time.
+///
+/// # Errors
+///
+/// What the standardizing of one row refuses, and
+/// [`RowPositions::too_many`] when the position of a variant is beyond
+/// what a `usize` counts.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn the_standardized_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+    use rayon::slice::{ParallelSlice, ParallelSliceMut};
+
+    let rows: Vec<Result<bool>> = gts
+        .par_chunks_exact(alleles_per_var)
+        .zip(standardized.par_chunks_exact_mut(num_individuals))
+        .enumerate()
+        .map_init(
+            || RowScratch::of(num_individuals),
+            |scratch, (var, (gts, row))| {
+                let position = positions
+                    .first
+                    .checked_add(var)
+                    .ok_or_else(positions.too_many)?;
+                the_standardized_row(gts, ploidy, position, options, scratch, row)
+            },
+        )
+        .collect();
+    rows.into_iter().collect()
+}
+
+/// The same rows, read one after another, which is what WebAssembly does:
+/// it has no threads.
+///
+/// # Errors
+///
+/// The same as the rows read on threads.
+#[cfg(target_family = "wasm")]
+pub(crate) fn the_standardized_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    the_standardized_rows_one_by_one(
+        gts,
+        alleles_per_var,
+        num_individuals,
+        ploidy,
+        options,
+        positions,
+        standardized,
+    )
+}
+
+/// The rows read one after another into the buffers of one row: what
+/// WebAssembly does, and what the test of [`crate::pca`] that compares the
+/// two ways of reading a block calls. `alleles_per_var` is 1 or more, as
+/// it is for the rows read on threads.
+///
+/// # Errors
+///
+/// What the standardizing of one row refuses, and
+/// [`RowPositions::too_many`] when the position of a variant is beyond
+/// what a `usize` counts.
+#[cfg(any(target_family = "wasm", test))]
+pub(crate) fn the_standardized_rows_one_by_one(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    let mut scratch = RowScratch::of(num_individuals);
+    let mut used = Vec::new();
+    for (var, (gts, row)) in gts
+        .chunks_exact(alleles_per_var)
+        .zip(standardized.chunks_exact_mut(num_individuals))
+        .enumerate()
+    {
+        let position = positions
+            .first
+            .checked_add(var)
+            .ok_or_else(positions.too_many)?;
+        used.push(the_standardized_row(
+            gts,
+            ploidy,
+            position,
+            options,
+            &mut scratch,
+            row,
+        )?);
+    }
+    Ok(used)
+}
+
+/// Where the row `var` of a buffer of rows of `num_individuals` values
+/// begins and ends.
+///
+/// The buffer holds the variants of the block times the individuals
+/// values, which the machine gave, and `var` is below the variants of the
+/// block, so neither the product nor the sum carries over.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the buffer holds the variants of the block times the individuals values, which the machine gave, and `var` is below the variants of the block"
+)]
+pub(crate) fn the_row_of(var: usize, num_individuals: usize) -> std::ops::Range<usize> {
+    let start = var * num_individuals;
+    start..start + num_individuals
+}
+
+/// What the benchmark `standardize_row` calls to time each pass over a row
+/// of a block on its own.
+///
+/// The four passes that standardizing a row is made of are private to this
+/// module, and a benchmark is a crate of its own, so nothing outside can
+/// call them; the compiler inlines all four into one closure, so a
+/// sampling profile of a calculation that walks the row sees them as one
+/// frame. This module is
+/// behind the cargo feature `bench-internals`, which is off by default and
+/// which nothing of popnei's own builds turn on, and it holds one wrapper
+/// for each of them, with the arguments the private function takes, so
+/// that what the benchmark times is the code the library runs.
+///
+/// [`the_standardized_values`] is the one thing here that is not a
+/// wrapper. The tail of [`the_standardized_row`] is two loops written
+/// inline in that function and not a function of its own, so timing it
+/// needs those two loops copied here; a change to them there is a change
+/// to them here.
+#[cfg(feature = "bench-internals")]
+#[doc(hidden)]
+pub mod bench_internals {
+    use std::num::NonZeroUsize;
+
+    use super::{
+        DOSAGES_OF_A_ROW, DosageOptions, DosageScale, RowScratch, VALUES_OF_A_ROW,
+        the_center_and_the_scale_of_the_dosages,
+        the_codes_of_the_genotypes as codes_of_the_genotypes,
+        the_counts_of_the_codes as counts_of_the_codes, the_standardized_row as standardized_row,
+    };
+    use crate::error::Result;
+
+    /// The buffers one thread keeps while it standardizes the rows of a
+    /// block, so that nothing is allocated for a variant. It is
+    /// `RowScratch`, which is private, and it is opaque here: the
+    /// benchmark builds one and hands it back.
+    pub struct Scratch(RowScratch);
+
+    impl Scratch {
+        /// The buffers for the rows of `num_individuals` individuals.
+        #[must_use]
+        pub fn of(num_individuals: usize) -> Scratch {
+            Scratch(RowScratch::of(num_individuals))
+        }
+    }
+
+    /// What a caller of the row pass chooses about it. It is
+    /// `DosageOptions`, which is private, and it is opaque here: the
+    /// benchmark builds one and hands it back.
+    pub struct Dosages(DosageOptions);
+
+    impl Dosages {
+        /// What the principal components of the variants ask of a row, and
+        /// what `docs/reports/perf-pca-2026-09-22.md` measured: the
+        /// centered dosages divided by their own standard deviation, and a
+        /// variant of more than two alleles refused.
+        #[must_use]
+        pub fn of_the_principal_components() -> Dosages {
+            Dosages(DosageOptions {
+                transform_to_biallelic: false,
+                scale: DosageScale::OfTheDosages,
+            })
+        }
+
+        /// What a caller inside the crate asks of a row, which is what the
+        /// test that compares [`the_standardized_values`] with the tail it
+        /// copies runs over each of the two divisors. The benchmark builds
+        /// its options with the constructor above and does not reach this.
+        #[cfg(test)]
+        pub(crate) fn of(options: DosageOptions) -> Dosages {
+            Dosages(options)
+        }
+    }
+
+    /// One row of a block standardized into `row`, and whether the variant
+    /// was used, which is `the_standardized_row` of this module and all
+    /// four passes over the row together.
+    ///
+    /// # Errors
+    ///
+    /// What `the_standardized_row` gives: a ploidy the dosages cannot be
+    /// written at, genotypes that are not whole, a variant of more than
+    /// two alleles, and what the counts of the alleles refuse.
+    pub fn the_standardized_row(
+        gts: &[i8],
+        ploidy: usize,
+        position: usize,
+        options: &Dosages,
+        scratch: &mut Scratch,
+        row: &mut [f64],
+    ) -> Result<bool> {
+        standardized_row(gts, ploidy, position, &options.0, &mut scratch.0, row)
+    }
+
+    /// The code of the genotype of each individual, its dosage or the code
+    /// of a genotype with an allele missing, which is
+    /// `the_codes_of_the_genotypes` of this module.
+    pub fn the_codes_of_the_genotypes(
+        gts: &[i8],
+        of_a_genotype: NonZeroUsize,
+        major: i8,
+        codes: &mut [u8],
+    ) {
+        codes_of_the_genotypes(gts, of_a_genotype, major, codes);
+    }
+
+    /// How many genotypes have each dosage, which is
+    /// `the_counts_of_the_codes` of this module.
+    pub fn the_counts_of_the_codes(
+        codes: &[u8],
+        num_dosages: usize,
+        counts: &mut [u32; DOSAGES_OF_A_ROW],
+    ) {
+        counts_of_the_codes(codes, num_dosages, counts);
+    }
+
+    /// The tail of [`the_standardized_row`]: the value of each dosage
+    /// written into `values`, and then the value of each code of the row
+    /// looked up there and written into `row`. It gives whether the
+    /// variant had variance, and leaves `row` as it was when it had none.
+    ///
+    /// These are the two loops that function ends in, copied, because they
+    /// are written inline there and not called. `options` says what the
+    /// centered dosages are divided by, which the caller of the row
+    /// chooses, and `ploidy` is the alleles of one genotype, which the
+    /// dosages of the variant are 0 to.
+    pub fn the_standardized_values(
+        dosage_counts: &[u32; DOSAGES_OF_A_ROW],
+        ploidy: usize,
+        codes: &[u8],
+        values: &mut [f64; VALUES_OF_A_ROW],
+        row: &mut [f64],
+        options: &Dosages,
+    ) -> bool {
+        let num_dosages = ploidy.saturating_add(1);
+        let Some((mean, divisor)) = the_center_and_the_scale_of_the_dosages(
+            dosage_counts,
+            ploidy,
+            row.len(),
+            options.0.scale,
+        ) else {
+            return false;
+        };
+        for (value, dosage) in values.iter_mut().take(num_dosages).zip(0_u32..) {
+            *value = (f64::from(dosage) - mean) / divisor;
+        }
+        for (target, code) in row.iter_mut().zip(codes.iter()) {
+            *target = values.get(usize::from(*code)).copied().unwrap_or(0.0);
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AlleleCounts, ChromTable, GtCounts, MAX_ALLELE, MISSING_ALLELE, Needs, count_alleles,
+        AlleleCounts, ChromTable, DosageOptions, DosageScale, GtCounts, MAX_ALLELE,
+        MAX_PLOIDY_OF_THE_VARIANTS, MISSING_ALLELE, Needs, RowScratch, count_alleles,
         count_alleles_of, count_gts, count_gts_of, the_major_allele, the_major_allele_frequency,
+        the_standardized_row,
     };
     use crate::error::Error;
+
+    /// A block whose individuals or whose ploidy are not the ones the pass
+    /// was given is refused, and its variants are not lost in silence.
+    ///
+    /// The rows of the block are cut by the size the block states and the
+    /// values by the size the caller states, and the shorter of the two is
+    /// what runs: a block of 5 individuals of the ploidy 2, which holds 10
+    /// alleles, read as 5 individuals of the ploidy 5 gives one row of
+    /// genotypes and no row of values, so the pass ran no row and gave back
+    /// `Ok([])`, which is what a block whose every variant has no variance
+    /// gives. The kinship would then have counted no variant used where its
+    /// reader gave one, and nothing would have said so.
+    #[test]
+    fn a_block_of_other_individuals_or_another_ploidy_than_the_pass_is_refused() {
+        for (num_individuals, ploidy) in [(5, 5), (2, 2)] {
+            let block = crate::block::Block {
+                num_vars: 1,
+                num_individuals: 5,
+                ploidy: 2,
+                gts: vec![0, 0, 0, 1, 1, 1, 0, 1, 1, 1],
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+            };
+            let mut standardized: Vec<f64> = Vec::new();
+
+            let refused = super::the_standardized_block(
+                &block,
+                num_individuals,
+                ploidy,
+                &OF_THE_DOSAGES,
+                THE_FIRST_POSITIONS,
+                &mut standardized,
+            );
+
+            let error = match refused {
+                Ok(used) => panic!("the pass used {used:?} of the variants of the block"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::BlocksDoNotFitTogether {
+                        found_num_individuals: 5,
+                        found_ploidy: 2,
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    /// How close a standardized dosage has to be to the literal it is
+    /// asserted against. The literals below are written with 12
+    /// significant digits and none of them is above 2, so each is within
+    /// 1e-11 of the number it stands for.
+    const TOLERANCE: f64 = 1e-11;
+
+    /// Where a block of a test sits among the variants a reader has given,
+    /// with the error of a reader that gave more variants than a `usize`
+    /// counts: no test of this module reaches that error.
+    const THE_FIRST_POSITIONS: super::RowPositions = super::RowPositions {
+        first: 0,
+        too_many: || Error::PcaNoVariants,
+    };
+
+    /// What the principal components of the variants of `docs/specs/pca.md`
+    /// ask of a row: the centered dosages divided by their own standard
+    /// deviation, and a variant of more than two alleles refused.
+    const OF_THE_DOSAGES: DosageOptions = DosageOptions {
+        transform_to_biallelic: false,
+        scale: DosageScale::OfTheDosages,
+    };
+
+    /// What the kinship of `docs/specs/kinship.md` asks of the same row:
+    /// the divisor under Hardy Weinberg, and a variant of more than two
+    /// alleles refused.
+    const UNDER_HARDY_WEINBERG: DosageOptions = DosageOptions {
+        transform_to_biallelic: false,
+        scale: DosageScale::OfHardyWeinberg,
+    };
+
+    /// The standardized dosages of one variant of `ploidy` alleles per
+    /// genotype, with the divisor `options` says, and whether the variant
+    /// was used. The individuals are the alleles over the ploidy.
+    fn the_row_of(gts: &[i8], ploidy: usize, options: &DosageOptions) -> (Vec<f64>, bool) {
+        let num_individuals = gts.len().checked_div(ploidy).expect("a ploidy above 0");
+        let mut scratch = RowScratch::of(num_individuals);
+        let mut row = vec![0.0; num_individuals];
+        let used = the_standardized_row(gts, ploidy, 0, options, &mut scratch, &mut row)
+            .expect("the standardizing of the row");
+        (row, used)
+    }
+
+    /// Every value of `row` within [`TOLERANCE`] of the one of `expected`
+    /// beside it.
+    fn assert_close(row: &[f64], expected: &[f64], what: &str) {
+        assert_eq!(row.len(), expected.len(), "{what}: the values");
+        for (individual, (value, wanted)) in row.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (value - wanted).abs() <= TOLERANCE,
+                "{what}: the individual {individual} is {value} and not {wanted}"
+            );
+        }
+    }
 
     /// The six variants of five diploid individuals of the worked example
     /// of `docs/specs/filters.md`, which the table of "How it is verified"
@@ -1486,5 +2459,355 @@ mod tests {
         assert_eq!(counts[1], 0);
         assert_eq!(counts[2], 0);
         assert_eq!(counts[3], 0);
+    }
+
+    /// The two variants that the worked example of "How it is verified" of
+    /// `docs/specs/kinship.md` keeps, standardized with the divisor under
+    /// Hardy Weinberg. Both have a mean dosage of 1, so `p` is 0.5 and the
+    /// divisor is `sqrt(2 * 0.5 * 0.5)`, and the spec gives the values as
+    /// `-sqrt(2)`, 0, `sqrt(2)`, 0 and `-sqrt(2)`, 0, 0, `sqrt(2)`. The 0
+    /// of `i2` in the second is its missing genotype, which takes the mean
+    /// of its variant and is 0 once the variant is centered.
+    #[test]
+    #[expect(
+        clippy::approx_constant,
+        reason = "the standardized dosage of a variant whose divisor is sqrt(0.5), written with the 12 significant digits of every literal here, is the first digits of sqrt(2)"
+    )]
+    fn the_divisor_under_hardy_weinberg_gives_the_standardized_dosages_of_the_worked_example() {
+        // v0: 0/0 0/1 1/1 0/1.
+        let (row, used) = the_row_of(&[0, 0, 0, 1, 1, 1, 0, 1], 2, &UNDER_HARDY_WEINBERG);
+        assert!(used, "v0 has variance");
+        assert_close(
+            &row,
+            &[-1.41421356237, 0.0, 1.41421356237, 0.0],
+            "the standardized dosages of v0",
+        );
+
+        // v1: 0/0 0/1 ./. 1/1.
+        let (row, used) = the_row_of(&[0, 0, 0, 1, -1, -1, 1, 1], 2, &UNDER_HARDY_WEINBERG);
+        assert!(used, "v1 has variance");
+        assert_close(
+            &row,
+            &[-1.41421356237, 0.0, 0.0, 1.41421356237],
+            "the standardized dosages of v1",
+        );
+    }
+
+    /// The two divisors are not the same number, and the row pass reads
+    /// the one it was given: the same variant standardized both ways gives
+    /// different values whenever the genotypes are not in Hardy Weinberg
+    /// proportions.
+    ///
+    /// Four diploid individuals, `0/0 0/0 1/1 1/1`, which no individual is
+    /// heterozygous in: the alleles 0 and 1 were each called four times,
+    /// so the major allele is the lower numbered 0 and the dosages are 0,
+    /// 0, 2, 2. Their mean is 1 and their standard deviation is 1, so the
+    /// principal components of the variants give -1, -1, 1, 1; `p` is 0.5,
+    /// so the divisor under Hardy Weinberg is `sqrt(2 * 0.5 * 0.5)` and
+    /// the values are `-sqrt(2)`, `-sqrt(2)`, `sqrt(2)`, `sqrt(2)`. Both
+    /// were worked out by hand from the two formulas on 23 September 2026.
+    #[test]
+    #[expect(
+        clippy::approx_constant,
+        reason = "the standardized dosage of a variant whose divisor is sqrt(0.5), written with the 12 significant digits of every literal here, is the first digits of sqrt(2)"
+    )]
+    fn the_row_pass_divides_by_what_its_caller_asked_for() {
+        let gts = [0_i8, 0, 0, 0, 1, 1, 1, 1];
+        let (of_the_dosages, used) = the_row_of(&gts, 2, &OF_THE_DOSAGES);
+        assert!(used, "the variant has variance");
+        assert_close(
+            &of_the_dosages,
+            &[-1.0, -1.0, 1.0, 1.0],
+            "the dosages divided by their own standard deviation",
+        );
+
+        let (under_hardy_weinberg, used) = the_row_of(&gts, 2, &UNDER_HARDY_WEINBERG);
+        assert!(used, "the variant has variance");
+        assert_close(
+            &under_hardy_weinberg,
+            &[-1.41421356237, -1.41421356237, 1.41421356237, 1.41421356237],
+            "the dosages divided by the deviation under Hardy Weinberg",
+        );
+    }
+
+    /// `bench_internals::the_standardized_values` is the tail of
+    /// [`the_standardized_row`] copied, because those two loops are
+    /// written inline in that function and are not one of their own.
+    /// Nothing compared the copy with what it copies, so it could drift
+    /// and the benchmark would then time code the library does not run.
+    ///
+    /// Both are run over one row, under each of the two divisors, and the
+    /// values have to be the same bits. The variant is `0/0 0/1 1/1 0/1
+    /// ./.`, whose last genotype has both of its alleles missing, so the
+    /// entry of [`MISSING_CODE`] is looked up as well.
+    #[cfg(feature = "bench-internals")]
+    #[test]
+    fn the_tail_the_benchmark_times_is_the_tail_the_row_pass_runs() {
+        use std::num::NonZeroUsize;
+
+        use super::bench_internals::{
+            Dosages, the_codes_of_the_genotypes as the_codes,
+            the_counts_of_the_codes as the_counts, the_standardized_values,
+        };
+        use super::{DOSAGES_OF_A_ROW, VALUES_OF_A_ROW};
+
+        const GTS: [i8; 10] = [0, 0, 0, 1, 1, 1, 0, 1, -1, -1];
+        const NUM_INDIVIDUALS: usize = 5;
+        const PLOIDY: usize = 2;
+        // The dosages of a diploid genotype are 0, 1 and 2.
+        const NUM_DOSAGES: usize = 3;
+
+        for options in [&OF_THE_DOSAGES, &UNDER_HARDY_WEINBERG] {
+            let (whole, used) = the_row_of(&GTS, PLOIDY, options);
+            assert!(used, "the variant has variance");
+
+            let mut allele_counts: AlleleCounts = [0; 128];
+            count_alleles(&GTS, &mut allele_counts).expect("the counts of the alleles");
+            let mut codes = vec![0_u8; NUM_INDIVIDUALS];
+            the_codes(
+                &GTS,
+                NonZeroUsize::new(PLOIDY).expect("a ploidy above 0"),
+                the_major_allele(&allele_counts),
+                &mut codes,
+            );
+            let mut dosage_counts = [0_u32; DOSAGES_OF_A_ROW];
+            the_counts(&codes, NUM_DOSAGES, &mut dosage_counts);
+            let mut values = [0.0_f64; VALUES_OF_A_ROW];
+            let mut of_the_tail = vec![0.0; NUM_INDIVIDUALS];
+            let used = the_standardized_values(
+                &dosage_counts,
+                PLOIDY,
+                &codes,
+                &mut values,
+                &mut of_the_tail,
+                &Dosages::of(*options),
+            );
+            assert!(used, "the variant has variance");
+
+            for (individual, (tail, row)) in of_the_tail.iter().zip(whole.iter()).enumerate() {
+                assert_eq!(
+                    tail.to_bits(),
+                    row.to_bits(),
+                    "the individual {individual}: the tail gives {tail} and the row {row}"
+                );
+            }
+        }
+    }
+
+    /// A thread keeps the buffers of one row and they are as long as the
+    /// rows it has read so far, so the first row of a source of more
+    /// individuals than the last one had finds a buffer of codes that is
+    /// too short and the pass grows it.
+    ///
+    /// Without that the codes, and then the standardized values, would be
+    /// written for the individuals the buffer holds and the rest of the
+    /// row would be left as it was, and the counts of the dosages would be
+    /// of those individuals alone, which gives another mean and another
+    /// divisor: a wrong row with no error and no panic.
+    ///
+    /// The variant is `v0` of the worked example of "How it is verified"
+    /// of `docs/specs/kinship.md`, four individuals read with the buffers
+    /// of two.
+    #[test]
+    #[expect(
+        clippy::approx_constant,
+        reason = "the standardized dosage of a variant whose divisor is sqrt(0.5), written with the 12 significant digits of every literal here, is the first digits of sqrt(2)"
+    )]
+    fn a_row_of_more_individuals_than_the_buffers_hold_is_written_whole() {
+        let mut scratch = RowScratch::of(2);
+        let mut row = vec![0.0; 4];
+        let used = the_standardized_row(
+            &[0, 0, 0, 1, 1, 1, 0, 1],
+            2,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        )
+        .expect("the standardizing of the row");
+        assert!(used, "the variant has variance");
+        assert_close(
+            &row,
+            &[-1.41421356237, 0.0, 1.41421356237, 0.0],
+            "the standardized dosages of four individuals read with the buffers of two",
+        );
+    }
+
+    /// The divisor under Hardy Weinberg reads both the ploidy and the
+    /// allele frequency of the variant, `sqrt(ploidy * p * (1 - p))` with
+    /// `p` the mean dosage over the ploidy.
+    ///
+    /// Every other test of that divisor is of a diploid variant whose mean
+    /// dosage is 1, where `p` is 0.5, so `p * (1 - p)` and `p * p` are the
+    /// same number and the ploidy is the 2 a constant would hold. The three
+    /// variants here each break one of those: the first is diploid with `p`
+    /// of 0.125, the second is tetraploid and the third haploid.
+    ///
+    /// The values are those of pyNei's `_calc_dosages`, which divides by
+    /// `sqrt(ploidy * freqs * (1 - freqs))`, run on 24 September 2026.
+    #[test]
+    fn the_divisor_under_hardy_weinberg_reads_the_ploidy_and_the_frequency() {
+        // 0/0 0/0 0/0 0/1: the allele 0 was called seven times and the
+        // allele 1 once, so the dosages are 0, 0, 0, 1, their mean is 0.25
+        // and `p` is 0.125. With `p * p` in place of `p * (1 - p)` the
+        // divisor would be sqrt(0.03125) and not sqrt(0.21875).
+        let (row, used) = the_row_of(&[0, 0, 0, 0, 0, 0, 0, 1], 2, &UNDER_HARDY_WEINBERG);
+        assert!(used, "the diploid variant has variance");
+        assert_close(
+            &row,
+            &[
+                -0.534522483825,
+                -0.534522483825,
+                -0.534522483825,
+                1.603567451475,
+            ],
+            "the standardized dosages of a diploid variant of p 0.125",
+        );
+
+        // 0/0/0/0 0/0/0/1 0/0/1/1 0/1/1/1: the dosages are 0, 1, 2, 3,
+        // their mean is 1.5 and `p` is 0.375, so each value is
+        // (dosage - 1.5) / sqrt(4 * 0.375 * 0.625). A ploidy read as 2
+        // would divide by sqrt(2 * 0.375 * 0.625) instead, and `p * p`
+        // would divide by sqrt(4 * 0.375 * 0.375).
+        let (row, used) = the_row_of(
+            &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1],
+            4,
+            &UNDER_HARDY_WEINBERG,
+        );
+        assert!(used, "the tetraploid variant has variance");
+        assert_close(
+            &row,
+            &[
+                -1.5491933384829668,
+                -0.5163977794943222,
+                0.5163977794943222,
+                1.5491933384829668,
+            ],
+            "the standardized dosages of a tetraploid variant",
+        );
+
+        // 0 0 1 1: the dosages are 0, 0, 1, 1, their mean is 0.5 and `p`
+        // is 0.5, so each value is (dosage - 0.5) / sqrt(1 * 0.5 * 0.5). A
+        // ploidy read as 2 would divide by sqrt(2 * 0.5 * 0.5).
+        let (row, used) = the_row_of(&[0, 0, 1, 1], 1, &UNDER_HARDY_WEINBERG);
+        assert!(used, "the haploid variant has variance");
+        assert_close(
+            &row,
+            &[-1.0, -1.0, 1.0, 1.0],
+            "the standardized dosages of a haploid variant",
+        );
+    }
+
+    /// A ploidy above [`MAX_PLOIDY_OF_THE_VARIANTS`] is refused by the row
+    /// pass itself, and the message names neither the principal components
+    /// of the variants nor any other calculation: the pass writes the
+    /// genotype of each individual as one byte, its dosage or the code of a
+    /// genotype with an allele missing, and a ploidy of 255 has one dosage
+    /// more than a byte holds.
+    ///
+    /// The largest ploidy the VCF reader takes is 255, so 255 is the
+    /// smallest ploidy a dataset of popnei can carry that this refuses.
+    #[test]
+    fn a_ploidy_the_dosages_cannot_be_written_at_is_refused_by_the_row_pass() {
+        let one_genotype = vec![0_i8; 255];
+        let mut scratch = RowScratch::of(1);
+        let mut row = vec![0.0; 1];
+        match the_standardized_row(
+            &one_genotype,
+            255,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        ) {
+            Err(Error::VariantPloidyTooLarge { ploidy }) => {
+                assert_eq!(ploidy, 255);
+                let message = Error::VariantPloidyTooLarge { ploidy }.to_string();
+                assert!(message.contains("a ploidy of 255"), "{message}");
+                assert!(message.contains("254 at most"), "{message}");
+                assert!(!message.contains("principal component"), "{message}");
+            }
+            other => panic!("a ploidy of 255 was turned into dosages: {other:?}"),
+        }
+
+        // The largest ploidy the pass takes is not refused.
+        let one_genotype = vec![0_i8; MAX_PLOIDY_OF_THE_VARIANTS];
+        let used = the_standardized_row(
+            &one_genotype,
+            MAX_PLOIDY_OF_THE_VARIANTS,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        )
+        .expect("the standardizing of the row");
+        assert!(!used, "one individual has one dosage and no variance");
+    }
+
+    /// A variant with more than two different alleles among its called
+    /// genotypes is refused whatever the centered dosages are divided by,
+    /// and the message names the position of the variant among those given
+    /// and the argument that turns the refusal off.
+    ///
+    /// The variant is `0/1 0/2 0/0 0/1 ./.` of five diploid individuals,
+    /// which holds the three alleles 0, 1 and 2: three and not four,
+    /// because three is where the refusal begins, and a variant of four
+    /// would leave `num_alleles > 3` passing.
+    ///
+    /// The message is asserted whole. Deliverable 3 of work package 1 of
+    /// `docs/plans/kinship.md` asks for it to be the same for both
+    /// callers, and its middle clause is not read anywhere else.
+    #[test]
+    fn a_variant_of_more_than_two_alleles_is_refused_whatever_the_dosages_are_divided_by() {
+        const OF_THREE_ALLELES: [i8; 10] = [0, 1, 0, 2, 0, 0, 0, 1, -1, -1];
+
+        let mut scratch = RowScratch::of(5);
+        let mut row = vec![0.0; 5];
+        for (what, options) in [
+            (
+                "divided by the standard deviation of the dosages",
+                &OF_THE_DOSAGES,
+            ),
+            (
+                "divided by the deviation under Hardy Weinberg",
+                &UNDER_HARDY_WEINBERG,
+            ),
+        ] {
+            match the_standardized_row(&OF_THREE_ALLELES, 2, 3, options, &mut scratch, &mut row) {
+                Err(Error::VariantWithMoreThanTwoAlleles {
+                    position,
+                    num_alleles,
+                }) => {
+                    assert_eq!(position, 3, "{what}");
+                    assert_eq!(num_alleles, 3, "{what}");
+                    let message = Error::VariantWithMoreThanTwoAlleles {
+                        position,
+                        num_alleles,
+                    }
+                    .to_string();
+                    assert_eq!(
+                        message,
+                        "the variant at the position 3 among those given has 3 different alleles \
+                         among its called genotypes, and the dosage of a genotype, how many of \
+                         its alleles are not the major one, has a meaning for two: pass \
+                         `transform_to_biallelic` to count every allele that is not the major one \
+                         the same",
+                        "{what}"
+                    );
+                }
+                other => panic!("{what}: a variant of three alleles was read: {other:?}"),
+            }
+        }
+
+        // With that argument every allele that is not the major one counts
+        // the same and the variant is read.
+        let biallelic = DosageOptions {
+            transform_to_biallelic: true,
+            ..UNDER_HARDY_WEINBERG
+        };
+        let used =
+            the_standardized_row(&OF_THREE_ALLELES, 2, 3, &biallelic, &mut scratch, &mut row)
+                .expect("the standardizing of the row");
+        assert!(used, "the variant has variance");
     }
 }

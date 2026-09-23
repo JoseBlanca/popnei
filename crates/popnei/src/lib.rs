@@ -15,8 +15,10 @@
 //! giving blocks implements and the reader that puts blocks back to a size;
 //! `io` the VCF reader, which parses the lines of a file into the rows of a
 //! block; `variant` what the other modules say about one variant: which
-//! fields a consumer wants, the table of the chromosome names and the view
-//! of one variant of a block; `filters` the variants that a user keeps
+//! fields a consumer wants, the table of the chromosome names, the view of
+//! one variant of a block, and the row helpers over it, which count its
+//! alleles and its genotypes and turn it into one standardized dosage per
+//! individual; `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept;
 //! and `stats` the populations a statistic is calculated for, each a named
 //! set of individuals, with the pass over the variants that gives, for each
@@ -29,11 +31,15 @@
 //! counted from the genotypes of each block as sets of bits; `ld` reads
 //! the genotypes as dosages, how many alleles of a genotype are not the
 //! major allele of its variant, which is what r², how much the genotype of
-//! one variant says about the genotype of another, is worked out from; and
+//! one variant says about the genotype of another, is worked out from;
 //! `pop_dists` the seven measures of how far apart two populations are,
 //! which one pass over the variants gives from the counts of each
-//! population at each of them. The modules that follow them are being
-//! written, and `docs/architecture.md` has their order.
+//! population at each of them; and `kinship` gives how much more of their
+//! genome every pair of individuals shares than two drawn at random from
+//! the same panel would, which is the matrix a mixed model of an
+//! association study takes as the covariance of its random effect. The
+//! modules that follow them are being written, and `docs/architecture.md`
+//! has their order.
 //!
 //! The linear algebra those modules need, the products of matrices and
 //! the eigendecomposition, is not a module here but a crate beside this
@@ -48,6 +54,7 @@ pub mod dists;
 pub mod error;
 pub mod filters;
 pub mod io;
+pub mod kinship;
 pub mod ld;
 pub mod pca;
 pub mod pop_dists;
