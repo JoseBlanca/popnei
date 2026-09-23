@@ -1408,6 +1408,25 @@ pub enum Error {
         value: f64,
     },
 
+    /// Every tested individual of a continuous trait has the same
+    /// phenotype. A study looks for the variants that go with how a trait
+    /// differs between the individuals, and a trait that does not differ
+    /// has nothing for a variant to go with. Neither of the two things a
+    /// fit would do instead is an answer: with no kinship the residual sum
+    /// of squares is 0 and the `se` of every variant comes back 0, and
+    /// with one the genetic variance is fitted at 0 and the inverse of the
+    /// covariance it feeds returns infinities. pyNei refuses a trait of
+    /// one value only for a binomial trait, and "Which individuals are
+    /// tested, and the design" of `docs/specs/gwas.md` records that
+    /// difference. In Python it is a `ValueError`.
+    #[error(
+        "every tested individual has the phenotype {value}, and a study looks for the variants that go with how a trait differs between the individuals; a trait that is the same in all of them has nothing for a variant to go with"
+    )]
+    GwasContinuousPhenotypeOfOneValue {
+        /// The phenotype they all have.
+        value: f64,
+    },
+
     /// The columns of the design of a study are not independent: a
     /// covariate is constant, or it is a combination of the others, such as
     /// a copy of one or the sum of two. The effects of such a design are

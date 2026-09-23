@@ -247,7 +247,10 @@ def calc_gwas(
     as much as NaN itself, is an individual with no phenotype and is left
     untested, and one whose ``float`` raises is a ``ValueError`` naming the
     individual. An infinity is refused too, which pyNei accepts and then
-    gives NaN for every variant.
+    gives NaN for every variant. A trait that is the same in every tested
+    individual is a ``ValueError``: there is nothing for a variant to be
+    associated with, and pyNei refuses such a trait only when it is
+    binomial.
 
     `trait` is ``"continuous"``, a measurement, or ``"binomial"``, 0 for an
     individual that has not a condition and 1 for one that has, the two

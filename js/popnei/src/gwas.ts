@@ -316,8 +316,9 @@ export interface CalcGwasOptions {
  * for, which is being written; when the score test is asked of a linear
  * model, which has it not; when no individual is tested or they are fewer
  * than the columns of the design plus two; when a phenotype or a covariate
- * is not a finite number once it is read as one; when the columns of the
- * design are not independent; when the trait is binomial, which is a
+ * is not a finite number once it is read as one; when the trait is the same
+ * in every tested individual, which leaves nothing for a variant to be
+ * associated with; when the columns of the design are not independent; when the trait is binomial, which is a
  * logistic model and is being written; when the source cannot be read, a
  * wrong line of a VCF among the causes; when a variant has more than two
  * alleles among its called genotypes and `transformToBiallelic` is false;

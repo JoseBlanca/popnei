@@ -987,6 +987,11 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
     "fewer individuals than the design has columns plus two": theStudyWith({
       phenotype: { i0: 2, i1: 3, i2: 5 },
     }),
+    "a trait that is the same in every individual": theStudyWith({
+      phenotype: Object.fromEntries(
+        Object.keys(THE_TRAIT).map((individual) => [individual, 4]),
+      ),
+    }),
     "a phenotype that is a name": theStudyWith({
       phenotype: { ...THE_TRAIT, i2: "tall" },
     }),

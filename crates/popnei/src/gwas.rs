@@ -515,7 +515,10 @@ impl<'a> Design<'a> {
     /// number, [`Error::GwasPhenotypeNotBinomial`] when a binomial trait
     /// holds a value that is neither 0 nor 1, and
     /// [`Error::GwasPhenotypeOfOneValue`] when every tested individual of
-    /// such a trait has the same one.
+    /// such a trait has the same one, which leaves one of the two groups
+    /// it compares empty. [`Error::GwasContinuousPhenotypeOfOneValue`] when
+    /// every tested individual of a continuous trait has the same one,
+    /// which is a measurement that does not differ between them.
     /// [`Error::GwasDesignValueNotFinite`] when a value of the design is
     /// not a finite number, naming the individual, the column and the
     /// value. [`Error::GwasCovariatesCollinear`] when the columns of the
@@ -740,19 +743,25 @@ fn refuse_individuals_that_are_not_the_source_in_order(
 }
 
 /// The phenotype of the tested individuals: a finite number for each of
-/// them, and for a binomial trait 0 or 1 with somebody in each of the two
-/// groups.
+/// them, not the same number in all of them, and for a binomial trait 0 or
+/// 1 with somebody in each of the two groups.
 ///
-/// A continuous trait of one value is not refused here. "Which individuals
-/// are tested, and the design" of `docs/specs/gwas.md` asks for that
-/// refusal of a binomial trait alone, where one of the two groups it
-/// compares would be empty.
+/// A trait of one value is refused for both kinds, which "Which
+/// individuals are tested, and the design" of `docs/specs/gwas.md` asks
+/// for and which pyNei does for a binomial trait alone. The two get the
+/// two errors, each with its own reason: a group of the binomial
+/// comparison that nobody is in, and a measurement that does not differ
+/// between the individuals.
 #[expect(
     clippy::float_cmp,
     reason = "a binomial phenotype is the 0.0 and the 1.0 themselves and not a \
               measurement near either, so what is wanted here is the exact \
               comparison and not one within a tolerance; a value of -0.0 is 0.0 \
-              by it, which is the answer for an individual without the condition"
+              by it, which is the answer for an individual without the condition. \
+              A continuous trait is the same number in every individual when \
+              every one of its finite values has the bits of the first, two \
+              measurements that differ at all differing in a bit, so that \
+              comparison is the exact one too"
 )]
 fn refuse_a_phenotype_that_is_not_the_trait(
     phenotype: &[f64],
@@ -764,7 +773,14 @@ fn refuse_a_phenotype_that_is_not_the_trait(
         }
     }
     match trait_type {
-        TraitType::Continuous => Ok(()),
+        // Every value is finite by here, so a trait that is the same in
+        // every individual is one whose values all equal the first.
+        TraitType::Continuous => match phenotype.split_first() {
+            Some((first, rest)) if rest.iter().all(|value| *value == *first) => {
+                Err(Error::GwasContinuousPhenotypeOfOneValue { value: *first })
+            }
+            Some(_) | None => Ok(()),
+        },
         TraitType::Binomial => {
             for (position, value) in phenotype.iter().copied().enumerate() {
                 if value != 0.0 && value != 1.0 {
@@ -3938,9 +3954,12 @@ mod design {
 
     /// A binomial trait where every tested individual has the same value is
     /// refused, naming the value: one of the two groups it compares is
-    /// empty. Both 0 and 1 are the same refusal, and the same phenotype of
-    /// a continuous trait is kept, which is what the spec says for that
-    /// trait and what a variant with no variance is tested against.
+    /// empty. Both 0 and 1 are the same refusal, and a phenotype with
+    /// somebody in each group is kept. A continuous trait of one value is
+    /// refused too, by the test below, and with the other error of the two:
+    /// the reason it gives is the one of a measurement that does not
+    /// differ, and not an empty group of a condition nobody was asked
+    /// about.
     #[test]
     fn a_binomial_phenotype_of_one_value_is_refused() {
         let four = [0, 1, 2, 3];
@@ -3957,11 +3976,6 @@ mod design {
                      trait, and that gave {other:?}"
                 ),
             }
-            study.trait_type = TraitType::Continuous;
-            assert!(
-                Design::of_the_study(&study, 4).is_ok(),
-                "a continuous trait of one value is refused nowhere in the spec"
-            );
         }
         let phenotype = [0.0, 1.0, 1.0, 0.0];
         let mut study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
@@ -3969,6 +3983,43 @@ mod design {
         assert!(
             Design::of_the_study(&study, 4).is_ok(),
             "two individuals have the condition and two have not"
+        );
+    }
+
+    /// A continuous trait where every tested individual has the same value
+    /// is refused, naming the value. There is nothing for such a trait to
+    /// be associated with, and what a fit gives instead is not an answer:
+    /// with no kinship the residual sum of squares is 0 and every `se` is
+    /// 0, and with a kinship the genetic variance is fitted at 0 and the
+    /// inverse it feeds returns infinities. pyNei refuses a trait of one
+    /// value only for a binomial trait, and "Which individuals are tested,
+    /// and the design" of `docs/specs/gwas.md` records that difference.
+    ///
+    /// The fixture is four individuals of the phenotype 2.5, which is
+    /// neither 0 nor 1, so the refusal is not the binomial one reached by
+    /// another route; and then the same four with one of them at 2.75,
+    /// which is kept. The two are either side of the refusal, so a check
+    /// that asked for more than one value to differ fails here.
+    #[test]
+    fn a_continuous_phenotype_of_one_value_is_refused() {
+        let four = [0, 1, 2, 3];
+        let phenotype = [2.5; 4];
+        let study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
+        match Design::of_the_study(&study, 4) {
+            Err(Error::GwasContinuousPhenotypeOfOneValue { value }) => {
+                assert_eq!(value.to_bits(), 2.5_f64.to_bits());
+            }
+            other => panic!(
+                "every tested individual has the phenotype 2.5 of a continuous trait, \
+                 and that gave {other:?}"
+            ),
+        }
+        let one_differs = [2.5, 2.5, 2.75, 2.5];
+        let study = a_study(&one_differs, &DESIGN_OF_FOUR, 2, &four);
+        assert!(
+            Design::of_the_study(&study, 4).is_ok(),
+            "one individual of the four has another measurement, which is a trait \
+             that differs"
         );
     }
 

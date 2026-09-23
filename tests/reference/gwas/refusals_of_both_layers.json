@@ -100,6 +100,10 @@
       "match": "individuals are tested and the design has"
     },
     {
+      "case": "a trait that is the same in every individual",
+      "match": "every tested individual has the phenotype .*, and a study looks for the variants that go with how a trait differs"
+    },
+    {
       "case": "a phenotype that is a name",
       "match": "the phenotype of .i2. is .*tall.*, and a trait is a number"
     },

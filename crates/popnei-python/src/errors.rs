@@ -624,12 +624,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The nine of the association study that are of what a user wrote
+        // The ten of the association study that are of what a user wrote
         // and are wrong whatever file is read: a phenotype or a covariate
         // that is not a finite number, which the package lets through as a
         // value that came out of the user's own arithmetic as an infinity;
         // a binomial trait whose phenotype is not 0 or 1 or is one value
-        // for everybody; covariates that are not independent, a copy of one
+        // for everybody, and a continuous trait that is one value for
+        // everybody too; covariates that are not independent, a copy of one
         // another or a constant; the score test asked of a linear model and
         // the Wald test of a logistic mixed one, which are the two pairs no
         // model has; the GRAMMAR-Gamma approximation asked for by a study
@@ -640,6 +641,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasPhenotypeNotFinite { .. }
         | popnei::Error::GwasPhenotypeNotBinomial { .. }
         | popnei::Error::GwasPhenotypeOfOneValue { .. }
+        | popnei::Error::GwasContinuousPhenotypeOfOneValue { .. }
         | popnei::Error::GwasDesignValueNotFinite { .. }
         | popnei::Error::GwasKinshipValueNotFinite { .. }
         | popnei::Error::GwasCovariatesCollinear { .. }

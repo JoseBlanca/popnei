@@ -1523,6 +1523,9 @@ def _the_calls_that_are_refused(
     empty["i2"] = ""
     covariate_of_names = covariates.astype(object)
     covariate_of_names.loc["i2", "cov"] = "north"
+    of_one_value = pandas.Series(
+        4.0, index=list(WORKED_EXAMPLE_INDIVIDUALS), dtype=float
+    )
     binomial = pandas.Series(
         [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
@@ -1569,6 +1572,9 @@ def _the_calls_that_are_refused(
         ),
         "fewer individuals than the design has columns plus two": lambda: (
             _the_worked_example(worked_example, phenotype=of_three)
+        ),
+        "a trait that is the same in every individual": lambda: _the_worked_example(
+            worked_example, phenotype=of_one_value
         ),
         "a phenotype that is a name": lambda: _the_worked_example(
             worked_example, phenotype=a_name
