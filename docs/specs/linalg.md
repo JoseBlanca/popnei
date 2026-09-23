@@ -947,6 +947,24 @@ read one operand the way another combination reads it gives a different
 matrix for at least one of the four, which is what the four assertions
 together catch.
 
+Those four matrices are all 2 x 2, so the rows and the columns of the
+result are the same number and a call that swapped the two would give them
+all. So each of the two combinations that turn the first operand is
+asserted once more on a result whose three dimensions differ, which is
+what "Layout, half and the backends" asks of every product and what the
+third case of `product` above is for. Both use the A of 2 x 3 written the
+other way round, the 3 x 2 with rows (1, 0), (2, 1) and (0, 3), with
+`inner` 3 and one column: `a' b` with the B of 3 x 1 with rows (1), (0)
+and (2) is the 2 x 1 with rows (1) and (6), and `a' b'` with the B of 1 x
+3 with the row (2, 0, 1) is the 2 x 1 with rows (2) and (3). They are the
+two matrices the second and third cases of "How it is verified" of "The
+four operations of the PCA and the LD" already give for the same A, since
+each of the four combinations computes the same product as one of those
+cases, and they are asserted exactly. Run on both backends on 23 September
+2026, and a backend whose result had its rows and its columns the other
+way round was checked to fail them and to pass every other test of the
+crate.
+
 ## The Rust interface
 
 The lower half of `g += a'a`; `a` is `rows` x `cols`, and `g` is `cols`
