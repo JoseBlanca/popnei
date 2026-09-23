@@ -1227,12 +1227,14 @@ which is this chord distance. The genotypes reach R as the csv that
 writes, with a population column added.
 
 On the biallelic panel adegenet gives 0.18026704497001397,
-0.17586558860911838 and 0.17977447554045811, and popnei's arithmetic is
-1.25e-15 from them at the furthest; on the multiallelic panel
-0.33853588707322202, 0.33760692274322368 and 0.3495821544731133, at
-3.3e-16. Both are the last bits of a double, so the tests compare within
-1e-12 relative. D_A is not in adegenet and is checked as the square of
-what is.
+0.17586558860911838 and 0.17977447554045811, and popnei's arithmetic gives
+each of the three as the same double; on the multiallelic panel it gives
+0.33853588707322202, 0.33760692274322368 and 0.3495821544731133 within
+6.7e-16 of adegenet's, the furthest being the pair p0-p2. That is the last
+bits of a double, so the tests compare within 1e-12 relative. D_A is not in
+adegenet and is checked as the square of what is, within the same 1e-12
+relative, which popnei's D_A is 3.9e-15 of at the furthest, the same pair:
+squaring the chord distance doubles how far from adegenet it is.
 
 Two of adegenet's other four distances were run and are not taken.
 Rogers' distance, `method=4`, is the mean over the variants of the
