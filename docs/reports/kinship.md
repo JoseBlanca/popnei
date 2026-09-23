@@ -235,3 +235,207 @@ Sending all seven categories rather than choosing among them was worth it
 here: the finding that mattered most came from `tests`, which was the
 slowest of the seven and the only one that mutates the code, and three of
 the others found the PCA-named ploidy error from three different sides.
+
+## Work package 2: the matrix
+
+Done. `calc_kinship` gives the genomic relationship matrix of a set of
+variants in the core crate, in Python and in TypeScript, with its per pair
+denominators, `num_vars`, the pass stats and `filter_individuals`.
+
+### The deliverables
+
+Each check was run by the orchestrator after the review's fixes.
+
+| deliverable | command | result |
+| --- | --- | --- |
+| 1, both panels are plink2's | `uv run pytest tests/test_kinship.py` | 37 passed; every entry of both 200 x 200 matrices within 1e-12 relative of plink2, `num_vars` 1200 for both |
+| 2, the worked example and the plink2 literals | `cargo test -p popnei --lib kinship -- --list` | `35 tests`, where the plan asks for at least 12 and the work began at 0 |
+| 3, one test per case | `cargo test -p popnei --lib kinship::cases -- --list` | `6 tests`, one for each of the four cases the spec names and two the review added |
+| 4, the individuals argument | `uv run pytest tests/test_kinship.py` | 1195 variants and a largest difference of 0.12917 from the same 40 rows and columns of the whole panel |
+| 5, popnei and pyNei agree | `uv run pytest tests/test_kinship.py` | every entry of both panels within 1e-12 relative, `num_vars` equal |
+| 6, `calcKinship` under node | `npm run build && npm test` in `js/popnei` | 260 pass, 0 fail |
+
+The whole suite on the same commit: `cargo fmt --all --check`, `cargo
+clippy --workspace --all-targets -- -D warnings`, `cargo clippy -p popnei
+--all-targets --features bench-internals -- -D warnings` and `cargo
+wasm-check` clean; `cargo test --workspace` 645 passed with 2 ignored in the
+core crate and 149 in the linear algebra crate; `cargo test -p popnei-linalg
+--no-default-features` 136; `uv run pytest` 384 passed; `npm run build &&
+npm test` 260 pass.
+
+Deliverable 4 settled a reading of the spec: the 0.129 it quotes is the
+fully called panel, which gives 0.12917. The panel with genotypes missing
+gives 0.1387.
+
+### What the tolerance against plink2 really was
+
+The plan and the spec asked for every entry to be within 1e-5 absolute of
+the stored `tests/reference/kinship/*.plink2.rel.gz`, and the first run gave
+a largest difference of 4.95e-06 on `panel_called` and 4.93e-06 on `panel`.
+That looked like agreement with a factor of two to spare. It was not
+agreement at all: those files hold six significant digits of text, and the
+whole difference is plink2's rounding. Every one of the 40000 differences is
+below the half-ulp of six digits.
+
+Re-run against plink2's binary output, `--make-rel square bin`, popnei is
+4.44e-16 from plink2 on `panel_called` and 5.55e-16 on `panel`, absolute.
+
+So the check had no headroom: an arithmetic error of up to 5e-6 would have
+passed it. And plink2's rounding is relative while the tolerance was
+absolute, so the rule held only while the entries stayed below about 2. On a
+panel of 60 individuals and 600 variants where most alleles are private,
+which is ordinary in sequence data of a small panel, the diagonal reaches
+19.66: there a correct popnei is 1.14e-13 from plink2's binary matrix and
+1.83e-05 from its printed text, and would have failed the test.
+
+`make_reference.py` now writes `<name>.plink2.rel.bin.gz` as well, and both
+the cargo and the pytest tests compare against those within 1e-12 relative.
+The eleven text literals stay for the spec's table, which is what a reader
+checks by eye. The margin is narrower than the absolute figures suggest: as
+a ratio the worst entry is 3.31e-13 on `panel_called` and 1.89e-13 on
+`panel`, at the smallest entries, so 1e-12 is two to three times the worst
+case.
+
+The agreement with pyNei is bit for bit, a largest difference of 0.0 on both
+panels, but that is an artifact of both libraries calling the same `dsyrk`
+on a single chunk of 1200 variants. At 30000 variants they differ by
+1.6e-14. The 1e-12 relative rule is the one to keep; the bit equality is not
+a property to lean on.
+
+### What the review found
+
+Seven reviewers, one per category. Twenty-two findings held and were fixed
+in fourteen commits, `ba94a0b` to `7e58df6`.
+
+**Four wrong numbers that every test passed.** The pass over the blocks
+carries, into the denominator of every pair, how many variants the blocks
+before it used. Passing how many they *gave* instead, one word apart, left
+all 637 tests green; on a dataset of 10002 variants with a variant dropped
+before the first missing genotype, every entry of the matrix moves. The same
+blindness hid three more: the position handed to the row pass, which names
+the variant in the error of more than two alleles; the two variant counts in
+the error of a pair never called together, which could be swapped; and the
+ploidy, which no kinship test used at anything but 2.
+
+All four are invisible for one reason. `calc_kinship` calls
+`Reblock::new(reader, None)`, and `Reblock` joins any dataset under 10000
+variants into a single block, so no fixture in the repository has a second
+block, and no caller can ask for a smaller one. The plan's own warning said
+a failure would show as "a failure on `panel` with a pass on
+`panel_called`". It cannot: both panels are one block. The tests are now on
+hand-built multi-block readers, and each of the four mutations fails its own
+test and no other.
+
+**Two silent wrong results a user could reach.** A `Kinship` built by hand
+in Python took a matrix that named one individual twice, and
+`filter_individuals` then returned two rows for the one name asked, which
+would travel on to `calc_gwas`. And `filter_individuals("a")`, one name
+where a sequence is meant, returned a kinship of the individual `a` rather
+than refusing: `filter_individuals("ab")` gave two individuals. Both are
+refused now, and both are in the spec.
+
+**The two packages refused different matrices, in both directions.** Python
+took an individual named twice, which TypeScript refused; TypeScript took a
+`NaN` on the diagonal, which its symmetry check never looked at, while
+Python refused a `NaN` by calling the matrix asymmetric, which is the wrong
+reason, since a matrix can hold a `NaN` and be symmetric and every
+comparison with a `NaN` is false. Both now refuse a value that is not a
+number first, naming its cell, and then test symmetry.
+
+**Messages that said what was not true.** The error of a pair with no
+variant called in both gave positions where the spec twice promises names,
+and with `individuals` given those positions were not even the file's; three
+reviewers found it. An individual whose sequencing failed, with no called
+genotype anywhere, read "the individuals at the positions 0 and 0 ... leave
+one of the two out", and is now named on its own. And "every variant has the
+same genotype in every individual" is false: the rule is one dosage, not one
+genotype, and both an all-missing dataset and a collapsed multiallelic one
+contradict it.
+
+**The count the core threw away.** `Kinship` carried only the variants that
+were used, while `pass_stats` means the variants the pass gave, and the core
+computed the second and dropped it. Every other calculation hands it out:
+`Pca::num_cols`, `Stats.num_vars`, `KosmanSums::num_vars`. So each binding
+wrapped the reader chain in its own `BlockReader` to count it again, about
+60 lines each, written independently and without sight of each other; they
+were the only two `impl BlockReader` outside the core. `Kinship` now carries
+`num_vars_given` and both wrappers are gone.
+
+The part of this worth keeping is not the duplication, which both subagents
+reported themselves. It is that the core counts with `checked_add` and
+raises, and both layers above independently chose `saturating_add` and
+wrapped in silence. Two layers recomputing a number the layer below had
+already computed, and both landing on a weaker overflow rule than it, is a
+shape that will recur wherever a binding wants a number the core discards.
+The evidence is `crates/popnei-python/src/kinship.rs` and
+`crates/popnei-js/src/kinship.rs` as they stood at `8392778`.
+
+**Memory.** `Kinship.__post_init__` checked symmetry with `values -
+values.T` and `numpy.abs`, two more matrices of individuals by individuals.
+Measured with `tracemalloc` on a frame of 3000 individuals, 72 MB: a peak of
+144 MB, which at the 10000 individuals the docstring names gives back about
+1.6 GB of the 800 MB that handing the array to numpy without copying it had
+saved. It reads one row at a time now: 0.4 MB and 0.043 s on the same frame.
+
+**Smaller.** `num_vars` was a `usize`, so the same count was 32 bits in a
+browser and 64 natively; it is a `u64`. `kinship.rs` took the limit on the
+individuals from `pca.rs`, the wrong way through the layers, and it sits in
+`variant.rs` now with `pca` re-exporting it. Four spec statements had code
+and no test. Two test comments explained guarantees the tests did not give,
+and one of them, the 37-variant test, now asserts bit equality against the
+default reading and so becomes the first real guard on re-blocking.
+
+### What was not taken
+
+- **The six tests of the moved row pass stay in `pca.rs`**, as in work
+  package 1: moving them drops the PCA count below 47 and removes the
+  evidence that no number of the principal components changed. Worth doing
+  once the plan is merged.
+- **The Python error mapping sends 29 of the 99 cases through a wildcard**,
+  so a case added later becomes a `ValueError` with nobody choosing it.
+  `Error` is `#[non_exhaustive]`, which makes the wildcard compulsory, and
+  every case falling through it is right today.
+- **The JavaScript message names `transform_to_biallelic` where the option
+  is `transformToBiallelic`.** Older than this plan, and it is what a user
+  of the principal components reads today, so it is the owner's and is asked
+  of them. A later fix touches `crates/popnei-js/src/kinship.rs:144`, the
+  PCA's own line, and a case in `errors.rs`.
+- **`PcaNoVariantWithVariance` carries the same false wording** about every
+  variant having the same genotype. Fixing it changes what a user of the
+  principal components reads, so it is the owner's.
+
+### What the owner should know
+
+- The kinship walks each block's genotypes twice more, serially, to build
+  the mask of called genotypes that the parallel row pass had already
+  decided per genotype. No measurement was made; it is for the performance
+  session.
+- `cargo wasm-check` covers `popnei` and `popnei-linalg` only, not
+  `popnei-js`, and `npm test` does not rebuild the wasm. The plan's final
+  check says `npm run build && npm test`, which does, so the plan is right;
+  anyone running `npm test` alone is testing the previous wasm.
+- `cargo doc -p popnei` fails on a link in `ld.rs` that predates this plan,
+  so rustdoc is not among the checks that run.
+- pyNei's VCF reader raises `IndexError` above a ploidy of 2, so the
+  tetraploid test takes its numbers from `Variants.from_gt_array` instead.
+
+### How the work went
+
+Building the work package took four subagents about 940000 tokens: 144000
+for the move of the block pass, 427000 for the core and its two fix rounds,
+315000 for Python, 251000 for TypeScript. The seven reviewers took 1035000
+between them, from 127000 for the architecture to 166000 for the spec.
+
+The review cost more than the building and found four wrong numbers that
+every one of the 637 tests passed. The single most useful thing it did was
+mutate the code: the `tests` reviewer, the slowest of the seven at thirteen
+minutes, found three of the four, and the orchestrator confirmed each by
+rerunning the mutation before and after the fix.
+
+Two things about the shape of the work are worth carrying to the next plan.
+Splitting the fixes into rounds by file ownership kept three subagents from
+editing one file, and left the branch tip uncompilable between the rounds,
+which cost another session its baseline; a round that another branch may
+take should end green. And running the two binding tasks in parallel, with
+neither able to see the other's files, is what produced two copies of the
+same counting reader and two copies of the same overflow mistake.
