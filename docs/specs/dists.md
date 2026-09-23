@@ -1109,11 +1109,15 @@ the one the Python and the TypeScript tests use, gives 0.041181109098151751,
 the last bits of a double away from the three above, 3.5e-16 relative at the
 furthest, and each test asserts the digits of the file it reads.
 
-ADMIXTOOLS reads biallelic genotypes only, so the multiallelic panel is
-checked through plink2 instead: f_2 summed over the loci is plink2's F_ST
-times the sum of H_b, and for p0 and p1 that is 0.0642281 x 90.758172 =
-5.829225 against the 5.829222 the sum gives, 3e-6 apart, which is what the
-six digits of plink2 allow.
+ADMIXTOOLS reads biallelic genotypes only, so the f_2 of the multiallelic
+panel is checked against no program and no test asserts it. plink2 does not
+give one by another route. popnei divides the same difference of sums by
+two different numbers, the sum of H_b for F_ST and the variants that
+counted for f_2, so f_2 is F_ST times that sum over that count whatever the
+genotypes are, and multiplying plink2's F_ST by popnei's own sum of H_b
+asserts the F_ST of the item above a second time and nothing of f_2. What
+holds the multiallelic arithmetic is that F_ST, which plink2 computes over
+every allele of a record, and the chord distance against adegenet.
 
 The worked example: 0.561111 / 4 = 0.140278.
 
