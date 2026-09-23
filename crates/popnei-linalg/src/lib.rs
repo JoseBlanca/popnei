@@ -774,6 +774,63 @@ pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr> {
     Ok(ThinQr { q, r })
 }
 
+/// The `x` of `r x = b` for the upper triangular `r` of `n` x `n`, whose
+/// lower half is not read.
+///
+/// `b` is `sides` x `n`, row after row, one row for each right hand side,
+/// and it comes back holding the solutions the same way, which is the
+/// layout [`solve_with_cholesky`] takes and whose doc comment says where
+/// that layout comes from. `sides` is 1 at least.
+///
+/// This is the second half of fitting a linear model to more individuals
+/// than coefficients: [`thin_qr`] of the design gives the `q` and the `r`,
+/// and the coefficients are the `c` of `r c = q' y` for the trait `y`.
+///
+/// Only the upper half of `r` is read, the entries of column `j` at least
+/// `i` of row `i`; what the lower half holds does not reach the result.
+/// Either buffer may hold more values than its dimensions ask for, and
+/// then its first `n` times `n`, or `sides` times `n`, are the matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` or `sides` is 0, when `r` holds fewer
+/// than `n` times `n` values or `b` fewer than `sides` times `n`, or when
+/// either of those counts is more than 2147483647, which is what the
+/// routines of BLAS and LAPACK count in. [`Error::NotFinite`] when the
+/// upper half of `r`, or `b`, holds a value that is not finite.
+/// [`Error::Singular`] when the diagonal of `r` holds a 0, with the first
+/// such row: the solve divides by every diagonal entry, and the two
+/// backends part company on a 0 there, faer dividing by it and answering
+/// with an infinity where `dtrtrs` gives an `info`, so the crate reads
+/// that diagonal above them both. [`Error::NoConvergence`] when the
+/// routine refused an argument it was given, which is a defect of popnei.
+///
+/// What this does not catch: that `r` is upper triangular at all. A slice
+/// whose lower half holds something else is solved against as if that half
+/// were 0, and what comes back is the solution of another system, with no
+/// error, as it is for [`solve_with_cholesky`] and its `l`.
+pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()> {
+    if n == 0 {
+        return Err(Error::Dimension {
+            argument: "n",
+            expected: "1 at least, since r is the n x n upper triangular matrix to solve against"
+                .to_owned(),
+        });
+    }
+    if sides == 0 {
+        return Err(Error::Dimension {
+            argument: "sides",
+            expected: "1 at least, since b holds one row for each right hand side".to_owned(),
+        });
+    }
+    let r = the_matrix_of(r, n, n, "r")?;
+    refuse_a_value_that_is_not_finite_in_the_upper_half(r, n, "r")?;
+    let b = the_matrix_of_mut(b, sides, n, "b")?;
+    refuse_a_value_that_is_not_finite(b, "b")?;
+    refuse_a_diagonal_entry(r, n, "r", |entry| entry == 0.0)?;
+    backend::solve_upper_triangular(r, n, b, sides)
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -933,6 +990,29 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
     }
 }
 
+/// The same for the upper half alone of an `n` x `n` matrix, the entries
+/// of column `j` at least `i` of row `i`, which is what the solve against
+/// an upper triangular matrix reads. `n` is 1 at least.
+///
+/// # Errors
+///
+/// [`Error::NotFinite`] when one of those values is an infinity or a NaN.
+fn refuse_a_value_that_is_not_finite_in_the_upper_half(
+    values: &[f64],
+    n: usize,
+    argument: &'static str,
+) -> Result<()> {
+    let it_is_all_finite = values
+        .chunks_exact(n)
+        .enumerate()
+        .all(|(row, entries)| entries.get(row..).is_some_and(every_value_is_finite));
+    if it_is_all_finite {
+        Ok(())
+    } else {
+        Err(Error::NotFinite { argument })
+    }
+}
+
 /// Refuses a matrix whose diagonal holds an entry that the operation
 /// cannot work with, and names the first row that holds one. The matrix is
 /// `n` x `n` row after row and holds exactly that many values, and `n` is
@@ -987,7 +1067,7 @@ mod tests {
     use super::{
         Eigen, Error, TheFirstOperand, TheSecondOperand, ThinQr, add_self_product_lower,
         cholesky_lower, eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product,
-        reverse_the_rows, solve_with_cholesky, thin_qr,
+        reverse_the_rows, solve_upper_triangular, solve_with_cholesky, thin_qr,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -3560,6 +3640,219 @@ mod tests {
             let error = thin_qr(&a, 4, 2).unwrap_err();
             assert!(
                 matches!(error, Error::NotFinite { argument: "a" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    /// The three right hand sides of "How the seven are verified" of
+    /// `docs/specs/linalg.md`, one row each: the `q' y` of the traits
+    /// (1, 3, 5, 7), (4, 7, 10, 13) and (1, 2, 3, 4), which are twice the
+    /// covariate less 1, three times it plus 1, and the covariate itself.
+    const THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS: [f64; 6] = [
+        8.0,
+        4.472_135_954_999_58, //
+        17.0,
+        6.708_203_932_499_37, //
+        5.0,
+        2.236_067_977_499_79,
+    ];
+
+    /// The coefficients of those three fits, (-1, 2), (1, 3) and (0, 1),
+    /// one row each, as `b` comes back holding them. Every fit is exact,
+    /// so a backend that read `r` the wrong way round gives something
+    /// else.
+    const THE_COEFFICIENTS_OF_THE_THREE_FITS: [f64; 6] = [
+        -1.0, 2.0, //
+        1.0, 3.0, //
+        0.0, 1.0,
+    ];
+
+    /// How far the coefficients may be from those: numpy 2.5.3 gives
+    /// 0.9999999999999991 and 3.0000000000000004 for the second fit, 9e-16
+    /// relative away from the exact one.
+    const THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE: f64 = 1e-14;
+
+    #[test]
+    fn the_triangular_solve_of_the_r_of_the_design_gives_the_coefficients_of_the_fit() {
+        let mut coefficients = [0.0_f64; 2];
+        coefficients.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
+        solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut coefficients, 1).unwrap();
+        assert!(
+            !differ(
+                &coefficients,
+                &THE_COEFFICIENTS_OF_THE_THREE_FITS[..2],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the coefficients are {coefficients:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_of_the_r_of_the_design_gives_the_coefficients_of_three_fits() {
+        // Three right hand sides against an `r` of 2 x 2: the three rows
+        // tell `sides` from `n`, which one right hand side of two numbers
+        // cannot, and they catch a backend that read the rows of `b` as
+        // its columns, which would solve three other systems here.
+        let mut coefficients = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS;
+        solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut coefficients, 3).unwrap();
+        assert!(
+            !differ(
+                &coefficients,
+                &THE_COEFFICIENTS_OF_THE_THREE_FITS,
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the coefficients are {coefficients:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_reads_the_upper_half_of_r_alone() {
+        // A NaN below the diagonal is neither refused nor read: the check
+        // for a value that is not finite walks the upper half alone, and
+        // the answer is the one the upper half gives.
+        let mut r = THE_R_OF_THE_DESIGN;
+        r[2] = f64::NAN;
+        let mut coefficients = [0.0_f64; 2];
+        coefficients.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
+        solve_upper_triangular(&r, 2, &mut coefficients, 1).unwrap();
+        assert!(
+            !differ(
+                &coefficients,
+                &THE_COEFFICIENTS_OF_THE_THREE_FITS[..2],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the coefficients are {coefficients:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
+        let mut r = THE_R_OF_THE_DESIGN.to_vec();
+        r.push(7.0);
+        let mut b = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2].to_vec();
+        b.push(9.0);
+        solve_upper_triangular(&r, 2, &mut b, 1).unwrap();
+        assert!(
+            !differ(
+                &b[..2],
+                &THE_COEFFICIENTS_OF_THE_THREE_FITS[..2],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution is {b:?}"
+        );
+        assert_eq!(
+            b.get(2),
+            Some(&9.0),
+            "the value after the right hand sides was written"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_of_an_r_with_a_zero_in_its_diagonal_is_singular_at_that_row() {
+        // The `r` with rows (2, 5) and (0, 0) of "How the seven are
+        // verified", which faer would divide by and answer an infinity
+        // for, and the same 0 moved to the first row, so that the row the
+        // error names is read and is not the last row of the matrix.
+        for (row, r) in [(1_usize, [2.0, 5.0, 0.0, 0.0]), (0, [0.0, 5.0, 0.0, 2.0])] {
+            let mut b = [0.0_f64; 2];
+            b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
+            let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+            assert!(
+                matches!(error, Error::Singular { argument: "r", at } if at == row),
+                "the error for the row {row} is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_an_n_of_zero() {
+        let mut b = [0.0_f64; 0];
+        let error = solve_upper_triangular(&[], 0, &mut b, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "n", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_sides_of_zero() {
+        let mut b = [0.0_f64; 0];
+        let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 0).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "sides",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_an_r_shorter_than_n_times_n() {
+        let r = [0.0_f64; 3];
+        let mut b = [0.0_f64; 2];
+        let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "r", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_b_shorter_than_sides_times_n() {
+        let mut b = [0.0_f64; 5];
+        let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 3).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "b", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 46341 rows of 46341 is 2147488281 values, more than the routines
+        // count in. The check comes before the one of the length of the
+        // buffer, so an empty slice reaches it, and it is made whichever
+        // backend would run.
+        let mut b = [0.0_f64; 0];
+        let error = solve_upper_triangular(&[], 46341, &mut b, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "r", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_value_that_is_not_finite_in_the_upper_half_of_r() {
+        // The two entries of the diagonal and the one above it, which are
+        // the three places of a 2 x 2 that the solve reads.
+        for entry in [0_usize, 1, 3] {
+            let mut r = THE_R_OF_THE_DESIGN;
+            r[entry] = f64::INFINITY;
+            let mut b = [0.0_f64; 2];
+            b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
+            let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "r" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_value_that_is_not_finite_anywhere_in_b() {
+        // The whole of `b` is read, so a value that is not finite is
+        // refused wherever it sits among the three right hand sides.
+        for entry in 0..6 {
+            let mut b = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS;
+            b[entry] = f64::NAN;
+            let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 3).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "b" }),
                 "the error for the entry {entry} is {error}"
             );
         }

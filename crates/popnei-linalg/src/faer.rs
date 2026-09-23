@@ -26,6 +26,7 @@ use faer::linalg::cholesky::llt::solve::{solve_in_place_scratch, solve_in_place_
 use faer::linalg::evd::EvdError;
 use faer::linalg::matmul::matmul;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as triangular_matmul};
+use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Accum, Conj, MatMut, MatRef, Par, Side};
 
 use crate::{Eigen, Error, Result};
@@ -410,6 +411,42 @@ pub(crate) fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
         }
     }
     Ok(Eigen { values, vectors })
+}
+
+/// The `x` of `r x = b` for the upper triangular `r` of exactly `n` x `n`
+/// values row after row with its upper half filled, and `b` of exactly
+/// `sides` x `n` values row after row, one row for each right hand side,
+/// which comes back holding the solutions the same way. `n` and `sides`
+/// are 1 at least.
+///
+/// faer takes the right hand sides as the columns of a matrix of `n` rows,
+/// so the buffer of `b` is given to it as the `sides` x `n` matrix it is
+/// and then turned the other way round, as it is for the solve with the
+/// Cholesky above: that transpose is another reference over the same
+/// values and nothing is copied.
+///
+/// # Errors
+///
+/// None: faer refuses nothing that the checks of `lib.rs` let through. It
+/// divides by a diagonal entry of 0 as it finds it and answers with an
+/// infinity, where `dtrtrs` of the BLAS backend gives an `info`, which is
+/// why `lib.rs` reads that diagonal before either backend runs. The
+/// signature is the one of that backend, which fails when a dimension is
+/// larger than the `i32` its routine takes.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
+)]
+pub(crate) fn solve_upper_triangular(
+    r: &[f64],
+    n: usize,
+    b: &mut [f64],
+    sides: usize,
+) -> Result<()> {
+    let r = MatRef::from_row_major_slice(r, n, n);
+    let b = MatMut::from_row_major_slice_mut(b, sides, n).transpose_mut();
+    solve_upper_triangular_in_place(r, b, the_threads());
+    Ok(())
 }
 
 #[cfg(test)]

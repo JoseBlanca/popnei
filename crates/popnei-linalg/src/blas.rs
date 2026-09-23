@@ -1,7 +1,7 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf` and `dorgqr`, the ones
-//! numpy calls.
+//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf`, `dorgqr` and
+//! `dtrtrs`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -898,6 +898,84 @@ fn the_length_of_a_workspace(values: usize) -> Result<i32> {
             largest = i32::MAX
         ),
     })
+}
+
+/// The `x` of `r x = b` for the upper triangular `r` of exactly `n` x `n`
+/// values row after row with its upper half filled, and `b` of exactly
+/// `sides` x `n` values row after row, one row for each right hand side,
+/// which comes back holding the solutions the same way. `n` and `sides`
+/// are 1 at least.
+///
+/// The buffer of `r` read column after column is its transpose, which is
+/// lower triangular, so the routine is told `uplo` L and `trans` T, which
+/// asks it for the solve against the transpose of what it read: the two
+/// turns undo each other and what is solved against is popnei's `r`. The
+/// buffer of `b` read that way is the n x `sides` matrix whose columns are
+/// the right hand sides, which is what the routine takes, as it is for
+/// `dpotrs` above, so nothing is copied here either.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when a dimension is larger than the `i32` the
+/// routine takes. [`Error::Singular`] when the diagonal of `r` holds a 0
+/// at the row the error names, which the routine would divide by;
+/// `lib.rs` reads that diagonal before either backend runs, since faer
+/// does not look at it, so no caller of the crate reaches this one.
+/// [`Error::NoConvergence`] when the routine refused an argument it was
+/// given, which is a defect of popnei.
+pub(crate) fn solve_upper_triangular(
+    r: &[f64],
+    n: usize,
+    b: &mut [f64],
+    sides: usize,
+) -> Result<()> {
+    let order = the_i32_of(n, "n")?;
+    let right_hand_sides = the_i32_of(sides, "sides")?;
+    let mut info = 0_i32;
+    // SAFETY: with `uplo` L, `trans` T, `diag` N, `n` = n and `lda` = n
+    // the routine reads the lower triangle of `r` as a column major
+    // matrix of n x n, which is the upper half of `r` in popnei's layout
+    // and is inside the n * n values `r` holds; and with `nrhs` = sides
+    // and `ldb` = n it reads and writes `b` as a column major matrix of n
+    // rows and sides columns, which is the sides * n values `b` holds. It
+    // writes nothing else, and `info` is one integer. Neither dimension
+    // is 0 and both fit in the `i32` the routine takes, which
+    // `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dtrtrs(
+            b'L',
+            b'T',
+            b'N',
+            order,
+            right_hand_sides,
+            r,
+            order,
+            b,
+            order,
+            &mut info,
+        );
+    }
+    if info == 0 {
+        return Ok(());
+    }
+    // An `info` above 0 is the row of the diagonal entry that is 0,
+    // counting from 1, which `lib.rs` has already refused. An `info` below
+    // 0 is an argument the routine refused, and that is the arm the
+    // conversion fails in, since no negative number is a count.
+    match usize::try_from(info) {
+        Ok(row) => Err(Error::Singular {
+            argument: "r",
+            at: row.saturating_sub(1),
+        }),
+        Err(_) => Err(Error::NoConvergence {
+            routine: "dtrtrs",
+            info,
+        }),
+    }
 }
 
 #[cfg(test)]
