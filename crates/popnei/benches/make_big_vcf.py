@@ -29,7 +29,15 @@ draw after it is of the number of variants, so a VCF of one number of
 variants is not a prefix of a VCF of another: the two files hold different
 genotypes.
 
-    uv run --no-project --with numpy python make_big_vcf.py <out.vcf> [num_vars]
+A third argument is the rate at which a genotype is missing, which is 0.03
+when it is not given. The performance review of the kinship needs the same
+panel with every genotype called, since "Speed" of docs/specs/kinship.md
+states its target on one: `0` gives it. The draw that decides which
+genotypes are missing is made whatever the rate, and only the comparison
+against it changes, so the panels of two rates hold the same genotypes and
+differ in which of them are `./.`.
+
+    uv run --no-project --with numpy python make_big_vcf.py <out.vcf> [num_vars] [missing_rate]
 """
 
 import sys
@@ -44,7 +52,8 @@ NUM_CHROMS = 2
 NUM_POPS = 3
 FAMILY_SIZE = 4
 FST = 0.1
-MISSING_RATE = 0.03
+# The rate at which a genotype is missing when the command line does not say.
+DEFAULT_MISSING_RATE = 0.03
 
 VARS_PER_WRITE = 1000
 
@@ -134,9 +143,31 @@ def num_vars_asked_for(text):
     return num_vars
 
 
+def missing_rate_asked_for(text):
+    """The rate at which a genotype is missing that the command line asked
+    for, or the message that says what it should have said.
+
+    A rate of 0 is the panel with every genotype called, which is what the
+    target of "Speed" of docs/specs/kinship.md is stated on.
+    """
+    try:
+        rate = float(text)
+    except ValueError:
+        rate = None
+    if rate is None or not 0.0 <= rate <= 1.0:
+        raise SystemExit(
+            f"`{text}`: the rate at which a genotype is missing is a number "
+            f"from 0 to 1"
+        )
+    return rate
+
+
 def main():
     out = sys.argv[1]
     num_vars = num_vars_asked_for(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_NUM_VARS
+    missing_rate = (
+        missing_rate_asked_for(sys.argv[3]) if len(sys.argv) > 3 else DEFAULT_MISSING_RATE
+    )
     rng = numpy.random.default_rng(SEED)
     alleles, _pops = simulate_genotypes(rng, num_vars)
     samples = [f"s{idx:03d}" for idx in range(NUM_SAMPLES)]
@@ -148,10 +179,16 @@ def main():
         1000 * (idx + 1) for _ in range(NUM_CHROMS) for idx in range(vars_per_chrom)
     ]
     ids = [f"var{idx:04d}" for idx in range(num_vars)]
-    is_missing = rng.uniform(size=(num_vars, NUM_SAMPLES)) < MISSING_RATE
+    # The draw is made at every rate, so that the genotypes of a panel do
+    # not depend on how many of them are then hidden: a rate of 0 gives
+    # `big.vcf` with its missing genotypes filled in, and not another panel.
+    is_missing = rng.uniform(size=(num_vars, NUM_SAMPLES)) < missing_rate
     alleles[is_missing] = -1
     write_vcf(out, alleles, samples, chroms, poss, ids)
-    print(f"{out}: {num_vars} variants x {NUM_SAMPLES} individuals")
+    print(
+        f"{out}: {num_vars} variants x {NUM_SAMPLES} individuals, "
+        f"{is_missing.sum()} genotypes missing of {num_vars * NUM_SAMPLES}"
+    )
 
 
 if __name__ == "__main__":

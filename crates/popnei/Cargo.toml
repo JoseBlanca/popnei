@@ -134,3 +134,15 @@ required-features = ["bench-internals"]
 name = "r2_matrix"
 harness = false
 required-features = ["bench-internals"]
+
+# How long the kinship of every pair of the individuals of a file takes, of
+# the performance review of docs/reports/perf-kinship-2026-09-23.md, which
+# is the first measurement popnei has of it, against the 0.23 s of plink2
+# that "Speed" of docs/specs/kinship.md states for 100000 variants of 1000
+# individuals with every genotype called. It takes the path of a VCF or of
+# a vars file, the runs and how many principal components of the matrix are
+# taken, and prints one wall time per run, so it runs without a harness, as
+# the eight above do.
+[[bench]]
+name = "kinship"
+harness = false
