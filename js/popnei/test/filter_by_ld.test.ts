@@ -29,7 +29,7 @@ import { test } from "node:test";
 import type { PassStats, Variants } from "popnei";
 import { init, openVcf } from "popnei";
 
-import { referenceLd } from "./reference.ts";
+import { referenceLd, vcfOf } from "./reference.ts";
 
 await init();
 
@@ -396,6 +396,61 @@ test("a second filter by linkage disequilibrium is refused with the one that is 
   ]);
   variants.free();
 });
+
+/**
+ * The variants of a source that does not give each chromosome together and
+ * in the order of the positions, and the two positions the message names:
+ * a position below the one before it on its chromosome, and a chromosome
+ * that had already ended.
+ */
+const SOURCES_OUT_OF_ORDER: [string, [string, number], [string, string]][] = [
+  ["a position that falls", ["chr1", 1000], ["1000", "2000"]],
+  ["a chromosome that came back", ["chr0", 3000], ["3000", "2000"]],
+];
+
+for (const [what, [chrom, pos], positions] of SOURCES_OUT_OF_ORDER) {
+  test(`a source with ${what} is refused while the pass runs`, () => {
+    // The window of a variant is the variants kept behind it on its
+    // chromosome, so this filter is the one reader of popnei that needs
+    // the variants of each chromosome to come together and in the order of
+    // their positions. Subtracting two positions that run backwards is a
+    // `u64` that wraps to a distance of 18 million million million, which
+    // puts the pair outside every window and takes no variant out with
+    // nothing said, so the source is refused instead. It is refused when
+    // the pass runs and not at the call that adds the filter, which reads
+    // nothing of the source, and it is the one refusal of popnei that this
+    // filter alone raises.
+    const gts = "GT\t0/0\t0/1\t1/1";
+    const variants = openVcf(
+      vcfOf([
+        `chr0\t1000\t.\tA\tC\t.\tPASS\t.\t${gts}`,
+        `chr1\t2000\t.\tA\tC\t.\tPASS\t.\t${gts}`,
+        `${chrom}\t${pos}\t.\tA\tC\t.\tPASS\t.\t${gts}`,
+      ]),
+    );
+    variants.filterByLd(0.5, 10000);
+
+    assert.throws(
+      () => [...variants.iterBlocks()],
+      (error: unknown) => {
+        assert.ok(error instanceof Error, `what was thrown is ${String(error)}`);
+        assert.ok(
+          error.message.includes("does not come after the one before it"),
+          `the message is ${error.message}`,
+        );
+        for (const position of positions) {
+          assert.ok(
+            error.message.includes(position),
+            `the message is ${error.message} and it does not name ${position}`,
+          );
+        }
+        return true;
+      },
+    );
+
+    variants.free();
+  });
+}
 
 test("filterByLd throws after the variants were freed", () => {
   // The steps live in the memory of wasm, which `free` gives back, so
