@@ -221,7 +221,18 @@ Read on 23 September 2026 in `the_standardized_rows` of
 ploidy of 2, with a caller passing a ploidy of 5, gives 1 chunk of genotypes
 against 0 rows of buffer, so no row runs, no error is raised, and the
 variant is gone. A study that lost variants that way would report a count
-the user could mistake for variants that had no variance. Then
+the user could mistake for variants that had no variance.
+
+Reproduced on 23 September 2026 by the session building
+`docs/specs/kinship.md`, which got `Ok([])` from exactly that block and has
+put the check in. **No caller can reach it today**, and that is worth
+knowing before anyone decides the guard is redundant: `pca_of_variants`,
+`calc_kinship` and this pass all put `reblock` in front, and `Reblock`
+refuses such a block already with the same error. So the guard is for the
+caller that one day does not, and it is cheap because the error exists. This
+pass asks for both, since `reblock` is here for the size of the blocks and
+not for this, and a later change to why it is here should not silently take
+the check away with it. Then
 each block is turned into its dosages, with rayon across the rows, and the
 variants that vary are tested together as a matrix, because every test but
 the logistic Wald one is a product of the block with something the null
@@ -528,6 +539,15 @@ of the coefficients, which is what the eigendecomposition bought. With the
 `log(det(dvd))` is the log determinant that comes off the same Cholesky
 factorization the solve above uses, which is why `docs/specs/linalg.md` has
 it as one of the seven.
+
+The eigendecomposition is where the two backends of `docs/specs/linalg.md`
+part furthest, and they part in the late components, the ones with the
+smallest eigenvalues: measured by the kinship on 23 September 2026 over 199
+components, faer sits 1.7e-12 from Accelerate where Accelerate sits 1.3e-13
+from numpy. Those eigenvalues are what the search over `delta` weights the
+trait by, so the variance components of this model are compared across both
+backends and not one, as "How it is verified" of "What every model shares"
+asks of every tolerance here.
 
 The eigenvalues of the kinship are clamped at 0 before use. A kinship of
 genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
