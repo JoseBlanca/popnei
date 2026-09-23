@@ -439,3 +439,92 @@ which cost another session its baseline; a round that another branch may
 take should end green. And running the two binding tasks in parallel, with
 neither able to see the other's files, is what produced two copies of the
 same counting reader and two copies of the same overflow mistake.
+
+## The five the owner decided on 23 September 2026
+
+The review of work package 2 left five questions that were the owner's,
+because each changes something a user reads or a document that governs how
+popnei is written. All five were answered the same day and all five are
+done.
+
+**A message in TypeScript names its options in TypeScript.** The error of a
+variant with more than two alleles told a JavaScript user to pass
+`transform_to_biallelic`, while the option is `transformToBiallelic`, so
+they would grep their code for a name that is not in it. The owner made it
+a rule rather than a fix, so the whole surface was swept. Eight names of
+the form `a_b_c` appear in the core's messages; seven have a TypeScript
+option of the same meaning. Three needed rewriting, `transformToBiallelic`,
+`numBins` and `numVarsPerBlock`; two, `polyThreshold` and `binType`, were
+already rewritten before the error left `stats.rs`; and three cannot be
+reached from JavaScript at all, `numPrinComps` because the second reader is
+opened exactly when it is above 0, and the two of `max_num_vars` because
+one is already rewritten and the other is refused by `arguments.ts` against
+the same bound the core checks. The eighth, `popnei_batches`, is not an
+option: it is the key popnei writes into the footer of a vars file, spelled
+that way in the file itself, so both languages keep it.
+
+The rewrite is one helper matching on the error, not a case for each. The
+three cases that existed carry something the binding knows and the core
+does not, the name of an argument; a spelling does not. `BlockTooLarge`
+alone can be raised from seven calls of the wasm crate, and a `map_err` at
+each is one that a later call forgets.
+
+**An error said what was not true.** `PcaNoVariantWithVariance` read "every
+variant has the same genotype in every individual". The rule is
+`dosages_seen < 2`, one dosage and not one genotype, and two datasets reach
+that message and contradict it: every genotype uncalled, and `0/1 0/2 0/1`
+read with `transform_to_biallelic`. It now reads "no variant has more than
+one dosage among its called genotypes, so none of them varies", which is
+word for word what the kinship's own case already said. `docs/specs/pca.md`
+quoted the old sentence and now states the rule, names pyNei's
+`std(mat012) > 0` and says the old wording was a mistake of the message and
+not a difference of behaviour. Nothing else in popnei had the same mistake.
+
+**A kinship matrix is labelled with names.** Python took a frame labelled
+with integers, which `pandas.DataFrame(matrix)` gives by default, while
+TypeScript required strings; it was the last of the five places where the
+two packages disagreed about what to accept. Python refuses it now, with a
+message that names the mistake a user will actually make and the line to
+write instead. The guards of a hand built `Kinship` are now sorted by
+kind: a `TypeError` for a wrong type, a matrix that is no frame, a label
+that is no name, a bare string where the names are meant, an `individuals`
+that cannot be walked; a `ValueError` for a wrong value, a matrix that is
+not square, two sides naming different individuals, an individual named
+twice, a cell that is no number, a cell that is not finite, a matrix
+outside the symmetry tolerance, `individuals` naming nobody, and a name
+that is not in the matrix.
+
+**The `coding` skill gained a paragraph.** A binding that works out a
+number for itself is a sign the core threw one away. The evidence is in
+this plan: both bindings wrapped the reader chain in a `BlockReader` of
+their own to count the variants a pass gave, about 60 lines each, written
+at the same time without sight of each other, because the core computed
+that count, read it once and left it out of its result. The duplication was
+the half that showed. The other half is that the core counted with
+`checked_add` and raised, and both wrappers used `saturating_add` and
+stopped counting in silence, so the three layers refused different datasets
+and nobody had decided that.
+
+**Ctrl-C is to interrupt a pass, and does not.** The owner decided it
+should be fixed even if the core needs a way to send a message back. It is
+not fixed here, and the scope is why. `crates/popnei-python/src/source.rs`
+checks for a signal between blocks, because there Python drives the loop.
+The five functions that run over a whole dataset, the kinship, the
+principal components, the distances, the linkage disequilibrium and writing
+a vars file, check only before and after, because the core owns the loop
+and returns when the file is done. Writing a vars file looks like a
+precedent and is not: it checks after the write and deletes the half
+written file.
+
+The design that works needs no change to the core's signatures. The binding
+wraps the reader chain in a `BlockReader` whose `next_block` re-attaches to
+the interpreter, calls `check_signals`, and turns a `KeyboardInterrupt`
+into an error that travels out through the core's `Result`. Two things make
+it more than a review fix. The interpreter is released for the whole pass
+because rayon's threads deadlock on a caller that holds it, and the claim
+that re-attaching between blocks is safe, since no rayon work is in flight
+at that moment, has to be checked and not assumed. And it touches five
+calculations in two binding crates, one new error case in the core, and
+tests that send a real signal in the middle of a pass. It is recommended as
+a plan of its own after this one merges, and it wants a sentence in a spec
+about what a user sees when they stop a pass.
