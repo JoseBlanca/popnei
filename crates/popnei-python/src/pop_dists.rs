@@ -197,29 +197,21 @@ fn over_the_source(
         .map(|pop| pops.name(pop).to_owned())
         .collect();
     let sums = calc_pop_dist_sums(&mut *chain, &pops, options)?;
-    // The pairs in the order of the distance vector, (0, 1), (0, 2), ...,
-    // (1, 2), ..., which is the order of every array of the result.
-    let pairs: Vec<(usize, usize)> = (0..sums.num_pops())
-        .flat_map(|first| {
-            (first..sums.num_pops())
-                .skip(1)
-                .map(move |second| (first, second))
-        })
-        .collect();
+    // Every array below is one of the core's iterators over the pairs, in
+    // the order of the distance vector, (0, 1), (0, 2), ..., (1, 2), ...:
+    // the order of the pairs is the core's alone, so the values of a
+    // result and their standard errors cannot fall into two orders.
     let groups_were_asked_for = options.groups != JackknifeGroups::None;
     let of_each_measure = asked_for
         .iter()
-        .map(|measure| of_the_measure(&sums, &pairs, *measure, groups_were_asked_for))
+        .map(|measure| of_the_measure(&sums, *measure, groups_were_asked_for))
         .collect();
     // A pair with no count is not a pair that counted no variant, which is
     // a 0 the core gives: it is a pair the core does not have, and the
     // count of a pair of the distance vector is a count of another pair
     // from there on.
-    let num_vars_of_each_pair = pairs
-        .iter()
-        .map(|(first, second)| sums.num_vars_of(*first, *second))
-        .collect();
-    let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums, &pairs));
+    let num_vars_of_each_pair = sums.num_vars_of_each_pair().collect();
+    let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums));
     let group_ids = sums
         .groups()
         .iter()
@@ -240,15 +232,14 @@ fn over_the_source(
     })
 }
 
-/// One measure of every pair, in the order of `pairs`, with its standard
-/// errors beside it where resampling groups were asked for.
+/// One measure of every pair, in the order of the distance vector, with its
+/// standard errors beside it where resampling groups were asked for.
 ///
 /// A pair the core has no value for, one whose populations counted no
 /// variant together among them, is NaN, and so is a standard error the core
 /// has none of, which is a pair whose variants all fell in one group.
 fn of_the_measure(
     sums: &PopDistSums,
-    pairs: &[(usize, usize)],
     measure: PopDistMeasure,
     groups_were_asked_for: bool,
 ) -> (Vec<f64>, Option<Vec<f64>>) {
@@ -257,12 +248,8 @@ fn of_the_measure(
         .map(|value| value.unwrap_or(f64::NAN))
         .collect();
     let standard_errors = groups_were_asked_for.then(|| {
-        pairs
-            .iter()
-            .map(|(first, second)| {
-                sums.standard_error(measure, *first, *second)
-                    .unwrap_or(f64::NAN)
-            })
+        sums.standard_errors(measure)
+            .map(|error| error.unwrap_or(f64::NAN))
             .collect()
     });
     (values, standard_errors)
@@ -271,16 +258,13 @@ fn of_the_measure(
 /// The f_2 of every pair within every group, the pairs of one group
 /// together, with how many groups there are: a table of groups x pairs that
 /// f_3 and f_4 are built from later without reading the genotypes again.
-fn f2_of_every_group(sums: &PopDistSums, pairs: &[(usize, usize)]) -> (usize, Vec<f64>) {
-    let num_groups = sums.groups().len();
-    let values = (0..num_groups)
-        .flat_map(|group| {
-            pairs.iter().map(move |(first, second)| {
-                sums.f2_of_group(group, *first, *second).unwrap_or(f64::NAN)
-            })
-        })
-        .collect();
-    (num_groups, values)
+fn f2_of_every_group(sums: &PopDistSums) -> (usize, Vec<f64>) {
+    (
+        sums.groups().len(),
+        sums.f2_of_every_group()
+            .map(|value| value.unwrap_or(f64::NAN))
+            .collect(),
+    )
 }
 
 /// One group with the name of its chromosome, and `None` in its place when

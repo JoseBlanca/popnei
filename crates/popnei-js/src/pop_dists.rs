@@ -234,17 +234,13 @@ pub(crate) fn pop_dists_of(
         .collect();
     let sums = calc_pop_dist_sums(&mut *chain, &pops, &options)?;
     let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
-    // The pairs in the order of the distance vector, (0, 1), (0, 2), ...,
-    // (1, 2), ..., which is the order of every array of the result.
-    let pairs: Vec<(usize, usize)> = (0..sums.num_pops())
-        .flat_map(|first| {
-            (first..sums.num_pops())
-                .skip(1)
-                .map(move |second| (first, second))
-        })
-        .collect();
+    // Every array below is one of the core's iterators over the pairs, in
+    // the order of the distance vector, (0, 1), (0, 2), ..., (1, 2), ...:
+    // the order of the pairs is the core's alone, so the values of a
+    // result and their standard errors cannot fall into two orders.
+    let num_pairs = sums.num_pairs();
     let groups_were_asked_for = options.groups != JackknifeGroups::None;
-    let mut values = Vec::with_capacity(measures.len().saturating_mul(pairs.len()));
+    let mut values = Vec::with_capacity(measures.len().saturating_mul(num_pairs));
     let mut standard_errors = Vec::new();
     for measure in &measures {
         values.extend(
@@ -252,23 +248,24 @@ pub(crate) fn pop_dists_of(
                 .map(|value| value.unwrap_or(f64::NAN)),
         );
         if groups_were_asked_for {
-            standard_errors.extend(pairs.iter().map(|(first, second)| {
-                sums.standard_error(*measure, *first, *second)
-                    .unwrap_or(f64::NAN)
-            }));
+            standard_errors.extend(
+                sums.standard_errors(*measure)
+                    .map(|error| error.unwrap_or(f64::NAN)),
+            );
         }
     }
     // A pair with no count is not a pair that counted no variant, which is
     // a 0 the core gives: it is a pair the core does not have, and the
     // count of a pair of the distance vector is a count of another pair
     // from there on.
-    let num_vars = pairs
-        .iter()
-        .map(|(first, second)| {
-            let counted = sums.num_vars_of(*first, *second).ok_or_else(|| {
+    let num_vars = sums
+        .num_vars_of_each_pair()
+        .enumerate()
+        .map(|(pair, counted)| {
+            let counted = counted.ok_or_else(|| {
                 JsPopneiError::Broken(format!(
-                    "the pass counted the variants of no pair of the populations \
-                     {first} and {second}"
+                    "the pass counted the variants of no pair at the place {pair} of \
+                     the distance vector"
                 ))
             })?;
             for_javascript(counted)
@@ -277,13 +274,13 @@ pub(crate) fn pop_dists_of(
     // The core gives no group at all when no standard errors were asked
     // for, so this is 0 there and the three arrays below are empty.
     let num_groups = sums.groups().len();
-    let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums, &pairs));
+    let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums));
     let group_chroms = named_chroms(chain.chroms(), &sums)?;
     let group_starts = positions_of(sums.groups().iter().map(|group| group.start).collect())?;
     let group_ends = positions_of(sums.groups().iter().map(|group| group.end).collect())?;
     Ok(PopDistsOfAPass {
         pop_names: Some(pop_names),
-        num_pairs: pairs.len(),
+        num_pairs,
         values: Some(values),
         standard_errors: groups_were_asked_for.then_some(standard_errors),
         num_vars: Some(num_vars),
@@ -299,13 +296,9 @@ pub(crate) fn pop_dists_of(
 /// The f_2 of every pair within every group, the pairs of one group
 /// together: a table of groups x pairs that f_3 and f_4 are built from later
 /// without reading the genotypes again.
-fn f2_of_every_group(sums: &PopDistSums, pairs: &[(usize, usize)]) -> Vec<f64> {
-    (0..sums.groups().len())
-        .flat_map(|group| {
-            pairs.iter().map(move |(first, second)| {
-                sums.f2_of_group(group, *first, *second).unwrap_or(f64::NAN)
-            })
-        })
+fn f2_of_every_group(sums: &PopDistSums) -> Vec<f64> {
+    sums.f2_of_every_group()
+        .map(|value| value.unwrap_or(f64::NAN))
         .collect()
 }
 

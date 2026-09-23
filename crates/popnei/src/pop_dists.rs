@@ -890,11 +890,45 @@ impl PopDistSums {
         self.of_the_pair(measure, self.index_of_the_pair(i, j)?)
     }
 
+    /// How many pairs the populations make, which is how many values each
+    /// of the iterators below gives for one measure and for one group, and
+    /// 0 when the populations make more pairs than a `usize` counts.
+    #[must_use]
+    pub fn num_pairs(&self) -> usize {
+        num_pairs_of(self.num_pops).unwrap_or(0)
+    }
+
     /// The measure of every pair, in the order of the distance vector. The
     /// binding crates write NaN for a `None`.
     pub fn measures(&self, measure: PopDistMeasure) -> impl Iterator<Item = Option<f64>> + '_ {
-        (0..num_pairs_of(self.num_pops).unwrap_or(0))
-            .map(move |pair| self.of_the_pair(measure, pair))
+        (0..self.num_pairs()).map(move |pair| self.of_the_pair(measure, pair))
+    }
+
+    /// The jackknife standard error of that measure for every pair, in the
+    /// same order, `None` where
+    /// [`standard_error`](PopDistSums::standard_error) gives one.
+    pub fn standard_errors(
+        &self,
+        measure: PopDistMeasure,
+    ) -> impl Iterator<Item = Option<f64>> + '_ {
+        (0..self.num_pairs()).map(move |pair| self.standard_error_of(measure, pair))
+    }
+
+    /// The variants that counted for every pair, in the same order, and
+    /// `None` for a pair the sums do not hold, which is a defect of popnei
+    /// and not a pair that counted nothing.
+    pub fn num_vars_of_each_pair(&self) -> impl Iterator<Item = Option<u64>> + '_ {
+        (0..self.num_pairs()).map(move |pair| Some(self.total_of(pair)?.num_vars))
+    }
+
+    /// f_2 within every group, the pairs of one group together and the
+    /// groups in the order they were started: the table of groups x pairs
+    /// that the packages give as `f2_groups` and that f_3 and f_4 are built
+    /// from later. It is empty when no groups were asked for.
+    pub fn f2_of_every_group(&self) -> impl Iterator<Item = Option<f64>> + '_ {
+        let num_pairs = self.num_pairs();
+        (0..self.groups.len())
+            .flat_map(move |group| (0..num_pairs).map(move |pair| self.f2_within(group, pair)))
     }
 
     /// f_2 within one group, which f_3 and f_4 are built from later.
@@ -907,11 +941,7 @@ impl PopDistSums {
     /// group it has no variant in.
     #[must_use]
     pub fn f2_of_group(&self, group: usize, i: usize, j: usize) -> Option<f64> {
-        if group >= self.groups.len() {
-            return None;
-        }
-        let of_the_group = self.of_the_group(group, self.index_of_the_pair(i, j)?)?;
-        value_of(PopDistMeasure::F2, of_the_group)
+        self.f2_within(group, self.index_of_the_pair(i, j)?)
     }
 
     /// The jackknife standard error of the measure of the pair. `None`
@@ -941,7 +971,22 @@ impl PopDistSums {
     /// for, so nothing divides by zero.
     #[must_use]
     pub fn standard_error(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64> {
-        let pair = self.index_of_the_pair(i, j)?;
+        self.standard_error_of(measure, self.index_of_the_pair(i, j)?)
+    }
+
+    /// f_2 of the pair at `pair` of the distance vector within the group at
+    /// `group`, and `None` when the group is not one of the pass or no
+    /// variant of the pair fell in it.
+    fn f2_within(&self, group: usize, pair: usize) -> Option<f64> {
+        if group >= self.groups.len() {
+            return None;
+        }
+        value_of(PopDistMeasure::F2, self.of_the_group(group, pair)?)
+    }
+
+    /// The jackknife standard error of the measure of the pair at `pair` of
+    /// the distance vector.
+    fn standard_error_of(&self, measure: PopDistMeasure, pair: usize) -> Option<f64> {
         let over_all = self.total_of(pair)?;
         let over_all_value = value_of(measure, &over_all)?;
         let mut num_groups: usize = 0;
@@ -2852,6 +2897,54 @@ mod tests {
         assert_eq!(in_order.len(), 3);
         for (pair, (i, j)) in [(0, 1), (0, 2), (1, 2)].into_iter().enumerate() {
             assert_eq!(in_order[pair], of_three.measure(PopDistMeasure::Fst, i, j));
+        }
+    }
+
+    /// The four iterators over the pairs give what the accessors by
+    /// number give for the pairs of the distance vector, in that order:
+    /// they are what the binding crates read every array of a result from,
+    /// so the values, the standard errors, the counts and the f_2 of the
+    /// groups of one result cannot fall into different orders.
+    ///
+    /// The biallelic panel is the fixture because its three populations
+    /// make three pairs whose numbers differ from one another, and the
+    /// groups of 250 000 base pairs are 6, so `f2_of_every_group` gives 18
+    /// values whose order would show as soon as it went by pairs and then
+    /// by groups.
+    #[test]
+    fn the_iterators_over_the_pairs_are_in_the_order_of_the_distance_vector() {
+        let sums = sums_of_the_panel(
+            "dists/panel.vcf.gz",
+            "stats/panel_pops.txt",
+            JackknifeGroups::OfBasePairs(250_000),
+            20,
+            None,
+        );
+        let pairs = [(0, 1), (0, 2), (1, 2)];
+
+        assert_eq!(sums.num_pairs(), 3);
+        for measure in [PopDistMeasure::Fst, PopDistMeasure::F2] {
+            let values: Vec<Option<f64>> = sums.measures(measure).collect();
+            let errors: Vec<Option<f64>> = sums.standard_errors(measure).collect();
+            assert_eq!(values.len(), 3);
+            assert_eq!(errors.len(), 3);
+            for (pair, (i, j)) in pairs.into_iter().enumerate() {
+                assert_eq!(values[pair], sums.measure(measure, i, j));
+                assert_eq!(errors[pair], sums.standard_error(measure, i, j));
+            }
+        }
+        let counted: Vec<Option<u64>> = sums.num_vars_of_each_pair().collect();
+        assert_eq!(counted, vec![Some(1200), Some(1200), Some(1200)]);
+        let of_every_group: Vec<Option<f64>> = sums.f2_of_every_group().collect();
+        assert_eq!(of_every_group.len(), 18);
+        for group in 0..6 {
+            for (pair, (i, j)) in pairs.into_iter().enumerate() {
+                assert_eq!(
+                    of_every_group[group * 3 + pair],
+                    sums.f2_of_group(group, i, j),
+                    "the f_2 of the pair {i} {j} within the group {group}"
+                );
+            }
         }
     }
 
