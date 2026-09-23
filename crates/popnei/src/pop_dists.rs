@@ -42,11 +42,11 @@
 //! tests assert, and the row `dists` of section 9 of
 //! `docs/architecture.md` is where the module sits.
 
-use crate::block::{Block, BlockReader};
+use crate::block::{Block, BlockReader, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of};
 use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
-use crate::stats::{ObsHet, Pops, ROWS_PER_CHUNK, alleles_of_a_chunk, alleles_per_var_of, raised};
+use crate::stats::{ObsHet, Pops, raised};
 use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts_of};
 
 /// How many populations a pairwise measure is over, the s of the
