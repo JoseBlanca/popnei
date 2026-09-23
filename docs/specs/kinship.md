@@ -386,6 +386,16 @@ variants called, so their denominator is 2 and their -2 becomes -1, and only
 and `i2` have only `v0` called in both, so their denominator is 1 and their
 -2 stays -2.
 
+The same four variants over `i0` and `i3` alone, which is what
+`individuals` asks for: the frequencies are those two individuals', so `v0`,
+whose dosages there are 0 and 1, has a mean dosage of 0.5 and is divided by
+`sqrt(2 * 0.25 * 0.75)`, where over the four individuals it has a mean of 1
+and is divided by `sqrt(2 * 0.5 * 0.5)`. Both variants are kept, the
+denominator of every pair is 2, and the matrix is 4/3 on the diagonal and
+-4/3 off it, which is not the two rows and columns of the matrix above.
+Run through pyNei at commit ef0ca6e on 23 September 2026, and the cargo test
+asserts it within 1e-12 absolute.
+
 In TypeScript, `calcKinship` is tested under node against the four entries
 of `s000` above on `panel_called.vcf.gz` and against the worked example.
 
@@ -510,8 +520,12 @@ above `MAX_PLOIDY_OF_THE_VARIANTS`, which the row pass of
 as "How it runs" has it. A reader that gives more variants than a `usize`
 counts, which is 4294967295 in a browser, where a `usize` is 32 bits; the
 PCA has that case and the kinship needs its own, since the pass they share
-takes the error from its caller. And whatever the reader and `linalg` fail
-with.
+takes the error from its caller. A source with no individual, which leaves
+nobody to give a kinship of and would have the pass over a block read its
+rows in chunks of no allele: every reader of popnei has one individual at
+least, as `docs/specs/block.md` says, so it is a caller of the core crate
+with a reader of its own that reaches it, and `pca_of_variants` refuses it
+in the same way. And whatever the reader and `linalg` fail with.
 
 The components of a kinship, `num_pcs` of them at most and fewer when the
 matrix has fewer with variance. `projections` is individuals x `num_comps`,
