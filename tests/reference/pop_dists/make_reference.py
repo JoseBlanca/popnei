@@ -36,8 +36,12 @@ The two panels of docs/specs/dists.md:
 
 It writes, beside itself: micro.vcf.gz and micro_pops.txt, the panel; and, for
 each panel, <name>.hudson_fst.tsv from plink2, <name>.chord.tsv from adegenet,
-<name>.mmod.tsv from mmod, and, for the biallelic one alone, panel.f2.tsv from
-admixtools, which reads biallelic genotypes only.
+<name>.mmod.tsv from mmod, and, for the biallelic one alone, panel.f2.tsv and
+panel.f2.uneven.tsv from admixtools, which reads biallelic genotypes only. The
+two f2 files are the same estimate over groups of 100 000 and of 250 000 base
+pairs: the first cuts the panel into 12 groups of 100 variants and the second
+into 6 that hold 250, 250 and 100 on each of the two chromosomes, which is what
+tells an estimator written for groups of different sizes from one that is not.
 """
 
 import gzip
@@ -181,7 +185,7 @@ writeLines(c("pair\tdest\tgst\tgst_hedrick",
 ADMIX_PROGRAM = r"""
 suppressMessages(library(admixtools))
 args <- commandArgs(trailingOnly = TRUE)
-blocks <- f2_from_geno(args[1], maxmiss = 1, blgsize = 100000,
+blocks <- f2_from_geno(args[1], maxmiss = 1, blgsize = as.numeric(args[3]),
                        adjust_pseudohaploid = FALSE, verbose = FALSE)
 est <- as.data.frame(f2(blocks))
 writeLines(c("pair\tf2\tstandard_error",
@@ -208,7 +212,13 @@ def run_plink2_fst(plink2, vcf, pops_file, name):
 
 
 def run_admixtools_f2(plink2, vcf, pop_of, name):
-    """f_2 of every pair with its jackknife standard error, over 100 kb groups."""
+    """f_2 of every pair with its jackknife standard error, over two group lengths.
+
+    100 000 base pairs cut the panel into 12 groups of 100 variants and 250 000
+    into 6 of 250, 250 and 100 on each chromosome. The second is there because
+    groups that all hold the same number of variants cannot tell the delete-m
+    jackknife for unequal m from an estimator that takes the groups as equal.
+    """
     with tempfile.TemporaryDirectory() as work:
         prefix = pathlib.Path(work) / "panel"
         subprocess.run([plink2, "--vcf", str(vcf), "--make-bed", "--out", str(prefix)],
@@ -221,8 +231,10 @@ def run_admixtools_f2(plink2, vcf, pop_of, name):
             (line.split() for line in fam.read_text().splitlines())) + "\n")
         program = pathlib.Path(work) / "f2.R"
         program.write_text(ADMIX_PROGRAM)
-        subprocess.run([RSCRIPT, str(program), str(prefix), str(HERE / f"{name}.f2.tsv")],
-                       check=True, capture_output=True)
+        for length, into in ((100000, f"{name}.f2.tsv"),
+                             (250000, f"{name}.f2.uneven.tsv")):
+            subprocess.run([RSCRIPT, str(program), str(prefix), str(HERE / into),
+                            str(length)], check=True, capture_output=True)
 
 
 def run_r_distances(csv, name):

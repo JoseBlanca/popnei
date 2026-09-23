@@ -793,8 +793,19 @@ jackknife, in the run of the f_2 item below: with the 12 groups that
 `blgsize = 100000` cuts the biallelic panel into, its standard errors for
 the three pairs are 0.0018034174115346543, 0.0015916239936530866 and
 0.0022726350509508155, and the formula above on the same groups is 3.9e-18
-from the furthest of them, the last bits of a double. The tests compare
-within 1e-12 relative. No other measure has its standard error checked outside the
+from the furthest of them, the last bits of a double.
+
+Those 12 groups all hold 100 variants, and groups that are all of one size
+cannot tell this estimator from one written for groups that are equal, since
+h_j is then the same number for every group. So the same run is made a
+second time with `blgsize = 250000`, which cuts the panel into 6 groups
+holding 250, 250 and 100 variants on each of its two chromosomes: there
+ADMIXTOOLS gives 0.0012853754149193656, 0.00099457882673528123 and
+0.0030341885486622044, and the formula above is 9.8e-17 from the furthest of
+them, 5.7e-14 of it. The two runs are
+`tests/reference/pop_dists/panel.f2.tsv` and `panel.f2.uneven.tsv`, which
+`make_reference.py` beside them writes. The tests compare within 1e-12
+relative. No other measure has its standard error checked outside the
 project, because no program prints one for them; what is checked is the
 arithmetic they share, which is this.
 
@@ -1032,7 +1043,11 @@ individual called homozygous everywhere as haploid.
 
 On the biallelic panel it gives 0.04118111, 0.03989079 and 0.04279856 for
 the three pairs, and the formula above is 7e-18 from the furthest, the
-last bits of a double, so the tests compare within 1e-12 relative.
+last bits of a double, so the tests compare within 1e-12 relative. The
+digits the tests assert are the ones
+`tests/reference/pop_dists/panel.f2.tsv` keeps, 0.041181109098151744,
+0.039890789655075122 and 0.042798563747209542, since eight of them are not
+enough for that comparison.
 
 ADMIXTOOLS reads biallelic genotypes only, so the multiallelic panel is
 checked through plink2 instead: f_2 summed over the loci is plink2's F_ST
