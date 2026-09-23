@@ -34,7 +34,7 @@ use popnei::block::BlockReader;
 use popnei::filters::resolve_individuals;
 use popnei::kinship::Kinship;
 
-use crate::errors::PyPopneiError;
+use crate::errors::{PyPopneiError, raise_a_ctrl_c_before_numpy_is_called};
 use crate::source::{OpenSource, PassCounts, count_of_at_least, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
@@ -93,11 +93,7 @@ pub(crate) fn calc_kinship<'py>(
     // of an argument a user wrote.
     let (kinship, individuals, counts) =
         calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
-    // The Ctrl-C that arrived while the interpreter was released is raised
-    // before numpy is called: the first array of a process imports the C API
-    // of numpy, that import fails with the exception that is pending, and
-    // the numpy crate panics when it does, which a user cannot catch.
-    py.check_signals()?;
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
     // The variants that were used go to Python as the `u64` the core counts
     // them in, which is what every count of popnei is there: a `usize` is 32
     // bits in WebAssembly and 64 natively, and what a user reads does not
@@ -209,11 +205,7 @@ pub(crate) fn kinship_principal_components<'py>(
     // The eigendecomposition of a matrix of thousands of individuals takes
     // seconds and the interpreter is of no use to it.
     let pcs = py.detach(|| popnei::kinship::principal_components_of(matrix, num_rows, num_pcs))?;
-    // The Ctrl-C that arrived while the interpreter was released is raised
-    // before numpy is called: the first array of a process imports the C API
-    // of numpy, that import fails with the exception that is pending, and
-    // the numpy crate panics when it does, which a user cannot catch.
-    py.check_signals()?;
+    raise_a_ctrl_c_before_numpy_is_called(py)?;
     let num_comps = pcs.num_comps;
     let projections = the_projections_of(py, pcs.projections, num_rows, num_comps)?;
     Ok((projections, num_comps))

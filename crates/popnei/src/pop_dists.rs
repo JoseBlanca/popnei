@@ -20,8 +20,10 @@
 //! blocks nor the number of threads changes what comes out.
 //!
 //! [`PopVarCounts`] holds the three counts of one variant in one
-//! population, and [`PopDistPerVar::of_var`] gives what one variant adds to
-//! the sums of one pair, or nothing when the variant does not count for it.
+//! population, and beside them the frequencies and the sums that are of
+//! that population alone, which every pair it is in would otherwise take
+//! again; [`PopDistPerVar::of_var`] gives what one variant adds to the sums
+//! of one pair, or nothing when the variant does not count for it.
 //!
 //! [`JackknifeGroups`] says how the variants are cut into the groups that
 //! the standard errors are resampled over, and [`JackknifeWalk`] is the
@@ -47,7 +49,7 @@ use crate::dists::{index_of_the_pair, num_pairs_of};
 use crate::error::{Error, Result};
 use crate::io::vcf::MAX_PLOIDY;
 use crate::stats::{ObsHet, Pops, raised};
-use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_of, count_gts_of};
+use crate::variant::{AlleleCounts, ChromTable, GtCounts, Needs, count_alleles_and_gts_of};
 
 /// How many populations a pairwise measure is over, the s of the
 /// corrections of H_S and H_T.
@@ -59,7 +61,9 @@ const NUM_POPS_OF_A_PAIR: f64 = 2.0;
 
 /// The counts of one variant in one population: how often each allele was
 /// called, how many alleles that is, and how many genotypes were called,
-/// missing and heterozygous.
+/// missing and heterozygous; and what the arithmetic of a pair reads of
+/// that population alone there, which is taken from the counts as they are
+/// made.
 ///
 /// A half called genotype, `0/.` in a VCF, gives its called allele to the
 /// counts of the alleles and is missing among the genotypes, as it is in
@@ -70,6 +74,15 @@ const NUM_POPS_OF_A_PAIR: f64 = 2.0;
 /// variant, so that the pass allocates nothing per variant.
 #[derive(Debug, Clone)]
 pub(crate) struct PopVarCounts {
+    /// The frequency p_Pa of the allele a in the population at the variant,
+    /// its count over `called_alleles`, at the place a. Every entry from
+    /// `num_alleles` up holds 0, as the count above it does, so that a pair
+    /// reading the alleles of the larger of its two populations finds 0 in
+    /// the smaller and not a frequency of the variant before.
+    allele_freqs: AlleleFreqs,
+    /// What the arithmetic of a pair reads of this population alone at this
+    /// variant, or `None` when the variant counts for no pair it is in.
+    of_the_pop: Option<OfThePop>,
     /// How often the allele a was called in the population at the variant.
     allele_counts: AlleleCounts,
     /// One past the largest allele the population called, so that a pair
@@ -89,6 +102,8 @@ impl PopVarCounts {
     /// writes over.
     pub(crate) fn new() -> PopVarCounts {
         PopVarCounts {
+            allele_freqs: [0.0; 128],
+            of_the_pop: None,
             allele_counts: [0; 128],
             num_alleles: 0,
             called_alleles: 0,
@@ -106,26 +121,72 @@ impl PopVarCounts {
     /// them, which [`Pops::individuals`](crate::stats::Pops::individuals)
     /// gives.
     ///
+    /// `per_var` is what the pairs of the pass are taken with, and it is
+    /// here because the frequencies and the sums of this population alone
+    /// are taken with the counts: the ploidy the frequencies are raised to
+    /// and how many called genotypes a population needs are its, and
+    /// [`PopDistPerVar::of_the_pop`] is what reads them.
+    ///
     /// # Errors
     ///
-    /// Those of [`count_alleles_of`] and [`count_gts_of`]: genotypes that
-    /// are not a whole number of genotypes of the ploidy, a variant of more
-    /// alleles than a count of them holds, an allele below the missing one,
-    /// and an individual of the population beyond the variant.
+    /// Those of [`count_alleles_and_gts_of`]: genotypes that are not a
+    /// whole number of genotypes of the ploidy, a variant of more alleles
+    /// than a count of them holds, an allele below the missing one, and an
+    /// individual of the population beyond the variant.
     pub(crate) fn count_the_var(
         &mut self,
         gts: &[i8],
         ploidy: usize,
         individuals: &[usize],
+        per_var: &PopDistPerVar,
     ) -> Result<()> {
-        self.called_alleles = count_alleles_of(gts, ploidy, individuals, &mut self.allele_counts)?;
-        self.gts = count_gts_of(gts, ploidy, individuals)?;
-        self.num_alleles = self
-            .allele_counts
-            .iter()
-            .rposition(|count| *count > 0)
-            .map_or(0, |largest| largest.saturating_add(1));
+        let alleles_of_the_var_before = self.num_alleles;
+        // The alleles and the genotypes are counted in one walk over the
+        // individuals of the population: the pass wants both of every
+        // population at every variant, and the genotype of an individual
+        // is looked up once for the two counts and not once for each.
+        let (counted, of_the_gts) =
+            count_alleles_and_gts_of(gts, ploidy, individuals, &mut self.allele_counts)?;
+        self.called_alleles = counted.called_alleles;
+        self.num_alleles = counted.num_alleles;
+        self.gts = of_the_gts;
+        self.take_the_freqs(alleles_of_the_var_before);
+        self.of_the_pop = per_var.of_the_pop(self);
         Ok(())
+    }
+
+    /// It writes the frequency of each allele of the variant, and 0 over
+    /// the frequencies the variant before it left above them.
+    ///
+    /// `alleles_of_the_var_before` is what `num_alleles` held for that
+    /// variant. The entries from `num_alleles` up have to hold 0, which is
+    /// what the counts above the alleles of the population hold, because a
+    /// pair walks the alleles of the larger of its two populations and
+    /// reads of the smaller an entry its own alleles do not reach.
+    fn take_the_freqs(&mut self, alleles_of_the_var_before: usize) {
+        for freq in self
+            .allele_freqs
+            .iter_mut()
+            .take(alleles_of_the_var_before)
+            .skip(self.num_alleles)
+        {
+            *freq = 0.0;
+        }
+        // A population that called no allele has no allele to divide for:
+        // `num_alleles` is 0 with `called_alleles`, so the walk below is
+        // empty and nothing divides by 0.
+        if self.called_alleles == 0 {
+            return;
+        }
+        let n = f64::from(self.called_alleles);
+        for (freq, count) in self
+            .allele_freqs
+            .iter_mut()
+            .zip(&self.allele_counts)
+            .take(self.num_alleles)
+        {
+            *freq = f64::from(*count) / n;
+        }
     }
 
     /// How often each allele was called, the allele a at the place a.
@@ -278,35 +339,33 @@ impl PopDistPerVar {
     /// allele, which takes a ploidy of 1, leaves u_P at 0 over 0. Both are
     /// in "Variants that do not count, populations with little data, and
     /// negative values" of `docs/specs/dists.md`.
+    ///
+    /// The first two of those three tests are the `None` of
+    /// [`PopVarCounts::of_the_pop`], made of each population alone when it
+    /// was counted; the third is of the pair and is made here. A pair
+    /// whose two populations both have a value reads their quantities from
+    /// there and divides for nothing that is of one population alone.
     pub(crate) fn of_var(
         &self,
         of_one: &PopVarCounts,
         of_the_other: &PopVarCounts,
     ) -> Option<VarSums> {
-        let obs_het_of_one = self.obs_het.of_var(of_one.gts)?;
-        let obs_het_of_the_other = self.obs_het.of_var(of_the_other.gts)?;
+        let alone_of_one = of_one.of_the_pop?;
+        let alone_of_the_other = of_the_other.of_the_pop?;
         if of_one.gts.called == 1 && of_the_other.gts.called == 1 {
             return None;
         }
-        if of_one.called_alleles < 2 || of_the_other.called_alleles < 2 {
-            return None;
-        }
-        let n_of_one = f64::from(of_one.called_alleles);
-        let n_of_the_other = f64::from(of_the_other.called_alleles);
         let over_the_alleles = self.over_the_alleles(of_one, of_the_other);
-        let within_one = (n_of_one / (n_of_one - 1.0)) * (1.0 - over_the_alleles.two_alike_of_one);
-        let within_the_other = (n_of_the_other / (n_of_the_other - 1.0))
-            * (1.0 - over_the_alleles.two_alike_of_the_other);
-        let h_s = ((1.0 - over_the_alleles.all_alike_of_one)
-            + (1.0 - over_the_alleles.all_alike_of_the_other))
-            / 2.0;
+        let within_one = alone_of_one.correction * (1.0 - alone_of_one.two_alike);
+        let within_the_other = alone_of_the_other.correction * (1.0 - alone_of_the_other.two_alike);
+        let h_s = ((1.0 - alone_of_one.all_alike) + (1.0 - alone_of_the_other.all_alike)) / 2.0;
         let h_t = 1.0 - over_the_alleles.all_alike_pooled;
         // The harmonic mean of the called genotypes of the two
         // populations, which is pyNei's `hmean` over the two. It is above 1
         // unless both are 1, which the caller above has left out.
         let harmonic = NUM_POPS_OF_A_PAIR
-            / (1.0 / f64::from(of_one.gts.called) + 1.0 / f64::from(of_the_other.gts.called));
-        let obs_het = (obs_het_of_one + obs_het_of_the_other) / 2.0;
+            / (alone_of_one.reciprocal_of_called + alone_of_the_other.reciprocal_of_called);
+        let obs_het = (alone_of_one.obs_het + alone_of_the_other.obs_het) / 2.0;
         let corrected_h_s = (harmonic / (harmonic - 1.0)) * (h_s - obs_het / (2.0 * harmonic));
         let corrected_h_t = h_t + corrected_h_s / (harmonic * NUM_POPS_OF_A_PAIR)
             - obs_het / (2.0 * harmonic * NUM_POPS_OF_A_PAIR);
@@ -319,45 +378,111 @@ impl PopDistPerVar {
         })
     }
 
-    /// The six sums over the alleles of the variant that the values of the
-    /// pair are built from.
+    /// The three sums over the alleles of the variant that are of the pair
+    /// and not of one of its two populations.
     ///
     /// The alleles are added in the order of their number, so that two runs
     /// over the same variant give the same bits, and the walk stops at the
-    /// largest allele either population called: the entries beyond it are 0
-    /// in both and add nothing.
+    /// largest allele either population called: the frequencies beyond it
+    /// are 0 in both and add nothing. The four sums that are of one
+    /// population alone are in [`OfThePop`], taken once for the population
+    /// at the variant and not once for each pair it is in.
     fn over_the_alleles(
         &self,
         of_one: &PopVarCounts,
         of_the_other: &PopVarCounts,
     ) -> OverTheAlleles {
-        let n_of_one = f64::from(of_one.called_alleles);
-        let n_of_the_other = f64::from(of_the_other.called_alleles);
         let num_alleles = of_one.num_alleles.max(of_the_other.num_alleles);
         let mut sums = OverTheAlleles::default();
-        for (count_of_one, count_of_the_other) in of_one
-            .allele_counts
+        for (p_of_one, p_of_the_other) in of_one
+            .allele_freqs
             .iter()
-            .zip(&of_the_other.allele_counts)
+            .zip(&of_the_other.allele_freqs)
             .take(num_alleles)
         {
-            let p_of_one = f64::from(*count_of_one) / n_of_one;
-            let p_of_the_other = f64::from(*count_of_the_other) / n_of_the_other;
             let product = p_of_one * p_of_the_other;
             sums.same_allele_in_both += product;
             sums.sqrt_of_the_products += product.sqrt();
-            sums.two_alike_of_one += p_of_one * p_of_one;
-            sums.two_alike_of_the_other += p_of_the_other * p_of_the_other;
-            sums.all_alike_of_one += raised(p_of_one, self.ploidy);
-            sums.all_alike_of_the_other += raised(p_of_the_other, self.ploidy);
             sums.all_alike_pooled += raised((p_of_one + p_of_the_other) / 2.0, self.ploidy);
         }
         sums
     }
+
+    /// What the arithmetic of a pair reads of one of its two populations
+    /// alone at one variant, or `None` when the variant counts for no pair
+    /// that population is in.
+    ///
+    /// The two tests are the ones [`PopDistPerVar::of_var`] makes before it
+    /// divides, and they are made here so that what is behind them is
+    /// divided once for the population and not once for each pair it is in.
+    /// A population whose observed heterozygosity is `None` has called no
+    /// genotype at the variant, or fewer than `min_num_individuals` of
+    /// them, and `1 / called` would then be a division by zero; a
+    /// population of fewer than two called alleles leaves `n_P / (n_P - 1)`
+    /// over zero. So neither division is reached on the path that gives no
+    /// value, and neither is an infinity a pair could read.
+    fn of_the_pop(&self, counts: &PopVarCounts) -> Option<OfThePop> {
+        let obs_het = self.obs_het.of_var(counts.gts)?;
+        if counts.called_alleles < 2 {
+            return None;
+        }
+        let n = f64::from(counts.called_alleles);
+        let mut two_alike = 0.0;
+        let mut all_alike = 0.0;
+        // The alleles are added in the order of their number, as the sums
+        // of the pair are: the frequencies above the alleles of this
+        // population are 0, and adding them changes neither sum.
+        for freq in counts.allele_freqs.iter().take(counts.num_alleles) {
+            two_alike += freq * freq;
+            all_alike += raised(*freq, self.ploidy);
+        }
+        Some(OfThePop {
+            obs_het,
+            correction: n / (n - 1.0),
+            reciprocal_of_called: 1.0 / f64::from(counts.gts.called),
+            two_alike,
+            all_alike,
+        })
+    }
 }
 
-/// The sums over the alleles of one variant that the values of one pair of
-/// populations are built from, each of them added allele by allele.
+/// One frequency for each allele a count of them holds, beside
+/// [`AlleleCounts`].
+type AlleleFreqs = [f64; 128];
+
+/// What the arithmetic of a pair reads of one of its two populations alone
+/// at one variant, taken once for the population at that variant instead of
+/// once for each pair it is in.
+///
+/// At 20 populations each of them is in 19 pairs, so each of these five
+/// numbers was taken 19 times where once does: two of them are divisions
+/// and two are sums over the alleles of the variant.
+/// [`PopDistPerVar::of_the_pop`] is what fills it, behind the tests that
+/// say whether the population has a value at the variant at all.
+#[derive(Debug, Clone, Copy)]
+struct OfThePop {
+    /// H_obs, the heterozygous genotypes of the population over its called
+    /// ones, which [`ObsHet::of_var`] gives.
+    obs_het: f64,
+    /// n_P / (n_P - 1), the correction of u_P, with n_P the called alleles
+    /// of the population at the variant.
+    correction: f64,
+    /// One over the called genotypes of the population, which the harmonic
+    /// mean of the pair adds to the other population's.
+    reciprocal_of_called: f64,
+    /// The chance that two copies drawn from the population with
+    /// replacement are alike, the sum over the alleles of p_Pa^2, which
+    /// u_P is taken from 1.
+    two_alike: f64,
+    /// The chance that k copies drawn from it with replacement are all
+    /// alike, the sum over the alleles of p_Pa^k, which E_P is taken from
+    /// 1.
+    all_alike: f64,
+}
+
+/// The sums over the alleles of one variant that are of a pair of
+/// populations and not of one of the two, each of them added allele by
+/// allele. The ones that are of one population are in [`OfThePop`].
 #[derive(Debug, Clone, Copy, Default)]
 struct OverTheAlleles {
     /// The chance that an allele drawn from each population is the same
@@ -366,19 +491,9 @@ struct OverTheAlleles {
     /// The sum of the square roots of those products, which the chord
     /// distance is built from.
     sqrt_of_the_products: f64,
-    /// The chance that two copies drawn from the first population with
-    /// replacement are alike, the sum of p_Aa^2.
-    two_alike_of_one: f64,
-    /// The same for the second population.
-    two_alike_of_the_other: f64,
-    /// The chance that k copies drawn from the first population with
-    /// replacement are all alike, the sum of p_Aa^k, which E_A is taken
-    /// from 1.
-    all_alike_of_one: f64,
-    /// The same for the second population.
-    all_alike_of_the_other: f64,
-    /// The same over the two populations pooled at equal weight, the sum of
-    /// ((p_Aa + p_Ba) / 2)^k, which H_T is taken from 1.
+    /// The chance that k copies drawn from the two populations pooled at
+    /// equal weight are all alike, the sum of ((p_Aa + p_Ba) / 2)^k, which
+    /// H_T is taken from 1.
     all_alike_pooled: f64,
 }
 
@@ -1797,7 +1912,12 @@ fn sums_of_the_chunk(
         }
         group_being_filled = Some(*group);
         for (pop, of_the_pop) in counts.iter_mut().enumerate() {
-            of_the_pop.count_the_var(row, ploidy, of_the_pass.pops.individuals(pop))?;
+            of_the_pop.count_the_var(
+                row,
+                ploidy,
+                of_the_pass.pops.individuals(pop),
+                &of_the_pass.per_var,
+            )?;
         }
         add_the_pairs(&counts, &of_the_pass.per_var, &mut of_the_group)?;
     }
@@ -1891,11 +2011,26 @@ mod tests {
     /// The individuals of its second population.
     const POP2: [usize; 3] = [3, 4, 5];
 
-    /// The counts of one variant over one population.
-    fn counts_of(gts: &[i8], ploidy: usize, individuals: &[usize]) -> PopVarCounts {
+    /// The counts of one variant over one population, and what the pair
+    /// arithmetic `per_var` reads of that population alone there.
+    fn counts_of(
+        per_var: &PopDistPerVar,
+        gts: &[i8],
+        ploidy: usize,
+        individuals: &[usize],
+    ) -> PopVarCounts {
         let mut counts = PopVarCounts::new();
-        match counts.count_the_var(gts, ploidy, individuals) {
+        match counts.count_the_var(gts, ploidy, individuals, per_var) {
             Ok(()) => counts,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// What `PopDistPerVar::new` gives, with the panic of a ploidy the
+    /// tests never give it out of the way.
+    fn per_var_of(ploidy: usize, min_num_individuals: u32) -> PopDistPerVar {
+        match PopDistPerVar::new(ploidy, min_num_individuals) {
+            Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         }
     }
@@ -1908,7 +2043,10 @@ mod tests {
             Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         };
-        per_var.of_var(&counts_of(gts, 2, &POP1), &counts_of(gts, 2, &POP2))
+        per_var.of_var(
+            &counts_of(&per_var, gts, 2, &POP1),
+            &counts_of(&per_var, gts, 2, &POP2),
+        )
     }
 
     /// The values of one variant, which the spec's table gives to six
@@ -1934,12 +2072,16 @@ mod tests {
             ([3, 3, 0], 6, 3, [3, 3, 0], 6, 3),
             ([5, 1, 0], 6, 3, [0, 3, 1], 4, 2),
         ];
+        // The counts asserted here are of the alleles and the genotypes
+        // and not of anything the pair arithmetic derives, so the
+        // threshold this counts them with changes none of them.
+        let per_var = per_var_of(2, 1);
         for (var, (of_pop1, n_1, called_1, of_pop2, n_2, called_2)) in
             expected.into_iter().enumerate()
         {
             let gts = &WORKED_EXAMPLE[var];
-            let counts_1 = counts_of(gts, 2, &POP1);
-            let counts_2 = counts_of(gts, 2, &POP2);
+            let counts_1 = counts_of(&per_var, gts, 2, &POP1);
+            let counts_2 = counts_of(&per_var, gts, 2, &POP2);
             assert_eq!(counts_1.allele_counts()[..3], of_pop1, "variant {var}");
             assert_eq!(counts_1.called_alleles(), n_1, "variant {var}");
             assert_eq!(counts_1.gts().called, called_1, "variant {var}");
@@ -2005,8 +2147,8 @@ mod tests {
             Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         };
-        let of_pop1 = counts_of(gts, 4, &POP1);
-        let of_pop2 = counts_of(gts, 4, &POP2);
+        let of_pop1 = counts_of(&per_var, gts, 4, &POP1);
+        let of_pop2 = counts_of(&per_var, gts, 4, &POP2);
 
         assert_eq!(of_pop1.allele_counts()[..3], [6, 5, 1]);
         assert_eq!(of_pop1.called_alleles(), 12);
@@ -2085,12 +2227,12 @@ mod tests {
             Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         };
-        let nothing_called = counts_of(gts, 2, &[2]);
+        let nothing_called = counts_of(&per_var, gts, 2, &[2]);
         assert_eq!(nothing_called.called_alleles(), 0);
         assert_eq!(nothing_called.gts().called, 0);
         assert!(
             per_var
-                .of_var(&nothing_called, &counts_of(gts, 2, &POP2))
+                .of_var(&nothing_called, &counts_of(&per_var, gts, 2, &POP2))
                 .is_none()
         );
     }
@@ -2108,13 +2250,17 @@ mod tests {
             Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         };
-        let of_one = counts_of(gts, 2, &[1]);
-        let of_the_other = counts_of(gts, 2, &[4]);
+        let of_one = counts_of(&per_var, gts, 2, &[1]);
+        let of_the_other = counts_of(&per_var, gts, 2, &[4]);
         assert_eq!(of_one.gts().called, 1);
         assert_eq!(of_the_other.gts().called, 1);
         assert!(per_var.of_var(&of_one, &of_the_other).is_none());
         // One called genotype against three still counts.
-        assert!(per_var.of_var(&of_one, &counts_of(gts, 2, &POP2)).is_some());
+        assert!(
+            per_var
+                .of_var(&of_one, &counts_of(&per_var, gts, 2, &POP2))
+                .is_some()
+        );
     }
 
     /// A haploid population with one called genotype has one called allele,
@@ -2129,9 +2275,9 @@ mod tests {
             Ok(per_var) => per_var,
             Err(error) => panic!("{error}"),
         };
-        let of_one_genotype = counts_of(&gts, 1, &[0]);
-        let of_two_genotypes = counts_of(&gts, 1, &[1, 2]);
-        let of_two_more = counts_of(&gts, 1, &[3, 4]);
+        let of_one_genotype = counts_of(&per_var, &gts, 1, &[0]);
+        let of_two_genotypes = counts_of(&per_var, &gts, 1, &[1, 2]);
+        let of_two_more = counts_of(&per_var, &gts, 1, &[3, 4]);
         assert_eq!(of_one_genotype.called_alleles(), 1);
         assert!(
             per_var
@@ -2516,9 +2662,9 @@ mod tests {
         };
         // Three populations make three pairs, and these sums hold two.
         let counts = [
-            counts_of(gts, 2, &[0, 1]),
-            counts_of(gts, 2, &[2, 3]),
-            counts_of(gts, 2, &[4, 5]),
+            counts_of(&per_var, gts, 2, &[0, 1]),
+            counts_of(&per_var, gts, 2, &[2, 3]),
+            counts_of(&per_var, gts, 2, &[4, 5]),
         ];
         let mut of_the_group = vec![PairSums::default(); 2];
         let refused = add_the_pairs(&counts, &per_var, &mut of_the_group);

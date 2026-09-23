@@ -1756,25 +1756,70 @@ popnei runs in a floor, goal 3 of `docs/objectives.md`, because the
 count of the bits of a pair in wasm uses the vector instructions of
 WebAssembly, which is what took that build under its number.
 
-The distances between populations have no number to reach yet, and the
-measurement comes first. The dataset is the one above, 100000 variants x
-1000 individuals read from a vars file with the reading measured separately
-and taken out, with the individuals cut into 3 populations and into 20, so
-that the growth with the square of the populations is in the measurement
-and not guessed at. The program to compare with is pyNei's
-`calc_jost_dest_pop_dists`, which on 20000 variants x 500 individuals and 3
-populations takes 0.76 s on the owner's M5 Pro with numpy 2.5.3 on
-Accelerate, measured on 23 September 2026 on genotypes drawn at random with
-3 in 100 missing. That run is a tenth of the variants and half the
-individuals of the dataset above, and pyNei was not run on the larger one.
-popnei calculates seven numbers where pyNei calculates one, from counts
-they share, so the comparison is of one pass against one pass and not of
-one number against one number. The owner decided on 23 September 2026 that
-the plan that builds this item does not measure: the performance review
-does, after the work is merged into `main`, and it writes the numbers to
-reach into this section then. The option not taken was a work package of
-the plan for the measurement, which would have set a number to reach
-before there was code whose speed anybody had seen.
+The distances between populations were measured on 23 September 2026 by
+the performance review `docs/reports/perf-dists-pops-2026-09-23.md`, which
+the owner decided that day would measure them after the work was merged
+rather than the plan that built them; the option not taken was a work
+package of the plan, which would have set a number to reach before there
+was code whose speed anybody had seen. The dataset is the one above,
+100000 variants x 1000 individuals read from a vars file with the reading
+measured separately and taken out, with the individuals cut into 3
+populations, which make 3 pairs, and into 20, which make 190.
+
+The numbers to reach are what that review left with a tenth over them, on
+the owner's M5 Pro, of the calculation with the reading taken out:
+
+| | 3 populations | 20 populations |
+|---|---|---|
+| one thread | 0.19 s | 0.27 s |
+| 18 threads, on a quiet machine | 0.023 s | 0.028 s |
+| wasm under node | 0.22 s | 0.35 s |
+
+What the code reaches, at `perf/dists-pops` after that review's three
+changes: 0.171 s and 0.248 s on one thread, 0.021 s and 0.025 s on 18
+threads, 0.198 s and 0.320 s in wasm. Before them the same measurements
+were 0.282 s and 0.489 s, 0.027 s and 0.044 s, and 0.375 s and 0.582 s, so
+the pass is 39 to 49 in 100 faster than the code that was merged and no
+number of any result moved by a bit.
+
+The one-thread figure is the one to check a change against. The 18 cores
+of this machine are 6 performance and 12 efficiency, so a figure over them
+holds within 5 in 100 on a quiet machine and moves by a factor of two when
+anything else runs, where the one-thread figure moves by under 6 in 100
+either way; the 12 efficiency cores are worth having, since 6 threads take
+0.047 s at 20 populations against 0.025 s on 18.
+
+The program to compare with is pyNei's `calc_jost_dest_pop_dists`, which
+over the same 100000 variants x 1000 individuals takes 7.811 s at 3
+populations and 502.105 s at 20, on one thread, with numpy 2.5.3 on
+Accelerate, measured on 23 September 2026; its best at 3 populations is
+0.944 s on 18 threads. Its reading is inside those numbers, so what goes
+beside them is popnei over the vars file, 0.277 s and 0.352 s on one
+thread, which is 28 times faster at 3 populations and 1426 at 20. The
+second ratio is mostly pyNei's own shape: it hands every pair the whole
+set of populations and so recounts all of them once for each pair, and its
+own numbers show it, 64.3 times the time for 63.3 times the pairs. And
+popnei calculates seven measures with a block jackknife standard error
+each where pyNei calculates Jost's D alone with none, from counts they
+share, so the comparison is of one pass against one pass and not of one
+number against one number.
+
+How the cost grows with the populations, which this section asked to have
+measured rather than guessed. The same 1000 individuals cut into 3, 6, 10,
+20 and 40 populations fit, each within 2 in 100,
+
+    a pass of 100000 variants =
+        0.164 s x (individuals / 1000) + 0.0014 s x populations
+        + 0.00028 s x pairs
+
+which is 1.64 ns for each individual counted, 14 ns fixed for each
+population at each variant whatever its size, and 2.8 ns for each pair at
+each variant at two alleles. The pairs pass the per-population cost at
+about 20 populations. A panel of more than two alleles was not timed, and
+the per-pair term is the only one that grows with the alleles of a
+variant. The model is fitted on panels of 1000 individuals and
+under-predicts a panel of 150 by 22 in 100, so there is a cost of about
+8 ms a pass that it has no term for.
 
 ## Open points
 

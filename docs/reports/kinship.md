@@ -5,11 +5,11 @@ out, written as the work went. The plan builds the genomic relationship
 matrix of a set of variants, which says for every pair of individuals how
 much of their genome they share beyond what two individuals drawn at random
 from the panel share, from `docs/specs/kinship.md`. The work is on the
-branch `plan/kinship` in the worktree `.claude/worktrees/kinship`, and
-nothing of it is on `main`.
+branch `plan/kinship` in the worktree `.claude/worktrees/kinship`.
 
-State: done. Every task is ticked, every deliverable checked, and the branch
-is `plan/kinship`, waiting on the owner to merge it.
+State: done and merged. Every task was ticked and every deliverable checked,
+and the owner merged the branch into `main` on 23 September 2026, at
+`2a8b4b7`. The branch and its worktree are gone; nothing was pushed.
 
 ## What exists now that did not
 
@@ -25,9 +25,8 @@ also be built by hand from a matrix a user brings from plink2 or a pedigree.
 Every entry of both reference panels is plink2's within 1e-13 of the largest
 entry of the matrix, on both of the linear algebra libraries popnei is built
 against, Accelerate natively on this machine and faer in a browser, and is
-pyNei's. The
-first components are pyNei's, and the first one separates the three
-subpopulations of the panel.
+pyNei's. The first components are pyNei's, and the first one separates the
+three subpopulations of the panel.
 
 One piece of code that existed changed: the row pass that turns a variant
 into its standardized dosages, and the pass over a block that drives it,
@@ -39,9 +38,14 @@ of the principal components changed.
 
 ## What is asked of the owner
 
-**The merge.** Nothing of this is on `main` and nothing has been pushed.
-`docs/plans/gwas-linear.md` is being carried out on a branch taken from this
-one, so it takes whatever is merged.
+**The merge, which is done.** `main` is at `2a8b4b7`. It was not a fast
+forward: the population distances and the performance review of the linear
+algebra crate had landed meanwhile, and two files conflicted, each where two
+branches had added an entry to the same list. Both were resolved by keeping
+the two additions. The merge was tested in a throwaway worktree first,
+because the linear algebra work sits under every number the kinship
+computes, and those numbers survived it. `docs/plans/gwas-linear.md` is
+carried out on a branch taken from this one and should now take `main`.
 
 **Two things to decide after the merge, not now.** Both came from this plan
 and from the reviewers of `docs/plans/gwas-linear.md` at once, so they are
@@ -96,11 +100,11 @@ sentence: they had been correcting the number each time instead of asking
 what the number was measuring.
 
 **And one piece of work this plan found and did not do.** Ctrl-C does not
-interrupt a pass. The owner decided on 23 September 2026 that it should, and
-the scope is in "The five the owner decided" below: five calculations in two
-binding crates, one new error case, and a claim about rayon and the
-interpreter that has to be checked rather than assumed. It is recommended as
-a plan of its own.
+interrupt a pass in flight. The owner decided on 23 September 2026 that it
+should, and the scope is in "The five the owner decided" below: it is
+recommended as a plan of its own. Half of the subject was already settled on
+`main` while this plan ran, by a different route and for a sharper problem,
+which that section now says.
 
 ## The starting commit
 
@@ -631,12 +635,31 @@ and nobody had decided that.
 should be fixed even if the core needs a way to send a message back. It is
 not fixed here, and the scope is why. `crates/popnei-python/src/source.rs`
 checks for a signal between blocks, because there Python drives the loop.
-The five functions that run over a whole dataset, the kinship, the
-principal components, the distances, the linkage disequilibrium and writing
-a vars file, check only before and after, because the core owns the loop
-and returns when the file is done. Writing a vars file looks like a
-precedent and is not: it checks after the write and deletes the half
-written file.
+The functions that run over a whole dataset, the kinship, the principal
+components, the distances, the population distances and writing a vars
+file, check only before and after, because the core owns the loop and
+returns when the file is done. Writing a vars file looks like a precedent
+and is not: it checks after the write and deletes the half written file.
+
+**A sharper problem of the same subject was solved on `main` while this
+plan ran**, and it is worth telling apart from this one. A Ctrl-C left
+pending is not merely unnoticed: the first array a process builds imports
+the C API of numpy, that import fails with the exception still pending, and
+the numpy crate panics when it does, so a user who pressed Ctrl-C got a
+`PanicException`, which derives from `BaseException`, is caught by no
+`except` of theirs, and ends the session. The commit `338a29a` put
+`raise_a_ctrl_c_before_numpy_is_called` in
+`crates/popnei-python/src/errors.rs` and had the distances, the principal
+components and the population distances call it between releasing the
+interpreter and building an array. It raises a signal that has already
+arrived, after the pass. It does not interrupt a pass, so what is scoped
+below is untouched by it.
+
+The kinship was written at the same time and had the same check inline,
+which nothing tested, since the test of `338a29a` runs the calculations
+that existed when it was written. After the merge the kinship calls the
+shared helper like its neighbours, and the interrupt test runs it as a
+third calculation; removing the call makes that case fail.
 
 The design that works needs no change to the core's signatures. The binding
 wraps the reader chain in a `BlockReader` whose `next_block` re-attaches to
@@ -645,9 +668,10 @@ into an error that travels out through the core's `Result`. Two things make
 it more than a review fix. The interpreter is released for the whole pass
 because rayon's threads deadlock on a caller that holds it, and the claim
 that re-attaching between blocks is safe, since no rayon work is in flight
-at that moment, has to be checked and not assumed. And it touches five
-calculations in two binding crates, one new error case in the core, and
-tests that send a real signal in the middle of a pass. It is recommended as
+at that moment, has to be checked and not assumed. And it touches every
+calculation that reads a whole source in one call, in two binding crates,
+one new error case in the core, and tests that send a real signal in the
+middle of a pass and not before or after one. It is recommended as
 a plan of its own after this one merges, and it wants a sentence in a spec
 about what a user sees when they stop a pass.
 
