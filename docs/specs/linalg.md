@@ -722,7 +722,15 @@ over the lower half alone where only the lower half is read. The rank adds
 `NoConvergence`: `dgesdd` gives an `info` other than 0 and faer gives
 `SvdError::NoConvergence`, which is the case the crate already has for the
 eigendecomposition, with the routine and the `info`. The inverse adds
-`Memory`, for faer's scratch of n x n. The log of the determinant reads
+`Memory`, for faer's scratch of n x n, and so do the thin QR and the rank,
+for the column major copy the BLAS backend writes: that copy is as large as
+the matrix it was given, `rows` times `cols` values, which is 400 KB for a
+design of 10000 x 5 and 17 GB for the largest matrix the crate takes, so it
+is asked for with `try_reserve_exact` and not taken, for the reason the
+workspace of the eigendecomposition is. A caller that could hold the matrix
+can usually hold the copy, which is why no call the association study makes
+reaches this; `thin_qr` and `rank` are public and nothing bounds what else
+is passed to them. The log of the determinant reads
 the diagonal of `l` alone, so `NotFinite` and the `Singular` below are
 what it checks that diagonal for, and it is the same `Singular` a
 `cholesky_lower` that gave that `l` would have given first.
