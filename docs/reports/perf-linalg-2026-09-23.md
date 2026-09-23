@@ -125,7 +125,7 @@ In the order in which they unblock the findings.
    `add_self_product_lower` at 5000 x 1000, `product` at the tile shapes
    of the r², and `eigh_lower` at n = 1000 and 5000, and it is run twice,
    once per backend. This is the deliverable the owner asked about and
-   section 5's H4 argues for it.
+   section 5's L1 argues for it.
 4. **The faer backend through the callers' benchmarks, which nobody has
    run.** `cargo bench --no-default-features --features bench-internals`
    builds both `pca_vars` and `r2_matrix` on faer natively. It is the
@@ -278,22 +278,50 @@ eigenvalues and 1e-9 on entries, and every test passes; but they are the
 same size as the gap between the two backends that the spec records, 2.9e-14
 and 1.3e-12, so a thread change spends the same budget a second time.
 
+**What pinning costs was measured for this report** and it is the number
+the decision turns on. Pinning gives the same bits at every pool size,
+confirmed at 1, 4 and 18 threads on all 1000 eigenvalues and all 1000000
+eigenvector entries of an n = 1000, compared as equal; and it costs:
+
+| n | faer on the pool | pinned to one thread | what pinning costs |
+|---|---|---|---|
+| 1000 | 0.068 s | 0.097 s | 1.43 times, 0.029 s |
+| 2000 | 0.289 s | 0.716 s | 2.48 times, 0.43 s |
+| 5000 | 2.635 s | 11.744 s | 4.46 times, 9.1 s |
+| 10000 | 25.41 s | 147.39 s | 5.80 times, 122 s |
+
 The options.
 
-- **Pin it**, by calling faer's eigendecomposition through the entry point
-  that takes a thread argument and giving it `the_threads()`, or by
-  giving it one thread. Costs whatever that decomposition gains from the
-  pool, which is unmeasured, and makes the rule true again.
+- **Pin it**, by calling faer's lower level entry point that takes a
+  thread argument. Costs the table above, 9.1 s at 5000 individuals and
+  two minutes at the 10000 of `docs/objectives.md`, and 32 lines in place
+  of 7 against a faer API likelier to move between versions than the one
+  used now. Makes the rule true again.
 - **Record it**, adding a sentence to "Threads" of `docs/specs/linalg.md`
   saying that this one operation on this one backend is not reproducible
-  across pool sizes, and a test that would catch it changing.
-- **Leave it**, since it is inside the tolerance and invisible in a
+  across pool sizes, and a test that would catch the day it changes.
+  Costs a paragraph.
+- **Leave it silent**, since it is inside the tolerance and invisible in a
   browser and on Accelerate.
 
-Recommended: measure what pinning costs and then pin it, because the rule
-is worth more than an unmeasured share of one call per analysis. This is
-a correctness matter that a performance review happened to find, so it
-may belong in a code review rather than here.
+Recommended: record it, and do not pin it. Two minutes of an analysis at
+10000 individuals is too much to pay for 15 units in the last place that
+sit well inside the tolerance the spec already states, and the two places
+popnei's users actually are, a browser and a native build on Accelerate,
+are both unaffected. This is a correctness matter that a performance
+review happened to find, so the sentence it needs may belong to a code
+review rather than to this report.
+
+**The same experiment found that the spec's faer column is a one-thread
+column.** The pinned times above, 0.097, 0.716 and 11.744 s, reproduce
+"Speed" of `docs/specs/linalg.md`, which records 0.096, 0.68 and 11.4 s
+for faer. On the pool faer takes 2.635 s at n = 5000 against the 6.3 s
+that table gives Accelerate, so **faer's eigendecomposition natively is
+2.4 times faster than Accelerate's at that size, not 1.8 times slower as
+the spec reads**. The table is not wrong, it is a one-thread table beside
+an Accelerate column that takes the threads it finds, and nothing on its
+face says so. Whoever next edits that section should say which column is
+which.
 
 ### Hot-path
 
@@ -337,6 +365,8 @@ Effect on the numbers: none. The predicate accepts and refuses exactly the
 same matrices, and the two tests added at `e64637c`, which put a value
 that is not finite in every place of a 2 x 12 and a 12 x 12, cover the
 loop and its tail.
+
+**Measured, no gain, closed.** Section 8 has the numbers.
 
 ### Likely
 
@@ -513,3 +543,81 @@ review.
   untimed, print best, median and worst, name the environment variables in
   the doc comment because a variable set after the process starts would
   not reach Accelerate, and print a checksum taken after the clock stops.
+
+## 8. What the experiments showed
+
+### H1, the cheaper scan: measured, no gain, closed
+
+The loop is not at the memory roof, and a cheaper one still buys nothing
+in either benchmark. Both halves of that are worth keeping, because they
+point in opposite directions and only the second decides.
+
+In isolation, a scratch binary scanning one buffer that is already
+resident, best of five, each trial moving at least 512 MB:
+
+| buffer | as it is | the mask form | the float form, 16 counters |
+|---|---|---|---|
+| 32 KB | 60.5 GB/s | 93.9 | 145.5 |
+| 1 MB | 72.5 GB/s | 96.3 | 133.1 |
+| 8 MB | 71.7 GB/s | 95.9 | 119.1 |
+| 40 MB | 71.9 GB/s | 90.4 | 104.2 |
+
+The instruction counts per 64 bytes, which are the same on every run: 20
+as it is, 16 for the mask form, 11.5 for the float form at 16 counters.
+The float form is 12 and not the 8 that was expected, because without
+`mul_add`, which is a software call under emscripten, the multiply and the
+add are two instructions. Thirty two counters add nothing over sixteen.
+So the loop reaches 72 GB/s at 8 MB and above, which matches the 75 GB/s
+derived from the r² and refutes the 26 GB/s derived from the analysis:
+**the loop is bound by its own instructions, not by memory.**
+
+The float form at 16 counters was then put in the crate. Every check
+passed before any timing: 149 tests on Accelerate, 136 on faer, 604 in the
+workspace, clippy clean, both wasm targets checked, and the assembly
+confirmed 11.5 instructions per 64 bytes in the crate as built. The two
+benchmarks were run alternately, both sides in the same window, because
+the drift between quiet windows, 0.015 to 0.020 s, is larger than the
+0.006 s the decision turned on:
+
+| | as it is | with the cheaper loop |
+|---|---|---|
+| the matrix of r², four paired rounds, best | 0.388, 0.387, 0.388, 0.390 s | 0.391, 0.390, 0.391, 0.390 s |
+| the analysis, three paired rounds, best | 0.449, 0.447, 0.447 s | 0.446, 0.444, 0.446 s |
+
+**The r² rose in every one of the four pairs.** The analysis fell by 0.002
+to 0.003 s, 0.6 per 100, inside the spread of its own five runs. The
+threshold was a fall of more than 0.006 s in the r². Nothing was kept and
+the file is as it was.
+
+Why a loop that is 3 per 100 of the profile and 1.45 times cheaper gives
+nothing back: the scan is the first pass over a matrix the library has
+just written, so much of what the profiler charges to it is the misses of
+that first touch. A cheaper loop does not remove those misses, it hands
+them to the next reader of the same buffer. The scratch binary re-reads a
+buffer that is already resident, which is why it sees the instruction
+count and the benchmark does not.
+
+What is left of it. At 32 KB the float form is 2.4 times the throughput of
+the one in place and at 1 MB 1.8 times, so if the eleven operations, which
+work on far smaller matrices, ever show this function in a profile of
+their own, the experiment is worth repeating there with a benchmark of
+that size. The mask form is a one-word change worth about half the float
+form in isolation, and was not carried to the benchmarks once the faster
+form failed the threshold.
+
+### O2, what pinning the eigendecomposition costs: measured, for the owner
+
+The table is in O2 above. Pinning removes the thread dependence
+completely, confirmed as bit equality at 1, 4 and 18 threads, and costs
+1.43 times the wall time at 1000 individuals, 4.46 at 5000 and 5.80 at
+10000. The recommendation in O2 is to record the divergence and not pay
+that.
+
+### What the experiments did not settle
+
+L1's benchmark is being built and its result goes here when it lands.
+Nothing else
+in section 5 was run: L3, L4, L6 and L7 are all about the eleven
+operations, and none of them can be timed until either that benchmark or
+the association study gives them a caller. That is not a gap this review
+can close by working longer.
