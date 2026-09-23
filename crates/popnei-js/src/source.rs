@@ -48,8 +48,10 @@ use crate::steps::{Steps, chain_of};
 /// The largest position a block hands to JavaScript, 2^53.
 ///
 /// The positions cross as float64, which holds every whole number up to
-/// this one and not the ones above it: 2^53 + 1 would arrive as 2^53.
-const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
+/// this one and not the ones above it: 2^53 + 1 would arrive as 2^53. It is
+/// also the longest stretch of a chromosome the resampling groups of the
+/// distances between populations are cut into, for the same reason.
+pub(crate) const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
 
 /// A file of variants that was opened, which every pass reads again.
 pub(crate) trait OpenSource {
@@ -663,7 +665,7 @@ impl BlockColumns {
 /// the two languages would disagree about where a variant is. No genome
 /// comes near that number: the longest chromosome that has been assembled
 /// is 2.5e8 bases.
-fn positions_of(positions: Vec<u64>) -> Result<Vec<f64>, JsPopneiError> {
+pub(crate) fn positions_of(positions: Vec<u64>) -> Result<Vec<f64>, JsPopneiError> {
     positions
         .into_iter()
         .map(|pos| {

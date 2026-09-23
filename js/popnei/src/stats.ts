@@ -33,6 +33,7 @@ import {
   aNumber,
   aString,
   namesOf,
+  popsOfTheObject,
   whatWasGiven,
   wholeNumberOfZeroOrMore,
 } from "./arguments.js";
@@ -417,25 +418,7 @@ function thePops(pops: Record<string, readonly string[]> | undefined): {
       numIndividualsPerPop: new Uint32Array(0),
     };
   }
-  if (typeof pops !== "object" || pops === null || Array.isArray(pops)) {
-    throw new Error(
-      "popnei: `pops` is an object of the name of a population to the names " +
-        `of its individuals, {pop1: ["ind00", "ind01"]}, and ` +
-        `${whatWasGiven(pops)} was given`,
-    );
-  }
-  const names = Object.keys(pops);
-  const individuals: string[] = [];
-  const numIndividualsPerPop = new Uint32Array(names.length);
-  for (const [which, pop] of names.entries()) {
-    const ofThePop = namesOf(`pops.${pop}`, pops[pop], {
-      oneOfThem: "individual",
-      anExample: "ind00",
-    });
-    individuals.push(...ofThePop);
-    numIndividualsPerPop[which] = ofThePop.length;
-  }
-  return { names, individuals, numIndividualsPerPop };
+  return popsOfTheObject(pops);
 }
 
 /** The three keys the histogram is given under. */

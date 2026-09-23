@@ -193,7 +193,7 @@ fn the_stats(names: &[String]) -> Result<Vec<PerVarStat>, JsPopneiError> {
 
 /// The populations a user named, each with the names of its individuals in
 /// the order they named them, which is what `Pops::from_names` takes.
-type PopsGiven = Vec<(String, Vec<String>)>;
+pub(crate) type PopsGiven = Vec<(String, Vec<String>)>;
 
 /// The populations a user named, each with the names of its individuals, out
 /// of the flat arrays they crossed in, and `None` when they named none.
@@ -210,8 +210,35 @@ fn the_pops_given(asked: &ArgumentsOfThePass) -> Result<Option<PopsGiven>, JsPop
     let Some(names) = asked.pop_names.as_ref() else {
         return Ok(None);
     };
+    Ok(Some(pops_of_the_arrays(
+        names,
+        &asked.pop_individuals,
+        &asked.num_individuals_per_pop,
+    )?))
+}
+
+/// The populations of `names`, each with the names of its individuals, out
+/// of the one array `individuals` holds them all in: the first population
+/// takes the first `num_individuals_per_pop[0]` of them, and so on.
+///
+/// An array of arrays is not one of the types wasm-bindgen carries, so every
+/// calculation that takes populations gets them flat and cuts them here.
+///
+/// The names are not looked up: they are resolved against the individuals
+/// the pass gives, which are those of the source after a filter of
+/// individuals when the `Variants` has one, and only the pass knows them.
+///
+/// # Errors
+///
+/// When the arrays do not hold the individuals of every population, which is
+/// a defect of the package: it is what cuts them.
+pub(crate) fn pops_of_the_arrays(
+    names: &[String],
+    individuals: &[String],
+    num_individuals_per_pop: &[u32],
+) -> Result<PopsGiven, JsPopneiError> {
     let num_pops = names.len();
-    let num_counts = asked.num_individuals_per_pop.len();
+    let num_counts = num_individuals_per_pop.len();
     if num_pops != num_counts {
         return Err(JsPopneiError::Broken(format!(
             "the pass was given {num_pops} populations and how many individuals \
@@ -220,7 +247,7 @@ fn the_pops_given(asked: &ArgumentsOfThePass) -> Result<Option<PopsGiven>, JsPop
     }
     let mut given = Vec::with_capacity(num_pops);
     let mut first = 0_usize;
-    for (name, num_individuals) in names.iter().zip(&asked.num_individuals_per_pop) {
+    for (name, num_individuals) in names.iter().zip(num_individuals_per_pop) {
         let num_individuals = usize::try_from(*num_individuals).map_err(|_| {
             JsPopneiError::Broken(format!(
                 "the population `{name}` holds {num_individuals} individuals, more \
@@ -233,19 +260,16 @@ fn the_pops_given(asked: &ArgumentsOfThePass) -> Result<Option<PopsGiven>, JsPop
                  counts"
             ))
         })?;
-        let of_the_pop = asked
-            .pop_individuals
-            .get(first..past_the_last)
-            .ok_or_else(|| {
-                JsPopneiError::Broken(format!(
-                    "the population `{name}` holds {num_individuals} individuals and \
-                     the pass was not given the names of every one of them"
-                ))
-            })?;
+        let of_the_pop = individuals.get(first..past_the_last).ok_or_else(|| {
+            JsPopneiError::Broken(format!(
+                "the population `{name}` holds {num_individuals} individuals and \
+                 the pass was not given the names of every one of them"
+            ))
+        })?;
         given.push((name.clone(), of_the_pop.to_vec()));
         first = past_the_last;
     }
-    Ok(Some(given))
+    Ok(given)
 }
 
 /// The mean of each population and its histogram counts, or `None` when
