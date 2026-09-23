@@ -481,6 +481,54 @@ pub(crate) fn count_of_at_least(
     }
 }
 
+/// The `value` that was given for the argument `name`, as a distance along
+/// a chromosome in base pairs: what [`count_of`] does for a number that the
+/// core takes as a `u64` and not as a `usize`.
+///
+/// The two do not go through one function because the number a distance is
+/// held in is the same on every platform, where a `usize` is 32 bits in
+/// WebAssembly and 64 natively: a window of base pairs is a number of the
+/// dataset and not a size of memory, so what a user may write for it cannot
+/// depend on where popnei runs.
+///
+/// # Errors
+///
+/// When the object is a whole number below 0, which is the `ValueError`
+/// that names the argument and the value and not the `OverflowError` that
+/// pyo3 raises when a negative number is asked of an unsigned one, or one
+/// above what a `u64` holds. An object that is no whole number at all,
+/// `2.5`, `"two"` or a truth value, is a `TypeError` that names the
+/// argument and what was given, as the threshold of a filter is.
+///
+/// A distance of 0 is given on, as a count of 0 is: what is wrong with it
+/// is the core's to say, so that a user is given one limit for the argument
+/// and not two.
+pub(crate) fn distance_of(
+    name: &'static str,
+    value: &Bound<'_, PyAny>,
+) -> Result<u64, PyPopneiError> {
+    // A truth value is a whole number in Python, so `True` would be a
+    // window of 1 base pair with nothing said.
+    if value.is_instance_of::<PyBool>() {
+        return Err(no_count(name, 1, value));
+    }
+    match value.extract::<u64>() {
+        Ok(distance) => Ok(distance),
+        // A negative whole number and one above 1.8e19 are both this: pyo3
+        // raises the `OverflowError` of a number that no `u64` holds for
+        // either, and what a user has to be told is which argument it was
+        // and what they wrote there.
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
+            Err(PyPopneiError::Count {
+                name,
+                smallest: 1,
+                value: value.to_string(),
+            })
+        }
+        Err(_) => Err(no_count(name, 1, value)),
+    }
+}
+
 /// What a user is told when they gave something that is no number of things
 /// for `name`, which names the argument and what was given, as the refusal
 /// of a threshold that is no number does.

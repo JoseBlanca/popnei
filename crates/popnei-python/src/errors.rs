@@ -461,7 +461,18 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdRowsNotInTheDosages { .. }
         | popnei::Error::LdDosagesOfOtherIndividuals { .. }
         | popnei::Error::LdR2OfAnotherSize { .. }
-        | popnei::Error::LdLinalg { .. } => {
+        | popnei::Error::LdLinalg { .. }
+        // The plain filter of a threshold built for the criterion of the
+        // filter by linkage disequilibrium, which it does not answer:
+        // whether a variant passes that one turns on the variants kept
+        // before it and not on the variant alone. No call of a user reaches
+        // it. This crate builds the filter that does answer each criterion
+        // when a step is added, and `chain_of` builds the readers of a
+        // pass, so a user who gets this one has found a defect of a caller
+        // of the core crate and reports it instead of looking at what they
+        // wrote. It is named here because the arm below would make it the
+        // `ValueError` of an argument a user wrote, which there is none of.
+        | popnei::Error::VarFilterOfTheLdCriterion => {
             PyRuntimeError::new_err(of_the_file(message, path))
         }
         // The two errors of a trait that the layer holding the frame names:
@@ -554,7 +565,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // among them a `qual` that is a value and is not finite, an allele
         // of `gts` below the missing one, and a file whose genotypes hold
         // no allele, which `open_vars` gives for a `popnei` key that names
-        // no individual. The block with more text
+        // no individual. The variant that the filter by linkage
+        // disequilibrium was given and whose position does not rise within
+        // its chromosome is one of them: what is wrong is the order the
+        // variants come in the file, which that filter is the one reader of
+        // popnei to refuse. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
         // alleles in one block is more memory than a machine gives.

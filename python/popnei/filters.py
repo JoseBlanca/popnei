@@ -9,6 +9,11 @@ frequency, and :meth:`popnei.Variants.filter_by_obs_het`, over its observed
 heterozygosity, and each of them keeps the variants whose number is at most
 the threshold it was given.
 
+The fourth, :meth:`popnei.Variants.filter_by_ld`, compares a variant with
+the variants kept before it instead of with a number of the variant alone:
+it takes out the variants that repeat what a variant kept near them on
+their chromosome already said.
+
 What is here is what a user reads of them: the :class:`Step` that a filter
 is in the steps of a ``Variants``, and the :class:`FilteringStats` that the
 counts of a pass hold for each filter of it.
@@ -44,8 +49,10 @@ class Step:
 
     kind: str
     """What the step does, which is the name its counts have in the counts
-    of a pass: ``"missing_data"``, ``"maf"`` or ``"obs_het"``."""
+    of a pass: ``"missing_data"``, ``"maf"``, ``"obs_het"`` or ``"ld"``."""
 
     args: dict[str, object]
     """What the step was given, under the names of the arguments of the
-    method that added it, ``{"max_allowed_maf": 0.95}``."""
+    method that added it, ``{"max_allowed_maf": 0.95}``, and
+    ``{"max_allowed_r2": 0.1, "max_dist": 10000}`` for the filter by linkage
+    disequilibrium, which takes two."""

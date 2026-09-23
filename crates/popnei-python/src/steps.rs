@@ -11,23 +11,27 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The three methods that add a filter are here as well, one for each of the
-//! three numbers of a variant a filter compares, and each of them refuses at
-//! the call what a user cannot filter by: a threshold that is not a number
-//! from 0 to 1, under the name of the argument they wrote it in, and a
-//! second filter of a kind the list holds, with the threshold of the one
-//! that is set. No reader exists at that call, so neither refusal can come
-//! from the chain.
+//! The four methods that add a filter are here as well, one for each of the
+//! three numbers of a variant a filter compares and one for the filter by
+//! linkage disequilibrium, and each of them refuses at the call what a user
+//! cannot filter by: a threshold that is not a number from 0 to 1, under the
+//! name of the argument they wrote it in, a window of fewer than 1 base
+//! pairs, and a second filter of a kind the list holds, with the threshold
+//! of the one that is set. No reader exists at that call, so none of those
+//! refusals can come from the chain.
 
+use std::convert::Infallible;
 use std::sync::{Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
-use popnei::filters::{VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind};
+use popnei::filters::{
+    LdFilter, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+};
 
 use crate::errors::PyPopneiError;
-use crate::source::threshold_of;
+use crate::source::{distance_of, threshold_of};
 
 /// One step of a `Variants`.
 ///
@@ -44,7 +48,7 @@ pub(crate) enum Step {
 
 impl Step {
     /// The kind of the step, which is the name its counts have for a Python
-    /// user, `"missing_data"`, `"maf"` or `"obs_het"`.
+    /// user, `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`.
     fn kind(self) -> &'static str {
         match self {
             Step::Filter(criterion) => criterion.kind(),
@@ -53,10 +57,55 @@ impl Step {
 
     /// The arguments of the step, each with the name a Python user writes
     /// for it, `max_allowed_maf`.
-    fn args(self) -> Vec<(&'static str, f64)> {
+    ///
+    /// Every filter has its threshold, and the filter by linkage
+    /// disequilibrium has the window besides it, which is the one criterion
+    /// whose `max_dist` is not `None`.
+    fn args(self) -> Vec<(&'static str, ArgOfAStep)> {
         match self {
-            Step::Filter(criterion) => vec![(argument_of(criterion), criterion.threshold())],
+            Step::Filter(criterion) => {
+                let mut args = vec![(
+                    argument_of(criterion),
+                    ArgOfAStep::Threshold(criterion.threshold()),
+                )];
+                if let Some(max_dist) = criterion.max_dist() {
+                    args.push((MAX_DIST, ArgOfAStep::Distance(max_dist)));
+                }
+                args
+            }
         }
+    }
+}
+
+/// What one argument of a step was given, on its way to the `args` of the
+/// `Step` a Python user reads.
+///
+/// The two are not one number: a threshold is a rate and is a float in
+/// Python, and a window is a number of base pairs, which a user wrote as a
+/// whole number and reads back as the same whole number and not as
+/// `10000.0`.
+#[derive(Clone, Copy)]
+pub(crate) enum ArgOfAStep {
+    /// The number of a variant, or its r² against a variant of its window,
+    /// is at most this one.
+    Threshold(f64),
+    /// How many base pairs along a chromosome the window of a variant
+    /// reaches behind it.
+    Distance(u64),
+}
+
+impl<'py> IntoPyObject<'py> for ArgOfAStep {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    // Neither a float nor a whole number of Rust can fail to become the
+    // object of Python that holds it.
+    type Error = Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self {
+            ArgOfAStep::Threshold(threshold) => threshold.into_pyobject(py)?.into_any(),
+            ArgOfAStep::Distance(distance) => distance.into_pyobject(py)?.into_any(),
+        })
     }
 }
 
@@ -70,6 +119,7 @@ const MAX_ALLOWED_MISSING_RATE: &str = "max_allowed_missing_rate";
 const MAX_ALLOWED_MAF: &str = "max_allowed_maf";
 const MAX_ALLOWED_OBS_HET: &str = "max_allowed_obs_het";
 const MAX_ALLOWED_R2: &str = "max_allowed_r2";
+const MAX_DIST: &str = "max_dist";
 
 /// The name a Python user writes the threshold of `criterion` under.
 fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
@@ -77,19 +127,16 @@ fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
         VarFilteringCriterion::MaxMissingRate(_) => MAX_ALLOWED_MISSING_RATE,
         VarFilteringCriterion::MaxMaf(_) => MAX_ALLOWED_MAF,
         VarFilteringCriterion::MaxObsHet(_) => MAX_ALLOWED_OBS_HET,
-        // The filter by linkage disequilibrium, whose step the package does
-        // not add yet: task 3.4 of `docs/plans/ld.md` is the one that gives
-        // a user `filter_by_ld`, with its second argument, the window, which
-        // no step of this list carries yet. The arm is here because a
-        // criterion the core added has to be named, and a wildcard would
-        // name the next one wrong.
+        // The threshold of the filter by linkage disequilibrium. Its other
+        // argument, the window, is not a threshold and is named where the
+        // arguments of a step are built.
         VarFilteringCriterion::MaxLdR2 { .. } => MAX_ALLOWED_R2,
     }
 }
 
 /// The kind of one step and its arguments on their way to Python, which the
 /// package puts in the `Step` of `docs/specs/filters.md`.
-type StepOfAVariants = (&'static str, Vec<(&'static str, f64)>);
+type StepOfAVariants = (&'static str, Vec<(&'static str, ArgOfAStep)>);
 
 // The steps of one `Variants`, in the order in which they were put on it. A
 // `///` here would become the `__doc__` of the class, and what a Python user
@@ -156,6 +203,24 @@ impl Steps {
             max_allowed_obs_het,
         )?))
     }
+
+    // The filter by linkage disequilibrium, which takes a second argument:
+    // how many base pairs behind a variant, on its chromosome, the variants
+    // it is compared with are. Both are taken as the objects they are and
+    // converted here, where what is refused names the argument the user
+    // wrote; the window is a whole number and is refused as a count is, so
+    // that a negative one is the `ValueError` of this argument and not the
+    // `OverflowError` of pyo3.
+    fn filter_by_ld(
+        &self,
+        max_allowed_r2: &Bound<'_, PyAny>,
+        max_dist: &Bound<'_, PyAny>,
+    ) -> Result<(), PyPopneiError> {
+        self.add(VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2: threshold_of(MAX_ALLOWED_R2, max_allowed_r2)?,
+            max_dist: distance_of(MAX_DIST, max_dist)?,
+        })
+    }
 }
 
 impl Steps {
@@ -176,15 +241,16 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, and when the list
-    /// holds a filter of the kind of `criterion` already. The core is what
-    /// says both: the filter built here is dropped, and every pass builds
-    /// its own from the criterion, so the rule that a threshold has to keep
-    /// and which filters can stand together are written in one place. The
-    /// threshold is refused first, since it is wrong whatever the list
-    /// holds. After either, the list is as it was.
+    /// When an argument of the criterion is one no filter of it takes, and
+    /// when the list holds a filter of the kind of `criterion` already. The
+    /// core is what says both: the filter built here is dropped, and every
+    /// pass builds its own from the criterion, so the rules an argument has
+    /// to keep and which filters can stand together are written in one
+    /// place. The arguments are refused first, since they are wrong
+    /// whatever the list holds. After either, the list is as it was.
     fn add(&self, criterion: VarFilteringCriterion) -> Result<(), PyPopneiError> {
-        VarFilter::new(criterion).map_err(|error| under_the_argument(error, criterion))?;
+        arguments_a_filter_takes(criterion)
+            .map_err(|error| under_the_argument(error, criterion))?;
         let mut steps = self.locked()?;
         refuse_a_second_filter_of_a_kind(&criteria_of(&steps), criterion)?;
         steps.push(Step::Filter(criterion));
@@ -204,6 +270,37 @@ impl Steps {
             path: None,
         })
     }
+}
+
+/// Nothing, when the arguments of `criterion` are ones the filter of it
+/// takes: the filter is built and dropped, and the pass builds its own.
+///
+/// Which filter answers a criterion is the core's to say, and the two do
+/// not overlap: `VarFilter`, the plain filter of a threshold, refuses the
+/// criterion of the filter by linkage disequilibrium, because whether a
+/// variant passes that one turns on the variants kept before it and not on
+/// the variant alone, and `LdFilter` is the filter that answers it. Sending
+/// a criterion to the filter that does not take it is a defect of this
+/// crate and reaches a user as a `RuntimeError`.
+///
+/// # Errors
+///
+/// A threshold that is not a number from 0 to 1, and a `max_dist` below 1.
+fn arguments_a_filter_takes(criterion: VarFilteringCriterion) -> Result<(), popnei::Error> {
+    match criterion {
+        VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2,
+            max_dist,
+        } => {
+            LdFilter::new(max_allowed_r2, max_dist)?;
+        }
+        VarFilteringCriterion::MaxMissingRate(_)
+        | VarFilteringCriterion::MaxMaf(_)
+        | VarFilteringCriterion::MaxObsHet(_) => {
+            VarFilter::new(criterion)?;
+        }
+    }
+    Ok(())
 }
 
 /// `error`, and a threshold the core refused under the name of the argument

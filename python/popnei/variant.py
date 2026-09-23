@@ -25,7 +25,8 @@ class PassStats:
 
     filtering: dict[str, FilteringStats]
     """How many variants each filter of the pass was given and kept, under
-    the kind of the filter, ``"missing_data"``, ``"maf"`` or ``"obs_het"``,
+    the kind of the filter, ``"missing_data"``, ``"maf"``, ``"obs_het"`` or
+    ``"ld"``,
     in the order of the steps. It is empty for a pass with no filter."""
 
 
@@ -177,7 +178,7 @@ class Variants:
         The tuple and the ``args`` dict of every step in it are built at
         each read, out of what the ``Variants`` holds, so writing into one
         of those dicts changes nothing of the steps: a step is added by one
-        of the three filter methods and by nothing else.
+        of the four filter methods and by nothing else.
         """
         return tuple(
             Step(kind=kind, args=dict(args)) for kind, args in self._steps.steps()
@@ -262,6 +263,68 @@ class Variants:
         0 to 1 and a second filter of this kind are a ``ValueError``.
         """
         self._steps.filter_by_obs_het(max_allowed_obs_het)
+
+    def filter_by_ld(self, max_allowed_r2: float, max_dist: int) -> None:
+        """Keep the variants that do not repeat what a variant kept within
+        `max_dist` base pairs of them on their chromosome already said.
+
+        Two variants say the same thing when their r² is high, where r² is
+        the square of the correlation, across the individuals, between the
+        dosages of the two variants, and the dosage of a genotype is how
+        many of its alleles are not the major allele of its variant. It is 1
+        when the dosage of an individual at one variant fixes its dosage at
+        the other and 0 when knowing one says nothing about the other.
+        :func:`popnei.calc_rogers_huff_r2_matrix` gives that number for
+        every pair.
+
+        A principal component analysis or a kinship over variants that
+        repeat one another counts that stretch of the genome as many times
+        as it has variants, and this filter is what a user puts before them.
+
+        The window of a variant is the variants the filter has already kept
+        that are on that variant's chromosome and no more than `max_dist`
+        base pairs behind it. A variant is kept when its called genotypes
+        hold two dosages at least and its r² against every variant of its
+        window is at most `max_allowed_r2`. A pair whose r² is not defined
+        does not drop the candidate, so the first variant of each chromosome
+        whose called genotypes hold two dosages is always kept, and a
+        variant whose called genotypes all hold one dosage is always
+        dropped, having nothing to tell any other variant apart with. Of two
+        variants whose r² is above the threshold, the one that comes first
+        is the one kept.
+
+        The dosages are read over every individual of the dataset. A user
+        who wants them read over one population puts a filter of individuals
+        before this one.
+
+        `max_allowed_r2` is the largest r² a kept variant may have against a
+        kept variant of its window, so lowering it keeps fewer variants,
+        where pyNei's `min_allowed_r2` is compared with the absolute value
+        of the correlation and keeps more variants as it rises: a pyNei
+        threshold of 0.1 is a threshold of 0.01 here. pyNei filters by the
+        major allele frequency in the same call, which in popnei is
+        :meth:`filter_by_maf` written before this one, so that the counts of
+        the two are apart and the order is the user's.
+
+        The call adds a step and gives nothing back, and it refuses what
+        :meth:`filter_by_missing_data` refuses: what is no number and a call
+        with an argument missing are a ``TypeError``, and a
+        `max_allowed_r2` that is not a number from 0 to 1 and a second
+        filter of this kind are a ``ValueError``. A `max_dist` below 1 is a
+        ``ValueError`` too: a window of no base pairs reaches nothing but
+        the variants at the very position of the variant it is the window
+        of. Neither argument has a default.
+
+        This filter is the one reader of popnei that refuses a source the
+        rest of it takes: the window of a variant is the variants kept
+        behind it, so the variants of each chromosome have to come together
+        and in the order of their positions. A variant whose position falls
+        below the one before it on its chromosome, and a variant on a
+        chromosome that had already ended, are a ``ValueError`` that names
+        the file, the variant and both positions, and it comes while the
+        pass runs, which is when the source is read.
+        """
+        self._steps.filter_by_ld(max_allowed_r2, max_dist)
 
     def iter_blocks(
         self,
