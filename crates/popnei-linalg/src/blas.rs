@@ -37,7 +37,7 @@
 //! are in `lib.rs`, where they hold for every backend. Each `unsafe` block
 //! says why the slices are long enough for the dimensions it passes.
 
-use crate::{Eigen, Error, Result};
+use crate::{Eigen, Error, Result, TheHalfThatHoldsTheMatrix};
 
 // The two crates below hold no code of their own: each emits the argument
 // that links the library holding the routines, `-framework Accelerate` on
@@ -961,42 +961,52 @@ fn the_length_of_a_workspace(values: usize) -> Result<i32> {
     })
 }
 
-/// The `x` of `r x = b` for the upper triangular `r` of exactly `n` x `n`
-/// values row after row with its upper half filled, and `b` of exactly
-/// `sides` x `n` values row after row, one row for each right hand side,
-/// which comes back holding the solutions the same way. `n` and `sides`
-/// are 1 at least.
+/// The `x` of `a x = b` for the triangular `a` of exactly `n` x `n`
+/// values row after row, held in the half of that buffer `half` names,
+/// and `b` of exactly `sides` x `n` values row after row, one row for each
+/// right hand side, which comes back holding the solutions the same way.
+/// `n` and `sides` are 1 at least.
 ///
-/// The buffer of `r` read column after column is its transpose, which is
-/// lower triangular, so the routine is told `uplo` L and `trans` T, which
-/// asks it for the solve against the transpose of what it read: the two
-/// turns undo each other and what is solved against is popnei's `r`. The
-/// buffer of `b` read that way is the n x `sides` matrix whose columns are
-/// the right hand sides, which is what the routine takes, as it is for
-/// `dpotrs` above, so nothing is copied here either.
+/// The buffer of `a` read column after column is its transpose, so the
+/// half popnei was given is the other half in the routine's view: `uplo`
+/// is L for popnei's upper half and U for its lower one. `trans` is T,
+/// which asks the routine for the solve against the transpose of what it
+/// read, so the two turns undo each other and what is solved against is
+/// popnei's `a`. The buffer of `b` read that way is the n x `sides` matrix
+/// whose columns are the right hand sides, which is what the routine
+/// takes, as it is for `dpotrs` above, so nothing is copied here either.
 ///
 /// # Errors
 ///
 /// [`Error::Dimension`] when a dimension is larger than the `i32` the
-/// routine takes. [`Error::Singular`] when the diagonal of `r` holds a 0
+/// routine takes. [`Error::Singular`] when the diagonal of `a` holds a 0
 /// at the row the error names, which the routine would divide by;
 /// `lib.rs` reads that diagonal before either backend runs, since faer
 /// does not look at it, so no caller of the crate reaches this one.
 /// [`Error::NoConvergence`] when the routine refused an argument it was
 /// given, which is a defect of popnei.
-pub(crate) fn solve_upper_triangular(
-    r: &[f64],
+pub(crate) fn solve_triangular(
+    a: &[f64],
     n: usize,
+    half: TheHalfThatHoldsTheMatrix,
     b: &mut [f64],
     sides: usize,
 ) -> Result<()> {
     let order = the_i32_of(n, "n")?;
     let right_hand_sides = the_i32_of(sides, "sides")?;
+    // The half of popnei's buffer is the other half of the routine's
+    // column major view, as the doc comment above says, so popnei's upper
+    // half is the routine's lower triangle and its lower half the
+    // routine's upper one.
+    let uplo = match half {
+        TheHalfThatHoldsTheMatrix::TheUpperHalf => b'L',
+        TheHalfThatHoldsTheMatrix::TheLowerHalf => b'U',
+    };
     let mut info = 0_i32;
-    // SAFETY: with `uplo` L, `trans` T, `diag` N, `n` = n and `lda` = n
-    // the routine reads the lower triangle of `r` as a column major
-    // matrix of n x n, which is the upper half of `r` in popnei's layout
-    // and is inside the n * n values `r` holds; and with `nrhs` = sides
+    // SAFETY: with `trans` T, `diag` N, `n` = n and `lda` = n the routine
+    // reads the triangle `uplo` names of `a` as a column major matrix of
+    // n x n, which is the half of `a` the caller named in popnei's layout
+    // and is inside the n * n values `a` holds; and with `nrhs` = sides
     // and `ldb` = n it reads and writes `b` as a column major matrix of n
     // rows and sides columns, which is the sides * n values `b` holds. It
     // writes nothing else, and `info` is one integer. Neither dimension
@@ -1008,12 +1018,12 @@ pub(crate) fn solve_upper_triangular(
     )]
     unsafe {
         ::lapack::dtrtrs(
-            b'L',
+            uplo,
             b'T',
             b'N',
             order,
             right_hand_sides,
-            r,
+            a,
             order,
             b,
             order,
@@ -1029,7 +1039,7 @@ pub(crate) fn solve_upper_triangular(
     // conversion fails in, since no negative number is a count.
     match usize::try_from(info) {
         Ok(row) => Err(Error::Singular {
-            argument: "r",
+            argument: "a",
             at: row.saturating_sub(1),
         }),
         Err(_) => Err(Error::NoConvergence {

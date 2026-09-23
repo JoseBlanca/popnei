@@ -27,10 +27,12 @@ use faer::linalg::evd::EvdError;
 use faer::linalg::matmul::matmul;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as triangular_matmul};
 use faer::linalg::svd::SvdError;
-use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
+use faer::linalg::triangular_solve::{
+    solve_lower_triangular_in_place, solve_upper_triangular_in_place,
+};
 use faer::{Accum, Conj, MatMut, MatRef, Par, Side};
 
-use crate::{Eigen, Error, Result};
+use crate::{Eigen, Error, Result, TheHalfThatHoldsTheMatrix};
 
 /// The threads a product runs on: the global pool of rayon, the one every
 /// parallel loop of popnei runs on, which `RAYON_NUM_THREADS` sizes; and
@@ -414,11 +416,16 @@ pub(crate) fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
     Ok(Eigen { values, vectors })
 }
 
-/// The `x` of `r x = b` for the upper triangular `r` of exactly `n` x `n`
-/// values row after row with its upper half filled, and `b` of exactly
-/// `sides` x `n` values row after row, one row for each right hand side,
-/// which comes back holding the solutions the same way. `n` and `sides`
-/// are 1 at least.
+/// The `x` of `a x = b` for the triangular `a` of exactly `n` x `n`
+/// values row after row, held in the half of that buffer `half` names,
+/// and `b` of exactly `sides` x `n` values row after row, one row for each
+/// right hand side, which comes back holding the solutions the same way.
+/// `n` and `sides` are 1 at least.
+///
+/// faer is told that the buffer is row major, so the half popnei was
+/// given is the half faer is asked for: `solve_upper_triangular_in_place`
+/// for the upper one and `solve_lower_triangular_in_place` for the lower,
+/// with no turn of the halves, which is what the BLAS backend needs.
 ///
 /// faer takes the right hand sides as the columns of a matrix of `n` rows,
 /// so the buffer of `b` is given to it as the `sides` x `n` matrix it is
@@ -428,25 +435,34 @@ pub(crate) fn eigh_lower(g: Vec<f64>, n: usize) -> Result<Eigen> {
 ///
 /// # Errors
 ///
-/// None: faer refuses nothing that the checks of `lib.rs` let through. It
-/// divides by a diagonal entry of 0 as it finds it and answers with an
-/// infinity, where `dtrtrs` of the BLAS backend gives an `info`, which is
-/// why `lib.rs` reads that diagonal before either backend runs. The
-/// signature is the one of that backend, which fails when a dimension is
-/// larger than the `i32` its routine takes.
+/// None: faer refuses nothing that the checks of `lib.rs` let through.
+/// Either of its two functions divides by a diagonal entry of 0 as it
+/// finds it and answers with an infinity, where `dtrtrs` of the BLAS
+/// backend gives an `info`, which is why `lib.rs` reads that diagonal
+/// before either backend runs. The signature is the one of that backend,
+/// which fails when a dimension is larger than the `i32` its routine
+/// takes.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
 )]
-pub(crate) fn solve_upper_triangular(
-    r: &[f64],
+pub(crate) fn solve_triangular(
+    a: &[f64],
     n: usize,
+    half: TheHalfThatHoldsTheMatrix,
     b: &mut [f64],
     sides: usize,
 ) -> Result<()> {
-    let r = MatRef::from_row_major_slice(r, n, n);
+    let a = MatRef::from_row_major_slice(a, n, n);
     let b = MatMut::from_row_major_slice_mut(b, sides, n).transpose_mut();
-    solve_upper_triangular_in_place(r, b, the_threads());
+    match half {
+        TheHalfThatHoldsTheMatrix::TheUpperHalf => {
+            solve_upper_triangular_in_place(a, b, the_threads());
+        }
+        TheHalfThatHoldsTheMatrix::TheLowerHalf => {
+            solve_lower_triangular_in_place(a, b, the_threads());
+        }
+    }
     Ok(())
 }
 

@@ -3,20 +3,22 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds thirteen: the product of a matrix with
+//! place that has them. It holds fourteen: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
 //! symmetric positive definite one, [`cholesky_lower`], the solve of a
 //! system with the matrix it factored, [`solve_with_cholesky`], the log of
 //! that matrix's determinant, [`log_determinant_with_cholesky`], and its
 //! inverse, [`invert_with_cholesky`]; the thin QR factorization of a
-//! design, [`thin_qr`], the solve of a system against the upper
-//! triangular matrix that factorization gives, [`solve_upper_triangular`],
-//! and how many of a matrix's columns are independent, [`rank`];
-//! and the product of two matrices, [`product`], which is the other four,
-//! because [`TheFirstOperand`] and [`TheSecondOperand`] each say how one
-//! matrix's buffer is laid out and the two together choose among `a b`,
-//! `a b'`, `a' b` and `a' b'`.
+//! design, [`thin_qr`], the solve of a system against a triangular
+//! matrix, [`solve_triangular`], which is two of the fourteen because
+//! [`TheHalfThatHoldsTheMatrix`] says whether the upper half holds it, as
+//! the `r` of that factorization does, or the lower one, as a Cholesky
+//! factor does; and how many of a matrix's columns are independent,
+//! [`rank`]; and the product of two matrices, [`product`], which is
+//! another four, because [`TheFirstOperand`] and [`TheSecondOperand`] each
+//! say how one matrix's buffer is laid out and the two together choose
+//! among `a b`, `a b'`, `a' b` and `a' b'`.
 //! `docs/specs/linalg.md` says what each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
@@ -139,8 +141,8 @@ pub enum Error {
 
     /// A matrix that could not be factored at the row the value names,
     /// counting from 0: the Cholesky reached a diagonal entry that is not
-    /// above 0 there, or the solve against an upper triangular matrix
-    /// reached one that is 0.
+    /// above 0 there, or the solve against a triangular matrix reached one
+    /// that is 0, in whichever half the caller named.
     ///
     /// The three operations that are given an `l` that a Cholesky made,
     /// the solve, the log of the determinant and the inverse, read its
@@ -779,46 +781,84 @@ pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr> {
     Ok(ThinQr { q, r })
 }
 
-/// The `x` of `r x = b` for the upper triangular `r` of `n` x `n`, whose
-/// lower half is not read.
+/// Which half of the buffer holds the matrix that [`solve_triangular`]
+/// is given.
+///
+/// Which of the two it is belongs here and not in the name of a function,
+/// for the reason [`TheFirstOperand`] gives for the operands of a product:
+/// the same buffer is a triangular matrix read either way, so a call that
+/// named the wrong one of two functions would pass every check and come
+/// back with the solution of another system and no error. The same
+/// factorization against the same right hand side gives (4, 12, 3) read as
+/// the lower half and (6.333333333333333, -4.666666666666666, 27) read as
+/// the upper, both of them answers a caller could believe.
+///
+/// The two cases carry no value, since the half is all they say, and they
+/// are an enum and not a `bool` because a `bool` at a call site says
+/// nothing about which half it means.
+#[derive(Debug, Clone, Copy)]
+pub enum TheHalfThatHoldsTheMatrix {
+    /// The entries of column `j` at least `i` of row `i`, the half the
+    /// `r` of a thin QR fills, whose diagonal belongs to both halves.
+    TheUpperHalf,
+    /// The entries of column `j` at most `i` of row `i`, the half a
+    /// Cholesky factorization fills.
+    TheLowerHalf,
+}
+
+/// The `x` of `a x = b` for the triangular `a` of `n` x `n`, held in the
+/// half of its buffer the caller names, the other half not being read.
 ///
 /// `b` is `sides` x `n`, row after row, one row for each right hand side,
 /// and it comes back holding the solutions the same way, which is the
 /// layout [`solve_with_cholesky`] takes and whose doc comment says where
 /// that layout comes from. `sides` is 1 at least.
 ///
-/// This is the second half of fitting a linear model to more individuals
-/// than coefficients: [`thin_qr`] of the design gives the `q` and the `r`,
-/// and the coefficients are the `c` of `r c = q' y` for the trait `y`.
+/// With [`TheHalfThatHoldsTheMatrix::TheUpperHalf`] this is the second
+/// half of fitting a linear model to more individuals than coefficients:
+/// [`thin_qr`] of the design gives the `q` and the `r`, and the
+/// coefficients are the `c` of `r c = q' y` for the trait `y`. With
+/// [`TheHalfThatHoldsTheMatrix::TheLowerHalf`] it is the solve against a
+/// factor a Cholesky gave, which is lower triangular: the fit of the null
+/// model of the logistic mixed model needs that solve with one right hand
+/// side for each individual, and "The solve against a triangular matrix"
+/// of `docs/specs/linalg.md` says what it is worth there.
 ///
-/// Only the upper half of `r` is read, the entries of column `j` at least
-/// `i` of row `i`; what the lower half holds does not reach the result.
-/// Either buffer may hold more values than its dimensions ask for, and
-/// then its first `n` times `n`, or `sides` times `n`, are the matrix.
+/// Only the half named is read, and what the other half holds does not
+/// reach the result; the diagonal belongs to both of them. Either buffer
+/// may hold more values than its dimensions ask for, and then its first
+/// `n` times `n`, or `sides` times `n`, are the matrix.
 ///
 /// # Errors
 ///
-/// [`Error::Dimension`] when `n` or `sides` is 0, when `r` holds fewer
+/// [`Error::Dimension`] when `n` or `sides` is 0, when `a` holds fewer
 /// than `n` times `n` values or `b` fewer than `sides` times `n`, or when
 /// either of those counts is more than 2147483647, which is what the
 /// routines of BLAS and LAPACK count in. [`Error::NotFinite`] when the
-/// upper half of `r`, or `b`, holds a value that is not finite.
-/// [`Error::Singular`] when the diagonal of `r` holds a 0, with the first
-/// such row: the solve divides by every diagonal entry, and the two
-/// backends part company on a 0 there, faer dividing by it and answering
-/// with an infinity where `dtrtrs` gives an `info`, so the crate reads
-/// that diagonal above them both. [`Error::NoConvergence`] when the
-/// routine refused an argument it was given, which is a defect of popnei.
+/// half of `a` the caller named, or `b`, holds a value that is not finite.
+/// [`Error::Singular`] when the diagonal of `a` holds a 0, with the first
+/// such row: the solve divides by every diagonal entry whichever half it
+/// read, and the two backends part company on a 0 there, faer dividing by
+/// it and answering with an infinity where `dtrtrs` gives an `info`, so
+/// the crate reads that diagonal above them both.
+/// [`Error::NoConvergence`] when the routine refused an argument it was
+/// given, which is a defect of popnei.
 ///
-/// What this does not catch: that `r` is upper triangular at all. A slice
-/// whose lower half holds something else is solved against as if that half
-/// were 0, and what comes back is the solution of another system, with no
+/// What this does not catch: that `a` is triangular at all. A slice whose
+/// other half holds something else is solved against as if that half were
+/// 0, and what comes back is the solution of another system, with no
 /// error, as it is for [`solve_with_cholesky`] and its `l`.
-pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()> {
+pub fn solve_triangular(
+    a: &[f64],
+    n: usize,
+    half: TheHalfThatHoldsTheMatrix,
+    b: &mut [f64],
+    sides: usize,
+) -> Result<()> {
     if n == 0 {
         return Err(Error::Dimension {
             argument: "n",
-            expected: "1 at least, since r is the n x n upper triangular matrix to solve against"
+            expected: "1 at least, since a is the n x n triangular matrix to solve against"
                 .to_owned(),
         });
     }
@@ -828,12 +868,24 @@ pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides: usize) 
             expected: "1 at least, since b holds one row for each right hand side".to_owned(),
         });
     }
-    let r = the_matrix_of(r, n, n, "r")?;
-    refuse_a_value_that_is_not_finite_in_the_upper_half(r, n, "r")?;
+    let a = the_matrix_of(a, n, n, "a")?;
+    // The value that is not finite is read over the half the caller named,
+    // since the other half is nothing of the matrix and does not reach the
+    // result.
+    match half {
+        TheHalfThatHoldsTheMatrix::TheUpperHalf => {
+            refuse_a_value_that_is_not_finite_in_the_upper_half(a, n, "a")?;
+        }
+        TheHalfThatHoldsTheMatrix::TheLowerHalf => {
+            refuse_a_value_that_is_not_finite_in_the_lower_half(a, n, "a")?;
+        }
+    }
     let b = the_matrix_of_mut(b, sides, n, "b")?;
     refuse_a_value_that_is_not_finite(b, "b")?;
-    refuse_a_diagonal_entry(r, n, "r", |entry| entry == 0.0)?;
-    backend::solve_upper_triangular(r, n, b, sides)
+    // The diagonal belongs to both halves and the solve divides by every
+    // entry of it, so it is read for a 0 whichever half was named.
+    refuse_a_diagonal_entry(a, n, "a", |entry| entry == 0.0)?;
+    backend::solve_triangular(a, n, half, b, sides)
 }
 
 /// The rank of `a` of `rows` x `cols`, row after row: how many of its
@@ -1147,9 +1199,10 @@ fn the_diagonal_of(values: &[f64], n: usize) -> impl Iterator<Item = f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Eigen, Error, TheFirstOperand, TheSecondOperand, ThinQr, add_self_product_lower,
-        cholesky_lower, eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product,
-        rank, reverse_the_rows, solve_upper_triangular, solve_with_cholesky, thin_qr,
+        Eigen, Error, TheFirstOperand, TheHalfThatHoldsTheMatrix, TheSecondOperand, ThinQr,
+        add_self_product_lower, cholesky_lower, eigh_lower, invert_with_cholesky,
+        log_determinant_with_cholesky, product, rank, reverse_the_rows, solve_triangular,
+        solve_with_cholesky, thin_qr,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -3759,7 +3812,14 @@ mod tests {
     fn the_triangular_solve_of_the_r_of_the_design_gives_the_coefficients_of_the_fit() {
         let mut coefficients = [0.0_f64; 2];
         coefficients.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-        solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut coefficients, 1).unwrap();
+        solve_triangular(
+            &THE_R_OF_THE_DESIGN,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut coefficients,
+            1,
+        )
+        .unwrap();
         assert!(
             !differ(
                 &coefficients,
@@ -3777,7 +3837,14 @@ mod tests {
         // cannot, and they catch a backend that read the rows of `b` as
         // its columns, which would solve three other systems here.
         let mut coefficients = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS;
-        solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut coefficients, 3).unwrap();
+        solve_triangular(
+            &THE_R_OF_THE_DESIGN,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut coefficients,
+            3,
+        )
+        .unwrap();
         assert!(
             !differ(
                 &coefficients,
@@ -3797,7 +3864,14 @@ mod tests {
         r[2] = f64::NAN;
         let mut coefficients = [0.0_f64; 2];
         coefficients.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-        solve_upper_triangular(&r, 2, &mut coefficients, 1).unwrap();
+        solve_triangular(
+            &r,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut coefficients,
+            1,
+        )
+        .unwrap();
         assert!(
             !differ(
                 &coefficients,
@@ -3814,7 +3888,7 @@ mod tests {
         r.push(7.0);
         let mut b = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2].to_vec();
         b.push(9.0);
-        solve_upper_triangular(&r, 2, &mut b, 1).unwrap();
+        solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1).unwrap();
         assert!(
             !differ(
                 &b[..2],
@@ -3839,9 +3913,10 @@ mod tests {
         for (row, r) in [(1_usize, [2.0, 5.0, 0.0, 0.0]), (0, [0.0, 5.0, 0.0, 2.0])] {
             let mut b = [0.0_f64; 2];
             b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-            let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+            let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+                .unwrap_err();
             assert!(
-                matches!(error, Error::Singular { argument: "r", at } if at == row),
+                matches!(error, Error::Singular { argument: "a", at } if at == row),
                 "the error for the row {row} is {error}"
             );
         }
@@ -3850,7 +3925,8 @@ mod tests {
     #[test]
     fn the_triangular_solve_refuses_an_n_of_zero() {
         let mut b = [0.0_f64; 0];
-        let error = solve_upper_triangular(&[], 0, &mut b, 1).unwrap_err();
+        let error = solve_triangular(&[], 0, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+            .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "n", .. }),
             "the error is {error}"
@@ -3860,7 +3936,14 @@ mod tests {
     #[test]
     fn the_triangular_solve_refuses_a_sides_of_zero() {
         let mut b = [0.0_f64; 0];
-        let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 0).unwrap_err();
+        let error = solve_triangular(
+            &THE_R_OF_THE_DESIGN,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut b,
+            0,
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -3877,9 +3960,10 @@ mod tests {
     fn the_triangular_solve_refuses_an_r_shorter_than_n_times_n() {
         let r = [0.0_f64; 3];
         let mut b = [0.0_f64; 2];
-        let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+        let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+            .unwrap_err();
         assert!(
-            matches!(error, Error::Dimension { argument: "r", .. }),
+            matches!(error, Error::Dimension { argument: "a", .. }),
             "the error is {error}"
         );
     }
@@ -3887,7 +3971,14 @@ mod tests {
     #[test]
     fn the_triangular_solve_refuses_a_b_shorter_than_sides_times_n() {
         let mut b = [0.0_f64; 5];
-        let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 3).unwrap_err();
+        let error = solve_triangular(
+            &THE_R_OF_THE_DESIGN,
+            2,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut b,
+            3,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "b", .. }),
             "the error is {error}"
@@ -3901,9 +3992,16 @@ mod tests {
         // buffer, so an empty slice reaches it, and it is made whichever
         // backend would run.
         let mut b = [0.0_f64; 0];
-        let error = solve_upper_triangular(&[], 46341, &mut b, 1).unwrap_err();
+        let error = solve_triangular(
+            &[],
+            46341,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut b,
+            1,
+        )
+        .unwrap_err();
         assert!(
-            matches!(error, Error::Dimension { argument: "r", .. }),
+            matches!(error, Error::Dimension { argument: "a", .. }),
             "the error is {error}"
         );
     }
@@ -3917,9 +4015,10 @@ mod tests {
             r[entry] = f64::INFINITY;
             let mut b = [0.0_f64; 2];
             b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS[..2]);
-            let error = solve_upper_triangular(&r, 2, &mut b, 1).unwrap_err();
+            let error = solve_triangular(&r, 2, TheHalfThatHoldsTheMatrix::TheUpperHalf, &mut b, 1)
+                .unwrap_err();
             assert!(
-                matches!(error, Error::NotFinite { argument: "r" }),
+                matches!(error, Error::NotFinite { argument: "a" }),
                 "the error for the entry {entry} is {error}"
             );
         }
@@ -3932,10 +4031,233 @@ mod tests {
         for entry in 0..6 {
             let mut b = THE_RIGHT_HAND_SIDES_OF_THE_THREE_FITS;
             b[entry] = f64::NAN;
-            let error = solve_upper_triangular(&THE_R_OF_THE_DESIGN, 2, &mut b, 3).unwrap_err();
+            let error = solve_triangular(
+                &THE_R_OF_THE_DESIGN,
+                2,
+                TheHalfThatHoldsTheMatrix::TheUpperHalf,
+                &mut b,
+                3,
+            )
+            .unwrap_err();
             assert!(
                 matches!(error, Error::NotFinite { argument: "b" }),
                 "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    /// The `l` of the Cholesky of "How the seven are verified" of
+    /// `docs/specs/linalg.md`, rows (2, 0, 0), (1, 3, 0) and (0, 2, 1),
+    /// row after row, with the upper half of the buffer holding the mirror
+    /// of the lower one, values that are nothing of that `l`: a call that
+    /// read the upper half instead solves against the rows (2, 1, 0),
+    /// (0, 3, 2) and (0, 0, 1), which is another system, and
+    /// `the_triangular_solve_reads_the_half_the_caller_named` asserts what
+    /// each of the two gives.
+    const THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT: [f64; 9] = [
+        2.0, 1.0, 0.0, //
+        1.0, 3.0, 2.0, //
+        0.0, 2.0, 1.0,
+    ];
+
+    /// The two right hand sides of that solve, (8, 40, 27) and (4, 2, 0),
+    /// one row each, which are the two the solve with the Cholesky is
+    /// checked on.
+    const THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF: [f64; 6] = [
+        8.0, 40.0, 27.0, //
+        4.0, 2.0, 0.0,
+    ];
+
+    /// What the lower half gives for them, (4, 12, 3) and (2, 0, 0), one
+    /// row each. Every entry is a small whole number, and "How the seven
+    /// are verified" of the spec asks for them exactly, but they are
+    /// asserted within [`THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE`] as every
+    /// other solve of this crate is: measured on 23 September 2026, faer
+    /// gives 11.999999999999998 and 3.0000000000000036 for the second and
+    /// the third entries, 1.8e-16 and 1.2e-15 relative away, since it
+    /// multiplies by the reciprocal of a diagonal entry where Accelerate
+    /// divides and lands on 12 and 3 exactly.
+    const THE_SOLUTIONS_OF_THE_LOWER_HALF: [f64; 6] = [
+        4.0, 12.0, 3.0, //
+        2.0, 0.0, 0.0,
+    ];
+
+    /// What the upper half of the same buffer gives for the first of those
+    /// right hand sides: the answer a caller that named the wrong half
+    /// would come back with, from numpy 2.5.3 on 23 September 2026.
+    const THE_SOLUTION_THE_UPPER_HALF_OF_IT_GIVES: [f64; 3] =
+        [6.333333333333333, -4.666666666666666, 27.0];
+
+    #[test]
+    fn the_triangular_solve_against_the_lower_half_gives_the_solution() {
+        let mut b = [0.0_f64; 3];
+        b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF[..3]);
+        solve_triangular(
+            &THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT,
+            3,
+            TheHalfThatHoldsTheMatrix::TheLowerHalf,
+            &mut b,
+            1,
+        )
+        .unwrap();
+        assert!(
+            !differ(
+                &b,
+                &THE_SOLUTIONS_OF_THE_LOWER_HALF[..3],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution of the lower half is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_against_the_lower_half_gives_the_solutions_of_two_right_hand_sides() {
+        // Two right hand sides against an `l` of 3 x 3: `sides` is 2 and
+        // `n` is 3, so a call that read the one dimension for the other
+        // would not come back with these, and the two rows catch a backend
+        // that read the rows of `b` as its columns.
+        let mut b = THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF;
+        solve_triangular(
+            &THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT,
+            3,
+            TheHalfThatHoldsTheMatrix::TheLowerHalf,
+            &mut b,
+            2,
+        )
+        .unwrap();
+        assert!(
+            !differ(
+                &b,
+                &THE_SOLUTIONS_OF_THE_LOWER_HALF,
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solutions of the lower half are {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_reads_the_half_the_caller_named() {
+        // The same buffer and the same right hand side read as the one
+        // half and as the other: the lower half gives (4, 12, 3) and the
+        // upper (6.333333333333333, -4.666666666666666, 27), both of them
+        // answers a caller could believe. Asserting the two is what says
+        // the half is read at all, since no length tells them apart.
+        let mut against_the_lower_half = [0.0_f64; 3];
+        against_the_lower_half.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF[..3]);
+        let mut against_the_upper_half = against_the_lower_half;
+        solve_triangular(
+            &THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT,
+            3,
+            TheHalfThatHoldsTheMatrix::TheLowerHalf,
+            &mut against_the_lower_half,
+            1,
+        )
+        .unwrap();
+        solve_triangular(
+            &THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT,
+            3,
+            TheHalfThatHoldsTheMatrix::TheUpperHalf,
+            &mut against_the_upper_half,
+            1,
+        )
+        .unwrap();
+        assert!(
+            !differ(
+                &against_the_lower_half,
+                &THE_SOLUTIONS_OF_THE_LOWER_HALF[..3],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution of the lower half is {against_the_lower_half:?}"
+        );
+        assert!(
+            !differ(
+                &against_the_upper_half,
+                &THE_SOLUTION_THE_UPPER_HALF_OF_IT_GIVES,
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution of the upper half is {against_the_upper_half:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_of_the_lower_half_gives_numbers_that_are_not_whole() {
+        // The third right hand side of "How the seven are verified",
+        // (2, 6, 1), whose solution is the one of the three that is not a
+        // triple of whole numbers, so it is asserted within the tolerance
+        // and not exactly.
+        let mut b = [2.0_f64, 6.0, 1.0];
+        solve_triangular(
+            &THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT,
+            3,
+            TheHalfThatHoldsTheMatrix::TheLowerHalf,
+            &mut b,
+            1,
+        )
+        .unwrap();
+        assert!(
+            !differ(
+                &b,
+                &[1.0, 1.6666666666666665, -2.333333333333333],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution of the lower half is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_reads_the_lower_half_of_a_alone() {
+        // A NaN above the diagonal is neither refused nor read when the
+        // lower half is the one named: the check for a value that is not
+        // finite walks the half the caller named, and the answer is the one
+        // the lower half gives.
+        let mut a = THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT;
+        a[1] = f64::NAN;
+        let mut b = [0.0_f64; 3];
+        b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF[..3]);
+        solve_triangular(&a, 3, TheHalfThatHoldsTheMatrix::TheLowerHalf, &mut b, 1).unwrap();
+        assert!(
+            !differ(
+                &b,
+                &THE_SOLUTIONS_OF_THE_LOWER_HALF[..3],
+                THE_TOLERANCE_OF_THE_TRIANGULAR_SOLVE
+            ),
+            "the solution of the lower half is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_triangular_solve_refuses_a_value_that_is_not_finite_in_the_lower_half_of_a() {
+        // The first and the last entries of the diagonal and one below it,
+        // which are three of the six places of a 3 x 3 that the solve
+        // against the lower half reads.
+        for entry in [0_usize, 3, 8] {
+            let mut a = THE_L_WHOSE_UPPER_HALF_IS_NOTHING_OF_IT;
+            a[entry] = f64::INFINITY;
+            let mut b = [0.0_f64; 3];
+            b.copy_from_slice(&THE_RIGHT_HAND_SIDES_OF_THE_LOWER_HALF[..3]);
+            let error = solve_triangular(&a, 3, TheHalfThatHoldsTheMatrix::TheLowerHalf, &mut b, 1)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "a" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_triangular_solve_of_a_lower_half_with_a_zero_in_its_diagonal_is_singular_at_that_row() {
+        // The `l` with rows (2, 0) and (5, 0) of "How the seven are
+        // verified", which faer would divide by and answer an infinity
+        // for, and the same 0 moved to the first row, so that the row the
+        // error names is read and is not the last row of the matrix. The
+        // diagonal is read for either half, since it belongs to both.
+        for (row, a) in [(1_usize, [2.0, 0.0, 5.0, 0.0]), (0, [0.0, 0.0, 5.0, 2.0])] {
+            let mut b = [8.0_f64, 40.0];
+            let error = solve_triangular(&a, 2, TheHalfThatHoldsTheMatrix::TheLowerHalf, &mut b, 1)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::Singular { argument: "a", at } if at == row),
+                "the error for the row {row} is {error}"
             );
         }
     }
