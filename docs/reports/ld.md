@@ -1,12 +1,23 @@
 # Work report: r², the matrix of it, and the filter by linkage disequilibrium
 
-The plan `docs/plans/ld.md` built three of its four work packages, and
-they were merged into `main` on 23 September 2026. The fourth, which
-measures the speed of what the other three built, was deferred that day
-by the owner's decision: it becomes a performance review of its own
-rather than the last work package of this plan. So popnei can now work
-out every number this plan set out to give, and nobody has yet measured
-how long it takes.
+The plan `docs/plans/ld.md` built three of its four work packages, on the
+branch `plan/ld`. The fourth, which measures the speed of what the other
+three built, was deferred on 23 September 2026 by the owner's decision:
+it becomes a performance review of its own rather than the last work
+package of this plan, because the review of the three that were built
+left a list of candidates with measurements already attached to them and
+popnei has no bench for either calculation to measure against. So popnei
+can now work out every number this plan set out to give, and nobody has
+yet measured how long it takes.
+
+Where the merge stands. `main` moved 110 commits while this plan ran, and
+the two sides changed 26 files in common, so the merge is a piece of work
+and not a formality: `main` now builds the chain of a pass from a list of
+steps where this branch built the filter by linkage disequilibrium into
+the list of criteria it built from before. The branch is being merged as
+this project has merged its others, `main` into the branch first, so that
+`main` is never left unable to build. Until that is done the three work
+packages are on `plan/ld` and nowhere else.
 
 ## What exists now that did not
 
@@ -17,9 +28,10 @@ with the chromosome and the position of each variant beside it and the
 counts of every filter the pass ran. A user writes
 `variants.filter_by_ld(max_allowed_r2, max_dist)` or `filterByLd` and
 every consumer of those variants afterwards sees only the ones that do
-not repeat what a variant kept near them on the chromosome already said.
-Under both is `crates/popnei/src/ld.rs`, which works r² out for two sets
-of variants through six matrix products.
+not repeat what a variant kept within `max_dist` base pairs of them on
+their chromosome already said. Under both is
+`crates/popnei/src/ld.rs`, which works r² out for two sets of variants
+through six matrix products.
 
 `crates/popnei-linalg` gained a fourth operation on the way, by the
 owner's decision of 23 September: the product of a matrix with the
@@ -30,11 +42,12 @@ have.
 
 popnei's r² is plink2's **to the bit**. Not within a tolerance: equal.
 That holds for all 93096 pairs of the reference dataset that plink2 gives
-a number for, for all 250000 cells of the matrix, and on three arithmetic
-paths — the system BLAS natively, faer natively, and faer compiled to
-WebAssembly and run under node. It was checked by setting the tests'
-tolerance to exactly 0 and rerunning, which the orchestrator did at every
-stage where the arithmetic underneath was changed.
+a number for, for all 250000 cells of the matrix, and on the three
+arithmetic paths popnei is built for — the BLAS of the machine natively,
+the faer library of Rust natively, and faer compiled to WebAssembly and
+run under node. It was checked by setting the tests' tolerance to exactly
+0 and rerunning, which the orchestrator did at every stage where the
+arithmetic underneath was changed.
 
 The dosages popnei counts are pyNei's `to_012` exactly, over all 25000
 genotypes of a file with 54 variants of more than two alleles and 257
@@ -45,117 +58,139 @@ The test pins that divergence at the median 0.00369, 99th percentile
 0.04680 and largest 0.19374 of the table of `docs/specs/ld.md`, so a
 change on either side of it shows.
 
-The filter keeps 84, 133, 85 and 85 variants of 500 at the four settings
-of the table of `docs/specs/filters.md`. Four implementations that share
-no arithmetic agree on that set: the rule of the spec written again in
-Python over plink2's stored matrix, popnei's reader in Rust, the same
-compiled to WebAssembly, and the Python binding. A reviewer wrote a fifth
-from the spec's words alone, worked out for itself which variants have
-two dosages rather than reading plink2's diagonal, and got the same set
-variant by variant.
+The filter keeps 84, 133, 85 and 85 variants of 500 of the reference
+dataset, at the four settings of the table of `docs/specs/filters.md`: a
+window of 10000 base pairs at a threshold of 0.1, then 10000 at 0.3, then
+50000 at 0.3, and then 250000 at 0.3, which is a whole chromosome of that
+dataset. Four implementations that share no arithmetic agree on that set:
+the rule of the spec written again in Python over plink2's stored matrix,
+popnei's reader in Rust, the same compiled to WebAssembly, and the Python
+binding. A reviewer wrote a fifth from the spec's words alone, worked out
+for itself which variants have two dosages rather than reading plink2's
+diagonal, and got the same set variant by variant.
 
-## What was found and fixed
+## What the review found
 
 Ten reviewers read the three work packages. Thirty-three findings held,
 two were refused with evidence the orchestrator accepted, and **not one
-of them was a wrong number**. What they found was that the code asked too
-much of a machine and that some of its checks could not fail.
+of them was a wrong number**: nothing wrong ever reached a user, because
+none of this had been released. What they found was that the code asked
+too much of a machine and that some of its checks could not fail. The
+sections below the rule have each of them with its evidence; the two
+worth the owner's time are these.
 
 The filter was doing about eighteen times the work its spec asks,
-comparing its window one variant at a time where the spec says one set of
-matrix products. Rewriting it as the spec has it took a pass of 20000
-variants from 2.62 s to 0.180 s and moved no variant of the result. Three
-allocations ended the process where the spec promises an error, one of
-them in the Python binding where the TypeScript binding had guarded the
-same copy. The three properties on which the filter's rule rests were
-worked out over the set that built them and so were 0 by construction;
-they now run against the file that was written, with three damaged sets
-beside them that the program refuses to write a 0 for. The path that
-carries the filter's window from one block to the next had no test at
-all, and two mutations of it survived the whole suite, one of them
-directly against the spec's rule about a pair with no r².
+comparing the variants it had kept one at a time where the spec says one
+set of matrix products. Rewriting it as the spec has it took a pass of
+20000 variants of 400 individuals from 2.62 s to 0.180 s and moved no
+variant of the result.
 
-Six statements of the two specs no longer matched the code, and in two of
-them the code was right. Seven differences between what Python and
-TypeScript accept and refuse were closed, which is what four subagents
-building the two languages at once without sight of each other produced.
+The interface this report's orchestrator wrote for the new operation of
+the linear algebra crate was a trap. It gave two functions that took the
+same six arguments of the same types and differed only in which way round
+the second matrix is read, so each would take the other's call and return
+a different matrix with no error. A reviewer showed it on the r²'s own
+shape. There is one function now, whose second operand carries its layout
+in its type, so the wrong call cannot be written by accident.
 
 ## What is open
 
 - **The speed of both calculations is not measured.** This is the whole
   of work package 4 and it is now a performance review. Nothing in this
   plan says how long the matrix of 5000 variants takes against the 0.50 s
-  the spec asks of it, or what a pass of the filter costs. popnei has no
-  bench for either.
-- **`has_variance` and `maf` of `LdDosages`** answer `false` and `None`
-  both for a variant that has no data and for an index that is not a
-  variant at all, so a tile or a window that runs one past its end fails
-  quietly. `docs/specs/ld.md` fixes both signatures, so narrowing them is
-  the owner's.
+  `docs/specs/ld.md` asks of it, or what a pass of the filter costs.
+  popnei has no bench for either.
+- **Two methods of `LdDosages`, the type that holds the dosages of a set
+  of variants, answer the same for two different things.**
+  `has_variance` says whether a variant has two dosages at least and
+  `maf` gives its major allele frequency; each of them answers `false`
+  and `None` for a variant that is there and has no data, and the same
+  `false` and `None` for a number that is not a variant of the set at
+  all. So a caller that runs one past the end of a set is told the
+  variant has nothing rather than that it asked for nothing. Narrowing
+  them means changing their signatures, which `docs/specs/ld.md` lays
+  down, so it is a change to the spec and the owner's to make.
 - **Which exception a machine that cannot give memory should raise.**
   `.claude/skills/coding/SKILL.md` records the convention the owner gave
   on 21 September 2026, with a `ValueError` for a wrong input, a
   `RuntimeError` for a defect of popnei and an `OSError` for a file. A
   machine too small for a matrix is none of the three, and Python has
   `MemoryError` for it. Two cases sit on this, the matrix of the r² and
-  the Kosman distances of `docs/specs/dists.md`, and they agree today by
-  both being a `ValueError`.
-- **Both bindings copy the matrix on the way out**, 200 MB at the default
-  cap, because `R2Matrix` lent its values. It can now give them away
-  instead, and neither binding has been changed to take them; in a
-  browser that copy is 200 MB of the instance's memory that is never
-  given back.
+  the Kosman distances of `docs/specs/dists.md`, which are the other
+  calculation of popnei that asks for memory the size of its dataset.
+  They agree today by both being a `ValueError`.
+- **Both bindings copy the matrix on the way out**, 200 MB at the cap of
+  5000 variants that `calc_rogers_huff_r2_matrix` takes by default,
+  because the type that holds the matrix lent its values rather than
+  giving them away. It can now give them away, and neither binding has
+  been changed to take them; in a browser that copy is 200 MB of the
+  instance's memory that is never given back.
 - **The second item of `docs/specs/ld.md`**, the curve of r² against
-  distance per population, is written and reviewed and not built, which
-  the owner decided on 22 September. Open 1 of that spec belongs to it.
-- **Open 2 of `docs/specs/ld.md`**, how the major allele of a variant
-  with half called genotypes is chosen, is unanswered. Everything here
-  follows its "meanwhile", the rule `docs/specs/pca.md` gives, so
-  answering it the other way would move the dosages and the r² of
-  variants of more than two alleles.
+  distance per population, is written and reviewed and not built. The
+  owner decided that on 22 September: nothing calls it today, where the
+  filter is what pop_lab uses to prune before a principal component
+  analysis, and it is the most machinery of the three. The first of the
+  two questions that spec leaves open belongs to it, so it needs no
+  answer until that item is built.
+- **The second of those two questions is unanswered and this plan leans
+  on it**: how the major allele of a variant is chosen when some of its
+  genotypes have one allele called and one missing. Everything here
+  follows the rule `docs/specs/pca.md` already gives, which the spec
+  names as what to do until the question is settled. Answering it the
+  other way would move the dosages, and so the r², of variants of more
+  than two alleles.
 
 ## What a performance review should start from
 
 Each of these was measured by a reviewer of this plan, on the owner's
 Apple M5 Pro, and each is a candidate and not a conclusion.
 
-- **The size of a tile of the matrix**, which is 256 variants. It was
-  chosen by reading the "Speed" table of `docs/specs/ld.md` as 1.9 ms for
-  a pair of 256-variant tiles against 5.7 ms for a pair of 512-variant
-  ones, where a pair of 512 covers four times as many pairs of variants.
-  Per pair of variants a reviewer measured 51.8 ns at 128, 38.0 ns at
-  256, 30.1 ns at 512 and 29.1 ns at 1024, which at the cap of 5000
-  variants is about 0.43 s of products at 256 against 0.35 s at 512,
-  where the number to reach is 0.50 s. The comment in the code now says
-  that the size is what a performance review settles.
+**Start with what a pass of the filter costs on the dataset popnei is
+sized for**, 100000 variants of 1000 individuals, which is the one
+`docs/rust_core.md` measures popnei on. It is the largest hole: the only
+figure there is comes from the fix above, 20000 variants of 400
+individuals with a window holding about 270 kept variants, 2.62 s before
+and 0.180 s after. How much a window holds is set by the dataset and not
+by the filter, so the number means nothing without saying what the window
+held, and nothing is known at the scale that matters.
+
+**Then the size of a tile**, the square block of variants the matrix is
+worked out in, which is 256 today. It was chosen by reading the "Speed"
+table of `docs/specs/ld.md` as 1.9 ms for a pair of 256-variant tiles
+against 5.7 ms for a pair of 512-variant ones, where a pair of 512 covers
+four times as many pairs of variants. Per pair of variants a reviewer
+measured 51.8 ns at 128, 38.0 ns at 256, 30.1 ns at 512 and 29.1 ns at
+1024, which at the cap of 5000 variants is about 0.43 s of products at
+256 against 0.35 s at 512, where the number to reach is 0.50 s. That is
+the one candidate with a pass or fail already attached to it, and the
+comment in the code says the size is what a performance review settles.
+
+Then, in no order:
+
 - **The copy each binding makes of the matrix**, 200 MB at the cap, which
-  `R2Matrix` can now hand over instead.
-- **The transposed half of each pair of tiles**, written cell by cell
-  with a stride of the width of the matrix: about 800 MB of scattered
-  writes at the cap, which a reviewer asked be measured apart from the
-  products before anything is done to the products.
-- **`LdDosages::rows`**, which gives an owned copy, and the six sums a
-  pair of tiles allocates inside the call with no way to hand in scratch,
-  where `pca.rs` has a scratch type for exactly this.
-- **What the filter costs now that its window is one set of products.**
-  The only figure is the one from the fix: 20000 variants of 400
-  individuals with a window of about 270 kept variants, 2.62 s before and
-  0.180 s after. Nothing is known about 100000 variants of 1000, which is
-  the dataset `docs/rust_core.md` measures popnei on.
-- **The window's memory**, one byte for each allele held between blocks
-  and 24 bytes for each individual and each of its variants while a set
-  is settled. How many variants a window holds is set by the dataset: a
-  dataset whose variants carry no linkage leaves every one of them in a
-  window as wide as a chromosome.
+  the core can now hand over instead of lending.
+- **The transposed half of each pair of tiles**, written one cell at a
+  time with the width of the whole matrix between one write and the next:
+  about 800 MB of scattered writes at the cap. A reviewer asked that it
+  be measured apart from the products before anything is done to the
+  products.
+- **`LdDosages::rows`**, which gives an owned copy of the dosages it is
+  asked for, and the six sums a pair of tiles allocates inside the call
+  with no way to hand in a buffer to reuse, where `pca.rs` has a type for
+  exactly that.
+- **The memory of the filter's window**, which holds the genotypes of
+  every variant it has kept: one byte for each allele between blocks, and
+  24 bytes for each individual and each of its variants while a set is
+  settled. A dataset whose variants carry no linkage leaves every one of
+  them in a window as wide as a chromosome.
 
 ## What is asked of the owner
 
-The merge is done. What is left is the four open points above, of which
-two are decisions only the owner can take: whether `has_variance` and
-`maf` should narrow their signatures, and whether the convention of
-exceptions should gain a fourth for a machine that has not the memory.
-The performance review is the other thing this plan hands on.
-
+Two decisions, both above: whether `has_variance` and `maf` should be
+narrowed, which changes `docs/specs/ld.md`; and whether the convention of
+exceptions should gain a fourth for a machine that has not the memory,
+which changes what every user of popnei catches. The performance review
+is the other thing this plan hands on.
 ---
 
 The rest of this file is what was written while the work went, work
