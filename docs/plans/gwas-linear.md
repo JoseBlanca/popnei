@@ -57,6 +57,8 @@ these counts and takes none away:
 - `cargo test --workspace`: 604 in the core crate, 2 ignored, 149 in the
   linear algebra crate, 136 of them on faer.
 - `cargo test -p popnei --lib gwas -- --list`: `0 tests`.
+- `uv run maturin develop && uv run pytest`: 347 passed, 0 failed.
+- `npm run build && npm test` in `js/popnei`: 242 pass, 0 fail.
 
 Every layer exists, so every check of the `coding` skill runs. The two notes
 of `docs/plans/linalg-gwas.md` about the release build and `wasm-bindgen`

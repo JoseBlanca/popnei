@@ -57,6 +57,8 @@ product and the eigendecomposition, is on `main`. Measured on 23 September
   the linear algebra crate, which is the faer backend: 136.
 - `cargo test -p popnei --lib kinship -- --list`: `0 tests`.
 - `cargo test -p popnei --lib pca -- --list`: `47 tests`.
+- `uv run maturin develop && uv run pytest`: 347 passed, 0 failed.
+- `npm run build && npm test` in `js/popnei`: 242 pass, 0 fail.
 
 Every layer of popnei exists, so every check of the `coding` skill runs
 during this plan and none is reported as not there. The two notes of
