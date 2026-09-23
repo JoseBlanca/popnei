@@ -340,3 +340,59 @@ F_ST and f_2. That call raises, because the default is all seven and five
 of them are not written until work package 3. The plan's sentence is
 corrected rather than the default changed twice, since nothing is merged
 until the plan is done and the default is right at the end of it.
+
+### The fixes, first round: the wrong result and the two blind tests
+
+Eight commits, `266c97a` to `1a23d0f`, 273 503 tokens. `cargo test -p
+popnei --lib pop_dists::` gives `45 passed; 0 failed` against 39 before,
+and `uv run pytest tests/test_pop_dists.py` `24 passed` against 23.
+
+**The source whose positions go back is refused.** The walk keeps the
+chromosome and the position of the variant before it and the chromosomes
+it has already read. Where the groups are a length, a position below the
+one before it on the same chromosome, or a chromosome that comes back
+after another, is an error. The first is the stricter of the two rules
+that would do, and it is the one the linkage disequilibrium filter
+already uses. `"variant"` and no groups at all take a source in any
+order, since neither cuts by position, and the spec says so.
+`docs/specs/filters.md` no longer claims to be the only part of popnei
+that needs the order. Both cases are a `ValueError` in Python with the
+file named. Four cargo tests and one pytest.
+
+**The test of the threads can now fail.** It compares one thread against
+four over a pass with no groups read in blocks of 10 000, which puts 19
+chunks into one accumulator, on the bits. Under the reduction that joins
+in rayon's own order the first comparison still passes and the second
+fails, with F_ST of one pair 0.10496244498389444 in one run and
+0.1049624449838943 in the other.
+
+**The corrected diversities are now pinned where they can be told apart.**
+The worked example gained a fifth variant, `0/0 0/0 0/1` against `1/1 ./.
+1/2`, where the two populations have 3 called genotypes against 2 and 6
+called alleles against 4, and a case at a ploidy of 4. Each of the three
+wrong formulas the reviewer demonstrated now makes a test fail. The new
+numbers were computed in exact rational arithmetic written from the
+spec's formulas, which reproduces every literal the example already had,
+and cross-checked against pyNei: its `_calc_pairwise_dest` gives the same
+corrected H_S and H_T per variant and its `calc_jost_dest_pop_dists` the
+same D.
+
+**Every number of the worked example moved**, because the example is now
+five variants: F_ST 0.351196 and f_2 0.203889 where they were 0.276712
+and 0.140278, and, for the work packages still to come, D 0.347531, G_ST
+0.238256, G''_ST 0.598618, D_A 0.258542 and the chord distance 0.508470.
+The plan quoted the old ones in the checks of three of its deliverables
+and now quotes these, so that the work packages after this one do not
+chase a literal that no longer exists.
+
+**One claim of the spec was dropped rather than tested.** The f_2 item
+said the multiallelic panel is checked through plink2, as plink2's F_ST
+times popnei's own sum of H_b. Since every measure divides the same
+difference of sums, that product is the F_ST comparison again and checks
+nothing further. The item now says plainly that the multiallelic f_2 is
+checked against no program.
+
+**What the owner may want to know.** Work package 2 divides by 1 minus the
+mean corrected H_S, and on the five variant example that mean is 0.357143,
+so the division stays far from zero there. A case near it is still
+unwritten, and work package 2's deliverable 2 asks for one.

@@ -76,7 +76,9 @@ A user calls `calc_pop_dists(variants, pops, jackknife_group=...)` in
 Python, or `calcPopDists` in TypeScript, and gets Hudson's F_ST and f_2 for
 every pair of populations, each with its jackknife standard error, with
 `num_vars` per pair, `f2_groups`, `group_ids` and the counts of the pass.
-The other five measures raise until the work packages below add them.
+The other five measures raise until the work packages below add them, and
+so does the default call, which asks for all seven: until work package 3
+is done a user names the measures they want.
 
 ### Its deliverables
 
@@ -98,7 +100,7 @@ The other five measures raise until the work packages below add them.
    less is an error.
 3. F_ST, f_2 and the standard error out of the sums. Check: cargo tests at
    `PopDistSums::measure` and `PopDistSums::standard_error` with the
-   worked example's F_ST of 0.276712 and f_2 of 0.140278; the three
+   worked example's F_ST of 0.351196 and f_2 of 0.203889; the three
    plink2 literals of the spec's F_ST item on each panel, within 1e-6
    absolute; the per variant F_ST of `var0000`, 0.332322, over a reader of
    that one variant; and ADMIXTOOLS 2's three f_2 and three standard
@@ -189,7 +191,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
 The accumulator is six numbers for each pair and each group, and how many
 groups there are is not known until the variants have been read, so it
 grows as groups appear rather than being allocated once as the Kosman sums
-are. The spec's figures, 66 KB for 3 populations and 500 groups and 27 MB
+are. The spec's figures, 72 KB for 3 populations and 500 groups and 29 MB
 for 50 populations, are what it has to stay near.
 
 The rows of a block go on rayon and every row adds to the sums of every
@@ -214,8 +216,8 @@ be compared with pyNei's, which is the strongest check popnei has.
 ### Its deliverables
 
 1. The three measures out of the sums. Check: cargo tests at
-   `PopDistSums::measure` with the worked example's D of 0.248677, G_ST of
-   0.191837 and G''_ST of 0.490541, and with the mmod literals of the two
+   `PopDistSums::measure` with the worked example's D of 0.347531, G_ST of
+   0.238256 and G''_ST of 0.598618, and with the mmod literals of the two
    items on both panels, within 5e-4.
 2. The variants that do not count. Check: cargo tests that a variant where
    both populations have exactly one called genotype counts for no measure
@@ -277,7 +279,7 @@ of populations from, and the only ones of the seven that are Euclidean.
 ### Its deliverables
 
 1. The two measures. Check: cargo tests at `PopDistSums::measure` with the
-   worked example's D_A of 0.161566 and chord of 0.401953, and the
+   worked example's D_A of 0.258542 and chord of 0.508470, and the
    adegenet literals of the spec's chord item on both panels within 1e-12
    relative.
 2. Python and TypeScript. Check: `uv run pytest tests/test_pop_dists.py`
