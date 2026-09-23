@@ -207,7 +207,8 @@ def calc_pop_dists(
     A group has to be longer than the distance over which two variants still
     carry the same history, because two groups that share it are not the
     independent draws the standard error takes them for, and there have to
-    be at least 20 groups, which is a ``ValueError`` below. The number of the
+    be at least 20 groups: a pass whose variants fall into fewer is a
+    ``ValueError`` that says how many they fell into. The number of the
     f-statistics literature is 5 centimorgans, about 5 million base pairs in
     humans, and it does not carry over by itself: linkage disequilibrium runs
     6.1 to 12.5 centimorgans in cultivated tomato and falls off within 18

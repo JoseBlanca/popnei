@@ -33,6 +33,10 @@ export interface CalcPairwiseKosmanDistsOptions {
  * the distances row by row, and NaN for a pair that has no distance.
  * `squareDists` gives that square matrix.
  *
+ * The pairs of the measures of `calcPopDists` are pairs of populations, and
+ * everything here reads the same way with the populations in the place of
+ * the individuals: their names are the `names`.
+ *
  * It is the result of every distance calculation of popnei, as
  * `docs/specs/dists.md` has it, and it is the `Distances` of the Python
  * package with the names of TypeScript: a `Float64Array` where Python has a
@@ -46,7 +50,10 @@ export class Distances {
    */
   readonly distVector: Float64Array;
 
-  /** The names of the individuals, in the order the source has them. */
+  /**
+   * The names of the individuals, in the order the source has them, or of
+   * the populations of `calcPopDists`, in the order they were named in.
+   */
   readonly names: readonly string[];
 
   /**

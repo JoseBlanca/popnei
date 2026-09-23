@@ -899,9 +899,12 @@ impl PopDistSums {
 
     /// f_2 within one group, which f_3 and f_4 are built from later.
     ///
-    /// `None` when no variant of the pair fell in the group, where
-    /// [`measure`](PopDistSums::measure) gives `None`, and when `group` is
-    /// not one of [`groups`](PopDistSums::groups).
+    /// `None` when `group` is not one of
+    /// [`groups`](PopDistSums::groups), when the two populations are one or
+    /// either of them is not a population, and when no variant of the pair
+    /// fell in the group. The last is of the group alone and not of the
+    /// pair: a pair whose f_2 over every group is a number has no f_2 in a
+    /// group it has no variant in.
     #[must_use]
     pub fn f2_of_group(&self, group: usize, i: usize, j: usize) -> Option<f64> {
         if group >= self.groups.len() {
@@ -1010,8 +1013,10 @@ impl PopDistSums {
     /// groups added in the order they were started so that the total does
     /// not depend on how the pass was cut into blocks or threads.
     ///
-    /// `None` when the populations make no pair and when the pair counted
-    /// more variants than a `u32` holds.
+    /// `None` when the populations make no pair and when the counts of the
+    /// groups add to more than a `u64` holds, which no pass of a source
+    /// reaches: a variant counts once for a pair, so the total is at most
+    /// the rows the pass read.
     fn total_of(&self, pair: usize) -> Option<PairSums> {
         let num_pairs = num_pairs_of(self.num_pops)?;
         if num_pairs == 0 {
@@ -2781,7 +2786,8 @@ mod tests {
     /// The standard error of the F_ST of the same panel and the same
     /// groups, which no program prints: what is checked here is that it
     /// comes out of the same jackknife as the f_2 above and is a small part
-    /// of the measure, 0.0032 of a F_ST of 0.10. Its arithmetic is the one
+    /// of the measure, 0.004197 of a F_ST of 0.104962 for p0 and p1 over
+    /// the 12 groups of 100 000 base pairs. Its arithmetic is the one
     /// ADMIXTOOLS checks.
     #[test]
     fn the_fst_has_a_standard_error_of_the_same_jackknife() {
