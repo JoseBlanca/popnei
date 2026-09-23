@@ -273,13 +273,18 @@ pub enum Error {
     /// every window without a word. In Python it is a `ValueError` with the
     /// file the variants were read from: it is what that source holds.
     #[error(
-        "the variant {variant} of the ones the filter by linkage disequilibrium has read does not come after the one before it, and that filter compares a variant with the ones it kept behind it on its chromosome: {problem}"
+        "the variant {variant} of the ones the filter by linkage disequilibrium has read, on {chrom}, does not come after the one before it, and that filter compares a variant with the ones it kept behind it on its chromosome: {problem}; give it a source whose variants come with each chromosome together and in the order of their positions, which `bcftools sort` writes"
     )]
     LdFilterVariantOutOfOrder {
         /// Which variant it is, counted from 1 over the variants the filter
         /// has been given since it was built, which are the ones the
         /// filters before it kept.
         variant: u64,
+        /// The chromosome it is on: its name when the reader that gave the
+        /// block was there to be asked for it, and the number it has in
+        /// that reader's table when the filter was called on a block of its
+        /// own.
+        chrom: crate::filters::TheChromOfTheVariant,
         /// How it does not come after the variant before it.
         problem: crate::filters::TheOrderOfTheVariants,
     },

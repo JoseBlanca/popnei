@@ -300,9 +300,8 @@ pub const THE_VARS_SETTLED_AT_A_TIME: usize = 256;
 /// The window of a variant is the variants kept behind it on its
 /// chromosome, so the filter by linkage disequilibrium is the one reader of
 /// popnei that needs the variants of each chromosome to come together and
-/// in the order of their positions. The chromosome is named in neither
-/// message: a block holds the number a chromosome has in the table of the
-/// reader that gave it, and the filter has that number and not the name.
+/// in the order of their positions. Which chromosome it is on is
+/// [`TheChromOfTheVariant`], beside this in the error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TheOrderOfTheVariants {
     /// The position of the variant is below the position of the variant
@@ -334,6 +333,36 @@ impl fmt::Display for TheOrderOfTheVariants {
             Self::TheChromosomeCameBack { pos, pos_before } => write!(
                 formatter,
                 "it is at the position {pos} of a chromosome that had already ended, and the variant before it at the position {pos_before} of another chromosome"
+            ),
+        }
+    }
+}
+
+/// The chromosome of a variant that the filter by linkage disequilibrium
+/// refused for not coming after the variant before it.
+///
+/// A block holds the number each of its chromosomes has in the table of the
+/// reader that gave it and not its name, so [`LdFilter::filter_block`],
+/// which is given a block and nothing else, has the number; an
+/// [`LdFilteredReader`] has the table of its source and puts the name in
+/// its place, which is what a user looks for in their file. On an assembly
+/// of ten thousand scaffolds there is no finding the row otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TheChromOfTheVariant {
+    /// The name of the chromosome in the table of the reader of the pass.
+    Named(String),
+    /// The number it has in that table, which is what a filter given a
+    /// block on its own has of it.
+    Numbered(u32),
+}
+
+impl fmt::Display for TheChromOfTheVariant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Named(name) => write!(formatter, "the chromosome {name}"),
+            Self::Numbered(chrom) => write!(
+                formatter,
+                "the chromosome numbered {chrom} in the table of the reader"
             ),
         }
     }
@@ -628,6 +657,7 @@ impl LdFilter {
                         .vars_processed
                         .saturating_add(u64::try_from(variant).unwrap_or(u64::MAX))
                         .saturating_add(1),
+                    chrom: TheChromOfTheVariant::Numbered(*chrom),
                     problem,
                 });
             }
@@ -1418,6 +1448,41 @@ impl<R: BlockReader> LdFilteredReader<R> {
             finished: false,
         })
     }
+
+    /// The error of a variant out of order with the name its chromosome has
+    /// in the table of the source in place of its number, and every other
+    /// error as it is.
+    ///
+    /// The filter is given blocks, which carry the number of a chromosome
+    /// and not its name, and this reader has the table: the name is what a
+    /// user looks the row up by in their file.
+    fn the_chromosome_named(&self, error: Error) -> Error {
+        let Error::LdFilterVariantOutOfOrder {
+            variant,
+            chrom,
+            problem,
+        } = error
+        else {
+            return error;
+        };
+        let named = match chrom {
+            TheChromOfTheVariant::Numbered(number) => self
+                .reader
+                .chroms()
+                .name(number)
+                .map_or(TheChromOfTheVariant::Numbered(number), |name| {
+                    TheChromOfTheVariant::Named(name.to_owned())
+                }),
+            // The filter gives the number, so a name is one this reader
+            // has already put there.
+            named @ TheChromOfTheVariant::Named(_) => named,
+        };
+        Error::LdFilterVariantOutOfOrder {
+            variant,
+            chrom: named,
+            problem,
+        }
+    }
 }
 
 impl<R: BlockReader> BlockReader for LdFilteredReader<R> {
@@ -1458,7 +1523,7 @@ impl<R: BlockReader> BlockReader for LdFilteredReader<R> {
             }
             if let Err(error) = self.filter.filter_block(&mut block) {
                 self.finished = true;
-                return Err(error);
+                return Err(self.the_chromosome_named(error));
             }
             // A block the filter emptied is not given: the next one is
             // taken, and the source says when there are no more.
@@ -1771,8 +1836,8 @@ mod tests {
 
     use super::{
         FilteredReader, FilteringStats, LdFilter, LdFilteredReader, THE_VARS_SETTLED_AT_A_TIME,
-        TheOrderOfTheVariants, VarFilter, VarFilteringCriterion, chain_of, keep_of_the_rows,
-        keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
+        TheChromOfTheVariant, TheOrderOfTheVariants, VarFilter, VarFilteringCriterion, chain_of,
+        keep_of_the_rows, keep_of_the_rows_one_by_one, refuse_a_second_filter_of_a_kind,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -3443,6 +3508,7 @@ mod tests {
                 error,
                 Error::LdFilterVariantOutOfOrder {
                     variant: 3,
+                    chrom: TheChromOfTheVariant::Numbered(0),
                     problem: TheOrderOfTheVariants::ThePositionFalls {
                         pos: 2000,
                         pos_before: 3000,
@@ -3452,6 +3518,17 @@ mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("the variant 3"), "{error}");
+        // The filter is given a block, which holds the number of a
+        // chromosome and not its name, so the message names the number; a
+        // reader over a source puts the name there.
+        assert!(
+            error.to_string().contains("the chromosome numbered 0"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("`bcftools sort` writes"),
+            "{error}"
+        );
         assert_eq!(out_of_order.num_vars, 2);
         assert_eq!(positions_of(&out_of_order), [3000, 2000]);
         assert_eq!(filter.stats(), pair(1, 1));
@@ -3482,6 +3559,7 @@ mod tests {
                 error,
                 Error::LdFilterVariantOutOfOrder {
                     variant: 2,
+                    chrom: TheChromOfTheVariant::Numbered(0),
                     problem: TheOrderOfTheVariants::ThePositionFalls {
                         pos: 2000,
                         pos_before: 3000,
@@ -3517,6 +3595,7 @@ mod tests {
                 error,
                 Error::LdFilterVariantOutOfOrder {
                     variant: 3,
+                    chrom: TheChromOfTheVariant::Numbered(0),
                     problem: TheOrderOfTheVariants::TheChromosomeCameBack {
                         pos: 2000,
                         pos_before: 1000,
@@ -3703,6 +3782,7 @@ mod tests {
                 error,
                 Error::LdFilterVariantOutOfOrder {
                     variant: 2,
+                    chrom: TheChromOfTheVariant::Named(_),
                     problem: TheOrderOfTheVariants::ThePositionFalls {
                         pos: 2000,
                         pos_before: 3000,
@@ -3711,6 +3791,9 @@ mod tests {
             ),
             "{error}"
         );
+        // The reader has the table of its source, so the message names the
+        // chromosome as the file does and not by its number.
+        assert!(error.to_string().contains("the chromosome chr1"), "{error}");
 
         assert!(
             filtered
