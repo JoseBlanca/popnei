@@ -296,7 +296,7 @@ and `js/popnei/src/ld.ts`.
 
 ### Its tasks
 
-- [ ] 3.1 `LdFilter`: the window, the rule, the counts and the error of
+- [x] 3.1 `LdFilter`: the window, the rule, the counts and the error of
       an unsorted position, in `crates/popnei/src/filters.rs`, built from
       "What it gives", "Which variant of a linked pair is kept, and the
       cases" and "How it runs" of the item in `docs/specs/filters.md`. It

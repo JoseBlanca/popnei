@@ -552,3 +552,54 @@ until it ends. What is refused before the source is read is a
 `max_num_vars` whose square is not a number this machine counts.
 
 Nothing of this task uses rayon.
+
+## Work package 3: the filter by linkage disequilibrium
+
+Task 3.1, `LdFilter`, commit c5d9e83, built at the same time as task 2.1
+and in other files. `cargo test -p popnei --lib filters:: -- --list` goes
+from 34 tests to 51, and `cargo test --workspace` gives `460 passed` in
+the core crate with the two tasks together.
+
+The plan calls this the task whose failure would be silent, a set of
+variants that is wrong rather than a crash, and the first sign is good:
+run by hand over `ld.vcf.gz`, the filter keeps 84, 133, 85 and 85
+variants of 500 for the four rows of the table of "How it is verified",
+with the five positions each row gives and chr2:1000 first of its
+chromosome, and it keeps the same variants in blocks of 7, of 64 and of
+the whole file. Those are the numbers deliverable 2 asks for. They are
+not in the tests yet: task 3.3 is what commits them, and until it does
+this is a measurement and not a check.
+
+Two decisions the spec left to the implementer.
+
+The filter settles 256 variants at a time. Each variant of the window is
+one comparison against the whole set of 256, the set against itself is
+one more, and a candidate is then read against the variants kept inside
+its own set out of that matrix, in order. 256 is the shape
+`docs/specs/ld.md` measures at 1.9 ms, and the matrix of a set is 512 KB
+whatever the blocks the source gives.
+
+The window holds one set of dosages for each variant it has kept, the
+one row of the dosages of the block that variant arrived in, with its
+chromosome and its position: 24 bytes for each individual, which is what
+the spec says. It cannot hold one set of dosages for the whole window,
+because a set is built from one block and popnei has no way to join
+variants of several blocks into one. Doing that would need something on
+`LdDosages` that does not exist, and the task did not bolt one on to
+`filters.rs`. Whether the window should hold one set instead of one per
+variant is a question for work package 4, which measures it.
+
+### How the two ran side by side
+
+They touched different files, as the plan says, and both staged by
+explicit path, so neither swallowed the other's work. One thing did go
+wrong. `crates/popnei/src/error.rs` is a file both needed, and the
+subagent of task 2.1 committed it whole while the two error cases of the
+filter were in it, so those two are in the commit of the matrix and not
+in the commit of the filter. Nothing is lost and everything passes; the
+history is what suffers, and a reader looking for where the filter's
+refusals came from will find them in a commit about something else. The
+instruction the orchestrator gave, to commit only one's own hunks of a
+shared file, asks for something git makes awkward. The next plan should
+give each file one owner for the length of a work package, or not run
+two tasks that need the same file at once.
