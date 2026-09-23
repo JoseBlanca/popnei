@@ -826,11 +826,15 @@ From the table of section 2.1 of `docs/rust_core.md`, over 100000 variants x
 1000 individuals, the linear model takes pyNei 0.35 s and plink2 0.10 s. The
 number to reach for the `lm` is plink2's 0.10 s on that dataset.
 
-For the mixed models `docs/rust_core.md` reports pyNei level with GMMAT on
-one thread, 1.5 s against 1.6 s over the same dataset, and 3x faster with
-six threads. The number to reach is GMMAT's 1.6 s, and popnei should beat it
-because the null fit is 1.9 to 2.1 times cheaper for the `glmm` and the per
-variant work is the same product.
+For the mixed models, section 2.4 of `docs/rust_core.md` reports pyNei level
+with GMMAT on one thread over the same dataset, 1.5 s against GMMAT's 1.6 s
+and 2.2 s, and 3x faster with six threads. It does not say which of GMMAT's
+two numbers belongs to which mixed model, so the number to reach is the
+smaller, 1.6 s, for both. Whether popnei beats it is not known: the null fit
+of the `glmm` is 1.9 to 2.1 times cheaper than pyNei's, measured, but at
+100000 variants and 1000 individuals the per variant work is the larger
+half, 0.32 s against a fit of 0.095 s by the numbers below, and that work is
+the same product in both libraries.
 
 Where the time goes at many individuals was measured for this spec, numpy
 2.5.3 on Accelerate on the owner's Apple M5 Pro, with the score test of
