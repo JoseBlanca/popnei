@@ -883,14 +883,14 @@ relative away, which the 1e-14 holds. And at
 `Singular` at the row 1, which is the case the crate reads the diagonal
 for, since faer would divide by that 0 and give an infinity.
 
-At `rank`, five matrices and their ranks, which is all `rank` gives: it
+At `rank`, six matrices and their ranks, which is all `rank` gives: it
 returns a count, so its singular values cannot be asserted at it, and the
-five are chosen so that the count alone pins both the values and the
-tolerance. The 4 x 2 above is rank 2. The 4 x 3 with rows (1, 1, 2),
-(1, 2, 3), (1, 3, 4) and (1, 4, 5), whose third column is the sum of the
-first two, is rank 2. The 4 x 2 whose covariate is the constant 5 is rank
-1. Those last two are the two designs line 841 refuses, the collinear one
-and the constant one.
+six are chosen so that the count alone pins the values, the tolerance and
+the comparison made against it. The 4 x 2 above is rank 2. The 4 x 3 with
+rows (1, 1, 2), (1, 2, 3), (1, 3, 4) and (1, 4, 5), whose third column is
+the sum of the first two, is rank 2. The 4 x 2 whose covariate is the
+constant 5 is rank 1. Those last two are the two designs line 841
+refuses, the collinear one and the constant one.
 
 The other two pin the tolerance itself, since a rank that counted at the
 wrong threshold would still give 2, 2 and 1 for the three above: the 2 x 2
@@ -899,6 +899,14 @@ with rows (1, 0) and (0, 5e-16) is rank 2 and the one with rows (1, 0) and
 largest singular value is 1, which is 4.440892098500626e-16. numpy 2.5.3
 gives 2 and 1 for them, and both backends were run on them on 23 September
 2026 and gave the same two counts and the same tolerance.
+
+The sixth is the 3 x 2 whose every value is 0, and it is rank 0: its
+largest singular value is 0, so the tolerance is 0 and no value is
+strictly above it. numpy 2.5.3 gives 0 for it on 23 September 2026, its
+two singular values being 0 and 0. It is here because the comparison is
+the one place the five above leave free: a rank that counted the values
+at the tolerance as well as above it gives each of the five its own
+count, and gives that matrix 2.
 
 The singular values themselves, from numpy 2.5.3, are 5.779378813233887
 and 0.773809106397227 for the first; 9.344132686098556,
