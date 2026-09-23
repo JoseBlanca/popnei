@@ -15,8 +15,8 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is built and its five deliverables check out; its
-review is running.
+reviewed and fixed, and work package 2 is done, reviewed and fixed. Work package 3 has not
+started.
 Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
@@ -321,6 +321,89 @@ passed` with 2 ignored in the core crate; `uv run maturin develop && uv
 run pytest` `257 passed`.
 
 Those subagents used 176640, 155982 and 174752 tokens.
+
+### The review of work package 2
+
+Six reviewers over `eb9c162`, `a5d431c`, `8af207e` and the spec commit
+`4d5cab5`: spec, tests, numbers, errors, and api and architecture
+together. `binding` was not sent, for the reason it was not sent for work
+package 1. They used 682000 tokens between them.
+
+**The one that would have reached a user.** Three reviewers found, each on
+its own, that `solve_with_cholesky` gave `Ok` and a buffer of NaN for an
+`l` whose diagonal holds an entry that is not above 0. The orchestrator
+ran it on both backends: `dpotrs` wrote NaN, an infinity and an infinity
+with its sign turned round, and faer wrote three NaN, both saying nothing
+went wrong. numpy refuses the same system with `LinAlgError`. Task 2.3 had
+given that check to the inverse because there the two backends disagree,
+which is the test the spec used to decide what to check; the solve is the
+case where they agree and both are wrong, which is what makes the rule
+general. All three operations that take an `l` now read its diagonal
+first, and `9a658ab` says so in the spec with the reason for each.
+
+**The spec paragraph that would have misled the GWAS.** "The solve of a
+factorized matrix" justified the layout of `b` with its two dimensions the
+wrong way round, saying the caller passes "c right hand sides of n numbers
+each" where lines 483 and 693 of pyNei's `gwas.py` have one right hand
+side for each individual of one number for each coefficient. That is what
+the spec's own table of those lines says and what the code does, so only
+the explanation was wrong; checked against numpy 2.5.3 on 3 individuals
+and 2 coefficients, where `solve` of a 2 x 2 against a 2 x 3 gives a 2 x
+3. It matters because `docs/specs/gwas.md` is written from that paragraph.
+
+**What else `9a658ab` corrected in the spec.** The log determinant of the
+3 x 3 was to be asserted to the bit, which the `coding` skill does not
+allow for a value that went through `ln`: five of the nine ways of moving
+`ln 2` and `ln 3` by one unit in the last place give another `f64`, and
+the libm Rust uses for `wasm32-unknown-unknown` already differs from this
+machine on `ln 3`. It is now 1e-15 relative. The 1e-13 of the large log
+determinant had to be said to be relative, the two backends being 2.4e-12
+absolute away from it, so an absolute tolerance would have failed both.
+And the spec now says that none of the seven checks its own result: a
+matrix that is positive definite and nearly not factors, and its inverse
+holds an infinity with no error, as numpy's does, which is the fit running
+away that the caller detects.
+
+**The row a `Singular` names was pinned by nothing.** Every fixture in the
+crate stopped at row 1, so replacing the computed row with the constant 1
+left all 85 tests passing on both backends. There are now fixtures that
+stop at the first row and at the last. The orchestrator made the mutation
+itself in the two places that report a row, the shared check and the BLAS
+factorization, and each is caught by one test and by no other.
+
+**Seven smaller findings, all fixed.** The diagonal walk was written twice
+and work package 3 needs a third with another test on the entry, so it is
+one helper now. `invert_with_cholesky` read the data before it checked the
+length of `inverse`, so a caller with a short buffer was told about its
+matrix. Three doc comments claimed something was the only one of its kind
+when the eigendecomposition already did the same. The doc comments of
+`Memory` and of `Singular` did not name their new producers. Nothing told
+a caller what happens when the slice given for `l` is not a factorization,
+which `product` carries a paragraph for: passing the matrix `a` there
+gives `Ok` and a plausible wrong answer, (0.3848, 0.2304, 0.216) where
+(1, 2, 3) is right. The workspace manifest named three routines of BLAS
+and LAPACK where six are now called. And the log determinant had no test
+for its dimension cap, none for a buffer longer than its dimensions, and
+none of the four was tested at `n` of 1.
+
+**What was not taken, and why.** The overflow sentinel of `dyn_stack`
+would make `Error::Memory` say 0 values, but it needs a 32 bit `usize` and
+an `n` of 23171, where `l` alone is 4.3 GB and cannot exist in a 4 GB
+address space. The `Singular` arm of the BLAS inverse is unreachable now
+that the crate checks the diagonal first; it stays, because a backend that
+reports what its routine said is right whether or not anything reaches it.
+And `NoConvergence` covering a negative `info` from routines that cannot
+fail to converge is what the spec defines that case to be.
+
+**The checks after the fixes**, each run by the orchestrator: fmt, clippy
+with the warnings denied, `cargo wasm-check` and ruff clean; `cargo test
+--workspace` `472 passed` with 2 ignored in the core crate and `93
+passed` in the linear algebra crate; `cargo test -p popnei-linalg
+--no-default-features` `90 passed`; `uv run maturin develop && uv run
+pytest` `257 passed`. Over the whole work package the crate went from 47
+tests to 93 and from 42 to 90.
+
+That subagent used 229755 tokens for the fixes.
 
 ## What is waiting on the owner
 
