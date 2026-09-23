@@ -647,11 +647,96 @@ mod tests {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
-    use super::{Denominators, Kinship, calc_kinship, the_denominators_of_the_block};
+    use super::{
+        Denominators, Kinship, ThePass, calc_kinship, the_denominators_of_the_block,
+        the_pass_over_the_blocks,
+    };
     use crate::block::{Block, BlockReader};
-    use crate::error::Error;
+    use crate::error::{Error, Result};
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::MISSING_ALLELE as MISSING;
+    use crate::variant::{
+        ChromTable, DosageOptions, DosageScale, MISSING_ALLELE as MISSING, Needs,
+    };
+
+    /// What the kinship asks of the pass over a row: the divisor its allele
+    /// frequency gives a variant under Hardy Weinberg, and a variant of more
+    /// than two alleles refused.
+    const THE_DOSAGES: DosageOptions = DosageOptions {
+        transform_to_biallelic: false,
+        scale: DosageScale::OfHardyWeinberg,
+    };
+
+    /// A reader over blocks a test built, of `num_individuals` individuals
+    /// named `ind0` and on.
+    ///
+    /// It is how the pass is driven over more than one block: `calc_kinship`
+    /// puts `Reblock` before it, and `Reblock` joins anything under 10000
+    /// variants into one block, so no VCF small enough for a test reaches
+    /// the second block of a pass.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks it has not given yet, the next one last.
+        left: Vec<Block>,
+    }
+
+    impl GivenBlocks {
+        fn of(blocks: Vec<Block>, num_individuals: usize, ploidy: usize) -> GivenBlocks {
+            let mut left = blocks;
+            left.reverse();
+            GivenBlocks {
+                individuals: (0..num_individuals).map(|at| format!("ind{at}")).collect(),
+                ploidy,
+                chroms: ChromTable::new(),
+                left,
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> Result<Option<Block>> {
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, _needs: Needs) {}
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
+        }
+    }
+
+    /// The pass over the blocks of a reader of the tests, over every
+    /// individual of it.
+    fn the_pass_over(blocks: &mut GivenBlocks, num_individuals: usize, ploidy: usize) -> ThePass {
+        match the_pass_over_the_blocks(blocks, None, num_individuals, ploidy, &THE_DOSAGES) {
+            Ok(pass) => pass,
+            Err(error) => panic!("the pass over the blocks: {error}"),
+        }
+    }
+
+    /// The denominators the pass left, or a panic when it left a count.
+    fn the_denominators_of(pass: ThePass) -> Vec<f64> {
+        match pass.denominators {
+            Denominators::OfThePair(of_the_pairs) => of_the_pairs,
+            Denominators::OfEveryPair => {
+                panic!("the block with a genotype missing left the denominators a count")
+            }
+        }
+    }
 
     /// A block of the genotypes given, `num_individuals` individuals of the
     /// ploidy `ploidy`, variant after variant, with no column but the
@@ -860,7 +945,8 @@ mod tests {
     /// Every entry of the matrix is the one the table of the spec gives.
     fn assert_it_is_the_worked_example(kinship: &Kinship) {
         assert_eq!(kinship.num_individuals, 4);
-        assert_eq!(kinship.num_vars, 2);
+        assert_eq!(kinship.num_vars, 2, "the variants that were used");
+        assert_eq!(kinship.num_vars_given, 4, "the variants the reader gave");
         for (at, (entry, expected)) in kinship
             .matrix
             .iter()
@@ -978,6 +1064,66 @@ mod tests {
                 "the entry {at} of the denominators is {count} and the variants called in both are {expected}"
             );
         }
+    }
+
+    /// What the blocks before the first one with a genotype missing put in
+    /// every entry of the denominators is the variants they **used** and not
+    /// the variants they gave.
+    ///
+    /// The pass is driven over two blocks here, since `calc_kinship` puts
+    /// `Reblock` before it and no dataset a test builds reaches a second
+    /// block through that. The first block gives two variants of three
+    /// individuals and uses one, its first having one allele; the second
+    /// gives one variant that `ind2` is not called at. Every pair had the
+    /// one variant of the first block, and the pair without `ind2` had the
+    /// variant of the second too.
+    #[test]
+    fn the_denominators_carry_the_variants_the_blocks_used_and_not_the_ones_they_gave() {
+        let dropped_and_used = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        let missing = block_of(3, 2, &[0, 0, 1, 1, MISSING, MISSING]);
+        let mut blocks = GivenBlocks::of(vec![dropped_and_used, missing], 3, 2);
+
+        let pass = the_pass_over(&mut blocks, 3, 2);
+
+        assert_eq!(pass.num_vars, 2, "the variants that were used");
+        assert_eq!(pass.num_vars_given, 3, "the variants the reader gave");
+        let of_the_pairs = the_denominators_of(pass);
+        for (at, expected) in [(0, 2.0), (3, 2.0), (4, 2.0), (6, 1.0), (7, 1.0), (8, 1.0)] {
+            let count = of_the_pairs[at];
+            assert!(
+                (count - expected).abs() < OF_THE_WORKED_EXAMPLE,
+                "the entry {at} of the denominators is {count} and the variants called in both are {expected}"
+            );
+        }
+    }
+
+    /// The error of a variant with more than two alleles names its place
+    /// among the variants the reader gave, and not among the ones that were
+    /// used: a user looks for it in their file, where the variants that were
+    /// dropped are too. The first block here uses one of its two variants
+    /// and the variant of three alleles is the first of the second block, so
+    /// the two places are 2 and 1.
+    #[test]
+    fn a_variant_of_more_than_two_alleles_is_named_by_its_place_among_those_given() {
+        let dropped_and_used = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        let three_alleles = block_of(3, 2, &[0, 0, 1, 2, 1, 1]);
+        let mut blocks = GivenBlocks::of(vec![dropped_and_used, three_alleles], 3, 2);
+
+        let error = match the_pass_over_the_blocks(&mut blocks, None, 3, 2, &THE_DOSAGES) {
+            Ok(pass) => panic!("the pass used {} variants", pass.num_vars),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(
+                error,
+                Error::VariantWithMoreThanTwoAlleles {
+                    position: 2,
+                    num_alleles: 3
+                }
+            ),
+            "{error}"
+        );
     }
 
     /// The frequencies, the means and the denominators are of the
