@@ -457,12 +457,55 @@ variant's residuals:
     xx   = the squared length of each variant's residuals
     num  = each variant's residuals times the trait's residuals
     beta = num / xx
-    rss  = the null's residual sum of squares - beta * num
+    rss  = the squared length of (the trait's residuals - beta * the variant's)
     se   = sqrt(rss / (n - c - 1) / xx)
 
 That `rss` is what the variant leaves unexplained, so each variant gets its
 own estimate of the residual variance, which is what makes this a t test and
 not a normal one.
+
+**`rss` is formed from the residuals and not by subtracting**, which is a
+difference from pyNei's arithmetic and the one place this spec departs from
+the oracle's formula rather than its behaviour. pyNei writes it as the
+null's residual sum of squares minus `beta * num`, at `gwas.py:395-396`, and
+so did this spec. Those two quantities agree to their last bits once a
+variant explains most of what the null left, and the difference is then
+noise of either sign. Measured on 23 September 2026 on six individuals with
+one covariate and a trait `1 + 2*cov + 3*dosage + delta*e`:
+
+| delta | by subtraction | from the residuals | `se` by subtraction | `se` from the residuals |
+|---|---|---|---|---|
+| 1e-5 | 6.6834e-11 | 6.6836e-11 | 2.3600e-06 | 2.3600e-06 |
+| 1e-7 | 0 | 6.6836e-15 | 0 | 2.3600e-08 |
+| 1e-8 | -7.1054e-15 | 6.6836e-17 | NaN | 2.3600e-09 |
+| 0 | 0 | 5.0290e-30 | 0 | 6.4737e-16 |
+
+Three things make this worse than a lost digit. The sign of that remainder
+is whatever the rounding order left, so the two backends of
+`docs/specs/linalg.md` disagree about whether the variant has an answer at
+all: on the same input Accelerate gives NaN where faer gives 0 and faer
+gives NaN where Accelerate gives a number, which means the wasm build and
+the native build answer differently. A variant that does have variance comes
+back with `beta` finite and `se` and `p_value` NaN, which is not the row of
+three NaNs that "The variants that have no answer" reserves, so a user
+filtering on `beta` being absent keeps it. And it needs the variant's
+residual to be about 1e-13 of the null's, so it bites at the strongest
+association in a study and nowhere else.
+
+It costs one more pass over the dosages of the block, since the residual of
+each variant has to be formed and squared rather than two numbers
+subtracted. The two forms agree wherever pyNei's subtraction has not already
+cancelled, so no literal of this spec moves.
+
+The same subtraction is in the linear mixed model's Wald test, `y' p y`
+minus `num² / den`, and nobody has measured whether it cancels there. The
+residual form is not free in that model: it needs `r' p r` for the residual
+`r` of each variant, a product with the projection matrix per variant, which
+is the cost `use_grammar_gamma_approx` exists to avoid. What it would take
+to reach is a variant explaining nearly all of `y' p y`, which the
+restricted maximum likelihood makes `n - c`, 197 on the panel. That is a far
+stronger association than the linear model's case needs, and it is worth
+measuring before it is worth fixing.
 
 ### How it is verified
 
