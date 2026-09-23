@@ -1361,6 +1361,26 @@ pub(crate) fn the_standardized_block(
     if !missing.is_empty() {
         return Err(Error::FieldsNotInTheBlock { fields: missing });
     }
+    // The rows of the block are cut by what the block says its size is and
+    // the values they are written into by what the caller says it is, and
+    // `chunks_exact` gives the rows of whichever of the two is the shorter:
+    // a block of 5 individuals of the ploidy 2 read as 5 individuals of the
+    // ploidy 5 has 10 alleles, one row of genotypes and no row of values,
+    // so no row runs and the pass gives back that no variant was used. That
+    // is what a block of variants with no variance gives too, so the loss
+    // would wear the costume of an ordinary result. A reader whose ploidy
+    // or whose individuals are not those of the blocks it gives has a
+    // defect, which `docs/specs/block.md` names; `Reblock` refuses such a
+    // block, and this pass is the one place a caller with no `Reblock`
+    // before it would lose the variants in silence.
+    if block.num_individuals != num_individuals || block.ploidy != ploidy {
+        return Err(Error::BlocksDoNotFitTogether {
+            num_individuals,
+            ploidy,
+            found_num_individuals: block.num_individuals,
+            found_ploidy: block.ploidy,
+        });
+    }
     let alleles_per_var = block.alleles_per_var()?;
     // The block holds its genotypes, so its rows hold one genotype of the
     // ploidy for each individual: `reblock` checked that the genotypes are
@@ -1706,11 +1726,73 @@ mod tests {
     };
     use crate::error::Error;
 
+    /// A block whose individuals or whose ploidy are not the ones the pass
+    /// was given is refused, and its variants are not lost in silence.
+    ///
+    /// The rows of the block are cut by the size the block states and the
+    /// values by the size the caller states, and the shorter of the two is
+    /// what runs: a block of 5 individuals of the ploidy 2, which holds 10
+    /// alleles, read as 5 individuals of the ploidy 5 gives one row of
+    /// genotypes and no row of values, so the pass ran no row and gave back
+    /// `Ok([])`, which is what a block whose every variant has no variance
+    /// gives. The kinship would then have counted no variant used where its
+    /// reader gave one, and nothing would have said so.
+    #[test]
+    fn a_block_of_other_individuals_or_another_ploidy_than_the_pass_is_refused() {
+        for (num_individuals, ploidy) in [(5, 5), (2, 2)] {
+            let block = crate::block::Block {
+                num_vars: 1,
+                num_individuals: 5,
+                ploidy: 2,
+                gts: vec![0, 0, 0, 1, 1, 1, 0, 1, 1, 1],
+                chrom: None,
+                pos: None,
+                id: None,
+                alleles: None,
+                qual: None,
+            };
+            let mut standardized: Vec<f64> = Vec::new();
+
+            let refused = super::the_standardized_block(
+                &block,
+                num_individuals,
+                ploidy,
+                &OF_THE_DOSAGES,
+                THE_FIRST_POSITIONS,
+                &mut standardized,
+            );
+
+            let error = match refused {
+                Ok(used) => panic!("the pass used {used:?} of the variants of the block"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    error,
+                    Error::BlocksDoNotFitTogether {
+                        found_num_individuals: 5,
+                        found_ploidy: 2,
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+        }
+    }
+
     /// How close a standardized dosage has to be to the literal it is
     /// asserted against. The literals below are written with 12
     /// significant digits and none of them is above 2, so each is within
     /// 1e-11 of the number it stands for.
     const TOLERANCE: f64 = 1e-11;
+
+    /// Where a block of a test sits among the variants a reader has given,
+    /// with the error of a reader that gave more variants than a `usize`
+    /// counts: no test of this module reaches that error.
+    const THE_FIRST_POSITIONS: super::RowPositions = super::RowPositions {
+        first: 0,
+        too_many: || Error::PcaNoVariants,
+    };
 
     /// What the principal components of the variants of `docs/specs/pca.md`
     /// ask of a row: the centered dosages divided by their own standard
