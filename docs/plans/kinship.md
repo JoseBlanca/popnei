@@ -210,13 +210,13 @@ both packages, all of which exist.
       genotypes, variants with no variance, and what pyNei asserts", "How it
       runs" and "The Rust interface" of `docs/specs/kinship.md`. Serves
       deliverables 2 and 3. Needs 1.1.
-- [ ] 2.2 The Python function: the binding in `crates/popnei-python`, the
+- [x] 2.2 The Python function: the binding in `crates/popnei-python`, the
       `Kinship` frozen dataclass with its checks on a matrix a user built,
       `filter_individuals`, and the pytest tests against plink2, against
       pyNei and for the individuals argument. Built from "Its Python
       function, and its TypeScript one" and "How it is verified". Serves
       deliverables 1, 4 and 5. Needs 2.1.
-- [ ] 2.3 The TypeScript function: the binding in `crates/popnei-js`, the
+- [x] 2.3 The TypeScript function: the binding in `crates/popnei-js`, the
       result object in `js/popnei`, and the test under node. Built from the
       same section. Serves deliverable 6. Needs 2.1, and it can run beside
       2.2.
