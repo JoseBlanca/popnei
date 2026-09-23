@@ -8,7 +8,7 @@ calls, and in WebAssembly, where there is none, on faer, a linear
 algebra library written in Rust. There is no code. This spec develops the
 row `linalg` of the table in section 9 of `docs/architecture.md` and
 decision 5 of `docs/rust_core.md`, which chose the two backends. It
-covers the crate, its backends, the builds, and thirteen operations. Two
+covers the crate, its backends, the builds, and fourteen operations. Two
 are the product of a matrix with itself and the eigendecomposition of a
 symmetric matrix, which `docs/specs/pca.md` calls. Four are the product
 of two matrices, one for each way round the two can be laid out, of which
@@ -18,7 +18,8 @@ operand turned" is the one that adds them. The last seven are what the
 association study calls besides, read from pyNei, and they are under "The
 seven operations of the GWAS": a Cholesky factorization and the solve,
 the log determinant and the inverse that come off it, the thin QR of the
-design, the solve against an upper triangular matrix, and the rank of a
+design, the solve against a triangular matrix, which is two operations
+because either half may be the one that holds it, and the rank of a
 matrix.
 
 The routines of BLAS and LAPACK are reached through the crates `blas`
@@ -597,10 +598,46 @@ design of "How the seven are verified" below, so no case has yet been
 found that makes them differ, and the test still fixes the sign so that a
 backend which chose the other one would pass.
 
-**The solve against an upper triangular matrix.** For the upper triangular
-`r` of n x n, whose lower half is not read, the `x` of `r x = b`, with
-`b` laid out as for the Cholesky solve. It is `dtrtrs` in LAPACK and
-`solve_upper_triangular_in_place` of faer. It exists for line 378 alone.
+**The solve against a triangular matrix.** For the triangular `a` of n x
+n, the `x` of `a x = b`, with `b` laid out as for the Cholesky solve. The
+caller says which half holds the matrix, and the other half is not read.
+It is `dtrtrs` in LAPACK, whose `uplo` is that half, and
+`solve_upper_triangular_in_place` or `solve_lower_triangular_in_place` of
+faer.
+
+The upper half is what line 378 asks for, the `r` of the QR of the design.
+The lower half is what the fit of the null model of the logistic mixed
+model asks for, and it is not a solve pyNei makes: the owner added it on
+23 September 2026, after the other thirteen operations were built, at the
+request of the session writing `docs/specs/gwas.md`. That fit needs the
+trace of the projection matrix times the kinship at each of its steps on
+the variance component, and taking it from the identity `tau k = sigma −
+w⁻¹` turns it into the Cholesky factor of `sigma` solved against with one
+right hand side for each individual, where pyNei instead forms the inverse
+of an individuals by individuals matrix once for each of its 21 to 26
+linearizations. A Cholesky factor is lower triangular, so the upper half
+cannot serve it. Measured with numpy 2.5.3 on Accelerate on the owner's
+Apple M5 Pro at 4000 individuals, against pyNei's fit of 9.959 s: 5.75 s
+with the lower half, 7.0 s with `solve_with_cholesky`, which is two
+triangular solves where one is wanted, and 5.29 s with an inverse of a
+triangular matrix, `dtrtri`, which would be a fifteenth operation written
+twice. `docs/reports/glmm-method/README.md`, written with
+`docs/specs/gwas.md`, has the fit those numbers belong to; this spec owns
+the operation and not the fit.
+
+It is one function and not two, and which half holds the matrix is an
+argument of it, for the reason "The product with its first operand turned"
+gives for `product`: two functions over the same arguments would each take
+the other's call and give a different answer with no error, no length
+telling them apart. The same `l` of "How the seven are verified", rows
+(2, 0, 0), (1, 3, 0) and (0, 2, 1), against the right hand side
+(8, 40, 27) gives (4, 12, 3) read as the lower half and
+(6.333333333333333, -4.666666666666666, 27) read as the upper, both of
+them answers a caller could believe. The option not taken was
+`solve_upper_triangular` beside a `solve_lower_triangular`, which is what
+the crate does for `cholesky_lower` and `eigh_lower`; those two have no
+other half in the crate at all, so no call of them can mean the other
+one.
 
 **The rank.** For `a` of `rows` x `cols`, how many of its singular
 values are strictly above the tolerance `s * max(rows, cols) *
@@ -788,11 +825,13 @@ same matrix, and its eigenvalues are 0, 1 and 5: none below 0 and one
 exactly 0, which is the case a factorization has to catch and an LU does
 not.
 
-faer's `solve_upper_triangular_in_place` gives no error and divides by a
-diagonal entry of 0 as it finds it, giving an infinity, while `dtrtrs`
-gives an `info`. So the diagonal of `r` is read for a 0 in the crate,
-above the backends, where it holds for both, as the check for a value that
-is not finite already is.
+faer's `solve_upper_triangular_in_place` and its
+`solve_lower_triangular_in_place` give no error and divide by a diagonal
+entry of 0 as they find it, giving an infinity, while `dtrtrs` gives an
+`info`. So the diagonal of `a` is read for a 0 in the crate, above the
+backends, where it holds for both halves and both backends, as the check
+for a value that is not finite already is. That check reads the half the
+caller named, and the diagonal belongs to both halves.
 
 ### How the seven are verified
 
@@ -890,7 +929,8 @@ From numpy 2.5.3 on 23 September 2026.
 A design of as many columns as rows is the smallest one `thin_qr` takes, and
 it is not refused: the 2 x 2 with rows (1, 1) and (1, 2) gives an `r` of
 (-1.4142135623730951, -2.1213203435596424) and (0, 0.7071067811865475),
-which numpy gives too. At `solve_upper_triangular`, the trait (1, 3, 5,
+which numpy gives too. At `solve_triangular` with the upper half
+named, the trait (1, 3, 5,
 7), which is twice the covariate less 1, gives the coefficients (-1, 2)
 from `r c = q' y`, within 1e-14: an exact fit, so a backend that read
 `r` the wrong way round gives something else. The `q' y` of that trait
@@ -905,9 +945,27 @@ solve above are, and three of them against an `r` of 2 x 2 is what tells
 `sides` from `n`. All three fits are exact, and numpy 2.5.3 gives
 0.9999999999999991 and 3.0000000000000004 for the second of them, 9e-16
 relative away, which the 1e-14 holds. And at
-`solve_upper_triangular` again, the `r` with rows (2, 5) and (0, 0) is
-`Singular` at the row 1, which is the case the crate reads the diagonal
-for, since faer would divide by that 0 and give an infinity.
+`solve_triangular` again, with the upper half named, the `r` with rows
+(2, 5) and (0, 0) is `Singular` at the row 1, which is the case the crate
+reads the diagonal for, since faer would divide by that 0 and give an
+infinity.
+
+At `solve_triangular` with the lower half named, on the `l` of the
+Cholesky above, rows (2, 0, 0), (1, 3, 0) and (0, 2, 1), whose upper half
+holds values that are nothing of the matrix so that a call which read that
+half instead gives something else: the right hand side (8, 40, 27) gives
+(4, 12, 3) and the two right hand sides (8, 40, 27) and (4, 2, 0), one row
+each, give (4, 12, 3) and (2, 0, 0), every entry a small whole number and
+asserted exactly, with `sides` of 2 against an `n` of 3 so that the two
+cannot be exchanged. The same `l` and the same first right hand side read
+as the upper half give (6.333333333333333, -4.666666666666666, 27), which
+the test asserts as well: it is what a caller that named the wrong half
+would get, and asserting both is what says the argument is read. A third
+right hand side, (2, 6, 1), gives (1, 1.6666666666666665,
+-2.333333333333333) within 1e-14, which is the one case of the three whose
+entries are not whole numbers. And the `l` with rows (2, 0) and (5, 0) is
+`Singular` at the row 1, as the upper half's own case is. From numpy 2.5.3
+on 23 September 2026.
 
 At `rank`, six matrices and their ranks, which is all `rank` gives: it
 returns a count, so its singular values cannot be asserted at it, and the
@@ -1217,10 +1275,11 @@ Result<()>;
 ```
 
 The thin QR of `a` of `rows` x `cols`, with `rows` at least `cols` and
-`cols` 1 at least. It and `solve_upper_triangular` below are the "least
+`cols` 1 at least. It and `solve_triangular` below are the "least
 squares" that the `linalg` row of section 9 of `docs/architecture.md`
 names: fitting a linear model to more individuals than coefficients is
-`thin_qr` of the design and then `solve_upper_triangular` of its `r`.
+`thin_qr` of the design and then `solve_triangular` of its `r`, with the
+upper half named.
 
 ```rust
 pub struct ThinQr {
@@ -1235,12 +1294,24 @@ pub struct ThinQr {
 pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr>;
 ```
 
-The `x` of `r x = b` for the upper triangular `r` of `n` x `n`, whose
-lower half is not read. `b` is laid out as it is for the Cholesky solve.
+The `x` of `a x = b` for the triangular `a` of `n` x `n`, whose other
+half is not read. `b` is laid out as it is for the Cholesky solve. The two
+cases carry no value, since the half is all they say, and they are an enum
+and not a `bool` because a `bool` at a call site says nothing about which
+half it means.
 
 ```rust
-pub fn solve_upper_triangular(r: &[f64], n: usize, b: &mut [f64], sides:
-usize) -> Result<()>;
+pub enum TheHalfThatHoldsTheMatrix {
+    /// The entries of column `j` at least `i` of row `i`, the half the
+    /// `r` of a thin QR fills, whose diagonal belongs to both halves.
+    TheUpperHalf,
+    /// The entries of column `j` at most `i` of row `i`, the half a
+    /// Cholesky factorization fills.
+    TheLowerHalf,
+}
+
+pub fn solve_triangular(a: &[f64], n: usize, half:
+TheHalfThatHoldsTheMatrix, b: &mut [f64], sides: usize) -> Result<()>;
 ```
 
 How many singular values of `a` of `rows` x `cols` are above numpy's
