@@ -1374,6 +1374,27 @@ pub enum Error {
         value: f64,
     },
 
+    /// A value of the kinship a study was given is not a finite number. A
+    /// mixed model eigendecomposes that matrix before it is fitted, and
+    /// one value that is not a number makes every eigenvalue and every
+    /// eigenvector one, so the study would come back with a NaN for every
+    /// variant and nothing to say which cell it started from.
+    /// `Kinship.__post_init__` refuses a matrix that holds a value that is
+    /// not a number, so what reaches this is an infinity out of the user's
+    /// own arithmetic, and a caller of the core crate. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the entry of the row {individual} and the column {other} of the kinship is {value}, and a mixed model is fitted on numbers; the rows and the columns are the tested individuals, in the order they were given"
+    )]
+    GwasKinshipValueNotFinite {
+        /// Which tested individual's row it is in, from 0.
+        individual: usize,
+        /// Which tested individual's column it is in, from 0.
+        other: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
     /// Every tested individual of a binomial trait has the same phenotype.
     /// A study of such a trait compares the individuals that have the
     /// condition with those that have not, and one of the two groups is

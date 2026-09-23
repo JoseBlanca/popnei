@@ -38,13 +38,17 @@
 //! with the answers of the variants that have variance and the three NaNs
 //! of the ones that have none. [`LinearModel`] is the one model that gives
 //! those answers today: the thin QR of the design, the residuals of the
-//! trait and the t test of every variant against them. The linear mixed
-//! model and the two logistic ones are being written.
+//! trait and the t test of every variant against them.
+//! [`LinearMixedModel`] is fitted and gives no answers yet: the
+//! eigendecomposition of the kinship, the search of [`RemlSearch`] for the
+//! two variances, the effects of the intercept and the covariates, and the
+//! projection matrix the two tests of that model will be taken through.
+//! The two logistic models are being written.
 
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::{TheFirstOperand, TheHalfThatHoldsTheMatrix, TheSecondOperand, ThinQr};
+use popnei_linalg::{Eigen, TheFirstOperand, TheHalfThatHoldsTheMatrix, TheSecondOperand, ThinQr};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
@@ -415,6 +419,14 @@ pub enum GwasInputShape {
     /// The design has no column, not even the one of ones that fits the
     /// intercept.
     NoCoef,
+    /// The kinship does not hold one row and one column for each tested
+    /// individual.
+    Kinship {
+        /// How many values the kinship holds.
+        num_values: usize,
+        /// How many individuals are tested.
+        num_individuals: usize,
+    },
 }
 
 impl fmt::Display for GwasInputShape {
@@ -438,6 +450,13 @@ impl fmt::Display for GwasInputShape {
             Self::NoCoef => write!(
                 formatter,
                 "the design has no column, and the intercept gives it a column of ones at least"
+            ),
+            Self::Kinship {
+                num_values,
+                num_individuals,
+            } => write!(
+                formatter,
+                "the kinship holds {num_values} values and {num_individuals} individuals are tested, and it is {num_individuals} x {num_individuals}, row after row, cut to them and in their order"
             ),
         }
     }
@@ -635,6 +654,50 @@ fn refuse_a_design_value_that_is_not_finite(design: &[f64], num_coefs: usize) ->
                 return Err(Error::GwasDesignValueNotFinite {
                     individual,
                     coef,
+                    value,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The kinship a study was given: one row and one column for each tested
+/// individual, and a finite number in every cell.
+///
+/// Neither is a thing a fit would notice, which is why they are checked
+/// here and before any model is fitted, as "The Rust interface" of
+/// `docs/specs/gwas.md` asks. A matrix of another length is read as
+/// another shape and gives numbers; a value that is not finite spreads
+/// through the eigendecomposition into every eigenvalue and every
+/// eigenvector, and the study comes back with a NaN for every variant and
+/// the linear algebra crate's refusal of a matrix at whichever routine met
+/// it first, which names no cell.
+///
+/// `kinship` is `num_individuals` x `num_individuals`, row after row, so
+/// the row of a value is one tested individual and the rest of the
+/// division is the other.
+fn refuse_a_kinship_that_is_not_of_the_individuals(
+    kinship: &[f64],
+    num_individuals: usize,
+) -> Result<()> {
+    if num_individuals
+        .checked_mul(num_individuals)
+        .is_none_or(|values| kinship.len() != values)
+    {
+        return Err(Error::GwasInputOfAnotherSize {
+            problem: GwasInputShape::Kinship {
+                num_values: kinship.len(),
+                num_individuals,
+            },
+        });
+    }
+    for (individual, row) in kinship.chunks(num_individuals.max(1)).enumerate() {
+        for (other, value) in row.iter().copied().enumerate() {
+            if !value.is_finite() {
+                return Err(Error::GwasKinshipValueNotFinite {
+                    individual,
+                    other,
                     value,
                 });
             }
@@ -2075,6 +2138,720 @@ impl LinearModel {
     }
 }
 
+/// How many points the search for the ratio of the two variances of a
+/// linear mixed model starts with: 101, evenly spaced in the log of that
+/// ratio between [`LOG_DELTA_LOWEST`] and 10.
+///
+/// It is `numpy.linspace(-10, 10, 101)` of `_reml_delta` of
+/// `pynei/gwas.py`. "The linear mixed model" of `docs/specs/gwas.md` asks
+/// for that search to be reproduced step for step, because the two
+/// variances it gives are GMMAT's, and it lists the six things that have
+/// to match: these 101 points, the two neighbours of the best clamped at
+/// the ends of the grid, the ratio of the golden section, its two interior
+/// points, the bracket moved to whichever of the two has the smaller
+/// value, and [`GOLDEN_SECTION_STEPS`] steps whatever happens.
+const LOG_DELTA_POINTS: usize = 101;
+
+/// The smallest log of that ratio the grid holds, -10, which is a residual
+/// variance 22026 times smaller than the genetic one.
+const LOG_DELTA_LOWEST: f64 = -10.0;
+
+/// The distance between two points of the grid, which is the 20 it spans
+/// over the 100 gaps of its 101 points.
+const LOG_DELTA_STEP: f64 = 0.2;
+
+/// How many steps of the golden section search are made after the grid,
+/// whatever the bracket has come to: 60, from `_reml_delta` of
+/// `pynei/gwas.py`. Each one shrinks the bracket to 0.618 of what it was,
+/// so 60 of them take the 0.4 the grid leaves to 1.4e-13.
+const GOLDEN_SECTION_STEPS: usize = 60;
+
+/// The point of the grid at `at`, which is 0 to
+/// [`LOG_DELTA_POINTS`] less one.
+///
+/// The step is multiplied first and the start added after, as
+/// `numpy.linspace` does it, so that the points are the ones pyNei
+/// searched: the 45th of them is -1.1999999999999993 and not -1.2.
+fn the_log_delta_at(at: usize) -> f64 {
+    LOG_DELTA_LOWEST + at as f64 * LOG_DELTA_STEP
+}
+
+/// The restricted maximum likelihood of a linear mixed model, with the
+/// buffers one value of the ratio of its two variances is evaluated in.
+///
+/// Restricted maximum likelihood is maximum likelihood on the part of the
+/// trait that the covariates cannot explain, so that fitting the
+/// covariates does not drag the variances down. Only the ratio of the two
+/// matters to the search: with `delta` the residual variance over the
+/// genetic one, the covariance of the trait is the genetic variance times
+/// `k + delta i`, with `k` the kinship and `i` the identity, so the
+/// kinship is eigendecomposed once and every value of `delta` then costs
+/// one number per individual instead of a matrix.
+///
+/// With `l` the eigenvalues of the kinship, `u` the design turned by the
+/// eigenvectors, `uy` the trait turned by them, and `w = 1 / (l + delta)`
+/// one weight per individual, the criterion to minimize is
+///
+/// ```text
+/// dvd   = u' diag(w) u
+/// coefs = the solution of `dvd coefs = u' (w * uy)`
+/// resid = uy - u coefs
+/// quad  = w' (resid * resid)
+/// value = sum(log(l + delta)) + (n - c) * log(quad) + log(det(dvd))
+/// ```
+///
+/// with `n` the tested individuals and `c` the columns of the design. It
+/// is the criterion of `_reml_delta` of `pynei/gwas.py` and of "The linear
+/// mixed model" of `docs/specs/gwas.md`. The log of the determinant comes
+/// off the same Cholesky factorization the solve uses, where pyNei takes
+/// it from numpy's `slogdet`, which factorizes the same matrix a second
+/// way. The two were run against each other in numpy on the panel on 24
+/// September 2026: the fitted `delta` lands 2.9e-9 of itself apart, which
+/// is what a search whose criterion is flat at its minimum comes to, and
+/// the two variances and the three effects then agree with GMMAT's to
+/// 1.19e-6 either way.
+struct RemlSearch<'a> {
+    /// The eigenvalues of the kinship, clamped at 0, one per individual.
+    eigenvalues: &'a [f64],
+    /// The trait turned by the eigenvectors, one value per individual.
+    rotated_trait: &'a [f64],
+    /// The design turned by them, `num_individuals` x `num_coefs`, row
+    /// after row.
+    rotated_design: &'a [f64],
+    /// How many individuals are tested.
+    num_individuals: usize,
+    /// How many columns the design has.
+    num_coefs: usize,
+    /// The individuals less those columns, as a number, which the criterion
+    /// weighs the log of `quad` by.
+    degrees_of_freedom_of_the_null: f64,
+    /// `1 / (eigenvalue + delta)`, one per individual.
+    weights: Vec<f64>,
+    /// The rotated design with every row times the weight of its
+    /// individual.
+    weighted_design: Vec<f64>,
+    /// The rotated trait with every value times the weight of its
+    /// individual.
+    weighted_trait: Vec<f64>,
+    /// `u' diag(w) u`, `num_coefs` x `num_coefs`, whose lower half becomes
+    /// its Cholesky factorization.
+    dvd: Vec<f64>,
+    /// The effect of the intercept and of each covariate at this `delta`.
+    coefs: Vec<f64>,
+    /// The rotated design times those effects, one value per individual.
+    fitted: Vec<f64>,
+}
+
+impl<'a> RemlSearch<'a> {
+    /// The search over a kinship that has been eigendecomposed and a trait
+    /// and a design that have been turned by its eigenvectors.
+    ///
+    /// The three slices hold one value, one value and one row per tested
+    /// individual, which [`LinearMixedModel::of_the_study`] has just built
+    /// from a checked [`Design`].
+    fn of(
+        eigenvalues: &'a [f64],
+        rotated_trait: &'a [f64],
+        rotated_design: &'a [f64],
+        num_individuals: usize,
+        num_coefs: usize,
+        degrees_of_freedom_of_the_null: f64,
+    ) -> RemlSearch<'a> {
+        // The design holds `num_individuals` x `num_coefs` values in one
+        // slice, and a study has two more individuals than its design has
+        // columns, so the `num_coefs` x `num_coefs` of `dvd` is smaller
+        // than a length that fits in a `usize`.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "`Design::of_the_study` refuses a study of no more individuals than \
+                      the columns of its design plus one, and the design is one slice of \
+                      `num_individuals` x `num_coefs` values, so `num_coefs` times itself \
+                      is smaller than a length a `usize` holds"
+        )]
+        let of_the_coefs = num_coefs * num_coefs;
+        RemlSearch {
+            eigenvalues,
+            rotated_trait,
+            rotated_design,
+            num_individuals,
+            num_coefs,
+            degrees_of_freedom_of_the_null,
+            weights: vec![0.0_f64; num_individuals],
+            weighted_design: vec![0.0_f64; rotated_design.len()],
+            weighted_trait: vec![0.0_f64; num_individuals],
+            dvd: vec![0.0_f64; of_the_coefs],
+            coefs: vec![0.0_f64; num_coefs],
+            fitted: vec![0.0_f64; num_individuals],
+        }
+    }
+
+    /// The fit at one `delta`, the residual variance over the genetic one:
+    /// it leaves the effects of the intercept and the covariates in
+    /// `coefs` and gives back the weighted squared length of what the
+    /// design left of the trait, `quad`, and the log of the determinant of
+    /// `dvd`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasLinalg`] when one of the three products, the Cholesky
+    /// factorization of `dvd` or the solve against it could not be done.
+    /// A `dvd` that is not positive definite is among them, which a design
+    /// whose columns are independent and a `delta` above 0 do not give.
+    fn fit_at(&mut self, delta: f64) -> Result<(f64, f64)> {
+        for (weight, eigenvalue) in self.weights.iter_mut().zip(self.eigenvalues) {
+            *weight = 1.0 / (eigenvalue + delta);
+        }
+        for ((row, weight), of_the_design) in self
+            .weighted_design
+            .chunks_exact_mut(self.num_coefs.max(1))
+            .zip(&self.weights)
+            .zip(self.rotated_design.chunks_exact(self.num_coefs.max(1)))
+        {
+            for (value, turned) in row.iter_mut().zip(of_the_design) {
+                *value = weight * turned;
+            }
+        }
+        for ((weighted, weight), turned) in self
+            .weighted_trait
+            .iter_mut()
+            .zip(&self.weights)
+            .zip(self.rotated_trait)
+        {
+            *weighted = weight * turned;
+        }
+        popnei_linalg::product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: self.rotated_design,
+                rows: self.num_coefs,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.weighted_design,
+                cols: self.num_coefs,
+            },
+            &mut self.dvd,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the turned design with its weighted self",
+            source,
+        })?;
+        popnei_linalg::product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: self.rotated_design,
+                rows: self.num_coefs,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.weighted_trait,
+                cols: 1,
+            },
+            &mut self.coefs,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the turned design with the weighted trait",
+            source,
+        })?;
+        popnei_linalg::cholesky_lower(&mut self.dvd, self.num_coefs).map_err(|source| {
+            Error::GwasLinalg {
+                operation: "Cholesky factorization of the weighted design",
+                source,
+            }
+        })?;
+        let log_determinant =
+            popnei_linalg::log_determinant_with_cholesky(&self.dvd, self.num_coefs).map_err(
+                |source| Error::GwasLinalg {
+                    operation: "log determinant of the weighted design",
+                    source,
+                },
+            )?;
+        popnei_linalg::solve_with_cholesky(&self.dvd, self.num_coefs, &mut self.coefs, 1).map_err(
+            |source| Error::GwasLinalg {
+                operation: "solve of the weighted design against the weighted trait",
+                source,
+            },
+        )?;
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: self.rotated_design,
+                rows: self.num_individuals,
+            },
+            self.num_coefs,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.coefs,
+                cols: 1,
+            },
+            &mut self.fitted,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the turned design with the effects it fitted",
+            source,
+        })?;
+        let quad = self
+            .weights
+            .iter()
+            .zip(self.rotated_trait)
+            .zip(&self.fitted)
+            .map(|((weight, measured), fitted)| {
+                let left = measured - fitted;
+                weight * left * left
+            })
+            .sum::<f64>();
+        Ok((quad, log_determinant))
+    }
+
+    /// The criterion at one log of `delta`, which the search minimizes.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`RemlSearch::fit_at`] fails with.
+    fn criterion(&mut self, log_delta: f64) -> Result<f64> {
+        let delta = log_delta.exp();
+        let (quad, log_determinant) = self.fit_at(delta)?;
+        let of_the_eigenvalues = self
+            .eigenvalues
+            .iter()
+            .map(|eigenvalue| (eigenvalue + delta).ln())
+            .sum::<f64>();
+        Ok(of_the_eigenvalues + self.degrees_of_freedom_of_the_null * quad.ln() + log_determinant)
+    }
+
+    /// The `delta` that minimizes the criterion: the smallest of the 101
+    /// points of the grid, bracketed by its two neighbours, and then 60
+    /// steps of the golden section search inside that bracket.
+    ///
+    /// A golden section search shrinks a bracket that holds a minimum by a
+    /// constant ratio at each step: the two interior points are `high -
+    /// ratio * (high - low)` and `low + ratio * (high - low)`, and the
+    /// bracket moves to whichever of the two has the smaller value. The
+    /// best point of the grid is bracketed by its neighbours clamped at the
+    /// ends, so a minimum at either end of the grid is bracketed by that
+    /// end and the one point beside it.
+    ///
+    /// Both interior points are evaluated at every step, as `_reml_delta`
+    /// of `pynei/gwas.py` evaluates them, so the whole search costs 221
+    /// evaluations and not 161. The usual form of the search keeps the
+    /// value at the interior point the new bracket inherits; that point is
+    /// then computed again from the new `low` and `high` and is not the
+    /// number that was kept, and the spec asks for pyNei's search step for
+    /// step because the two variances it gives are GMMAT's.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`RemlSearch::fit_at`] fails with, at any of the 221
+    /// evaluations.
+    fn the_delta(&mut self) -> Result<f64> {
+        let mut best_at = 0_usize;
+        let mut smallest = f64::INFINITY;
+        for at in 0..LOG_DELTA_POINTS {
+            let value = self.criterion(the_log_delta_at(at))?;
+            if value < smallest {
+                smallest = value;
+                best_at = at;
+            }
+        }
+        let mut low = the_log_delta_at(best_at.saturating_sub(1));
+        let mut high = the_log_delta_at(
+            best_at
+                .saturating_add(1)
+                .min(LOG_DELTA_POINTS.saturating_sub(1)),
+        );
+        let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+        for _ in 0..GOLDEN_SECTION_STEPS {
+            let from_the_top = high - ratio * (high - low);
+            let from_the_bottom = low + ratio * (high - low);
+            if self.criterion(from_the_top)? < self.criterion(from_the_bottom)? {
+                high = from_the_bottom;
+            } else {
+                low = from_the_top;
+            }
+        }
+        Ok(((low + high) / 2.0).exp())
+    }
+}
+
+/// The linear mixed model of a study fitted without any variant in it: the
+/// two variances of the trait, the effects of the intercept and the
+/// covariates, and the projection matrix every variant is then tested
+/// through.
+///
+/// Beside the covariates the trait carries a random effect whose
+/// covariance is the kinship times a variance, so that two related
+/// individuals are expected to resemble each other before any variant is
+/// looked at. The covariance of the trait under the null is `v =
+/// genetic_variance * k + residual_variance * i`, with `k` the kinship and
+/// `i` the identity, and the two variances are estimated by restricted
+/// maximum likelihood, which [`RemlSearch`] describes.
+///
+/// The projection matrix is `p = v⁻¹ - v⁻¹ d (d' v⁻¹ d)⁻¹ d' v⁻¹`,
+/// individuals by individuals, with `d` the design: it takes the
+/// covariates out of anything it is applied to and weights it by the
+/// covariance. [`LinearMixedModel::ypy`] is the trait through it, which is
+/// what says the fit reached its optimum.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "`calc_gwas` refuses a continuous trait with a kinship until the two \
+                  tests of this model are written, which is task 4.2 of \
+                  `docs/plans/gwas-linear.md`; the cargo tests of this module fit it"
+    )
+)]
+pub(crate) struct LinearMixedModel {
+    /// The effect of the intercept and of each covariate, one per column
+    /// of the design.
+    coefs: Vec<f64>,
+    /// The variance of the random effect of the kinship.
+    genetic_variance: f64,
+    /// What is left over, the variance of the trait that the kinship does
+    /// not account for.
+    residual_variance: f64,
+    /// The genetic variance over the sum of the two, which is the share of
+    /// the trait's variance that the kinship explains.
+    heritability: f64,
+    /// The trait through the projection matrix, `y' p y`.
+    ypy: f64,
+    /// How many individuals the study tests.
+    num_individuals: usize,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the same as the struct: nothing outside the cargo tests of this module \
+                  fits this model until task 4.2 of `docs/plans/gwas-linear.md` gives it \
+                  its two tests"
+    )
+)]
+impl LinearMixedModel {
+    /// The linear mixed model of `phenotype` over `design` with `kinship`
+    /// as the covariance of its random effect, fitted without any variant
+    /// in it.
+    ///
+    /// `phenotype` holds one value for each individual the design has a
+    /// row for, and `kinship` is that many rows of that many values, row
+    /// after row, already cut to those individuals and in their order.
+    /// [`calc_gwas`] checks the kinship before any model is fitted, so a
+    /// caller that comes straight here with a matrix of another length
+    /// gets the eigendecomposition's refusal of it.
+    ///
+    /// The eigenvalues of the kinship are clamped at 0 before use. A
+    /// kinship of genotypes with nothing missing has none below 0 but for
+    /// rounding, -3.3e-15 on the panel of `docs/specs/gwas.md`; the per
+    /// pair denominators of `docs/specs/kinship.md` put them there,
+    /// -0.0321 on the panel with 3 in 100 genotypes missing, and a
+    /// negative eigenvalue would make the covariance of the trait not a
+    /// covariance.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasInputOfAnotherSize`] when `phenotype` does not hold
+    /// one value for each tested individual, and [`Error::GwasLinalg`]
+    /// when the eigendecomposition of the kinship, one of the products,
+    /// one of the two Cholesky factorizations or one of the solves could
+    /// not be done.
+    pub(crate) fn of_the_study(
+        phenotype: &[f64],
+        design: &Design<'_>,
+        kinship: &[f64],
+    ) -> Result<LinearMixedModel> {
+        let num_individuals = design.num_individuals();
+        let num_coefs = design.num_coefs();
+        if phenotype.len() != num_individuals {
+            return Err(Error::GwasInputOfAnotherSize {
+                problem: GwasInputShape::Phenotype {
+                    num_values: phenotype.len(),
+                    num_individuals,
+                },
+            });
+        }
+        // The eigendecomposition is taken once and every value of the
+        // ratio of the two variances is then one number per individual.
+        // The buffer of the matrix comes back as the eigenvectors, so the
+        // kinship the caller holds is copied into one of its own.
+        let Eigen {
+            values: mut eigenvalues,
+            vectors,
+        } = popnei_linalg::eigh_lower(kinship.to_vec(), num_individuals).map_err(|source| {
+            Error::GwasLinalg {
+                operation: "eigendecomposition of the kinship",
+                source,
+            }
+        })?;
+        for eigenvalue in &mut eigenvalues {
+            *eigenvalue = eigenvalue.max(0.0);
+        }
+        // Row `j` of the eigenvectors is the eigenvector of the eigenvalue
+        // `j`, so the product of that matrix with the trait is the trait
+        // turned by the eigenvectors, and the same for the design.
+        let mut rotated_trait = vec![0.0_f64; num_individuals];
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: &vectors,
+                rows: num_individuals,
+            },
+            num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: phenotype,
+                cols: 1,
+            },
+            &mut rotated_trait,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the kinship's eigenvectors with the trait",
+            source,
+        })?;
+        let mut rotated_design = vec![0.0_f64; design.values().len()];
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: &vectors,
+                rows: num_individuals,
+            },
+            num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: design.values(),
+                cols: num_coefs,
+            },
+            &mut rotated_design,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of the kinship's eigenvectors with the design",
+            source,
+        })?;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "`Design::of_the_study` refuses a study of no more individuals than \
+                      the columns of its design plus one, so this is 2 at least"
+        )]
+        let degrees_of_freedom_of_the_null = num_individuals - num_coefs;
+        let degrees_of_freedom_of_the_null = degrees_of_freedom_of_the_null as f64;
+        let mut search = RemlSearch::of(
+            &eigenvalues,
+            &rotated_trait,
+            &rotated_design,
+            num_individuals,
+            num_coefs,
+            degrees_of_freedom_of_the_null,
+        );
+        let delta = search.the_delta()?;
+        // The search leaves the weights and the effects at whichever point
+        // it evaluated last, so the fit is taken again at the `delta` it
+        // gave, as `_LMMNull` of `pynei/gwas.py` does.
+        let (quad, _) = search.fit_at(delta)?;
+        let genetic_variance = quad / degrees_of_freedom_of_the_null;
+        let residual_variance = delta * genetic_variance;
+        let heritability = genetic_variance / (genetic_variance + residual_variance);
+        let coefs = std::mem::take(&mut search.coefs);
+        drop(search);
+        let ypy = the_trait_through_the_projection(
+            phenotype,
+            design,
+            &eigenvalues,
+            &vectors,
+            genetic_variance,
+            residual_variance,
+        )?;
+        Ok(LinearMixedModel {
+            coefs,
+            genetic_variance,
+            residual_variance,
+            heritability,
+            ypy,
+            num_individuals,
+        })
+    }
+
+    /// The null model of the result: the effects of the intercept and of
+    /// the covariates, the two variances and the share of the trait's
+    /// variance that the kinship explains.
+    #[must_use]
+    pub(crate) fn null_model(&self, test: TestType) -> NullModel {
+        NullModel {
+            model: GwasModel::Lmm,
+            test,
+            covariate_effects: self.coefs.clone(),
+            residual_variance: Some(self.residual_variance),
+            genetic_variance: Some(self.genetic_variance),
+            heritability: Some(self.heritability),
+            num_individuals: self.num_individuals,
+        }
+    }
+
+    /// The trait through the projection matrix, `y' p y`, which is the
+    /// generalized residual sum of squares of the null over the genetic
+    /// variance.
+    ///
+    /// The restricted maximum likelihood makes it exactly the individuals
+    /// less the columns of the design, so it is the cheapest evidence
+    /// there is that the fit reached its optimum. It is in no result, and
+    /// "The linear mixed model" of `docs/specs/gwas.md` has the cargo test
+    /// of it made here for that reason.
+    #[must_use]
+    pub(crate) fn ypy(&self) -> f64 {
+        self.ypy
+    }
+}
+
+/// The trait through the projection matrix of a fitted linear mixed model,
+/// `y' p y`.
+///
+/// The covariance of the trait under the null is the kinship times the
+/// genetic variance plus the identity times the residual one, `v =
+/// genetic_variance * k + residual_variance * i`, and the
+/// eigendecomposition of the kinship gives its inverse without another
+/// factorization: with `e` the eigenvectors and `l` the eigenvalues, `v⁻¹
+/// = e diag(1 / (genetic_variance * l + residual_variance)) e'`. The
+/// projection matrix is then `p = v⁻¹ - v⁻¹ d (d' v⁻¹ d)⁻¹ d' v⁻¹`, and
+/// `p y` is what every variant's numerator is taken against.
+///
+/// `eigenvectors` is `num_individuals` x `num_individuals`, row after row,
+/// row `j` being the eigenvector of `eigenvalues[j]`. Three matrices of
+/// that size are held at once here, which at the 10000 individuals of
+/// `docs/objectives.md` is 2.4 GB; pyNei holds the same three.
+///
+/// # Errors
+///
+/// [`Error::GwasLinalg`] when one of the four products, the Cholesky
+/// factorization of the design weighted by the covariance or the solve
+/// against it could not be done.
+fn the_trait_through_the_projection(
+    phenotype: &[f64],
+    design: &Design<'_>,
+    eigenvalues: &[f64],
+    eigenvectors: &[f64],
+    genetic_variance: f64,
+    residual_variance: f64,
+) -> Result<f64> {
+    let num_individuals = design.num_individuals();
+    let num_coefs = design.num_coefs();
+    let mut scaled = vec![0.0_f64; eigenvectors.len()];
+    for ((into, eigenvector), eigenvalue) in scaled
+        .chunks_exact_mut(num_individuals.max(1))
+        .zip(eigenvectors.chunks_exact(num_individuals.max(1)))
+        .zip(eigenvalues)
+    {
+        let of_the_covariance = genetic_variance * eigenvalue + residual_variance;
+        for (value, of_the_eigenvector) in into.iter_mut().zip(eigenvector) {
+            *value = of_the_eigenvector / of_the_covariance;
+        }
+    }
+    let mut inverse = vec![0.0_f64; eigenvectors.len()];
+    popnei_linalg::product(
+        TheFirstOperand::ByTheValuesSummedOver {
+            values: eigenvectors,
+            rows: num_individuals,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: &scaled,
+            cols: num_individuals,
+        },
+        &mut inverse,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "inverse of the covariance of the trait",
+        source,
+    })?;
+    let mut of_the_covariance = vec![0.0_f64; design.values().len()];
+    popnei_linalg::product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: &inverse,
+            rows: num_individuals,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: design.values(),
+            cols: num_coefs,
+        },
+        &mut of_the_covariance,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product of the covariance's inverse with the design",
+        source,
+    })?;
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the design is one slice of `num_individuals` x `num_coefs` values and a \
+                  study has two more individuals than columns, so `num_coefs` times \
+                  itself is smaller than a length a `usize` holds"
+    )]
+    let of_the_coefs = num_coefs * num_coefs;
+    let mut dvd = vec![0.0_f64; of_the_coefs];
+    popnei_linalg::product(
+        TheFirstOperand::ByTheValuesSummedOver {
+            values: design.values(),
+            rows: num_coefs,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: &of_the_covariance,
+            cols: num_coefs,
+        },
+        &mut dvd,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product of the design with the covariance's inverse",
+        source,
+    })?;
+    popnei_linalg::cholesky_lower(&mut dvd, num_coefs).map_err(|source| Error::GwasLinalg {
+        operation: "Cholesky factorization of the design weighted by the covariance",
+        source,
+    })?;
+    let mut solved = of_the_covariance.clone();
+    popnei_linalg::solve_with_cholesky(&dvd, num_coefs, &mut solved, num_individuals).map_err(
+        |source| Error::GwasLinalg {
+            operation: "solve of the design weighted by the covariance",
+            source,
+        },
+    )?;
+    // The buffer of the scaled eigenvectors is done with, and what goes in
+    // it is the part of the covariance's inverse that the design explains,
+    // which is taken out of that inverse to leave the projection matrix.
+    let mut of_the_design = scaled;
+    popnei_linalg::product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: &of_the_covariance,
+            rows: num_individuals,
+        },
+        num_coefs,
+        TheSecondOperand::ByTheColumnsOfTheResult {
+            values: &solved,
+            cols: num_individuals,
+        },
+        &mut of_the_design,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product that takes the design out of the covariance's inverse",
+        source,
+    })?;
+    let mut projection = inverse;
+    for (entry, explained) in projection.iter_mut().zip(&of_the_design) {
+        *entry -= *explained;
+    }
+    let mut through = vec![0.0_f64; num_individuals];
+    popnei_linalg::product(
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: &projection,
+            rows: num_individuals,
+        },
+        num_individuals,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: phenotype,
+            cols: 1,
+        },
+        &mut through,
+    )
+    .map_err(|source| Error::GwasLinalg {
+        operation: "product of the projection matrix with the trait",
+        source,
+    })?;
+    Ok(phenotype
+        .iter()
+        .zip(&through)
+        .map(|(measured, projected)| measured * projected)
+        .sum::<f64>())
+}
+
 /// The association study of the variants of a reader against a trait of
 /// the individuals: one row for each variant, with the frequency of the
 /// alleles that are not the major one, the effect of one more copy of one
@@ -2109,7 +2886,11 @@ impl LinearModel {
 /// [`Error::GwasModelNotBuilt`] when the study needs one of the three
 /// models that are not written, and
 /// [`Error::GwasGrammarGammaWithoutAKinship`] when the approximation was
-/// asked for by a study with no kinship. What
+/// asked for by a study with no kinship.
+/// [`Error::GwasInputOfAnotherSize`] when a kinship does not hold one row
+/// and one column for each tested individual, and
+/// [`Error::GwasKinshipValueNotFinite`] when one of its values is not a
+/// finite number, both checked before any model is fitted. What
 /// [`the_model_and_the_test`] refuses of the trait, the kinship and the
 /// test, and what [`Design::of_the_study`] refuses of the individuals, the
 /// phenotype and the design. [`Error::GwasLinalg`] when the fit or the
@@ -2135,6 +2916,9 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     let (model, test) = the_model_and_the_test(input)?;
     if input.use_grammar_gamma_approx && input.kinship.is_none() {
         return Err(Error::GwasGrammarGammaWithoutAKinship);
+    }
+    if let Some(kinship) = input.kinship {
+        refuse_a_kinship_that_is_not_of_the_individuals(kinship, input.individuals.len())?;
     }
     match model {
         GwasModel::Lm => {}
@@ -4354,8 +5138,8 @@ mod lm {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BlockReader, Design, Gwas, GwasInput, GwasModel, LinearModel, TestType, TraitType,
-        calc_gwas,
+        BlockReader, Design, Gwas, GwasInput, GwasInputShape, GwasModel, LinearModel, TestType,
+        TraitType, calc_gwas,
     };
     use crate::error::{Error, Result};
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -4807,7 +5591,9 @@ mod lm {
     /// continuous trait, the binomial one, the two covariates and the
     /// subpopulation. What is taken here is the continuous trait and the
     /// two covariates, which is what plink2 was given.
-    fn the_trait_and_the_design_of_the_panel(individuals: &[String]) -> (Vec<f64>, Vec<f64>) {
+    pub(super) fn the_trait_and_the_design_of_the_panel(
+        individuals: &[String],
+    ) -> (Vec<f64>, Vec<f64>) {
         let path = the_reference_path("phenotypes.csv");
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -5264,6 +6050,337 @@ mod lm {
             Err(Error::PassGaveNoVariant { .. }) => {}
             Err(error) => panic!("the study was refused with {error}"),
             Ok(result) => panic!("a study of {} variants was run", result.num_vars),
+        }
+    }
+
+    /// A kinship that does not hold one row and one column for each tested
+    /// individual is refused, and the refusal comes before the study is
+    /// told that its model is not written, which is what "checked before
+    /// any model is fitted" of "The Rust interface" of
+    /// `docs/specs/gwas.md` asks: the six individuals of the worked
+    /// example want 36 values.
+    #[test]
+    fn a_kinship_that_is_not_of_the_tested_individuals_is_refused() {
+        let vcf = the_worked_example_vcf();
+        for values in [25_usize, 35, 37, 49] {
+            let kinship = vec![0.0_f64; values];
+            let study = GwasInput {
+                kinship: Some(&kinship),
+                ..the_worked_example_study()
+            };
+            let mut reader = reader_over(&vcf);
+            match the_study_of(&mut reader, &study) {
+                Err(Error::GwasInputOfAnotherSize {
+                    problem:
+                        GwasInputShape::Kinship {
+                            num_values,
+                            num_individuals,
+                        },
+                }) => {
+                    assert_eq!(num_values, values, "the values the kinship held");
+                    assert_eq!(num_individuals, 6, "the individuals that are tested");
+                }
+                Err(error) => panic!("a kinship of {values} values was refused with {error}"),
+                Ok(result) => panic!("a study of {} variants was run", result.num_vars),
+            }
+        }
+    }
+
+    /// A kinship that holds a value which is not a finite number is
+    /// refused, naming the two individuals of that cell and the value. A
+    /// fit would not notice it: the eigendecomposition spreads it through
+    /// every eigenvalue and every eigenvector, and what the user would be
+    /// told is that a matrix of the linear algebra crate is not finite.
+    #[test]
+    fn a_kinship_that_holds_a_value_that_is_not_a_number_is_refused() {
+        let vcf = the_worked_example_vcf();
+        for (at, row, column, held) in [
+            (0_usize, 0_usize, 0_usize, f64::NAN),
+            (13, 2, 1, f64::INFINITY),
+            (35, 5, 5, f64::NEG_INFINITY),
+        ] {
+            let mut kinship = vec![0.0_f64; 36];
+            kinship[at] = held;
+            let study = GwasInput {
+                kinship: Some(&kinship),
+                ..the_worked_example_study()
+            };
+            let mut reader = reader_over(&vcf);
+            match the_study_of(&mut reader, &study) {
+                Err(Error::GwasKinshipValueNotFinite {
+                    individual,
+                    other,
+                    value,
+                }) => {
+                    assert_eq!(individual, row, "the row of the value");
+                    assert_eq!(other, column, "the column of the value");
+                    // `total_cmp` orders every `f64`, NaN among them, so
+                    // one comparison covers the three values.
+                    assert_eq!(
+                        value.total_cmp(&held),
+                        std::cmp::Ordering::Equal,
+                        "the value is {value} and the kinship held {held} at {at}"
+                    );
+                }
+                Err(error) => panic!("a kinship holding {held} was refused with {error}"),
+                Ok(result) => panic!("a study of {} variants was run", result.num_vars),
+            }
+        }
+    }
+}
+
+/// The null model of the linear mixed model against GMMAT 1.5.0's
+/// `glmmkin`, and the fit's own identity, which "The linear mixed model"
+/// of `docs/specs/gwas.md` has as the two checks of that fit.
+#[cfg(test)]
+mod lmm {
+    use std::io::Read;
+    use std::path::{Path, PathBuf};
+
+    use super::lm::the_trait_and_the_design_of_the_panel;
+    use super::{Design, GwasInput, GwasModel, LinearMixedModel, TestType, TraitType};
+
+    /// How far each of the five numbers of the null model may be from
+    /// GMMAT's: 1e-5 absolute.
+    ///
+    /// It is the bound of "How it is verified" of "The linear mixed model"
+    /// of `docs/specs/gwas.md`, and it is the distance between two
+    /// restricted maximum likelihood searches and not the width of a
+    /// printed digit: `tests/reference/gwas/gmmat.null_models.tsv` is one
+    /// of the three references the script writes at full precision, 15
+    /// digits of each number, so nothing of this bound is spent on
+    /// rounding.
+    ///
+    /// Measured over the five and the heritability on 24 September 2026:
+    /// the worst is the genetic variance, 1.230e-6 away on Accelerate and
+    /// 1.218e-6 on faer, which is 12 per cent of what is allowed; the
+    /// residual variance is 1.048e-6 and 1.041e-6 away, and the largest of
+    /// the three effects is the 6.93e-7 of `cov2` on both. The bound is not
+    /// lowered to two or three times that, unlike the ones this module sets
+    /// on popnei's own arithmetic: what it measures is how far the searches
+    /// of two programs land apart, and the spec fixes it.
+    ///
+    /// Where that 1.2e-6 comes from is the kinship and not the search. The
+    /// reference script gives GMMAT the text that `plink2 --make-rel
+    /// square` wrote, six significant digits of each entry, and this test
+    /// reads the `f64` of `--make-rel square bin` beside it, which is the
+    /// same matrix to 4.95e-6 of an entry. Fitted on that text in numpy on
+    /// 24 September 2026 the genetic variance lands 3.77e-7 from GMMAT's
+    /// instead of 1.2e-6.
+    ///
+    /// What the search itself is worth is 1.18e-8, which is how far the two
+    /// backends put the genetic variance from each other on the same
+    /// kinship: the criterion is flat at its minimum, so an eigenvalue that
+    /// moves in its last bits moves the fitted ratio of the two variances
+    /// by about the square root of that.
+    const OF_GMMAT: f64 = 1e-5;
+
+    /// How far `y' p y` may be from the individuals less the columns of
+    /// the design: 1e-6 absolute, from "The linear mixed model" of
+    /// `docs/specs/gwas.md`.
+    ///
+    /// Measured on the two panels on 24 September 2026, the worst is
+    /// 9.4e-12 on Accelerate and 7.6e-12 on faer, both on the panel with
+    /// every genotype called, which is 0.001 per cent of what is allowed.
+    /// The bound is the spec's and is not lowered to two or three times
+    /// what was measured: 197 is what the fit is at its optimum, and the
+    /// arithmetic that reaches it is products of 200 x 200 matrices, whose
+    /// rounding grows with the individuals where the number it is compared
+    /// with does not.
+    const OF_THE_REML_IDENTITY: f64 = 1e-6;
+
+    /// What GMMAT 1.5.0's `glmmkin` fitted for the panel with every
+    /// genotype called, from `tests/reference/gwas/gmmat.null_models.tsv`:
+    /// the variance of the random effect of the kinship, what is left
+    /// over, and the effects of the intercept, of `cov1` and of `cov2`.
+    ///
+    /// GMMAT calls the first two `tau` and `sigma2`. The file holds them
+    /// at full precision and these are its digits.
+    const OF_GMMAT_NULL: (f64, f64, [f64; 3]) = (
+        1.22161667529699,
+        0.342359482266917,
+        [4.67802051309181, 0.473360959469751, 1.11027907093373],
+    );
+
+    /// The genetic variance of those two over their sum, which is the
+    /// share of the trait's variance that the kinship explains.
+    const OF_GMMAT_HERITABILITY: f64 = 0.7810967382008012;
+
+    /// The path of one of the files of `tests/reference/kinship/`, where
+    /// the two kinships plink2 wrote are.
+    fn the_kinship_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/kinship")
+            .join(name)
+    }
+
+    /// The 40000 entries of the kinship plink2 wrote for one of the two
+    /// panels, row after row: the little endian `f64` of `--make-rel
+    /// square bin`, which is the matrix at full precision.
+    ///
+    /// The mixed models are given the kinship that came from plink2 and
+    /// not from popnei or pyNei, as "How it is verified" of "What every
+    /// model shares" of `docs/specs/gwas.md` asks.
+    fn the_kinship_of(name: &str) -> Vec<f64> {
+        let path = the_kinship_path(&format!("{name}.plink2.rel.bin.gz"));
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let mut bytes = Vec::new();
+        if let Err(error) = flate2::read::GzDecoder::new(file).read_to_end(&mut bytes) {
+            panic!("{path}: {error}", path = path.display());
+        }
+        bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|eight| f64::from_le_bytes(*eight))
+            .collect()
+    }
+
+    /// The individuals of that kinship, in the order plink2 wrote its rows
+    /// and its columns in, which is the order the VCF has them.
+    ///
+    /// The file holds one header line, `#IID`, and then one name per line.
+    fn the_individuals_of_the_kinship(name: &str) -> Vec<String> {
+        let path = the_kinship_path(&format!("{name}.plink2.rel.id"));
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        text.lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.trim().to_owned())
+            .collect()
+    }
+
+    /// The linear mixed model of one of the two panels, fitted on the
+    /// trait `cont` and the covariates `cov1` and `cov2` of
+    /// `tests/reference/gwas/phenotypes.csv` over the kinship plink2 wrote
+    /// for `name`.
+    ///
+    /// It is fitted here and not through `calc_gwas`, which refuses a
+    /// continuous trait with a kinship until the two tests of this model
+    /// are written, and because `y' p y` is in no result.
+    fn the_null_of_the_panel(name: &str) -> LinearMixedModel {
+        let individuals = the_individuals_of_the_kinship(name);
+        assert_eq!(individuals.len(), 200, "the individuals of {name}");
+        let kinship = the_kinship_of(name);
+        assert_eq!(kinship.len(), 40000, "the entries of the kinship of {name}");
+        let (phenotype, values) = the_trait_and_the_design_of_the_panel(&individuals);
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Continuous,
+            design: &values,
+            num_coefs: 3,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, individuals.len()) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of {name}: {error}"),
+        };
+        match LinearMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the null model of {name}: {error}"),
+        }
+    }
+
+    /// `found` within [`OF_GMMAT`] of `expected`, absolute.
+    fn assert_of_gmmat(found: f64, expected: f64, what: &str) {
+        let difference = (found - expected).abs();
+        assert!(
+            difference <= OF_GMMAT,
+            "{what} is {found} and GMMAT gives {expected}, {difference} away, against the \
+             {OF_GMMAT} allowed"
+        );
+    }
+
+    /// The two variances and the three effects of the null model are
+    /// GMMAT's, within 1e-5 absolute, which is deliverable 1 of work
+    /// package 4 of `docs/plans/gwas-linear.md`.
+    ///
+    /// The search has to be reproduced step for step or the variances
+    /// move, so a `genetic_variance` near but not at GMMAT's means the
+    /// search and one far from it means the criterion or the clamp of the
+    /// eigenvalues at 0.
+    ///
+    /// The `heritability` is asserted with them because it is the only
+    /// number of `NullModel` that is built from the two variances rather
+    /// than read off the fit.
+    #[test]
+    fn the_null_of_the_panel_is_gmmats_two_variances_and_three_effects() {
+        let fitted = the_null_of_the_panel("panel_called");
+        let null = fitted.null_model(TestType::Score);
+        assert_eq!(null.model, GwasModel::Lmm, "the model that was fitted");
+        assert_eq!(null.test, TestType::Score, "the test it carries");
+        assert_eq!(
+            null.num_individuals, 200,
+            "the individuals it was fitted on"
+        );
+        let (genetic, residual, effects) = OF_GMMAT_NULL;
+        let found = null
+            .genetic_variance
+            .expect("a linear mixed model has a genetic variance");
+        assert_of_gmmat(found, genetic, "the genetic variance");
+        let found = null
+            .residual_variance
+            .expect("a linear mixed model has a residual variance");
+        assert_of_gmmat(found, residual, "the residual variance");
+        let found = null
+            .heritability
+            .expect("a linear mixed model has a heritability");
+        assert_of_gmmat(found, OF_GMMAT_HERITABILITY, "the heritability");
+        assert_eq!(
+            null.covariate_effects.len(),
+            3,
+            "one effect per column of the design"
+        );
+        for ((found, expected), what) in null.covariate_effects.iter().zip(effects).zip([
+            "the intercept",
+            "the effect of cov1",
+            "the effect of cov2",
+        ]) {
+            assert_of_gmmat(*found, expected, what);
+        }
+    }
+
+    /// `y' p y` is the individuals less the columns of the design, 197 on
+    /// both panels within 1e-6, which is deliverable 2 of work package 4
+    /// of `docs/plans/gwas-linear.md` and `test_reml_identity` of pyNei.
+    ///
+    /// It is the generalized residual sum of squares of the null over the
+    /// genetic variance, and the restricted maximum likelihood makes it
+    /// exactly that number when the fit is at its optimum. It is the
+    /// cheapest evidence there is that the search settled where it should,
+    /// and it is the one check of this spec made at the private function
+    /// that fits the null, since `y' p y` is in no result.
+    ///
+    /// The second panel is here for the clamp of the eigenvalues at 0. Its
+    /// kinship, the one plink2 wrote for the panel with 3 in 100 genotypes
+    /// missing whole, has a smallest eigenvalue of -0.0321 where the
+    /// panel with every genotype called has -3.3e-15. Without the clamp
+    /// the weights of the criterion go negative at every `delta` below
+    /// 0.0321, which is 33 of the 101 points of the grid, and the Cholesky
+    /// factorization of the weighted design refuses them, so the fit comes
+    /// back with an error and this test fails.
+    #[test]
+    fn the_trait_through_the_projection_of_a_panel_is_its_individuals_less_its_design() {
+        for name in ["panel_called", "panel"] {
+            let fitted = the_null_of_the_panel(name);
+            let found = fitted.ypy();
+            let difference = (found - 197.0).abs();
+            assert!(
+                difference <= OF_THE_REML_IDENTITY,
+                "y' p y of {name} is {found} and the fit at its optimum makes it 197, \
+                 {difference} away, against the {OF_THE_REML_IDENTITY} allowed"
+            );
         }
     }
 }

@@ -641,6 +641,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasPhenotypeNotBinomial { .. }
         | popnei::Error::GwasPhenotypeOfOneValue { .. }
         | popnei::Error::GwasDesignValueNotFinite { .. }
+        | popnei::Error::GwasKinshipValueNotFinite { .. }
         | popnei::Error::GwasCovariatesCollinear { .. }
         | popnei::Error::GwasScoreTestOfALinearModel
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
