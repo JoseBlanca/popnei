@@ -1469,7 +1469,7 @@ fn add_the_rows(
             let called_alleles = if of_the_whole_row {
                 count_alleles(row, &mut counts)?
             } else {
-                count_alleles_of(row, ploidy, individuals, &mut counts)?
+                count_alleles_of(row, ploidy, individuals, &mut counts)?.called_alleles
             };
             if asked.the_maf()
                 && let Some(value) = config.maf.of_var(&counts, called_alleles)
@@ -2160,7 +2160,8 @@ mod fixtures {
     pub(super) fn allele_counts_of(gts: &[i8], pop: &[usize]) -> (AlleleCounts, u32) {
         let mut counts: AlleleCounts = [0; 128];
         let called_alleles = count_alleles_of(gts, 2, pop, &mut counts)
-            .expect("the allele counts of the population");
+            .expect("the allele counts of the population")
+            .called_alleles;
         (counts, called_alleles)
     }
 
@@ -2959,7 +2960,9 @@ mod maf {
             {
                 let mut counts = [0_u32; 128];
                 let called_alleles =
-                    count_alleles_of(gts_of(&block, var), 2, &individuals, &mut counts).unwrap();
+                    count_alleles_of(gts_of(&block, var), 2, &individuals, &mut counts)
+                        .unwrap()
+                        .called_alleles;
                 assert_eq!(called_alleles, of_each_pop[pop]);
                 assert_value(
                     maf.of_var(&counts, called_alleles),

@@ -134,3 +134,14 @@ required-features = ["bench-internals"]
 name = "r2_matrix"
 harness = false
 required-features = ["bench-internals"]
+
+# How long the seven distances between every pair of populations take, of
+# the performance review of that pass, which "Speed" of
+# docs/specs/dists.md gives no number to reach and leaves the measurement
+# of to the review. It takes the path of a vars file, one or
+# more files of the population of each individual, the runs and how the
+# variants are cut into the resampling groups, and prints one wall time per
+# run, so it runs without a harness, as the eight above do.
+[[bench]]
+name = "pop_dists"
+harness = false
