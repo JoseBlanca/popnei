@@ -278,6 +278,22 @@ refused, a defect of popnei, when it is negative, is an error with the
 routine and the `info`, and faer's error for the same case is the same
 error of the crate, with the `info` at 0, since faer gives none.
 
+The diagonal is read for a 0 and for nothing else. An entry that is not 0
+but whose reciprocal overflows, which is any subnormal one, is let through,
+and the solution then holds an infinity or a NaN: measured on 23 September
+2026 on the 2 x 2 with 4e-309 and 1 on its diagonal against the right hand
+side (0.5, 1), whose exact solution is (1.2500000000000008e308, 1) and
+both of whose entries an `f64` holds, `dtrtrs` gave an infinity and faer a
+NaN for the first entry, each with no error, and numpy 2.5.3 gave the
+infinity. So this is the one place where the two backends answer
+differently and neither says so, and what makes it bearable is that both
+answers are not finite, so the one test a caller has to make on what came
+back catches either. Refusing every diagonal entry whose reciprocal
+overflows would make the two agree and would refuse an input numpy
+answers, and that is the owner's to decide; the same holds of the three
+operations that read the diagonal of a Cholesky factorization, whose check
+is an entry at most 0.
+
 What none of the seven checks is its own result. A matrix that is positive
 definite and nearly not factors, and the inverse or the solution that comes
 off it can hold an infinity: measured on 23 September 2026, the 2 x 2 with
