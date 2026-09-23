@@ -924,8 +924,16 @@ fn value_of(measure: PopDistMeasure, sums: &PairSums, ploidy: u32) -> Option<f64
     let one_minus_mean_h_s = 1.0 - mean_h_s;
     // The sum of the square roots is at most the variants that counted, so
     // what the rounding leaves above them is 0 and not a chord distance of
-    // NaN.
-    let nei_d_a = (1.0 - sums.sqrt_of_the_products / num_vars).max(0.0);
+    // NaN. The comparison is written this way round because
+    // `f64::max(NAN, 0.0)` is 0, and a NaN that reached here would leave as
+    // a distance of 0: no pass makes one, and if one is ever made it stays
+    // a NaN.
+    let of_the_square_roots = 1.0 - sums.sqrt_of_the_products / num_vars;
+    let nei_d_a = if of_the_square_roots < 0.0 {
+        0.0
+    } else {
+        of_the_square_roots
+    };
     match measure {
         PopDistMeasure::Fst => (sums.h_b != 0.0).then(|| between_minus_within / sums.h_b),
         PopDistMeasure::F2 => Some(between_minus_within / num_vars),
@@ -3303,6 +3311,45 @@ mod tests {
                 &format!("the {} of four homozygotes of four alleles", measure.name()),
             );
         }
+    }
+
+    /// The clamp that keeps the rounding from taking Nei's D_A below 0 does
+    /// not turn a NaN into 0. `f64::max(NAN, 0.0)` is 0, so the clamp
+    /// written with it would have handed a user a D_A of 0 and a chord
+    /// distance of 0 for a sum of the square roots that is not a number.
+    ///
+    /// No pass reaches this: every square root of a product of two
+    /// frequencies is a number, and the sums are written here as no pass
+    /// would leave them. What the test holds is the rule that a NaN stays
+    /// one until the boundary with Python, where it means a value that is
+    /// not there.
+    #[test]
+    fn a_sum_of_the_square_roots_that_is_not_a_number_leaves_the_da_and_the_chord_not_numbers() {
+        let sums = PopDistSums::of_the_pass(
+            2,
+            2,
+            1,
+            Vec::new(),
+            vec![PairSums {
+                h_b: 0.5,
+                h_w: 0.25,
+                sqrt_of_the_products: f64::NAN,
+                corrected_h_s: 0.25,
+                corrected_h_t: 0.5,
+                num_vars: 1,
+            }],
+        );
+
+        assert!(
+            sums.measure(PopDistMeasure::Da, 0, 1)
+                .is_some_and(f64::is_nan),
+            "Nei's D_A of a sum of the square roots that is not a number"
+        );
+        assert!(
+            sums.measure(PopDistMeasure::Chord, 0, 1)
+                .is_some_and(f64::is_nan),
+            "the chord distance of a sum of the square roots that is not a number"
+        );
     }
 
     /// The groups the variants were cut into change no measure: the sums of
