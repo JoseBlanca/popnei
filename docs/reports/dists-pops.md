@@ -694,3 +694,87 @@ of them. They add five ratios inside one function, over sums work package
 1 already accumulates. The `architecture` reviewer of work package 1 went
 over the pass, the accumulator, the two builds and the memory, which is
 where those questions live, and nothing here changes them.
+
+### The review of work packages 2 and 3: what it found
+
+Six reviewers: `spec`, `tests`, `numbers`, `errors` and one taking `api`
+with the binding layer. Three of them rebuilt the five measures
+independently from the spec, one with its own VCF reader, and all three
+agree with popnei to 1.8e-14 relative or better on both panels at two
+thresholds. The `spec` reviewer also re-ran adegenet and mmod itself
+under R and reproduced all eighteen reference doubles digit for digit. So
+the measures are right wherever their inputs are in range, and everything
+below is about the edges and about what a reader is told.
+
+**A 0 over 0 that destroyed a standard error that existed.** Two
+reviewers found it. Two populations fixed for the same allele at every
+variant that counted make the two corrected diversities 0, so G_ST and
+G''_ST divided 0 by 0 and returned a NaN as though it were a value, with
+a count of variants above zero. One such NaN, in one group left out,
+poisons the whole jackknife. The orchestrator ran it on 25 variants of 4
+individuals, 24 of them with every genotype `0/0`: F_ST, G_ST and G''_ST
+came out with a standard error of NaN while Jost's D, f_2, the chord
+distance and D_A all built a finite one from the same data.
+
+It reached F_ST too, whose 0 over 0 work package 1 had documented as
+deliberate on the argument that a caller sees the same thing whether the
+core gives no value or a NaN. That argument was false, and this is the
+case that shows it.
+
+**What the standard error does when a group has no value, which the spec
+did not say.** The fix had to settle it. A measure now gets no standard
+error at all when a group that holds variants of the pair leaves it
+without a value, rather than a standard error built from the groups that
+do have one. The reason is in the estimator: the weights of the g groups
+add to one, so dropping a group for want of a value pulls the jackknife
+estimate off by that group's weight and the variance is then taken around
+a centre no group put there. On the 25-variant fixture that route gives
+0.0082 for F_ST where the honest answer is that the error is not
+computable. It costs nothing on real data, since a left-out value is
+undefined only when every other group is degenerate. It is in the spec,
+in a commit before the code.
+
+**Three measures that were a ratio of rounding noise at a ploidy of 1.**
+At ploidy 1 the two corrected diversities are identically zero by their
+definitions, so the sums hold only the residue of adding frequencies that
+do not come to exactly 1, and Jost's D, G_ST and G''_ST divided residue by
+residue. On popnei's own haploid fixture the orchestrator read G_ST
+0.2503 and G''_ST 0.4004, where Jost's D showed what was really there,
+1.4e-17. Moving `min_num_individuals` from 3 to 4 moved G_ST by 6% and the
+chord distance by 0.2%, which is the signature of a ratio of noise; a
+reviewer's own implementation of the same formulas gave G_ST 1.0 on the
+same data, a different arbitrary number. The three now have no value at a
+ploidy of 1, which is in the spec. F_ST, f_2, the chord distance and D_A
+are meaningful there and are unchanged, which is why the pass is not
+refused.
+
+**A third blind test of the family work package 1's review found.** The
+tests that check the measures do not change with the size of the blocks or
+the number of threads looped over F_ST and f_2 alone. Those two read two
+of the six sums, so the three sums that the other five measures are built
+from were never compared across block sizes or thread counts at all. Two
+reviewers made those three sums depend on how many chunks a block holds
+and both tests still passed. Widened to all seven, the same mutation fails
+with the chord distance of one pair 1.4e-9 apart between blocks of 100 and
+of 10000.
+
+**A fixture that was not a state a pass can reach.** The test of the case
+where the mean corrected within-population diversity is exactly 1 was
+built from hand-written sums, and its doc said no genotypes reach that
+case. Genotypes do: four individuals in two populations of two, one
+variant of four distinct homozygotes. And the reachable case behaves
+differently from the hand-written one, since there both corrected
+diversities are 1 and G''_ST is a 0 over 0 rather than an infinity. There
+is now a test over real genotypes beside the hand-written one, which is
+kept for the other case.
+
+**Smaller things that held.** No test asserted that a standard error of
+the five measures these two work packages added is a number at all. The
+comparison with pyNei built its populations through a helper that sorts
+the names, so popnei keeping the order of the `pops` dict, which is one of
+the four differences from pyNei the spec names, was never exercised with
+an unsorted dict. One TypeScript assertion compared the length of two
+constants with each other and could not fail. The clamp that keeps D_A at
+zero or above would have turned a NaN into a zero, since that is what the
+maximum of a NaN and zero gives, which was a hazard rather than a defect
+since no NaN can reach it today.
