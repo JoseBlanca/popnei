@@ -129,6 +129,27 @@ populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
 `dist_vector` in identifiers, as in pyNei. Not used: condensed matrix,
 the name scipy gives the same order.
 
+**standardized dosage.** The dosage of a genotype with the mean dosage of
+its variant taken from it and the result divided by
+`sqrt(ploidy * p * (1 - p))`, where p is the mean dosage over the ploidy:
+the spread the allele frequency of the variant gives it under Hardy
+Weinberg. It is what the kinship is built from, and it is not the dosage
+divided by its own standard deviation, which is what a PCA of the variants
+standardizes with. `z` in the formulas, as in the literature.
+
+**kinship.** The genomic relationship matrix of VanRaden (2008), which GCTA
+and plink2's `--make-rel` also compute: for every pair of individuals, the
+standardized dosages of the two multiplied together and summed over the
+variants, divided by the per pair denominator. An entry off the diagonal is
+twice the coancestry of the pair and one on the diagonal is 1 plus the
+inbreeding of that individual. `docs/specs/kinship.md`. Not used: GRM,
+relationship matrix, K, which is what the formulas call it.
+
+**per pair denominator.** How many variants have a called genotype in both
+individuals of a pair, which is what that pair's entry of the kinship is
+divided by. With no missing genotype it is the same number for every pair.
+`num_vars_per_pair` in pyNei. `docs/specs/kinship.md`.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`
