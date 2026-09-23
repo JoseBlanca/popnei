@@ -929,7 +929,11 @@ cargo tests take the first two, and the Python and the TypeScript tests take
 the third, the only one of the three above the 20 group minimum. All compare
 within 1e-12 relative. No other measure has its standard error checked outside
 the project, because no program prints one for them; what is checked is the
-arithmetic they share, which is this.
+arithmetic they share, which is this, and that each of the seven comes out of
+it a number of the size a standard error of that measure has: over the 22
+groups of 55 000 base pairs every one of the seven of the biallelic panel is
+between 2 and 6 in 100 of the measure beside it, and the tests ask of each of
+them that it be above 0 and below a tenth of it.
 
 ### How it is verified
 
