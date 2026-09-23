@@ -5,10 +5,11 @@
 //! needs a few operations of linear algebra, and this crate is the one
 //! place that has them. It holds four: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
-//! symmetric matrix, [`eigh_lower`]; the product of two matrices,
-//! [`product`]; and the product of a matrix with the transpose of
-//! another, [`product_by_transpose`]. `docs/specs/linalg.md` says what
-//! each one gives.
+//! symmetric matrix, [`eigh_lower`]; and the product of two matrices,
+//! [`product`], which is two of the four because [`TheSecondOperand`]
+//! says whether the second matrix holds one row for each of the values
+//! summed over or one row for each column of the result.
+//! `docs/specs/linalg.md` says what each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
 //! the layout of the blocks and of everything the core crate holds, with
@@ -202,14 +203,67 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
     backend::add_self_product_lower(a, rows, cols, g)
 }
 
-/// The product `c = a b`, where `a` is `rows` x `inner`, `b` is `inner` x
-/// `cols` and `c`, which is overwritten, is `rows` x `cols`, all row after
-/// row.
+/// The second operand of a [`product`], with the way it holds its values.
+///
+/// A product sums over the `inner` values of each row of its first
+/// operand, and the second operand holds those values either as one row
+/// for each of them, which is the second matrix of a product as it is
+/// usually written, or as one row for each column of the result, which is
+/// what a caller has whose two matrices are both laid out by the thing
+/// they describe. Which of the two it is belongs here and not in the name
+/// of a function, because the two take the same numbers and give
+/// different matrices: a call that named the wrong one of two functions
+/// would pass every check, since a buffer of `inner` x `cols` values
+/// holds `cols` x `inner` as well, and would give a wrong matrix with no
+/// error.
+#[derive(Debug, Clone, Copy)]
+pub enum TheSecondOperand<'a> {
+    /// `inner` x `cols`, one row for each of the values the product sums
+    /// over, which gives `c = a b`.
+    ByTheValuesSummedOver {
+        /// The values of the matrix, row after row.
+        values: &'a [f64],
+        /// How many columns it has, which is how many the result has.
+        cols: usize,
+    },
+    /// `cols` x `inner`, one row for each column of the result, which
+    /// gives `c = a b'`. Both backends read it that way inside the
+    /// routine and neither pays a copy for it.
+    ByTheColumnsOfTheResult {
+        /// The values of the matrix, row after row.
+        values: &'a [f64],
+        /// How many rows it has, which is how many columns the result
+        /// has.
+        cols: usize,
+    },
+}
+
+impl TheSecondOperand<'_> {
+    /// How many columns the result has, which the operand holds as its
+    /// columns or as its rows by the way it is laid out.
+    fn cols(self) -> usize {
+        match self {
+            TheSecondOperand::ByTheValuesSummedOver { cols, .. }
+            | TheSecondOperand::ByTheColumnsOfTheResult { cols, .. } => cols,
+        }
+    }
+}
+
+/// The product of `a`, which is `rows` x `inner`, with `b`, whose
+/// [`TheSecondOperand`] says whether it is `inner` x `cols` or `cols` x
+/// `inner`, into `c`, which is overwritten and is `rows` x `cols`, all
+/// row after row.
+///
+/// The entry i, j of the result is the sum over the `inner` values of the
+/// row i of `a` times the column j, or the row j, of `b`. Giving one
+/// slice for `a` and for `b` as
+/// [`TheSecondOperand::ByTheColumnsOfTheResult`], with `rows` equal to
+/// `cols`, is the product of a matrix with its own transpose.
 ///
 /// `rows` may be 0, and then `c` holds no rows and nothing is written.
-/// `inner` and `cols` are 1 at least: a product with no inner dimension or
-/// no column is a defect of the caller, as `docs/specs/linalg.md` has a
-/// `cols` of 0 among its errors. A buffer may hold more values than its
+/// `inner` and `cols` are 1 at least: a product with no inner dimension
+/// or no column is a defect of the caller, as `docs/specs/linalg.md` has
+/// a `cols` of 0 among its errors. A buffer may hold more values than its
 /// rows times its columns, and then its first rows times columns are the
 /// matrix.
 ///
@@ -218,14 +272,13 @@ pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]
 /// [`Error::Dimension`] when `inner` or `cols` is 0, when a buffer holds
 /// fewer values than its rows times its columns, or when a matrix would
 /// hold more than 2147483647 values, which is what the routines of BLAS
-/// and LAPACK count in. [`Error::NotFinite`] when `a` or `b` holds a value
-/// that is not finite.
+/// and LAPACK count in. [`Error::NotFinite`] when `a` or `b` holds a
+/// value that is not finite.
 pub fn product(
     a: &[f64],
     rows: usize,
     inner: usize,
-    b: &[f64],
-    cols: usize,
+    b: TheSecondOperand<'_>,
     c: &mut [f64],
 ) -> Result<()> {
     if inner == 0 {
@@ -234,6 +287,7 @@ pub fn product(
             expected: "1 at least, since it is the dimension the product sums over".to_owned(),
         });
     }
+    let cols = b.cols();
     if cols == 0 {
         return Err(Error::Dimension {
             argument: "cols",
@@ -241,73 +295,32 @@ pub fn product(
         });
     }
     let a = the_matrix_of(a, rows, inner, "a")?;
-    let b = the_matrix_of(b, inner, cols, "b")?;
+    let values_of_b = match b {
+        TheSecondOperand::ByTheValuesSummedOver { values, cols } => {
+            the_matrix_of(values, inner, cols, "b")?
+        }
+        TheSecondOperand::ByTheColumnsOfTheResult { values, cols } => {
+            the_matrix_of(values, cols, inner, "b")?
+        }
+    };
     let c = the_matrix_of_mut(c, rows, cols, "c")?;
     refuse_a_value_that_is_not_finite(a, "a")?;
-    refuse_a_value_that_is_not_finite(b, "b")?;
+    refuse_a_value_that_is_not_finite(values_of_b, "b")?;
     if rows == 0 {
+        // No row of the result to write. Both backends write nothing for a
+        // product of no rows anyway, so no test tells this line from its
+        // absence; what it buys is that no routine of a backend is ever
+        // reached with a dimension of 0 and the pointer of an empty slice.
         return Ok(());
     }
-    backend::product(a, rows, inner, b, cols, c)
-}
-
-/// The product `c = a b'`, where `a` is `rows` x `inner`, `b` is `cols` x
-/// `inner` and `c`, which is overwritten, is `rows` x `cols`, all row
-/// after row.
-///
-/// The two operands hold their `inner` values the same way round, one row
-/// for each of the `rows` and the `cols` things they describe, and the
-/// entry i, j of the result is the sum over the `inner` columns of the row
-/// i of `a` times the row j of `b`. It is [`product`] with its second
-/// operand read the other way round, which both backends do inside the
-/// routine and neither pays a copy for, so a caller whose two matrices are
-/// both laid out by the thing they describe writes no transpose of its
-/// own.
-///
-/// Giving one slice for `a` and for `b` with `rows` equal to `cols` is the
-/// product of a matrix with its own transpose.
-///
-/// `rows` may be 0, and then `c` holds no rows and nothing is written.
-/// `inner` and `cols` are 1 at least, as in [`product`]. A buffer may hold
-/// more values than its rows times its columns, and then its first rows
-/// times columns are the matrix.
-///
-/// # Errors
-///
-/// [`Error::Dimension`] when `inner` or `cols` is 0, when a buffer holds
-/// fewer values than its rows times its columns, or when a matrix would
-/// hold more than 2147483647 values, which is what the routines of BLAS
-/// and LAPACK count in. [`Error::NotFinite`] when `a` or `b` holds a value
-/// that is not finite.
-pub fn product_by_transpose(
-    a: &[f64],
-    rows: usize,
-    inner: usize,
-    b: &[f64],
-    cols: usize,
-    c: &mut [f64],
-) -> Result<()> {
-    if inner == 0 {
-        return Err(Error::Dimension {
-            argument: "inner",
-            expected: "1 at least, since it is the dimension the product sums over".to_owned(),
-        });
+    match b {
+        TheSecondOperand::ByTheValuesSummedOver { .. } => {
+            backend::product(a, rows, inner, values_of_b, cols, c)
+        }
+        TheSecondOperand::ByTheColumnsOfTheResult { .. } => {
+            backend::product_by_transpose(a, rows, inner, values_of_b, cols, c)
+        }
     }
-    if cols == 0 {
-        return Err(Error::Dimension {
-            argument: "cols",
-            expected: "1 at least, since it is the number of columns of the product".to_owned(),
-        });
-    }
-    let a = the_matrix_of(a, rows, inner, "a")?;
-    let b = the_matrix_of(b, cols, inner, "b")?;
-    let c = the_matrix_of_mut(c, rows, cols, "c")?;
-    refuse_a_value_that_is_not_finite(a, "a")?;
-    refuse_a_value_that_is_not_finite(b, "b")?;
-    if rows == 0 {
-        return Ok(());
-    }
-    backend::product_by_transpose(a, rows, inner, b, cols, c)
 }
 
 /// The eigendecomposition of the symmetric `g` of `n` x `n`, given by its
@@ -524,10 +537,8 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Eigen, Error, add_self_product_lower, eigh_lower, product, product_by_transpose,
-        reverse_the_rows,
-    };
+    use super::TheSecondOperand::{ByTheColumnsOfTheResult, ByTheValuesSummedOver};
+    use super::{Eigen, Error, add_self_product_lower, eigh_lower, product, reverse_the_rows};
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
     /// rows (1, 2, 0) and (0, 1, 3), row after row.
@@ -682,21 +693,51 @@ mod tests {
         // C holds other values first, so a product that added to C instead
         // of overwriting it would leave them in the result.
         let mut c = vec![7.0; 4];
-        product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 2, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0]);
     }
 
     #[test]
     fn the_product_of_a_b_whose_result_is_not_symmetric() {
         let mut c = vec![7.0; 4];
-        product(&A_OF_2_BY_3, 2, 3, &B_THAT_IS_NOT_SYMMETRIC, 2, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_THAT_IS_NOT_SYMMETRIC,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![5.0, 1.0, 2.0, 9.0]);
     }
 
     #[test]
     fn the_product_of_matrices_whose_three_dimensions_are_all_different() {
         let mut c = vec![7.0; 2];
-        product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_1, 1, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_1,
+                cols: 1,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![1.0, 6.0]);
     }
 
@@ -704,76 +745,176 @@ mod tests {
     fn the_product_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
         let b = [1.0, 0.0, 2.0, 1.0, 0.0, 3.0, 1000.0];
         let mut c = vec![7.0; 5];
-        product(&A_OF_2_BY_3, 2, 3, &b, 2, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &b,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0, 7.0]);
     }
 
     #[test]
     fn the_product_of_an_a_of_no_rows_writes_nothing() {
         let mut c = vec![7.0, 7.0];
-        product(&[], 0, 3, &B_OF_3_BY_2, 2, &mut c).unwrap();
+        product(
+            &[],
+            0,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![7.0, 7.0]);
     }
 
     #[test]
-    fn the_product_by_transpose_of_two_matrices_whose_result_is_not_symmetric() {
+    fn the_product_by_the_columns_of_the_result_of_two_matrices_whose_result_is_not_symmetric() {
         // C holds other values first, so a product that added to C instead
         // of overwriting it would leave them in the result. The result is
         // not symmetric, so a backend that wrote the transpose of C would
         // fail this.
         let mut c = vec![7.0; 4];
-        product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 2, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_2_BY_3,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![3.0, 4.0, 1.0, 5.0]);
     }
 
     #[test]
-    fn the_product_by_transpose_of_matrices_whose_three_dimensions_are_all_different() {
+    fn the_product_by_the_columns_of_the_result_of_matrices_whose_three_dimensions_are_all_different()
+     {
         let mut c = vec![7.0; 2];
-        product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_1_BY_3, 1, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_1_BY_3,
+                cols: 1,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![2.0, 3.0]);
     }
 
     #[test]
-    fn the_product_by_transpose_of_a_matrix_with_itself_is_the_product_of_the_two_layouts() {
+    fn the_product_by_the_columns_of_the_result_of_a_matrix_with_itself_is_the_product_of_the_two_layouts()
+     {
         // A A', which is the first case of `product` above written the
         // other way round: the B of 3 x 2 there is this A. The two
         // functions are asserted to give it alike, which is what catches
         // one of them reading an operand the way the other does.
         let mut c = vec![7.0; 4];
-        product_by_transpose(&A_OF_2_BY_3, 2, 3, &A_OF_2_BY_3, 2, &mut c).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &A_OF_2_BY_3,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![5.0, 2.0, 2.0, 10.0]);
         let mut of_the_product = vec![7.0; 4];
-        product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 2, &mut of_the_product).unwrap();
+        product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2,
+                cols: 2,
+            },
+            &mut of_the_product,
+        )
+        .unwrap();
         assert_eq!(c, of_the_product);
     }
 
     #[test]
-    fn the_product_by_transpose_of_an_a_of_no_rows_writes_nothing() {
+    fn the_product_by_the_columns_of_the_result_of_an_a_of_no_rows_writes_nothing() {
         let mut c = vec![7.0, 7.0];
-        product_by_transpose(&[], 0, 3, &B_OF_2_BY_3, 2, &mut c).unwrap();
+        product(
+            &[],
+            0,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_2_BY_3,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap();
         assert_eq!(c, vec![7.0, 7.0]);
     }
 
     #[test]
-    fn the_product_by_transpose_refuses_the_dimensions_the_product_refuses() {
+    fn the_product_by_the_columns_of_the_result_refuses_the_dimensions_the_product_refuses() {
         // A `b` that does not hold its cols rows of inner values, a `c`
         // shorter than its rows times its columns, and the two dimensions
         // that are 1 at least.
         let mut c = vec![0.0; 4];
-        let error =
-            product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3[..4], 2, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_2_BY_3[..4],
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "b", .. }),
             "the error is {error}"
         );
         let mut short = vec![0.0; 3];
-        let error =
-            product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 2, &mut short).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_2_BY_3,
+                cols: 2,
+            },
+            &mut short,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "c", .. }),
             "the error is {error}"
         );
-        let error = product_by_transpose(&A_OF_2_BY_3, 2, 3, &B_OF_2_BY_3, 0, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_OF_2_BY_3,
+                cols: 0,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -784,7 +925,17 @@ mod tests {
             ),
             "the error is {error}"
         );
-        let error = product_by_transpose(&[], 2, 0, &[], 2, &mut c).unwrap_err();
+        let error = product(
+            &[],
+            2,
+            0,
+            ByTheColumnsOfTheResult {
+                values: &[],
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -797,9 +948,17 @@ mod tests {
         );
         let mut with_one_that_is_not_finite = B_OF_2_BY_3;
         with_one_that_is_not_finite[3] = f64::NAN;
-        let error =
-            product_by_transpose(&A_OF_2_BY_3, 2, 3, &with_one_that_is_not_finite, 2, &mut c)
-                .unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheColumnsOfTheResult {
+                values: &with_one_that_is_not_finite,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::NotFinite { argument: "b" }),
             "the error is {error}"
@@ -1033,7 +1192,17 @@ mod tests {
     #[test]
     fn the_product_refuses_a_b_that_does_not_have_the_inner_dimension() {
         let mut c = vec![0.0; 4];
-        let error = product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2[..4], 2, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2[..4],
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "b", .. }),
             "the error is {error}"
@@ -1043,7 +1212,17 @@ mod tests {
     #[test]
     fn the_product_refuses_a_c_shorter_than_its_rows_times_its_columns() {
         let mut c = vec![0.0; 3];
-        let error = product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 2, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "c", .. }),
             "the error is {error}"
@@ -1053,7 +1232,17 @@ mod tests {
     #[test]
     fn the_product_refuses_a_cols_of_zero_and_an_inner_of_zero() {
         let mut c: Vec<f64> = Vec::new();
-        let error = product(&A_OF_2_BY_3, 2, 3, &B_OF_3_BY_2, 0, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &B_OF_3_BY_2,
+                cols: 0,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -1064,7 +1253,17 @@ mod tests {
             ),
             "the error is {error}"
         );
-        let error = product(&[], 2, 0, &[], 2, &mut c).unwrap_err();
+        let error = product(
+            &[],
+            2,
+            0,
+            ByTheValuesSummedOver {
+                values: &[],
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error,
@@ -1081,11 +1280,75 @@ mod tests {
     fn the_product_refuses_a_value_that_is_not_finite() {
         let mut c = vec![0.0; 4];
         let b = [1.0, 0.0, 2.0, f64::NEG_INFINITY, 0.0, 3.0];
-        let error = product(&A_OF_2_BY_3, 2, 3, &b, 2, &mut c).unwrap_err();
+        let error = product(
+            &A_OF_2_BY_3,
+            2,
+            3,
+            ByTheValuesSummedOver {
+                values: &b,
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::NotFinite { argument: "b" }),
             "the error is {error}"
         );
+    }
+
+    /// The first operand of a product is checked as the second one is:
+    /// its length against its rows times the inner dimension, and its
+    /// values for one that is not finite. Both are made whichever way the
+    /// second operand is held, and both name `a` and not `b`.
+    #[test]
+    fn the_product_refuses_an_a_that_is_not_its_rows_times_the_inner_dimension() {
+        let of_the_values = ByTheValuesSummedOver {
+            values: &B_OF_3_BY_2,
+            cols: 2,
+        };
+        let of_the_columns = ByTheColumnsOfTheResult {
+            values: &B_OF_2_BY_3,
+            cols: 2,
+        };
+        for b in [of_the_values, of_the_columns] {
+            let mut c = vec![0.0; 4];
+            let error = product(&A_OF_2_BY_3[..5], 2, 3, b, &mut c).unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "a", .. }),
+                "the error for {b:?} is {error}"
+            );
+            // The same call with the whole of `a` is no error.
+            product(&A_OF_2_BY_3, 2, 3, b, &mut c).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_product_refuses_a_value_that_is_not_finite_in_a() {
+        let of_the_values = ByTheValuesSummedOver {
+            values: &B_OF_3_BY_2,
+            cols: 2,
+        };
+        let of_the_columns = ByTheColumnsOfTheResult {
+            values: &B_OF_2_BY_3,
+            cols: 2,
+        };
+        for b in [of_the_values, of_the_columns] {
+            for place in 0..A_OF_2_BY_3.len() {
+                let mut a = A_OF_2_BY_3;
+                *a.get_mut(place).unwrap() = if place % 2 == 0 {
+                    f64::NAN
+                } else {
+                    f64::NEG_INFINITY
+                };
+                let mut c = vec![0.0; 4];
+                let error = product(&a, 2, 3, b, &mut c).unwrap_err();
+                assert!(
+                    matches!(error, Error::NotFinite { argument: "a" }),
+                    "the error for the place {place} of {b:?} is {error}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1094,10 +1357,35 @@ mod tests {
         // before the one of the length of the buffer, so an empty slice
         // reaches it, and it is made whichever backend would run.
         let mut c: Vec<f64> = Vec::new();
-        let error = product(&[], 1 << 31, 1, &[], 1, &mut c).unwrap_err();
+        let error = product(
+            &[],
+            1 << 31,
+            1,
+            ByTheValuesSummedOver {
+                values: &[],
+                cols: 1,
+            },
+            &mut c,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::Dimension { argument: "a", .. }),
             "the error is {error}"
+        );
+        let error = product(
+            &[],
+            1 << 31,
+            1,
+            ByTheColumnsOfTheResult {
+                values: &[],
+                cols: 1,
+            },
+            &mut c,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error of the second operand held the other way is {error}"
         );
         // With no rows the a of the self product holds no values whatever
         // its number of columns is, and what the columns are too many for

@@ -24,7 +24,7 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::product_by_transpose;
+use popnei_linalg::{TheSecondOperand, product};
 
 use crate::block::Block;
 use crate::error::{Error, Result};
@@ -627,9 +627,9 @@ impl TheSumsOfThePairs {
     ///
     /// The three matrices of a set of dosages hold one row for each
     /// variant and one column for each individual, and the sums of a pair
-    /// run over the individuals, so each product is
-    /// [`product_by_transpose`], which reads the matrix of the second set
-    /// the other way round inside the routine and copies nothing.
+    /// run over the individuals, so the matrix of the second set is the
+    /// operand of [`product`] with one row for each column of the result,
+    /// which the routine reads that way and copies nothing for.
     ///
     /// # Errors
     ///
@@ -643,12 +643,20 @@ impl TheSumsOfThePairs {
         let mut of_a = a_vector_of(0.0, num_values, &the_memory_for("Σx", num_values))?;
         let mut squares_of_a = a_vector_of(0.0, num_values, &the_memory_for("Σxx", num_values))?;
         let sum_of = |of_the_variants: &[f64], of_the_others: &[f64], into: &mut [f64], sum| {
-            product_by_transpose(of_the_variants, rows, inner, of_the_others, cols, into).map_err(
-                |source| Error::LdLinalg {
+            // The three matrices of both sets hold one row for each
+            // variant and one column for each individual, and the sums of
+            // a pair run over the individuals, so the second set is the
+            // operand with one row for each column of the result.
+            let of_the_others = TheSecondOperand::ByTheColumnsOfTheResult {
+                values: of_the_others,
+                cols,
+            };
+            product(of_the_variants, rows, inner, of_the_others, into).map_err(|source| {
+                Error::LdLinalg {
                     operation: sum,
                     source,
-                },
-            )
+                }
+            })
         };
         sum_of(&a.called, &b.called, &mut num_individuals, "n")?;
         sum_of(&a.dosages, &b.dosages, &mut products, "Σxy")?;

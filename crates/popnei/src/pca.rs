@@ -27,7 +27,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::{Eigen, add_self_product_lower, eigh_lower, product};
+use popnei_linalg::{Eigen, TheSecondOperand, add_self_product_lower, eigh_lower, product};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
@@ -671,8 +671,10 @@ fn the_weights_of_a_second_pass<R: BlockReader>(
             &standardized,
             kept,
             num_individuals,
-            after.scaled_vectors,
-            after.num_prin_comps,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: after.scaled_vectors,
+                cols: after.num_prin_comps,
+            },
             &mut of_the_block,
         )
         .map_err(|source| Error::PcaLinalg {
@@ -1441,8 +1443,10 @@ fn the_components_of_the_product_of_the_traits(
         standardized,
         num_rows,
         num_cols,
-        &weights_by_trait,
-        num_comps,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: &weights_by_trait,
+            cols: num_comps,
+        },
         &mut projections,
     )
     .map_err(|source| Error::PcaLinalg {
@@ -1485,8 +1489,10 @@ fn the_components_of_the_product_of_the_rows(
         standardized,
         num_cols,
         num_rows,
-        &vectors_by_row,
-        num_comps,
+        TheSecondOperand::ByTheValuesSummedOver {
+            values: &vectors_by_row,
+            cols: num_comps,
+        },
         &mut weights_by_trait,
     )
     .map_err(|source| Error::PcaLinalg {

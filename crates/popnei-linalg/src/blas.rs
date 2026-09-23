@@ -1,5 +1,6 @@
-//! The BLAS and LAPACK backend: the three routines of the library of the
-//! system, `dsyrk`, `dgemm` and `dsyevd`, the ones numpy calls.
+//! The BLAS and LAPACK backend: the routines of the library of the
+//! system, `dsyrk`, `dgemm`, which the two products of this module call,
+//! and `dsyevd`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
