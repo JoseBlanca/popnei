@@ -2320,6 +2320,10 @@ mod tests {
         /// The reader over `blocks`, of the individuals `individuals` and
         /// of the ploidy 2, which is the ploidy of every block of these
         /// tests.
+        ///
+        /// Its table of chromosome names holds `chr1` and `chr2`, the two
+        /// of the biallelic panel, so that a block of the panel given back
+        /// to it carries the names its own reader gave the numbers.
         fn of(individuals: Vec<String>, blocks: Vec<Block>, fails_at_the_end: bool) -> GivenBlocks {
             let mut chroms = ChromTable::new();
             chroms.intern("chr1");
