@@ -11,10 +11,10 @@
 //! the buffer of `b` as its first operand and that of `a` as its second.
 //! `c = a b'` is `c' = b a'` the same way, and there the first operand of
 //! the routine is the transpose of what the buffer of `b` is in its view,
-//! so that call is the one whose `transa` is `T`. `c = a' b` is
-//! `c' = b' a`, which turns the routine's second operand instead, so its
-//! `transb` is `T`; and `c = a' b'` is `c' = b a`, whose two flags are
-//! both `T`. None of the four copies a buffer.
+//! so that call has `transa` `T` and `transb` `N`. `c = a' b` is
+//! `c' = b' a`, which turns the routine's second operand instead, so it
+//! has `transa` `N` and `transb` `T`; and `c = a' b'` is `c' = b a`,
+//! whose two flags are both `T`. None of the four copies a buffer.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -112,7 +112,7 @@ pub(crate) fn product(
 ///
 /// [`Error::Dimension`] when a dimension is larger than the `i32` the
 /// routine takes.
-pub(crate) fn product_by_transpose(
+pub(crate) fn product_with_the_second_turned(
     a: &[f64],
     rows: usize,
     inner: usize,
@@ -155,7 +155,7 @@ pub(crate) fn product_by_transpose(
 ///
 /// [`Error::Dimension`] when a dimension is larger than the `i32` the
 /// routine takes.
-pub(crate) fn product_of_the_transpose(
+pub(crate) fn product_with_the_first_turned(
     a: &[f64],
     rows: usize,
     inner: usize,
@@ -198,7 +198,7 @@ pub(crate) fn product_of_the_transpose(
 ///
 /// [`Error::Dimension`] when a dimension is larger than the `i32` the
 /// routine takes.
-pub(crate) fn product_of_both_transposes(
+pub(crate) fn product_with_both_turned(
     a: &[f64],
     rows: usize,
     inner: usize,

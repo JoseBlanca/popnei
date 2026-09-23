@@ -110,7 +110,7 @@ pub(crate) fn product(
     clippy::unnecessary_wraps,
     reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
 )]
-pub(crate) fn product_by_transpose(
+pub(crate) fn product_with_the_second_turned(
     a: &[f64],
     rows: usize,
     inner: usize,
@@ -139,7 +139,7 @@ pub(crate) fn product_by_transpose(
     clippy::unnecessary_wraps,
     reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
 )]
-pub(crate) fn product_of_the_transpose(
+pub(crate) fn product_with_the_first_turned(
     a: &[f64],
     rows: usize,
     inner: usize,
@@ -167,7 +167,7 @@ pub(crate) fn product_of_the_transpose(
     clippy::unnecessary_wraps,
     reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
 )]
-pub(crate) fn product_of_both_transposes(
+pub(crate) fn product_with_both_turned(
     a: &[f64],
     rows: usize,
     inner: usize,
