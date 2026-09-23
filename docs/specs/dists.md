@@ -1561,11 +1561,36 @@ impl PopDistSums {
     pub fn standard_error(&self, measure: PopDistMeasure, i: usize, j: usize) -> Option<f64>;
     /// f_2 within one group, which f_3 and f_4 are built from later.
     pub fn f2_of_group(&self, group: usize, i: usize, j: usize) -> Option<f64>;
+    /// How many pairs the pops make, the values each iterator below gives
+    /// for one measure and for one group.
+    pub fn num_pairs(&self) -> usize;
     /// The measure of every pair, in the order of `dist_vector`. The
     /// binding crates write NaN for a None.
     pub fn measures(&self, measure: PopDistMeasure) -> impl Iterator<Item = Option<f64>> + '_;
+    /// Its standard error for every pair, in that same order.
+    pub fn standard_errors(&self, measure: PopDistMeasure) -> impl Iterator<Item = Option<f64>> + '_;
+    /// The variants that counted for every pair, in that same order.
+    pub fn num_vars_of_each_pair(&self) -> impl Iterator<Item = Option<u64>> + '_;
+    /// f_2 within every group, the pairs of one group together, which is
+    /// the groups x pairs table the packages give as `f2_groups`.
+    pub fn f2_of_every_group(&self) -> impl Iterator<Item = Option<f64>> + '_;
 }
 ```
+
+Every array of a result comes from one of those four iterators, and no
+binding crate builds the pairs itself. The order of the pairs is then the
+core's alone, so a change to it moves the values, the standard errors,
+the counts and the f_2 of the groups of one result together; a crate that
+walked its own pairs beside `measures` would put the standard error of
+one pair beside the value of another, and nothing would say so.
+
+Which measures have a value is the core's too. `PopDistMeasure` carries
+the two that are calculated, Hudson's F_ST and f_2, beside the seven
+names, and both packages refuse the other five by asking it for their
+names. Work packages 2 and 3 of `docs/plans/dists-pops.md` then add a
+measure in the core alone: a list kept in each package as well is one
+that can be changed in one and not the other, which gives a user a vector
+of NaN read as a distance.
 
 ## Speed
 
