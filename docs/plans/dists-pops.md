@@ -178,7 +178,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
   `square_standard_errors` on `Distances` in `python/popnei/dists.py`, both
   exported from `popnei`; and `tests/test_pop_dists.py`. From "Its Python
   function" and the cases section. Serves deliverable 5. Needs 1.4.
-- [ ] 1.6 The TypeScript side: the same in `crates/popnei-js`,
+- [x] 1.6 The TypeScript side: the same in `crates/popnei-js`,
   `calcPopDists` and `PopDists` in `js/popnei/src/pop_dists.ts` with the
   `standardErrors` of `dists.ts`, and `test/pop_dists.test.ts`. From the
   TypeScript paragraph of "Its Python function". Serves deliverable 6.

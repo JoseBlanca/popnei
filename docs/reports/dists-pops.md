@@ -208,3 +208,43 @@ field for this item, so the noun stayed. It is a string a user sees and
 the plan does not depend on it, so the work goes on and it is put to the
 owner at the end of the plan with its two options: the repr loses the
 noun, or `Distances` learns what its names are of.
+
+### Task 1.6, the TypeScript side
+
+One commit, `c8e1285`. 283 373 tokens. `npm run build && npm test` in
+`js/popnei` gives `tests 229, pass 229, fail 0`, of which
+`test/pop_dists.test.ts` is 21, where that file did not exist. Every other
+check passes on the same commit.
+
+The cutting of the flat arrays of populations moved out of `stats.rs` into
+one helper the two calculations share, rather than a second copy. A
+`jackknifeGroup` that is 0, negative, fractional or above 2^53 is refused
+in the binding crate, where the Python binding refuses 0, so the package
+itself only tells the three kinds of value apart.
+
+One difference between the two packages that no spec change was needed
+for: in TypeScript each `Distances` of a result carries the counts of the
+pass in `passStats`, which that class requires, and in Python
+`Distances.pass_stats` is `None` there and the counts are on `PopDists`
+alone. Both carry them on the result, which is where a user reads them.
+
+## Work package 1: its six deliverables, each checked by the orchestrator
+
+Run on `c8e1285`.
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, 2, 3 and 4, the core | `cargo test -p popnei --lib pop_dists::` | `39 passed; 0 failed` |
+| 4, that the tests exist | `cargo test -p popnei --lib pop_dists:: -- --list` | `39 tests, 0 benchmarks`, where the plan asks for 20 or more and the branch started with 0 |
+| 5, Python | `uv run pytest tests/test_pop_dists.py` | `23 passed`, where the file did not exist |
+| 6, TypeScript | `npm test` in `js/popnei` | `tests 229, pass 229, fail 0` |
+
+And the whole of the `coding` skill's checks on the same commit: `cargo
+fmt --all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` `Finished` with no warning, `cargo test --workspace` `560
+passed; 0 failed; 2 ignored` and `35 passed`, `cargo wasm-check`
+`Finished`, `ruff format --check` `27 files already formatted`, `ruff
+check` `All checks passed!`, and `uv run maturin develop && uv run
+pytest` `335 passed`.
+
+All six deliverables are met.
