@@ -930,6 +930,53 @@ impl R2Matrix {
     pub fn poss(&self) -> &[u64] {
         &self.poss
     }
+
+    /// The matrix and its three columns given away, which is how a binding
+    /// crate hands them to its language.
+    ///
+    /// Section 1 of `docs/architecture.md` has a reader give a block away
+    /// so that the binding hands the array of the genotypes over without
+    /// copying it, and the matrix of the r² is the larger of the two: 200
+    /// MB at [`MAX_NUM_VARS_OF_THE_MATRIX`], which a binding that read
+    /// [`R2Matrix::r2`] would copy, and which in a browser is never given
+    /// back. A caller in Rust that reads the matrix and keeps it uses the
+    /// four accessors above instead.
+    #[must_use]
+    pub fn given_away(self) -> TheMatrixGivenAway {
+        let R2Matrix {
+            num_vars,
+            r2,
+            chroms,
+            chrom_table,
+            poss,
+        } = self;
+        TheMatrixGivenAway {
+            num_vars,
+            r2,
+            chroms,
+            chrom_table,
+            poss,
+        }
+    }
+}
+
+/// What an [`R2Matrix`] holds, given away by value: the r² of every pair
+/// and the three columns that say which variant each row of it is.
+///
+/// [`R2Matrix::given_away`] is where it comes from, and the doc comments of
+/// the accessors of `R2Matrix` say what each of these is.
+#[derive(Debug)]
+pub struct TheMatrixGivenAway {
+    /// How many variants the matrix is of.
+    pub num_vars: usize,
+    /// The r² of every pair, `num_vars` rows of `num_vars` values.
+    pub r2: Vec<f64>,
+    /// The number of the chromosome of each variant, in `chrom_table`.
+    pub chroms: Vec<u32>,
+    /// The names of the chromosomes, each with the number the rows hold.
+    pub chrom_table: ChromTable,
+    /// The position of each variant, 1 based as in a VCF.
+    pub poss: Vec<u64>,
 }
 
 /// The matrix of every pair of the variants of `reader`, taken in tiles of
@@ -3331,6 +3378,47 @@ mod tests {
         assert!(
             matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::CHROM_POS),
             "the block with no position gave: {error:?}"
+        );
+    }
+
+    /// The matrix given away holds what the accessors lend, and the values
+    /// are the same ones: a binding crate hands the vector to its language
+    /// instead of copying 200 MB out of it.
+    #[test]
+    fn the_matrix_given_away_holds_what_the_accessors_lend_and_copies_nothing() {
+        let mut block = the_worked_example();
+        the_chrom_and_the_pos_of(&mut block, 0);
+        let mut reader = GivenBlocks::of(vec![block], 6, 2);
+        let matrix = calc_r2_matrix(&mut reader, 5000).expect("the matrix of r²");
+        let num_vars = matrix.num_vars();
+        let chroms = matrix.chroms().to_vec();
+        let poss = matrix.poss().to_vec();
+        let of_the_first_chrom = matrix.chrom_table().name(0).map(str::to_owned);
+        let values = matrix.r2().to_vec();
+        // Where the values of the matrix are: the vector given away is the
+        // one the matrix held and not a copy of it.
+        let where_they_are = matrix.r2().as_ptr();
+
+        let given = matrix.given_away();
+
+        assert_eq!(given.num_vars, num_vars);
+        // A NaN is no value's equal, and the matrix of the worked example
+        // has five of them, so the values are compared by their bits.
+        assert_eq!(given.r2.len(), values.len());
+        assert!(
+            given
+                .r2
+                .iter()
+                .zip(&values)
+                .all(|(given, lent)| given.to_bits() == lent.to_bits()),
+            "the values given away are not the ones the accessor lent"
+        );
+        assert!(std::ptr::eq(given.r2.as_ptr(), where_they_are));
+        assert_eq!(given.chroms, chroms);
+        assert_eq!(given.poss, poss);
+        assert_eq!(
+            given.chrom_table.name(0).map(str::to_owned),
+            of_the_first_chrom
         );
     }
 
