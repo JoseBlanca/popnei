@@ -98,7 +98,16 @@ It has two methods. `principal_components(num_pcs)` is the item below.
 `filter_individuals(individuals)` takes the rows and columns of some of
 them, keeps `num_vars` and `pass_stats` as they were, and raises a
 `ValueError` naming any individual that is not in the matrix, which is what
-`Kinship.filter_samples` of pyNei does.
+`Kinship.filter_samples` of pyNei does. It refuses three more things that
+pyNei answers for, and `calc_kinship` refuses the same three: a name given
+twice, which would put one individual in two rows; no name at all, since a
+kinship is of one individual at least; and one name where a sequence of
+them is meant, `"i0"` for `("i0",)`, which Python would otherwise read as
+the letters of the name. The last is a `TypeError` naming what to write
+instead, as `Variants.filter_individuals` of `docs/specs/variant.md`
+already raises. The review of 23 September 2026 found that without it
+`filter_individuals("ab")` returned a kinship of the two individuals `a`
+and `b` if they existed, and said nothing.
 
 With `individuals` the matrix is of those individuals, in the order given,
 and every frequency, mean and denominator is theirs: it is not the kinship
@@ -121,8 +130,19 @@ which `docs/objectives.md` asks to be written down:
   that a user can bring the one plink2 or a pedigree gave them and pass it
   to `calc_gwas`, and `__post_init__` checks it where pyNei checks nothing:
   it raises a `ValueError` for a matrix that is not square, whose index and
-  columns name different individuals, or that is further from its own
-  transpose than 1e-9 of its largest absolute entry. The owner decided on
+  columns name different individuals, that names one individual twice, that
+  holds a value that is not a number, or that is further from its own
+  transpose than 1e-9 of its largest absolute entry. The check for a value
+  that is not finite comes before the one for symmetry, so that a matrix
+  holding a `NaN`, which is what pyNei's own kinship leaves for a pair with
+  no variant called in both, is refused for the cell it holds and not
+  reported as asymmetric: a matrix can hold a `NaN` and be symmetric, and
+  every comparison with a `NaN` is false, so the symmetry check alone gives
+  the wrong reason. The two packages refuse the same matrices: the review of
+  23 September 2026 found Python taking one that named an individual twice,
+  where `filter_individuals` then gave two rows for the one name asked, and
+  TypeScript taking a `NaN` on the diagonal, which its symmetry check never
+  looked at. The owner decided on
   23 September 2026 to raise the error sooner rather than later; the option
   not taken was to reproduce pyNei and let the complaint come out of the
   linear algebra, where the message names a matrix and a row and not the
