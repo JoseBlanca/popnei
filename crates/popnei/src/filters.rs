@@ -288,11 +288,17 @@ const THE_KIND_OF_THE_LD_FILTER: &str = "ld";
 /// against each other is 65536 values, 512 KB, and `docs/specs/ld.md`
 /// measures one product of that shape at 1.9 ms over 1000 individuals.
 ///
-/// It changes no result. The rule reads the positions of the variants and
-/// never the end of a set or of a block, and the six sums of a pair are
-/// whole numbers that an `f64` holds exactly, so a pair has the same r² in
-/// whichever set it is worked out.
-pub const THE_VARS_SETTLED_AT_A_TIME: usize = 256;
+/// It changes no result, which
+/// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+/// asserts at 1, at 3 and at 256: the rule reads the positions of the
+/// variants and never the end of a set or of a block, and the six sums of a
+/// pair are whole numbers that an `f64` holds exactly, so a pair has the
+/// same r² in whichever set it is worked out.
+///
+/// It is of the crate and not of its users, as the tile of the matrix of
+/// `docs/specs/ld.md` is private to its module: nothing outside this file
+/// reads it.
+pub(crate) const THE_VARS_SETTLED_AT_A_TIME: usize = 256;
 
 /// How a variant given to [`LdFilter::filter_block`] does not come after
 /// the variant before it.
@@ -528,6 +534,24 @@ impl LdFilter {
     /// three matrices for among them. After any of them the block is as it
     /// was, nothing was added to the counts and the window is as it was.
     pub fn filter_block(&mut self, block: &mut Block) -> Result<()> {
+        self.the_block_filtered(block, THE_VARS_SETTLED_AT_A_TIME)
+    }
+
+    /// The block filtered with `at_a_time` variants settled at a time,
+    /// which [`LdFilter::filter_block`] is with
+    /// [`THE_VARS_SETTLED_AT_A_TIME`] and the tests are what give another
+    /// number.
+    ///
+    /// The variants kept are the same whatever the number, which
+    /// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+    /// asserts at 1, at 3 and at 256: the rule reads the positions of the
+    /// variants and never the end of a set, and a pair has the same r² in
+    /// whichever set it is worked out.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`LdFilter::filter_block`].
+    fn the_block_filtered(&mut self, block: &mut Block, at_a_time: usize) -> Result<()> {
         // The rows are cut out of the genotypes by the sizes the block
         // states, so those sizes are checked before anything is read.
         block.check()?;
@@ -551,9 +575,8 @@ impl LdFilter {
         // source whose positions do not rise is refused whatever else the
         // block holds.
         let order = self.the_order_read(chroms, positions)?;
-        let settled =
-            the_variants_that_stay(self, block, chroms, positions, THE_VARS_SETTLED_AT_A_TIME)
-                .and_then(|settled| block.retain_vars(&settled.keep).map(|()| settled));
+        let settled = the_variants_that_stay(self, block, chroms, positions, at_a_time)
+            .and_then(|settled| block.retain_vars(&settled.keep).map(|()| settled));
         let settled = match settled {
             Ok(settled) => settled,
             Err(error) => {
@@ -3388,6 +3411,45 @@ mod tests {
                 (variant as u64 * 1000, alleles.clone())
             })
             .collect()
+    }
+
+    /// The variants kept do not change with how many of them the filter
+    /// settles at a time, which is what
+    /// `ld::tests::neither_the_blocks_nor_the_tiles_change_the_matrix` does
+    /// for the tiles of the matrix: one block of 600 variants keeps the
+    /// same set at 1, at 3 and at the 256 of `THE_VARS_SETTLED_AT_A_TIME`.
+    ///
+    /// At 1 every candidate is compared with its whole window and with
+    /// nothing else, and at 256 the last 344 of them are compared with the
+    /// variants kept inside their own set as well, so the two paths give
+    /// the same set.
+    #[test]
+    fn the_variants_kept_do_not_change_with_the_variants_settled_at_a_time() {
+        let num_vars = 600;
+        let variants = a_linked_chromosome(num_vars, 20);
+        let kept_at = |at_a_time| {
+            let rows: Vec<(u32, u64, &[i8])> = variants
+                .iter()
+                .map(|(pos, gts)| (0, *pos, gts.as_slice()))
+                .collect();
+            let mut block = block_of_the_chromosomes(&rows, 20, 2);
+            let mut filter = LdFilter::new(0.3, 10_000).expect("the filter");
+            filter
+                .the_block_filtered(&mut block, at_a_time)
+                .expect("the block");
+            positions_of(&block)
+        };
+        let at_the_default = kept_at(THE_VARS_SETTLED_AT_A_TIME);
+        // A set that is neither every variant nor one of them: a dataset
+        // the filter does nothing on would tell no two ways of settling it
+        // apart.
+        assert!(
+            at_the_default.len() > 20 && at_the_default.len() < num_vars - 20,
+            "{} variants of {num_vars} kept",
+            at_the_default.len()
+        );
+        assert_eq!(kept_at(1), at_the_default, "settled one at a time");
+        assert_eq!(kept_at(3), at_the_default, "settled three at a time");
     }
 
     /// The variants kept do not change with the size of the blocks over a
