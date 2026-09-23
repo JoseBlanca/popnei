@@ -457,10 +457,11 @@ does with them is a matrix, a tree or a principal coordinate analysis of
 populations, as the Kosman distances above serve for individuals.
 
 The seven are calculated in one pass, because all of them are functions of
-the same two counts: how often each allele was called in each population
-at each variant, and how many genotypes of the population were called
-there. So a user who wants to compare F_ST with Jost's D pays for one
-reading of the variants and not two. Which measure answers which question
+the same three counts of a population at a variant: how often each allele
+was called there, how many genotypes were called whole, and how many of
+those are heterozygous. The last is what the correction inside Jost's D
+needs and the other four measures do not. So a user who wants to compare
+F_ST with Jost's D pays for one reading of the variants and not two. Which measure answers which question
 is in each item below.
 
 Every allele of a variant counts as itself. A multiallelic variant is not
@@ -621,8 +622,10 @@ One pass, over the rows of each block with rayon across them, and it
 needs no `reblock` before it. For each variant of the block and each
 population, the allele counts over the indices of that population come
 from `count_alleles_of` of the `variant` module, the row helper that
-`docs/specs/stats.md` already uses, and the called genotypes from the
-same row. Everything else is arithmetic on those counts.
+`docs/specs/stats.md` already uses, and the called genotypes and the
+heterozygous ones from `ObsHet` of that same spec, which counts both over
+a population at one variant. Everything else is arithmetic on those three
+counts.
 
 What is kept from one block to the next, and what the threads reduce
 into, is, for each pair of populations and each resampling group, five
@@ -657,14 +660,14 @@ the position when it is a length, since that is what cuts the groups.
 A distance between two populations is a mean over variants, and variants
 near each other on a chromosome carry much the same history, so treating
 each of them as an independent draw makes the error look smaller than it
-is. The block jackknife of the literature takes that into account, and popnei
-calls its unit a resampling group, because a block in popnei is the run of
-variants a reader gives, section 2 of `docs/architecture.md`, and the two
-have nothing to do with each other: the variants are cut into
-groups long enough that two groups are nearly independent, each group is
-left out in turn, the measure is calculated again from the sums of the
+is. The method of the literature takes that into account: the variants are cut
+into groups long enough that two groups are nearly independent, each group
+is left out in turn, the measure is calculated again from the sums of the
 others, and how much the answer moves is what the standard error is built
-from.
+from. The literature calls a group a block and the method the block
+jackknife. popnei says group, because a block here is the run of variants
+a reader gives, section 2 of `docs/architecture.md`, and the two have
+nothing to do with each other.
 
 The groups are stretches of one chromosome `jackknife_group` base pairs
 long. Walking the variants in the order the reader gives them, a new group
