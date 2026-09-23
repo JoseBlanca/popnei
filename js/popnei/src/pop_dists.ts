@@ -268,7 +268,7 @@ export interface PopDists {
  * `jackknifeGroup` is neither `null`, nor `"variant"`, nor a whole length in
  * base pairs of 1 or more; when `measures` is not an array of names, when a
  * name of it is of no measure, when it names none at all and when it names
- * one of the five that are not calculated yet; when `pops` is not an object
+ * one of the two that are not calculated yet; when `pops` is not an object
  * of names to arrays of names, when a population names an individual the
  * pass does not give, names one twice or names none, and when it holds fewer
  * than two populations; when `minNumIndividuals` is not a whole number of 0
@@ -417,7 +417,7 @@ function theGroups(
  * has no value yet.
  *
  * @throws {Error} When `measures` is not an array of names, when it names
- * none, and when it names one of the five that are not calculated yet.
+ * none, and when it names one of the two that are not calculated yet.
  */
 function theMeasures(
   measures: readonly PopDistMeasure[] | undefined,
@@ -437,8 +437,8 @@ function theMeasures(
   }
   const askedFor = [...new Set(asked)];
   // Which of the seven have a value today is the core's, so that the
-  // measures the work packages 2 and 3 of `docs/plans/dists-pops.md` add are
-  // added there and not here as well.
+  // measures work package 3 of `docs/plans/dists-pops.md` adds are added
+  // there and not here as well.
   const haveAValue = measuresThatHaveAValue() as PopDistMeasure[];
   // A name that is of none of the seven goes on to the binding crate, which
   // refuses it with the seven: which names there are is the core's rule too.

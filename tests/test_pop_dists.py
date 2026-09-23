@@ -17,11 +17,10 @@ the three runs only the one at 55 000 base pairs, which cuts the panel into
 22 groups, can be asked for through this package; the other two, at 100 000
 and at 250 000, are cargo tests of `crates/popnei/src/pop_dists.rs`.
 
-Five of the seven measures, the chord distance, Nei's D_A, Jost's D, Nei's
-G_ST and the standardized G''_ST, are not calculated yet: the work packages 2
-and 3 of `docs/plans/dists-pops.md` add them, and asking for one of them is a
-`ValueError` until then, which `test_a_measure_that_is_not_written_yet_is_refused`
-holds to.
+Two of the seven measures, the chord distance and Nei's D_A, are not
+calculated yet: work package 3 of `docs/plans/dists-pops.md` adds them, and
+asking for one of them is a `ValueError` until then, which
+`test_a_measure_that_is_not_written_yet_is_refused` holds to.
 """
 
 import math
@@ -111,10 +110,11 @@ PANEL_NUM_VARS_OF_EACH_PAIR = (688, 688, 1200)
 # and p2, of 68 and 84, have every variant of the panel at it.
 NO_VARIANT_MIN_NUM_INDIVIDUALS = 50
 
-# The two measures that work package 1 of `docs/plans/dists-pops.md`
-# calculates, and the five that the work packages 2 and 3 add.
-MEASURES_THAT_ARE_WRITTEN = ("fst", "f2")
-MEASURES_THAT_ARE_NOT_WRITTEN_YET = ("chord", "da", "dest", "gst", "gst_standardized")
+# The five measures that the work packages 1 and 2 of
+# `docs/plans/dists-pops.md` calculate, and the two that its work package 3
+# adds.
+MEASURES_THAT_ARE_WRITTEN = ("fst", "f2", "dest", "gst", "gst_standardized")
+MEASURES_THAT_ARE_NOT_WRITTEN_YET = ("chord", "da")
 
 
 def _pops_of(path: Path) -> dict[str, list[str]]:
@@ -561,7 +561,7 @@ def test_a_pair_with_no_variant_is_nan_and_the_pass_is_not_an_error() -> None:
         open_vcf(PANEL),
         PANEL_POPS,
         jackknife_group=PANEL_JACKKNIFE_GROUP,
-        measures=("fst", "f2"),
+        measures=MEASURES_THAT_ARE_WRITTEN,
         min_num_individuals=NO_VARIANT_MIN_NUM_INDIVIDUALS,
     )
 
@@ -734,13 +734,13 @@ def test_one_measure_as_a_bare_string_and_a_repeated_one_are_taken_once() -> Non
 
 
 def test_a_measure_that_is_not_written_yet_is_refused() -> None:
-    """The five measures the work packages 2 and 3 of
-    `docs/plans/dists-pops.md` add, which have no value today.
+    """The two measures work package 3 of `docs/plans/dists-pops.md` adds,
+    which have no value today.
 
-    A user who asks for one gets a `ValueError` that names it and the two
+    A user who asks for one gets a `ValueError` that names it and the five
     that are calculated, and not a vector of NaN that says nothing about
     itself. `measures=None`, which asks for all seven, is refused for the
-    same reason until those work packages are done.
+    same reason until that work package is done.
     """
     for measure in MEASURES_THAT_ARE_NOT_WRITTEN_YET:
         with pytest.raises(ValueError) as refusal:

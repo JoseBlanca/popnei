@@ -70,10 +70,10 @@ class PopDistMeasure(StrEnum):
     the two populations hold, so that it reaches 1."""
 
 
-# The measures that have a value today, which the core crate holds: Hudson's
-# F_ST and f_2 are what work package 1 of `docs/plans/dists-pops.md`
-# calculates, its work packages 2 and 3 add the other five, and asking for
-# one of those is refused here until they do, so that nobody reads a vector
+# The measures that have a value today, which the core crate holds: the work
+# packages 1 and 2 of `docs/plans/dists-pops.md` calculate five of the seven,
+# its work package 3 adds the chord distance and Nei's D_A, and asking for one
+# of those two is refused here until it does, so that nobody reads a vector
 # of NaN as a distance. It is read from the core and not written here so that
 # a measure is added in one place and not in this package, in the TypeScript
 # one and in the core.
@@ -376,8 +376,8 @@ def _the_measures(measures: Sequence[PopDistMeasure] | None) -> list[str]:
             "`measures` names no measure, and a result holds the ones that "
             "were asked for: leave `measures` out for every measure there is"
         )
-    # The five the work packages 2 and 3 of `docs/plans/dists-pops.md` add
-    # have no value yet, and a vector of NaN says nothing about itself.
+    # The two that work package 3 of `docs/plans/dists-pops.md` adds have no
+    # value yet, and a vector of NaN says nothing about itself.
     not_written_yet = [
         measure for measure in asked_for if measure not in _MEASURES_THAT_HAVE_A_VALUE
     ]

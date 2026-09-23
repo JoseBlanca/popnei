@@ -22,10 +22,9 @@
  * two, at 100 000 and at 250 000, are cargo tests of
  * `crates/popnei/src/pop_dists.rs`.
  *
- * Five of the seven measures, the chord distance, Nei's D_A, Jost's D, Nei's
- * G_ST and the standardized G''_ST, are not calculated yet: the work
- * packages 2 and 3 of `docs/plans/dists-pops.md` add them, and asking for
- * one of them is an `Error` until then.
+ * Two of the seven measures, the chord distance and Nei's D_A, are not
+ * calculated yet: work package 3 of `docs/plans/dists-pops.md` adds them,
+ * and asking for one of them is an `Error` until then.
  */
 
 import assert from "node:assert/strict";
@@ -142,17 +141,18 @@ const F2_TOLERANCE = 1e-12;
 const PARTING_MIN_NUM_INDIVIDUALS = 47;
 const PANEL_NUM_VARS_OF_EACH_PAIR = [688, 688, 1200];
 
-/** The two measures work package 1 of `docs/plans/dists-pops.md` gives. */
-const MEASURES_THAT_ARE_WRITTEN = ["fst", "f2"];
-
-/** The five its work packages 2 and 3 add. */
-const MEASURES_THAT_ARE_NOT_WRITTEN_YET = [
-  "chord",
-  "da",
+/** The five measures the work packages 1 and 2 of `docs/plans/dists-pops.md`
+ * give. */
+const MEASURES_THAT_ARE_WRITTEN = [
+  "fst",
+  "f2",
   "dest",
   "gst",
   "gst_standardized",
 ];
+
+/** The two its work package 3 adds. */
+const MEASURES_THAT_ARE_NOT_WRITTEN_YET = ["chord", "da"];
 
 /**
  * The distances between the populations of `pops` over the variants of the
@@ -636,10 +636,10 @@ test("a measure that was not asked for is null in the result", () => {
 });
 
 test("a measure that is not written yet is refused with the ones that are", () => {
-  // The five measures the work packages 2 and 3 of
-  // `docs/plans/dists-pops.md` add have no value today, and a vector of NaN
-  // says nothing about itself. No `measures` asks for all seven and is
-  // refused for the same reason until those work packages are done.
+  // The two measures work package 3 of `docs/plans/dists-pops.md` adds have
+  // no value today, and a vector of NaN says nothing about itself. No
+  // `measures` asks for all seven and is refused for the same reason until
+  // that work package is done.
   for (const measure of MEASURES_THAT_ARE_NOT_WRITTEN_YET) {
     let said = "";
     assert.throws(

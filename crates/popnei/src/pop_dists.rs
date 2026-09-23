@@ -659,16 +659,25 @@ impl PopDistMeasure {
             .unwrap_or("")
     }
 
-    /// The measures a pass gives a value for today, Hudson's F_ST and f_2,
-    /// which work package 1 of `docs/plans/dists-pops.md` calculates.
+    /// The measures a pass gives a value for today: Hudson's F_ST and f_2,
+    /// which work package 1 of `docs/plans/dists-pops.md` calculates, and
+    /// Jost's D, Nei's G_ST and the standardized G''_ST, which its work
+    /// package 2 adds.
     ///
-    /// Its work packages 2 and 3 add the other five, and both packages
-    /// refuse a measure that is not here, so that nobody reads a vector of
-    /// NaN as a distance. It is in the core, as [`NAMES`](PopDistMeasure::NAMES)
-    /// is, so that a measure is added to the two packages by adding the
-    /// formula of [`value_of`] and this array, both of which are in this
-    /// file.
-    pub const THAT_HAVE_A_VALUE: [PopDistMeasure; 2] = [PopDistMeasure::Fst, PopDistMeasure::F2];
+    /// Its work package 3 adds the chord distance and Nei's D_A, and both
+    /// packages refuse a measure that is not here, so that nobody reads a
+    /// vector of NaN as a distance. It is in the core, as
+    /// [`NAMES`](PopDistMeasure::NAMES) is, so that a measure is added to
+    /// the two packages by adding the formula of [`value_of`] and this
+    /// array, both of which are in this file. They are in the order of
+    /// `NAMES`, which is the order a package names them in.
+    pub const THAT_HAVE_A_VALUE: [PopDistMeasure; 5] = [
+        PopDistMeasure::Fst,
+        PopDistMeasure::F2,
+        PopDistMeasure::Dest,
+        PopDistMeasure::Gst,
+        PopDistMeasure::GstStandardized,
+    ];
 
     /// Whether a pass gives this measure a value today.
     #[must_use]
@@ -812,25 +821,53 @@ impl PairSums {
 /// and that is not one of them, and a caller sees the same thing either
 /// way: the binding crates write a NaN for a `None` as well.
 ///
-/// The five measures below them are the work packages 2 and 3 of
-/// `docs/plans/dists-pops.md` and have no value until those are written,
-/// which is what [`PopDistMeasure::THAT_HAVE_A_VALUE`] names and what both
+/// Jost's D, Nei's G_ST and the standardized G''_ST are ratios of the means
+/// of the corrected H_S and H_T instead, which [`PopDistPerVar::of_var`]
+/// gives one variant of. With H_S' and H_T' those two means over the n
+/// variants that counted for the pair, and s = 2 populations, since a pair
+/// is a pair whatever else the run holds:
+///
+/// ```text
+/// D      = (s / (s - 1)) (H_T' - H_S') / (1 - H_S')
+/// G_ST   = (H_T' - H_S') / H_T'
+/// G''_ST = s (H_T' - H_S') / ((s H_T' - H_S') (1 - H_S'))
+/// ```
+///
+/// Each of the three is a ratio of the means and not a mean of the per
+/// variant ratios, which is what pyNei's `_calc_jost_from_ht_hs` computes
+/// for D. D has no value where H_S' is exactly 1, the division by 1 - H_S'
+/// that "The Rust interface" of the spec gives to D alone; G''_ST divides
+/// by that same 1 - H_S' and comes out infinite there.
+///
+/// The chord distance and Nei's D_A are work package 3 of
+/// `docs/plans/dists-pops.md` and have no value until it is written, which
+/// is what [`PopDistMeasure::THAT_HAVE_A_VALUE`] names and what both
 /// packages refuse them by.
 fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
     if sums.num_vars == 0 {
         return None;
     }
     let between_minus_within = sums.h_b - sums.h_w;
+    // Every count of popnei is below 2^53, where a `f64` holds the whole
+    // numbers exactly.
+    let num_vars = sums.num_vars as f64;
+    let mean_h_s = sums.corrected_h_s / num_vars;
+    let mean_h_t = sums.corrected_h_t / num_vars;
+    let between_the_pops = mean_h_t - mean_h_s;
+    let one_minus_mean_h_s = 1.0 - mean_h_s;
     match measure {
         PopDistMeasure::Fst => Some(between_minus_within / sums.h_b),
-        // Every count of popnei is below 2^53, where a `f64` holds the
-        // whole numbers exactly.
-        PopDistMeasure::F2 => Some(between_minus_within / sums.num_vars as f64),
-        PopDistMeasure::Chord
-        | PopDistMeasure::Da
-        | PopDistMeasure::Dest
-        | PopDistMeasure::Gst
-        | PopDistMeasure::GstStandardized => None,
+        PopDistMeasure::F2 => Some(between_minus_within / num_vars),
+        PopDistMeasure::Dest => (one_minus_mean_h_s != 0.0).then(|| {
+            (NUM_POPS_OF_A_PAIR / (NUM_POPS_OF_A_PAIR - 1.0)) * between_the_pops
+                / one_minus_mean_h_s
+        }),
+        PopDistMeasure::Gst => Some(between_the_pops / mean_h_t),
+        PopDistMeasure::GstStandardized => Some(
+            NUM_POPS_OF_A_PAIR * between_the_pops
+                / ((NUM_POPS_OF_A_PAIR * mean_h_t - mean_h_s) * one_minus_mean_h_s),
+        ),
+        PopDistMeasure::Chord | PopDistMeasure::Da => None,
     }
 }
 
@@ -2474,6 +2511,53 @@ mod tests {
         Pops::from_names(&named, &individuals).expect("the populations of the worked example")
     }
 
+    /// The genotypes of the two variants of "What pyNei does that is odd,
+    /// and what popnei does instead" of `docs/specs/dists.md`: 4 diploid
+    /// individuals, the two alleles of each after those of the one before,
+    /// with -1 for an allele that was not called, pop1 the first two
+    /// individuals and pop2 the last two.
+    ///
+    /// Each population has exactly one called genotype at the first
+    /// variant, which is what no panel of popnei reaches and what a
+    /// `min_num_individuals` of 1 lets through as far as the rule that
+    /// drops it. The second variant carries the pair on its own, and its
+    /// Jost's D is the 0.25 pyNei gives for the two together.
+    const ONE_CALLED_GENOTYPE_EACH: [[i8; 8]; 2] =
+        [[0, 0, -1, -1, 1, 1, -1, -1], [0, 0, 0, 1, 0, 1, 1, 1]];
+
+    /// The sums of the one pair of two populations of two individuals over
+    /// `of_the_vars`, one block of them in the order given, at a
+    /// `min_num_individuals` of 1 and with no resampling groups.
+    fn sums_of_the_pair_of_two_over(of_the_vars: &[[i8; 8]]) -> PopDistSums {
+        let individuals: Vec<String> = (0..4).map(|number| format!("i{number}")).collect();
+        let named = [
+            ("pop1".to_owned(), individuals[..2].to_vec()),
+            ("pop2".to_owned(), individuals[2..].to_vec()),
+        ];
+        let pops = Pops::from_names(&named, &individuals).expect("the two populations of two");
+        let block = Block {
+            num_vars: of_the_vars.len(),
+            num_individuals: 4,
+            ploidy: 2,
+            gts: of_the_vars.iter().flatten().copied().collect(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of(individuals, vec![block], false);
+        calc_pop_dist_sums(
+            &mut reader,
+            &pops,
+            &PopDistOptions {
+                min_num_individuals: 1,
+                groups: JackknifeGroups::None,
+            },
+        )
+        .expect("the sums of the two populations of two")
+    }
+
     /// A reader of the tests that gives the blocks it was built with, and
     /// then the error of a bgzipped file with no mark of its end when it
     /// was built to fail, which is how an error of a reader reaches the
@@ -2646,6 +2730,116 @@ mod tests {
         assert_eq!(sums.num_vars_of(1, 0), sums.num_vars_of(0, 1));
     }
 
+    /// Jost's D, Nei's G_ST and the standardized G''_ST of the worked
+    /// example of "How it is verified" of `docs/specs/dists.md`, the three
+    /// measures that are ratios of the means of the corrected sums: over
+    /// its five variants the mean corrected H_S is 0.357143 and the mean
+    /// corrected H_T is 0.468849, so D is 2 * 0.111706 / 0.642857, G_ST is
+    /// 0.111706 / 0.468849, and G''_ST is 0.223412 / (0.580556 * 0.642857).
+    /// pyNei gives the same D for the same genotypes, 0.34753086.
+    #[test]
+    fn the_worked_example_has_the_dest_the_gst_and_the_gst_standardized_of_the_spec() {
+        let sums = sums_of_the_worked_example(JackknifeGroups::PerVariant);
+
+        assert_it_is_within(
+            sums.measure(PopDistMeasure::Dest, 0, 1),
+            0.347531,
+            1e-6,
+            "the Jost's D of the worked example",
+        );
+        assert_it_is_within(
+            sums.measure(PopDistMeasure::Gst, 0, 1),
+            0.238256,
+            1e-6,
+            "the G_ST of the worked example",
+        );
+        assert_it_is_within(
+            sums.measure(PopDistMeasure::GstStandardized, 0, 1),
+            0.598618,
+            1e-6,
+            "the G''_ST of the worked example",
+        );
+    }
+
+    /// A variant where both populations have exactly one called genotype
+    /// counts for no measure of the pair, which takes a
+    /// `min_num_individuals` of 1 and which "Variants that do not count,
+    /// populations with little data, and negative values" of
+    /// `docs/specs/dists.md` asks for: the harmonic mean of the two counts
+    /// is 1, and the correction of H_S divides by 1 - 1.
+    ///
+    /// The two variants are the ones "What pyNei does that is odd, and what
+    /// popnei does instead" of the Jost's D item measured pyNei at commit
+    /// ef0ca6e on, four individuals in two populations of two with
+    /// `min_num_samples=1`: pyNei drops the first variant through a NaN
+    /// that `numpy.nansum` leaves out of both sums and out of the count,
+    /// printing two RuntimeWarnings, and gives D as 0.25, which is the D of
+    /// the second variant alone. popnei drops it by the rule above, with no
+    /// NaN made and nothing printed, and every measure of the two variants
+    /// is the measure of the second alone to the bit.
+    #[test]
+    fn a_variant_where_both_pops_have_one_called_genotype_counts_for_no_measure() {
+        let of_both = sums_of_the_pair_of_two_over(&ONE_CALLED_GENOTYPE_EACH);
+        let of_the_second = sums_of_the_pair_of_two_over(&ONE_CALLED_GENOTYPE_EACH[1..]);
+
+        assert_eq!(of_both.num_vars(), 2);
+        assert_eq!(of_both.num_vars_of(0, 1), Some(1));
+        assert_eq!(of_the_second.num_vars(), 1);
+        assert_eq!(of_the_second.num_vars_of(0, 1), Some(1));
+        for measure in PopDistMeasure::THAT_HAVE_A_VALUE {
+            assert_eq!(
+                of_both.measure(measure, 0, 1),
+                of_the_second.measure(measure, 0, 1),
+                "the {} over the two variants and over the second alone",
+                measure.name()
+            );
+        }
+        assert_it_is_the_same_number(
+            of_both.measure(PopDistMeasure::Dest, 0, 1),
+            0.25,
+            "the Jost's D of the two variants, which pyNei gives as 0.25",
+        );
+    }
+
+    /// Jost's D divides by 1 - the mean corrected H_S, so a pair whose mean
+    /// corrected H_S came to exactly 1 has no D. It is the one case of "The
+    /// Rust interface" of `docs/specs/dists.md` that belongs to a single
+    /// measure, and the spec gives it to Dest alone: G_ST, which divides by
+    /// the mean corrected H_T, has a value there, and the standardized
+    /// G''_ST divides by that same 1 - H_S and comes out infinite.
+    ///
+    /// No genotypes of a panel reach a mean corrected H_S of exactly 1, so
+    /// the sums are written here as a pass would have left them: two
+    /// variants whose corrected H_S added to 2.
+    #[test]
+    fn the_dest_of_a_pair_whose_mean_corrected_h_s_is_one_has_no_value() {
+        let sums = PopDistSums::of_the_pass(
+            2,
+            2,
+            Vec::new(),
+            vec![PairSums {
+                h_b: 1.5,
+                h_w: 1.0,
+                sqrt_of_the_products: 1.0,
+                corrected_h_s: 2.0,
+                corrected_h_t: 3.0,
+                num_vars: 2,
+            }],
+        );
+
+        assert_eq!(sums.num_vars_of(0, 1), Some(2));
+        assert_eq!(sums.measure(PopDistMeasure::Dest, 0, 1), None);
+        assert!(
+            sums.measure(PopDistMeasure::Gst, 0, 1).is_some(),
+            "the G_ST of a pair whose mean corrected H_S is 1"
+        );
+        assert!(
+            sums.measure(PopDistMeasure::GstStandardized, 0, 1)
+                .is_some_and(f64::is_infinite),
+            "the G''_ST of a pair whose mean corrected H_S is 1"
+        );
+    }
+
     /// The groups the variants were cut into change no measure: the sums of
     /// a pair are added group by group and the division happens once,
     /// whether the five variants of the worked example fall in five groups,
@@ -2749,6 +2943,70 @@ mod tests {
                     1e-6,
                     &format!("the F_ST of the pair {i} {j} of {panel}"),
                 );
+            }
+        }
+    }
+
+    /// Jost's D, Nei's G_ST and the standardized G''_ST of the three pairs
+    /// of both panels against `pairwise_D`, `pairwise_Gst_Nei` and
+    /// `pairwise_Gst_Hedrick` of mmod 1.3.3 under R 4.6.1, which
+    /// `tests/reference/pop_dists/panel.mmod.tsv` and `micro.mmod.tsv`
+    /// hold. `pairwise_Gst_Hedrick` computes the standardized G''_ST of
+    /// Meirmans and Hedrick (2011) and not the G'_ST its name suggests,
+    /// which "How it is verified" of the G_ST item of `docs/specs/dists.md`
+    /// shows from its source.
+    ///
+    /// mmod computes another estimator of the same three quantities: its
+    /// `HsHt` leaves the observed heterozygosity term out of both
+    /// corrections and uses 2n/(2n - 1) where popnei, which is pyNei and
+    /// Nei and Chesser (1983), uses n/(n - 1) and subtracts H_obs/(2n). So
+    /// the check is an agreement and not an equality, and its tolerance is
+    /// the 5e-4 absolute of the two items of the spec, which the furthest
+    /// of these eighteen numbers, a G''_ST of the multiallelic panel, is
+    /// 4.7e-4 within. What pins the estimator is the comparison with pyNei,
+    /// exact to 1e-12 relative, which is made where a user sees the number
+    /// and not here. Tightening this tolerance, or moving the arithmetic
+    /// towards mmod, breaks that comparison.
+    #[test]
+    fn the_dest_the_gst_and_the_gst_standardized_of_both_panels_agree_with_mmod() {
+        let panels = [
+            (
+                "dists/panel.vcf.gz",
+                "stats/panel_pops.txt",
+                [
+                    [0.0634704859, 0.0612312792, 0.0656071139],
+                    [0.0553896690, 0.0541614926, 0.0579922831],
+                    [0.1617736271, 0.1576967932, 0.1680418436],
+                ],
+            ),
+            (
+                "pop_dists/micro.vcf.gz",
+                "pop_dists/micro_pops.txt",
+                [
+                    [0.1662094246, 0.1819580763, 0.1816462134],
+                    [0.0331789783, 0.0359529575, 0.0362672006],
+                    [0.2197612680, 0.2387386980, 0.2389275805],
+                ],
+            ),
+        ];
+        for (panel, pops_file, of_mmod) in panels {
+            let sums = sums_of_the_panel(panel, pops_file, JackknifeGroups::None, 20, None);
+            for (row, measure) in [
+                PopDistMeasure::Dest,
+                PopDistMeasure::Gst,
+                PopDistMeasure::GstStandardized,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for (pair, (i, j)) in [(0, 1), (0, 2), (1, 2)].into_iter().enumerate() {
+                    assert_it_is_within(
+                        sums.measure(measure, i, j),
+                        of_mmod[row][pair],
+                        5e-4,
+                        &format!("the {} of the pair {i} {j} of {panel}", measure.name()),
+                    );
+                }
             }
         }
     }
@@ -2898,9 +3156,9 @@ mod tests {
 
     /// The pairs and the measures a caller asks for by number: two
     /// populations that are one, or one that is not a population, have no
-    /// measure and no count of variants, and the five measures that the
-    /// work packages 2 and 3 of `docs/plans/dists-pops.md` add have none
-    /// yet. `measures` gives the pairs in the order of the distance vector,
+    /// measure and no count of variants, and the two measures that work
+    /// package 3 of `docs/plans/dists-pops.md` adds have none yet.
+    /// `measures` gives the pairs in the order of the distance vector,
     /// which for three populations is p0-p1, p0-p2 and p1-p2.
     #[test]
     fn a_pair_that_is_not_one_and_a_measure_not_written_yet_have_no_value() {
@@ -2911,15 +3169,17 @@ mod tests {
         assert_eq!(sums.measure(PopDistMeasure::Fst, 0, 2), None);
         assert_eq!(sums.num_vars_of(0, 0), None);
         assert_eq!(sums.standard_error(PopDistMeasure::F2, 0, 0), None);
+        for measure in [PopDistMeasure::Chord, PopDistMeasure::Da] {
+            assert_eq!(sums.measure(measure, 0, 1), None);
+            assert_eq!(sums.standard_error(measure, 0, 1), None);
+        }
         for measure in [
-            PopDistMeasure::Chord,
-            PopDistMeasure::Da,
             PopDistMeasure::Dest,
             PopDistMeasure::Gst,
             PopDistMeasure::GstStandardized,
         ] {
-            assert_eq!(sums.measure(measure, 0, 1), None);
-            assert_eq!(sums.standard_error(measure, 0, 1), None);
+            assert_eq!(sums.measure(measure, 0, 0), None);
+            assert_eq!(sums.measure(measure, 0, 2), None);
         }
         let of_three = sums_of_the_first_variant_of_the_panel();
         let in_order: Vec<Option<f64>> = of_three.measures(PopDistMeasure::Fst).collect();
@@ -3003,7 +3263,10 @@ mod tests {
                 measure.name()
             );
         }
-        assert_eq!(PopDistMeasure::names_that_have_a_value(), ["fst", "f2"]);
+        assert_eq!(
+            PopDistMeasure::names_that_have_a_value(),
+            ["fst", "f2", "dest", "gst", "gst_standardized"]
+        );
     }
 
     /// The six sums of one pair within one group are 48 bytes, the five f64
