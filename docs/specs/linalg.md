@@ -276,6 +276,16 @@ refused, a defect of popnei, when it is negative, is an error with the
 routine and the `info`, and faer's error for the same case is the same
 error of the crate, with the `info` at 0, since faer gives none.
 
+What none of the seven checks is its own result. A matrix that is positive
+definite and nearly not factors, and the inverse or the solution that comes
+off it can hold an infinity: measured on 23 September 2026, the 2 x 2 with
+1e-320 and 1 on its diagonal factors on both backends and its inverse is an
+infinity and a 1, with no error. numpy does the same and says nothing. That
+is the case "Why a Cholesky where numpy uses an LU" calls a fit that is
+running away, which pyNei reaches by another road and gives NaN for, so the
+caller is what notices it and `docs/specs/gwas.md` is where that is decided.
+The crate refuses what it is given, not what it produced.
+
 One error is not a defect of the caller: the workspace of the
 eigendecomposition is 2n² floats and more, 1.6 GB at n = 10000, and a
 machine that has not the memory for it would abort the process where the
@@ -527,16 +537,19 @@ back holding the solutions the same way. It is `dpotrs` in LAPACK and
 `solve_in_place_with_conj` of faer's `linalg::cholesky::llt::solve`.
 
 That layout, one row for each right hand side, is what the caller of
-lines 483 and 693 already has, and it was chosen for it. There the right
-hand sides are the columns of a matrix of n rows and one column for each
-coefficient. A buffer of n rows and c columns held row after row, which
-is how popnei holds every matrix, is the same buffer as one of c rows and
-n columns held row after row, which is that matrix turned the other way
-round: so the caller passes the buffer it has, as c right hand sides of n
-numbers each, and nothing is copied and nothing is moved. The solutions
-come back the same way, one row for each column of the matrix the next
-product needs, so that product is `product` with its second operand
-`ByTheColumnsOfTheResult`.
+lines 483 and 693 already has, and it was chosen for it. There `a` is the
+coefficients square, so each right hand side holds one number for each
+coefficient, and there is one of them for each individual: the matrix of
+them is the individuals by the coefficients, which is what those two lines
+hold, and numpy is handed its transpose because numpy takes the right hand
+sides as columns. popnei takes them as rows, so the caller passes the
+buffer it has with `sides` the individuals and `n` the coefficients, and
+nothing is copied and nothing is moved. Checked against numpy 2.5.3 on 23
+September 2026 on 3 individuals and 2 coefficients: `solve` of a 2 x 2
+against a 2 x 3 gives a 2 x 3, which is 3 right hand sides of 2 numbers
+each. The solutions come back the same way, one row for each column of the
+matrix the next product needs, so that product is `product` with its
+second operand `ByTheColumnsOfTheResult`.
 
 **The log of the determinant.** For the `l` above, twice the sum of the
 logs of its diagonal, which is the log of the determinant of `a`. It is
@@ -714,9 +727,10 @@ the diagonal of `l` alone, so `NotFinite` and the `Singular` below are
 what it checks that diagonal for, and it is the same `Singular` a
 `cholesky_lower` that gave that `l` would have given first.
 
-The inverse reads that diagonal for the same `Singular`, and for the
-reason the triangular solve below does: the two backends do not agree on
-an `l` whose diagonal holds an entry that is not above 0. Measured on 23
+The solve and the inverse read that diagonal for the same `Singular`, and
+the inverse for the reason the triangular solve below does: the two
+backends do not agree on an `l` whose diagonal holds an entry that is not
+above 0. Measured on 23
 September 2026 on an `l` with a 0 at its row 1, `dpotri` gave an `info` of
 2 and faer's `inverse` gave no error at all and wrote infinities and NaN
 into the buffer. No `l` that `cholesky_lower` gave is such a matrix, since
@@ -724,6 +738,18 @@ that is what it stops at, and a caller holds the two buffers apart and can
 pass one that never was a factorization. So the diagonal is read in the
 crate, above the backends, where it holds for both, and the caller gets
 the error instead of a matrix of NaN.
+
+The solve is refused for a different reason, and it is the one that makes
+the rule general: there the two backends agree, and both are wrong. On the
+same `l`, measured on 23 September 2026, `dpotrs` gave a solution of NaN,
+an infinity and an infinity with the sign turned round, and faer's solve
+gave three NaN, each with no error at all. numpy refuses the same system,
+`LinAlgError: Singular matrix`. So the three operations that read an `l`
+read its diagonal first, and each gives the `Singular` that the
+`cholesky_lower` which would have produced that `l` gives at the same row.
+What is left to the caller is an `l` that is the factorization of some
+other matrix, which no check here can see: "The Rust interface" says so at
+each of the three.
 
 One case is new. A matrix that cannot be factored is neither a wrong
 dimension nor a value that is not finite nor a routine that ran out of
@@ -780,8 +806,16 @@ entry a small integer, and whose determinant is 36.
 
 At `cholesky_lower`, that factorization exactly. At
 `log_determinant_with_cholesky`, 3.58351893845611, which is the log of 36
-and the number numpy's `slogdet` gives for the same matrix, exactly: the
-sum of the logs of 2, 3 and 1, doubled, lands on the same `f64`. At
+and the number numpy's `slogdet` gives for the same matrix, within 1e-15
+relative. It is not asserted to the bit, although the sum of the logs of 2,
+3 and 1, doubled, does land on that `f64` here: `ln` is not rounded the
+same on every platform, which is why the `coding` skill does not let a test
+assert the bits of a value that went through it, and this sum is one bit
+wide. Measured on 23 September 2026, five of the nine ways of moving `ln 2`
+and `ln 3` by one unit in the last place give another `f64`, and the libm
+Rust uses for `wasm32-unknown-unknown` already differs from this machine's
+`ln 3` by one of those units. One unit in the last place of the answer is
+1.2e-16 relative, so the tolerance leaves about eight of them. At
 `solve_with_cholesky`, the right hand side (8, 40, 27) gives (1, 2, 3),
 and the two right hand sides (8, 40, 27) and (4, 2, 0), one row each, give
 (1, 2, 3) and (1, 0, 0), both within 1e-14, which is what catches a
@@ -805,8 +839,10 @@ operations of the PCA and the LD", started at 7, whose trace is
 positive definite. The literals, from numpy 2.5.3: the first and the
 last entries of the diagonal of its factorization, 10.135944716832457
 and 4.115426436421405, within 1e-12 relative; its log determinant,
-3963.7986384485084, within 1e-13, which numpy's `slogdet` gives as
-3963.7986384485057 through its LU; the solution of `G x = v` for `v` the
+3963.7986384485084, within 1e-13 relative, which numpy's `slogdet` gives as
+3963.7986384485057 through its LU, the tolerance being relative and not
+absolute since the two backends are 2.4e-12 absolute away from it and 6.1e-16
+relative; the solution of `G x = v` for `v` the
 vector of 1000 ones, of which the test asserts the first three entries,
 -0.3054837936349659, -0.04576083734778211 and -0.21314634692119025, and
 their sum over the 1000, 73.9565335781636, within 1e-11 relative; and of
