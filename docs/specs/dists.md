@@ -1179,7 +1179,8 @@ and asks it for the genotypes, and for the chromosome and the position
 too when the groups are stretches of a chromosome. Its errors: a pass that
 gave no variant, `PassGaveNoVariant`, the case of `docs/specs/stats.md`
 that every calculation over a pass raises; fewer than two populations;
-fewer resampling groups than the standard errors need, Open 1; and the
+fewer resampling groups than the standard errors need
+(**Open 1**, below); and the
 memory for the sums, asked of the machine at the first block. Each is a
 `ValueError` in Python. `Pops` is the populations of
 `docs/specs/stats.md`, which already refuses a name that is not an
