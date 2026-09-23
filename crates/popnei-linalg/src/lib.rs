@@ -3,12 +3,14 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds six: the product of a matrix with
+//! place that has them. It holds seven: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
-//! symmetric matrix, [`eigh_lower`]; and the product of two matrices,
-//! [`product`], which is the other four, because [`TheFirstOperand`] and
-//! [`TheSecondOperand`] each say how one matrix's buffer is laid out and
-//! the two together choose among `a b`, `a b'`, `a' b` and `a' b'`.
+//! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
+//! symmetric positive definite one, [`cholesky_lower`]; and the product
+//! of two matrices, [`product`], which is the other four, because
+//! [`TheFirstOperand`] and [`TheSecondOperand`] each say how one matrix's
+//! buffer is laid out and the two together choose among `a b`, `a b'`,
+//! `a' b` and `a' b'`.
 //! `docs/specs/linalg.md` says what each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
@@ -123,6 +125,27 @@ pub enum Error {
         what: &'static str,
         /// How many values it holds.
         values: usize,
+    },
+
+    /// A matrix that could not be factored at the row the value names,
+    /// counting from 0: the Cholesky reached a diagonal entry that is not
+    /// above 0 there, or the solve against an upper triangular matrix
+    /// reached one that is 0.
+    ///
+    /// It is not a defect of the caller: the call was right and the matrix
+    /// was what the data made it, so the module that called decides what
+    /// it means there. Both backends give the same row, counted from 0:
+    /// `dpotrf` gives the order of the leading corner, counting from 1,
+    /// and faer an index from 0.
+    #[error(
+        "the matrix {argument} is singular: the factorization stopped at its row {at}, counting from 0"
+    )]
+    Singular {
+        /// The name of the argument, as "The Rust interface" of
+        /// `docs/specs/linalg.md` spells it.
+        argument: &'static str,
+        /// The row the factorization stopped at, counting from 0.
+        at: usize,
     },
 }
 
@@ -454,6 +477,45 @@ fn reverse_the_rows(values: &mut [f64], n: usize) {
     }
 }
 
+/// The Cholesky factorization of the symmetric positive definite `a` of
+/// `n` x `n`, given by its lower half: the lower triangular `l` with
+/// `l l' = a`, which overwrites that lower half.
+///
+/// Only the lower half of `a` is read, the entries of column `j` at most
+/// `i` of row `i`; what the upper half holds does not reach the result and
+/// is left as it was. The lower half is the factorization when this comes
+/// back, so a caller that needs `a` afterwards copies it first. `a` may
+/// hold more values than `n` times `n`, and then its first `n` times `n`
+/// are the matrix.
+///
+/// This is the test for a matrix that is positive definite, and the one
+/// the association study fits its models through: it stops at the first
+/// row whose diagonal entry, once the rows above it have been taken out,
+/// is not above 0, and gives [`Error::Singular`] with that row. What that
+/// row means is for the module that called, since it is what the data was
+/// and not a defect of the call.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` is 0, when `a` holds fewer than `n` times
+/// `n` values, or when `n` times `n` is more than 2147483647, which is
+/// what the routines of BLAS and LAPACK count in. [`Error::NotFinite`]
+/// when the lower half of `a` holds a value that is not finite.
+/// [`Error::Singular`] when `a` is not positive definite, with the row the
+/// factorization stopped at. [`Error::NoConvergence`] when the routine
+/// refused an argument it was given, which is a defect of popnei.
+pub fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
+    if n == 0 {
+        return Err(Error::Dimension {
+            argument: "n",
+            expected: "1 at least, since a is the n x n matrix to factor".to_owned(),
+        });
+    }
+    let a = the_matrix_of_mut(a, n, n, "a")?;
+    refuse_a_value_that_is_not_finite_in_the_lower_half(a, n, "a")?;
+    backend::cholesky_lower(a, n)
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -616,8 +678,8 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 #[cfg(test)]
 mod tests {
     use super::{
-        Eigen, Error, TheFirstOperand, TheSecondOperand, add_self_product_lower, eigh_lower,
-        product, reverse_the_rows,
+        Eigen, Error, TheFirstOperand, TheSecondOperand, add_self_product_lower, cholesky_lower,
+        eigh_lower, product, reverse_the_rows,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -726,6 +788,39 @@ mod tests {
                 state.wrapping_shr(11) as f64 / 9007199254740992.0 - 0.5
             })
             .collect()
+    }
+
+    /// The 3 x 3 symmetric positive definite matrix of "How the seven are
+    /// verified" of `docs/specs/linalg.md`, rows (4, 2, 0), (2, 10, 6) and
+    /// (0, 6, 5), with only its lower half given and the upper half
+    /// holding a value that is nothing of the matrix, so that a call that
+    /// read the upper half instead would give another factorization.
+    fn the_matrix_to_factor() -> Vec<f64> {
+        vec![
+            4.0, 99.0, 99.0, //
+            2.0, 10.0, 99.0, //
+            0.0, 6.0, 5.0,
+        ]
+    }
+
+    /// The order of the matrix below, which is the number of individuals
+    /// the spec checks the two backends at.
+    const THE_LARGE_CASE: usize = 1000;
+
+    /// The columns of the Z that matrix is built from, which are the
+    /// variants of those individuals.
+    const THE_VARIANTS_OF_THE_LARGE_CASE: usize = 1200;
+
+    /// The G of "How the seven are verified", the lower half of ZZ' for
+    /// the Z of 1000 rows and 1200 columns of the generator, which is the
+    /// matrix the eigendecomposition is checked on as well: ZZ' is A'A for
+    /// A = Z', of 1200 rows and 1000 columns, and the numbers in the order
+    /// the generator gives them are the rows of that A, one after another.
+    fn the_matrix_of_1000_by_1000_of_the_generator() -> Vec<f64> {
+        let a = the_numbers_of_the_generator(THE_VARIANTS_OF_THE_LARGE_CASE * THE_LARGE_CASE);
+        let mut g = vec![0.0_f64; THE_LARGE_CASE * THE_LARGE_CASE];
+        add_self_product_lower(&a, THE_VARIANTS_OF_THE_LARGE_CASE, THE_LARGE_CASE, &mut g).unwrap();
+        g
     }
 
     #[test]
@@ -2055,5 +2150,152 @@ mod tests {
             error.to_string(),
             "this machine has not the memory for the workspace of floats of dsyevd, 200060001 values"
         );
+    }
+
+    #[test]
+    fn the_cholesky_of_the_3_by_3_writes_the_lower_half_and_leaves_the_upper_as_it_was() {
+        // The factorization of "How the seven are verified" has rows
+        // (2, 0, 0), (1, 3, 0) and (0, 2, 1). Every entry is a small
+        // integer, the square roots are of 4, 9 and 1 and the entries
+        // below the diagonal are sums of at most two products of small
+        // integers, so the arithmetic is exact and the assertion is too.
+        let mut a = the_matrix_to_factor();
+        cholesky_lower(&mut a, 3).unwrap();
+        assert_eq!(
+            a,
+            vec![
+                2.0, 99.0, 99.0, //
+                1.0, 3.0, 99.0, //
+                0.0, 2.0, 1.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_cholesky_of_a_matrix_that_is_not_positive_definite_is_singular_at_the_row_it_stopped_at()
+    {
+        // The 3 x 3 of "The errors the seven add", rows (4, 2, 0),
+        // (2, 1, 0) and (0, 0, 1), whose leading 2 x 2 has a determinant
+        // of 0: the row it stops at is the middle one of the three, so a
+        // backend that counted from 1, as LAPACK does, or from the other
+        // end gives another number.
+        let mut a = vec![
+            4.0, 99.0, 99.0, //
+            2.0, 1.0, 99.0, //
+            0.0, 0.0, 1.0,
+        ];
+        let error = cholesky_lower(&mut a, 3).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Singular {
+                    argument: "a",
+                    at: 1
+                }
+            ),
+            "the error is {error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "the matrix a is singular: the factorization stopped at its row 1, counting from 0"
+        );
+    }
+
+    #[test]
+    fn the_cholesky_of_the_1000_by_1000_matrix_of_the_generator() {
+        let mut g = the_matrix_of_1000_by_1000_of_the_generator();
+        let trace: f64 = g
+            .as_chunks::<THE_LARGE_CASE>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(row, entries)| entries[row])
+            .sum();
+        assert!(
+            !differ_in_their_digits(trace, 99996.3873081677, 1e-12),
+            "the trace of the matrix to factor is {trace}"
+        );
+
+        cholesky_lower(&mut g, THE_LARGE_CASE).unwrap();
+        let first = g[0];
+        let last = g[THE_LARGE_CASE * THE_LARGE_CASE - 1];
+        assert!(
+            !differ_in_their_digits(first, 10.135944716832457, 1e-12),
+            "the first entry of the diagonal of the factorization is {first}"
+        );
+        assert!(
+            !differ_in_their_digits(last, 4.115426436421405, 1e-12),
+            "the last entry of the diagonal of the factorization is {last}"
+        );
+    }
+
+    #[test]
+    fn the_cholesky_reads_and_writes_the_first_values_of_an_a_that_holds_more() {
+        let mut a = the_matrix_to_factor();
+        a.push(7.0);
+        cholesky_lower(&mut a, 3).unwrap();
+        assert_eq!(
+            a,
+            vec![
+                2.0, 99.0, 99.0, //
+                1.0, 3.0, 99.0, //
+                0.0, 2.0, 1.0, //
+                7.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_cholesky_refuses_an_n_of_zero() {
+        let error = cholesky_lower(&mut [], 0).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "n", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_cholesky_refuses_an_a_shorter_than_n_times_n() {
+        let mut a = [0.0; 8];
+        let error = cholesky_lower(&mut a, 3).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_cholesky_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 2^31, one more than the largest an i32 holds. The check comes
+        // before the one of the length of the buffer, so an empty slice
+        // reaches it, and it is made whichever backend would run.
+        let error = cholesky_lower(&mut [], 1 << 31).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_cholesky_refuses_a_value_that_is_not_finite_in_the_lower_half_alone() {
+        // Below the diagonal and on it.
+        for entry in [3_usize, 4] {
+            let mut a = the_matrix_to_factor();
+            a[entry] = f64::NAN;
+            let error = cholesky_lower(&mut a, 3).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "a" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+        // And above it, where nothing is read: the factorization is the
+        // one of the matrix and the value is left where it was, which is
+        // what says that the upper half never reaches a routine.
+        let mut a = the_matrix_to_factor();
+        a[1] = f64::NAN;
+        cholesky_lower(&mut a, 3).unwrap();
+        let lower_half = vec![a[0], a[3], a[4], a[6], a[7], a[8]];
+        assert_eq!(lower_half, vec![2.0, 1.0, 3.0, 0.0, 2.0, 1.0]);
+        assert!(a[1].is_nan(), "the entry above the diagonal is {}", a[1]);
     }
 }

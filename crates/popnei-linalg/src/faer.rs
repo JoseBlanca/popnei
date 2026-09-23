@@ -1,4 +1,4 @@
-//! The faer backend: the six operations on faer, a linear algebra
+//! The faer backend: the seven operations on faer, a linear algebra
 //! library written in Rust, which runs where there is no BLAS to link and
 //! natively when the crate is built with `--no-default-features`.
 //!
@@ -15,6 +15,10 @@
 //! are in `lib.rs`, where they hold for whichever backend runs. Nothing
 //! here is `unsafe`.
 
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::cholesky::llt::factor::{
+    LltError, LltRegularization, cholesky_in_place, cholesky_in_place_scratch,
+};
 use faer::linalg::evd::EvdError;
 use faer::linalg::matmul::matmul;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as triangular_matmul};
@@ -189,6 +193,44 @@ pub(crate) fn product_with_both_turned(
         the_threads(),
     );
     Ok(())
+}
+
+/// The Cholesky factorization of the symmetric positive definite `a`, of
+/// exactly `n` x `n` values row after row with its lower half filled and
+/// `n` 1 at least, which overwrites that lower half with the lower
+/// triangular `l`.
+///
+/// faer is given the regularization it calls its default, which is the one
+/// that refuses: told to regularize, it patches a pivot that is not
+/// positive and factors on, and [`Error::Singular`] would never be raised.
+///
+/// # Errors
+///
+/// [`Error::Singular`] when `a` is not positive definite, with the row
+/// faer stopped at, which it counts from 0 as this crate does.
+pub(crate) fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
+    let a = MatMut::from_row_major_slice_mut(a, n, n);
+    // The scratch faer asks for here is n values, one column of the
+    // matrix, which is 8 KB at the 1000 individuals of the spec.
+    let mut scratch = MemBuffer::new(cholesky_in_place_scratch::<f64>(
+        n,
+        the_threads(),
+        Default::default(),
+    ));
+    cholesky_in_place(
+        a,
+        LltRegularization::default(),
+        the_threads(),
+        MemStack::new(&mut scratch),
+        Default::default(),
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        LltError::NonPositivePivot { index } => Error::Singular {
+            argument: "a",
+            at: index,
+        },
+    })
 }
 
 /// The eigendecomposition of the symmetric `g`, of exactly `n` x `n`

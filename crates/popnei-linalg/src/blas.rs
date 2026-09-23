@@ -1,6 +1,6 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! and `dsyevd`, the ones numpy calls.
+//! `dsyevd` and `dpotrf`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -356,6 +356,54 @@ pub(crate) fn eigh_lower(mut g: Vec<f64>, n: usize) -> Result<Eigen> {
     // eigenvectors a row each. `lib.rs` turns the values and the rows
     // round together.
     Ok(Eigen { values, vectors: g })
+}
+
+/// The Cholesky factorization of the symmetric positive definite `a`, of
+/// exactly `n` x `n` values row after row with its lower half filled and
+/// `n` 1 at least, which overwrites that lower half with the lower
+/// triangular `l`.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` is larger than the `i32` the routine
+/// takes. [`Error::Singular`] when `a` is not positive definite, with the
+/// row the routine stopped at counted from 0. [`Error::NoConvergence`]
+/// when the routine refused an argument, which is a defect of popnei.
+pub(crate) fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
+    let order = the_i32_of(n, "n")?;
+    let mut info = 0_i32;
+    // SAFETY: with `uplo` U, `n` = n and `lda` = n the routine reads the
+    // upper triangle of `a` as a column major matrix of n x n, which is
+    // the lower half of `a` in popnei's layout, and overwrites that same
+    // triangle with the factorization; both are inside the n * n values of
+    // `a`, which is what it holds. It reads and writes nothing else of
+    // `a`, and `info` is one integer. `n` is not 0 and fits in the `i32`
+    // the routine takes, which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dpotrf(b'U', order, a, order, &mut info);
+    }
+    if info == 0 {
+        return Ok(());
+    }
+    // An `info` above 0 is the order of the leading corner that is not
+    // positive definite, counting from 1, and the row the crate gives is
+    // that corner's last, counting from 0, which is one less. An `info`
+    // below 0 is an argument the routine refused, and that is the arm the
+    // conversion fails in, since no negative number is a count.
+    match usize::try_from(info) {
+        Ok(corner) => Err(Error::Singular {
+            argument: "a",
+            at: corner.saturating_sub(1),
+        }),
+        Err(_) => Err(Error::NoConvergence {
+            routine: "dpotrf",
+            info,
+        }),
+    }
 }
 
 /// How many floats and how many integers `dsyevd` works in for a matrix of
