@@ -129,7 +129,8 @@ which `docs/objectives.md` asks to be written down:
 - A `Kinship` can still be built by hand, from a matrix and `num_vars`, so
   that a user can bring the one plink2 or a pedigree gave them and pass it
   to `calc_gwas`, and `__post_init__` checks it where pyNei checks nothing:
-  it raises a `ValueError` for a matrix that is not square, whose index and
+  it raises a `ValueError` for a matrix that is not square, whose index or
+  columns hold a label that is no name, whose index and
   columns name different individuals, that names one individual twice, that
   holds a value that is not a number, or that is further from its own
   transpose than 1e-9 of its largest absolute entry. The check for a value
@@ -142,7 +143,16 @@ which `docs/objectives.md` asks to be written down:
   23 September 2026 found Python taking one that named an individual twice,
   where `filter_individuals` then gave two rows for the one name asked, and
   TypeScript taking a `NaN` on the diagonal, which its symmetry check never
-  looked at. The owner decided on
+  looked at. The fifth place they differed was the labels: Python took a
+  matrix indexed by the numbers 0 and 1, where `calcKinship` of TypeScript
+  takes the names as strings and refuses anything else. The owner decided on
+  23 September 2026 to refuse it, which is what makes the two packages take
+  the same matrices: an individual has a name, and a kinship whose rows are
+  0 and 1 cannot be matched to the phenotypes `calc_gwas` is given. A frame
+  written as `pandas.DataFrame(matrix)`, with no `index` and no `columns`,
+  is labelled with the numbers 0 to N-1, and that is how a user meets this,
+  so the message says to write both with the names of the individuals and
+  not only that a number is no name. The owner decided on
   23 September 2026 to raise the error sooner rather than later; the option
   not taken was to reproduce pyNei and let the complaint come out of the
   linear algebra, where the message names a matrix and a row and not the
