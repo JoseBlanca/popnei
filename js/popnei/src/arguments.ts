@@ -33,10 +33,17 @@ import {
 const LARGEST_WHOLE_NUMBER = 4294967295;
 
 /**
- * The largest whole number a number of JavaScript holds exactly, 2^53 - 1.
+ * The largest whole number a number of JavaScript counts to one by one,
+ * 2^53 - 1, which is `Number.MAX_SAFE_INTEGER` and what
+ * `Number.isSafeInteger` takes.
  *
  * A float64 counts in twos above it, so 2^53 + 1 is read as 2^53 and a
  * number written above this one is not the number the user wrote.
+ *
+ * The position of a variant reaches one further, the 2^53 of
+ * `docs/specs/block.md`, which a float64 holds exactly: a position is read
+ * from a file, where this number is written by a user and read back to
+ * them.
  */
 const LARGEST_EXACT_WHOLE_NUMBER = 9007199254740991;
 
@@ -138,16 +145,17 @@ export function varsOfTheMatrixOfEveryPair(
 
 /**
  * `value` when it is a whole number of base pairs of 1 or more that a
- * number of JavaScript holds exactly, and an `Error` that names `argument`
- * and what was given otherwise.
+ * number of JavaScript counts to one by one, and an `Error` that names
+ * `argument` and what was given otherwise.
  *
  * The window of `filterByLd` comes through here, how many base pairs behind
  * a variant the variants it is compared with reach. The core takes it as a
  * 64 bit whole number, which a Python user can fill to 1.8e19, and
- * JavaScript is what cuts it at 2^53 - 1: a whole number above that one is
- * not held exactly, so it would reach the core as another window than the
- * one that was written. No genome comes near either number, the longest
- * chromosome that has been assembled being 2.5e8 base pairs.
+ * JavaScript is what cuts it at 2^53 - 1: the numbers above that one no
+ * longer run one by one, so a window written there would reach the core as
+ * another number than the one that was written. No genome comes near
+ * either of the two: the largest known, over 1e11 base pairs in all of its
+ * chromosomes together, is smaller by more than four orders of magnitude.
  *
  * @throws {Error} When `value` is not such a number.
  */
@@ -156,8 +164,8 @@ export function distanceInBasePairs(argument: string, value: unknown): number {
     throw new Error(
       `popnei: \`${argument}\` is a whole number of base pairs of 1 or more ` +
         `and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number ` +
-        `a number of JavaScript holds exactly, and ${whatWasGiven(value)} ` +
-        `was given`,
+        `a number of JavaScript counts to one by one, and ` +
+        `${whatWasGiven(value)} was given`,
     );
   }
   return value;

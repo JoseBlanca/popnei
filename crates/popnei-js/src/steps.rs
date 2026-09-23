@@ -81,12 +81,17 @@ impl Step {
 /// it is compared with reach.
 const THE_WINDOW_OF_THE_LD_FILTER: &str = "maxDist";
 
-/// The largest window that crosses, 2^53 - 1 base pairs, which is the
-/// largest whole number a number of JavaScript holds exactly.
+/// The largest window that crosses, 2^53 - 1 base pairs, which is
+/// `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
+/// JavaScript counts to one by one.
 ///
 /// The core takes a window of up to 2^64 - 1 base pairs, which is what a
 /// Python user can write; above this one a number of JavaScript counts in
 /// twos, so a window written there is not the window that would arrive.
+///
+/// The position of a variant reaches one further, the 2^53 of
+/// `LARGEST_POSITION` of `source.rs`, which is held exactly and comes from
+/// a file instead of being written by a user.
 const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
 
 /// `max_dist` as the number of base pairs the core takes.

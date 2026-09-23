@@ -408,12 +408,13 @@ export class Variants {
    * before this one. Neither argument has a default.
    *
    * The largest window is 9007199254740991 base pairs, 2^53 - 1, which is
-   * the largest whole number a number of JavaScript holds exactly: the core
-   * takes a window of up to 2^64 - 1, which is what a user of popnei in
-   * Python can write, and above 2^53 - 1 a number of JavaScript counts in
-   * twos, so a larger window would reach the core as another number than
-   * the one written. The longest chromosome that has been assembled is
-   * 2.5e8 base pairs.
+   * `Number.MAX_SAFE_INTEGER`, the largest whole number a number of
+   * JavaScript counts to one by one: the core takes a window of up to
+   * 2^64 - 1, which is what a user of popnei in Python can write, and above
+   * 2^53 - 1 a number of JavaScript counts in twos, so a larger window would
+   * reach the core as another number than the one written. No genome comes
+   * near it: the largest one known, over 1e11 base pairs in all of its
+   * chromosomes together, is smaller by more than four orders of magnitude.
    *
    * The call adds a step and gives nothing back.
    *

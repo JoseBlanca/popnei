@@ -45,10 +45,19 @@ use popnei::variant::Needs;
 use crate::errors::JsPopneiError;
 use crate::steps::{Steps, chain_of};
 
-/// The largest position a block hands to JavaScript, 2^53.
+/// The largest position a block hands to JavaScript, 2^53, which
+/// `docs/specs/block.md` sets.
 ///
 /// The positions cross as float64, which holds every whole number up to
 /// this one and not the ones above it: 2^53 + 1 would arrive as 2^53.
+///
+/// It is one above the largest window a user may write for the filter by
+/// linkage disequilibrium, the 2^53 - 1 of `LARGEST_WINDOW` of `steps.rs`,
+/// and the two are not the same kind of number. A position is read from a
+/// file, and 2^53 itself is held exactly, so it is handed out. A window is
+/// written by a user and read back to them, which is what
+/// `Number.isSafeInteger` stands for: above 2^53 - 1 the numbers a user
+/// can write no longer run one by one.
 pub(crate) const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
 
 /// A file of variants that was opened, which every pass reads again.
@@ -656,8 +665,9 @@ impl BlockColumns {
 /// When a position is above [`LARGEST_POSITION`]. A float64 would round it,
 /// and the same file read from Python gives the position the source has, so
 /// the two languages would disagree about where a variant is. No genome
-/// comes near that number: the longest chromosome that has been assembled
-/// is 2.5e8 bases.
+/// comes near that number: the largest one known, over 1e11 bases in all of
+/// its chromosomes together, is smaller by more than four orders of
+/// magnitude.
 pub(crate) fn positions_of(positions: &[u64]) -> Result<Vec<f64>, JsPopneiError> {
     positions
         .iter()
@@ -666,7 +676,8 @@ pub(crate) fn positions_of(positions: &[u64]) -> Result<Vec<f64>, JsPopneiError>
             if pos > LARGEST_POSITION {
                 return Err(JsPopneiError::NotInJavaScript(format!(
                     "the position {pos} of a variant is above {LARGEST_POSITION}, the \
-                     largest whole number a number of JavaScript holds"
+                     last whole number a number of JavaScript holds: the one after it \
+                     would arrive as {LARGEST_POSITION} itself"
                 )));
             }
             Ok(pos as f64)

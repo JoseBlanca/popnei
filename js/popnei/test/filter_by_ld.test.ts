@@ -323,7 +323,7 @@ for (const [maxDist, written] of WINDOWS_REFUSED) {
   });
 }
 
-test("the largest window a number of JavaScript holds exactly is taken", () => {
+test("the largest window a number of JavaScript counts to one by one is taken", () => {
   // The core takes the window as a 64 bit whole number of base pairs, and
   // what JavaScript hands it has to be the number the user wrote: at
   // 9007199254740991 it still is. A window longer than a chromosome is the
@@ -354,10 +354,12 @@ test("the largest window a number of JavaScript holds exactly is taken", () => {
   variants.free();
 });
 
-test("a window above the whole numbers a float64 holds is refused", () => {
-  // 9007199254740992 is 2^53, where a number of JavaScript starts counting
-  // in twos: the core would be given a window the user cannot write and
-  // cannot read back, so the package refuses it and says why.
+test("a window of 2^53 is refused, where the numbers stop running one by one", () => {
+  // 9007199254740992 is 2^53, the first whole number with no number of its
+  // own after it: 2^53 + 1 is read as 2^53, so from here on a user cannot
+  // write every window and read it back, and the package refuses it and
+  // says why. The position of a variant reaches 2^53, which is read from a
+  // file and not written by a user.
   const variants = theDataset();
 
   assert.throws(
@@ -366,7 +368,7 @@ test("a window above the whole numbers a float64 holds is refused", () => {
       error instanceof Error &&
       error.message.includes("maxDist") &&
       error.message.includes(`${FIRST_WINDOW_REFUSED}`) &&
-      error.message.includes("holds exactly"),
+      error.message.includes("counts to one by one"),
   );
 
   assert.deepEqual(variants.steps, []);
