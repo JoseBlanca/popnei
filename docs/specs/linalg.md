@@ -714,6 +714,17 @@ the diagonal of `l` alone, so `NotFinite` and the `Singular` below are
 what it checks that diagonal for, and it is the same `Singular` a
 `cholesky_lower` that gave that `l` would have given first.
 
+The inverse reads that diagonal for the same `Singular`, and for the
+reason the triangular solve below does: the two backends do not agree on
+an `l` whose diagonal holds an entry that is not above 0. Measured on 23
+September 2026 on an `l` with a 0 at its row 1, `dpotri` gave an `info` of
+2 and faer's `inverse` gave no error at all and wrote infinities and NaN
+into the buffer. No `l` that `cholesky_lower` gave is such a matrix, since
+that is what it stops at, and a caller holds the two buffers apart and can
+pass one that never was a factorization. So the diagonal is read in the
+crate, above the backends, where it holds for both, and the caller gets
+the error instead of a matrix of NaN.
+
 One case is new. A matrix that cannot be factored is neither a wrong
 dimension nor a value that is not finite nor a routine that ran out of
 iterations, and it is not a defect of the caller either: it is what the
