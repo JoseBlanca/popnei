@@ -8,9 +8,14 @@ timed: no benchmark, no profile, no wall time, for the core, for Python or
 for wasm. The owner decided on 23 September 2026 that the plan which built
 it would not measure and that this review would, and "Speed" of
 `docs/specs/dists.md` asks this review to write the numbers to reach into
-it once they exist. Section 2 has the numbers, section 3 what they are of,
-section 10 the numbers proposed for the spec and the one decision they
-need from the owner.
+it once they exist.
+
+Section 2 says what the code does now and what it did before, section 3
+how it was measured, section 4 how the cost grows with the populations,
+which the spec asked to have measured rather than guessed, section 10 the
+numbers now written into the spec, and section 14 the three changes this
+review made and what each gave. The branch `perf/dists-pops` holds them
+and is not merged; the order to merge is what this report asks for.
 
 The words this document uses. The **calculation** is one call of
 `calc_pop_dist_sums` over a reader, which gives, for each pair of
@@ -66,37 +71,54 @@ linalg_and_wasm, python_boundary and io_and_syscalls.
 
 ## 2. The verdict
 
-**Run the experiments.** The code has no defect of speed that this review
-can point at and no target it misses, because it had no target. What it
-has is two costs that a profile names, that a cost model measures, and
-that a change of contained size removes, both of them bit-identical: the
-counter table (H1) and the per-population arithmetic redone for every pair
-(H2). Section 6 gives them in order and section 9 what each experiment
-gave.
+**Applied.** Three changes were built, measured and kept, on the branch
+`perf/dists-pops`, which is not merged. Together they make the pass 39 to
+49 in 100 faster on one thread, and **no number of any result moved by a
+single bit**: 3807 numbers of the test panel were compared as bits at each
+step, under three ways of cutting the resampling groups, including the one
+that magnifies a last-place change most. Section 14 gives each change with
+its two numbers.
 
-What the code does today, on the dataset above with the reader taken out,
-on one thread, best of 5 on a quiet machine:
+On 100000 variants x 1000 individuals with the reader taken out, on one
+thread, best of 5 on a machine checked quiet:
 
 | | 3 populations, 3 pairs | 20 populations, 190 pairs |
 |---|---|---|
-| popnei, one thread | 0.282 s | 0.489 s |
-| popnei in wasm, one thread | 0.375 s | 0.582 s |
-| pyNei, one thread | 7.811 s | 502.105 s |
+| popnei before, at 3bc33f9 | 0.282 s | 0.489 s |
+| **popnei now** | **0.171 s** | **0.248 s** |
+| popnei in wasm before | 0.375 s | 0.582 s |
+| **popnei in wasm now** | **0.198 s** | **0.320 s** |
+| pyNei | 7.811 s | 502.105 s |
 
 Over the vars file, which is what a user waits for and has the reader in
-it, popnei takes 0.388 s and 0.620 s on one thread against pyNei's 7.811 s
-and 502.105 s, so it is **20 times faster at 3 populations and 810 times
-at 20**. The second ratio is mostly pyNei's own shape and not popnei's
-speed, and section 5 says why.
+it as pyNei's number has pyNei's, popnei now takes 0.277 s and 0.352 s on
+one thread, so it is **28 times faster than pyNei at 3 populations and
+1426 times at 20**. The second ratio is mostly pyNei's own shape and not
+popnei's speed, and section 5 says why.
 
-What is asked of the owner: the order to merge this branch, which nothing
-here stands in the way of; and one decision, in section 10, on whether the
-spec's numbers to reach should include a figure for many threads at all,
-given that on this machine such a figure moved by a factor of two between
-two runs of the same binary while the one-thread figures moved by under 6
-in 100.
+The numbers to reach are written into "Speed" of `docs/specs/dists.md`,
+where this review was asked to put them: the measurements above with a
+tenth over them.
+
+What is asked of the owner: **the order to merge this branch**, which
+nothing here stands in the way of. One thing to know before deciding, and
+not a decision: H2 is a gain from about 10 populations up and is neutral
+below that, because it moves work from the pairs to the populations;
+section 14 has both numbers.
+
+The verdict before the experiments were run was "run the experiments", on
+this evidence: two costs that the profile named and the cost model
+measured, the counter table walked in full for every population at every
+variant (10.2 GB a pass at 20 populations against 200 MB of genotypes
+read), and each population's own arithmetic redone for each of the 19
+pairs it is in. Both were confirmed.
 
 ## 3. What was measured, and with what
+
+Every number in this section is of the code as it was merged, at
+3bc33f9, before the three changes of section 14. It is kept because it
+is what the findings were made from and what the next review will
+compare against.
 
 The benchmark is `crates/popnei/benches/pop_dists.rs`, added by this
 review, `harness = false` as the other eight, run as
@@ -503,39 +525,37 @@ proposed as an experiment now:
 - **`+simd128` for wasm** is already on, set in `.cargo/config.toml` for
   another module, so the wasm numbers of section 2 were measured with it.
 
-## 10. The numbers to reach, and the decision they need
+## 10. The numbers written into the spec
 
-"Speed" of `docs/specs/dists.md` is waiting for numbers. What this review
-proposes to write there, once the experiments of section 11 are run, is
-the measured one-thread and wasm numbers with a tenth over them, which is
-the form the Kosman item of the same spec uses.
+"Speed" of `docs/specs/dists.md` was waiting for numbers and now has them:
+the measurements of section 14 with a tenth over them, of the calculation
+with the reading taken out, on the owner's M5 Pro.
 
-The decision. The Kosman item states a target on 18 cores. On this machine
-that kind of figure is not reproducible to better than a factor of two:
-the same binary on the same dataset gave 0.027 s and 0.061 s for the
-3-population in-memory timing in two invocations, and 0.044 s and 0.092 s
-at 20 populations, while every one-thread figure over the same runs moved
-by under 6 in 100. The owner's own account of why is that the 18 cores are
-6 performance and 12 efficiency, so which kind a chunk lands on depends on
-what else is running. The options:
+| | 3 populations | 20 populations |
+|---|---|---|
+| one thread | 0.19 s | 0.27 s |
+| 18 threads, on a quiet machine | 0.023 s | 0.028 s |
+| wasm under node | 0.22 s | 0.35 s |
 
-- **One-thread and wasm numbers only**, with the parallel figure recorded
-  in this report and not in the spec. The spec then holds only numbers
-  that can be checked again on a machine that is not quiet. It gives up a
-  stated goal for the threads, which is where goal 4 of the objectives
-  cares most.
-- **All three, with the parallel one as a range** and the pool size and
-  the load average beside it, as the Kosman item does with a single
-  number. It keeps a goal for the threads and it will be argued about
-  every time somebody checks it.
-- **All three, with the parallel one taken at `RAYON_NUM_THREADS=6`**, the
-  six performance cores, which is also the pool pyNei was measured at.
-  That is reproducible in a way the 18-thread figure is not, and it states
-  a goal for the threads. It needs one measurement this review has not
-  taken.
+The form is the one the Kosman item of the same spec uses. What is new is
+the condition on the middle row and a sentence saying that the one-thread
+figure is the one to check a change against.
 
-Recommended: the third. It is the only one that keeps a checkable number
-for the threads, and what it costs is one run of the benchmark.
+Whether to state a figure for many threads at all was open while this
+review ran, because the same binary gave 0.027 s and 0.061 s for the same
+18-thread timing in two invocations. It is settled by measurement rather
+than by judgement: on a machine checked quiet the 18-thread figure repeats
+within 5 in 100 (0.025, 0.025 and 0.026 s over five runs at 20
+populations), and the factor of two appeared only when another session was
+compiling or a profiler was attached. So the figure is worth stating with
+the condition attached, and it is stated.
+
+The third option this review considered, taking the parallel figure on the
+6 performance cores alone because they are alike, was measured and
+dropped: `RAYON_NUM_THREADS=6` gives 0.031 s at 3 populations and 0.047 s
+at 20 against 0.021 s and 0.025 s on all 18. The 12 efficiency cores are
+worth 1.9 times at 20 populations, so a target that left them out would
+ask for less than the machine gives.
 
 ## 11. The measurement plan
 
@@ -608,3 +628,153 @@ hundredfold at 100 groups.
   are values of single variants, never ratios, which is what lets the
   blocks and the threads add them in any order and is why H1 and H2 can be
   bit-identical at all.
+
+## 14. What the experiments gave
+
+Each change was built on the one before it, so each baseline is the commit
+before it and not the state the review started from. Every timing is one
+thread, best of 5, blocks in memory, on a machine checked quiet with
+`ps` and `sysctl -n vm.loadavg` before and after; the machine was shared
+with other sessions throughout and two of the three experiments had to
+wait for another session's build to finish before their final timing.
+
+Before anything was timed, each change passed `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all
+--check`, `cargo wasm-check`, `uv run ruff check` and `uv run pytest`. And
+each proved the bits directly: every number of the test panel printed as
+`f64::to_bits` before and after and compared — 117 numbers under 24
+resampling groups in blocks of 100 variants, 45 under no groups in one
+block, and 3645 under one group for each variant in blocks of 7, which is
+the cut that magnifies a last-place change most. **All 3807 were identical
+at every step.** The test that asserts the same bits across pools of 1 and
+4 threads passed at each step too, so nothing was made to depend on the
+pool.
+
+### H1, applied at 9d828e8: count a population of two alleles without the table
+
+`count_alleles_of` now counts a population whose alleles are only 0, 1 and
+the missing one in four `u32` counters and never touches the 128-entry
+table, falling back to the table at the first individual it cannot count
+that way; and the largest allele it saw comes out of the counting, so the
+backwards scan of 128 counters in `count_the_var` is gone.
+
+The gate was a count, not a time: the bytes zeroed per pass went from
+**4 096 000 000 to 0**, the first being exactly 100000 variants x 20
+populations x 2048 bytes. The per-population coefficient fell by 75 in
+100. The 20-population pass went from 0.501 s to 0.363 s and the
+3-population pass from 0.286 s to 0.238 s. `_platform_memset` left the
+profile, from 1585 samples to 4.
+
+The per-individual coefficient also fell by 13 in 100, which was not
+predicted: the fast path replaces a bounds-checked indexed increment into
+one of four lane arrays with three compares and three adds in registers,
+so the counting of each allele got cheaper and not only the table.
+
+Cost: one new public two-field struct, two counting paths where there was
+one, and two `#[expect]` of the arithmetic lint with the bounds the code
+already establishes. Two tests were added and both were shown to fail
+against deliberately broken code.
+
+### H2, applied at 4d6b616: take each population's own quantities once a variant, not once a pair
+
+`PopVarCounts` now carries, beside its counts, each population's allele
+frequencies and the five numbers a pair reads of one of its two
+populations. The pair loop keeps only what is of the pair: the product of
+the two frequencies, its square root and the pooled power.
+
+The gate was the divisions executed for one biallelic variant at 20
+populations, attributed to their innermost loop in the disassembly of the
+benchmark that was actually built: **2850 before and 1050 after, a fall of
+63 in 100**. The per-pair coefficient fell by 46 in 100. The 20-population
+pass went from 0.370 s to 0.326 s and the 40-population pass from 0.714 s
+to 0.526 s. `sums_of_the_chunk` fell from about a third of the work to a
+seventh.
+
+The condition that keeps it bit-identical was honoured: the hoisted values
+sit behind the same integer tests that made `of_var` give no value, so a
+population with fewer than two called alleles still yields nothing rather
+than an infinity.
+
+Cost, and the one thing the owner should know: **below about 10
+populations this change is neutral**, because the per-population
+coefficient rises by 23 in 100 to pay for the per-pair fall. At 6
+populations the two cancel exactly. `PopVarCounts` grows from about 540
+bytes to about 1610 and now holds derived floats that belong to the
+variant just counted and to the settings it was counted with.
+
+### H4, applied at 7df1472: count the alleles and the genotypes in one walk — and the finding as written was wrong
+
+The experiment refuted its own stated mechanism and found the gain
+elsewhere, which is worth recording.
+
+H4 said the cost was the two walks over the same individuals and the 2e8
+`genotype_of` lookups a pass. Built that way — one walk, the genotype
+taken once, the existing `count_the_genotype` called per genotype — it was
+**7 in 100 slower** than the baseline at every population count. Halving
+the lookups bought nothing.
+
+What paid was not re-reading the genotype's alleles: counting the genotype
+out of the zeros, ones and missing alleles the fast path has already
+counted, instead of walking its alleles again. And one more thing, which
+is the most transferable result of this review: the version that still had
+`if missing { .. } else { .. }` per genotype was faster on every
+populations file **except** `pops3.tsv`, which it made slower than the
+baseline, 0.245 s against 0.237 s. `pops3.tsv` is the only file whose
+populations are scattered through the row, in 181 runs of varying length,
+because the three populations are the simulated ones. Writing the three
+counts as `+= u32::from(..)` with `&` rather than `&&`, so that nothing
+branches on the genotype, took that file to 0.167 s. **An unpredictable
+branch in a loop whose loads are irregular cost a quarter of the pass.**
+
+The per-individual coefficient fell by 31 in 100 and the 3-population pass
+from 0.237 s to 0.167 s, which is the control that says the change moved
+what it claimed: it is charged per individual, so the 3-population pass
+had to move too, and the 150-individual panel moved with it.
+
+Cost: three counting functions where there were two, and about 45 lines
+repeated between two of them that nothing but the tests would catch
+diverging. What is not repeated is what matters most — the rules for which
+of the three counts a genotype falls in now live in one function that both
+paths call, pinned by a test over 4452 populations covering every genotype
+of one and two individuals at ploidies 1, 2 and 3.
+
+### Not run, and why
+
+- **H3**, the arm for ploidy 2 in `raised`. H2 cut its call count from
+  1140 a variant at 20 populations to 420, so the most it can now give is
+  under 1 in 100 of the pass. The plan in section 11 stands and its count
+  should be retaken before it is built.
+- **L1**, the error built eagerly in `num_individuals_of`. H4 made that
+  function run once per population per variant instead of twice, so the
+  0.6 in 100 the profile showed is now about 0.3. One word, and worth
+  taking the next time that file is opened.
+- **L2**, **L3**, **L4** and the build flags. L2 is cold until somebody
+  asks for a resampling group of each variant. L3 and L4 are about the
+  threads, and the one-thread pass is what this machine measures
+  reliably; L4 is instrumentation first and nothing was built for it. The
+  build flags were left for the reason section 9 gives, and they should
+  now be measured against N1's checksum rather than against a timing,
+  since the pass is smaller than it was.
+
+### What the numbers look like now
+
+The cost model, refitted on the same five cuts of the same 1000
+individuals, each point within 2 in 100:
+
+| | before, at 3bc33f9 | now |
+|---|---|---|
+| per individual counted, per variant | 2.68 ns | 1.64 ns |
+| per population, per variant | 60.2 ns | 14.1 ns |
+| per pair, per variant | 5.80 ns | 2.82 ns |
+
+The model is now less able to extrapolate than it was: fitted on panels of
+1000 individuals it under-predicts the 150-individual panel by 22 in 100,
+where before it missed by 9. What that says is that a cost per variant
+that does not depend on the individuals, about 8 ms a pass, was hidden
+under the counting and is now visible. Nothing in this review names it.
+
+The reader is now most of what a user waits for over a file. At 20
+populations on 18 threads the pass is 0.025 s and the reader 0.110 s of
+the 0.135 s; at 3 populations it is 0.021 s against 0.112 s of 0.133 s.
+Section 8 says what a read-ahead thread could give and that it belongs to
+`docs/specs/block.md`.
