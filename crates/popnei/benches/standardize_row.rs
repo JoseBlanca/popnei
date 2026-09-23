@@ -90,12 +90,10 @@ use std::time::{Duration, Instant};
 use popnei::block::BlockReader;
 use popnei::io::vars::VarsReader;
 use popnei::variant::bench_internals::{
-    Scratch, the_codes_of_the_genotypes, the_counts_of_the_codes, the_standardized_row,
+    Dosages, Scratch, the_codes_of_the_genotypes, the_counts_of_the_codes, the_standardized_row,
     the_standardized_values,
 };
-use popnei::variant::{
-    AlleleCounts, DosageOptions, DosageScale, Needs, count_alleles, the_major_allele,
-};
+use popnei::variant::{AlleleCounts, Needs, count_alleles, the_major_allele};
 
 /// How many times each pass is timed when the command line does not say.
 const DEFAULT_RUNS: usize = 5;
@@ -212,7 +210,7 @@ struct TheBlock {
     /// takes: no variant of more than two alleles is turned into a
     /// biallelic one, and the dosages are divided by their own standard
     /// deviation, which is the divisor of the principal components.
-    options: DosageOptions,
+    options: Dosages,
 }
 
 /// The first block of the vars file at `path`, with the genotypes alone
@@ -296,10 +294,7 @@ fn the_block_of(path: &Path) -> Result<TheBlock, String> {
         majors,
         codes,
         dosage_counts,
-        options: DosageOptions {
-            transform_to_biallelic: false,
-            scale: DosageScale::OfTheDosages,
-        },
+        options: Dosages::of_the_principal_components(),
     })
 }
 
@@ -393,14 +388,8 @@ fn the_pass_of_the_values<const CHECKSUM: bool>(
         for (target, count) in counts.iter_mut().zip(counts_of_the_row.iter()) {
             *target = *count;
         }
-        let used = the_standardized_values(
-            counts,
-            block.num_dosages,
-            codes,
-            values,
-            row,
-            block.options.scale,
-        );
+        let used =
+            the_standardized_values(counts, block.ploidy, codes, values, row, &block.options);
         black_box(&*row);
         if CHECKSUM && used {
             for value in row.iter() {
