@@ -47,8 +47,8 @@ checklist says to skip it.
 **The scope splits in two by call frequency, and every finding below says
 which half it is about.** Three operations are reached from popnei today.
 `add_self_product_lower`, the product of a matrix with itself, is called
-once per block by the principal component analysis, at `crates/popnei/src/pca.rs:223`
-and `:875`. `product` is called three times from `pca.rs` and once from
+once per block by the principal component analysis, at
+`crates/popnei/src/pca.rs:223` and `:875`. `product` is called three times from `pca.rs` and once from
 `crates/popnei/src/ld.rs:784`, which is six times per pair of tiles.
 `eigh_lower`, the eigendecomposition, is called once per analysis. The
 other eleven — a Cholesky factorization and the solve, the log of the
@@ -387,7 +387,8 @@ targets nothing can reproduce.** `crates/popnei-linalg/Cargo.toml` has no
 The two benchmarks that reach this crate time a whole analysis and a whole
 matrix, so they can say that popnei got slower and cannot say which call
 did it. The eigendecomposition cannot be separated at all: the phases of
-it that are matrix products land in `libBLAS.dylib`, where the LAPACK total is 2.3% of samples
+it that are matrix products land in `libBLAS.dylib`, where the LAPACK
+total is 2.3% of samples
 while the spec's 0.035 s at n = 1000 is 7.7% of a 0.453 s run, and 60 to
 78 per 100 of the samples are unsymbolicated addresses inside that
 library, so no profile goes finer. The claims that steer this crate — 12.7
