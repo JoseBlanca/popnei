@@ -867,7 +867,18 @@ the covariate less its mean, divided by the length of that; both within
 -1.9999999999999998. At `solve_upper_triangular`, the trait (1, 3, 5,
 7), which is twice the covariate less 1, gives the coefficients (-1, 2)
 from `r c = q' y`, within 1e-14: an exact fit, so a backend that read
-`r` the wrong way round gives something else. And at
+`r` the wrong way round gives something else. The `q' y` of that trait
+is (8, 4.47213595499958), which is the right hand side the check passes.
+Two more traits go with it: (4, 7, 10, 13), three times the covariate
+plus 1, whose `q' y` is (17, 6.70820393249937) and whose coefficients
+are (1, 3); and the covariate itself, (1, 2, 3, 4), whose `q' y` is
+(5, 2.23606797749979) and whose coefficients are (0, 1). The three
+passed together, one row each, are what catches a backend that read the
+rows of `b` as its columns, as the two right hand sides of the Cholesky
+solve above are, and three of them against an `r` of 2 x 2 is what tells
+`sides` from `n`. All three fits are exact, and numpy 2.5.3 gives
+0.9999999999999991 and 3.0000000000000004 for the second of them, 9e-16
+relative away, which the 1e-14 holds. And at
 `solve_upper_triangular` again, the `r` with rows (2, 5) and (0, 0) is
 `Singular` at the row 1, which is the case the crate reads the diagonal
 for, since faer would divide by that 0 and give an infinity.
