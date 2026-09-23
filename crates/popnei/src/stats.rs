@@ -663,7 +663,7 @@ impl ExpHet {
 /// population is the `p * p` numpy computes, to the bit, on every machine
 /// popnei runs on. `times` is 255 at most, the largest exponent a statistic
 /// is built with.
-fn raised(value: f64, times: u32) -> f64 {
+pub(crate) fn raised(value: f64, times: u32) -> f64 {
     let mut raised = 1.0;
     for _ in 0..times {
         raised *= value;
@@ -681,7 +681,7 @@ fn raised(value: f64, times: u32) -> f64 {
 /// # Errors
 ///
 /// A `value` of 0 or above [`MAX_PLOIDY`].
-fn checked_ploidy(kind: &'static str, value: usize) -> Result<u32> {
+pub(crate) fn checked_ploidy(kind: &'static str, value: usize) -> Result<u32> {
     let out_of_range = || Error::StatPloidyOutOfRange {
         kind,
         value,
