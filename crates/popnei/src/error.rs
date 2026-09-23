@@ -629,8 +629,8 @@ pub enum Error {
 
     /// One of the matrices the r² of a set of variants is worked out
     /// through, and that this machine did not give the memory for: one of
-    /// the three matrices of the dosages, one of the six sums of the pairs
-    /// of two sets, or a transpose of one of them. The memory is asked for
+    /// the three matrices of the dosages, or one of the six sums of the
+    /// pairs of two sets. The memory is asked for
     /// with `try_reserve_exact`, which gives it back as this error where
     /// `vec![0.0; n]` would end the process, and which also refuses a
     /// matrix whose bytes a `usize` does not count, as one of more than

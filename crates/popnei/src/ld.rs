@@ -431,8 +431,10 @@ impl LdDosages {
 /// The six sums of every pair come from six products of the three
 /// matrices of the two sets, and four of them are enough when `a` and `b`
 /// are the same dosages given as one reference, which is how a tile of
-/// the matrix of r² against itself is asked for: n and Σxy are then each
-/// their own transpose, and Σy and Σyy are the transposes of Σx and Σxx.
+/// the matrix of r² against itself is asked for: the pair of the variants
+/// i and j holds the same two variants as the pair of j and i, so n and
+/// Σxy are the same for both and Σy and Σyy are the Σx and Σxx of the
+/// pair the other way round.
 ///
 /// # Errors
 ///
@@ -518,10 +520,20 @@ fn the_r2_of_every_pair(
 /// The pair of the variants i and j holds the same two variants as the
 /// pair of j and i, so Σy of the row i is the column i of Σx, whose
 /// entries lie one row apart, and Σyy of that row is the column i of Σxx.
+/// The value read there is the one a product would have given, to the
+/// bit, because the sums are whole numbers below 2^53, which
+/// [`TheSumsOfTheSecondSet::TheOtherWayRound`] says why.
+///
 /// Every buffer holds `num_vars` rows of `num_vars` values, and `num_vars`
 /// is 1 at least: a set of no variant has no pair, and the caller writes
 /// nothing for it.
 fn the_r2_of_a_set_against_itself(sums: &TheSumsOfThePairs, num_vars: usize, out: &mut [f64]) {
+    debug_assert_eq!(
+        Some(out.len()),
+        num_vars.checked_mul(num_vars),
+        "the r² of a set of {num_vars} variants against itself was given a buffer of {} values",
+        out.len()
+    );
     let rows = out
         .chunks_exact_mut(num_vars)
         .zip(sums.num_individuals.chunks_exact(num_vars))
@@ -616,6 +628,18 @@ enum TheSumsOfTheSecondSet {
     /// which is what one set of variants against itself has: the pair of
     /// the variants i and j holds the same two variants as the pair of j
     /// and i, so two of the six products are not taken.
+    ///
+    /// The two are the same number and not two numbers within a tolerance
+    /// because every entry of the three matrices is a whole number and
+    /// [`MAX_ALLELES_OF_A_VARIANT`] keeps every sum below the 2^53 an
+    /// `f64` counts one by one. Each of them is a sum of the same
+    /// products, and a routine of BLAS need not add those in the same
+    /// order when it is given the two matrices in the other roles: over
+    /// values that are not whole numbers the two orders differ in their
+    /// last bit, which was measured on Accelerate on 23 September 2026.
+    /// Anything else that reads these sums the other way round, a
+    /// standardized dosage or a kinship, has to work that bound out for
+    /// itself.
     TheOtherWayRound,
 }
 
@@ -2192,6 +2216,40 @@ mod tests {
             of_the_pair(&matrix, THE_VARS_OF_THE_EXAMPLE, 0, 3).is_nan(),
             "the pair of v1 and v4 of the file"
         );
+    }
+
+    /// The four products of one set of variants against itself and the
+    /// six of two sets give the same r², to the bit, over the 250000
+    /// pairs of `tests/reference/ld/ld.vcf.gz`.
+    ///
+    /// The shortcut reads Σy and Σyy of a pair as the Σx and Σxx of the
+    /// pair the other way round instead of taking two more products, and
+    /// this is what would show the two paths drifting apart. They are the
+    /// same number because the sums are whole numbers below 2^53, which
+    /// `TheSumsOfTheSecondSet::TheOtherWayRound` says why.
+    #[test]
+    fn the_four_products_of_a_set_against_itself_give_the_r2_the_six_give() {
+        let block = the_whole_of(
+            &the_reference_path("ld.vcf.gz"),
+            Needs::GTS,
+            NUM_VARS_OF_A_REFERENCE,
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        // The same variants as a second set of their own, which is not one
+        // reference, so Σy and Σyy are two products of their own.
+        let of_the_same_variants = dosages
+            .rows(0, NUM_VARS_OF_A_REFERENCE)
+            .expect("the same variants");
+        let of_four = the_r2_of(&dosages, &dosages);
+        let of_six = the_r2_of(&of_the_same_variants, &dosages);
+        assert_eq!(
+            of_four.len(),
+            of_six.len(),
+            "the two matrices are not as large"
+        );
+        for (at, (of_four, of_six)) in of_four.iter().zip(&of_six).enumerate() {
+            assert_the_r2_is_the_same(*of_four, *of_six, &format!("the pair {at}"));
+        }
     }
 
     /// The dosages popnei reads from `tests/reference/vcf/many.vcf`
