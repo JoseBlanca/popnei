@@ -657,3 +657,52 @@ own side and said so, and nothing was lost, but the orchestrator had not
 foreseen it: ownership of a file is not the same as ownership of what
 compiles. A task that adds a variant to an enum the bindings match on
 should either own the arms it breaks or not run beside the tasks that do.
+
+Task 2.2, the Python function, commit 732e566. `calc_rogers_huff_r2_matrix`
+reaches Python with its result and the counts of the pass, and
+`tests/test_ld.py` holds 15 tests where the file did not exist. `uv run
+pytest` goes from 242 to 257.
+
+This is where popnei is first compared with pyNei for the r², everything
+before it having been checked against plink2's stored matrix. Both halves
+of deliverable 3 came out.
+
+With the missing genotypes taken out, `filter_by_missing_data(0)` on
+`ld.vcf.gz` keeps 21 variants of 500, and popnei's matrix and pyNei's r
+squared agree within 1e-12 relative over the 256 cells of those that are
+numbers, the other 185 being NaN on both sides.
+
+With the missing genotypes left in, the two libraries part, and the test
+pins by how much: over the 1.4 million pairs of the panel the difference
+is median 0.00369, 99th percentile 0.04680 and largest 0.19374, which is
+the table of "Missing genotypes" of `docs/specs/ld.md` to its digits.
+popnei leaves the individuals missing at either variant of a pair out of
+it and pyNei leaves them in with a dosage of -1.
+
+The task changed which dataset that second half is measured on, and was
+right to. The plan puts both halves on `ld.vcf.gz`, but the table whose
+numbers pin the divergence was measured on the panel, so on the panel is
+where those numbers mean anything; on `ld.vcf.gz` the test asserts only
+that the two libraries differ. The task measured that difference there
+too, over the 186192 pairs where both libraries have an r²: median
+0.00578, 99th percentile 0.18071, largest 0.68299. Those are not in the
+spec and so are not asserted. What is worth the owner's eye in them is
+the count of cells with no r² at all: popnei has 63376 and pyNei 4975,
+because a dosage of -1 gives variance to variants that have none.
+
+### A table of the spec that its own program does not produce
+
+The task, checking which of r and r² the table of "Missing genotypes" is
+in, found that `docs/reports/ld-method/missing_rules.py` compares plink2's
+r, while the table is in r². The orchestrator ran the program to be sure.
+It gives, in r, a median of 0.0300, a 99th percentile of 0.1245 and a
+largest of 0.6002 for pyNei's rule, where the table says 0.0037, 0.047
+and 0.194. The README of that directory says the program "is the table of
+'Missing genotypes' of `docs/specs/ld.md`", and it is not.
+
+The table is the one that is right: two independent computations in r²
+reach its digits, and the median r² of 0.0071 it quotes is the square of
+the 0.0845 median r the program prints. So the numbers a reader would act
+on are sound and the program kept to reproduce them is not, which is the
+worse way round for a number that has to survive a change on either side.
+It is being put right.

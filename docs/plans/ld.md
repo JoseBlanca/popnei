@@ -228,7 +228,7 @@ Work package 1.
       from "The Rust interface" and "How it runs" of `docs/specs/ld.md`,
       with the tiling that keeps the six intermediate matrices small and
       the lower half computed once. Serves deliverable 1. Needs 1.4.
-- [ ] 2.2 The Python function: the binding in
+- [x] 2.2 The Python function: the binding in
       `crates/popnei-python/src/`, which opens the reader of the pass
       from the source and the steps of the `Variants` and keeps it to
       read the counts of the filters, and `calc_rogers_huff_r2_matrix`
