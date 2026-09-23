@@ -2873,6 +2873,11 @@ mod tests {
     /// Two runs of the same panel that have to give the same bits, which
     /// `assert_eq!` on the numbers themselves does not say: a NaN is not
     /// equal to itself, and a standard error the pass has none of is one.
+    ///
+    /// The test that compares two pools of threads is the one that uses it,
+    /// and that test is compiled for the targets that have rayon, which are
+    /// the ones that are not wasm.
+    #[cfg(not(target_family = "wasm"))]
     fn assert_they_are_the_same_bits(of_one_run: &[f64], of_the_other: &[f64], what: &str) {
         assert_eq!(
             of_one_run.len(),
