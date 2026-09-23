@@ -257,12 +257,25 @@ standard error and its p-value.
    `cov1` and `cov2`, and over all 1200 variants agrees with
    `plink2.panel_called.glm.linear.tsv` as "How it is verified" of "The
    linear model" of the spec asks: `allele_freq` within 1e-6 absolute, and
-   `beta`, `se` and `p_value` within 1e-5 relative. plink2 prints that file
-   to six significant digits, which round a value by up to 5e-6 of itself,
-   so this check has at most twofold headroom and says that popnei computes
-   the same quantity. Deliverables 2 and 3, the worked example at 1e-12
-   relative and pyNei at 1e-9 relative, are the ones that would catch a
-   wrong digit.
+   `beta` and `se` within 1e-5 times that variant's `se` plus half a unit
+   in plink2's last printed digit of the value compared.
+
+   That second term is not what this deliverable said until 24 September
+   2026, and without it no correct implementation passes. It asked for
+   1e-5 times `se` alone. Measured over all 1200 variants, the worst
+   difference is 1.94e-5 of `se`, at `var0482`, whose `beta` is 1.0389 and
+   whose `se` is 0.19: six significant digits of a value above 1 round it
+   by up to 5e-6 absolute, against a budget of 1e-5 x 0.19 = 1.9e-6, so
+   plink2's printing alone is 2.6 times the whole allowance. 1198 of the
+   1200 failed, and the two that passed were the two whose `beta` stays
+   below 1. With the printed-digit term the bound at `var0482` is 1.9e-6
+   plus 5e-6 = 6.9e-6 and the measured difference is 3.69e-6, 53 per cent
+   of it, the same on both linear algebra backends. The spec carries the
+   same shape for every comparison against a printed reference, at
+   `7cb4c76` of `spec/gwas`.
+
+   Deliverables 2 and 3, the worked example and pyNei, are the ones that
+   would catch a wrong digit.
 2. The worked example and the six literals are cargo tests. The check:
    `cargo test -p popnei --lib gwas::lm -- --list` names them, where today
    it prints `0 tests`; the worked example of "The worked example" asserts
@@ -281,8 +294,23 @@ standard error and its p-value.
    worst entry as a ratio was 3.31e-13, so its 1e-12 relative bound had two
    to three times the worst case and not the thousandfold the absolute
    figure suggested.
-4. The block size changes nothing. The check: a pytest test reads the same
-   panel in blocks of 77 and gets `stats` equal within 1e-12 relative.
+4. The block size changes nothing. The check, in two tests rather than the
+   one this deliverable named, because neither covers the whole of it: a
+   pytest test reads the same panel from a vars file written in batches of
+   77, 16 of them, and gets `stats` equal within 1e-12 relative; and a
+   cargo test runs a study of 10100 variants, which is more than the 10000
+   a block of 200 individuals holds, and asserts that a variant of the
+   second block gets the same answer as the same pattern in the first,
+   with the identifiers and the positions growing across the two.
+
+   The pytest test alone does not check what this deliverable is for. Every
+   pass puts a `Reblock` over its reader, so the 16 batches are joined into
+   the one block the study reads and the study's own loop runs once either
+   way: the measured difference is 0, exactly, because it is the same
+   computation. What it does show is that a source which gives its variants
+   a few at a time changes nothing. The cargo test is the one that runs the
+   loop twice, and breaking it on purpose, by writing the first block's
+   columns over instead of after, fails it.
 5. `calcGwas` under node gives the same numbers. The check: `npm test` in
    `js/popnei` asserts the six literals and the worked example.
 
@@ -292,16 +320,16 @@ Work packages 1 and 2, whole, since the work packages run in order.
 
 ### Its tasks
 
-- [ ] 3.1 The linear model's null fit and its test, in the core, with the
+- [x] 3.1 The linear model's null fit and its test, in the core, with the
       worked example and the six plink2 literals as cargo tests. Built from
       "The linear model" and "The worked example" of `docs/specs/gwas.md`.
       Serves deliverable 2. Needs 2.2.
-- [ ] 3.2 The Python function: the binding, `GWASResult`, `NullModel`, the
+- [x] 3.2 The Python function: the binding, `GWASResult`, `NullModel`, the
       three enums, and the pytest tests against plink2, against pyNei and
       for the block size. Built from "Its Python function, and its
       TypeScript one" and "How it is verified" of "What every model shares".
       Serves deliverables 1, 3 and 4. Needs 3.1.
-- [ ] 3.3 The TypeScript function: the binding, the result object and the
+- [x] 3.3 The TypeScript function: the binding, the result object and the
       node test. Built from the same section. Serves deliverable 5. Needs
       3.1, and it can run beside 3.2.
 
