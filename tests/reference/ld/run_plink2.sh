@@ -7,7 +7,10 @@
 # variants that the filter by linkage disequilibrium keeps of ld.vcf at the
 # four settings of the table of docs/specs/filters.md, worked out from
 # plink2's matrix; and the three properties that item asks of the set kept,
-# each as the number of variants or pairs that break it.
+# each as the number of variants or pairs that break it, worked out over the
+# variants read back from the file of kept variants, with each property also
+# run against a set built to break it, whose number is not 0 and which the
+# comparison below covers like the rest.
 #
 # Run it from the root of the repository with one argument, a directory it
 # works in, which it creates and which has to be empty or not exist:
