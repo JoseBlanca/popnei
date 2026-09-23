@@ -391,6 +391,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaSecondPassMissing { .. }
         | popnei::Error::PcaSecondPassDiffers { .. }
         | popnei::Error::PcaWeightOutOfPlace { .. }
+        // The one of the kinship that no argument of `calc_kinship` gives:
+        // a product of the linear algebra that did not run, which is the
+        // standardized dosages of a block with themselves or the genotypes
+        // that were called with themselves. Every size of both products is
+        // checked before they are asked for, the individuals at the entry of
+        // the calculation and the variants of the block as it is read, so
+        // what is left is a defect of popnei or a backend that refused the
+        // work, and a user reports it.
+        | popnei::Error::KinshipLinalg { .. }
         // The four of the r² of two sets of variants that no argument of
         // `calc_rogers_huff_r2_matrix` gives, for the same reason as the
         // two of the principal component analysis above: a range of
@@ -533,6 +542,24 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VariantPloidyTooLarge { .. }
         | popnei::Error::PcaNoIndividual
         | popnei::Error::PcaVariantsTooLarge { .. }
+        // The four of the kinship that the dataset a user gave is wrong
+        // for, which are of that same kind: no variant with variance among
+        // the individuals it was asked for, which one individual gives and
+        // which pyNei raises for as well; a pair of individuals with no
+        // variant called in both of them, whose entry would be divided by
+        // no variant at all and which names the two so that the user can
+        // leave one of them out, where pyNei divides and leaves a NaN in
+        // the matrix; a source with no individual, which is nobody to give
+        // a kinship of and which no source of popnei is, since one that
+        // names no individual is refused when it is opened; and a dataset
+        // of a size the calculation cannot count in, more individuals than
+        // the matrix of the linear algebra holds or more variants than this
+        // machine counts. `docs/specs/kinship.md` has the four in "The Rust
+        // interface", each as the `ValueError` it is here.
+        | popnei::Error::KinshipNoVariantWithVariance
+        | popnei::Error::KinshipPairWithNoVariantCalled { .. }
+        | popnei::Error::KinshipNoIndividual
+        | popnei::Error::KinshipVariantsTooLarge { .. }
         // The pass that gave more variants than `max_num_vars`, which is
         // of that same kind, a dataset larger than the calculation takes:
         // the cap a user wrote and the variants the file holds decide it

@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 
 mod dists;
 mod errors;
+mod kinship;
 mod ld;
 mod pca;
 mod source;
@@ -96,6 +97,8 @@ mod _core {
 
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::kinship::calc_kinship;
     #[pymodule_export]
     use super::ld::calc_rogers_huff_r2_matrix;
     #[pymodule_export]
