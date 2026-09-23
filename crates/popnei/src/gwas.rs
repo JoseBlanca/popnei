@@ -6,14 +6,27 @@
 //! its models is verified.
 //!
 //! What is here is the two functions that turn the statistic of a test
-//! into a p-value, which every model of the module ends in. Each is a
-//! survival function, the chance that a distribution is beyond a point,
-//! which `sf` in their names stands for: `chi2_sf_1df` is the chi square
-//! with one degree of freedom that every score test and the Wald test of a
-//! logistic model need, and `t_sf_two_sided` the Student t of the Wald
-//! test of a linear model and of a linear mixed model, which is written
-//! from the regularized incomplete beta function below it. The models that
-//! give the statistics to both are being written.
+//! into a p-value, which every model of the module ends in, and the design
+//! every model is fitted on. Each of the two is a survival function, the
+//! chance that a distribution is beyond a point, which `sf` in their names
+//! stands for: `chi2_sf_1df` is the chi square with one degree of freedom
+//! that every score test and the Wald test of a logistic model need, and
+//! `t_sf_two_sided` the Student t of the Wald test of a linear model and of
+//! a linear mixed model, which is written from the regularized incomplete
+//! beta function below it.
+//!
+//! [`Design::of_the_study`] is what a study is refused for before any model
+//! is fitted or any variant is read: an individual to test that the source
+//! has not, one that is there twice, individuals that are not in the order
+//! the source has them, a study of no more individuals than the columns of
+//! its design plus one, a phenotype that is not a number or that does not
+//! fit the trait, and a design whose columns are not independent. The
+//! models that give the statistics to the two distributions, and the pass
+//! over the variants that feeds them, are being written.
+
+use std::fmt;
+
+use crate::error::{Error, Result};
 
 /// The chance that a chi square with one degree of freedom is above `x`.
 ///
@@ -202,6 +215,344 @@ fn beta_continued_fraction(a: f64, b: f64, x: f64) -> f64 {
         }
     }
     h
+}
+
+/// What a user measured on each individual, which with the kinship decides
+/// which of the four models of `docs/specs/gwas.md` a study fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraitType {
+    /// A measurement, one number per individual, such as the height of a
+    /// plant. Without a kinship it is fitted by a linear model and with one
+    /// by a linear mixed model.
+    Continuous,
+    /// 0 or 1: an individual that has a condition and one that has not.
+    /// Without a kinship it is fitted by a logistic regression and with one
+    /// by a logistic mixed model.
+    Binomial,
+}
+
+/// Which of the two tests a study makes of every variant.
+///
+/// Both ask whether the effect of the variant on the trait is 0, and under
+/// that they have the same distribution in large samples; they differ in
+/// what they cost. Which one each model has and which is its default is in
+/// "What every model shares" of `docs/specs/gwas.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestType {
+    /// The model is fitted again with the variant in it, and the variant's
+    /// effect is measured in its own standard errors away from 0. It costs
+    /// a fit per variant.
+    Wald,
+    /// How steeply the fit would improve if the variant's effect were let
+    /// off 0, measured at the null model and against how uncertain that
+    /// slope is. It costs no fit per variant.
+    Score,
+}
+
+/// What a study is given: the trait of the individuals it tests, the design
+/// its models are fitted on, and what the user asked for.
+///
+/// The individuals tested are those that have a phenotype, and `phenotype`,
+/// `design` and `individuals` hold them in the order the source has them,
+/// one value, one row and one position each. [`Design::of_the_study`]
+/// refuses any other order, since the three are read together and an
+/// individual's phenotype would otherwise be measured against another
+/// individual's genotypes.
+#[derive(Debug, Clone, Copy)]
+pub struct GwasInput<'a> {
+    /// One value per tested individual: the measurement, or 0.0 or 1.0.
+    pub phenotype: &'a [f64],
+    /// What was measured.
+    pub trait_type: TraitType,
+    /// `num_individuals` x `num_coefs`, row after row, the intercept first.
+    pub design: &'a [f64],
+    /// How many columns the design has: the intercept and one for each
+    /// covariate.
+    pub num_coefs: usize,
+    /// `num_individuals` x `num_individuals`, row after row, already cut to
+    /// the individuals that are tested and in their order, or `None` for a
+    /// model with no random effect.
+    pub kinship: Option<&'a [f64]>,
+    /// `None` takes the default for the trait and the kinship.
+    pub test: Option<TestType>,
+    /// Whether the GRAMMAR-Gamma approximation is used, which a mixed model
+    /// can take to spend one product per variant instead of a fit.
+    pub use_grammar_gamma_approx: bool,
+    /// The positions of the tested individuals among those the reader
+    /// gives, in the order `phenotype` and `design` have them.
+    pub individuals: &'a [usize],
+    /// Whether a variant with more than two alleles among its called
+    /// genotypes is read with every allele that is not the major one
+    /// counting the same. Without it such a variant is an error.
+    pub transform_to_biallelic: bool,
+}
+
+/// Which of the three buffers a study was given does not hold the study it
+/// was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GwasInputShape {
+    /// The phenotype does not hold one value for each tested individual.
+    Phenotype {
+        /// How many values the phenotype holds.
+        num_values: usize,
+        /// How many individuals are tested.
+        num_individuals: usize,
+    },
+    /// The design does not hold one row of `num_coefs` values for each
+    /// tested individual.
+    Design {
+        /// How many values the design holds.
+        num_values: usize,
+        /// How many individuals are tested.
+        num_individuals: usize,
+        /// How many columns the design was said to have.
+        num_coefs: usize,
+    },
+    /// The design has no column, not even the one of ones that fits the
+    /// intercept.
+    NoCoef,
+}
+
+impl fmt::Display for GwasInputShape {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Phenotype {
+                num_values,
+                num_individuals,
+            } => write!(
+                formatter,
+                "the phenotype holds {num_values} values and {num_individuals} individuals are tested, and it holds the trait of each of them"
+            ),
+            Self::Design {
+                num_values,
+                num_individuals,
+                num_coefs,
+            } => write!(
+                formatter,
+                "the design holds {num_values} values and it is {num_individuals} individuals x {num_coefs} columns, one row of {num_coefs} values for each of them"
+            ),
+            Self::NoCoef => write!(
+                formatter,
+                "the design has no column, and the intercept gives it a column of ones at least"
+            ),
+        }
+    }
+}
+
+/// The matrix every model of a study is fitted on, checked: one row per
+/// tested individual and one column per number the model fits, the
+/// intercept first and then one for each covariate.
+///
+/// [`Design::of_the_study`] is the only way to have one, so a model that
+/// takes a `Design` is fitted on individuals the source has, each of them
+/// once and in the source's order, on a phenotype that holds a number for
+/// each of them and fits the trait, and on columns that are independent.
+#[derive(Debug, Clone, Copy)]
+pub struct Design<'a> {
+    values: &'a [f64],
+    num_individuals: usize,
+    num_coefs: usize,
+}
+
+impl<'a> Design<'a> {
+    /// The design of a study, with everything "Which individuals are
+    /// tested, and the design" of `docs/specs/gwas.md` refuses about it,
+    /// about the individuals it tests and about their phenotype.
+    ///
+    /// `num_individuals_of_the_source` is how many individuals the reader
+    /// the study reads has, which every position of `input.individuals` is
+    /// one of. It is known before the first block is read.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasIndividualNotInTheDataset`] when a tested individual is
+    /// not one the source has, [`Error::GwasIndividualTestedTwice`] when
+    /// one of them is there twice, and [`Error::GwasIndividualsOutOfOrder`]
+    /// when they are not in the order the source has them, which is also
+    /// what a repeat with another individual between its two halves gives.
+    /// [`Error::GwasTooFewIndividuals`] when they are no more than the
+    /// columns of the design plus one, which would leave nothing to measure
+    /// a variant's uncertainty from.
+    /// [`Error::GwasPhenotypeNotFinite`] when a phenotype is not a finite
+    /// number, [`Error::GwasPhenotypeNotBinomial`] when a binomial trait
+    /// holds a value that is neither 0 nor 1, and
+    /// [`Error::GwasPhenotypeOfOneValue`] when every tested individual of
+    /// such a trait has the same one.
+    /// [`Error::GwasCovariatesCollinear`] when the columns of the design
+    /// are not independent, and [`Error::GwasLinalg`] when the rank that
+    /// finds that out could not be taken.
+    /// [`Error::GwasInputOfAnotherSize`] when the phenotype or the design
+    /// does not hold one value or one row for each tested individual, or
+    /// the design has no column.
+    pub fn of_the_study(
+        input: &GwasInput<'a>,
+        num_individuals_of_the_source: usize,
+    ) -> Result<Design<'a>> {
+        let num_individuals = input.individuals.len();
+        let num_coefs = input.num_coefs;
+        if num_coefs == 0 {
+            return Err(Error::GwasInputOfAnotherSize {
+                problem: GwasInputShape::NoCoef,
+            });
+        }
+        if input.phenotype.len() != num_individuals {
+            return Err(Error::GwasInputOfAnotherSize {
+                problem: GwasInputShape::Phenotype {
+                    num_values: input.phenotype.len(),
+                    num_individuals,
+                },
+            });
+        }
+        // A design of more values than a `usize` counts is refused here
+        // with the rest: no buffer holds that many, and the product is
+        // taken with the method that says so rather than left to wrap.
+        if num_individuals
+            .checked_mul(num_coefs)
+            .is_none_or(|values| input.design.len() != values)
+        {
+            return Err(Error::GwasInputOfAnotherSize {
+                problem: GwasInputShape::Design {
+                    num_values: input.design.len(),
+                    num_individuals,
+                    num_coefs,
+                },
+            });
+        }
+        // The design fits one number per column and the variant one more,
+        // so the individuals are the columns plus two for one of them to be
+        // left over, which is what the uncertainty of the variant's effect
+        // is measured from. A `num_coefs` whose plus two does not fit in a
+        // `usize` is more columns than any design has and is refused too.
+        if num_coefs
+            .checked_add(2)
+            .is_none_or(|fewest| num_individuals < fewest)
+        {
+            return Err(Error::GwasTooFewIndividuals {
+                num_individuals,
+                num_coefs,
+            });
+        }
+        refuse_individuals_that_are_not_the_source_in_order(
+            input.individuals,
+            num_individuals_of_the_source,
+        )?;
+        refuse_a_phenotype_that_is_not_the_trait(input.phenotype, input.trait_type)?;
+        // The columns of the design have to be independent, and the rank is
+        // how many of them are, at the tolerance of numpy's `matrix_rank`,
+        // so that a design popnei refuses is a design pyNei refuses.
+        let rank =
+            popnei_linalg::rank(input.design, num_individuals, num_coefs).map_err(|source| {
+                Error::GwasLinalg {
+                    operation: "rank of the design",
+                    source,
+                }
+            })?;
+        if rank < num_coefs {
+            return Err(Error::GwasCovariatesCollinear { num_coefs, rank });
+        }
+        Ok(Design {
+            values: input.design,
+            num_individuals,
+            num_coefs,
+        })
+    }
+
+    /// The design itself, `num_individuals` x `num_coefs`, row after row.
+    #[must_use]
+    pub fn values(&self) -> &'a [f64] {
+        self.values
+    }
+
+    /// How many individuals are tested, which is the rows of the design.
+    #[must_use]
+    pub fn num_individuals(&self) -> usize {
+        self.num_individuals
+    }
+
+    /// How many columns the design has: the intercept and one for each
+    /// covariate.
+    #[must_use]
+    pub fn num_coefs(&self) -> usize {
+        self.num_coefs
+    }
+}
+
+/// The individuals a study tests: each of them one the source has, each of
+/// them once, and in the order the source has them.
+///
+/// The three are one walk over the positions, since a position that is not
+/// above the one before it is either that one again or one the source has
+/// earlier. A repeat with another individual between its two halves comes
+/// back as the second of the two and not as the first.
+fn refuse_individuals_that_are_not_the_source_in_order(
+    individuals: &[usize],
+    num_individuals_of_the_source: usize,
+) -> Result<()> {
+    let mut the_one_before: Option<usize> = None;
+    for individual in individuals.iter().copied() {
+        if individual >= num_individuals_of_the_source {
+            return Err(Error::GwasIndividualNotInTheDataset {
+                individual,
+                num_individuals: num_individuals_of_the_source,
+            });
+        }
+        if let Some(after) = the_one_before {
+            if individual == after {
+                return Err(Error::GwasIndividualTestedTwice { individual });
+            }
+            if individual < after {
+                return Err(Error::GwasIndividualsOutOfOrder { individual, after });
+            }
+        }
+        the_one_before = Some(individual);
+    }
+    Ok(())
+}
+
+/// The phenotype of the tested individuals: a finite number for each of
+/// them, and for a binomial trait 0 or 1 with somebody in each of the two
+/// groups.
+///
+/// A continuous trait of one value is not refused here. "Which individuals
+/// are tested, and the design" of `docs/specs/gwas.md` asks for that
+/// refusal of a binomial trait alone, where one of the two groups it
+/// compares would be empty.
+#[expect(
+    clippy::float_cmp,
+    reason = "a binomial phenotype is the 0.0 and the 1.0 themselves and not a \
+              measurement near either, so what is wanted here is the exact \
+              comparison and not one within a tolerance; a value of -0.0 is 0.0 \
+              by it, which is the answer for an individual without the condition"
+)]
+fn refuse_a_phenotype_that_is_not_the_trait(
+    phenotype: &[f64],
+    trait_type: TraitType,
+) -> Result<()> {
+    for (position, value) in phenotype.iter().copied().enumerate() {
+        if !value.is_finite() {
+            return Err(Error::GwasPhenotypeNotFinite { position, value });
+        }
+    }
+    match trait_type {
+        TraitType::Continuous => Ok(()),
+        TraitType::Binomial => {
+            for (position, value) in phenotype.iter().copied().enumerate() {
+                if value != 0.0 && value != 1.0 {
+                    return Err(Error::GwasPhenotypeNotBinomial { position, value });
+                }
+            }
+            // Every value is 0 or 1 by here, so counting those that are 1
+            // says whether both groups have somebody in them, and the first
+            // value is the one they all have when one of the two is empty.
+            let with_the_condition = phenotype.iter().filter(|value| **value == 1.0).count();
+            match phenotype.first().copied() {
+                Some(value) if with_the_condition == 0 || with_the_condition == phenotype.len() => {
+                    Err(Error::GwasPhenotypeOfOneValue { value })
+                }
+                Some(_) | None => Ok(()),
+            }
+        }
+    }
 }
 
 /// The two distributions against scipy 1.18.1, whose numbers are the
@@ -608,6 +959,401 @@ mod distributions {
                 "{df} degrees of freedom has no p-value, and before this was \
                  asserted `t_sf_two_sided(1.0, 0.0)` gave 0.0"
             );
+        }
+    }
+}
+
+/// The individuals a study tests, the design and what each of them is
+/// refused for, as "Which individuals are tested, and the design" of
+/// `docs/specs/gwas.md` states them.
+#[cfg(test)]
+mod design {
+    use std::ptr;
+
+    use super::{Design, GwasInput, GwasInputShape, TraitType};
+    use crate::error::Error;
+
+    /// A study of a continuous trait over the individuals at `individuals`
+    /// of the source, with no kinship and the default test.
+    fn a_study<'a>(
+        phenotype: &'a [f64],
+        design: &'a [f64],
+        num_coefs: usize,
+        individuals: &'a [usize],
+    ) -> GwasInput<'a> {
+        GwasInput {
+            phenotype,
+            trait_type: TraitType::Continuous,
+            design,
+            num_coefs,
+            kinship: None,
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals,
+            transform_to_biallelic: false,
+        }
+    }
+
+    /// The four tested individuals of the fixtures below: the phenotype of
+    /// each, and the design of the intercept and one covariate, four rows
+    /// of two values. Every phenotype and every covariate differs from the
+    /// others, so a row that went to another individual can be seen.
+    const PHENOTYPE_OF_FOUR: [f64; 4] = [1.5, -0.5, 2.0, 0.25];
+    const DESIGN_OF_FOUR: [f64; 8] = [1.0, 0.5, 1.0, -1.5, 1.0, 2.5, 1.0, -0.25];
+
+    /// A design of eight rows and two columns whose columns are at right
+    /// angles to each other: the ones of the intercept, and a covariate of
+    /// `size` and `-size` in turn. Two columns at right angles have their
+    /// own lengths for singular values, `sqrt(8)` and `size * sqrt(8)`, so
+    /// the smallest of the two is `size` of the largest and the rank sees
+    /// exactly the `size` asked for.
+    fn a_design_whose_smallest_singular_value_is(size: f64) -> Vec<f64> {
+        [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0]
+            .into_iter()
+            .flat_map(|sign| [1.0, sign * size])
+            .collect()
+    }
+
+    /// The individuals of a study are tested in the order the source has
+    /// them, and no other order is taken.
+    ///
+    /// Their phenotype, their rows of the design and, when the pass over
+    /// the variants reads them, their dosages are three lists read row by
+    /// row: an order that is not the source's measures one individual's
+    /// trait against another individual's genotypes, and every number of
+    /// the study is then of nobody. The panel of
+    /// `tests/reference/gwas/phenotypes.csv` has its phenotype in the
+    /// source's order, so a study that sorted the individuals by any other
+    /// key, or that kept them in a set and lost their order, gives the same
+    /// answer on it as a study that is right.
+    ///
+    /// The fixture is four of the six individuals of a source, at the
+    /// positions 0, 2, 3 and 5, and the two orders that are refused are the
+    /// same four with 2 and 3 exchanged and the four reversed. Sorting
+    /// either of the two, or reading it as a set, gives the order that is
+    /// kept, so an implementation that did that fails here. The phenotype
+    /// and the covariate of each individual differ from the others, and the
+    /// design that comes back is asserted to be the buffer that was given,
+    /// so no row was moved or dropped.
+    #[test]
+    fn the_tested_individuals_are_in_the_order_the_source_has_them() {
+        let in_the_source_order = [0, 2, 3, 5];
+        let study = a_study(&PHENOTYPE_OF_FOUR, &DESIGN_OF_FOUR, 2, &in_the_source_order);
+        let design = Design::of_the_study(&study, 6)
+            .expect("four of the six individuals of the source, in its order");
+        assert_eq!(design.num_individuals(), 4);
+        assert_eq!(design.num_coefs(), 2);
+        assert!(
+            ptr::eq(design.values(), DESIGN_OF_FOUR.as_slice()),
+            "the design is the rows that were given, in the order they were given"
+        );
+        for (out_of_order, expected) in [([0, 3, 2, 5], (2, 3)), ([5, 3, 2, 0], (3, 5))] {
+            let study = a_study(&PHENOTYPE_OF_FOUR, &DESIGN_OF_FOUR, 2, &out_of_order);
+            match Design::of_the_study(&study, 6) {
+                Err(Error::GwasIndividualsOutOfOrder { individual, after }) => {
+                    assert_eq!(
+                        (individual, after),
+                        expected,
+                        "the individuals {out_of_order:?} are not in the source's order"
+                    );
+                }
+                other => panic!(
+                    "the individuals {out_of_order:?} are the four that are tested in \
+                     another order than the source has them, and that gave {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// An individual that the source does not have is refused, naming the
+    /// position that was asked for and how many individuals there are. The
+    /// fixture asks for the position 6 of a source of 6, whose positions
+    /// are 0 to 5.
+    #[test]
+    fn a_tested_individual_the_source_does_not_have_is_refused() {
+        let past_the_source = [0, 2, 3, 6];
+        let study = a_study(&PHENOTYPE_OF_FOUR, &DESIGN_OF_FOUR, 2, &past_the_source);
+        match Design::of_the_study(&study, 6) {
+            Err(Error::GwasIndividualNotInTheDataset {
+                individual,
+                num_individuals,
+            }) => {
+                assert_eq!((individual, num_individuals), (6, 6));
+            }
+            other => panic!(
+                "the source has the individuals 0 to 5 and the individual 6 was asked \
+                 to be tested, and that gave {other:?}"
+            ),
+        }
+    }
+
+    /// An individual that is twice among the ones to test is refused,
+    /// naming it. It would weigh twice in the null model and its phenotype
+    /// would be read at two rows.
+    #[test]
+    fn a_tested_individual_given_twice_is_refused() {
+        let twice = [0, 2, 2, 5];
+        let study = a_study(&PHENOTYPE_OF_FOUR, &DESIGN_OF_FOUR, 2, &twice);
+        match Design::of_the_study(&study, 6) {
+            Err(Error::GwasIndividualTestedTwice { individual }) => {
+                assert_eq!(individual, 2);
+            }
+            other => {
+                panic!("the individual 2 is twice among the ones to test, and that gave {other:?}")
+            }
+        }
+    }
+
+    /// A study of no more individuals than the columns of its design plus
+    /// one is refused: the design fits one number per column, the variant
+    /// one more, and what is left over is what the uncertainty of the
+    /// variant's effect is measured from.
+    ///
+    /// The fixture is a design of two columns, the intercept and one
+    /// covariate, over three individuals, which is the columns plus one,
+    /// and the same design over four, which is the fewest that is kept. The
+    /// two are either side of the refusal, so a study that counted one
+    /// individual more or less fails here.
+    #[test]
+    fn a_study_with_no_more_individuals_than_the_columns_plus_one_is_refused() {
+        let three = [0, 1, 2];
+        let phenotype_of_three = [1.5, -0.5, 2.0];
+        let design_of_three = [1.0, 0.5, 1.0, -1.5, 1.0, 2.5];
+        let study = a_study(&phenotype_of_three, &design_of_three, 2, &three);
+        match Design::of_the_study(&study, 6) {
+            Err(Error::GwasTooFewIndividuals {
+                num_individuals,
+                num_coefs,
+            }) => {
+                assert_eq!((num_individuals, num_coefs), (3, 2));
+            }
+            other => panic!(
+                "three individuals and a design of two columns leave nothing to measure \
+                 a variant's uncertainty from, and that gave {other:?}"
+            ),
+        }
+        let four = [0, 1, 2, 3];
+        let study = a_study(&PHENOTYPE_OF_FOUR, &DESIGN_OF_FOUR, 2, &four);
+        assert!(
+            Design::of_the_study(&study, 6).is_ok(),
+            "four individuals and a design of two columns leave one individual over, \
+             which is the fewest a study is made of"
+        );
+    }
+
+    /// A phenotype of a binomial trait that is not 0 or 1 is refused,
+    /// naming where it is among the tested individuals and what it is. The
+    /// same values as a continuous trait are a measurement and are kept, so
+    /// the refusal reads the trait it was given.
+    #[test]
+    fn a_binomial_phenotype_that_is_not_0_or_1_is_refused() {
+        let four = [0, 1, 2, 3];
+        let phenotype = [0.0, 1.0, 2.0, 1.0];
+        let mut study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
+        study.trait_type = TraitType::Binomial;
+        match Design::of_the_study(&study, 4) {
+            Err(Error::GwasPhenotypeNotBinomial { position, value }) => {
+                assert_eq!(position, 2);
+                assert_eq!(value.to_bits(), 2.0_f64.to_bits());
+            }
+            other => panic!(
+                "the third of the four individuals has the phenotype 2 of a binomial \
+                 trait, which is 0 or 1, and that gave {other:?}"
+            ),
+        }
+        study.trait_type = TraitType::Continuous;
+        assert!(
+            Design::of_the_study(&study, 4).is_ok(),
+            "the same four values of a continuous trait are four measurements"
+        );
+    }
+
+    /// A binomial trait where every tested individual has the same value is
+    /// refused, naming the value: one of the two groups it compares is
+    /// empty. Both 0 and 1 are the same refusal, and the same phenotype of
+    /// a continuous trait is kept, which is what the spec says for that
+    /// trait and what a variant with no variance is tested against.
+    #[test]
+    fn a_binomial_phenotype_of_one_value_is_refused() {
+        let four = [0, 1, 2, 3];
+        for same in [0.0, 1.0] {
+            let phenotype = [same; 4];
+            let mut study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
+            study.trait_type = TraitType::Binomial;
+            match Design::of_the_study(&study, 4) {
+                Err(Error::GwasPhenotypeOfOneValue { value }) => {
+                    assert_eq!(value.to_bits(), same.to_bits());
+                }
+                other => panic!(
+                    "every tested individual has the phenotype {same} of a binomial \
+                     trait, and that gave {other:?}"
+                ),
+            }
+            study.trait_type = TraitType::Continuous;
+            assert!(
+                Design::of_the_study(&study, 4).is_ok(),
+                "a continuous trait of one value is refused nowhere in the spec"
+            );
+        }
+        let phenotype = [0.0, 1.0, 1.0, 0.0];
+        let mut study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
+        study.trait_type = TraitType::Binomial;
+        assert!(
+            Design::of_the_study(&study, 4).is_ok(),
+            "two individuals have the condition and two have not"
+        );
+    }
+
+    /// A phenotype that is not a finite number is refused, naming where it
+    /// is and what it is. The individuals that are tested are those that
+    /// have a phenotype, so a NaN is an individual that should not have
+    /// been tested at all, and an infinity would carry through the null
+    /// model into the effect of every variant.
+    #[test]
+    fn a_phenotype_that_is_not_finite_is_refused() {
+        let four = [0, 1, 2, 3];
+        for (position, not_finite) in [(1, f64::NAN), (3, f64::INFINITY)] {
+            let mut phenotype = PHENOTYPE_OF_FOUR;
+            phenotype[position] = not_finite;
+            let study = a_study(&phenotype, &DESIGN_OF_FOUR, 2, &four);
+            match Design::of_the_study(&study, 4) {
+                Err(Error::GwasPhenotypeNotFinite {
+                    position: where_it_is,
+                    value,
+                }) => {
+                    assert_eq!(where_it_is, position);
+                    assert_eq!(value.to_bits(), not_finite.to_bits());
+                }
+                other => panic!(
+                    "the phenotype of the individual {position} is {not_finite}, and \
+                     that gave {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// A design with a covariate that is twice another is refused: its
+    /// columns are not independent, so its effects are not one set of
+    /// numbers but many.
+    ///
+    /// The fixture is six individuals and three columns, the intercept, a
+    /// covariate and that covariate doubled, whose rank is 2 of the 3
+    /// columns. The covariate is not constant and has both signs, so the
+    /// refusal is the doubling and not the covariate itself.
+    #[test]
+    fn a_design_whose_covariate_is_twice_another_is_refused() {
+        let six = [0, 1, 2, 3, 4, 5];
+        let phenotype = [1.5, -0.5, 2.0, 0.25, 3.5, -1.25];
+        let design: Vec<f64> = [0.5, 1.5, -2.0, 3.0, 0.25, -1.0]
+            .into_iter()
+            .flat_map(|covariate| [1.0, covariate, covariate * 2.0])
+            .collect();
+        let study = a_study(&phenotype, &design, 3, &six);
+        match Design::of_the_study(&study, 6) {
+            Err(Error::GwasCovariatesCollinear { num_coefs, rank }) => {
+                assert_eq!((num_coefs, rank), (3, 2));
+            }
+            other => panic!(
+                "the third column of the design is the second doubled, so two of its \
+                 three columns are independent, and that gave {other:?}"
+            ),
+        }
+    }
+
+    /// A design whose smallest singular value is 1e-11 of its largest is
+    /// kept, and one whose smallest is 1e-16 of its largest is refused.
+    ///
+    /// The rank counts the singular values strictly above the largest of
+    /// them times the larger dimension times the distance from 1 to the
+    /// next `f64`, which `docs/specs/linalg.md` takes from numpy's
+    /// `matrix_rank` so that a design popnei refuses is a design pyNei
+    /// refuses. For the eight rows and two columns here that tolerance is
+    /// 8 * 2.220446049250313e-16 = 1.7763568394002505e-15 of the largest
+    /// singular value, so the design that is kept has its smallest 5629
+    /// times above it and the one that is refused has its smallest 17.8
+    /// times below. The two are 1e5 apart and the tolerance is between
+    /// them, which is what says that the rank was taken at numpy's
+    /// tolerance and not at a rounder one. Searched on this Mac on 23
+    /// September 2026, the fraction popnei turns at is between
+    /// 1.7763567728318708e-15 and 1.7763568947297103e-15, which holds that
+    /// tolerance to seven digits; the boundary itself is not asserted,
+    /// since a singular value the decomposition computes within a bit of
+    /// the tolerance falls either side of it by rounding.
+    ///
+    /// numpy 2.5.3 was run on the same two designs on 23 September 2026 and
+    /// gave the same two ranks, 2 and 1, and singular values of
+    /// 2.8284271247461903 and `size` times that, which is what two columns
+    /// at right angles have.
+    ///
+    /// 1e-11 is the fraction `docs/specs/linalg.md` measured `matrix_rank`
+    /// to give full rank at on a design of 10000 rows and 4 columns, where
+    /// the tolerance is 10000 times that distance; on the eight rows here
+    /// the same fraction is further from the tolerance, since the tolerance
+    /// follows the larger dimension.
+    #[test]
+    fn a_design_whose_smallest_singular_value_is_1e_11_of_its_largest_is_kept() {
+        let eight = [0, 1, 2, 3, 4, 5, 6, 7];
+        let phenotype = [1.5, -0.5, 2.0, 0.25, 3.5, -1.25, 0.75, 2.25];
+        let kept = a_design_whose_smallest_singular_value_is(1e-11);
+        let study = a_study(&phenotype, &kept, 2, &eight);
+        assert!(
+            Design::of_the_study(&study, 8).is_ok(),
+            "the smallest singular value of this design is 1e-11 of its largest, 5629 \
+             times the tolerance of the rank"
+        );
+        let refused = a_design_whose_smallest_singular_value_is(1e-16);
+        let study = a_study(&phenotype, &refused, 2, &eight);
+        match Design::of_the_study(&study, 8) {
+            Err(Error::GwasCovariatesCollinear { num_coefs, rank }) => {
+                assert_eq!((num_coefs, rank), (2, 1));
+            }
+            other => panic!(
+                "the smallest singular value of this design is 1e-16 of its largest, \
+                 17.8 times below the tolerance of the rank, and that gave {other:?}"
+            ),
+        }
+    }
+
+    /// The phenotype holds one value for each tested individual, the design
+    /// one row of its columns for each, and the design has the column of
+    /// the intercept at least. None of the three can be reached from Python
+    /// or from TypeScript, which build the three from the same individuals,
+    /// and a caller of the core crate builds them itself.
+    #[test]
+    fn a_study_whose_buffers_are_not_of_its_individuals_is_refused() {
+        let four = [0, 1, 2, 3];
+        let phenotype_of_three = [1.5, -0.5, 2.0];
+        let study = a_study(&phenotype_of_three, &DESIGN_OF_FOUR, 2, &four);
+        assert_eq!(
+            the_shape_refused(Design::of_the_study(&study, 4)),
+            GwasInputShape::Phenotype {
+                num_values: 3,
+                num_individuals: 4,
+            }
+        );
+        let design_of_three = [1.0, 0.5, 1.0, -1.5, 1.0, 2.5];
+        let study = a_study(&PHENOTYPE_OF_FOUR, &design_of_three, 2, &four);
+        assert_eq!(
+            the_shape_refused(Design::of_the_study(&study, 4)),
+            GwasInputShape::Design {
+                num_values: 6,
+                num_individuals: 4,
+                num_coefs: 2,
+            }
+        );
+        let study = a_study(&PHENOTYPE_OF_FOUR, &[], 0, &four);
+        assert_eq!(
+            the_shape_refused(Design::of_the_study(&study, 4)),
+            GwasInputShape::NoCoef
+        );
+    }
+
+    /// Which of the three buffers of a study was of another size, from what
+    /// building its design gave.
+    fn the_shape_refused(built: crate::error::Result<Design<'_>>) -> GwasInputShape {
+        match built {
+            Err(Error::GwasInputOfAnotherSize { problem }) => problem,
+            other => panic!("the buffers of the study do not hold it, and that gave {other:?}"),
         }
     }
 }

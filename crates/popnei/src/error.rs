@@ -1206,6 +1206,159 @@ pub enum Error {
         /// How many variants the calculation was allowed to take.
         max_num_vars: usize,
     },
+    /// An individual a study was asked to test is not one the source has.
+    /// The individuals of a study are given by their position among those
+    /// the reader gives, from 0, and this one is at or beyond their count.
+    /// The Python and the TypeScript layers turn a name of the phenotype
+    /// into that position and are where a name the source has not is
+    /// refused, so the core is reached by a caller of `calc_gwas` with
+    /// positions of its own. In Python it is a `ValueError`.
+    #[error(
+        "the individual at the position {individual} was asked to be tested and the source has {num_individuals} individuals, whose positions are 0 to {last}",
+        last = num_individuals.saturating_sub(1)
+    )]
+    GwasIndividualNotInTheDataset {
+        /// The position that was asked for, from 0.
+        individual: usize,
+        /// How many individuals the source has.
+        num_individuals: usize,
+    },
+
+    /// An individual is twice among the ones a study was asked to test. It
+    /// would weigh twice in the null model and in every variant, and its
+    /// phenotype would be read at two rows. It is pyNei's repeated
+    /// individual of the phenotype, and in Python it is a `ValueError`.
+    #[error(
+        "the individual at the position {individual} is twice among the ones to test, and each of them is tested once"
+    )]
+    GwasIndividualTestedTwice {
+        /// The position that is there twice, from 0.
+        individual: usize,
+    },
+
+    /// The individuals a study was asked to test are not in the order the
+    /// source has them. Their phenotype, their design and their dosages are
+    /// three lists that are read together, row by row, so an order that is
+    /// not the source's puts one individual's phenotype against another's
+    /// genotypes and the study answers about nobody. The Python and the
+    /// TypeScript layers build the positions by walking the individuals of
+    /// the source and keeping the ones that have a phenotype, whatever
+    /// order the phenotype was given in, so they rise. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual at the position {individual} is to be tested after the one at {after}, and the individuals of a study are tested in the order the source has them, their phenotype and their design in that order too"
+    )]
+    GwasIndividualsOutOfOrder {
+        /// The position that comes too late, from 0.
+        individual: usize,
+        /// The position it was given after, which is above it.
+        after: usize,
+    },
+
+    /// A study of no more individuals than its design has columns plus one.
+    /// The design holds one column for the intercept and one for each
+    /// covariate, the variant adds one more, and what is left over is what
+    /// the uncertainty of the variant's effect is measured from: one
+    /// individual at least, so the individuals are the columns plus two.
+    /// In Python it is a `ValueError`.
+    #[error(
+        "{num_individuals} individuals are tested and the design has {num_coefs} columns, so the variant would leave nothing to measure its uncertainty from; a study of that design needs the columns plus two individuals"
+    )]
+    GwasTooFewIndividuals {
+        /// How many individuals are tested.
+        num_individuals: usize,
+        /// How many columns the design has, the intercept among them.
+        num_coefs: usize,
+    },
+
+    /// A phenotype of a study holds a value that is not finite. The
+    /// individuals that are tested are those that have a phenotype, so a
+    /// NaN is an individual that should not have been tested at all, and an
+    /// infinity would carry through the fit into every variant's effect.
+    /// The Python and the TypeScript layers leave out the individuals whose
+    /// phenotype is NaN. In Python it is a `ValueError`.
+    #[error(
+        "the phenotype of the tested individual at the position {position} is {value}, and a study is fitted on numbers; leave that individual out"
+    )]
+    GwasPhenotypeNotFinite {
+        /// Where the value is among the tested individuals, from 0.
+        position: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A phenotype of a binomial trait holds a value that is neither 0 nor 1.
+    /// Such a trait is the individuals that have a condition against those
+    /// that have not, and a logistic model is fitted to nothing else. It is
+    /// pyNei's refusal of a phenotype that is not 0 or 1, and in Python it
+    /// is a `ValueError`.
+    #[error(
+        "the phenotype of the tested individual at the position {position} is {value}, and a binomial trait is 0 or 1"
+    )]
+    GwasPhenotypeNotBinomial {
+        /// Where the value is among the tested individuals, from 0.
+        position: usize,
+        /// The value that is neither 0 nor 1.
+        value: f64,
+    },
+
+    /// Every tested individual of a binomial trait has the same phenotype.
+    /// A study of such a trait compares the individuals that have the
+    /// condition with those that have not, and one of the two groups is
+    /// empty, so no variant can tell them apart. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "every tested individual has the phenotype {value}, and a binomial trait is compared between the individuals that have the condition and those that have not"
+    )]
+    GwasPhenotypeOfOneValue {
+        /// The phenotype they all have, 0 or 1.
+        value: f64,
+    },
+
+    /// The columns of the design of a study are not independent: a
+    /// covariate is constant, or it is a combination of the others, such as
+    /// a copy of one or the sum of two. The effects of such a design are
+    /// not one set of numbers but many, and the fit would answer with
+    /// whichever the arithmetic reached. It is found with the rank of
+    /// `popnei-linalg`, how many of the design's columns are independent at
+    /// numpy's tolerance, so a design popnei refuses is a design pyNei
+    /// refuses. The user takes the covariate out. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the design has {num_coefs} columns, the intercept among them, and only {rank} of them are independent: a covariate is constant, or it is a combination of the others, such as a copy of one; take it out"
+    )]
+    GwasCovariatesCollinear {
+        /// How many columns the design has, the intercept among them.
+        num_coefs: usize,
+        /// How many of them are independent.
+        rank: usize,
+    },
+
+    /// The buffers a study was given do not hold the study it was given:
+    /// the phenotype does not hold one value per tested individual, the
+    /// design does not hold one row of its columns per tested individual,
+    /// or the design has no column at all.
+    /// [`crate::gwas::GwasInputShape`] says which of the three it is. Each
+    /// binding crate builds the three from the same individuals, so in
+    /// Python it is a `RuntimeError`.
+    #[error("the study cannot be run on what it was given: {problem}")]
+    GwasInputOfAnotherSize {
+        /// Which of the three it is, with the sizes that do not agree.
+        problem: crate::gwas::GwasInputShape,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a study asked for did
+    /// not run, with what was being computed. Its dimensions and its values
+    /// are checked before it is called, so what is left is a machine with
+    /// too little memory for the workspace and a decomposition that did not
+    /// come out. In Python it is a `RuntimeError`.
+    #[error("the {operation} of the association study could not be done: {source}")]
+    GwasLinalg {
+        /// What was being computed: the rank of the design.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
 
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
