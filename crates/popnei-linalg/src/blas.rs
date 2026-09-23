@@ -1,6 +1,6 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd` and `dpotrf`, the ones numpy calls.
+//! `dsyevd`, `dpotrf` and `dpotrs`, the ones numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -403,6 +403,54 @@ pub(crate) fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
             routine: "dpotrf",
             info,
         }),
+    }
+}
+
+/// The `x` of `a x = b` for the factorization `l` of exactly `n` x `n`
+/// values row after row with its lower half filled, and `b` of exactly
+/// `sides` x `n` values row after row, one row for each right hand side,
+/// which comes back holding the solutions the same way. `n` and `sides`
+/// are 1 at least.
+///
+/// The buffer of `b` read column after column is the n x `sides` matrix
+/// whose columns are the right hand sides, which is what the routine
+/// takes, so the layout of this crate is the layout `dpotrs` wants and
+/// nothing is copied here either.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when a dimension is larger than the `i32` the
+/// routine takes. [`Error::NoConvergence`] when the routine refused an
+/// argument it was given, which is a defect of popnei.
+pub(crate) fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()> {
+    let order = the_i32_of(n, "n")?;
+    let right_hand_sides = the_i32_of(sides, "sides")?;
+    let mut info = 0_i32;
+    // SAFETY: with `uplo` U, `n` = n and `lda` = n the routine reads the
+    // upper triangle of `l` as a column major matrix of n x n, which is
+    // the lower half of `l` in popnei's layout and is inside the n * n
+    // values `l` holds; and with `nrhs` = sides and `ldb` = n it reads and
+    // writes `b` as a column major matrix of n rows and sides columns,
+    // which is the sides * n values `b` holds. It writes nothing else, and
+    // `info` is one integer. Neither dimension is 0 and both fit in the
+    // `i32` the routine takes, which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dpotrs(b'U', order, right_hand_sides, l, order, b, order, &mut info);
+    }
+    if info == 0 {
+        Ok(())
+    } else {
+        // `dpotrs` gives an `info` other than 0 for one reason, an
+        // argument it refused, which is a defect of popnei and never a
+        // matrix it could not solve with.
+        Err(Error::NoConvergence {
+            routine: "dpotrs",
+            info,
+        })
     }
 }
 

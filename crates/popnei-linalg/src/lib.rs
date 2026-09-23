@@ -3,14 +3,16 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds seven: the product of a matrix with
+//! place that has them. It holds nine: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
-//! symmetric positive definite one, [`cholesky_lower`]; and the product
-//! of two matrices, [`product`], which is the other four, because
-//! [`TheFirstOperand`] and [`TheSecondOperand`] each say how one matrix's
-//! buffer is laid out and the two together choose among `a b`, `a b'`,
-//! `a' b` and `a' b'`.
+//! symmetric positive definite one, [`cholesky_lower`], the solve of a
+//! system with the matrix it factored, [`solve_with_cholesky`], and the
+//! log of that matrix's determinant, [`log_determinant_with_cholesky`];
+//! and the product of two matrices, [`product`], which is the other four,
+//! because [`TheFirstOperand`] and [`TheSecondOperand`] each say how one
+//! matrix's buffer is laid out and the two together choose among `a b`,
+//! `a b'`, `a' b` and `a' b'`.
 //! `docs/specs/linalg.md` says what each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
@@ -516,6 +518,107 @@ pub fn cholesky_lower(a: &mut [f64], n: usize) -> Result<()> {
     backend::cholesky_lower(a, n)
 }
 
+/// The `x` of `a x = b`, where `l` of `n` x `n` is the factorization
+/// [`cholesky_lower`] gave of the symmetric positive definite `a`.
+///
+/// `b` is `sides` x `n`, row after row, one row for each right hand side,
+/// and it comes back holding the solutions the same way. That layout is
+/// the one the caller already has: a buffer of `n` rows and `c` columns
+/// held row after row is the same buffer as one of `c` rows and `n`
+/// columns held row after row, so a caller whose right hand sides are the
+/// columns of a matrix of `n` rows passes the buffer it holds, as `c`
+/// right hand sides of `n` numbers each, and nothing is copied and nothing
+/// is moved. The solutions come back one row for each column of the matrix
+/// the next product reads, which is [`product`] with that operand
+/// [`TheSecondOperand::ByTheColumnsOfTheResult`]. `sides` is 1 at least.
+///
+/// Only the lower half of `l` is read, the entries of column `j` at most
+/// `i` of row `i`; what the upper half holds does not reach the result.
+/// Either buffer may hold more values than its dimensions ask for, and
+/// then its first `n` times `n`, or `sides` times `n`, are the matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` or `sides` is 0, when `l` holds fewer
+/// than `n` times `n` values or `b` fewer than `sides` times `n`, or when
+/// either of those counts is more than 2147483647, which is what the
+/// routines of BLAS and LAPACK count in. [`Error::NotFinite`] when the
+/// lower half of `l`, or `b`, holds a value that is not finite.
+/// [`Error::NoConvergence`] when the routine refused an argument it was
+/// given, which is a defect of popnei.
+pub fn solve_with_cholesky(l: &[f64], n: usize, b: &mut [f64], sides: usize) -> Result<()> {
+    if n == 0 {
+        return Err(Error::Dimension {
+            argument: "n",
+            expected: "1 at least, since l is the n x n factorization to solve with".to_owned(),
+        });
+    }
+    if sides == 0 {
+        return Err(Error::Dimension {
+            argument: "sides",
+            expected: "1 at least, since b holds one row for each right hand side".to_owned(),
+        });
+    }
+    let l = the_matrix_of(l, n, n, "l")?;
+    refuse_a_value_that_is_not_finite_in_the_lower_half(l, n, "l")?;
+    let b = the_matrix_of_mut(b, sides, n, "b")?;
+    refuse_a_value_that_is_not_finite(b, "b")?;
+    backend::solve_with_cholesky(l, n, b, sides)
+}
+
+/// The log of the determinant of the `a` whose factorization `l` of `n` x
+/// `n` is, which is twice the sum of the logs of the diagonal of `l`.
+///
+/// There is no sign to give: the determinant of a positive definite matrix
+/// is above 0, so a caller that wanted numpy's `slogdet` has its second
+/// value here and its first is always 1.
+///
+/// Neither backend runs: it is arithmetic over the `n` entries of the
+/// diagonal, and the diagonal is all this reads. So the diagonal is what
+/// it checks, and what it checks it for is what a [`cholesky_lower`] that
+/// gave this `l` would have refused first. `l` may hold more values than
+/// `n` times `n`, and then its first `n` times `n` are the matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `n` is 0, when `l` holds fewer than `n` times
+/// `n` values, or when `n` times `n` is more than 2147483647, which is
+/// what the routines of BLAS and LAPACK count in. [`Error::NotFinite`]
+/// when the diagonal holds a value that is not finite.
+/// [`Error::Singular`] when it holds one that is not above 0, with the
+/// first such row.
+pub fn log_determinant_with_cholesky(l: &[f64], n: usize) -> Result<f64> {
+    if n == 0 {
+        return Err(Error::Dimension {
+            argument: "n",
+            expected: "1 at least, since l is the n x n factorization to read the diagonal of"
+                .to_owned(),
+        });
+    }
+    let l = the_matrix_of(l, n, n, "l")?;
+    // The entry `i`, `i` of a matrix held row after row is the value `i`
+    // times `n` plus `i` of the buffer, so the diagonal is one value in
+    // every `n` plus 1 from the first, and the last of them is the last
+    // value of the buffer. The addition cannot overflow: `the_matrix_of`
+    // has refused every `n` whose square is above 2147483647, which leaves
+    // `n` at 46340 at most.
+    let the_diagonal = || l.iter().copied().step_by(n.saturating_add(1));
+    if !the_diagonal().all(f64::is_finite) {
+        return Err(Error::NotFinite { argument: "l" });
+    }
+    if let Some((row, _)) = the_diagonal().enumerate().find(|(_, entry)| *entry <= 0.0) {
+        return Err(Error::Singular {
+            argument: "l",
+            at: row,
+        });
+    }
+    // The logs are added in the order of the rows, which is the order the
+    // spec's number was taken in and the one a total of floats has to be
+    // added in to be the same number on every run.
+    let total: f64 = the_diagonal().map(f64::ln).sum();
+    Ok(2.0 * total)
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -679,7 +782,7 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 mod tests {
     use super::{
         Eigen, Error, TheFirstOperand, TheSecondOperand, add_self_product_lower, cholesky_lower,
-        eigh_lower, product, reverse_the_rows,
+        eigh_lower, log_determinant_with_cholesky, product, reverse_the_rows, solve_with_cholesky,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -802,6 +905,14 @@ mod tests {
             0.0, 6.0, 5.0,
         ]
     }
+
+    /// The right hand side of "How the seven are verified", (8, 40, 27),
+    /// whose solution against the 3 x 3 above is (1, 2, 3).
+    const THE_RIGHT_HAND_SIDE: [f64; 3] = [8.0, 40.0, 27.0];
+
+    /// The second right hand side of the same place, (4, 2, 0), which is
+    /// the first column of that 3 x 3, so its solution is (1, 0, 0).
+    const THE_SECOND_RIGHT_HAND_SIDE: [f64; 3] = [4.0, 2.0, 0.0];
 
     /// The order of the matrix below, which is the number of individuals
     /// the spec checks the two backends at.
@@ -2297,5 +2408,293 @@ mod tests {
         let lower_half = vec![a[0], a[3], a[4], a[6], a[7], a[8]];
         assert_eq!(lower_half, vec![2.0, 1.0, 3.0, 0.0, 2.0, 1.0]);
         assert!(a[1].is_nan(), "the entry above the diagonal is {}", a[1]);
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_of_the_3_by_3_gives_the_one_right_hand_side() {
+        // The right hand side (8, 40, 27) of "How the seven are verified"
+        // and its solution (1, 2, 3). The upper half of the buffer still
+        // holds the 99 the factorization left there, so a call that read
+        // it instead of the lower half would give something else.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let mut b = THE_RIGHT_HAND_SIDE;
+        solve_with_cholesky(&l, 3, &mut b, 1).unwrap();
+        assert!(
+            !differ(&b, &[1.0, 2.0, 3.0], 1e-14),
+            "the solution is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_of_the_3_by_3_gives_the_two_right_hand_sides() {
+        // The two right hand sides of "How the seven are verified", one
+        // row each: (8, 40, 27) gives (1, 2, 3) and (4, 2, 0), which is
+        // the first column of the matrix, gives (1, 0, 0). A backend that
+        // read the rows of `b` as its columns gives something else for
+        // both, and `sides` is 2 against an `n` of 3, so a call that swapped
+        // the two dimensions would not fit the buffer either.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let mut b: Vec<f64> = THE_RIGHT_HAND_SIDE
+            .into_iter()
+            .chain(THE_SECOND_RIGHT_HAND_SIDE)
+            .collect();
+        solve_with_cholesky(&l, 3, &mut b, 2).unwrap();
+        assert!(
+            !differ(&b, &[1.0, 2.0, 3.0, 1.0, 0.0, 0.0], 1e-14),
+            "the solutions are {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_of_the_1000_by_1000_matrix_of_the_generator() {
+        // The x of G x = v for v the vector of 1000 ones, of which "How
+        // the seven are verified" gives the first three entries and the
+        // sum over the 1000.
+        let mut g = the_matrix_of_1000_by_1000_of_the_generator();
+        cholesky_lower(&mut g, THE_LARGE_CASE).unwrap();
+        let mut b = vec![1.0; THE_LARGE_CASE];
+        solve_with_cholesky(&g, THE_LARGE_CASE, &mut b, 1).unwrap();
+        let the_first_three = [
+            -0.3054837936349659,
+            -0.04576083734778211,
+            -0.21314634692119025,
+        ];
+        for (entry, (got, expected)) in b.iter().zip(the_first_three).enumerate() {
+            assert!(
+                !differ_in_their_digits(*got, expected, 1e-11),
+                "the entry {entry} of the solution is {got}"
+            );
+        }
+        let total: f64 = b.iter().sum();
+        assert!(
+            !differ_in_their_digits(total, 73.9565335781636, 1e-11),
+            "the sum of the solution is {total}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_reads_the_lower_half_of_l_alone() {
+        // A value that is nothing of the factorization above its diagonal
+        // reaches neither the check nor the routine: the solution is the
+        // one of the matrix.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        l[1] = f64::NAN;
+        let mut b = THE_RIGHT_HAND_SIDE;
+        solve_with_cholesky(&l, 3, &mut b, 1).unwrap();
+        assert!(
+            !differ(&b, &[1.0, 2.0, 3.0], 1e-14),
+            "the solution is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_reads_and_writes_the_first_values_of_buffers_that_hold_more() {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        l.push(7.0);
+        let mut b = vec![8.0, 40.0, 27.0, 7.0];
+        solve_with_cholesky(&l, 3, &mut b, 1).unwrap();
+        assert!(
+            !differ(&b, &[1.0, 2.0, 3.0, 7.0], 1e-14),
+            "the buffer of the solution is {b:?}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_an_n_of_zero() {
+        let error = solve_with_cholesky(&[], 0, &mut [], 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "n", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_a_sides_of_zero() {
+        let error = solve_with_cholesky(&[0.0; 9], 3, &mut [], 0).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "sides",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_an_l_shorter_than_n_times_n() {
+        let error = solve_with_cholesky(&[0.0; 8], 3, &mut [0.0; 3], 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "l", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_a_b_shorter_than_sides_times_n() {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let error = solve_with_cholesky(&l, 3, &mut [0.0; 5], 2).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "b", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 2^31, one more than the largest an i32 holds. The check comes
+        // before the one of the length of the buffer, so empty slices
+        // reach it, and it is made whichever backend would run.
+        let error = solve_with_cholesky(&[], 1 << 31, &mut [], 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "l", .. }),
+            "the error of the n is {error}"
+        );
+        let error = solve_with_cholesky(&[0.0; 9], 3, &mut [], 1 << 31).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "b", .. }),
+            "the error of the sides is {error}"
+        );
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_a_value_that_is_not_finite_in_the_lower_half_of_l() {
+        // Below the diagonal and on it. Above it is the test that reads
+        // the lower half alone.
+        for entry in [3_usize, 4] {
+            let mut l = the_matrix_to_factor();
+            cholesky_lower(&mut l, 3).unwrap();
+            l[entry] = f64::INFINITY;
+            let mut b = THE_RIGHT_HAND_SIDE;
+            let error = solve_with_cholesky(&l, 3, &mut b, 1).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "l" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_solve_with_the_cholesky_refuses_a_value_that_is_not_finite_in_b() {
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let mut b = [8.0, f64::NAN, 27.0];
+        let error = solve_with_cholesky(&l, 3, &mut b, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::NotFinite { argument: "b" }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_log_determinant_with_the_cholesky_of_the_3_by_3_is_the_log_of_36() {
+        // The diagonal of the factorization is 2, 3 and 1, and twice the
+        // sum of their logs lands on the f64 numpy's slogdet gives for the
+        // matrix, 3.58351893845611, which is the log of its determinant of
+        // 36: the tolerance of the comparison is 0.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        let logarithm = log_determinant_with_cholesky(&l, 3).unwrap();
+        assert!(
+            !differ(&[logarithm], &[3.58351893845611], 0.0),
+            "the log of the determinant is {logarithm}"
+        );
+    }
+
+    #[test]
+    fn the_log_determinant_with_the_cholesky_reads_the_diagonal_alone() {
+        // A value that is not finite off the diagonal, above it and below
+        // it, changes neither the number nor the check: the operation
+        // reads the diagonal and nothing else.
+        let mut l = the_matrix_to_factor();
+        cholesky_lower(&mut l, 3).unwrap();
+        l[1] = f64::NAN;
+        l[3] = f64::INFINITY;
+        let logarithm = log_determinant_with_cholesky(&l, 3).unwrap();
+        assert!(
+            !differ(&[logarithm], &[3.58351893845611], 0.0),
+            "the log of the determinant is {logarithm}"
+        );
+    }
+
+    #[test]
+    fn the_log_determinant_with_the_cholesky_of_the_1000_by_1000_matrix_of_the_generator() {
+        let mut g = the_matrix_of_1000_by_1000_of_the_generator();
+        cholesky_lower(&mut g, THE_LARGE_CASE).unwrap();
+        let logarithm = log_determinant_with_cholesky(&g, THE_LARGE_CASE).unwrap();
+        assert!(
+            !differ_in_their_digits(logarithm, 3963.7986384485084, 1e-13),
+            "the log of the determinant is {logarithm}"
+        );
+    }
+
+    #[test]
+    fn the_log_determinant_of_a_diagonal_entry_that_is_not_above_zero_is_singular_at_that_row() {
+        // A diagonal entry of 0 and one below 0, each at the middle row of
+        // the three, which is the row a `cholesky_lower` that gave such an
+        // `l` would have stopped at.
+        for entry in [0.0, -3.0] {
+            let l = vec![
+                2.0, 99.0, 99.0, //
+                1.0, entry, 99.0, //
+                0.0, 2.0, 1.0,
+            ];
+            let error = log_determinant_with_cholesky(&l, 3).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::Singular {
+                        argument: "l",
+                        at: 1
+                    }
+                ),
+                "the error for the diagonal entry {entry} is {error}"
+            );
+            assert_eq!(
+                error.to_string(),
+                "the matrix l is singular: the factorization stopped at its row 1, counting from 0"
+            );
+        }
+    }
+
+    #[test]
+    fn the_log_determinant_refuses_a_value_that_is_not_finite_in_the_diagonal() {
+        for entry in [f64::NAN, f64::INFINITY] {
+            let l = vec![
+                2.0, 99.0, 99.0, //
+                1.0, 3.0, 99.0, //
+                0.0, 2.0, entry,
+            ];
+            let error = log_determinant_with_cholesky(&l, 3).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "l" }),
+                "the error for the diagonal entry {entry} is {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_log_determinant_refuses_an_n_of_zero() {
+        let error = log_determinant_with_cholesky(&[], 0).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "n", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_log_determinant_refuses_an_l_shorter_than_n_times_n() {
+        let error = log_determinant_with_cholesky(&[0.0; 8], 3).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "l", .. }),
+            "the error is {error}"
+        );
     }
 }
