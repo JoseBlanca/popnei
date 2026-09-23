@@ -515,3 +515,36 @@ pytest` `344 passed`.
 
 The review added 10 cargo tests and 7 Python tests to this work package
 and changed the spec in five more places.
+
+## Work package 2, as it goes
+
+### Task 2.1, the three measures out of the corrected sums
+
+One commit, `9f0a6e9`. 155 644 tokens. `cargo test -p popnei --lib
+pop_dists::` gives `53 passed; 0 failed` against 49, and the workspace
+`574 passed; 0 failed; 2 ignored`. The work package added no count and no
+sum, as the plan said it would not: the three measures are ratios of the
+means of the two corrected diversities work package 1 already summed.
+
+Deliverables 1 and 2 are met. How far the three came from mmod, which is
+the number to watch because mmod computes another estimator of the same
+quantity: on the biallelic panel the furthest of the three pairs is 7.3e-5
+for Jost's D, 7.2e-5 for G_ST and 1.9e-4 for G''_ST, and on the
+multiallelic panel 3.5e-4, 9.0e-5 and 4.7e-4. All six are inside the 5e-4
+the plan asks for, and the tolerance was left where it is. The exact
+comparison, against pyNei, is task 2.2's.
+
+### One point for the owner, which nothing rests on
+
+The standardized G''_ST divides by 1 minus the mean corrected H_S, the
+same divisor as Jost's D. The spec gives Jost's D no value where that mean
+is exactly 1, and gives G''_ST no such exception, in the words "for Dest
+alone". So where Jost's D has no value, G''_ST comes out infinite. The
+task followed the spec and pinned it in a test.
+
+The word "alone" is explicit, so the orchestrator did not overturn it: it
+is either the owner's decision or an oversight of whoever wrote the line,
+and the two cannot be told apart from the page. The case needs the mean
+corrected H_S to be exactly 1.0 and the task had to construct a fixture to
+reach it, so nothing of the plan rests on the answer and the work goes on.
+The two options are at the end of this report.

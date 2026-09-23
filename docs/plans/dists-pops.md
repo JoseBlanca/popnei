@@ -242,7 +242,7 @@ no sum.
 
 ### Its tasks
 
-- [ ] 2.1 Jost's D, G_ST and G''_ST out of the means of the corrected sums,
+- [x] 2.1 Jost's D, G_ST and G''_ST out of the means of the corrected sums,
   in `crates/popnei/src/pop_dists.rs`, with the cargo tests of deliverables
   1 and 2. From "What it gives" of Jost's D and of the G_ST item, and from
   "What pyNei does that is odd, and what popnei does instead". Serves
