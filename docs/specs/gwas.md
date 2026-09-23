@@ -94,7 +94,44 @@ calc_gwas(
 ```
 
 `phenotype` is a series indexed by individual name; a frame of one column is
-taken as that column. `trait` is `"continuous"` or `"binomial"`, the two
+taken as that column.
+
+**A value that is not a number is coerced, in both layers.** Python coerces
+with `float`, as pyNei does, so the strings `['2', '3', '5']` and the
+booleans `True` and `False` are accepted, and so does TypeScript, where the
+same values used to be refused. The owner decided it on 23 September 2026:
+a phenotype read from a file arrives as strings often enough that refusing
+it would be a divergence users feel, and popnei has no reason to be stricter
+than its oracle here. The option not taken was to refuse in both, which is
+what the Python docstring says a trait is and which would have made the
+layers agree by making Python stricter than pyNei.
+
+The two coercions are not the same coercion, and one rule is what makes
+them one. **A value means an individual with no phenotype exactly when
+Python's `float` of it gives NaN, or the entry is not there, and it is
+refused exactly when Python's `float` of it raises.** TypeScript is written
+to that rule and not to JavaScript's own coercion, which agrees with it
+nowhere that matters: `Number("abc")` gives NaN where `float` raises, so a
+typo would become a silently missing individual instead of an error;
+`Number(null)` and `Number("")` give 0, so a blank cell would become a
+phenotype of zero; and `Number(undefined)` gives NaN, so a key a user forgot
+to fill would vanish rather than be reported.
+
+What the rule gives, measured against `float` on 23 September 2026. A number
+that is NaN is a missing phenotype, and so is a key that is absent, which is
+`dropna` at `gwas.py:801`. A string is coerced and refused unless it parses,
+so `"2"` is 2, `""` and `"abc"` are refused, and `"nan"` is a missing
+phenotype because `float("nan")` is NaN. A boolean is 1 or 0. `null` and
+`undefined` are refused, since `float(None)` raises. An infinity is refused
+by both layers, which pyNei does not do: `float("inf")` succeeds there and
+the fit it feeds gives NaN for every variant.
+
+That the two layers refuse the same things is checked and not assumed:
+`tests/reference/gwas/refusals_of_both_layers.json` lists each case with the
+message it gives, and the Python and the node suites both walk it. It was
+written during `docs/plans/gwas-linear.md` because nothing had been checking
+it, and writing it caught two messages about a covariate named `intercept`
+that differed between the languages. `trait` is `"continuous"` or `"binomial"`, the two
 values of `TraitType`. `test` is `"wald"` or `"score"`, the two values of
 `TestType`, and `None` takes the default above.
 
@@ -118,6 +155,13 @@ It mirrors `calc_gwas` of `pynei/gwas.py`. The differences from pyNei, which
   `docs/glossary.md` gives.
 - `num_threads` is not an argument, as no calculation of popnei has one.
 - `pass_stats` is new, as it is for every consumer of a `Variants`.
+- `pos` of `stats` is unsigned, as `Block.pos` and `R2Matrix.poss` are,
+  where pyNei's is signed. Subtracting from it wraps instead of going
+  negative: on the worked example `stats["pos"] - 2000` gives
+  18446744073709550616 for the first variant where pyNei gives -1000,
+  measured on 23 September 2026. A position is never negative and the
+  unsigned column is popnei's convention, so it stays; a user who takes
+  differences between positions casts first.
 - `chrom`, `pos` and `id` are columns of `stats` whenever the source has
   them. pyNei leaves each out when the chunk has no such column, which its
   own test asserts; popnei asks the reader for them and gives them.
@@ -158,7 +202,23 @@ and one column for each covariate. The covariates are a frame indexed by
 individual, which must cover every tested individual and hold no missing
 value and no value that is not a number; each of the three raises a
 `ValueError`, and the one for a value that is not a number says to code a
-categorical covariate, with `pandas.get_dummies` for instance.
+categorical covariate, with `pandas.get_dummies` for instance. A covariate
+named `intercept` is a `ValueError` too: the effects of the null model come
+back under the names of the columns of the design, and the column of ones is
+`intercept` among them, so a covariate of that name would be the same entry
+of `covariate_effects` and a user would read one of the two without knowing
+which.
+
+A covariate named `intercept` is refused, in Python and in TypeScript alike,
+with a `ValueError` saying that the name is the intercept's. The effects
+come back keyed by name with the intercept among them, so two of them named
+`intercept` would collide. pyNei does not refuse it and loses the intercept
+without saying anything: `_prepare_samples_and_design` of `pynei/gwas.py`
+builds `["intercept"] + covariate names` and hands it to a pandas `Series`
+as its index, which takes a repeated label, and the frame a user then reads
+keeps whichever of the two came last. Measured on 23 September 2026: a
+series over `intercept`, `intercept` and `cov2` gives two entries, not
+three, and the intercept's own value is the one that is gone.
 
 Two refusals protect the fits. A design whose columns are not independent, a
 covariate that is constant or a copy of another, is a `ValueError` saying
@@ -169,12 +229,54 @@ columns plus one is refused, since there would be nothing left to estimate
 the uncertainty from.
 
 For a binomial trait, a phenotype that is not 0 or 1 everywhere is a
-`ValueError`, and so is one where every individual has the same value.
+`ValueError`. A trait where every individual has the same value is a
+`ValueError` for **both** kinds, where pyNei refuses it only for a binomial
+one. There is nothing for a constant trait to be associated with, and what
+it gives instead of an error is not an answer: without a kinship the
+residual sum of squares is 0 and every `se` is 0, and with one the genetic
+variance is fitted at 0 and the inverse it feeds returns infinities.
 
 Asking for a test the model does not have is a `ValueError`: the score test
 for a continuous trait with no kinship, since the only test of a linear
 model is its t test; and the Wald test for a binomial trait with a kinship,
 since it would fit one mixed model per variant.
+
+The core crate is given the tested individuals as their positions among the
+individuals the source has, with their phenotype and the design already
+built, as "The Rust interface" below has it. So the refusals about a name
+and about a frame are made where those are, in the Python and the TypeScript
+layers: an individual of the phenotype that the `Variants` has not, a
+covariate that does not cover a tested individual, and a covariate value
+that is missing or is not a number. The core makes the rest over the
+positions and the numbers it holds, and four more that only it can see.
+
+The positions rise, and any other order is a `ValueError`. They are the
+order the source has the individuals in, and the phenotype, the rows of the
+design and the dosages of a block are read together row by row, so an order
+that is not the source's measures one individual's trait against another
+individual's genotypes. A position that repeats the one before it is the
+repeated individual above, and one that falls back is refused as an order
+that is not the source's, which is also what a repeat with another
+individual between its two halves gives. A phenotype that is not a finite
+number is a `ValueError` naming where it is: the individuals tested are
+those that have a phenotype, so a NaN is an individual that should not have
+been tested at all, and an infinity would carry through the null model into
+the effect of every variant. A value of the design that is not a finite
+number is a `ValueError` too, naming the individual whose row it is in, the
+column it is in and the value. The Python and the TypeScript layers refuse a
+covariate that is missing or is not a number, so what reaches this is a
+covariate that was a number and came out of the user's own arithmetic as an
+infinity, and a caller of the core crate; left in, it would reach the rank,
+which refuses what it is given and not what it produced, and the user would
+be told of a defect of popnei where they gave a wrong covariate. pyNei
+catches a NaN covariate at the frame, as a missing value, and an infinity
+reaches its rank, where numpy 2.5.3's `matrix_rank` gives 0 and the user is
+told the covariates are collinear; what popnei adds is the value and where
+it is. And the phenotype holds one value
+for each tested individual, the design one row of its columns for each, and
+the design has the column of ones at least; none of the three can be reached
+from Python or from TypeScript, which build the three from the same
+individuals, so each is a `RuntimeError`.
 
 ### The variants that have no answer
 
@@ -188,6 +290,14 @@ the mean of nothing, which pyNei sets to 0.
 A variant of the logistic Wald test whose fit runs away also gets three
 NaNs, which the item for that model says.
 
+A third case exists and the spec did not describe it. The denominator of
+both score tests is `x' p x`, a quadratic form that is 0 or above in exact
+arithmetic and that can round just below 0 for a variant with almost no
+variance left after the covariates and the kinship are taken out. `beta` is
+then `num` over a tiny negative number, a large value of whichever sign the
+rounding chose, and the statistic `num² / den` is negative. What such a
+variant gets is **Open 2**, below.
+
 `test_monomorphic_and_missing_variants` of pyNei asserts exactly this on 50
 variants of 60 individuals where the first has one allele and the second has
 no called genotype: the first two p-values are NaN and the other 48 are
@@ -196,7 +306,35 @@ between 0 and 1.
 ### How it runs
 
 One pass over the blocks. The null model is fitted before the pass, from the
-trait, the design and the kinship alone, and no block is read for it. Then
+trait, the design and the kinship alone, and no block is read for it.
+
+Before its rows are read, every block is checked against the reader that
+gave it: a block with no variants, and one whose individuals or ploidy
+disagree with the reader's, are the two reader defects `docs/specs/block.md`
+names, and this pass refuses both with the errors that spec gives them. The
+check is not a formality. The drive over the rows pairs the genotypes cut
+into one chunk per variant with the output buffer cut into one row per
+individual, and a buffer sized from a ploidy that is not the block's comes
+out with fewer rows than there are variants; the pairing then truncates to
+the shorter of the two, so the variants past that point are not read at all
+and the pass returns as though the block had held only the ones it managed.
+Read on 23 September 2026 in `the_standardized_rows` of
+`crates/popnei/src/variant.rs`: one variant of five individuals at a block
+ploidy of 2, with a caller passing a ploidy of 5, gives 1 chunk of genotypes
+against 0 rows of buffer, so no row runs, no error is raised, and the
+variant is gone. A study that lost variants that way would report a count
+the user could mistake for variants that had no variance.
+
+Reproduced on 23 September 2026 by the session building
+`docs/specs/kinship.md`, which got `Ok([])` from exactly that block and has
+put the check in. **No caller can reach it today**, and that is worth
+knowing before anyone decides the guard is redundant: `pca_of_variants`,
+`calc_kinship` and this pass all put `reblock` in front, and `Reblock`
+refuses such a block already with the same error. So the guard is for the
+caller that one day does not, and it is cheap because the error exists. This
+pass asks for both, since `reblock` is here for the size of the blocks and
+not for this, and a later change to why it is here should not silently take
+the check away with it. Then
 each block is turned into its dosages, with rayon across the rows, and the
 variants that vary are tested together as a matrix, because every test but
 the logistic Wald one is a product of the block with something the null
@@ -211,6 +349,16 @@ what the source gave.
 
 With `use_grammar_gamma_approx` there is a second pass, which is opened
 first and reads one block. Everything else is one pass.
+
+A pass of the Python binding releases the interpreter while it runs and then
+builds numpy arrays for `stats`, and a Ctrl-C that arrived during the pass
+makes numpy's C API import fail and the numpy crate panic, so the user gets
+a `PanicException` that no `except` of theirs catches. So the binding raises
+a signal that is already pending after the pass and before it builds an
+array, through the helper `crates/popnei-python/src/errors.rs` gives every
+calculation for it. That raises a signal that has arrived; it does not
+interrupt a pass in flight, and a `calc_gwas` over a million variants is not
+interruptible, which is a question of its own and not this module's.
 
 ### How it is verified
 
@@ -238,6 +386,78 @@ not causal.
 The mixed models are given the kinship that plink2 wrote for the panel with
 every genotype called, so that they are tested against a kinship that came
 from neither popnei nor pyNei.
+
+**How many digits each reference gives, and what that costs.** Two of the
+five files are printed to six significant digits, plink2's `--glm` and
+GMMAT's `glmm.score`; neither program has a binary form for them, so that is
+all there is. Six significant digits round a value by up to 5e-6 of itself,
+so a comparison against one of those two can have at most twofold headroom
+at a tolerance of 1e-5 relative: it says that popnei computes the same
+quantity, and it would not catch an arithmetic error smaller than the
+printing. That rounding is relative, so an absolute tolerance
+would hold on this panel, whose values are small, and break on data whose
+values are larger, for an implementation that is right. A tolerance relative
+to each value breaks the other way, and the next paragraph is that.
+
+The other three are full precision: rrBLUP's `GWAS`, R's `anova(glm, test =
+"Rao")` and GMMAT's `glmmkin` null models, which the reference script writes
+itself. Their tolerances are the distance between two fits and not the width
+of a printed digit.
+
+**The check with headroom is pyNei**, at 1e-9 relative over every column of
+every model, and the worked example at 1e-12, both against float64 with
+nothing rounded away. Those two are what would catch a wrong digit that the
+printed references could not. No work package rests on a printed reference
+alone.
+
+**A tolerance is against the scale of what is estimated, not against each
+value.** An association study is mostly null: for the great majority of
+variants the effect is 0, and what comes out is whatever the rounding of a
+sum of cancelling products left, a number whose own magnitude means nothing.
+Asking two implementations to agree to a share of *that* asks for accuracy
+no arithmetic has, at exactly the variants where the null is true, which is
+most of the genome. So `beta` and `se` are compared within a tolerance times
+`se`, the scale of what the study is measuring, and never within a tolerance
+times `beta`; `p_value` is compared in `log10`, which is already a scale;
+and a check over a vector of numbers is against the largest of them and not
+each one.
+
+Where the right shape comes from, so that the next quantity does not have to
+be got wrong first. A bound is on the rounding of the sum that produced the
+number, and the rounding of a sum of `m` products is about `m` times the
+distance from 1 to the next `f64`, 2.2e-16, times the largest term of the
+sum. So the bound goes against whatever bounds the terms, and the terms are
+what the quantity is built from and not the quantity itself, which is why a
+value that cancelled to near 0 is no guide to its own error. For the kinship
+that scale is the largest entry of the matrix, since the sum of the absolute
+products of a pair is at most `m` times the square root of the two diagonal
+entries and so at most `m` times the largest entry; the bound is then loose
+by the ratio of the largest entry to that square root, measured at 1.4 times
+on both panels. For an effect size it is `se`, which is what the study's own
+arithmetic says the effect is uncertain by.
+
+The kinship met this on 23 September 2026 and it is why the rule is here.
+Its first bound was 1e-12 relative to each entry of the matrix, which looked
+sound: the worst entry as a ratio was 3.31e-13. It broke on the second
+backend, and not at a large entry. faer missed at an entry of 1.29e-05 whose
+difference from plink2 was 1.9e-17, a smaller difference than the ones at
+entries a hundred times larger, every one of which passed. Its rule now is
+that each entry is within 1e-13 of the **largest** entry of the matrix, at
+which the worst of four measurements is 3.6e-16 and 4.5e-16 on Accelerate
+and 3.3e-15 and 2.3e-15 on faer.
+
+**A tolerance is chosen against both backends of `docs/specs/linalg.md` and
+not one.** faer sits about seven times further from plink2 than Accelerate
+does on the same data, which is well inside what the order and the blocking
+of the sums allow and is not a defect. The faer build is what runs in a
+browser, so a bound fixed on Accelerate alone is a bound the wasm package
+fails. `cargo test -p popnei --no-default-features` is the run that says so,
+and it is in the `coding` skill since 23 September 2026.
+
+And the numbers are where to start and not where to stop: 1e-9 and 1e-12
+were chosen here for being small, which is not evidence of anything. Each is
+lowered until it fails and set two or three times above where it broke, on
+both backends, and the implementation plan records both numbers.
 
 Each model item says what it is checked against and how closely. Three
 checks are common to all four:
@@ -267,7 +487,10 @@ that the study finds what was planted: of the 10 variants with the smallest
 p-value under the `lmm`, at least 3 are among the 5 causal ones.
 
 In TypeScript, `calcGwas` is tested under node against the same six literals
-for each model.
+for each model, at a tolerance of its own: WebAssembly has no fused multiply
+and add, so it rounds a sum of products differently from a native build.
+Measured on 23 September 2026 on the worked example, node sits 2.31e-15 from
+pyNei's numbers where native faer sits 1.24e-15.
 
 ## The linear model
 
@@ -293,28 +516,110 @@ variant's residuals:
     xx   = the squared length of each variant's residuals
     num  = each variant's residuals times the trait's residuals
     beta = num / xx
-    rss  = the null's residual sum of squares - beta * num
+    rss  = the squared length of (the trait's residuals - beta * the variant's)
     se   = sqrt(rss / (n - c - 1) / xx)
 
 That `rss` is what the variant leaves unexplained, so each variant gets its
 own estimate of the residual variance, which is what makes this a t test and
 not a normal one.
 
+**`rss` is formed from the residuals and not by subtracting**, which is a
+difference from pyNei's arithmetic and the one place this spec departs from
+the oracle's formula rather than its behaviour. pyNei writes it as the
+null's residual sum of squares minus `beta * num`, at `gwas.py:395-396`, and
+so did this spec. Those two quantities agree to their last bits once a
+variant explains most of what the null left, and the difference is then
+noise of either sign. Measured on 23 September 2026 on six individuals with
+one covariate and a trait `1 + 2*cov + 3*dosage + delta*e`:
+
+| delta | by subtraction | from the residuals | `se` by subtraction | `se` from the residuals |
+|---|---|---|---|---|
+| 1e-5 | 6.6834e-11 | 6.6836e-11 | 2.3600e-06 | 2.3600e-06 |
+| 1e-7 | 0 | 6.6836e-15 | 0 | 2.3600e-08 |
+| 1e-8 | -7.1054e-15 | 6.6836e-17 | NaN | 2.3600e-09 |
+| 0 | 0 | 5.0290e-30 | 0 | 6.4737e-16 |
+
+Three things make this worse than a lost digit. The sign of that remainder
+is whatever the rounding order left, so the two backends of
+`docs/specs/linalg.md` disagree about whether the variant has an answer at
+all: on the same input Accelerate gives NaN where faer gives 0 and faer
+gives NaN where Accelerate gives a number, which means the wasm build and
+the native build answer differently. A variant that does have variance comes
+back with `beta` finite and `se` and `p_value` NaN, which is not the row of
+three NaNs that "The variants that have no answer" reserves, so a user
+filtering on `beta` being absent keeps it. And it needs the variant's
+residual to be about 1e-13 of the null's, so it bites at the strongest
+association in a study and nowhere else.
+
+It costs one more pass over the dosages of the block, since the residual of
+each variant has to be formed and squared rather than two numbers
+subtracted. The two forms agree wherever pyNei's subtraction has not already
+cancelled, so no literal of this spec moves.
+
+The same subtraction is in the linear mixed model's Wald test, `y' p y`
+minus `num² / den`, where it cancels too and where the cheap repair is not
+available: forming the residual exactly there costs a product with the
+projection matrix per variant. That is **Open 2**, below, which is one rule
+over the three places a variant can be left with nothing to test.
+
 ### How it is verified
 
 Against plink2 `--glm hide-covar` on the panel with every genotype called,
 with `cov1` and `cov2` as covariates, which writes
 `tests/reference/gwas/plink2.panel_called.glm.linear.tsv`, 1200 rows with no
-`NA`. plink2 tests the minor allele and popnei the non major one, which here
-are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
+`NA`. plink2 tests the minor allele and popnei the non major one. **On this
+panel they are the same**, so `allele_freq` is plink2's `A1_FREQ` and the
+signs agree; every genotype of it is called, and that is what makes the two
+conventions coincide.
 
-Over all 1200 variants: `allele_freq` within 1e-6 absolute, `beta` and `se`
-within 1e-5 absolute, and `p_value` within 1e-5 relative. plink2 writes six
-significant digits, and those are the units of its last digit.
+They are not the same in general, and `allele_freq` can pass a half. The
+major allele is the most frequent among the called **alleles**, which counts
+the called half of a half called genotype, while the mean that becomes
+`allele_freq` is over the whole called **genotypes**, which a half called
+one is not. So the allele the dosages are counted from is not always the one
+whose frequency is below a half. Run on 23 September 2026 on one variant of
+five individuals, `0/. 0/. 0/. 0/. 1/1`: the major allele is 0, on four
+called halves against two, while the only whole genotype is `1/1`, so the
+mean dosage is 2 and `allele_freq` is 1.0. popnei and pyNei agree on this,
+so it is a divergence from plink2 and not from the oracle, and neither
+reference panel shows it: one has every genotype called and the other has
+them missing whole.
 
-The six literals are held to the same tolerances as the whole columns,
-1e-5 absolute on `beta` and `se` and 1e-5 relative on `p`. From plink2 on
-23 September 2026:
+Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
+frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
+`se` of that variant, for the reason above, **plus half a unit in the last
+digit plink2 printed for the value being compared**; and `p_value` within
+1e-5 relative.
+
+**A tolerance against a printed reference is the sum of two terms**, not one
+number with the printing hidden inside it: what popnei's arithmetic is
+allowed, against the scale of the estimate, plus the rounding of the value
+it is compared against, which is half a unit in the last digit the program
+printed. For six significant digits that is `0.5 * 10^(floor(log10|v|) - 5)`
+for the value `v` in the file. So the bound for `beta` and for `se` is
+
+    1e-5 * se  +  half a unit in plink2's last printed digit of that value
+
+and the same shape holds for every comparison against a printed reference
+in this spec.
+
+Writing it as one number instead put a bound in this spec that no correct
+implementation could pass, measured on the whole panel on 23 September 2026:
+at `var0482`, `beta` 1.0389 and `se` 0.19, six significant digits round a
+value above 1 by up to 5e-6 where they round one below 1 by 5e-7, while the
+budget `1e-5 * se` was 1.9e-6. The printing alone was 2.6 times the whole
+allowance. Three variants of the 1200 failed, `var0398`, `var0482` and
+`var1001`, and the worst was 1.938e-5 of `se`; with the second term they all
+pass. What decides a failure is not whether `beta` passes 1 but whether half
+a unit in the last printed digit passes `1e-5` times that variant's `se`,
+which for a `beta` between 1 and 10 means an `se` below 0.5: six variants
+meet that and three of them fail, since the printing error is at most half a
+digit and usually less. The share the printing takes grows with the value
+while the budget grows with `se`, and the two come apart wherever an effect
+is large and its standard error is not.
+
+The six literals are held to the same tolerance as the whole columns, 1e-5
+relative on all three. From plink2 on 23 September 2026:
 
 | variant | beta | se | p |
 |---|---|---|---|
@@ -411,8 +716,19 @@ of the coefficients, which is what the eigendecomposition bought. With the
 factorization the solve above uses, which is why `docs/specs/linalg.md` has
 it as one of the seven.
 
+The eigendecomposition is where the two backends of `docs/specs/linalg.md`
+part furthest, and they part in the late components, the ones with the
+smallest eigenvalues: measured by the kinship on 23 September 2026 over 199
+components, faer sits 1.7e-12 from Accelerate where Accelerate sits 1.3e-13
+from numpy. Those eigenvalues are what the search over `delta` weights the
+trait by, so the variance components of this model are compared across both
+backends and not one, as "How it is verified" of "What every model shares"
+asks of every tolerance here.
+
 The eigenvalues of the kinship are clamped at 0 before use. A kinship of
-genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
+genotypes with nothing missing has none below 0 but for rounding,
+-3.4416913763379853e-15 against a largest of 17.26914115545746 on
+`panel_called`, measured on plink2's f64 matrix on 24 September 2026
 on the panel; the per pair denominators of `docs/specs/kinship.md` put them
 there, -0.0321 on the panel with 3 in 100 genotypes missing, and a negative
 eigenvalue would make `V` not a covariance.
@@ -453,8 +769,11 @@ The Wald test against rrBLUP 4.6.3's `GWAS` with `P3D = TRUE`, which holds
 the variance components at the null as popnei does. rrBLUP takes every fixed
 effect as a factor, so only the binary covariate `cov2` was given to it, and
 popnei is run with the same one covariate for this comparison. It reports
-`-log10(p)`, so that is what is compared, over all 1200 variants within
-1e-4, from `tests/reference/gwas/rrblup.panel_called.lmm.tsv`.
+`-log10(p)` at full precision, so that is what is compared, over all 1200
+variants within 1e-4 absolute, from
+`tests/reference/gwas/rrblup.panel_called.lmm.tsv`. The tolerance is the
+distance between two fits, not a printed digit: 1e-4 in `-log10(p)` is 2.3e-4
+of the p-value itself.
 
 The six literals, held to 1e-4 absolute as the whole column is, are
 `-log10(p_value)` and nothing else, because `-log10(p)` is all rrBLUP
@@ -470,7 +789,9 @@ p-values are compared in `log10` because they span 23 orders of magnitude
 and what a user reads is the exponent.
 
 The six literals are `1 / se²` against `VAR`, within 1e-5 relative, and
-`p_value` within 1e-4 in `log10`, the same as the whole columns. The
+`p_value` within 1e-4 in `log10`, the same as the whole columns. Both are
+against six printed significant digits, so the first has twofold headroom
+and the second has more, `log10` shrinking a relative difference. The
 variance of the score and the p-value, with every genotype called and then
 with 3 in 100 missing:
 
@@ -487,8 +808,19 @@ With genotypes missing, GMMAT gives a missing genotype the mean of its
 variant, which it calls `impute2mean` and which is popnei's rule too; that
 is why the two agree on the second panel.
 
+The comparison with pyNei for this model is the one place the common 1e-9
+relative does not simply apply, and it is measured rather than assumed. The
+criterion is flat at its minimum, so an eigenvalue moving in its last bits
+moves `delta` by about the square root of that, and the two backends put the
+genetic variance 9.7e-9 apart in relative terms on the same kinship,
+measured on 23 September 2026. `se` scales with the square root of the
+genetic variance, so the bound for this model's columns is set where it
+breaks on both backends and written into the plan's report, which every
+bound of this spec is now asked to be; 1e-9 sits at the noise and is not it.
+
 The null model against GMMAT's `glmmkin`, from `gmmat.null_models.tsv`,
-within 1e-5 absolute: `genetic_variance` 1.221617, `residual_variance`
+which the reference script writes at full precision, within 1e-5 absolute,
+which is how far two restricted maximum likelihood searches land apart: `genetic_variance` 1.221617, `residual_variance`
 0.342359, and the three covariate effects 4.678021, 0.473361 and 1.110279.
 `heritability` is 1.221617 / (1.221617 + 0.342359).
 
@@ -565,11 +897,12 @@ the odds ratio, so `beta` is compared with its logarithm.
 The one variant plink2 fell back to Firth for is left out of the comparison,
 and instead a test asserts that popnei's NaNs are exactly the variants
 plink2 marked `FIRTH?` `Y`, which is `var0006` and no other. Over the other
-1199: `beta` within 1e-4 absolute, `se` within 1e-4 absolute, and `p_value`
-within 5e-3 relative. That last tolerance is loose because plink2 stops its
-logistic fit earlier than popnei does, not because of rounding; the six
-literals below are held to 1e-5 on `beta`, 1e-4 on `se` and 5e-3 on `p`, the
-same as pyNei holds them.
+1199: `beta` and `se` within 1e-4 times the `se` of that variant and
+`p_value` within 5e-3 relative. All three are wider than plink2's printing, which rounds by 5e-6,
+because plink2 stops its logistic fit earlier than popnei does; the
+difference between the two fits is what these measure, and the printing is
+not what limits them. The six literals below are held to 1e-5 on `beta`,
+1e-4 on `se` and 5e-3 on `p`, the same as pyNei holds them.
 
 | variant | beta, a log odds ratio | se | p |
 |---|---|---|---|
@@ -585,10 +918,14 @@ ratio and these are its logarithm.
 
 The score test against R 4.6.1's `anova(glm, test = "Rao")`, one logistic
 regression per variant fitted by R, from `r.panel_called.glm.score.tsv`.
-R reports the score statistic and its p-value. Over all 1200 variants the
-statistic `(beta / se)²` is within 1e-2 absolute and `|log10(p / p_R)|`
-below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
-1e-8 in the deviance, which is what those tolerances are.
+R reports the score statistic and its p-value at full precision. Over all
+1200 variants the statistic `(beta / se)²` is within 1e-2 absolute and
+`|log10(p / p_R)|` below 1e-3; the six literals are held to 1e-3 and 1e-3.
+R's glm converges to 1e-8 in the deviance, which is what those tolerances
+are. The one on the statistic is absolute where the reference is exact, so
+on a panel whose statistics are far above this one's 1.5 to 12 it would fail
+a right answer rather than pass a wrong one, which is the safe way round for
+a check to be fragile.
 
 The six literals, the score statistic `(beta / se)²` within 1e-3 absolute
 and the p-value within 1e-3 in `log10`: var0000 4.938245 and
@@ -799,11 +1136,15 @@ is why pyNei wrote both.
 - `chi2_sf_1df(x)`, the chance that a chi square with one degree of freedom
   is above `x`, which every score test and the logistic Wald test need. It
   is `erfc(sqrt(x / 2))`, the complementary error function, which gives how
-  much of a normal distribution lies past a point.
+  much of a normal distribution lies past a point. An `x` of 0 or below
+  gives 1.0, as scipy's `chi2.sf` does, and not the NaN that the square root
+  of a negative number would give. Who may pass one is **Open 2**, below.
 - `t_sf_two_sided(t, df)`, the chance that a Student t with `df` degrees of
   freedom is further from 0 than `t`, which the linear model and the linear
   mixed model's Wald test need. It is the regularized incomplete beta
-  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`.
+  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`, and it hands the
+  incomplete beta `t² / (df + t²)` beside it as `one_minus_x`, for the
+  reason that section gives.
 
 popnei takes `erfc` from the `libm` crate, a pure Rust port of musl's math
 library with no C in it, which builds for both wasm targets, checked as a
@@ -822,15 +1163,28 @@ Lentz's method, which builds a continued fraction from its front rather than
 from its far end, so it can stop as soon as a term no longer changes the
 value instead of needing its depth fixed in advance.
 
-`x` at or below 0 gives 0 and at or above 1 gives 1. Otherwise, with
+It takes **both** `x` and `one_minus_x` from its caller and never subtracts
+one from the other. `t_sf_two_sided` has them for nothing, `df / (df + t²)`
+and `t² / (df + t²)`, and computing the second as `1 - x` instead throws
+away every digit of it once `x` has rounded to 1: at 197 degrees of freedom
+and `t` of 1e-7 that returned exactly 1.0 where the answer is
+0.9999999203127337. Measured on 23 September 2026, taking `one_minus_x` from
+the caller moved the worst relative error over `t` in [1e-7, 1e-3] from
+7.97e-8 to 5.34e-17 at 197 degrees of freedom, and from 6.34e-7 to 3.83e-15
+at 9997.
+
+An `x` at or below 0 gives 0 and a `one_minus_x` at or below 0 gives 1.
+Otherwise, with
 
     front = exp(lgamma(a + b) - lgamma(a) - lgamma(b)
-                + a * ln(x) + b * ln(1 - x))
+                + a * ln(x) + b * ln(one_minus_x))
 
 the answer is `front * cf(a, b, x) / a` while `x` is below
-`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, 1 - x) / b` at or above
-it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where the
-fraction converges slowly. `cf` is the continued fraction, with `tiny` at
+`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, one_minus_x) / b` at or
+above it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where
+the fraction converges slowly. pyNei writes both of those from `x` alone,
+`numpy.log1p(-xi)` at `src/pynei/gwas.py:329` and `1 - xi` at 337, and
+`log1p` recovers the logarithm but not the fraction's argument. `cf` is the continued fraction, with `tiny` at
 1e-300, `eps` at 1e-15 and at most 500 rounds:
 
     qab = a + b;  qap = a + 1;  qam = a - 1
@@ -852,8 +1206,33 @@ fraction converges slowly. `cf` is the continued fraction, with `tiny` at
 `tiny` keeps a denominator that has come out at 0 from dividing, which is
 what Lentz's method needs to carry on past a term that vanishes, and running
 out of rounds is not an error: the four pairs of arguments this module uses
-converge in at most 40 rounds, measured on 23 September 2026 over the cases
-of "How it is verified".
+converge in at most 52 rounds, measured on 23 September 2026 over the sweep
+below.
+
+**`tiny` cannot fire at any argument the t distribution reaches, and it
+stays.** The first denominator is `d = 1 - (a + b) x / (a + 1)`, and in both
+branches it is bounded below by `2 / (a + b + 2)`: in the direct branch
+because `x` is below `(a + 1) / (a + b + 2)`, in the symmetry branch because
+`1 - x` is at most `(b + 1) / (a + b + 2)`, and the zero of `d` lies above
+both. So `d` reaches 1e-300 only once `a + b` passes about 2e300, which with
+`b` at 1/2 and `a` half the degrees of freedom is a panel of 4e300
+individuals. The bound is tight and two measurements meet it: over 6009003
+calls, degrees of freedom 1 to 3000 and then 1e4, 1e5 and 1e6 with `t` from
+0 to 20, the smallest `|c|` or `|d|` was 4.027585806198886e-6, which is
+`2 / (a + b + 2)` exactly at a million degrees of freedom. It stays because
+the recipe and pyNei have it and because a caller with some other `b` would
+need it; `b` here is always 1/2.
+
+`eps` is a different thing: it caps the work and does not get the digits.
+With it set to 0, so that the loop always runs its 500 rounds, nothing
+became not finite and the worst value moved by 2.3e-13 relative. The
+fraction took at most 52 rounds of its 500, over a sweep of 116802 calls.
+
+So no test of either guard can fail on a value, and the only assertion with
+anything behind it is one on the number of rounds. A reader who finds the five lines that read
+`tiny`, and the one that reads `eps`, covered by no test should stop looking
+for the argument that reaches them: for `tiny` there is none, and the bound
+above says why.
 
 ### How it is verified
 
@@ -866,10 +1245,40 @@ for this reason. The cases are pyNei's, in `test_distributions`:
   1e-12 absolute. The pair `(98.5, 0.5)` is what a t with 197 degrees of
   freedom uses, next to the panel's 196: 200 individuals less the three
   columns of its design less one for the variant.
-- `t_sf_two_sided` at 5, 17 and 197 degrees of freedom, over a spread of `t`
-  including 10, 20 and 40, within 1e-10 relative.
+- `t_sf_two_sided` at 5, 17, 197, 997 and 9997 degrees of freedom, over a
+  spread of `t` including 10, 20 and 40, within 1e-10 relative.
+
+**The 1e-10 is claimed to 9997 degrees of freedom and not beyond**, which is
+the 10000 individuals `docs/objectives.md` names, less the coefficients and
+the variant. The error grows with the degrees of freedom and its worst point
+is not spread over `t`: it sits at `t` near 1.73, where the branch of the
+incomplete beta switches. Measured against mpmath at 60 digits on 23
+September 2026: 4.7e-13 relative at 197 degrees of freedom, 7.7e-13 at 997,
+5.5e-11 at 9997, 1.5e-10 at 20000 and 3.5e-9 at 500000. So the bound has 213
+times the room at 197 degrees of freedom, 1.8 times at 9997, and is
+already untrue at 20000 individuals. It is the cancellation in
+`lgamma(a + b) - lgamma(a)`, amplified by the `1 -` of the symmetry branch,
+and not the stopping rule: setting `eps` to 0 moves the worst point from
+3.3326e-9 to 3.3324e-9.
+
+That 1.8 is the one bound of this spec sitting near its failure, and it is
+stated rather than widened because widening it would catch less at the sizes
+popnei actually runs. Whoever first wants popnei past 10000 individuals has
+to come back to this function before they can trust its p-values, and the
+front factor in logarithms is where to start.
 - `chi2_sf_1df` over a chi square sample and at 30, 50 and 100, within 1e-12
   relative.
+
+How far those three bounds are from the differences they allow, measured on
+23 September 2026 on a built implementation: the chi square's worst is
+1.8e-14 relative, 57 times inside its bound; the incomplete beta's worst is
+8.5e-15 absolute at the pair `(98.5, 0.5)`, 117 times inside; and the
+Student t's worst is 4.7e-13 relative at 197 degrees of freedom, 213 times
+inside, at `t` near 1.73 where the branch switches. So these three are not
+the round numbers that
+"How it is verified" of "What every model shares" warns about, and they do
+not need lowering to where they break: the room has been measured and it is
+there.
 
 popnei's and pyNei's p-values differ by the difference between two `erfc`
 implementations, about 1e-14 relative, which is five orders below the 1e-9
@@ -905,6 +1314,23 @@ pub struct GwasInput<'a> {
     pub transform_to_biallelic: bool,
 }
 ```
+
+`kinship`, when it is given, is checked before any model is fitted: that it
+holds `individuals.len()` times `individuals.len()` values, and that every
+one of them is finite. Neither is a thing a fit would notice. A matrix of
+the wrong length is read as another shape and gives numbers, and a NaN in
+one comes back much later as the linear algebra crate's refusal of a value
+that is not finite, naming a matrix at whichever routine met it first.
+
+A matrix of the wrong length is a `RuntimeError` in Python, as a phenotype
+or a design of another size is: both binding crates cut the kinship to the
+tested individuals themselves, so no user gives one of another length. A
+value of it that is not finite is a `ValueError` naming the row, the column
+and the value, since it is the matrix the user brought;
+`Kinship.__post_init__` of "Its Python function, and its TypeScript one" of
+`docs/specs/kinship.md` refuses a matrix that holds a value that is not a
+number, so what reaches this is a caller of the core crate or an infinity
+that came out of the user's own arithmetic.
 
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
@@ -1018,8 +1444,11 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides this one, and until then the implementer follows its
-"meanwhile".
+The owner decides these four, and until then the implementer follows the
+"meanwhile" of each. A third, what the two layers do with a phenotype that
+is not a number, was decided on 23 September 2026 and is in "Its Python
+function, and its TypeScript one" of "What every model shares", with the
+option that was not taken.
 
 **Open 1: a variant that separates the cases from the controls.** Its
 logistic effect is infinite and its Wald fit runs away. pyNei gives NaN for
@@ -1039,6 +1468,121 @@ variant vanish learns whether it had no variance or a runaway fit, which are
 different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
+
+**Open 2: a variant there is nothing left to test.** One rule in three
+places, so it is one decision. In the linear model the quantity is `xx`,
+what is left of a variant's dosages once the covariates are taken out. In
+both score tests it is `x' p x`. And in the linear mixed model's Wald test
+it is `y' p y` minus `num² / den`, what the variant leaves of the trait
+rather than what the design leaves of the variant. In each, the number can
+round to 0 or below and `beta` is then something divided by noise.
+
+All three are reachable and all three were measured on 23 and 24 September
+2026.
+
+The linear model: eight individuals, a covariate marking two subpopulations
+of four and a variant fixed one way in each. popnei and pyNei agree to the
+bit at `beta` 5.36e13, `se` 6.95e14 and `p` 0.941, which reads as a variant
+that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
+`ERRCODE CORR_TOO_HIGH`.
+
+The linear mixed model's Wald test: six individuals, one covariate, an
+identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
+`beta` 1.00000 with `se` and `p_value` NaN, while the score test on the same
+call with one argument changed gives `se` 0.500 and `p` 0.0455. The
+cancellation is hit exactly and not approached, because the projection
+annihilates the design, so any affine image of the trait gives
+`num² / den = y' p y` in exact arithmetic. On `panel_called` it comes out
+8.53e-13 on Accelerate against 3.98e-13 on faer where 0 is exact, 46 per
+cent apart, so `se` would be 1.93e-8 on one build and 1.32e-8 on the other.
+
+Two options.
+
+Refuse, and give the three NaNs that "The variants that have no answer"
+already means: when what is left falls to `n` times 2.2e-16 of what there
+was, which is 1.8e-15 on the collinear fixture against 6.5e-32 measured, and
+8.5e-12 on the panel against 8.53e-13. It is one comparison in each of the
+three places and costs nothing per variant.
+
+Or form the residual exactly, which for the linear model is a pass over the
+block's dosages and is what "The linear model" already does, and for the
+mixed model's Wald test is `r' p r` per variant, a product with the
+projection matrix that roughly doubles that test and is the cost
+`use_grammar_gamma_approx` exists to avoid.
+
+Recommendation: refuse. Leaving it is not among the options any more, and it
+was until the NaN was reproduced: a row with a finite `beta` beside a NaN
+`se` and `p_value` is a fourth kind of NaN that this spec does not describe,
+so a user filtering on a missing effect keeps it and reads 1.0 as an effect
+that was measured. That is the argument that settled the linear model's
+subtraction, and the same evidence has now appeared one model along. The
+exact form is worth having where it is cheap, and it is already taken for
+the linear model; where it costs a matrix product per variant it buys only
+the band just above the floor, which needs a variant explaining 99.9999 per
+cent of the trait, and that is for the performance session to weigh once
+there are numbers. Meanwhile the implementer refuses at that threshold in
+all three places, because a meanwhile that returns NaN where the score test
+returns 0.0455 is not a safe thing to build on; no literal moves, since no
+variant of either panel comes near.
+
+**Open 3: a kinship that does not identify the two variances.** For a
+kinship close to a multiple of the identity, the model is the ordinary
+linear one whatever the split between the genetic and the residual variance,
+so the restricted maximum likelihood has nothing to choose between them and
+its criterion is flat. Measured on 24 September 2026: over the 101 grid
+points the criterion spans 1.1e-12, less than one unit in the last place of
+its own size, and perturbing such a kinship by symmetric noise of 1e-15 gave
+a `heritability` of 6.5e-5, 7.1e-5 and 0.967 over three seeds, the grid
+minimum jumping from index 98 to index 33. A kinship of all zeros gives
+0.99988 and one of all ones 0.99995. `beta` and `p_value` are untouched,
+because the test is scale free and the model is the linear one there; the
+damage is exactly `genetic_variance`, `residual_variance` and
+`heritability`, which is what a user reads a heritability off.
+
+It is not a contrived input: a panel of unrelated individuals lands there,
+and so does a user passing an identity matrix to mean no relatedness.
+
+The options are to give the three fields as they come, which is pyNei's
+behaviour and which returns a heritability decided by the last bit; to pin
+the tie to the lowest grid index, so that at least the two backends agree on
+which arbitrary answer they give; or to give the study and set the three
+fields to `None`, with the result saying why. Recommendation: the third.
+Refusing the whole study would be wrong, because the association tests are
+valid there and are what the user mostly came for; returning a number is
+worse than returning nothing, because a heritability of 0.967 from one seed
+and 6.5e-5 from another looks reliable and is not; and agreeing on an
+arbitrary number, which the second option buys, only makes the two builds
+tell the same untruth. The test is one comparison at the end of the grid:
+the smallest value within about `101 * 2.2e-16` of the largest. Meanwhile
+the implementer gives the study with the three fields `None`.
+
+**Open 4: how negative an eigenvalue is still rounding.** The linear mixed
+model clamps a negative eigenvalue of the kinship at 0, and nothing bounds
+how negative. Forcing one eigenvalue of `panel_called`'s kinship to -5,
+which is 29 per cent of its largest, is clamped in silence and the fit
+returns ordinary looking numbers, `genetic_variance` 1.22162,
+`heritability` 0.781096 and `y' p y` 197.0000000000; so does forcing fifty
+of them to -2. What a legitimate kinship reaches is measured in
+`docs/specs/kinship.md`: -3.4e-15 of a largest of 17.27 with nothing
+missing, -0.0321 at 3 genotypes missing in 100, and -1.06 against a largest
+of 32.5 at 50 in 100, which is 3.3 per cent. So the line is somewhere
+between 3.3 per cent, which is real data, and 29 per cent, which is not a
+kinship, and nothing has been measured in between. The options are to leave
+it unbounded, or to refuse when the smallest eigenvalue is below some
+fraction of the largest. Recommendation: refuse, at a tenth of the largest,
+which is three times the worst a legitimate kinship reached and well below
+the 29 per cent that is silently accepted today. The fraction is a judgement
+and it is the owner's; those two numbers are what there is to judge it on.
+Meanwhile the implementer refuses at a tenth and says so in the report.
+
+Two things about the same clamp are decided rather than open, because
+neither has a second answer. A NaN eigenvalue is refused and not clamped:
+`f64::max` turns one into a legitimate 0, and `calc_gwas` refuses a kinship
+that is not finite before it gets there, so only a caller of the core crate
+reaches it. And the core checks that the kinship is symmetric, which the
+`Kinship` of both packages already checks and the core did not: the
+eigendecomposition reads the lower triangle, so an asymmetric matrix was
+being read as its lower half mirrored, with no word to the caller.
 
 ## Not in this spec
 

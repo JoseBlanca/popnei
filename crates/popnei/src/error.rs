@@ -1257,6 +1257,387 @@ pub enum Error {
         /// How many variants the calculation was allowed to take.
         max_num_vars: usize,
     },
+    /// An individual a study was asked to test is not one the source has.
+    /// The individuals of a study are given by their position among those
+    /// the reader gives, from 0, and this one is at or beyond their count.
+    /// The Python and the TypeScript layers turn a name of the phenotype
+    /// into that position and are where a name the source has not is
+    /// refused, so the core is reached by a caller of `calc_gwas` with
+    /// positions of its own. In Python it is a `ValueError`.
+    #[error(
+        "the individual at the position {individual} was asked to be tested and the source has {num_individuals} individuals, whose positions are 0 to {last}",
+        last = num_individuals.saturating_sub(1)
+    )]
+    GwasIndividualNotInTheDataset {
+        /// The position that was asked for, from 0.
+        individual: usize,
+        /// How many individuals the source has.
+        num_individuals: usize,
+    },
+
+    /// An individual is twice among the ones a study was asked to test. It
+    /// would weigh twice in the null model and in every variant, and its
+    /// phenotype would be read at two rows. It is pyNei's repeated
+    /// individual of the phenotype, and in Python it is a `ValueError`.
+    #[error(
+        "the individual at the position {individual} is twice among the ones to test, and each of them is tested once"
+    )]
+    GwasIndividualTestedTwice {
+        /// The position that is there twice, from 0.
+        individual: usize,
+    },
+
+    /// The individuals a study was asked to test are not in the order the
+    /// source has them. Their phenotype, their design and their dosages are
+    /// three lists that are read together, row by row, so an order that is
+    /// not the source's puts one individual's phenotype against another's
+    /// genotypes and the study answers about nobody. The Python and the
+    /// TypeScript layers build the positions by walking the individuals of
+    /// the source and keeping the ones that have a phenotype, whatever
+    /// order the phenotype was given in, so they rise. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the individual at the position {individual} is to be tested after the one at {after}, and the individuals of a study are tested in the order the source has them, their phenotype and their design in that order too"
+    )]
+    GwasIndividualsOutOfOrder {
+        /// The position that comes too late, from 0.
+        individual: usize,
+        /// The position it was given after, which is above it.
+        after: usize,
+    },
+
+    /// A study of no more individuals than its design has columns plus one.
+    /// The design holds one column for the intercept and one for each
+    /// covariate, the variant adds one more, and what is left over is what
+    /// the uncertainty of the variant's effect is measured from: one
+    /// individual at least, so the individuals are the columns plus two.
+    /// In Python it is a `ValueError`.
+    #[error(
+        "{num_individuals} individuals are tested and the design has {num_coefs} columns, so the variant would leave nothing to measure its uncertainty from; a study of that design needs the columns plus two individuals"
+    )]
+    GwasTooFewIndividuals {
+        /// How many individuals are tested.
+        num_individuals: usize,
+        /// How many columns the design has, the intercept among them.
+        num_coefs: usize,
+    },
+
+    /// A phenotype of a study holds a value that is not finite. The
+    /// individuals that are tested are those that have a phenotype, so a
+    /// NaN is an individual that should not have been tested at all, and an
+    /// infinity would carry through the fit into every variant's effect.
+    /// The Python and the TypeScript layers leave out the individuals whose
+    /// phenotype is NaN. In Python it is a `ValueError`.
+    #[error(
+        "the phenotype of the tested individual at the position {position} is {value}, and a study is fitted on numbers; leave that individual out"
+    )]
+    GwasPhenotypeNotFinite {
+        /// Where the value is among the tested individuals, from 0.
+        position: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A phenotype of a binomial trait holds a value that is neither 0 nor 1.
+    /// Such a trait is the individuals that have a condition against those
+    /// that have not, and a logistic model is fitted to nothing else. It is
+    /// pyNei's refusal of a phenotype that is not 0 or 1, and in Python it
+    /// is a `ValueError`.
+    #[error(
+        "the phenotype of the tested individual at the position {position} is {value}, and a binomial trait is 0 or 1"
+    )]
+    GwasPhenotypeNotBinomial {
+        /// Where the value is among the tested individuals, from 0.
+        position: usize,
+        /// The value that is neither 0 nor 1.
+        value: f64,
+    },
+
+    /// A value of the design of a study is not a finite number. The Python
+    /// and the TypeScript layers refuse a covariate that is missing or is
+    /// not a number, so what reaches this is a covariate that came out of
+    /// a user's own arithmetic as an infinity, and a caller of the core
+    /// crate. Left in, it would reach the rank of the design, which
+    /// refuses what it is given, and the user would be told of a defect of
+    /// popnei where they gave a wrong covariate. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the value of the column {coef} of the design at the tested individual {individual} is {value}, and a study is fitted on numbers; the column 0 is the intercept and the others are the covariates in the order they were given"
+    )]
+    GwasDesignValueNotFinite {
+        /// Which tested individual's row it is in, from 0.
+        individual: usize,
+        /// Which column of the design it is in, from 0, where 0 is the
+        /// intercept.
+        coef: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A value of the kinship a study was given is not a finite number. A
+    /// mixed model eigendecomposes that matrix before it is fitted, and
+    /// one value that is not a number makes every eigenvalue and every
+    /// eigenvector one, so the study would come back with a NaN for every
+    /// variant and nothing to say which cell it started from.
+    /// `Kinship.__post_init__` refuses a matrix that holds a value that is
+    /// not a number, so what reaches this is an infinity out of the user's
+    /// own arithmetic, and a caller of the core crate. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the entry of the row {individual} and the column {other} of the kinship is {value}, and a mixed model is fitted on numbers; the rows and the columns are the tested individuals, in the order they were given"
+    )]
+    GwasKinshipValueNotFinite {
+        /// Which tested individual's row it is in, from 0.
+        individual: usize,
+        /// Which tested individual's column it is in, from 0.
+        other: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// Every tested individual of a binomial trait has the same phenotype.
+    /// A study of such a trait compares the individuals that have the
+    /// condition with those that have not, and one of the two groups is
+    /// empty, so no variant can tell them apart. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "every tested individual has the phenotype {value}, and a binomial trait is compared between the individuals that have the condition and those that have not"
+    )]
+    GwasPhenotypeOfOneValue {
+        /// The phenotype they all have, 0 or 1.
+        value: f64,
+    },
+
+    /// Every tested individual of a continuous trait has the same
+    /// phenotype. A study looks for the variants that go with how a trait
+    /// differs between the individuals, and a trait that does not differ
+    /// has nothing for a variant to go with. Neither of the two things a
+    /// fit would do instead is an answer: with no kinship the residual sum
+    /// of squares is 0 and the `se` of every variant comes back 0, and
+    /// with one the genetic variance is fitted at 0 and the inverse of the
+    /// covariance it feeds returns infinities. pyNei refuses a trait of
+    /// one value only for a binomial trait, and "Which individuals are
+    /// tested, and the design" of `docs/specs/gwas.md` records that
+    /// difference. In Python it is a `ValueError`.
+    #[error(
+        "every tested individual has the phenotype {value}, and a study looks for the variants that go with how a trait differs between the individuals; a trait that is the same in all of them has nothing for a variant to go with"
+    )]
+    GwasContinuousPhenotypeOfOneValue {
+        /// The phenotype they all have.
+        value: f64,
+    },
+
+    /// The covariates of a study explain the whole of its trait, so the
+    /// restricted maximum likelihood of a linear mixed model leaves both
+    /// variances at 0, the covariance of the trait is the zero matrix and
+    /// its inverse is infinities. It is reached by giving the trait as one
+    /// of its own covariates and by covariates that together predict it
+    /// exactly, which is a design a user built wrong and not a defect of
+    /// popnei: what it gave until 25 September 2026 was the linear
+    /// algebra's refusal of a matrix that is not finite, naming an operand
+    /// of a product and the file the variants came from, neither of which
+    /// is at fault. In Python it is a `ValueError`, as the trait of one
+    /// value beside it is.
+    #[error(
+        "the covariates explain the whole of the trait, so the fit leaves no variance at all: a study looks for the variants that go with what the covariates do not explain, and here there is nothing they do not explain; take out the covariate that carries the trait"
+    )]
+    GwasDesignExplainsTheTrait,
+
+    /// The kinship a study was given holds two different numbers for one
+    /// pair of individuals. A kinship is symmetric, and the
+    /// eigendecomposition reads the lower triangle alone, so such a matrix
+    /// was being read as its lower half mirrored with no word to the
+    /// caller. The `Kinship` of both packages refuses one at the same
+    /// tolerance, a share of the largest absolute entry, and this is what
+    /// catches a frame written into after it was built and a caller of the
+    /// core crate. In Python it is a `ValueError`.
+    #[error(
+        "the kinship holds {value} for the pair of the tested individuals {individual} and {other} and {and_back} for the same pair the other way round, and a kinship is symmetric; the eigendecomposition reads the lower triangle alone, so the matrix would be read as that half mirrored"
+    )]
+    GwasKinshipNotSymmetric {
+        /// The row of the cell, as a place among the tested individuals.
+        individual: usize,
+        /// The column of the cell, as such a place.
+        other: usize,
+        /// What the matrix holds at that cell.
+        value: f64,
+        /// What it holds at the cell of the same pair the other way round.
+        and_back: f64,
+    },
+
+    /// The columns of the design of a study are not independent: a
+    /// covariate is constant, or it is a combination of the others, such as
+    /// a copy of one or the sum of two. The effects of such a design are
+    /// not one set of numbers but many, and the fit would answer with
+    /// whichever the arithmetic reached. It is found with the rank of
+    /// `popnei-linalg`, how many of the design's columns are independent at
+    /// numpy's tolerance, so a design popnei refuses is a design pyNei
+    /// refuses. The user takes the covariate out. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the design has {num_coefs} columns, the intercept among them, and only {rank} of them are independent: a covariate is constant, or it is a combination of the others, such as a copy of one; take it out"
+    )]
+    GwasCovariatesCollinear {
+        /// How many columns the design has, the intercept among them.
+        num_coefs: usize,
+        /// How many of them are independent.
+        rank: usize,
+    },
+
+    /// The buffers a study was given do not hold the study it was given:
+    /// the phenotype does not hold one value per tested individual, the
+    /// design does not hold one row of its columns per tested individual,
+    /// or the design has no column at all.
+    /// [`crate::gwas::GwasInputShape`] says which of the three it is. Each
+    /// binding crate builds the three from the same individuals, so in
+    /// Python it is a `RuntimeError`.
+    #[error("the study cannot be run on what it was given: {problem}")]
+    GwasInputOfAnotherSize {
+        /// Which of the three it is, with the sizes that do not agree.
+        problem: crate::gwas::GwasInputShape,
+    },
+
+    /// An operation of the crate `popnei-linalg` that a study asked for did
+    /// not run, with what was being computed. Its dimensions and its values
+    /// are checked before it is called: a design of no row or of no column
+    /// is [`Error::GwasTooFewIndividuals`] and
+    /// [`Error::GwasInputOfAnotherSize`], and a value of it that is not
+    /// finite is [`Error::GwasDesignValueNotFinite`]. What is left is a
+    /// matrix of more values than that crate takes, which is a design of
+    /// more than 2147483647 of them, a machine with too little memory for
+    /// the workspace, and a decomposition that did not come out. In Python
+    /// it is a `RuntimeError`.
+    #[error("the {operation} of the association study could not be done: {source}")]
+    GwasLinalg {
+        /// What was being computed: the rank of the design, the thin QR a
+        /// model is fitted with, a solve against it, or a product of a
+        /// block of variants with something the null model holds.
+        operation: &'static str,
+        /// What the linear algebra said.
+        source: popnei_linalg::Error,
+    },
+
+    /// The score test was asked of a continuous trait with no kinship.
+    /// The only test of a linear model is the t test of the effect it
+    /// fitted, and a score test of it would be the same test with the
+    /// residual variance held at the null, which no program reports. It is
+    /// pyNei's refusal of the same pair, and in Python it is a
+    /// `ValueError`.
+    #[error(
+        "a continuous trait with no kinship is a linear model, whose only test is the t test of the effect it fitted; ask for the Wald test or for none"
+    )]
+    GwasScoreTestOfALinearModel,
+
+    /// The Wald test was asked of a binomial trait with a kinship. Such a
+    /// test fits the model again with each variant in it, and the model
+    /// here is a logistic mixed one, so it would be one mixed model fit
+    /// for every variant of the dataset. It is pyNei's refusal of the same
+    /// pair, and in Python it is a `ValueError`.
+    #[error(
+        "a binomial trait with a kinship is a logistic mixed model, and a Wald test of it would fit one mixed model for every variant; ask for the score test or for none"
+    )]
+    GwasWaldTestOfALogisticMixedModel,
+
+    /// The variants a study was given are more than this machine counts
+    /// them in, which is 4294967295 in WebAssembly, where a `usize` is 32
+    /// bits. Every variant gets a row of the result and is named by its
+    /// position among those the reader gave, and neither is a number that
+    /// can be counted past the end. In Python it is a `ValueError`.
+    #[error(
+        "the study was given more variants than this machine counts them in, which is {largest}",
+        largest = usize::MAX
+    )]
+    GwasVariantsTooLarge,
+
+    /// A model of a study answered for another number of variants than the
+    /// block it was given holds. It answers for the variants that have
+    /// variance among the tested individuals, one `beta`, one `se` and one
+    /// `p_value` for each of them, and the message names the column that
+    /// is not of that size. It is a defect of popnei, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the model answered {num_values} values of `{column}` for a block of which {num_with_variance} variants have variance among the tested individuals, and it answers for each of those"
+    )]
+    GwasAnswersOfAnotherSize {
+        /// Which of the three columns is not of that size.
+        column: &'static str,
+        /// How many values it holds.
+        num_values: usize,
+        /// How many variants of the block have variance.
+        num_with_variance: usize,
+    },
+
+    /// The GRAMMAR-Gamma approximation was asked for by a study with no
+    /// kinship. It stands in for the denominator of a mixed model's test,
+    /// which is a product with the covariance of the random effect the
+    /// kinship is, and a study without one has no such denominator to
+    /// approximate. The user gives a kinship or asks for no approximation.
+    /// It is pyNei's refusal of the same pair, and in Python it is a
+    /// `ValueError`.
+    #[error(
+        "the GRAMMAR-Gamma approximation stands in for the denominator of a mixed model's test, and a study with no kinship has no such denominator; give a kinship or ask for no approximation"
+    )]
+    GwasGrammarGammaWithoutAKinship,
+
+    /// The GRAMMAR-Gamma approximation was asked for by a study that has a
+    /// kinship, which is the pair it is for, and popnei has not written it
+    /// yet. It is refused and not ignored: a study that made the exact test
+    /// of every variant and reported that it had approximated nothing would
+    /// give the user no way to tell that what they asked for did not
+    /// happen. Until it is written the user asks for no approximation and
+    /// gets the exact test, which is what every number of
+    /// `docs/specs/gwas.md` is. In Python it is a `ValueError`.
+    #[error(
+        "the GRAMMAR-Gamma approximation is being written; ask for no approximation and every variant gets the exact denominator of its test, which is what it stands in for"
+    )]
+    GwasGrammarGammaNotBuilt,
+
+    /// The trait and the kinship of a study ask for one of the models
+    /// popnei has not written yet, which the message names. The two models
+    /// of a continuous trait are written, the linear one without a kinship
+    /// and the linear mixed one with it; the two logistic ones are being
+    /// written. In Python it is a `ValueError`, since it is the study the
+    /// user asked for that popnei cannot run.
+    #[error(
+        "popnei cannot run this study yet: {what}, which is being written",
+        what = model.what_it_is_of()
+    )]
+    GwasModelNotBuilt {
+        /// Which of the four models the study needs, which the message
+        /// names with the trait and the kinship that chose it.
+        model: crate::gwas::GwasModel,
+    },
+
+    /// A user asked for a trait under a name that is of neither of the
+    /// two. The names are `crate::gwas::TraitType::NAMES`, which the
+    /// message lists, and both binding crates read them from there. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`trait` is `{continuous}`, a measurement of each individual, or `{binomial}`, 0 for an individual that has not a condition and 1 for one that has, and `{name}` was given",
+        continuous = crate::gwas::TraitType::Continuous.name(),
+        binomial = crate::gwas::TraitType::Binomial.name()
+    )]
+    GwasTraitOfAnUnknownName {
+        /// The name that was given.
+        name: String,
+    },
+
+    /// A user asked for a test under a name that is of neither of the two
+    /// popnei makes. The names are `crate::gwas::TestType::NAMES`, which
+    /// the message lists. A name that is of a test popnei makes and that
+    /// the model of the study has not is another error,
+    /// [`Error::GwasScoreTestOfALinearModel`] or
+    /// [`Error::GwasWaldTestOfALogisticMixedModel`]. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "`test` is `{wald}`, which fits the model again with the variant in it, or `{score}`, which measures at the null model how steeply the fit would improve if the variant's effect were let off 0, and `{name}` was given",
+        wald = crate::gwas::TestType::Wald.name(),
+        score = crate::gwas::TestType::Score.name()
+    )]
+    GwasTestOfAnUnknownName {
+        /// The name that was given.
+        name: String,
+    },
 
     /// A user asked for a measure of how far apart two populations are
     /// under a name that is of none of the seven. The names are those of

@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 
 mod dists;
 mod errors;
+mod gwas;
 mod kinship;
 mod ld;
 mod pca;
@@ -105,6 +106,8 @@ mod _core {
 
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::gwas::calc_gwas;
     #[pymodule_export]
     use super::kinship::{calc_kinship, kinship_principal_components};
     #[pymodule_export]

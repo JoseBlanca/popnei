@@ -1,14 +1,19 @@
 # Plan: the association study of a continuous trait
 
-23 September 2026. State: draft, not yet approved by the owner. It builds
+23 September 2026. State: done on 24 September 2026, on the branch
+`plan/gwas-linear`, not merged. It builds
 the parts of `docs/specs/gwas.md` that a continuous trait needs: the two
 distributions, everything `calc_gwas` shares whatever the model, the linear
 model and the linear mixed model. It is the second of three plans; `kinship`
 comes before it and `gwas-logistic` after.
 
 It is carried out in the worktree `.claude/worktrees/gwas-linear` on the
-branch `plan/gwas-linear`, which starts from `main` with the plan `kinship`
-merged into it. The report is `docs/reports/gwas-linear.md`.
+branch `plan/gwas-linear`. It was to start from `main` with the plan
+`kinship` merged into it; the owner decided on 23 September 2026 that it
+starts from `b387def` of `plan/kinship` instead, which is that plan's work
+packages 1 and 2 and is not yet on `main`, and that `plan/kinship` is merged
+in again before work package 4, the first that uses the kinship matrix. The
+report is `docs/reports/gwas-linear.md` and gives the reason.
 
 The work packages run in order, and so do the tasks inside each one,
 except where a task says it can run beside another. What a task says it
@@ -48,19 +53,30 @@ plan.
 
 ## What has to be in place
 
-The plan `kinship` merged into `main`, for the matrix the linear mixed model
-takes and for the row pass its work package 1 moved. The linear algebra this
-plan calls, the Cholesky with its solve and log determinant, the thin QR,
-the rank and the eigendecomposition, is on `main` already.
+The work packages 1 and 2 of the plan `kinship`, for the matrix the linear
+mixed model takes and for the row pass its work package 1 moved. The linear
+algebra this plan calls, the Cholesky with its solve and log determinant,
+the thin QR, the rank and the eigendecomposition, is on `main` already.
 
-Measured on 23 September 2026 on `main` with `spec/gwas` merged in, which is
-this plan's starting commit but for the plan `kinship`, whose work adds to
-these counts and takes none away:
+The counts below were measured on 23 September 2026 on `main` with
+`spec/gwas` merged in, before any kinship work existed. What this plan
+actually starts from, `b387def` of `plan/kinship`, gives 637 tests in the
+core crate with 2 ignored, 149 in the linear algebra crate, 369 pytest and
+253 node tests, higher as this section says they would be, with every other
+check clean and `cargo test -p popnei --lib gwas -- --list` printing
+`0 tests`:
 
 - `cargo fmt --all --check` and `cargo clippy --workspace --all-targets --
   -D warnings`: clean.
 - `cargo test --workspace`: 604 in the core crate, 2 ignored, 149 in the
   linear algebra crate, 136 of them on faer.
+- `cargo test -p popnei --no-default-features`, the core crate on faer,
+  which is the backend the wasm build uses and so what runs in a browser.
+  It was in no check list until 23 September 2026 and is in the `coding`
+  skill now. Any tolerance this plan adds is chosen against both backends:
+  faer sits about seven times further from plink2 than Accelerate does on
+  the same data, which the order and the blocking of the sums allow and
+  which a bound fixed on Accelerate alone would fail under wasm.
 - `cargo test -p popnei --lib gwas -- --list`: `0 tests`.
 - `uv run maturin develop && uv run pytest`: 347 passed, 0 failed.
 - `npm run build && npm test` in `js/popnei`: 242 pass, 0 fail.
@@ -112,24 +128,43 @@ Nothing of this plan.
 
 ### Its tasks
 
-- [ ] 1.1 `libm` in the workspace and in the core crate, `chi2_sf_1df` in a
+- [x] 1.1 `libm` in the workspace and in the core crate, `chi2_sf_1df` in a
       new `crates/popnei/src/gwas.rs`, and the wasm checks. Built from "The
       two distributions" of `docs/specs/gwas.md`. Serves deliverables 1 and
       2. Needs nothing.
-- [ ] 1.2 The regularized incomplete beta and `t_sf_two_sided`, from the
+- [x] 1.2 The regularized incomplete beta and `t_sf_two_sided`, from the
       recurrence the spec writes out, with the script that prints scipy's
       numbers and the three tests. Built from the same section. Serves
       deliverables 2 and 3. Needs 1.1.
 
 ### What could go wrong
 
-The continued fraction is transcribed in the spec and the two guards in it,
-the `tiny` that keeps a denominator of 0 from dividing and the `eps` that
-stops it, are what make it converge; dropping either gives numbers that are
-right for most arguments and wrong for some. The pair `(98.5, 0.5)` is the
-one a t of 197 degrees of freedom uses and the one closest to the panel, so
-a failure there and not at `(0.5, 0.5)` is the fraction and not the front
+The continued fraction is transcribed in the spec. The pair `(98.5, 0.5)` is
+the one a t of 197 degrees of freedom uses and the one closest to the panel,
+so a failure there and not at `(0.5, 0.5)` is the fraction and not the front
 factor.
+
+This section said until 23 September 2026 that the two guards of the
+fraction, the `tiny` that keeps a denominator of 0 from dividing and the
+`eps` that stops it, are what make it converge, and that dropping either
+gives numbers that are right for most arguments and wrong for some. The
+review of this work package measured that and it is false for every argument
+either plan can reach, so a test writer who believed it would hunt for a
+case that does not exist. The first denominator is bounded below by
+`2 / (a + b + 2)` in both branches, so with `b` of 1 / 2 the `tiny` can fire
+only for a panel of about 4e300 individuals; one reviewer saw a minimum of
+4.0276e-6 over 6009003 calls, which is that bound at 1e6 degrees of freedom,
+and another 4.06e-5 over 116802. The `eps` caps the work and not the digits:
+with it turned off the fraction runs its 500 rounds and the worst value
+moves by 2.3e-13 relative, nothing becoming non-finite. So neither guard can
+be caught by a test on a value, and the only assertion that could fail is
+one on the number of rounds, which is at most 52 over the wide sweep against
+the 500 allowed. Both guards stay, because the recipe and pyNei have them
+and because a caller with another `b` would need the `tiny`.
+
+What the review found instead, in the place this section was pointing away
+from: `t_sf_two_sided` cancelled `1 - x` out of an `x` that had rounded to
+1, and lost up to eight digits for a `t` near 0.
 
 ## Work package 2: what every model shares
 
@@ -163,17 +198,38 @@ which is also where the comparison with pyNei is first made.
 
 ### What it stands on
 
-Work package 1, for nothing but the module it lives in. Outside the plan:
-the row pass that work package 1 of the plan `kinship` moved into `variant`,
-which this uses for the dosages.
+Work package 1, for nothing but the module it lives in.
+
+This section said until 23 September 2026 that the dosages use the row pass
+that work package 1 of the plan `kinship` moved into `variant`. They cannot.
+That pass always divides the centered dosages by a scale, either of the
+dosages themselves or of Hardy Weinberg, because the kinship and the
+principal components want a variant standardized; a study wants the dosage
+itself, since `beta` is the effect of one copy of an allele in the units of
+the trait. The worked example of the spec has the dosages 0, 1, 2 and a
+`beta` of 1.5, which the scale would turn into 1.2247. The pass also gives
+no mean back, and a study reports that mean as the `allele_freq` of every
+variant, including the ones it cannot test. So work package 2 has its own
+row, which calls the two vectorized passes of `variant` that do apply,
+`count_alleles` and `the_codes_of_the_genotypes`, and adds the mean and the
+fill for a missing genotype.
+
+`ld.rs` is the precedent for a module having its own dosage rule, and for
+that much only: it reads its rows one after another and has no rayon, so it
+is no precedent for the drive over the rows and its wasm twin, which the
+review of this work package measured as the larger half of about 120
+duplicated lines. Whether the two rows become one, with the scale made
+optional so that a study can ask for the dosage itself, is for the owner at
+the end of this plan: the change is in `variant.rs`, which another plan owns
+while this one runs, and `gwas-logistic` would be its third caller.
 
 ### Its tasks
 
-- [ ] 2.1 The tested individuals, the design, its refusals and the rank
+- [x] 2.1 The tested individuals, the design, its refusals and the rank
       check, in `crates/popnei/src/gwas.rs`. Built from "Which individuals
       are tested, and the design" of `docs/specs/gwas.md`. Serves
       deliverables 1 and 2. Needs 1.1.
-- [ ] 2.2 The dosages of a block over the tested individuals, the shape of
+- [x] 2.2 The dosages of a block over the tested individuals, the shape of
       the result, the variants that have no answer, and the choice of model
       and test. Built from "What it gives", "The variants that have no
       answer" and "The Rust interface". Serves deliverables 3 and 4. Needs
@@ -199,9 +255,42 @@ standard error and its p-value.
 
 1. The whole study is plink2's. The check: a pytest test reads
    `tests/reference/kinship/panel_called.vcf.gz`, runs `calc_gwas` with
-   `cov1` and `cov2`, and over all 1200 variants `allele_freq` is within
-   1e-6 absolute, `beta` and `se` within 1e-5 absolute and `p_value` within
-   1e-5 relative of `plink2.panel_called.glm.linear.tsv`.
+   `cov1` and `cov2`, and over all 1200 variants agrees with
+   `plink2.panel_called.glm.linear.tsv` as "How it is verified" of "The
+   linear model" of the spec asks: `allele_freq` within 1e-6 absolute, and
+   `beta` and `se` within 1e-5 times that variant's `se` plus half a unit
+   in plink2's last printed digit of the value compared.
+
+   That second term is not what this deliverable said until 24 September
+   2026, and without it no correct implementation passes. It asked for
+   1e-5 times `se` alone. Measured over all 1200 variants, the worst
+   difference is 1.94e-5 of `se`, at `var0482`, whose `beta` is 1.0389 and
+   whose `se` is 0.19: six significant digits of a value above 1 round it
+   by up to 5e-6 absolute, against a budget of 1e-5 x 0.19 = 1.9e-6, so
+   plink2's printing alone is 2.6 times the whole allowance. Three of the
+   1200 fail it, `var0398`, `var0482` and `var1001`. With the printed-digit
+   term none of the 1200 fails.
+
+   Two counts were reported here on 24 September 2026 and both were wrong,
+   so they are written out rather than quietly replaced. That 1198 of the
+   1200 failed: three do. That the two variants which passed were the two
+   whose `beta` passes 1: six variants have a `|beta|` above 1, `var0006`,
+   `var0398`, `var0482`, `var0657`, `var1001` and `var1059`, and three of
+   those six fail. What decides it is not whether `beta` passes 1 but
+   whether half a unit in plink2's last printed digit passes `1e-5` times
+   that variant's `se`, which for a `beta` between 1 and 10 means an `se`
+   below 0.5. Three variants fail rather than five because the printing
+   error is at most half a digit and is usually less. The deliverable had
+   to change either way, since a correct implementation fails it; it failed
+   on three variants and not on 1198. With the printed-digit term the bound
+   at `var0482` is 1.9e-6
+   plus 5e-6 = 6.9e-6 and the measured difference is 3.69e-6, 53 per cent
+   of it, the same on both linear algebra backends. The spec carries the
+   same shape for every comparison against a printed reference, at
+   `7cb4c76` of `spec/gwas`.
+
+   Deliverables 2 and 3, the worked example and pyNei, are the ones that
+   would catch a wrong digit.
 2. The worked example and the six literals are cargo tests. The check:
    `cargo test -p popnei --lib gwas::lm -- --list` names them, where today
    it prints `0 tests`; the worked example of "The worked example" asserts
@@ -210,8 +299,33 @@ standard error and its p-value.
 3. popnei and pyNei agree. The check: a pytest test runs both on the panel
    and `beta`, `se` and `p_value` agree within 1e-9 relative and the NaN
    variants are the same.
-4. The block size changes nothing. The check: a pytest test reads the same
-   panel in blocks of 77 and gets `stats` equal within 1e-12 relative.
+
+   The 1e-9 of deliverable 3 and the 1e-12 of deliverable 2 are where to
+   start and not where to stop, as "How it is verified" of "What every
+   model shares" of the spec now says. Each is lowered until it fails, set
+   two or three times above where it broke, and both numbers go in the
+   report. The spec's reason: the kinship's matrix matched plink2's binary
+   output to 4.44e-16 absolute, which reads as a wide margin, while its
+   worst entry as a ratio was 3.31e-13, so its 1e-12 relative bound had two
+   to three times the worst case and not the thousandfold the absolute
+   figure suggested.
+4. The block size changes nothing. The check, in two tests rather than the
+   one this deliverable named, because neither covers the whole of it: a
+   pytest test reads the same panel from a vars file written in batches of
+   77, 16 of them, and gets `stats` equal within 1e-12 relative; and a
+   cargo test runs a study of 10100 variants, which is more than the 10000
+   a block of 200 individuals holds, and asserts that a variant of the
+   second block gets the same answer as the same pattern in the first,
+   with the identifiers and the positions growing across the two.
+
+   The pytest test alone does not check what this deliverable is for. Every
+   pass puts a `Reblock` over its reader, so the 16 batches are joined into
+   the one block the study reads and the study's own loop runs once either
+   way: the measured difference is 0, exactly, because it is the same
+   computation. What it does show is that a source which gives its variants
+   a few at a time changes nothing. The cargo test is the one that runs the
+   loop twice, and breaking it on purpose, by writing the first block's
+   columns over instead of after, fails it.
 5. `calcGwas` under node gives the same numbers. The check: `npm test` in
    `js/popnei` asserts the six literals and the worked example.
 
@@ -221,16 +335,16 @@ Work packages 1 and 2, whole, since the work packages run in order.
 
 ### Its tasks
 
-- [ ] 3.1 The linear model's null fit and its test, in the core, with the
+- [x] 3.1 The linear model's null fit and its test, in the core, with the
       worked example and the six plink2 literals as cargo tests. Built from
       "The linear model" and "The worked example" of `docs/specs/gwas.md`.
       Serves deliverable 2. Needs 2.2.
-- [ ] 3.2 The Python function: the binding, `GWASResult`, `NullModel`, the
+- [x] 3.2 The Python function: the binding, `GWASResult`, `NullModel`, the
       three enums, and the pytest tests against plink2, against pyNei and
       for the block size. Built from "Its Python function, and its
       TypeScript one" and "How it is verified" of "What every model shares".
       Serves deliverables 1, 3 and 4. Needs 3.1.
-- [ ] 3.3 The TypeScript function: the binding, the result object and the
+- [x] 3.3 The TypeScript function: the binding, the result object and the
       node test. Built from the same section. Serves deliverable 5. Needs
       3.1, and it can run beside 3.2.
 
@@ -259,9 +373,35 @@ so that a variant that only marks ancestry does not look associated.
    `genetic_variance` 1.221617, `residual_variance` 0.342359 and the three
    covariate effects 4.678021, 0.473361 and 1.110279 within 1e-5 absolute,
    from `tests/reference/gwas/gmmat.null_models.tsv`.
-2. The fit is at its optimum. The check: a cargo test asserts that `y' p y`
-   on the panel is 197 within 1e-6. "How it is verified" says this one is
-   made at the private function that fits this null and pins it.
+2. The fit is at its optimum, and the search is pyNei's step for step. The
+   check, in two cargo tests rather than the one this deliverable named,
+   because the one it named cannot fail for the reason it gave: the fitted
+   ratio of the two variances is within 2.5e-7 of pyNei's 0.2802522656675301
+   on the panel, and `y' p y` on the panel is 197 within 1e-6.
+
+   The second of those is an algebraic identity and not evidence about the
+   search. `y' p y` is the individuals less the columns of the design for
+   any value of the ratio, because the genetic variance is that same
+   quadratic form divided by those degrees of freedom. The review of this
+   work package multiplied the fitted ratio by a million and the test still
+   gave 196.99999999999872, 1.3e-12 from 197, while every comparison with
+   GMMAT and rrBLUP went red. What the identity does check is worth keeping
+   and is what its doc comment now claims: that the clamp at 0 works, since
+   without it the panel with the -0.0321 eigenvalue fails the Cholesky, and
+   that the projection matrix and the quadratic form agree with each other.
+
+   The first is what pins the search. Of the six things the spec says must
+   reproduce pyNei, four had code and no test that would fail: the review
+   changed the grid from 101 points to 81, its lowest point from -10 to
+   -10.1, and the golden section ratio to a flat 0.61, and all 50 cargo and
+   50 pytest tests passed on each. The bound here is 2.5e-7 and not the
+   1e-10 the orchestrator first asked for: popnei's ratio sits 7.72e-8 from
+   pyNei's on Accelerate and 6.94e-8 on faer, so 1e-10 fails on code that is
+   right. 2.5e-7 is 1.2 times the shift a wrong grid start or a wrong ratio
+   gives, 1.635e-7 and 9.22e-8. Changing the grid's point count alone moves
+   the ratio by 0, the minimum being well inside either grid, so that one is
+   pinned another way: the grid is asserted against `numpy.linspace` to the
+   bit, and the ratio is a named constant asserted against its formula.
 3. The Wald test is rrBLUP's. The check: a pytest test with `cov2` alone and
    the kinship gets `-log10(p_value)` within 1e-4 of
    `rrblup.panel_called.lmm.tsv` over all 1200 variants, and a cargo test
@@ -275,7 +415,9 @@ so that a variant that only marks ancestry does not look associated.
    3 of the 5 variants of `causal_vars.csv` among the 10 smallest p-values.
 6. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
    the pytest comparison of work package 3 with a kinship, and `npm test`
-   asserting the six score test literals.
+   asserting the six score test literals. The comparison with pyNei is
+   lowered until it fails and set two or three times above, as in
+   deliverable 3 of work package 3, and the report carries both numbers.
 
 ### What it stands on
 
@@ -283,15 +425,15 @@ Work package 3, and the plan `kinship` for the matrix.
 
 ### Its tasks
 
-- [ ] 4.1 The REML search and the null fit: the eigendecomposition, the
+- [x] 4.1 The REML search and the null fit: the eigendecomposition, the
       clamp at 0, the 101 points and the 60 golden section steps, the
       criterion and the two variances, with the cargo test of `y' p y`.
       Built from "What it gives" of "The linear mixed model". Serves
       deliverables 1 and 2. Needs 3.1.
-- [ ] 4.2 The projection matrix and the two tests, with the six literals of
+- [x] 4.2 The projection matrix and the two tests, with the six literals of
       each as cargo tests. Built from the same section. Serves deliverables
       3 and 4. Needs 4.1.
-- [ ] 4.3 The `kinship` and `test` arguments through both bindings and both
+- [x] 4.3 The `kinship` and `test` arguments through both bindings and both
       packages, with the pytest tests against rrBLUP, GMMAT and pyNei, the
       causal variants, and the node test. Built from "Its Python function,
       and its TypeScript one" of "What every model shares". Serves
