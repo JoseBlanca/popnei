@@ -953,14 +953,18 @@ pub enum Error {
     /// The linear algebra of a kinship failed. The products of a kinship
     /// are the standardized dosages of a block with themselves and the
     /// genotypes that were called with themselves, both individuals x
-    /// individuals. In Python it is a `RuntimeError`: every size was
-    /// checked before the product was asked for, so what is left is a
-    /// defect of popnei or a backend that refused the work.
+    /// individuals, and its principal components are the
+    /// eigendecomposition of the matrix. In Python it is a `RuntimeError`:
+    /// every size was checked before the work was asked for, so what is
+    /// left is a defect of popnei, a matrix whose products are not finite
+    /// or a machine with too little memory for the workspace of the
+    /// eigendecomposition.
     #[error("the {operation} of the kinship could not be done: {source}")]
     KinshipLinalg {
         /// What was being computed: the product of a block of variants
-        /// with itself, or the product of the genotypes that were called
-        /// with themselves.
+        /// with itself, the product of the genotypes that were called with
+        /// themselves, or the eigendecomposition that gives the principal
+        /// components.
         operation: &'static str,
         /// What the linear algebra said.
         source: popnei_linalg::Error,

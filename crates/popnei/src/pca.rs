@@ -1002,7 +1002,7 @@ fn the_percentages_of(values: &[f64], num_comps: usize) -> Vec<f64> {
 ///
 /// `eigen` holds the eigenvectors of G as its rows, `num_rows` values
 /// each, and their eigenvalues from the largest.
-fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
+pub(crate) fn the_projections_of(eigen: &Eigen, num_rows: usize, num_comps: usize) -> Vec<f64> {
     let mut projections = vec![0.0; num_values_of(num_rows, num_comps)];
     // A matrix of no component has no value to write, and this keeps
     // `step_by` below off a step of 0, which panics.
@@ -1223,7 +1223,11 @@ fn the_standardized_table(
 /// eigenvalue near the largest `f64`, which a table of values of 2.5e153
 /// gives, does not become an infinity on the way to a threshold that is a
 /// small part of it.
-fn the_components_with_variance(values: &[f64], num_rows: usize, num_cols: usize) -> usize {
+pub(crate) fn the_components_with_variance(
+    values: &[f64],
+    num_rows: usize,
+    num_cols: usize,
+) -> usize {
     let Some(largest) = values.first() else {
         return 0;
     };
@@ -1367,35 +1371,56 @@ fn fix_the_signs(
     num_cols: usize,
 ) {
     for component in 0..num_comps {
-        // The projection of the largest absolute value, and the first of
-        // them when two are of one size, which a value that has to be
-        // above the one kept by more than the tolerance keeps.
-        let largest = projections
-            .iter()
-            .skip(component)
-            .step_by(num_comps)
-            .copied()
-            .fold(0.0_f64, |largest: f64, value| {
-                if of_one_size(value, largest) == Ordering::Greater {
-                    value
-                } else {
-                    largest
-                }
-            });
-        if largest < 0.0 {
-            for projection in projections.iter_mut().skip(component).step_by(num_comps) {
-                *projection = -*projection;
-            }
-            // The weights are given for the first components alone, so
-            // there are none for a component after them and there is
-            // nothing to turn round: it is not a weight that went missing.
-            if let Some(weights) = princomps.chunks_exact_mut(num_cols).nth(component) {
-                for weight in weights {
-                    *weight = -*weight;
-                }
+        if !fix_the_sign_of(projections, component, num_comps) {
+            continue;
+        }
+        // The weights are given for the first components alone, so there
+        // are none for a component after them and there is nothing to turn
+        // round: it is not a weight that went missing.
+        if let Some(weights) = princomps.chunks_exact_mut(num_cols).nth(component) {
+            for weight in weights {
+                *weight = -*weight;
             }
         }
     }
+}
+
+/// Gives one component of the projections the sign of the rule of
+/// `docs/specs/pca.md`, and says whether it was turned round, so that a
+/// caller holding the weights of that component turns them round with it.
+///
+/// `projections` is the individuals x `num_comps` matrix, row after row,
+/// and `component` is below `num_comps`. The kinship of
+/// `crate::kinship::principal_components` takes the same rule, over
+/// projections that have no weights beside them.
+pub(crate) fn fix_the_sign_of(projections: &mut [f64], component: usize, num_comps: usize) -> bool {
+    // A matrix of no component has no projection of a component to read,
+    // and this keeps `step_by` below off a step of 0, which panics.
+    if num_comps == 0 {
+        return false;
+    }
+    // The projection of the largest absolute value, and the first of them
+    // when two are of one size, which a value that has to be above the one
+    // kept by more than the tolerance keeps.
+    let largest = projections
+        .iter()
+        .skip(component)
+        .step_by(num_comps)
+        .copied()
+        .fold(0.0_f64, |largest: f64, value| {
+            if of_one_size(value, largest) == Ordering::Greater {
+                value
+            } else {
+                largest
+            }
+        });
+    if largest >= 0.0 {
+        return false;
+    }
+    for projection in projections.iter_mut().skip(component).step_by(num_comps) {
+        *projection = -*projection;
+    }
+    true
 }
 
 /// How the absolute value of `value` compares with that of `largest` for

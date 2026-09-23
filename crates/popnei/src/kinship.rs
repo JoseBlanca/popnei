@@ -23,13 +23,19 @@
 //! the two agree only when the genotypes are in Hardy Weinberg proportions;
 //! the pass over a row that both calculations make, of
 //! [`crate::variant`], takes the divisor from its caller.
+//!
+//! [`principal_components`] places each individual along the directions in
+//! which the panel varies most, from the eigenvectors of that matrix, which
+//! is what a user gives an association study as covariates when they
+//! account for the structure of the panel without a mixed model.
 
 use std::fmt;
 
-use popnei_linalg::add_self_product_lower;
+use popnei_linalg::{add_self_product_lower, eigh_lower};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
+use crate::pca::{fix_the_sign_of, the_components_with_variance, the_projections_of};
 use crate::variant::{
     DosageOptions, DosageScale, MISSING_ALLELE, Needs, RowPositions, the_standardized_block,
 };
@@ -205,6 +211,90 @@ pub fn calc_kinship<R: BlockReader>(
         num_vars,
         num_vars_given,
         matrix: gram,
+    })
+}
+
+/// Where each individual falls along the directions in which a panel
+/// varies most, taken from the kinship of its individuals.
+///
+/// A user gives these to an association study as covariates, which is how
+/// the structure of a panel is accounted for without a mixed model.
+#[derive(Debug, Clone)]
+pub struct KinshipPcs {
+    /// How many components were given: the `num_pcs` that were asked for,
+    /// or the components the kinship has above the tolerance when it has
+    /// fewer of them.
+    pub num_comps: usize,
+    /// The individuals x [`Self::num_comps`] matrix of where each
+    /// individual falls along each component, row after row, with the
+    /// individuals in the order the kinship has them.
+    pub projections: Vec<f64>,
+}
+
+/// The principal components of a kinship, `num_pcs` of them at most.
+///
+/// With `lambda_j` the eigenvalues of the matrix from the largest and
+/// `u_j` its eigenvectors, the component `j` is `u_j * sqrt(lambda_j)`:
+/// where each individual falls along the direction in which the panel
+/// varies the `j`th most.
+///
+/// A component whose eigenvalue is not above the largest eigenvalue times
+/// the individuals times the difference between 1 and the next number an
+/// `f64` holds is not given, so a kinship with fewer components than were
+/// asked for gives the ones it has and [`KinshipPcs::num_comps`] says how
+/// many. The per pair denominators of a dataset with genotypes missing put
+/// eigenvalues below 0, which are the length of nothing: pyNei gives
+/// `num_pcs` components whatever the eigenvalue, taking the square root of
+/// its absolute value. The sign of each component is fixed by the rule of
+/// `docs/specs/pca.md`, the projection of the largest absolute value
+/// positive, so that the two backends of the eigendecomposition and the
+/// three builds of popnei give one answer.
+///
+/// These are close to the principal components of the variants the kinship
+/// was calculated from and they are not the same: a kinship divides each
+/// variant by `sqrt(ploidy * p * (1 - p))`, with `p` its allele frequency,
+/// and [`crate::pca::pca_of_variants`] by the standard deviation of its
+/// dosages, and the two agree only when the genotypes are in Hardy
+/// Weinberg proportions.
+///
+/// The matrix is copied, since the eigendecomposition writes the
+/// eigenvectors over the matrix it is given and the caller keeps its
+/// kinship: 800 MB at 10000 individuals.
+///
+/// # Errors
+///
+/// [`Error::KinshipNoIndividual`] when the kinship has no individual,
+/// which leaves nobody to place along anything, and
+/// [`Error::KinshipLinalg`] when the eigendecomposition could not be done.
+pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<KinshipPcs> {
+    let num_individuals = kinship.num_individuals;
+    if num_individuals == 0 {
+        return Err(Error::KinshipNoIndividual);
+    }
+    // The eigendecomposition reads the lower half of the matrix and writes
+    // the eigenvectors over it, and the caller keeps its kinship.
+    let eigen = eigh_lower(kinship.matrix.clone(), num_individuals).map_err(|source| {
+        Error::KinshipLinalg {
+            operation: "eigendecomposition",
+            source,
+        }
+    })?;
+    // The matrix is the individuals by the individuals, so the tolerance
+    // of `docs/specs/pca.md`, the largest eigenvalue times the larger side
+    // of the matrix times the difference between 1 and the next number an
+    // `f64` holds, takes the individuals on both sides.
+    let num_comps =
+        the_components_with_variance(&eigen.values, num_individuals, num_individuals).min(num_pcs);
+    let mut projections = the_projections_of(&eigen, num_individuals, num_comps);
+    for component in 0..num_comps {
+        // Whether the component was turned round is for a caller that
+        // holds the weight of each trait in it, which the principal
+        // components of a table do and a kinship does not.
+        fix_the_sign_of(&mut projections, component, num_comps);
+    }
+    Ok(KinshipPcs {
+        num_comps,
+        projections,
     })
 }
 
@@ -924,12 +1014,12 @@ mod tests {
     }
 
     /// The panel every genotype of which is called.
-    fn the_panel_called() -> (Vec<String>, Kinship) {
+    pub(super) fn the_panel_called() -> (Vec<String>, Kinship) {
         the_kinship_of_the_panel(&the_reference_path("panel_called.vcf.gz"))
     }
 
     /// The same panel with 3 in 100 of its genotypes missing whole.
-    fn the_panel_with_genotypes_missing() -> (Vec<String>, Kinship) {
+    pub(super) fn the_panel_with_genotypes_missing() -> (Vec<String>, Kinship) {
         the_kinship_of_the_panel(&the_dists_path("panel.vcf.gz"))
     }
 
@@ -1031,7 +1121,7 @@ mod tests {
     /// individual is heterozygous and the one with a single allele have no
     /// variance and are left out. The genotype `./.` of `i2` at `v1` takes
     /// the mean dosage of its variant and is in the denominator of no pair.
-    fn the_worked_example() -> Vec<Vec<String>> {
+    pub(super) fn the_worked_example() -> Vec<Vec<String>> {
         vec![
             variant(&["0/0", "0/1", "1/1", "0/1"]),
             variant(&["0/0", "0/1", "./.", "1/1"]),
@@ -1787,5 +1877,310 @@ mod cases {
             matches!(error, Error::KinshipNoVariantWithVariance),
             "{error}"
         );
+    }
+}
+
+/// The principal components of a kinship, "The principal components of the
+/// kinship" of `docs/specs/kinship.md`.
+#[cfg(test)]
+mod components {
+    use super::tests::{
+        the_kinship_of, the_panel_called, the_panel_with_genotypes_missing, the_worked_example,
+        variant, vcf_of,
+    };
+    use super::{Kinship, KinshipPcs, principal_components};
+    use crate::error::Error;
+
+    /// What the eigenvalues and the projections of numpy 2.5.3 are held to,
+    /// relative for an eigenvalue and absolute for a projection, which is
+    /// what "How it is verified" of `docs/specs/kinship.md` asks. The
+    /// projections of the worked example are between 0.2 and 1.5, so the two
+    /// bounds are of the same size there.
+    const OF_NUMPY: f64 = 1e-9;
+
+    /// The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on
+    /// 23 September 2026.
+    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] = [17.26914116, 12.44731524, 3.35871258];
+
+    /// The projections of the two components of the worked example of "How
+    /// it is verified" of `docs/specs/kinship.md`, from numpy 2.5.3 on 23
+    /// September 2026, with the sign of the rule: 4 individuals x 2
+    /// components, row after row. The two of `i1` are 0, since its
+    /// standardized dosage is 0 at both variants that were used.
+    const THE_COMPONENTS_OF_THE_WORKED_EXAMPLE: [f64; 8] = [
+        1.45989777643,
+        -0.212872996577, //
+        0.0,
+        0.0, //
+        -1.34910400096,
+        -0.550866821327, //
+        -0.461372751067,
+        0.937211435408,
+    ];
+
+    /// The components of a kinship, or a panic with what they failed with.
+    fn the_components_of(kinship: &Kinship, num_pcs: usize) -> KinshipPcs {
+        match principal_components(kinship, num_pcs) {
+            Ok(pcs) => pcs,
+            Err(error) => panic!("the components were not taken: {error}"),
+        }
+    }
+
+    /// Where one individual falls along one component.
+    fn the_projection_of(pcs: &KinshipPcs, individual: usize, component: usize) -> f64 {
+        let at = individual
+            .checked_mul(pcs.num_comps)
+            .and_then(|row| row.checked_add(component))
+            .expect("the place of the projection");
+        pcs.projections[at]
+    }
+
+    /// The sum of the squares of the projections of one component, which is
+    /// its eigenvalue: a component is `u_j sqrt(lambda_j)` and the
+    /// eigenvector `u_j` has length 1. No function of popnei gives an
+    /// eigenvalue, so this is how the eigenvalues are read.
+    fn the_sum_of_the_squares_of(
+        pcs: &KinshipPcs,
+        component: usize,
+        num_individuals: usize,
+    ) -> f64 {
+        (0..num_individuals)
+            .map(|individual| the_projection_of(pcs, individual, component).powi(2))
+            .sum()
+    }
+
+    /// The projection of a component that decides its sign: the one of the
+    /// largest absolute value, and the first of them when two are exactly of
+    /// one size.
+    ///
+    /// The rule of `docs/specs/pca.md` takes two projections within 64 units
+    /// in the last place of each other for one absolute value, which this
+    /// does not. Neither panel has such a pair: the two largest absolute
+    /// values of a component are 2.5e-3 of each other at the closest on
+    /// `panel_called` and 4.2e-4 on `panel`, measured with numpy 2.5.3 over
+    /// the 199 components of each. The kinship of two individuals below is
+    /// where the tolerance decides.
+    fn the_projection_that_fixes_the_sign_of(
+        pcs: &KinshipPcs,
+        component: usize,
+        num_individuals: usize,
+    ) -> f64 {
+        let mut largest = 0.0_f64;
+        for individual in 0..num_individuals {
+            let projection = the_projection_of(pcs, individual, component);
+            if projection.abs() > largest.abs() {
+                largest = projection;
+            }
+        }
+        largest
+    }
+
+    /// Every component of a kinship has the projection that decides its sign
+    /// above 0, which is the rule of `docs/specs/pca.md`.
+    fn assert_every_component_obeys_the_sign_rule(kinship: &Kinship, pcs: &KinshipPcs, of: &str) {
+        assert!(pcs.num_comps > 0, "the components of {of}");
+        for component in 0..pcs.num_comps {
+            let largest =
+                the_projection_that_fixes_the_sign_of(pcs, component, kinship.num_individuals);
+            assert!(
+                largest > 0.0,
+                "the component {component} of {of} has {largest} as the projection of its largest absolute value"
+            );
+        }
+    }
+
+    /// The kinship of the worked example of `docs/specs/kinship.md`: 4
+    /// individuals, of which `i1` is 0 against everyone, and 2 variants with
+    /// variance of the 4 the reader gives.
+    fn the_kinship_of_the_worked_example() -> Kinship {
+        the_kinship_of(&vcf_of(4, &the_worked_example()), None)
+    }
+
+    /// Two individuals and one variant, `0/0` and `1/1`: the standardized
+    /// dosages are -sqrt(2) and sqrt(2) over a denominator of 1, so the
+    /// matrix is 2 on the diagonal and -2 off it, and its one component has
+    /// two projections of one absolute value.
+    fn the_kinship_of_two_individuals() -> Kinship {
+        the_kinship_of(&vcf_of(2, &[variant(&["0/0", "1/1"])]), None)
+    }
+
+    /// The sum of the squares of the projections of a component is its
+    /// eigenvalue, and the three largest of `panel_called` are 17.26914116,
+    /// 12.44731524 and 3.35871258 from numpy 2.5.3.
+    #[test]
+    fn the_first_three_components_of_the_panel_hold_the_eigenvalues_numpy_gives() {
+        let (_, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, 3);
+
+        assert_eq!(pcs.num_comps, 3, "the components asked for");
+        assert_eq!(pcs.projections.len(), 600, "the individuals x components");
+        for (component, eigenvalue) in THE_EIGENVALUES_OF_THE_PANEL.into_iter().enumerate() {
+            let sum = the_sum_of_the_squares_of(&pcs, component, kinship.num_individuals);
+            assert!(
+                (sum - eigenvalue).abs() <= OF_NUMPY * eigenvalue,
+                "the squares of the component {component} add up to {sum} and numpy gives {eigenvalue}"
+            );
+        }
+    }
+
+    /// The panel with every genotype called, over every component it has.
+    #[test]
+    fn every_component_of_the_panel_called_obeys_the_sign_rule() {
+        let (_, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, kinship.num_individuals);
+
+        assert_every_component_obeys_the_sign_rule(&kinship, &pcs, "panel_called");
+    }
+
+    /// The panel with 3 in 100 of its genotypes missing, whose per pair
+    /// denominators put an eigenvalue below 0.
+    #[test]
+    fn every_component_of_the_panel_with_genotypes_missing_obeys_the_sign_rule() {
+        let (_, kinship) = the_panel_with_genotypes_missing();
+
+        let pcs = the_components_of(&kinship, kinship.num_individuals);
+
+        assert_every_component_obeys_the_sign_rule(&kinship, &pcs, "panel");
+    }
+
+    /// The rule of `docs/specs/pca.md` gives the first of two projections of
+    /// one absolute value the positive sign. The two individuals of one
+    /// variant have projections of sqrt(2) and -sqrt(2), the same number
+    /// with opposite signs, so which of the two the eigendecomposition
+    /// leaves the larger by a bit is what would decide the sign of the
+    /// component without the tolerance of the rule.
+    #[test]
+    fn the_first_of_two_projections_of_one_absolute_value_is_the_positive_one() {
+        let kinship = the_kinship_of_two_individuals();
+
+        let pcs = the_components_of(&kinship, 2);
+
+        assert_eq!(pcs.num_comps, 1, "the second eigenvalue is 0");
+        let first = the_projection_of(&pcs, 0, 0);
+        let second = the_projection_of(&pcs, 1, 0);
+        assert!(
+            (first - std::f64::consts::SQRT_2).abs() < OF_NUMPY,
+            "the first individual is at {first} and sqrt(2) is asked for"
+        );
+        assert!(
+            (second + std::f64::consts::SQRT_2).abs() < OF_NUMPY,
+            "the second individual is at {second} and -sqrt(2) is asked for"
+        );
+    }
+
+    /// The worked example has 4 individuals and eigenvalues 4.16424794,
+    /// 1.22713444, -3.2e-16 and -0.39138238 from numpy 2.5.3, so two of them
+    /// are above the tolerance and 6 components asked for give 2. pyNei
+    /// gives the 6 that were asked for and raises out of pandas above the
+    /// individuals.
+    #[test]
+    fn a_kinship_asked_for_more_components_than_it_has_gives_the_ones_above_the_tolerance() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 6);
+
+        assert_eq!(pcs.num_comps, 2, "the components above the tolerance");
+        assert_eq!(pcs.projections.len(), 8, "4 individuals x 2 components");
+    }
+
+    /// Each projection of the two components of the worked example is the
+    /// one numpy 2.5.3 gives, with the sign of the rule, which is what says
+    /// that a component is the eigenvector times the square root of its
+    /// eigenvalue and that the matrix is individuals x components.
+    #[test]
+    fn the_components_of_the_worked_example_are_the_ones_numpy_gives() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 2);
+
+        assert_eq!(pcs.num_comps, 2);
+        for (at, (projection, expected)) in pcs
+            .projections
+            .iter()
+            .zip(THE_COMPONENTS_OF_THE_WORKED_EXAMPLE)
+            .enumerate()
+        {
+            assert!(
+                (projection - expected).abs() < OF_NUMPY,
+                "the projection {at} is {projection} and numpy gives {expected}"
+            );
+        }
+    }
+
+    /// A kinship gives the components that were asked for when it has more
+    /// of them: the worked example has 2 above the tolerance, and 1 asked
+    /// for is 1, the first of them.
+    #[test]
+    fn a_kinship_asked_for_fewer_components_than_it_has_gives_that_many() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 1);
+
+        assert_eq!(pcs.num_comps, 1, "the components asked for");
+        assert_eq!(pcs.projections.len(), 4, "4 individuals x 1 component");
+        for (at, (projection, expected)) in pcs
+            .projections
+            .iter()
+            .zip(THE_COMPONENTS_OF_THE_WORKED_EXAMPLE.into_iter().step_by(2))
+            .enumerate()
+        {
+            assert!(
+                (projection - expected).abs() < OF_NUMPY,
+                "the projection {at} of the first component is {projection} and numpy gives {expected}"
+            );
+        }
+    }
+
+    /// A kinship measures each pair against the average pair of the panel,
+    /// which takes one direction out of it, so the last eigenvalue of a
+    /// panel is 0 or below it: -3.44e-15 on `panel_called` and -0.0321 on
+    /// `panel` from numpy 2.5.3, against a tolerance of 7.67e-13 on both.
+    /// pyNei gives 200 components on either, the last of them the square
+    /// root of the absolute value of that eigenvalue.
+    #[test]
+    fn both_panels_asked_for_a_component_for_each_individual_give_one_fewer() {
+        let (_, called) = the_panel_called();
+        let (_, missing) = the_panel_with_genotypes_missing();
+
+        let of_the_called = the_components_of(&called, 200);
+        let of_the_missing = the_components_of(&missing, 200);
+
+        assert_eq!(of_the_called.num_comps, 199, "panel_called");
+        assert_eq!(of_the_missing.num_comps, 199, "panel");
+    }
+
+    /// Asking for no component is not an error and gives none, as asking a
+    /// principal component analysis of the variants for none is not.
+    #[test]
+    fn a_kinship_asked_for_no_component_gives_none() {
+        let kinship = the_kinship_of_the_worked_example();
+
+        let pcs = the_components_of(&kinship, 0);
+
+        assert_eq!(pcs.num_comps, 0);
+        assert!(pcs.projections.is_empty(), "{:?}", pcs.projections);
+    }
+
+    /// A kinship of no individual leaves nobody to place along a component.
+    /// A user reaches it from Python with an empty frame, which the checks
+    /// of a kinship built by hand let past, since a matrix of no row is
+    /// square and names nobody twice.
+    #[test]
+    fn a_kinship_of_no_individual_is_refused() {
+        let kinship = Kinship {
+            num_individuals: 0,
+            num_vars: 0,
+            num_vars_given: 0,
+            matrix: Vec::new(),
+        };
+
+        let error = match principal_components(&kinship, 3) {
+            Ok(pcs) => panic!("{} components were given", pcs.num_comps),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, Error::KinshipNoIndividual), "{error}");
     }
 }
