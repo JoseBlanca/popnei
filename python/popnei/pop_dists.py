@@ -66,9 +66,9 @@ class PopDistMeasure(StrEnum):
     GST = "gst"
     """Nei's G_ST, the share of the diversity of the two populations that
     lies between them, corrected for the individuals they were estimated
-    from. With two populations it cannot pass (1 - H_S)/(1 + H_S), so two
-    internally diverse populations that share no allele still give a small
-    number."""
+    from. With two populations it cannot pass (1 - H_S)/(1 + H_S), with H_S
+    the mean corrected diversity within them, so two internally diverse
+    populations that share no allele still give a small number."""
 
     GST_STANDARDIZED = "gst_standardized"
     """The G''_ST of Meirmans and Hedrick (2011), G_ST rescaled so that it
@@ -76,17 +76,29 @@ class PopDistMeasure(StrEnum):
     diversity. It is not Hedrick's earlier G'_ST, which divides G_ST by the
     largest value it could take: for the first two populations of the
     biallelic panel of the tests this one is 0.1620 and G'_ST is 0.1155.
-    A user who wants G'_ST gets it from :attr:`gst` with one division,
-    ``gst * (1 + H_S) / (1 - H_S)``."""
+
+    G'_ST is ``gst * (1 + h_s) / (1 - h_s)``, with ``h_s`` the mean
+    corrected diversity within the two populations over the variants that
+    counted for that pair. No field of :class:`PopDists` holds ``h_s``, and
+    :attr:`PopDists.gst` and :attr:`PopDists.dest` together give it back::
+
+        d = 1 / (1 / gst - 1 + 2 / dest)
+        h_s = 1 - 2 * d / dest
+
+    which for that same pair is an ``h_s`` of 0.351109 and a G'_ST of
+    0.115481. The unbiased expected heterozygosity of
+    :func:`popnei.calc_per_var_distribs` is another quantity, corrected for
+    the sample in another way and taken over one population and not the two
+    pooled: on that pair its mean is 0.351160, four digits of agreement and
+    a G'_ST nobody would see was wrong.
+    """
 
 
 # The measures that have a value, which the core crate holds and which is all
-# seven of them since work package 3 of `docs/plans/dists-pops.md` added the
-# chord distance and Nei's D_A. Asking for one that has none is refused, so
-# that nobody reads a vector of NaN as a distance, and there is nothing left
-# to refuse. It is read from the core and not written here so that a measure
-# is added in one place and not in this package, in the TypeScript one and in
-# the core.
+# seven of them. Asking for one that has none is refused, so that nobody
+# reads a vector of NaN as a distance, and there is nothing left to refuse.
+# It is read from the core and not written here so that a measure is added in
+# one place and not in this package, in the TypeScript one and in the core.
 _MEASURES_THAT_HAVE_A_VALUE = tuple(_core.pop_dist_measures_that_have_a_value())
 
 
@@ -133,7 +145,16 @@ class PopDists:
 
     chord: Distances | None = None
     """The chord distance of every pair, and ``None`` when it was not asked
-    for."""
+    for.
+
+    It is the form ``adegenet::dist.genpop(method = 2)`` gives, the chord of
+    the sphere of radius 1 divided by the square root of 2: two populations
+    that share no allele are 1 apart here and 1.414 apart unscaled. Books
+    normalize it in several ways, so a number compared with another program
+    has to be compared with the same form, and the scaling changes nothing
+    for a tree or for a principal coordinate analysis. :attr:`da` is the
+    square of this form and is Nei's D_A.
+    """
 
     da: Distances | None = None
     """Nei's D_A of every pair, and ``None`` when it was not asked for."""
@@ -417,18 +438,16 @@ def _the_measures(measures: Sequence[PopDistMeasure] | None) -> list[str]:
             "were asked for: leave `measures` out for every measure there is"
         )
     # A measure that popnei has no value for is refused here, so that nobody
-    # reads a vector of NaN as a distance. All seven have one since work
-    # package 3 of `docs/plans/dists-pops.md`, so this refuses nothing today
-    # and is what a measure added to `PopDistMeasure` with no formula beside
-    # it would meet.
-    not_written_yet = [
+    # reads a vector of NaN as a distance. All seven have one, so this
+    # refuses nothing today and is what a measure added to `PopDistMeasure`
+    # with no formula beside it would meet.
+    with_no_value = [
         measure for measure in asked_for if measure not in _MEASURES_THAT_HAVE_A_VALUE
     ]
-    if not_written_yet:
+    if with_no_value:
         raise ValueError(
-            f"{_named(not_written_yet)} "
-            f"{'is' if len(not_written_yet) == 1 else 'are'} not calculated "
-            f"yet, and what popnei calculates today is "
+            f"popnei has no value for {_named(with_no_value)}, and the "
+            f"measures it has a value for are "
             f"{_named(_MEASURES_THAT_HAVE_A_VALUE)}: ask for those"
         )
     return asked_for
