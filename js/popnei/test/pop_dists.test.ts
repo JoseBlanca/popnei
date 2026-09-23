@@ -215,7 +215,7 @@ const MICRO_GST = [0.0331595308, 0.0360169279, 0.0363566716];
 const MICRO_GST_STANDARDIZED = [0.2196573038, 0.2390740032, 0.2393928219];
 
 /**
- * The six sets of literals above are the spec's ten digits, so half a unit
+ * The seven sets of literals above are the spec's ten digits, so half a unit
  * of the tenth is how far a value may be from the one written there.
  */
 const TEN_DIGITS_TOLERANCE = 5e-11;

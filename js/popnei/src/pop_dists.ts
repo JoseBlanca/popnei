@@ -48,16 +48,24 @@ const THE_MEASURES = [
 
 /**
  * The name of one of the seven measures of how far apart two populations
- * are: Hudson's F_ST, how much of the diversity of the two taken together
- * lies between them rather than within them; f_2, how much allele frequency
- * they have drifted apart by, in the units it was measured in, which is what
- * makes it add up along a tree; the chord distance of Cavalli-Sforza and
- * Edwards and Nei's D_A, its square, the two that are Euclidean and that a
- * tree or a principal coordinate analysis is built from; Jost's D, how much
- * of the allelic variety of the two is not shared; Nei's G_ST, the share of
- * the diversity of the two that lies between them; and the standardized
- * G''_ST, which is G_ST rescaled so that it reaches 1 when the two share no
- * allele whatever their diversity.
+ * are, each of them the field of a `PopDists` that holds it:
+ *
+ * - `fst`, Hudson's F_ST, how much of the diversity of the two taken
+ *   together lies between them rather than within them.
+ * - `f2`, how much allele frequency they have drifted apart by, in the units
+ *   it was measured in, which is what makes it add up along a tree.
+ * - `chord`, the chord distance of Cavalli-Sforza and Edwards, and `da`,
+ *   Nei's D_A, its square: the two that are Euclidean and that a tree or a
+ *   principal coordinate analysis is built from.
+ * - `dest`, Jost's D, how much of the allelic variety of the two is not
+ *   shared. It is the one to read on microsatellites, where `gst` cannot
+ *   reach 1.
+ * - `gst`, Nei's G_ST, the share of the diversity of the two that lies
+ *   between them. With two populations it cannot pass (1 - H_S)/(1 + H_S),
+ *   with H_S the mean corrected diversity within them, so two internally
+ *   diverse populations that share no allele still give a small number.
+ * - `gst_standardized`, the standardized G''_ST, which is G_ST rescaled so
+ *   that it reaches 1 when the two share no allele whatever their diversity.
  */
 export type PopDistMeasure = (typeof THE_MEASURES)[number];
 
@@ -157,7 +165,17 @@ export interface PopDists {
   /** f_2 of every pair, and `null` when it was not asked for. */
   readonly f2: Distances | null;
 
-  /** The chord distance of every pair, and `null` when it was not asked for. */
+  /**
+   * The chord distance of every pair, and `null` when it was not asked for.
+   *
+   * It is the form `adegenet::dist.genpop(method = 2)` gives, the chord of
+   * the sphere of radius 1 divided by the square root of 2: two populations
+   * that share no allele are 1 apart here and 1.414 apart unscaled. Books
+   * normalize it in several ways, so a number compared with another program
+   * has to be compared with the same form, and the scaling changes nothing
+   * for a tree or for a principal coordinate analysis. `da` is the square of
+   * this form and is Nei's D_A.
+   */
   readonly chord: Distances | null;
 
   /** Nei's D_A of every pair, and `null` when it was not asked for. */
@@ -203,12 +221,28 @@ export interface PopDists {
    *
    * It is Meirmans and Hedrick's (2011) and not Hedrick's earlier G'_ST: for
    * the first two populations of the biallelic panel of the tests this one
-   * is 0.1620 and G'_ST is 0.1155, and a user who wants G'_ST gets it from
-   * `gst` with one division, `gst * (1 + H_S) / (1 - H_S)`. mmod's
-   * `pairwise_Gst_Hedrick` computes this one whatever its name suggests, and
-   * is 1.9e-4 from it at the furthest on the biallelic panel and 4.7e-4 on
-   * the multiallelic one. It has no value at a ploidy of 1 either, for the
-   * reason `dest` gives.
+   * is 0.1620 and G'_ST is 0.1155.
+   *
+   * G'_ST is `gst * (1 + hS) / (1 - hS)`, with `hS` the mean corrected
+   * diversity within the two populations over the variants that counted for
+   * that pair. No field of a `PopDists` holds `hS`, and `gst` and `dest`
+   * together give it back:
+   *
+   * ```js
+   * const d = 1 / (1 / gst - 1 + 2 / dest);
+   * const hS = 1 - (2 * d) / dest;
+   * ```
+   *
+   * which for that same pair is an `hS` of 0.351109 and a G'_ST of 0.115481.
+   * The unbiased expected heterozygosity of `calcPerVarDistribs` is another
+   * quantity, corrected for the sample in another way and taken over one
+   * population and not the two pooled: on that pair its mean is 0.351160,
+   * four digits of agreement and a G'_ST nobody would see was wrong.
+   *
+   * mmod's `pairwise_Gst_Hedrick` computes this one whatever its name
+   * suggests, and is 1.9e-4 from it at the furthest on the biallelic panel
+   * and 4.7e-4 on the multiallelic one. It has no value at a ploidy of 1
+   * either, for the reason `dest` gives.
    */
   readonly gstStandardized: Distances | null;
 
@@ -475,8 +509,9 @@ function theMeasures(
   }
   const askedFor = [...new Set(asked)];
   // Which of the seven have a value is the core's, so that a measure is
-  // written there and not here as well. All seven have one, so nothing is
-  // refused below.
+  // written there and not here as well. All seven have one, so what the
+  // refusal below can fire on is a measure added to `THE_MEASURES` with no
+  // formula in the core beside it.
   const haveAValue = measuresThatHaveAValue() as PopDistMeasure[];
   // A name that is of none of the seven goes on to the binding crate, which
   // refuses it with the seven: which names there are is the core's rule too.
@@ -486,10 +521,8 @@ function theMeasures(
   );
   if (withNoValue.length > 0) {
     throw new Error(
-      `popnei: ${named(withNoValue)} ` +
-        `${withNoValue.length === 1 ? "is" : "are"} not calculated yet, ` +
-        `and what popnei calculates today is ` +
-        `${named(haveAValue)}: ask for those`,
+      `popnei: there is no value for ${named(withNoValue)}, and the ` +
+        `measures that have one are ${named(haveAValue)}: ask for those`,
     );
   }
   return askedFor;
