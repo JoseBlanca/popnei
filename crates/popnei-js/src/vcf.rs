@@ -227,25 +227,31 @@ impl VcfSource {
     /// The three arrays hold the tested individuals in the order the source
     /// has them, one position, one value of the trait and one row of
     /// `num_coefs` values of the design each, and they are read together row
-    /// by row.
+    /// by row. `kinship` is the relatedness of those individuals, one row
+    /// and one column for each of them and row after row, which makes the
+    /// study a mixed model, and `undefined` leaves it a model with no
+    /// random effect.
     ///
     /// # Errors
     ///
     /// When `trait_name` is of neither trait; when the study needs one of
-    /// the three models that are not written; when the individuals are not
-    /// in the order the source has them, one is there twice or is not in the
-    /// source, or they are fewer than the columns of the design plus two;
-    /// when a value of the phenotype or of the design is not finite; when
-    /// the columns of the design are not independent; when the VCF
-    /// cannot be read; when a variant has more than two alleles among its
-    /// called genotypes and `transform_to_biallelic` is false; when the pass
-    /// gives no variant; and when the linear algebra could not be done.
+    /// the two logistic models, which are not written, or the GRAMMAR-Gamma
+    /// approximation, which is not written either; when the individuals are
+    /// not in the order the source has them, one is there twice or is not in
+    /// the source, or they are fewer than the columns of the design plus
+    /// two; when a value of the phenotype or of the design is not finite;
+    /// when the kinship is not one row and one column for each tested
+    /// individual or holds a value that is not finite; when the columns of
+    /// the design are not independent; when the VCF cannot be read; when a
+    /// variant has more than two alleles among its called genotypes and
+    /// `transform_to_biallelic` is false; when the pass gives no variant;
+    /// and when the linear algebra could not be done.
     #[expect(
         clippy::too_many_arguments,
         reason = "the study as the package checked it: the tested individuals, their \
-                  trait, their design and how a multiallelic variant is read, each \
-                  array flat, since a table is not one of the types wasm-bindgen \
-                  carries"
+                  trait, their design, the kinship of a mixed model and the three \
+                  things a user asked for, each array flat, since a table is not one \
+                  of the types wasm-bindgen carries"
     )]
     pub fn calc_gwas(
         &self,
@@ -255,6 +261,8 @@ impl VcfSource {
         num_coefs: usize,
         trait_name: String,
         test_name: Option<String>,
+        kinship: Option<Vec<f64>>,
+        use_grammar_gamma_approx: bool,
         transform_to_biallelic: bool,
         steps: Steps,
     ) -> Result<GwasOfVariants, JsPopneiError> {
@@ -267,6 +275,8 @@ impl VcfSource {
                 num_coefs,
                 trait_name,
                 test_name,
+                kinship,
+                use_grammar_gamma_approx,
                 transform_to_biallelic,
             },
             steps,

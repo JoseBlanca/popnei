@@ -12,18 +12,25 @@
  * and `pValue` is the probability of seeing an effect that far from 0 when
  * the variant has none.
  *
- * What `calcGwas` fits is the linear model, a continuous trait with no
- * kinship, which is what plink2's `--glm` computes. Its test is the t test
+ * What `calcGwas` fits is the continuous half of the study, the two models
+ * of a trait that is a measurement. Without a kinship it is the linear
+ * model, which is what plink2's `--glm` computes, and its test is the t test
  * of the effect: the effect divided by its standard error, which under the
  * hypothesis that the variant has none follows a Student t distribution
  * with as many degrees of freedom as there are individuals left once the
  * covariates and the variant have been fitted, and `pValue` is the chance
  * that such a t falls further from 0 than this one did, either way.
  *
- * The linear mixed model, which takes a kinship so that a variant that only
- * marks the ancestry of a panel does not look associated, and the two
- * logistic models of a binomial trait are being written; asking for one is
- * an `Error` that says so. `docs/specs/gwas.md` has the four of them.
+ * With a kinship it is the linear mixed model, which a panel with families
+ * in it needs: the trait carries a random effect whose covariance is the
+ * kinship times a variance, so that a variant which only marks the ancestry
+ * of the panel does not look associated. Its two tests are rrBLUP's Wald
+ * test and GMMAT's score test.
+ *
+ * The two logistic models of a binomial trait are being written, and so is
+ * the GRAMMAR-Gamma approximation a mixed model can take instead of the
+ * exact denominator of its test; asking for one is an `Error` that says so.
+ * `docs/specs/gwas.md` has the four models.
  */
 
 import {
@@ -32,7 +39,7 @@ import {
 
 import { aBoolean, aString, whatWasGiven } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
-import type { Kinship } from "./kinship.js";
+import { Kinship } from "./kinship.js";
 import { theValuesOf } from "./pca.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
@@ -47,20 +54,25 @@ import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 const INTERCEPT = "intercept";
 
 /**
- * The options of `calcGwas` that the linear mixed model brings and that this
- * build has not: a kinship, and the approximation that a mixed model can
- * take instead of a fit per variant.
+ * What `float` takes in Python and `Number` does not, and the other way
+ * round: a string is read as the number it holds only when it is written the
+ * way `float` writes one.
  *
- * They are refused by name rather than ignored: a call that gave a kinship
- * and got a study without one would be a linear model reported as a mixed
- * one, with nothing to show it. `test` is not among them: the Wald test is
- * the linear model's own, and the core is what refuses the score test of it.
- *
- * An option that is written and left `undefined` is not given, which is what
- * spreading an object of options over a call leaves behind, so what is
- * refused is a value and not a key.
+ * `Number` gives a value where `float` raises, so a string that holds no
+ * number would become a phenotype of 0 or a silently missing individual, and
+ * `float` takes what `Number` refuses, the underscores of `1_000`. What is
+ * matched is an optional sign and then digits with an optional point and an
+ * optional exponent, with `_` allowed between digits, which is `float`'s
+ * grammar for a decimal literal. The words `nan`, `inf` and `infinity`,
+ * which `float` also takes, are matched apart, since `Number` reads only the
+ * second of the three.
  */
-const OF_THE_MIXED_MODEL = ["kinship", "useGrammarGammaApprox"] as const;
+const A_DIGIT_RUN = "\\d+(?:_\\d+)*";
+const WRITTEN_AS_FLOAT_WRITES_ONE = new RegExp(
+  `^[+-]?(?:${A_DIGIT_RUN}(?:\\.(?:${A_DIGIT_RUN})?)?|\\.${A_DIGIT_RUN})` +
+    `(?:[eE][+-]?${A_DIGIT_RUN})?$`,
+);
+const WRITTEN_AS_A_WORD_FLOAT_TAKES = /^([+-]?)(nan|inf|infinity)$/i;
 
 /** What was measured on each individual. */
 export type TraitType = "continuous" | "binomial";
@@ -196,11 +208,12 @@ export interface CalcGwasOptions {
    *
    * A value that is not a number is read as one, as `float` reads it in the
    * Python package and in pyNei: the string `"1.7"`, which is how a trait
-   * read from a file arrives, and `true` and `false`. What holds no number
-   * is an `Error` naming the individual, `null`, `undefined`, the empty
-   * string and NaN among them. An individual with no phenotype is left out
-   * of the object altogether, which is the only way to say so here and is
-   * what leaves it untested.
+   * read from a file arrives, and `true` and `false`. A value whose `float`
+   * would be NaN is an individual with no phenotype, which is left untested:
+   * NaN itself, the string `"nan"`, and a key that is not in the object at
+   * all. What holds no number is an `Error` naming the individual, `null`,
+   * `undefined`, the empty string and any other string that is not a number
+   * among them, and so is an infinity.
    */
   phenotype: Readonly<Record<string, number | string | boolean>>;
   /**
@@ -243,14 +256,24 @@ export interface CalcGwasOptions {
   transformToBiallelic?: boolean;
   /**
    * The relatedness of every pair of individuals, which the linear mixed
-   * model takes as the covariance of a random effect. It is being written,
-   * and giving one is an `Error` that says so; until then the structure of
-   * a panel goes in as the top principal components among the covariates.
+   * model takes as the covariance of a random effect, so that a variant
+   * which only marks the ancestry of a panel does not look associated.
+   *
+   * It is what `calcKinship` gives, or a `Kinship` built over the matrix
+   * another program wrote. It has to hold every individual that is tested,
+   * and a tested individual it has not is an `Error` naming them; the ones
+   * it holds over are left out, as `Kinship` of some of a panel would be.
+   * Without it the structure of a panel goes in as the top principal
+   * components among the covariates, which is enough for individuals that
+   * are not close relatives.
    */
   kinship?: Kinship;
   /**
-   * Whether the GRAMMAR-Gamma approximation is made, which only a mixed
-   * model has to make. It is being written, and giving it is an `Error`.
+   * Whether the GRAMMAR-Gamma approximation is made, which stands in for the
+   * denominator of a mixed model's test and which only a mixed model has.
+   * It is being written, and asking for it is an `Error`: with no kinship
+   * because there is no such denominator to approximate, and with one
+   * because popnei cannot approximate it yet.
    */
   useGrammarGammaApprox?: boolean;
 }
@@ -282,18 +305,18 @@ export interface CalcGwasOptions {
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when the
  * options are not given at all; when `phenotype` is not an object of a name
- * to a value that holds a number, which `null`, `undefined`, the empty
- * string and NaN do not; when a name of it is of nobody the pass gives; when
- * `trait` is not one of the two names and when `test` is not one of the two;
- * when a covariate is not an object of a name to such a value, does not
- * cover a tested individual, or holds a value that is missing or holds no
- * number; when a covariate is named `intercept`, which is the name the
- * effect of the column of ones comes back under; when `kinship` or
- * `useGrammarGammaApprox` holds a value, which the linear mixed model
- * brings; when the score test is asked for, which a linear model has not;
- * when no individual is tested or they are fewer than the columns of the
- * design plus two; when a phenotype or a covariate is not a finite number
- * once it is read as one; when the columns of the
+ * to a value that holds a number, which `null`, `undefined` and the empty
+ * string do not; when a name of it is of nobody the pass gives; when `trait`
+ * is not one of the two names and when `test` is not one of the two; when a
+ * covariate is not an object of a name to such a value, does not cover a
+ * tested individual, or holds a value that is missing or holds no number;
+ * when a covariate is named `intercept`, which is the name the effect of the
+ * column of ones comes back under; when `kinship` is not a `Kinship` or has
+ * not an individual that is tested; when `useGrammarGammaApprox` is asked
+ * for, which is being written; when the score test is asked of a linear
+ * model, which has it not; when no individual is tested or they are fewer
+ * than the columns of the design plus two; when a phenotype or a covariate
+ * is not a finite number once it is read as one; when the columns of the
  * design are not independent; when the trait is binomial, which is a
  * logistic model and is being written; when the source cannot be read, a
  * wrong line of a VCF among the causes; when a variant has more than two
@@ -308,7 +331,6 @@ export function calcGwas(
   theWasmHasToBeLoaded();
   const { source, steps } = sourceOfTheVariants("variants", variants);
   theOptions(options);
-  theOptionsOfTheMixedModel(options);
   const trait = aString("trait", options.trait);
   const test =
     options.test === undefined ? undefined : aString("test", options.test);
@@ -316,6 +338,13 @@ export function calcGwas(
     options.transformToBiallelic === undefined
       ? defaultTransformToBiallelic()
       : aBoolean("transformToBiallelic", options.transformToBiallelic);
+  // An option written and left `undefined` is one that was not given, which
+  // is what spreading an object of options over a call leaves behind.
+  const useGrammarGammaApprox =
+    options.useGrammarGammaApprox === undefined
+      ? false
+      : aBoolean("useGrammarGammaApprox", options.useGrammarGammaApprox);
+  const kinship = theKinship(options.kinship);
   const individuals = theTestedIndividuals(
     options.phenotype,
     variants.individuals,
@@ -340,6 +369,8 @@ export function calcGwas(
     numCoefs,
     trait,
     test,
+    kinship === undefined ? undefined : theKinshipOfTheTested(kinship, names),
+    useGrammarGammaApprox,
     transformToBiallelic,
     steps.of_a_pass(),
   );
@@ -428,12 +459,7 @@ function theTestedIndividuals(
   const tested: TestedIndividual[] = [];
   for (const [position, name] of ofThePass.entries()) {
     // An individual the object has no key for has no phenotype and is not
-    // tested, and that is the only way to say so here: `Number` turns
-    // `null` into 0 and `undefined` into NaN, so a value that was meant as
-    // a missing one is refused below with the individual's name. The Python
-    // package says the same thing with a name its series has not, with
-    // `None` and with NaN, which is pandas' missing value, and the spec of
-    // the study settled the two on 23 September 2026.
+    // tested, which is what a name the series has not says in Python.
     if (!Object.hasOwn(phenotype, name)) {
       continue;
     }
@@ -454,12 +480,19 @@ function theTestedIndividuals(
           'numbers with trait: "binomial"',
       );
     }
-    // A phenotype that is not finite is refused here, where the individual
-    // has a name. A NaN is an individual the user asked to test and popnei
-    // would leave out with nothing to show it, and an infinity would carry
-    // through the null model into the effect of every variant. The core
-    // refuses both as well, by the place of the individual, which is what a
-    // caller of the wasm module reads.
+    // A value whose `float` is NaN is an individual with no phenotype, and
+    // is left untested rather than refused: that is the rule the spec
+    // settled on 23 September 2026, by the oracle, and it is what the
+    // Python package does with the NaN of a table read from a file. NaN
+    // itself and the string `nan` are what arrive here.
+    if (Number.isNaN(number)) {
+      continue;
+    }
+    // An infinity is refused here, where the individual has a name: it
+    // would carry through the null model into the effect of every variant.
+    // The core refuses it as well, by the place of the individual, which is
+    // what a caller of the wasm module reads. pyNei accepts it and then
+    // gives NaN for every variant.
     if (!Number.isFinite(number)) {
       throw new Error(
         `popnei: the phenotype of \`${name}\` is ${number}, and a study is ` +
@@ -473,23 +506,25 @@ function theTestedIndividuals(
 }
 
 /**
- * `value` as the number a study is fitted on, and `undefined` when it holds
- * none.
+ * `value` as `float` reads it in Python, and `undefined` where `float`
+ * raises.
  *
- * What it takes is what `float` takes in Python, which is what pyNei reads
- * and what the Python package of popnei kept: a number, a whole number, a
- * boolean, and a string that holds a number, which is how a trait read from
- * a file arrives. `Number` is wider than `float` in three ways, and each of
- * them is cut out here because what `Number` gives is a value and not an
- * error. A string that holds no number gives NaN, where `float` raises, so
- * a string is a number here only when its `Number` is one. A blank string
- * gives 0, where `float` raises on it as well. And an array, an object and
- * a date are read as numbers by `Number` and refused by `float`, so only
- * the four types above are read at all.
+ * `float` is the rule and not `Number`, because `float` is what pyNei and
+ * the Python package of popnei read a phenotype with and the two layers
+ * answer the same thing or they are two libraries: a value means an
+ * individual with no phenotype exactly where this gives NaN, and it is
+ * refused exactly where this gives `undefined`. `Number` agrees with `float`
+ * nowhere that matters, which is why nothing here is handed to it but a
+ * string already matched: `Number("abc")` gives NaN where `float` raises, so
+ * a typo would vanish instead of being reported; `Number(null)` and
+ * `Number("")` give 0, so a blank cell would become a phenotype of zero; and
+ * `Number("0x10")` gives 16 where `float` raises.
  *
- * NaN and the infinities come back as themselves, as `float('nan')` and
- * `float('inf')` give them: what a study does with one is the caller's to
- * say, and the caller is what has the name of the individual it is of.
+ * A number, a whole number and a boolean are read as `float` reads them, and
+ * a string is read when it is written the way `float` writes a number, which
+ * is how a trait read from a file arrives. `"nan"` comes back as NaN, so it
+ * is an individual with no phenotype and not a refusal, which is the case
+ * nobody guesses.
  */
 function theNumberOf(value: unknown): number | undefined {
   if (
@@ -499,11 +534,22 @@ function theNumberOf(value: unknown): number | undefined {
   ) {
     return Number(value);
   }
-  if (typeof value !== "string" || value.trim() === "") {
+  if (typeof value !== "string") {
     return undefined;
   }
-  const number = Number(value);
-  return Number.isNaN(number) ? undefined : number;
+  // `float` skips the whitespace around the number and nothing else.
+  const written = value.trim();
+  const word = WRITTEN_AS_A_WORD_FLOAT_TAKES.exec(written);
+  if (word !== null) {
+    const sign = word[1] === "-" ? -1 : 1;
+    return (word[2] as string).toLowerCase() === "nan"
+      ? Number.NaN
+      : sign * Number.POSITIVE_INFINITY;
+  }
+  if (!WRITTEN_AS_FLOAT_WRITES_ONE.test(written)) {
+    return undefined;
+  }
+  return Number(written.replaceAll("_", ""));
 }
 
 /** One covariate: its name and its value for each tested individual. */
@@ -689,27 +735,72 @@ function theOptions(options: CalcGwasOptions): void {
 }
 
 /**
- * Refuses the options that the linear mixed model brings, which this build
- * has not.
+ * What was written in `kinship`, given back unless it is neither a `Kinship`
+ * nor missing.
  *
- * What is refused is a value and not a key: an option written as
- * `undefined`, which is what spreading an object of options leaves for the
- * ones that were not filled in, is an option that was not given, and a user
- * who writes the documented default explicitly is not asking for anything.
+ * An option written and left `undefined` is one that was not given, which is
+ * what spreading an object of options over a call leaves behind, so a study
+ * with `kinship: undefined` is a study with no kinship and no error.
  *
- * @throws {Error} When `kinship` or `useGrammarGammaApprox` holds a value.
+ * @throws {Error} When it holds something that is not a `Kinship`. What a
+ * user gives instead is usually the matrix itself, and what that gave was
+ * the error of a `Float64Array` read off `undefined`.
  */
-function theOptionsOfTheMixedModel(options: CalcGwasOptions): void {
-  const given = OF_THE_MIXED_MODEL.filter(
-    (option) => options[option] !== undefined,
-  );
-  if (given.length > 0) {
-    const belongs = given.length === 1 ? "belongs" : "belong";
-    throw new Error(
-      `popnei: \`${given.join("`, `")}\` ${belongs} to the linear mixed ` +
-        "model, which accounts for the relatedness of a panel and is being " +
-        "written; what calcGwas fits is the linear model, a continuous trait " +
-        "with no kinship",
-    );
+function theKinship(kinship: Kinship | undefined): Kinship | undefined {
+  if (kinship === undefined || kinship instanceof Kinship) {
+    return kinship;
   }
+  throw new Error(
+    `popnei: \`kinship\` is ${whatWasGiven(kinship)}, and the kinship a ` +
+      "mixed model takes is a `Kinship`: give it what `calcKinship` gives, " +
+      "or build one over the matrix another program wrote, new " +
+      "Kinship(matrix, individuals, numVars)",
+  );
+}
+
+/**
+ * The kinship cut to the individuals of `tested`, in their order, as the
+ * core reads it: one row and one column for each of them, row after row.
+ *
+ * The core is given numbers and holds no name to cut a matrix by, so the
+ * cutting is here, where the names are. An individual the kinship holds over
+ * is left out, as a `Kinship` of some of a panel leaves it out: the kinship
+ * a user has is of their panel, and a phenotype that leaves individuals out
+ * does not make it another matrix.
+ *
+ * @throws {Error} When a tested individual is not one of the kinship's: the
+ * random effect of a mixed model is the relatedness of every pair that is
+ * tested, and there is nothing to put in the row of an individual the matrix
+ * has not.
+ */
+function theKinshipOfTheTested(
+  kinship: Kinship,
+  tested: readonly string[],
+): Float64Array {
+  const ofTheMatrix = new Map(
+    kinship.individuals.map((name, row) => [name, row]),
+  );
+  const rows = tested.map((name) => {
+    const row = ofTheMatrix.get(name);
+    if (row === undefined) {
+      throw new Error(
+        `popnei: \`${name}\` is tested and is not one of the ` +
+          `${kinship.individuals.length} individuals of the \`kinship\`, ` +
+          "which holds the relatedness of every pair that is tested: give a " +
+          "kinship of them, `calcKinship(variants)` for instance, or leave " +
+          "that individual out of the phenotype",
+      );
+    }
+    return row;
+  });
+  const ofThePanel = kinship.individuals.length;
+  const cut = new Float64Array(rows.length * rows.length);
+  for (const [row, ofTheRow] of rows.entries()) {
+    for (const [column, ofTheColumn] of rows.entries()) {
+      cut[row * rows.length + column] = kinship.matrix[
+        ofTheRow * ofThePanel + ofTheColumn
+      ] as number;
+    }
+  }
+  return cut;
 }

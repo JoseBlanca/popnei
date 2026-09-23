@@ -60,6 +60,13 @@ pub(crate) struct ArgumentsOfTheStudy {
     /// Which test is made of every variant, one of the names of
     /// `popnei::gwas::TestType`, and `None` for the default of the model.
     pub(crate) test_name: Option<String>,
+    /// The kinship of the tested individuals, one row and one column for
+    /// each of them and row after row, already cut to them and in their
+    /// order by the package, or `None` for a model with no random effect.
+    pub(crate) kinship: Option<Vec<f64>>,
+    /// Whether the GRAMMAR-Gamma approximation is made, which popnei
+    /// refuses until it is written and which the core is what refuses.
+    pub(crate) use_grammar_gamma_approx: bool,
     /// Whether a variant of more than two alleles among its called genotypes
     /// is read with every allele that is not the major one counting the
     /// same.
@@ -223,19 +230,22 @@ impl GwasOfVariants {
 /// # Errors
 ///
 /// When the name of the trait is of neither of the two and when the name of
-/// the test is of neither; when the study needs one of the three models that
-/// are not written, the two logistic ones and the linear mixed one; when the
-/// score test is asked of a linear model, whose only test is the t test of
-/// the effect it fitted; when the individuals to test are not in the order
-/// the source has them, one of them is there twice, one of them is not in
-/// the source, or they are fewer than the columns of the design plus two;
-/// when a value of the phenotype or of the design is not a finite number;
-/// when the columns of the design are not independent; when the source
-/// cannot be read, a wrong line of a VCF among the causes; when a variant
-/// has more than two alleles among its called genotypes and
-/// `transform_to_biallelic` is false; when the pass gives no variant; when
-/// the linear algebra of a fit or of a test could not be done; and when a
-/// position of a variant is above the last whole number JavaScript holds.
+/// the test is of neither; when the study needs one of the two logistic
+/// models, which are not written; when the GRAMMAR-Gamma approximation is
+/// asked for, which is not written either; when the score test is asked of
+/// a linear model, whose only test is the t test of the effect it fitted;
+/// when the individuals to test are not in the order the source has them,
+/// one of them is there twice, one of them is not in the source, or they are
+/// fewer than the columns of the design plus two; when a value of the
+/// phenotype or of the design is not a finite number; when the kinship does
+/// not hold one row and one column for each tested individual or holds a
+/// value that is not finite; when the columns of the design are not
+/// independent; when the source cannot be read, a wrong line of a VCF among
+/// the causes; when a variant has more than two alleles among its called
+/// genotypes and `transform_to_biallelic` is false; when the pass gives no
+/// variant; when the linear algebra of a fit or of a test could not be done;
+/// and when a position of a variant is above the last whole number
+/// JavaScript holds.
 pub(crate) fn gwas_of_the_variants(
     source: &dyn OpenSource,
     study: &ArgumentsOfTheStudy,
@@ -258,13 +268,14 @@ pub(crate) fn gwas_of_the_variants(
         trait_type,
         design: &study.design,
         num_coefs: study.num_coefs,
-        // The kinship and the GRAMMAR-Gamma approximation reach the core
-        // with the linear mixed model, which is being written. The test
-        // does not wait for it: the Wald test is the linear model's own,
-        // and the core is what refuses the score test of it.
-        kinship: None,
+        kinship: study.kinship.as_deref(),
         test,
-        use_grammar_gamma_approx: false,
+        // The approximation is refused by the core, which says two
+        // different things about it, that a study with no kinship has no
+        // denominator to approximate and that popnei has not written the
+        // approximation of the one a mixed model has. Both packages give it
+        // as the user wrote it, so both messages are the same in each.
+        use_grammar_gamma_approx: study.use_grammar_gamma_approx,
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
     };

@@ -5,18 +5,25 @@ the numbers this file asserts. Every literal here is the spec's, or is read
 from `tests/reference/gwas/`, which
 `tests/reference/gwas/make_reference.py` writes: the trait, the two
 covariates and the subpopulation of each of the 200 individuals in
-`phenotypes.csv`, and what plink2 v2.0.0-a.7.7 answered for the panel with
-every genotype called in `plink2.panel_called.glm.linear.tsv`, 1200 rows.
-The panel itself is `tests/reference/kinship/panel_called.vcf.gz`.
+`phenotypes.csv`, what plink2 v2.0.0-a.7.7 answered for the panel with every
+genotype called in `plink2.panel_called.glm.linear.tsv`, and what GMMAT
+1.5.0 and rrBLUP 4.6.3 answered for the mixed model in
+`gmmat.null_models.tsv`, `gmmat.panel_called.lmm.score.tsv`,
+`gmmat.panel.lmm.score.tsv` and `rrblup.panel_called.lmm.tsv`, 1200 rows
+each. The panel itself is `tests/reference/kinship/panel_called.vcf.gz`, and
+the kinship the mixed model is given is the one plink2 wrote for it, which
+came from neither popnei nor pyNei.
 
-The three checks of "How it is verified" of "What every model shares" that
-are made at the Python `calc_gwas` are here: every column against plink2
-over all 1200 variants, every column against pyNei at commit ef0ca6e, which
-`pyproject.toml` names, and that the blocks the source gives change nothing.
-The worked example and the six literals are cargo tests, where the spec puts
-them. What the rest of this file covers is what only this layer has: which
-individuals are tested and in which order, the design built out of a frame
-of covariates, and what a wrong argument is refused with.
+The checks of "How it is verified" of "What every model shares" that are
+made at the Python `calc_gwas` are here: every column against the reference
+program of each model over all 1200 variants, every column against pyNei at
+commit ef0ca6e, which `pyproject.toml` names, that the blocks the source
+gives change nothing, and that the mixed model finds the variants that were
+planted. The worked example and the six literals of each model are cargo
+tests, where the spec puts them. What the rest of this file covers is what
+only this layer has: which individuals are tested and in which order, the
+design built out of a frame of covariates, the kinship cut to the tested
+individuals, and what a wrong argument is refused with.
 
 A `beta` and an `se` are compared with a share of the `se` of their variant
 and never with a share of themselves, which is the rule of "How it is
@@ -25,6 +32,7 @@ variants `beta` is what the rounding of a sum of cancelling products left,
 and a bound relative to it asks for an accuracy no arithmetic has.
 """
 
+import gzip
 import json
 import pathlib
 
@@ -34,6 +42,7 @@ import popnei
 import pytest
 from popnei import (
     GWASModel,
+    Kinship,
     TraitType,
     _core,
     calc_gwas,
@@ -42,6 +51,7 @@ from popnei import (
     write_vars,
 )
 from pynei import vars_from_vcf
+from pynei.gwas import Kinship as PyneiKinship
 from pynei.gwas import calc_gwas as pynei_gwas
 
 REFERENCE_GWAS_DIR = pathlib.Path(__file__).parent / "reference" / "gwas"
@@ -621,27 +631,42 @@ def test_a_trait_that_is_no_name_is_refused_by_its_type(
         _the_worked_example(worked_example, trait=_the_covariate())
 
 
-@pytest.mark.parametrize(
-    ("argument", "value"),
-    [
-        ("kinship", "a matrix"),
-        ("use_grammar_gamma_approx", True),
-    ],
-)
-def test_what_the_linear_mixed_model_brings_is_refused_by_name(
-    worked_example: pathlib.Path, argument: str, value: object
+def test_the_approximation_of_a_study_with_no_kinship_is_refused(
+    worked_example: pathlib.Path,
 ) -> None:
-    """A kinship and the approximation are refused by name.
+    """The GRAMMAR-Gamma approximation stands in for the denominator of a
+    mixed model's test, and a study with no kinship has no such denominator
+    to approximate.
 
-    A call that gave a kinship and got a study without one would be a linear
-    model reported as a mixed one, with nothing to show it, so they are
-    refused and not ignored while the linear mixed model is being written.
-    `test` is not one of them: it is the argument below.
+    It is the core that refuses it and not this layer, so the message is the
+    one TypeScript gives, and it is not the message of a study that brought a
+    kinship: there the denominator exists and popnei cannot approximate it
+    yet, which the next test asserts.
     """
-    with pytest.raises(
-        ValueError, match=rf"`{argument}` belongs to the linear mixed model"
-    ):
-        _the_worked_example(worked_example, **{argument: value})
+    with pytest.raises(ValueError, match="has no such denominator"):
+        _the_worked_example(worked_example, use_grammar_gamma_approx=True)
+
+
+def test_the_approximation_of_a_study_with_a_kinship_is_being_written() -> None:
+    """A mixed model that asks for the approximation is refused, and is not
+    given the exact test in silence.
+
+    The approximation is the plan `gwas-logistic`, being one item over both
+    mixed models. A study that made the exact test of every variant and
+    reported that it had approximated nothing would give the user no way to
+    tell that what they asked for did not happen.
+    """
+    phenotypes = _phenotypes()
+
+    with pytest.raises(ValueError, match="approximation is being written"):
+        calc_gwas(
+            open_vcf(PANEL),
+            phenotypes["cont"],
+            TraitType.CONTINUOUS,
+            covariates=phenotypes[["cov1", "cov2"]],
+            kinship=_the_kinship_of_the_panel(),
+            use_grammar_gamma_approx=True,
+        )
 
 
 def test_the_wald_test_is_the_linear_models_own_and_the_score_test_is_refused(
@@ -940,11 +965,537 @@ def test_the_private_module_names_a_design_that_is_not_contiguous(
             by_columns,
             "continuous",
             None,
+            None,
+            False,
             False,
             variants._steps,
         )
 
     assert "`design`" in str(refusal.value)
+
+
+# What GMMAT 1.5.0's `glmmkin` fitted for the panel with every genotype
+# called, from `tests/reference/gwas/gmmat.null_models.tsv`, which the
+# reference script writes at full precision: the variance of the random
+# effect of the kinship, which GMMAT calls `tau`, what is left over, which it
+# calls `sigma2`, and the effects of the intercept, of `cov1` and of `cov2`.
+OF_GMMAT_NULL = {
+    "genetic_variance": 1.22161667529699,
+    "residual_variance": 0.342359482266917,
+    "intercept": 4.67802051309181,
+    "cov1": 0.473360959469751,
+    "cov2": 1.11027907093373,
+}
+
+# How far each of those five may be from GMMAT's: 1e-5 absolute, the bound of
+# "How it is verified" of "The linear mixed model" of the spec, which is how
+# far two restricted maximum likelihood searches land apart. Nothing of it is
+# spent on rounding, the file being at full precision.
+#
+# Measured over the five on 24 September 2026: the worst is the genetic
+# variance, 1.221e-6 away on Accelerate and 1.218e-6 on faer, 12 per cent of
+# what is allowed, and the largest of the three effects is the 6.93e-7 of
+# `cov2` on both. Where that 1.2e-6 comes from is the kinship and not the
+# search: GMMAT was given the six printed digits of plink2's matrix and this
+# test reads the float64 beside them. The bound is the spec's and is not
+# lowered to two or three times what was measured, as the bounds on popnei's
+# own arithmetic are.
+OF_GMMAT_NULL_MODEL = 1e-5
+
+# How far a `-log10(p_value)` of the Wald test may be from rrBLUP's: 1e-4
+# absolute, from the same section, which asks it of all 1200 variants. It is
+# the distance between two fits and not a printed digit, the file being at
+# full precision, and 1e-4 in `-log10(p)` is 2.3e-4 of the p-value itself.
+#
+# Measured over the 1200 on 24 September 2026: the worst is `var0572`,
+# 1.997e-5 on Accelerate and 1.996e-5 on faer, 20 per cent of what is
+# allowed.
+OF_RRBLUP = 1e-4
+
+# How far `1 / se**2` of the score test may be from GMMAT's `VAR`, as a share
+# of it, and how far a p-value may be from GMMAT's in `log10`: 1e-5 and 1e-4,
+# both from the spec and both over all 1200 variants of both panels.
+#
+# The two files are printed to six significant digits, which rounds a value
+# by up to 5e-6 of itself, so half of the first bound can go on GMMAT's
+# printing alone and that comparison has twofold headroom at best. `log10`
+# shrinks a relative difference, so the second has more.
+#
+# Measured over the 1200 of each panel on 24 September 2026, the same to
+# three digits on both backends: the worst `1 / se**2` is 4.43e-6 of `VAR` at
+# `var0955` of the panel with every genotype called and 5.42e-6 at `var1060`
+# of the panel with genotypes missing, 54 per cent of what is allowed and at
+# the width of GMMAT's own last printed digit; the worst p-value is 4.62e-5
+# and 4.76e-5 in `log10`, both at `var0185`, 48 per cent of what is allowed,
+# and that one is not the printing but the two fits, which land 1.2e-6 apart
+# in the genetic variance.
+OF_GMMAT_VARIANCE = 1e-5
+OF_GMMAT_P_VALUE = 1e-4
+
+# How far a number of a mixed model may be from pyNei's: 1.5e-7, for the two
+# variances and the effects of the null model as a share of pyNei's, for a
+# `beta` and an `se` as a share of the `se` of their variant, and for a
+# p-value as the distance between the two in `log10`.
+#
+# It is the one comparison of the spec that does not take the common 1e-9
+# relative, and "How it is verified" of "The linear mixed model" says why:
+# the criterion of the restricted maximum likelihood search is flat at its
+# minimum, so an eigenvalue moving in its last bits moves the ratio of the
+# two variances by about the square root of that, and every number of this
+# model is built from that ratio. The two backends alone put the genetic
+# variance 9.7e-9 apart on the same kinship, so a bound at 1e-9 would sit
+# below the noise of the search and would pass or fail by rounding.
+#
+# So it was lowered until it failed, on both backends, over all 1200 variants
+# of both panels under both tests, on 24 September 2026. It breaks at 5.17e-8
+# on Accelerate and 4.65e-8 on faer, at the residual variance of the null
+# model, which is `delta` times the genetic one and so carries the whole
+# error of the search; the worst `beta` is 4.21e-8 and 3.78e-8 of its `se`,
+# at the panel with genotypes missing under the score test, and the worst
+# p-value is 4.32e-8 and 3.88e-8 in `log10`. This is 2.9 times the worst of
+# those, and 15 times the distance between the two backends, so it is a bound
+# the comparison can fail.
+OF_PYNEI_WITH_A_KINSHIP = 1.5e-7
+
+# How many of the 5 causal variants have to be among the 10 smallest p-values
+# of the mixed model, which is what "How it is verified" of "What every model
+# shares" asks: at least 3. Measured on 24 September 2026, 4 of the 5 are, on
+# both backends.
+CAUSAL_AMONG_THE_SMALLEST = 3
+THE_SMALLEST_P_VALUES = 10
+
+
+def _the_kinship_of_the_panel() -> Kinship:
+    """The kinship that `plink2 --make-rel square bin` wrote for the panel
+    with every genotype called, at full precision.
+
+    It is the one the mixed models are given, for both panels, as "How it is
+    verified" of "What every model shares" of the spec asks: a kinship that
+    came from neither popnei nor pyNei, and the one
+    `tests/reference/gwas/make_reference.py` gave GMMAT and rrBLUP. GMMAT
+    fits one null model with it and scores the variants of each panel against
+    that fit, so the panel with genotypes missing is tested with the other
+    panel's kinship here as it is there.
+    """
+    with gzip.open(
+        REFERENCE_KINSHIP_DIR / "panel_called.plink2.rel.bin.gz", "rb"
+    ) as stored:
+        entries = numpy.frombuffer(stored.read(), dtype="<f8")
+    lines = (
+        (REFERENCE_KINSHIP_DIR / "panel_called.plink2.rel.id").read_text().splitlines()
+    )
+    individuals = [line for line in lines[1:] if line]
+    assert len(individuals) == PANEL_NUM_INDIVIDUALS
+    matrix = entries.reshape(PANEL_NUM_INDIVIDUALS, PANEL_NUM_INDIVIDUALS).copy()
+    return Kinship(
+        matrix=pandas.DataFrame(matrix, index=individuals, columns=individuals),
+        num_vars=PANEL_NUM_VARS,
+    )
+
+
+def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool = True):
+    """The study of `panel` with the kinship plink2 wrote and the test
+    `test`, `None` taking the default of the model.
+
+    `with_cov1` says whether the continuous covariate goes in beside the
+    intercept and the binary one. rrBLUP takes every fixed effect as a
+    factor, so it was given `cov2` alone and popnei is run with that one
+    covariate for its comparison; GMMAT was given both.
+    """
+    phenotypes = _phenotypes()
+    columns = ["cov1", "cov2"] if with_cov1 else ["cov2"]
+    return calc_gwas(
+        open_vcf(panel),
+        phenotypes["cont"],
+        TraitType.CONTINUOUS,
+        covariates=phenotypes[columns],
+        kinship=_the_kinship_of_the_panel(),
+        test=test,
+    )
+
+
+def test_the_null_of_the_panel_is_gmmats_variances_and_effects() -> None:
+    """The five numbers of the null model against GMMAT's `glmmkin`, within
+    1e-5 absolute.
+
+    The search has to be reproduced step for step or the variances move, so a
+    `genetic_variance` near but not at 1.221617 means the search and one far
+    from it means the criterion or the clamp of the eigenvalues at 0. The
+    cargo test of the same five asserts them at the fit; what this one adds
+    is that they reach Python under the names `NullModel` gives them, where
+    GMMAT calls the two variances `tau` and `sigma2`.
+
+    The `heritability` is asserted with them because it is the only number of
+    `NullModel` built from the two variances rather than read off the fit,
+    and because it is `None` for every other model.
+    """
+    of_gmmat = pandas.read_csv(
+        REFERENCE_GWAS_DIR / "gmmat.null_models.tsv", sep="\t"
+    ).set_index("model")
+
+    result = _the_mixed_study_of(PANEL, "score")
+
+    null = result.null_model
+    assert null.model == GWASModel.LMM
+    assert result.test == "score"
+    assert null.num_individuals == PANEL_NUM_INDIVIDUALS
+    # The file is read as well, so that a number of it that moved away from
+    # the literals above would fail here and not quietly widen the check.
+    assert dict(
+        zip(
+            OF_GMMAT_NULL,
+            of_gmmat.loc["lmm", ["tau", "sigma2", "intercept", "cov1", "cov2"]],
+            strict=True,
+        )
+    ) == pytest.approx(OF_GMMAT_NULL, rel=0, abs=0)
+    found = {
+        "genetic_variance": null.genetic_variance,
+        "residual_variance": null.residual_variance,
+        "intercept": null.covariate_effects["intercept"],
+        "cov1": null.covariate_effects["cov1"],
+        "cov2": null.covariate_effects["cov2"],
+    }
+    for name, expected in OF_GMMAT_NULL.items():
+        assert found[name] == pytest.approx(expected, rel=0, abs=OF_GMMAT_NULL_MODEL), (
+            f"{name} is {found[name]} and GMMAT gives {expected}"
+        )
+    genetic = OF_GMMAT_NULL["genetic_variance"]
+    residual = OF_GMMAT_NULL["residual_variance"]
+    assert null.heritability == pytest.approx(
+        genetic / (genetic + residual), rel=0, abs=OF_GMMAT_NULL_MODEL
+    )
+
+
+def test_every_variant_of_the_panel_is_rrblups_wald_test() -> None:
+    """The `-log10(p_value)` of all 1200 variants against rrBLUP's `GWAS`
+    with `P3D = TRUE`, within 1e-4 absolute.
+
+    `-log10(p)` is all rrBLUP reports, so it is what is compared. The study
+    is run with `cov2` alone: rrBLUP takes every fixed effect as a factor, so
+    the reference script gave it that covariate and no other, and a run that
+    gave it both would get numbers that are close and not equal, which reads
+    like a tolerance that is too tight and is not.
+
+    The markers are compared first, so that every row is matched to the
+    variant rrBLUP wrote it for and not to the row at the same place.
+    """
+    of_rrblup = pandas.read_csv(
+        REFERENCE_GWAS_DIR / "rrblup.panel_called.lmm.tsv", sep="\t"
+    )
+
+    result = _the_mixed_study_of(PANEL, "wald", with_cov1=False)
+
+    assert result.null_model.model == GWASModel.LMM
+    assert result.test == "wald"
+    assert len(of_rrblup.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_rrblup["marker"])
+    # rrBLUP writes the column under the name of the trait it was given.
+    theirs = of_rrblup["cont"].to_numpy()
+    ours = -numpy.log10(result.stats["p_value"].to_numpy())
+    difference = numpy.abs(ours - theirs)
+    worst = int(numpy.argmax(difference))
+    assert difference[worst] <= OF_RRBLUP, (
+        f"-log10(p) of {of_rrblup['marker'][worst]} is {ours[worst]} and "
+        f"rrBLUP gives {theirs[worst]}, {difference[worst]} away against the "
+        f"{OF_RRBLUP} allowed"
+    )
+
+
+@pytest.mark.parametrize("panel", PANELS)
+def test_every_variant_of_a_panel_is_gmmats_score_test(panel: pathlib.Path) -> None:
+    """The variance of the score and the p-value of all 1200 variants of both
+    panels against GMMAT's `glmm.score`.
+
+    GMMAT reports the variance of the score, which is `x' p x`, the
+    denominator both tests are built on and what popnei gives as
+    `1 / se**2`, and the p-value. The p-values span 23 orders of magnitude
+    and what a user reads is the exponent, so they are compared in `log10`.
+
+    The second panel is what says that a missing genotype takes the mean
+    dosage of its variant, which GMMAT calls `impute2mean`: 3 in 100 of its
+    genotypes are missing whole, and it is scored against the null model
+    fitted with the kinship of the panel where none is, as the reference
+    script scores it.
+    """
+    name = "panel_called" if panel == PANEL else "panel"
+    of_gmmat = pandas.read_csv(
+        REFERENCE_GWAS_DIR / f"gmmat.{name}.lmm.score.tsv", sep="\t"
+    )
+
+    result = _the_mixed_study_of(panel, "score")
+
+    assert len(of_gmmat.index) == PANEL_NUM_VARS
+    assert list(result.stats["id"]) == list(of_gmmat["SNP"])
+    se = result.stats["se"].to_numpy()
+    ours = 1.0 / (se * se)
+    theirs = of_gmmat["VAR"].to_numpy()
+    share = numpy.abs(ours - theirs) / theirs
+    worst = int(numpy.argmax(share))
+    assert share[worst] <= OF_GMMAT_VARIANCE, (
+        f"1 / se**2 of {of_gmmat['SNP'][worst]} of {name} is {ours[worst]} "
+        f"and GMMAT gives {theirs[worst]}, which is {share[worst]} of it "
+        f"against the {OF_GMMAT_VARIANCE} allowed"
+    )
+    ours_p = result.stats["p_value"].to_numpy()
+    theirs_p = of_gmmat["PVAL"].to_numpy()
+    apart = numpy.abs(numpy.log10(ours_p / theirs_p))
+    worst = int(numpy.argmax(apart))
+    assert apart[worst] <= OF_GMMAT_P_VALUE, (
+        f"the p-value of {of_gmmat['SNP'][worst]} of {name} is "
+        f"{ours_p[worst]} and GMMAT gives {theirs_p[worst]}, {apart[worst]} "
+        f"apart in log10 against the {OF_GMMAT_P_VALUE} allowed"
+    )
+
+
+@pytest.mark.parametrize("test", ["wald", "score"])
+@pytest.mark.parametrize("panel", PANELS)
+def test_every_variant_of_a_panel_with_a_kinship_is_pyneis(
+    panel: pathlib.Path, test: str
+) -> None:
+    """Both libraries on the same VCF with the same kinship, over all 1200
+    variants of each panel under each test.
+
+    Both are given the kinship plink2 wrote, so what is compared is the
+    search and the two tests and not two kinships. The variants that have no
+    answer are asserted to be the same ones, which on both panels is none of
+    them.
+
+    The bound is `OF_PYNEI_WITH_A_KINSHIP` and not the `OF_PYNEI` the linear
+    model is held to, seven orders of magnitude apart: every number of this
+    model comes out of a search whose criterion is flat at its minimum, and
+    the comment on that constant has where each backend broke.
+    """
+    phenotypes = _phenotypes()
+    theirs = pynei_gwas(
+        vars_from_vcf(panel),
+        phenotypes["cont"],
+        "continuous",
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=PyneiKinship(
+            matrix=_the_kinship_of_the_panel().matrix, num_vars=PANEL_NUM_VARS
+        ),
+        test=test,
+    )
+
+    ours = _the_mixed_study_of(panel, test)
+
+    assert ours.individuals == tuple(theirs.samples)
+    assert ours.null_model.model == theirs.null_model.model
+    assert ours.test == theirs.test
+    for what, found, expected in (
+        (
+            "the genetic variance",
+            ours.null_model.genetic_variance,
+            theirs.null_model.genetic_variance,
+        ),
+        (
+            "the residual variance",
+            ours.null_model.residual_variance,
+            theirs.null_model.residual_variance,
+        ),
+    ):
+        assert found == pytest.approx(expected, rel=OF_PYNEI_WITH_A_KINSHIP), what
+    numpy.testing.assert_allclose(
+        ours.null_model.covariate_effects.to_numpy(),
+        theirs.null_model.covariate_effects.to_numpy(),
+        rtol=OF_PYNEI_WITH_A_KINSHIP,
+        atol=0,
+    )
+    numpy.testing.assert_allclose(
+        ours.stats["allele_freq"].to_numpy(),
+        theirs.stats["allele_freq"].to_numpy(),
+        rtol=0,
+        atol=OF_PLINK2_FREQUENCY,
+    )
+    se = theirs.stats["se"].to_numpy()
+    for column in ("beta", "se"):
+        difference = numpy.abs(
+            ours.stats[column].to_numpy() - theirs.stats[column].to_numpy()
+        )
+        worst = numpy.nanmax(difference / se)
+        assert worst <= OF_PYNEI_WITH_A_KINSHIP, (
+            f"the worst {column} is {worst} of the `se` of its variant "
+            f"against the {OF_PYNEI_WITH_A_KINSHIP} allowed"
+        )
+    ours_p = ours.stats["p_value"].to_numpy()
+    theirs_p = theirs.stats["p_value"].to_numpy()
+    assert (numpy.isnan(ours_p) == numpy.isnan(theirs_p)).all()
+    numpy.testing.assert_allclose(
+        numpy.log10(ours_p),
+        numpy.log10(theirs_p),
+        rtol=0,
+        atol=OF_PYNEI_WITH_A_KINSHIP,
+    )
+
+
+def test_the_mixed_model_finds_the_variants_that_were_planted() -> None:
+    """At least 3 of the 5 causal variants are among the 10 smallest p-values
+    of the mixed model.
+
+    The trait was simulated from the genotypes with five causal variants of
+    effect 0.6 and a heritability of 0.5, and the three subpopulations differ
+    in their mean so that the structure of the panel confounds it. This is
+    the one test of the file that asks whether the study answers the question
+    it is for rather than whether it answers it as another program does.
+    Measured on 24 September 2026, 4 of the 5 are there on both backends.
+    """
+    causal = set(pandas.read_csv(REFERENCE_GWAS_DIR / "causal_vars.csv")["id"])
+
+    result = _the_mixed_study_of(PANEL, "wald")
+
+    assert len(causal) == 5
+    smallest = result.stats.nsmallest(THE_SMALLEST_P_VALUES, "p_value")
+    found = causal & set(smallest["id"])
+    assert len(found) >= CAUSAL_AMONG_THE_SMALLEST, (
+        f"{sorted(found)} of the causal variants {sorted(causal)} are among "
+        f"the {THE_SMALLEST_P_VALUES} smallest p-values, "
+        f"{list(smallest['id'])}"
+    )
+
+
+def test_the_two_tests_of_the_mixed_model_differ_in_the_error_alone() -> None:
+    """The Wald test and the score test give the same `beta` for every
+    variant and a different `se`, and the default of the model is the Wald
+    test.
+
+    Both are `num / den` with the same numerator and the same denominator,
+    and what they differ in is how uncertain that effect is and which
+    distribution it is read against. A study that answered two different
+    effects would have its defect in the projection matrix and not in either
+    test, which is what makes this the cheapest check of the two together.
+    """
+    wald = _the_mixed_study_of(PANEL, "wald")
+    score = _the_mixed_study_of(PANEL, "score")
+    by_default = _the_mixed_study_of(PANEL, None)
+
+    assert wald.test == "wald"
+    assert score.test == "score"
+    assert by_default.test == "wald"
+    assert list(by_default.stats["p_value"]) == list(wald.stats["p_value"])
+    assert list(wald.stats["beta"]) == list(score.stats["beta"])
+    differ = numpy.asarray(wald.stats["se"]) != numpy.asarray(score.stats["se"])
+    assert differ.all()
+
+
+def test_a_tested_individual_the_kinship_has_not_is_refused_by_name() -> None:
+    """A kinship of half the panel, with a phenotype of all of it.
+
+    The random effect is the relatedness of every pair that is tested, so
+    there is nothing to put in the row of an individual the matrix has not,
+    and the refusal names the first of them. The other way round is no error:
+    a kinship of the whole panel with a phenotype of some of it is cut to
+    those, which the next test asserts.
+    """
+    kinship = _the_kinship_of_the_panel()
+    of_the_first_hundred = kinship.filter_individuals(kinship.individuals[:100])
+
+    with pytest.raises(ValueError, match="'s100' is tested and is not one of"):
+        calc_gwas(
+            open_vcf(PANEL),
+            _phenotypes()["cont"],
+            TraitType.CONTINUOUS,
+            kinship=of_the_first_hundred,
+        )
+
+
+def test_a_kinship_of_more_individuals_than_are_tested_is_cut_to_them() -> None:
+    """A kinship of the whole panel with a phenotype of 100 of them gives
+    what a kinship already cut to those 100 gives, to the bit.
+
+    The kinship a user holds is of their panel, and a phenotype that leaves
+    individuals out does not make it another matrix, so it is cut here as
+    `Kinship.filter_individuals` cuts it. The cutting is the only thing that
+    can differ between the two calls, and a study that read the uncut matrix
+    would be fitted on the relatedness of individuals it never tested.
+    """
+    kinship = _the_kinship_of_the_panel()
+    tested = list(kinship.individuals[:100])
+    phenotypes = _phenotypes().loc[tested]
+
+    of_the_panel = calc_gwas(
+        open_vcf(PANEL),
+        phenotypes["cont"],
+        TraitType.CONTINUOUS,
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=kinship,
+    )
+    of_the_hundred = calc_gwas(
+        open_vcf(PANEL),
+        phenotypes["cont"],
+        TraitType.CONTINUOUS,
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=kinship.filter_individuals(tested),
+    )
+
+    assert of_the_panel.individuals == tuple(tested)
+    assert of_the_panel.null_model.num_individuals == 100
+    assert list(of_the_panel.stats["beta"]) == list(of_the_hundred.stats["beta"])
+    assert list(of_the_panel.stats["se"]) == list(of_the_hundred.stats["se"])
+
+
+def test_the_kinship_is_read_in_the_order_the_source_has_the_individuals() -> None:
+    """A kinship whose rows were given in another order gives the study the
+    source's order gives.
+
+    The phenotype, the rows of the design and the dosages of a block are read
+    together row by row, and the kinship is the relatedness of those rows, so
+    a matrix left in the order the user built it in would put one
+    individual's relatedness against another's genotypes. No message can
+    catch this one, both matrices being kinships of the same 200 individuals:
+    what says it is that the two studies are equal.
+    """
+    kinship = _the_kinship_of_the_panel()
+    backwards = kinship.filter_individuals(list(reversed(kinship.individuals)))
+    phenotypes = _phenotypes()
+
+    in_the_sources_order = _the_mixed_study_of(PANEL, "score")
+    written_backwards = calc_gwas(
+        open_vcf(PANEL),
+        phenotypes["cont"],
+        TraitType.CONTINUOUS,
+        covariates=phenotypes[["cov1", "cov2"]],
+        kinship=backwards,
+        test="score",
+    )
+
+    assert list(written_backwards.stats["beta"]) == list(
+        in_the_sources_order.stats["beta"]
+    )
+    assert list(written_backwards.stats["se"]) == list(in_the_sources_order.stats["se"])
+
+
+def test_a_kinship_that_is_not_a_kinship_is_refused_by_its_type() -> None:
+    """The matrix itself is what a user gives instead, and what that gave
+    before this check was the `AttributeError` of an object with no `matrix`
+    in it."""
+    with pytest.raises(
+        TypeError, match="`kinship` is a DataFrame, and the kinship a mixed"
+    ):
+        calc_gwas(
+            open_vcf(PANEL),
+            _phenotypes()["cont"],
+            TraitType.CONTINUOUS,
+            kinship=_the_kinship_of_the_panel().matrix,
+        )
+
+
+def _the_kinship_of_the_worked_example(without: str | None = None) -> Kinship:
+    """The kinship of the six individuals of the worked example, or of the
+    five that are not `without`: the identity, which is the relatedness of
+    individuals with no recent ancestor in common.
+
+    The calls it is written for are refused before any model is fitted, so
+    what the matrix holds only has to be a kinship.
+    """
+    names = [
+        name
+        for name in WORKED_EXAMPLE_INDIVIDUALS
+        if without is None or name != without
+    ]
+    return Kinship(
+        matrix=pandas.DataFrame(numpy.eye(len(names)), index=names, columns=names),
+        num_vars=3,
+    )
 
 
 def _the_calls_that_are_refused(
@@ -976,9 +1527,20 @@ def _the_calls_that_are_refused(
         [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
     return {
-        "a kinship": lambda: _the_worked_example(worked_example, kinship="a matrix"),
-        "the grammar gamma approximation": lambda: _the_worked_example(
+        "a kinship that is not a kinship": lambda: _the_worked_example(
+            worked_example, kinship="a matrix"
+        ),
+        "the grammar gamma approximation with no kinship": lambda: _the_worked_example(
             worked_example, use_grammar_gamma_approx=True
+        ),
+        "the grammar gamma approximation with a kinship": lambda: _the_worked_example(
+            worked_example,
+            kinship=_the_kinship_of_the_worked_example(),
+            use_grammar_gamma_approx=True,
+        ),
+        "a tested individual the kinship has not": lambda: _the_worked_example(
+            worked_example,
+            kinship=_the_kinship_of_the_worked_example(without="i2"),
         ),
         "the score test": lambda: _the_worked_example(worked_example, test="score"),
         "a test of another name": lambda: _the_worked_example(
@@ -1056,29 +1618,48 @@ def _the_calls_that_are_coerced(worked_example: pathlib.Path) -> dict:
     }
 
 
+def _the_calls_with_no_phenotype_for_one(worked_example: pathlib.Path) -> dict:
+    """The call of each case of the `no_phenotype_in_both_layers` of that
+    same file: a value that both layers read as an individual with no
+    phenotype, which is left untested.
+
+    A value means no phenotype exactly where `float` of it gives NaN, which
+    is NaN itself and the string `nan`. The second is the one a user does not
+    expect, and it is the one a table of traits written by a program that
+    prints NaN as text arrives with.
+    """
+    of_nan = _the_trait()
+    of_nan["i2"] = numpy.nan
+    of_the_word = _the_trait().astype(object)
+    of_the_word["i2"] = "nan"
+    return {
+        "a phenotype that is NaN": lambda: _the_worked_example(
+            worked_example, phenotype=of_nan
+        ),
+        "a phenotype that is the string nan": lambda: _the_worked_example(
+            worked_example, phenotype=of_the_word
+        ),
+    }
+
+
 def _the_calls_that_typescript_alone_refuses(worked_example: pathlib.Path) -> dict:
     """The call of each case of the `refused_in_typescript_alone` of that
     same file: a phenotype that says here, and not in TypeScript, that `i2`
     has none.
 
     `None` is what this layer has for the `null` and the `undefined` of
-    TypeScript, which is why two of the three are the same call here; NaN is
-    what a table read from a file holds where a value is blank, and it is
-    the third.
+    TypeScript, so the two cases are the same call here: `pandas.isna` reads
+    it as a missing value, which is what `dropna` drops in pyNei, while
+    `float(None)` raises and is what TypeScript is written to.
     """
     of_none = _the_trait().astype(object)
     of_none["i2"] = None
-    of_nan = _the_trait()
-    of_nan["i2"] = numpy.nan
     return {
         "a phenotype that is null": lambda: _the_worked_example(
             worked_example, phenotype=of_none
         ),
         "a phenotype that is undefined": lambda: _the_worked_example(
             worked_example, phenotype=of_none
-        ),
-        "a phenotype that is NaN": lambda: _the_worked_example(
-            worked_example, phenotype=of_nan
         ),
     }
 
@@ -1115,11 +1696,17 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
     that the two layers refuse the same things: each of them checks itself
     against its own copy of the literals, which is how they came to refuse
     `test` differently for a day.
+
+    A case that says `python_raises` is one where what the user wrote is of
+    the wrong type altogether, which this layer has an exception of its own
+    for and which JavaScript has not: it is the class that differs and not
+    the message, and the message is what the file binds.
     """
     for case, call in _the_calls_of(
         "refusals", _the_calls_that_are_refused(worked_example)
     ):
-        with pytest.raises(ValueError, match=case["match"]):
+        raises = TypeError if case.get("python_raises") == "TypeError" else ValueError
+        with pytest.raises(raises, match=case["match"]):
             call()
 
 
@@ -1151,6 +1738,28 @@ def test_both_layers_read_a_value_that_is_not_a_number_as_the_number_it_holds(
         ), f"the residual variance with {case['case']}"
 
 
+def test_both_layers_leave_an_individual_with_no_phenotype_untested(
+    worked_example: pathlib.Path,
+) -> None:
+    """Every call of the `no_phenotype_in_both_layers` of that file leaves
+    `i2` untested, here and in TypeScript.
+
+    A value means no phenotype exactly where `float` of it gives NaN, which
+    is the rule the spec settled on 23 September 2026 by the oracle, and the
+    string `nan` is the case nobody guesses: `float('nan')` is NaN, so it is
+    an individual that is not tested and not a value that is refused. The
+    TypeScript suite asserts the same five individuals of the same calls.
+    """
+    for case, call in _the_calls_of(
+        "no_phenotype_in_both_layers",
+        _the_calls_with_no_phenotype_for_one(worked_example),
+    ):
+        result = call()
+
+        assert result.individuals == ("i0", "i1", "i3", "i4", "i5"), case["case"]
+        assert result.null_model.num_individuals == 5, case["case"]
+
+
 def test_what_typescript_alone_refuses_is_an_individual_with_no_phenotype_here(
     worked_example: pathlib.Path,
 ) -> None:
@@ -1158,11 +1767,11 @@ def test_what_typescript_alone_refuses_is_an_individual_with_no_phenotype_here(
     `i2` untested here, where TypeScript refuses it.
 
     Python says that an individual has no phenotype with a name the series
-    has not, with `None` and with NaN, which is pandas' missing value;
-    TypeScript says it with a key the object has not, and that is the only
-    way to say it there, since `Number` turns `null` into 0 and `undefined`
-    into NaN. The TypeScript suite asserts the other half of each of these
-    three, the refusal and its message.
+    has not and with the missing value of pandas, which `None` is one
+    spelling of and which `dropna` drops in pyNei. TypeScript has no such
+    value, and `float(None)` raises, so `null` and `undefined` are refused
+    there, naming the individual. The TypeScript suite asserts the other
+    half of each of these two.
     """
     for case, call in _the_calls_of(
         "refused_in_typescript_alone",

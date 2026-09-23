@@ -13,18 +13,25 @@ of interest but has to be taken out, the field a plant grew in for instance,
 and the top principal components of the panel go in as covariates so that a
 variant which only marks ancestry does not look associated.
 
-What is built is the linear model, a continuous trait with no kinship, which
-is what plink2's ``--glm`` computes. Its test is the t test of the effect:
+What is built is the continuous half of the study, the two models of a trait
+that is a measurement. Without a kinship it is the linear model, which is
+what plink2's ``--glm`` computes, and its test is the t test of the effect:
 the effect divided by its standard error, which under the hypothesis that
 the variant has none follows a Student t distribution with as many degrees
 of freedom as there are individuals left once the covariates and the variant
 have been fitted, and the p-value is the chance that such a t falls further
 from 0 than this one did, either way.
 
-The linear mixed model, which takes a kinship instead of the principal
-components and is what a panel with families in it needs, and the two
-logistic models of a binomial trait are being written; asking for one is a
-``ValueError`` that says so.
+With a kinship it is the linear mixed model, which a panel with families in
+it needs: the trait carries a random effect whose covariance is the kinship
+times a variance, so that two related individuals are expected to resemble
+each other before any variant is looked at. Its two tests are rrBLUP's Wald
+test, which estimates the scale of the two variances again with the variant
+in, and GMMAT's score test, which holds both at the null.
+
+The two logistic models of a binomial trait are being written, and so is the
+GRAMMAR-Gamma approximation that a mixed model can take instead of the exact
+denominator of its test; asking for one is a ``ValueError`` that says so.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
 what popnei does differently from pyNei.
@@ -46,14 +53,6 @@ from popnei.variant import PassStats, Variants, _pass_stats_of
 # row of its series. A covariate of that name is refused, since the two
 # would be one row of it.
 _INTERCEPT = "intercept"
-
-# The arguments the linear mixed model brings, which this build has not: the
-# matrix of relatedness, and the approximation a mixed model can take
-# instead of a fit per variant. They are refused rather than ignored: a call
-# that gave a kinship and got a study without one would be a linear model
-# reported as a mixed one, with nothing to show it. `test` is not among
-# them: the Wald test is the linear model's own, and the core is what
-# refuses the score test of it.
 
 
 class TraitType(StrEnum):
@@ -191,7 +190,7 @@ class GWASResult:
 
     used_grammar_gamma_approx: bool
     """Whether the GRAMMAR-Gamma approximation was used, which only a mixed
-    model can use and which this build has not.
+    model can use and which is being written.
 
     It stands in for the denominator of a mixed model's test, which is a
     product with the covariance of the random effect and costs one such
@@ -215,11 +214,11 @@ def calc_gwas(
     test: TestType | str | None = None,
     # The default is written here and not taken from the core's
     # `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can
-    # make the approximation takes when the user says nothing: this build
-    # refuses the approximation, so a core whose default became true would
-    # turn every plain call into a refusal. The linear mixed model is what
-    # will read that constant, and until then this default changes no
-    # result, since the approximation is refused whatever is written here.
+    # make the approximation takes when the user says nothing: popnei
+    # refuses the approximation until it is written, so a core whose default
+    # became true would turn every plain call into a refusal. Until then
+    # this default changes no result, since the approximation is refused
+    # whatever is written here.
     use_grammar_gamma_approx: bool = False,
     transform_to_biallelic: bool = _core.DEFAULT_TRANSFORM_TO_BIALLELIC,
 ) -> GWASResult:
@@ -241,6 +240,15 @@ def calc_gwas(
     written in. A name of the phenotype that is of nobody the pass gives is a
     ``ValueError`` that names it, and so is a name that is there twice.
 
+    A value of the phenotype that is not a number is read as one with
+    ``float``, as pyNei reads it, so a trait written as the strings
+    ``['2', '3', '5']`` and one written as ``True`` and ``False`` are both
+    accepted. A value whose ``float`` is NaN, which the string ``'nan'`` is
+    as much as NaN itself, is an individual with no phenotype and is left
+    untested, and one whose ``float`` raises is a ``ValueError`` naming the
+    individual. An infinity is refused too, which pyNei accepts and then
+    gives NaN for every variant.
+
     `trait` is ``"continuous"``, a measurement, or ``"binomial"``, 0 for an
     individual that has not a condition and 1 for one that has, the two
     values of :class:`TraitType`. A binomial trait is a logistic model, which
@@ -261,18 +269,33 @@ def calc_gwas(
     columns of its design plus one, which would leave nothing to measure the
     uncertainty of a variant's effect from.
 
-    `test` is ``"wald"`` or ``"score"``, the two values of
-    :class:`TestType`, and ``None`` takes the default of the model. The
-    linear model's only test is the t test of the effect it fitted, which is
-    the Wald test, so ``"score"`` is a ``ValueError`` that says so.
-
-    `kinship` and `use_grammar_gamma_approx` belong to the linear mixed
-    model, which accounts for the relatedness of a panel and is being
-    written. Giving either is a ``ValueError`` that names it. Until then the
-    structure of a panel is accounted for with the top principal components
-    of :meth:`popnei.Kinship.principal_components` or of
+    `kinship` is the relatedness of every pair, what :func:`popnei.calc_kinship`
+    gives or a :class:`popnei.Kinship` built from a matrix another program
+    wrote, and it makes the study a linear mixed model: the trait carries a
+    random effect of that covariance, so that a variant which only marks the
+    ancestry of a panel does not look associated. It has to hold every
+    individual that is tested, and a tested individual it has not is a
+    ``ValueError`` naming them; the rows and the columns of the ones it holds
+    over are left out, as :meth:`popnei.Kinship.filter_individuals` leaves
+    them out. Without a kinship the structure of a panel is accounted for
+    with the top principal components of
+    :meth:`popnei.Kinship.principal_components` or of
     :func:`popnei.do_pca_from_variants` as covariates, which is enough for
-    individuals that are not close relatives.
+    individuals that are not close relatives, and both at once is the Q+K
+    model of a strongly subdivided panel.
+
+    `test` is ``"wald"`` or ``"score"``, the two values of
+    :class:`TestType`, and ``None`` takes the default of the model, which is
+    the Wald test for both models of a continuous trait. The linear model's
+    only test is the t test of the effect it fitted, which is the Wald test,
+    so ``"score"`` is a ``ValueError`` that says so; the linear mixed model
+    takes either, the Wald test being rrBLUP's and the score test GMMAT's.
+
+    `use_grammar_gamma_approx` stands in for the denominator of a mixed
+    model's test, which costs a product with the covariance of the random
+    effect for every variant. It is being written, and asking for it is a
+    ``ValueError``: with no kinship because there is no such denominator to
+    approximate, and with one because popnei cannot approximate it yet.
 
     `transform_to_biallelic` makes every allele that is not the major one
     count the same, which is what a variant of more than two different
@@ -307,7 +330,7 @@ def calc_gwas(
             f"`open_vcf` or `open_vars` gives, "
             f"calc_gwas(open_vcf(vcf_path), phenotype, 'continuous')"
         )
-    _refuse_what_the_mixed_model_brings(kinship, use_grammar_gamma_approx)
+    _refuse_a_kinship_that_is_not_one(kinship)
     trait_name = _a_name_written_in(
         "trait",
         trait,
@@ -322,9 +345,9 @@ def calc_gwas(
             "test",
             test,
             "it says which test is made of every variant: write test='wald', "
-            "which is the one a linear model has, or leave it out for the "
-            "default of the model, and the two of them are the members of "
-            "`TestType`",
+            "which is the one a linear model has, or test='score', which a "
+            "mixed model has too, or leave it out for the default of the "
+            "model, and the two of them are the members of `TestType`",
         )
     )
     tested = _the_tested_individuals(_the_phenotype(phenotype), variants.individuals)
@@ -343,6 +366,8 @@ def calc_gwas(
         _the_design(columns, len(names)),
         trait_name,
         test_name,
+        _the_kinship_of_the_tested(kinship, names),
+        bool(use_grammar_gamma_approx),
         transform_to_biallelic,
         variants._steps,
     )
@@ -365,36 +390,66 @@ def calc_gwas(
     )
 
 
-def _refuse_what_the_mixed_model_brings(
-    kinship: Kinship | None, use_grammar_gamma_approx: bool
-) -> None:
-    """The arguments of the linear mixed model, which this build has not,
-    refused by name.
+def _refuse_a_kinship_that_is_not_one(kinship: Kinship | None) -> None:
+    """What was written in `kinship`, refused unless it is a ``Kinship``.
 
     # Raises
 
-    ``ValueError`` naming the ones that were given. They are refused and not
-    ignored: a call that gave a kinship and got a study without one would be
-    a linear model reported as a mixed one, with nothing to show it.
+    ``TypeError`` saying what a kinship is. What a user gives instead is
+    usually the matrix itself, a frame or an array, and what that gave was
+    the ``AttributeError`` of an object with no ``matrix`` in it.
     """
-    given = [
-        name
-        for name, asked_for in (
-            ("kinship", kinship is not None),
-            ("use_grammar_gamma_approx", bool(use_grammar_gamma_approx)),
-        )
-        if asked_for
-    ]
-    if not given:
+    if kinship is None or isinstance(kinship, Kinship):
         return
-    named = ", ".join(f"`{name}`" for name in given)
-    belongs = "belongs" if len(given) == 1 else "belong"
-    raise ValueError(
-        f"{named} {belongs} to the linear mixed model, which accounts for "
-        f"the relatedness of a panel and is being written: what `calc_gwas` "
-        f"fits is the linear model, a continuous trait with no kinship, and "
-        f"the structure of a panel goes into it as the top principal "
-        f"components of `Kinship.principal_components` among the covariates"
+    # The value is named by its type and not written out: what a user gives
+    # here is usually the matrix itself, and the repr of a frame of 200
+    # individuals is the message and the frame.
+    raise TypeError(
+        f"`kinship` is a {type(kinship).__name__}, and the kinship a mixed "
+        f"model takes is a `Kinship`: give it what `calc_kinship` gives, or "
+        f"build one over the matrix another program wrote, "
+        f"Kinship(matrix=frame, num_vars=num_vars)"
+    )
+
+
+def _the_kinship_of_the_tested(
+    kinship: Kinship | None, tested: list[str]
+) -> numpy.ndarray | None:
+    """The kinship cut to the individuals of `tested`, in their order, as the
+    core reads it: one row and one column for each of them, row after row.
+
+    The core is given numbers and holds no name to cut a matrix by, so the
+    cutting is here, where the names are. An individual the kinship holds
+    over is left out, as `Kinship.filter_individuals` leaves it out: the
+    kinship of a panel is the one a user has, and a phenotype that leaves
+    individuals out does not make it another matrix.
+
+    Whether the entries of the matrix are finite numbers is not checked
+    here: `Kinship.__post_init__` refuses a matrix that holds anything else,
+    and the core refuses it again by the cell it is in, which is what a
+    caller of `popnei._core` reads.
+
+    # Raises
+
+    ``ValueError`` when a tested individual is not one of the kinship's: the
+    random effect of a mixed model is the relatedness of every pair that is
+    tested, and there is nothing to put in the row of an individual the
+    matrix has not.
+    """
+    if kinship is None:
+        return None
+    of_the_matrix = set(kinship.individuals)
+    for name in tested:
+        if name not in of_the_matrix:
+            raise ValueError(
+                f"{name!r} is tested and is not one of the "
+                f"{len(kinship.individuals)} individuals of the `kinship`, "
+                f"which holds the relatedness of every pair that is tested: "
+                f"give a kinship of them, `calc_kinship(variants)` for "
+                f"instance, or leave that individual out of the phenotype"
+            )
+    return numpy.ascontiguousarray(
+        kinship.matrix.loc[tested, tested].to_numpy(dtype=numpy.float64)
     )
 
 
@@ -461,9 +516,11 @@ def _the_tested_individuals(
     # Raises
 
     ``ValueError`` when a name of the phenotype is of nobody the pass gives,
-    when a name is there twice, and when a value of it is neither a number
-    nor missing. A missing value is an individual that is not tested and no
-    error.
+    when a name is there twice, and when a value of it holds no number. A
+    value that means no phenotype is an individual that is not tested and no
+    error, and what means that is what ``float`` reads as NaN: NaN itself,
+    the missing value of pandas, and the string ``'nan'``, which is the one
+    a user does not expect.
     """
     _refuse_an_individual_that_is_there_twice(list(phenotype.index))
     of_the_source = set(of_the_pass)
@@ -496,6 +553,14 @@ def _the_tested_individuals(
                 f"that is 0 and 1 is written as those numbers with "
                 f"trait='binomial'"
             ) from None
+        # A value whose `float` is NaN is an individual with no phenotype,
+        # which is what `pandas.isna` answered above for NaN itself and for
+        # the missing value of a table; the string 'nan' arrives here
+        # instead, and `float` makes the same NaN of it. The spec of the
+        # study settled it on 23 September 2026, by the oracle: a value
+        # means no phenotype exactly where `float` of it gives NaN.
+        if math.isnan(number):
+            continue
         # An infinity is refused here, where the individual has a name: it
         # would carry through the null model into the effect of every
         # variant, and the core, which refuses it too, has the place of the

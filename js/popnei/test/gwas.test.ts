@@ -1,16 +1,18 @@
 /**
  * The association study from TypeScript: `calcGwas` and the result it gives.
  *
- * "The linear model" and "The worked example" of `docs/specs/gwas.md` have
- * the numbers. The worked example is 3 variants of 6 diploid individuals
- * with one covariate, written as a VCF here, and pyNei at commit ef0ca6e
- * gave its null model and its three rows; it reads no reference file and
- * nothing of it is rounded away. The panel is
+ * "The linear model", "The linear mixed model" and "The worked example" of
+ * `docs/specs/gwas.md` have the numbers. The worked example is 3 variants of
+ * 6 diploid individuals with one covariate, written as a VCF here, and pyNei
+ * at commit ef0ca6e gave its null model and its three rows; it reads no
+ * reference file and nothing of it is rounded away. The panel is
  * `tests/reference/kinship/panel_called.vcf.gz`, 200 individuals and 1200
  * biallelic variants with every genotype called, with the trait `cont` and
- * the covariates `cov1` and `cov2` of `tests/reference/gwas/phenotypes.csv`,
- * and the six variants asserted here are what plink2 v2.0.0-a.7.7 wrote for
- * it.
+ * the covariates `cov1` and `cov2` of `tests/reference/gwas/phenotypes.csv`.
+ * The six variants asserted for the linear model are what plink2
+ * v2.0.0-a.7.7 wrote for it, and the six of the mixed model are what GMMAT
+ * 1.5.0 wrote, over the kinship that `plink2 --make-rel` wrote and that
+ * neither popnei nor pyNei calculated.
  *
  * The calculation is tested in the core crate, over all 1200 variants of the
  * panel. What these tests say is that the study reaches TypeScript with the
@@ -24,8 +26,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { gunzipSync } from "node:zlib";
 
-import { calcGwas, init, openVcf } from "popnei";
+import { calcGwas, init, Kinship, openVcf } from "popnei";
 import type { GwasResult, Variants } from "popnei";
 
 import { referenceGwas, referenceKinship } from "./reference.ts";
@@ -234,23 +237,125 @@ const OF_PLINK2_SIX: {
   },
 ];
 
+/**
+ * How far `1 / se**2` of the score test may be from GMMAT's `VAR`, as a
+ * share of it, and how far a p-value may be from GMMAT's in `log10`: 1e-5
+ * and 1e-4, which is what "How it is verified" of "The linear mixed model"
+ * of the spec asks of every variant and what the cargo tests hold the same
+ * six literals to.
+ *
+ * `gmmat.panel_called.lmm.score.tsv` is printed to six significant digits,
+ * which rounds a value by up to 5e-6 of itself, so half of the first bound
+ * can go on GMMAT's printing alone. Measured under node on 24 September
+ * 2026, the worst of the six is 1.837e-6 of `VAR`, at `var0052`, and the
+ * worst p-value is 4.165e-5 in `log10`, at `var0629`; the cargo test of the
+ * core measures 1.843e-6 and 4.164e-5 on faer natively and 1.842e-6 and
+ * 4.164e-5 on Accelerate, so nothing of the distance from GMMAT is
+ * WebAssembly's own rounding. That p-value is not the printing either:
+ * 4.16e-5 in `log10` is 9.6e-5 of the p-value, where six digits round it by
+ * 5e-6, and it is the two fits landing 1.2e-6 apart in the genetic variance
+ * at a p-value of 4.8e-5, where the tail of the chi square turns a small
+ * move of the statistic into a larger one of the p-value.
+ */
+const OF_GMMAT_VARIANCE = 1e-5;
+const OF_GMMAT_P_VALUE = 1e-4;
+
+/**
+ * How far each of the two variances of the null model may be from GMMAT's
+ * `glmmkin`: 1e-5 absolute, which is the spec's and is how far two
+ * restricted maximum likelihood searches land apart.
+ *
+ * Measured under node on 24 September 2026, the worst of the three numbers
+ * this test holds to it is the genetic variance, 1.273e-6 from GMMAT's,
+ * which is 13 per cent of what is allowed; the cargo test measures 1.218e-6
+ * on faer natively. Where that 1.2e-6 comes from is the kinship and not the
+ * search: GMMAT was given the six printed digits of plink2's matrix and
+ * this suite reads the float64 beside them.
+ */
+const OF_GMMAT_NULL_MODEL = 1e-5;
+
+/**
+ * What GMMAT 1.5.0's `glmm.score` gave for six variants of the panel with
+ * every genotype called, from `tests/reference/gwas/gmmat.panel_called.lmm.
+ * score.tsv`: the variance of the score, which is `x' p x` and which popnei
+ * gives as `1 / se**2`, and the p-value.
+ *
+ * GMMAT was given both covariates and the kinship plink2 wrote for this
+ * panel, which is what this suite gives popnei. Five of the six are the
+ * causal variants of `causal_vars.csv` and `var0000` is not causal.
+ */
+const OF_GMMAT_SIX: { id: string; variance: number; pValue: number }[] = [
+  { id: "var0000", variance: 29.8774, pValue: 0.360_526 },
+  { id: "var0052", variance: 43.8076, pValue: 0.001_189_85 },
+  { id: "var0629", variance: 31.7241, pValue: 4.810_05e-5 },
+  { id: "var0751", variance: 44.5825, pValue: 0.004_392_26 },
+  { id: "var1137", variance: 43.3724, pValue: 0.013_926 },
+  { id: "var1188", variance: 47.3766, pValue: 0.001_073_4 },
+];
+
+/**
+ * The two variances GMMAT's `glmmkin` fitted for the panel, from
+ * `tests/reference/gwas/gmmat.null_models.tsv`, which the reference script
+ * writes at full precision: the variance of the random effect of the
+ * kinship, which GMMAT calls `tau`, and what is left over, its `sigma2`.
+ */
+const OF_GMMAT_NULL = { geneticVariance: 1.221_616_675_296_99, residualVariance: 0.342_359_482_266_917 };
+
 /** The bytes of the panel and its phenotypes, read once for every test. */
 const PANEL_VCF = await referenceKinship("panel_called.vcf.gz");
 const PHENOTYPES = theColumnsOfTheFile(await referenceGwas("phenotypes.csv"));
 
 /**
- * The three lists of `tests/reference/gwas/refusals_of_both_layers.json`,
+ * The kinship that `plink2 --make-rel square bin` wrote for the panel, at
+ * full precision, with the individuals plink2 wrote beside it.
+ *
+ * It is the one the mixed model is given, as "How it is verified" of "What
+ * every model shares" of the spec asks: a kinship that came from neither
+ * popnei nor pyNei, and the one `tests/reference/gwas/make_reference.py`
+ * gave GMMAT.
+ */
+const PANEL_KINSHIP = theKinshipOfThePanel(
+  await referenceKinship("panel_called.plink2.rel.bin.gz"),
+  new TextDecoder().decode(
+    await referenceKinship("panel_called.plink2.rel.id"),
+  ),
+);
+
+/**
+ * The four lists of `tests/reference/gwas/refusals_of_both_layers.json`,
  * which the Python suite walks as well: the calls both layers refuse, the
- * values both read as a number, and the ones TypeScript alone refuses. That
- * file says what each list is and why the third one is there.
+ * values both read as a number, the values that mean an individual with no
+ * phenotype in both, and the ones TypeScript alone refuses. That file says
+ * what each list is and why the last one is there.
  */
 const OF_BOTH_LAYERS = JSON.parse(
   await referenceGwas("refusals_of_both_layers.json"),
 ) as {
   refusals: { case: string; match: string }[];
   coercions: { case: string }[];
+  no_phenotype_in_both_layers: { case: string }[];
   refused_in_typescript_alone: { case: string; match: string }[];
 };
+
+/**
+ * The kinship of the panel out of the two files plink2 wrote: the little
+ * endian float64 of `--make-rel square bin`, gzipped, and the names of the
+ * individuals in the order of its rows, under one header line of `#IID`.
+ */
+function theKinshipOfThePanel(gzipped: Uint8Array, ids: string): Kinship {
+  const bytes = gunzipSync(gzipped);
+  const values = new Float64Array(
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  );
+  const individuals = ids
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  assert.equal(individuals.length, PANEL_NUM_INDIVIDUALS);
+  assert.equal(values.length, PANEL_NUM_INDIVIDUALS * PANEL_NUM_INDIVIDUALS);
+  return new Kinship(values, individuals, PANEL_NUM_VARS);
+}
 
 /**
  * A VCF of the individuals `names` with one data line for each of
@@ -342,6 +447,42 @@ function theStudyOfThePanel(): GwasResult {
       cov2: PHENOTYPES.cov2 as Record<string, number>,
     },
   });
+}
+
+/**
+ * The study of the panel with the kinship and the score test, which is what
+ * GMMAT was given: both covariates and the matrix plink2 wrote.
+ */
+function theMixedStudyOfThePanel(): GwasResult {
+  return gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.cont as Record<string, number>,
+    trait: "continuous",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+    kinship: PANEL_KINSHIP,
+    test: "score",
+  });
+}
+
+/**
+ * A kinship of the six individuals of the worked example, or of the five
+ * that are not `without`: the identity, which is the relatedness of
+ * individuals with no recent ancestor in common.
+ *
+ * The calls it is written for are refused before any model is fitted, so
+ * what the matrix holds only has to be a kinship.
+ */
+function theKinshipOfTheWorkedExample(without?: string): Kinship {
+  const names = ["i0", "i1", "i2", "i3", "i4", "i5"].filter(
+    (name) => name !== without,
+  );
+  const matrix = new Float64Array(names.length * names.length);
+  for (let row = 0; row < names.length; row += 1) {
+    matrix[row * names.length + row] = 1;
+  }
+  return new Kinship(matrix, names, 3);
 }
 
 /** The row of the variant `id` in the result of a study. */
@@ -586,18 +727,114 @@ test("a covariate that is a copy of another is refused as collinear", () => {
   );
 });
 
-test("the options of the linear mixed model are refused by name", () => {
+test("the six variants of the panel are gmmat's score test under a kinship", () => {
+  const result = theMixedStudyOfThePanel();
+
+  assert.equal(result.nullModel.model, "lmm");
+  assert.equal(result.test, "score");
+  assert.equal(result.nullModel.numIndividuals, PANEL_NUM_INDIVIDUALS);
+  assert.equal(result.stats.beta.length, PANEL_NUM_VARS);
+  assert.ok(
+    Math.abs(
+      (result.nullModel.geneticVariance as number) -
+        OF_GMMAT_NULL.geneticVariance,
+    ) <= OF_GMMAT_NULL_MODEL,
+    `the genetic variance is ${result.nullModel.geneticVariance} and GMMAT ` +
+      `gives ${OF_GMMAT_NULL.geneticVariance}`,
+  );
+  assert.ok(
+    Math.abs(
+      (result.nullModel.residualVariance as number) -
+        OF_GMMAT_NULL.residualVariance,
+    ) <= OF_GMMAT_NULL_MODEL,
+    `the residual variance is ${result.nullModel.residualVariance} and ` +
+      `GMMAT gives ${OF_GMMAT_NULL.residualVariance}`,
+  );
+  // The heritability is the one number of the null model built from the two
+  // variances rather than read off the fit, and it is `undefined` for every
+  // model but this one.
+  const heritability =
+    OF_GMMAT_NULL.geneticVariance /
+    (OF_GMMAT_NULL.geneticVariance + OF_GMMAT_NULL.residualVariance);
+  assert.ok(
+    Math.abs((result.nullModel.heritability as number) - heritability) <=
+      OF_GMMAT_NULL_MODEL,
+    `the heritability is ${result.nullModel.heritability} and the two ` +
+      `variances of GMMAT give ${heritability}`,
+  );
+  for (const { id, variance, pValue } of OF_GMMAT_SIX) {
+    const at = rowOf(result, id);
+    const se = result.stats.se[at] as number;
+    assertWithin(1 / (se * se), variance, OF_GMMAT_VARIANCE, `1 / se² of ${id}`);
+    const found = result.stats.pValue[at] as number;
+    const apart = Math.abs(Math.log10(found / pValue));
+    assert.ok(
+      apart <= OF_GMMAT_P_VALUE,
+      `the p-value of ${id} is ${found} and GMMAT gives ${pValue}, ${apart} ` +
+        `apart in log10 against the ${OF_GMMAT_P_VALUE} allowed`,
+    );
+  }
+});
+
+test("the kinship is read in the order the source has the individuals", () => {
+  // The phenotype, the rows of the design and the dosages of a block are
+  // read together row by row, and the kinship is the relatedness of those
+  // rows, so a matrix left in the order the user built it in would put one
+  // individual's relatedness against another's genotypes. No message can
+  // catch this one, both matrices being kinships of the same 200
+  // individuals: what says it is that the two studies are equal. The Python
+  // suite makes the same pair of calls.
+  const ofThePanel = PANEL_KINSHIP.individuals;
+  const names = [...ofThePanel].reverse();
+  const matrix = new Float64Array(names.length * names.length);
+  for (const [row, ofTheRow] of names.entries()) {
+    for (const [column, ofTheColumn] of names.entries()) {
+      matrix[row * names.length + column] = PANEL_KINSHIP.matrix[
+        ofThePanel.indexOf(ofTheRow) * ofThePanel.length +
+          ofThePanel.indexOf(ofTheColumn)
+      ] as number;
+    }
+  }
+
+  const backwards = gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.cont as Record<string, number>,
+    trait: "continuous",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+    kinship: new Kinship(matrix, names, PANEL_NUM_VARS),
+    test: "score",
+  });
+  const inTheSourcesOrder = theMixedStudyOfThePanel();
+
+  assert.deepEqual([...backwards.stats.beta], [...inTheSourcesOrder.stats.beta]);
+  assert.deepEqual([...backwards.stats.se], [...inTheSourcesOrder.stats.se]);
+});
+
+test("a tested individual the kinship has not is refused by name", () => {
   assert.throws(
     () =>
       gwasOf(WORKED_EXAMPLE, {
         phenotype: THE_TRAIT,
         trait: "continuous",
-        kinship: undefined as unknown as Parameters<
-          typeof calcGwas
-        >[1]["kinship"],
+        covariates: THE_COVARIATE,
+        kinship: theKinshipOfTheWorkedExample("i2"),
+      }),
+    { message: /`i2` is tested and is not one of the 5 individuals/ },
+  );
+});
+
+test("the grammar gamma approximation of a mixed model is being written", () => {
+  assert.throws(
+    () =>
+      gwasOf(PANEL_VCF, {
+        phenotype: PHENOTYPES.cont as Record<string, number>,
+        trait: "continuous",
+        kinship: PANEL_KINSHIP,
         useGrammarGammaApprox: true,
       }),
-    { message: /`useGrammarGammaApprox` belongs to the linear mixed model/ },
+    { message: /GRAMMAR-Gamma approximation is being written/ },
   );
 });
 
@@ -714,9 +951,16 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
   const { i5: _withoutI5, ...ofFive } = cov;
   const { i5: _alsoWithoutI5, ...ofThree } = THE_TRAIT;
   return {
-    "a kinship": theStudyWith({ kinship: "a matrix" }),
-    "the grammar gamma approximation": theStudyWith({
+    "a kinship that is not a kinship": theStudyWith({ kinship: "a matrix" }),
+    "the grammar gamma approximation with no kinship": theStudyWith({
       useGrammarGammaApprox: true,
+    }),
+    "the grammar gamma approximation with a kinship": theStudyWith({
+      kinship: theKinshipOfTheWorkedExample(),
+      useGrammarGammaApprox: true,
+    }),
+    "a tested individual the kinship has not": theStudyWith({
+      kinship: theKinshipOfTheWorkedExample("i2"),
     }),
     "the score test": theStudyWith({ test: "score" }),
     "a test of another name": theStudyWith({ test: "rao" }),
@@ -792,6 +1036,27 @@ function theCallsThatAreCoerced(): Record<string, () => GwasResult> {
 }
 
 /**
+ * The call of each case of `no_phenotype_in_both_layers` of that file: a
+ * value that both layers read as an individual with no phenotype, which is
+ * left untested.
+ *
+ * A value means no phenotype exactly where `float` of it gives NaN, which is
+ * NaN itself and the string `nan`. The second is the one a user does not
+ * expect, and it is the one a table of traits written by a program that
+ * prints NaN as text arrives with.
+ */
+function theCallsWithNoPhenotypeForOne(): Record<string, () => GwasResult> {
+  return {
+    "a phenotype that is NaN": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: Number.NaN },
+    }),
+    "a phenotype that is the string nan": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: "nan" },
+    }),
+  };
+}
+
+/**
  * The call of each case of `refused_in_typescript_alone` of that file: a
  * phenotype written as what Python has for an individual with no phenotype
  * and TypeScript has not.
@@ -806,9 +1071,6 @@ function theCallsThatTypescriptAloneRefuses(): Record<string, () => GwasResult> 
     }),
     "a phenotype that is undefined": theStudyWith({
       phenotype: { ...THE_TRAIT, i2: undefined },
-    }),
-    "a phenotype that is NaN": theStudyWith({
-      phenotype: { ...THE_TRAIT, i2: Number.NaN },
     }),
   };
 }
@@ -878,12 +1140,30 @@ test("both layers read a value that is not a number as the number it holds", () 
   }
 });
 
+test("both layers leave an individual with no phenotype untested", () => {
+  // A value means no phenotype exactly where Python's `float` of it gives
+  // NaN, which is the rule the spec settled on 23 September 2026 by the
+  // oracle, and the string `nan` is the case nobody guesses: `float('nan')`
+  // is NaN, so it is an individual that is not tested and not a refusal.
+  // The Python suite asserts the same five individuals of the same calls.
+  for (const [{ case: name }, call] of theCallsOf(
+    OF_BOTH_LAYERS.no_phenotype_in_both_layers,
+    theCallsWithNoPhenotypeForOne(),
+    "no_phenotype_in_both_layers",
+  )) {
+    const result = call();
+
+    assert.deepEqual(result.individuals, ["i0", "i1", "i3", "i4", "i5"], name);
+    assert.equal(result.nullModel.numIndividuals, 5, name);
+  }
+});
+
 test("what says no phenotype in python is refused here, by the individual", () => {
-  // `Number` turns `null` into 0 and `undefined` into NaN, and an
-  // individual whose trait is NaN is one the user asked to test and popnei
-  // would leave out with nothing to show it. A key the object has not is
+  // `Number` turns `null` into 0 and `undefined` into NaN, and `float` of
+  // either raises, so both are refused here where pandas reads them as its
+  // missing value and drops the individual. A key the object has not is
   // what says that an individual has no phenotype here, and the Python
-  // suite asserts of these three that its layer tests five individuals.
+  // suite asserts of these two that its layer tests five individuals.
   for (const [{ case: name, match }, call] of theCallsOf(
     OF_BOTH_LAYERS.refused_in_typescript_alone,
     theCallsThatTypescriptAloneRefuses(),

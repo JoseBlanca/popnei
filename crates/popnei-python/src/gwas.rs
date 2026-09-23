@@ -25,6 +25,11 @@
 //! of the design for each, which for a panel of 10000 individuals with three
 //! covariates is 80 KB, 80 KB and 320 KB, against the variants x individuals
 //! the pass itself reads.
+//!
+//! A mixed model brings a fourth, the kinship of those individuals, which is
+//! copied for the same reason and which is the one of the four that grows
+//! with the square of the panel: 800 MB for 10000 individuals, the size of
+//! the matrix the user already holds.
 
 use numpy::{
     IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods as _,
@@ -92,13 +97,13 @@ type FilteringCounts = Vec<(&'static str, u64, u64)>;
 // comment here would become the `__doc__` of `popnei._core.calc_gwas`, and
 // what a Python user reads belongs to the package, which is the API.
 #[pyfunction]
-#[pyo3(signature = (source, individuals, phenotype, design, trait_name, test_name, transform_to_biallelic, steps))]
+#[pyo3(signature = (source, individuals, phenotype, design, trait_name, test_name, kinship, use_grammar_gamma_approx, transform_to_biallelic, steps))]
 #[expect(
     clippy::too_many_arguments,
     reason = "what a study is given in `docs/specs/gwas.md`: the source and its steps, \
               the three arrays of the tested individuals that are read together row by \
-              row, and the two things a user asked for. A struct of them would be built \
-              in Python, element by element"
+              row, the kinship of those individuals, and the three things a user asked \
+              for. A struct of them would be built in Python, element by element"
 )]
 pub(crate) fn calc_gwas<'py>(
     py: Python<'py>,
@@ -108,6 +113,8 @@ pub(crate) fn calc_gwas<'py>(
     design: PyReadonlyArray2<'py, f64>,
     trait_name: &str,
     test_name: Option<String>,
+    kinship: Option<PyReadonlyArray2<'py, f64>>,
+    use_grammar_gamma_approx: bool,
     transform_to_biallelic: bool,
     steps: &Bound<'_, Steps>,
 ) -> Result<GwasForPython<'py>, PyPopneiError> {
@@ -137,6 +144,14 @@ pub(crate) fn calc_gwas<'py>(
         .as_slice()
         .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "design" })?
         .to_vec();
+    // The kinship crosses as the matrix of the tested individuals alone,
+    // cut and ordered by the package, which is where the names of the
+    // individuals are: the core reads it row after row beside the design
+    // and holds no name to cut it by. It is copied for the same reason the
+    // other three are, the interpreter being released for the whole pass,
+    // and for 10000 individuals it is 800 MB, which is what a kinship of
+    // that panel weighs wherever it is held.
+    let kinship_values = the_kinship(kinship.as_ref())?;
     let steps = steps.get().of_a_pass()?;
     // A Ctrl-C that was pending when this was called is raised here, before
     // the file is opened.
@@ -147,13 +162,14 @@ pub(crate) fn calc_gwas<'py>(
         trait_type,
         design: &design_values,
         num_coefs,
-        // The kinship and the GRAMMAR-Gamma approximation reach the core
-        // with the linear mixed model, which is being written. The test
-        // does not wait for it: the Wald test is the linear model's own,
-        // and the core is what refuses the score test of it.
-        kinship: None,
+        kinship: kinship_values.as_deref(),
         test,
-        use_grammar_gamma_approx: false,
+        // The approximation is refused by the core, which says two
+        // different things about it, that a study with no kinship has no
+        // denominator to approximate and that popnei has not written the
+        // approximation of the one a mixed model has. Both packages give it
+        // as the user wrote it, so both messages are the same in each.
+        use_grammar_gamma_approx,
         individuals: &tested,
         transform_to_biallelic,
     };
@@ -300,6 +316,41 @@ fn the_positions(individuals: &PyReadonlyArray1<'_, u64>) -> Result<Vec<usize>, 
             })
         })
         .collect()
+}
+
+/// The kinship of the tested individuals as the core reads it, row after
+/// row, and `None` for a study with no random effect.
+///
+/// Whether it holds one row and one column for each tested individual, and
+/// whether every value of it is a finite number, are the core's to refuse:
+/// it says which cell a value that is not finite is in, and the package
+/// checks neither, since `Kinship.__post_init__` refuses a matrix that is
+/// not square and one that holds what is no number.
+///
+/// # Errors
+///
+/// [`PyPopneiError::ArrayNotContiguous`] when the array does not lie row
+/// after row, which the package makes it before the call. A matrix that
+/// lies column after column would be read as its own transpose, which for
+/// a kinship is the same matrix; the layout is asked for all the same,
+/// because `as_slice` takes a strided view of another matrix altogether.
+fn the_kinship(
+    kinship: Option<&PyReadonlyArray2<'_, f64>>,
+) -> Result<Option<Vec<f64>>, PyPopneiError> {
+    match kinship {
+        None => Ok(None),
+        Some(values) => {
+            if !values.is_c_contiguous() {
+                return Err(PyPopneiError::ArrayNotContiguous { name: "kinship" });
+            }
+            Ok(Some(
+                values
+                    .as_slice()
+                    .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "kinship" })?
+                    .to_vec(),
+            ))
+        }
+    }
 }
 
 /// The values of an array of one number per tested individual, copied into

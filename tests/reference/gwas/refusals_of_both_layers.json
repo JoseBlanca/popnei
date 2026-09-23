@@ -16,30 +16,48 @@
     "them: the names of the arguments differ between the two languages, and",
     "so does the quoting of a name in a message.",
     "",
-    "`refusals` are the calls both layers refuse. `coercions` are the calls",
-    "where a value that is not a number reaches the study as one, with",
-    "`float` in Python and `Number` in TypeScript: each of them is the",
-    "worked example written another way, so each suite asserts the null",
-    "model that example gives and no case there has a `match`.",
+    "`refusals` are the calls both layers refuse. Each of them is a",
+    "`ValueError` in Python unless the case says otherwise in",
+    "`python_raises`, which is `TypeError` where what the user wrote is of",
+    "the wrong type altogether; JavaScript has one `Error` for all of them.",
     "",
-    "`refused_in_typescript_alone` is the one divergence the spec settled,",
-    "on 23 September 2026. Python says that an individual has no phenotype",
-    "with a name that the series has not, with `None` or with NaN;",
-    "TypeScript says it with a key that the object has not, and that is the",
-    "only way to say it there, because `Number` turns `null` into 0 and",
-    "`undefined` into NaN and a NaN phenotype would leave a typo out of the",
-    "study in silence. Each suite asserts its own half: the TypeScript one",
-    "the refusal of `match`, and the Python one a study of the five",
-    "individuals that `i2` is not among."
+    "`coercions` are the calls where a value that is not a number reaches",
+    "the study as one: each of them is the worked example written another",
+    "way, so each suite asserts the null model that example gives and no",
+    "case there has a `match`.",
+    "",
+    "`no_phenotype_in_both_layers` are the values that mean an individual",
+    "with no phenotype, which is left untested rather than refused. The rule",
+    "the spec settled on 23 September 2026 is by the oracle: a value means",
+    "no phenotype exactly where Python's `float` of it gives NaN, which NaN",
+    "itself and the string `nan` both do. Each suite asserts a study of the",
+    "five individuals that `i2` is not among.",
+    "",
+    "`refused_in_typescript_alone` is the divergence that is left. Python",
+    "says that an individual has no phenotype with a name the series has",
+    "not, with `None` and with the missing value of pandas, which `dropna`",
+    "drops; TypeScript has neither, and `float(None)` raises, so `null` and",
+    "`undefined` are refused there. Each suite asserts its own half: the",
+    "TypeScript one the refusal of `match`, and the Python one a study of",
+    "the five individuals that `i2` is not among."
   ],
   "refusals": [
     {
-      "case": "a kinship",
-      "match": "`kinship` belongs to the linear mixed model"
+      "case": "a kinship that is not a kinship",
+      "match": "`kinship` is .*, and the kinship a mixed model takes is a `Kinship`",
+      "python_raises": "TypeError"
     },
     {
-      "case": "the grammar gamma approximation",
-      "match": "belongs to the linear mixed model"
+      "case": "the grammar gamma approximation with no kinship",
+      "match": "a study with no kinship has no such denominator"
+    },
+    {
+      "case": "the grammar gamma approximation with a kinship",
+      "match": "GRAMMAR-Gamma approximation is being written"
+    },
+    {
+      "case": "a tested individual the kinship has not",
+      "match": "`?.i2.`? is tested and is not one of the 5 individuals of the"
     },
     {
       "case": "the score test",
@@ -105,6 +123,14 @@
       "case": "a covariate written as booleans"
     }
   ],
+  "no_phenotype_in_both_layers": [
+    {
+      "case": "a phenotype that is NaN"
+    },
+    {
+      "case": "a phenotype that is the string nan"
+    }
+  ],
   "refused_in_typescript_alone": [
     {
       "case": "a phenotype that is null",
@@ -113,10 +139,6 @@
     {
       "case": "a phenotype that is undefined",
       "match": "the phenotype of .i2. is undefined"
-    },
-    {
-      "case": "a phenotype that is NaN",
-      "match": "the phenotype of .i2. is NaN"
     }
   ]
 }
