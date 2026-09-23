@@ -24,6 +24,7 @@ use popnei::io::vars::VarsReader;
 
 use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::errors::JsPopneiError;
+use crate::kinship::{KinshipOfVariants, kinship_of_the_variants};
 use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
@@ -199,6 +200,28 @@ impl VarsSource {
             num_prin_comps,
             steps,
         )
+    }
+
+    /// The kinship of every pair of the individuals of `individuals`, or of
+    /// every individual of the pass when it is nothing, over the variants of
+    /// the file that the steps of `steps` keep.
+    ///
+    /// # Errors
+    ///
+    /// When a name of `individuals` is of nobody the pass gives, is there
+    /// twice, or the list is empty; when the file cannot be read; when a
+    /// variant has more than two alleles among its called genotypes and
+    /// `transform_to_biallelic` is false; when the pass gives no variant or
+    /// no variant with variance; when two individuals have no variant called
+    /// in both; when a size of the dataset is beyond what the calculation
+    /// counts in; and when the linear algebra could not be done.
+    pub fn calc_kinship(
+        &self,
+        individuals: Option<Vec<String>>,
+        transform_to_biallelic: bool,
+        steps: Steps,
+    ) -> Result<KinshipOfVariants, JsPopneiError> {
+        kinship_of_the_variants(self, individuals, transform_to_biallelic, steps)
     }
 
     /// The Kosman distance of every pair of individuals over the variants

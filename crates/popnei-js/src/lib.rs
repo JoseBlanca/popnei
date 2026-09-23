@@ -21,6 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 pub mod dists;
 pub mod errors;
+pub mod kinship;
 pub mod ld;
 pub mod pca;
 pub mod source;
