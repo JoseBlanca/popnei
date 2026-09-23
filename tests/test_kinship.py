@@ -34,6 +34,7 @@ from pynei.gwas import calc_kinship as pynei_kinship
 
 REFERENCE_KINSHIP_DIR = Path(__file__).parent / "reference" / "kinship"
 REFERENCE_DISTS_DIR = Path(__file__).parent / "reference" / "dists"
+REFERENCE_GWAS_DIR = Path(__file__).parent / "reference" / "gwas"
 
 # The two panels of "How it is verified" of the spec, the same 200
 # individuals and 1200 biallelic diploid variants twice: `panel_called` with
@@ -773,3 +774,195 @@ def test_the_kinship_of_a_calculation_passes_the_checks_of_a_matrix(vcf_of) -> N
     assert again.individuals == WORKED_EXAMPLE_INDIVIDUALS
     assert again.num_vars == kinship.num_vars
     assert again.pass_stats == kinship.pass_stats
+
+
+# The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on 23
+# September 2026, which "How it is verified" of the spec gives. No function
+# gives an eigenvalue, so they are read from the projections: a component is
+# `u_j * sqrt(lambda_j)` and `u_j` has length 1, so the sum of the squares of
+# a component's projections is its eigenvalue.
+EIGENVALUES_OF_PANEL_CALLED = (17.26914116, 12.44731524, 3.35871258)
+
+# How many components a panel of 200 individuals has. A kinship measures a
+# pair against the average pair of the panel, which takes one direction out
+# of it, so the last eigenvalue is 0 or below: numpy gives -3.44e-15 on
+# `panel_called` and -0.0321 on `panel`, against a tolerance of 7.67e-13.
+COMPONENTS_OF_A_PANEL = 199
+
+# How many components the comparison with pyNei is over, and the tolerance
+# the spec asks for. pyNei takes the square root of the absolute value of an
+# eigenvalue below 0 and popnei does not, so the two agree on the components
+# above the tolerance alone; the third eigenvalue of the panel with genotypes
+# missing is 3.36, far above it. Measured on 23 September 2026 with numpy on
+# Accelerate, the worst projection of the first 10 components is 1.27e-11 of
+# itself away from pyNei's on `panel_called` and 2.44e-11 on `panel`, and the
+# smallest projection compared is 8.5e-06, so no projection is near enough to
+# 0 for the bound to ask of it what no arithmetic gives.
+FIRST_COMPONENTS = 10
+OF_THE_PROJECTIONS_OF_PYNEI = 1e-9
+
+# The kinship of two individuals called at one variant, `0/0` and `1/1`,
+# which "How it is verified" gives: its matrix is 2 on the diagonal and -2
+# off it, its first component is 1.41421356 and -1.41421356, and its second
+# eigenvalue is 0, so asking it for 2 components gives 1. It is where the
+# tolerance of the sign rule is read: the two projections are one number with
+# opposite signs, and the rule gives the first of the two the positive one.
+OF_TWO_INDIVIDUALS = [[2.0, -2.0], [-2.0, 2.0]]
+ITS_FIRST_COMPONENT = (1.41421356, -1.41421356)
+OF_THE_SPECS_DIGITS = 1e-8
+
+
+def _the_pops() -> pandas.Series:
+    """Which of the three subpopulations each individual of the panel
+    belongs to, the `pop` column of `tests/reference/gwas/phenotypes.csv`."""
+    phenotypes = pandas.read_csv(REFERENCE_GWAS_DIR / "phenotypes.csv")
+    return phenotypes.set_index("IID")["pop"]
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_the_first_ten_components_of_a_panel_are_pyneis(name: str) -> None:
+    """Both libraries on the same panel, projection by projection.
+
+    The absolute value of each of them is what is compared: the sign of a
+    component is popnei's own rule and pyNei gives whatever LAPACK gave, and
+    a component multiplied by -1 is the same component.
+    """
+    ours = calc_kinship(open_vcf(_panel(name))).principal_components(FIRST_COMPONENTS)
+    theirs = pynei_kinship(vars_from_vcf(_panel(name))).principal_components(
+        FIRST_COMPONENTS
+    )
+
+    assert ours.shape == (PANEL_NUM_INDIVIDUALS, FIRST_COMPONENTS)
+    assert list(ours.index) == list(theirs.index)
+    numpy.testing.assert_allclose(
+        numpy.abs(ours.to_numpy()),
+        numpy.abs(theirs.to_numpy()),
+        rtol=OF_THE_PROJECTIONS_OF_PYNEI,
+        atol=0,
+    )
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_every_component_of_a_panel_obeys_the_sign_rule(name: str) -> None:
+    """The projection of the largest absolute value is positive in every one
+    of the 199 components of a panel.
+
+    Without the rule the sign of each component is whatever the
+    eigendecomposition gave, which is not the same in the two backends of
+    popnei nor in its three builds.
+    """
+    components = calc_kinship(open_vcf(_panel(name))).principal_components(
+        PANEL_NUM_INDIVIDUALS
+    )
+    projections = components.to_numpy()
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_A_PANEL)
+    furthest = numpy.abs(projections).argmax(axis=0)
+    largest = projections[furthest, numpy.arange(projections.shape[1])]
+    assert (largest > 0).all(), f"{int((largest <= 0).sum())} components are turned"
+
+
+def test_the_eigenvalues_of_the_panel_are_the_sums_of_the_squares() -> None:
+    """The three largest eigenvalues of `panel_called`, read from the
+    projections, which no function of popnei gives on its own."""
+    components = calc_kinship(open_vcf(_panel("panel_called"))).principal_components(3)
+
+    eigenvalues = (components**2).sum().to_numpy()
+    numpy.testing.assert_allclose(
+        eigenvalues, numpy.array(EIGENVALUES_OF_PANEL_CALLED), rtol=1e-9, atol=0
+    )
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_a_panel_has_one_component_fewer_than_its_individuals(name: str) -> None:
+    """200 components asked of a panel of 200 individuals gives 199.
+
+    The last eigenvalue is 0 or below it, since the matrix is measured
+    against the average pair of the panel, and a component whose eigenvalue
+    is not above the tolerance is not given. pyNei gives 200 there, the last
+    of them the square root of the absolute value of that eigenvalue, 0.179
+    on the panel with genotypes missing, along a direction in which the panel
+    does not vary.
+    """
+    components = calc_kinship(open_vcf(_panel(name))).principal_components(
+        PANEL_NUM_INDIVIDUALS
+    )
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_A_PANEL)
+    assert list(components.index) == [f"s{at:03d}" for at in range(200)]
+
+
+@pytest.mark.parametrize("name", PANELS)
+def test_the_first_component_tells_the_subpopulations_of_the_panel_apart(
+    name: str,
+) -> None:
+    """The three subpopulations of the panel, which the `pop` column of the
+    phenotypes names.
+
+    The standard deviation of the mean of `PC0` over the three is above the
+    standard deviation of `PC0` itself, which is what says that the component
+    separates them: it is `test_kinship_of_some_samples_and_threads` of
+    pyNei. Measured on 23 September 2026, 0.336 against 0.295 on both panels.
+    """
+    first = calc_kinship(open_vcf(_panel(name))).principal_components(1)["PC0"]
+    pops = _the_pops()
+
+    assert set(pops) == {0, 1, 2}
+    of_the_pops = first.groupby(pops.reindex(first.index)).mean()
+    assert len(of_the_pops) == 3
+    assert of_the_pops.std() > first.std()
+
+
+def test_the_columns_are_the_components_with_zeros_on_the_left() -> None:
+    """Ten components are `PC00` to `PC09`, and three are `PC0` to `PC2`:
+    the number has zeros on its left to the width of how many there are, as
+    the principal components of a table are named."""
+    kinship = calc_kinship(open_vcf(_panel("panel_called")))
+
+    assert list(kinship.principal_components(10).columns) == [
+        f"PC0{at}" for at in range(10)
+    ]
+    assert list(kinship.principal_components(3).columns) == ["PC0", "PC1", "PC2"]
+
+
+def test_no_component_asked_for_is_a_frame_of_no_columns() -> None:
+    """A `num_pcs` of 0, which is no error, as asking a principal component
+    analysis for no components is not."""
+    components = calc_kinship(open_vcf(_panel("panel_called"))).principal_components(0)
+
+    assert components.shape == (PANEL_NUM_INDIVIDUALS, 0)
+    assert list(components.index) == [f"s{at:03d}" for at in range(200)]
+
+
+def test_the_components_of_a_kinship_a_user_built() -> None:
+    """The kinship of two individuals called at one variant, `0/0` and
+    `1/1`, whose matrix is 2 on the diagonal and -2 off it.
+
+    Its first component is 1.41421356 and -1.41421356, two projections of
+    one absolute value, and the sign rule gives the first of the two the
+    positive sign. Its second eigenvalue is 0, so asking it for 2 components
+    gives 1.
+    """
+    kinship = _kinship_of(OF_TWO_INDIVIDUALS, ["a", "b"], num_vars=1)
+
+    components = kinship.principal_components(2)
+
+    assert components.shape == (2, 1)
+    assert list(components.columns) == ["PC0"]
+    numpy.testing.assert_allclose(
+        components["PC0"].to_numpy(),
+        numpy.array(ITS_FIRST_COMPONENT),
+        rtol=0,
+        atol=OF_THE_SPECS_DIGITS,
+    )
+
+
+def test_a_num_pcs_that_counts_no_components_is_refused() -> None:
+    """A negative number of components, and what is no whole number of
+    them, both named by the argument a user wrote."""
+    kinship = _kinship_of(OF_TWO_INDIVIDUALS, ["a", "b"], num_vars=1)
+
+    with pytest.raises(ValueError, match="num_pcs"):
+        kinship.principal_components(-1)
+    with pytest.raises(TypeError, match="num_pcs"):
+        kinship.principal_components(2.5)

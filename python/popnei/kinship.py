@@ -25,6 +25,7 @@ import numpy
 import pandas
 
 from popnei import _core
+from popnei.pca import _component_names
 from popnei.variant import PassStats, Variants, _pass_stats_of
 
 # How far a matrix a user built may be from its own transpose, as a share of
@@ -122,6 +123,77 @@ class Kinship:
         They are read from the matrix itself, so the names are in one place
         and cannot disagree with themselves, as pyNei's ``samples`` is."""
         return tuple(self.matrix.index)
+
+    def principal_components(self, num_pcs: int) -> pandas.DataFrame:
+        """Where each individual falls along the `num_pcs` directions in
+        which the panel varies most, taken from this matrix.
+
+        A user gives them to an association study as covariates, which is how
+        the structure of a panel is accounted for without a mixed model, and
+        they cost an eigendecomposition of a matrix that is already in hand
+        rather than a second pass over the variants. With ``lambda_j`` the
+        eigenvalues of the kinship from the largest and ``u_j`` its
+        eigenvectors, the component ``j`` is ``u_j * sqrt(lambda_j)``.
+
+        What comes back is a frame with the names of the individuals as index
+        and the components as columns, named ``PC0``, ``PC1`` and so on with
+        zeros on the left to the width of how many there are, as
+        :func:`popnei.do_pca` names them. It is indexed by individual so that
+        it can be joined to the covariates of the association study.
+
+        In every component the projection of the largest absolute value is
+        positive, which is the rule of `docs/specs/pca.md`: a component
+        multiplied by -1 is the same component, and without the rule the two
+        backends of the eigendecomposition and the three builds of popnei
+        would give different signs for one dataset.
+
+        A component whose eigenvalue is not above ``lambda_1 * n * 2.2e-16``,
+        with ``n`` the individuals, is not given, so asking for more
+        components than the matrix has gives those it has and the frame has
+        that many columns. A kinship measures a pair against the average pair
+        of the panel, which takes one direction out of it, so a panel of 200
+        individuals has 199 components and not 200. A `num_pcs` of 0 gives a
+        frame of no columns and is no error, as asking a principal component
+        analysis for no components is not; a negative one, and what is no
+        whole number, are a ``ValueError`` and a ``TypeError`` that name the
+        argument.
+
+        These are close to the principal components of the variants the
+        kinship was calculated from and they are not the same, because the
+        two standardize by different numbers: the kinship divides each
+        variant by ``sqrt(ploidy * p * (1 - p))`` and
+        :func:`popnei.do_pca_from_variants` by the standard deviation of its
+        dosages, and the two agree only when the genotypes are in Hardy
+        Weinberg proportions.
+
+        It is pyNei's ``Kinship.principal_components``, with two differences.
+        pyNei gives exactly `num_pcs` components whatever their eigenvalue,
+        taking the square root of the absolute value of one below 0, which
+        the per pair denominators of a dataset with genotypes missing put
+        there: on the reference panel with 3 in 100 of its genotypes missing
+        the smallest eigenvalue is -0.0321, and the length that absolute
+        value gives means nothing. And pyNei leaves the sign of a component
+        to the library that decomposed the matrix.
+        """
+        # A frame of one dtype lies column after column, which the core
+        # would read as the transpose: for a matrix that is symmetric only
+        # within the tolerance of `__post_init__` that is other numbers, and
+        # the core reads the lower half alone.
+        values = numpy.ascontiguousarray(
+            self.matrix.to_numpy(dtype=numpy.float64), dtype=numpy.float64
+        )
+        # `num_pcs` is checked in the binding crate, where every count a
+        # user writes is: a whole number of Python is of any size, and what
+        # is none of them is refused there by the name of the argument.
+        projections, num_comps = _core.kinship_principal_components(values, num_pcs)
+        # `copy=False`: the array came from the core crate for this call,
+        # nothing else holds it, and only the frame outlives the call.
+        return pandas.DataFrame(
+            projections,
+            index=list(self.individuals),
+            columns=_component_names(num_comps),
+            copy=False,
+        )
 
     def filter_individuals(self, individuals: Sequence[str]) -> Kinship:
         """The rows and the columns of `individuals`, in the order given.

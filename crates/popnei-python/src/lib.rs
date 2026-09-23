@@ -105,7 +105,7 @@ mod _core {
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]
-    use super::kinship::calc_kinship;
+    use super::kinship::{calc_kinship, kinship_principal_components};
     #[pymodule_export]
     use super::ld::calc_rogers_huff_r2_matrix;
     #[pymodule_export]

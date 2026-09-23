@@ -19,9 +19,16 @@
 //! individuals of the pass here, with `popnei::filters::resolve_individuals`,
 //! which is what the filter of individuals is given as well: the core takes
 //! the places and knows nothing of the names.
+//!
+//! [`kinship_principal_components`] is the other half of the module: it
+//! places each individual along the directions in which the panel varies
+//! most, out of a matrix alone. It reads no source, since the matrix a user
+//! holds is the whole input, and a user who built that matrix by hand gets
+//! its components as one of a pass does.
 
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray2};
+use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods as _};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
@@ -29,7 +36,7 @@ use popnei::filters::resolve_individuals;
 use popnei::kinship::Kinship;
 
 use crate::errors::PyPopneiError;
-use crate::source::{OpenSource, PassCounts, source_of};
+use crate::source::{OpenSource, PassCounts, count_of_at_least, source_of};
 use crate::steps::{Step, Steps, chain_of};
 
 /// What one pass gives: the kinship the core calculated, the names of the
@@ -155,6 +162,70 @@ fn over_the_source(
     ))
 }
 
+// The principal components of the kinship `matrix`, an individuals x
+// individuals float64 array that lies row after row, `num_pcs` of them at
+// most. What it gives back is where each individual falls along each
+// component, individuals x the components that were given, and how many
+// those are: a component whose eigenvalue is not above the tolerance of
+// `docs/specs/pca.md` is not given, so a kinship with fewer components than
+// were asked for gives the ones it has. A `///` comment here would become
+// the `__doc__` of `popnei._core.kinship_principal_components`, and what a
+// Python user reads belongs to the package, which is the API.
+#[pyfunction]
+#[pyo3(signature = (matrix, num_pcs))]
+pub(crate) fn kinship_principal_components<'py>(
+    py: Python<'py>,
+    matrix: PyReadonlyArray2<'py, f64>,
+    num_pcs: &Bound<'_, PyAny>,
+) -> Result<(Bound<'py, PyArray2<f64>>, usize), PyPopneiError> {
+    // A `num_pcs` of 0 is no components and is no error, as asking a
+    // principal component analysis for none is not, so 0 is the fewest.
+    let num_pcs = count_of_at_least("num_pcs", 0, num_pcs)?;
+    let (num_rows, num_columns) = matrix.as_array().dim();
+    if num_rows != num_columns {
+        // The package builds this array out of the frame of a `Kinship`,
+        // which is square by the checks of that class, so only a caller of
+        // `popnei._core` itself arrives here.
+        return Err(PyValueError::new_err(format!(
+            "`matrix` is {num_rows} by {num_columns}, and the kinship a \
+             component is taken of is a square matrix of the individuals by \
+             the individuals"
+        ))
+        .into());
+    }
+    // The layout is asked of the array itself and not of `as_slice`, which
+    // takes an array that lies column after column as well: the core would
+    // read the upper half of the matrix as its lower half, which for a
+    // matrix that is symmetric only within a tolerance is other numbers.
+    if !matrix.is_c_contiguous() {
+        return Err(PyPopneiError::ArrayNotContiguous { name: "matrix" });
+    }
+    let values = matrix
+        .as_slice()
+        .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "matrix" })?;
+    // The values are copied while the interpreter is held, since the array
+    // they are in belongs to Python and the closure below has to own what
+    // it reads. The two counts of the result are not read by the
+    // components, which take the matrix and the individuals alone.
+    let kinship = Kinship {
+        num_individuals: num_rows,
+        num_vars: 0,
+        num_vars_given: 0,
+        matrix: values.to_vec(),
+    };
+    // The eigendecomposition of a matrix of thousands of individuals takes
+    // seconds and the interpreter is of no use to it.
+    let pcs = py.detach(|| popnei::kinship::principal_components(&kinship, num_pcs))?;
+    // The Ctrl-C that arrived while the interpreter was released is raised
+    // before numpy is called: the first array of a process imports the C API
+    // of numpy, that import fails with the exception that is pending, and
+    // the numpy crate panics when it does, which a user cannot catch.
+    py.check_signals()?;
+    let num_comps = pcs.num_comps;
+    let projections = the_projections_of(py, pcs.projections, num_rows, num_comps)?;
+    Ok((projections, num_comps))
+}
+
 /// The matrix of the kinship as a numpy array of individuals x individuals.
 ///
 /// `values` is the `Vec` the core filled and gave away, and numpy takes it
@@ -183,6 +254,33 @@ fn the_square_of(
             }
         })?;
     Ok(square.into_pyarray(py))
+}
+
+/// The projections as a numpy array of individuals x components, which
+/// takes the allocation of the core without copying it.
+///
+/// # Errors
+///
+/// [`PyPopneiError::Broken`] when the core gave projections that are not
+/// its individuals times its components, which is a defect of popnei: a
+/// user reports it instead of looking for what they typed wrong.
+fn the_projections_of(
+    py: Python<'_>,
+    values: Vec<f64>,
+    num_individuals: usize,
+    num_comps: usize,
+) -> Result<Bound<'_, PyArray2<f64>>, PyPopneiError> {
+    let num_values = values.len();
+    let table = Array2::from_shape_vec((num_individuals, num_comps), values).map_err(|error| {
+        PyPopneiError::Broken {
+            message: format!(
+                "the {num_comps} principal components of a kinship of \
+                 {num_individuals} individuals hold {num_values} values: {error}"
+            ),
+            path: None,
+        }
+    })?;
+    Ok(table.into_pyarray(py))
 }
 
 /// What each filter of a chain was given and kept, the outermost filter
