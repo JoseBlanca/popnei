@@ -966,6 +966,21 @@ const _: () = {
 /// a genotype with an allele missing are one value more than a byte holds.
 pub const MAX_PLOIDY_OF_THE_VARIANTS: usize = 254;
 
+/// The most individuals a calculation that builds a matrix of them by them
+/// takes: the largest number whose square is at most the 2147483647 values
+/// that the routines of BLAS and LAPACK count a matrix in, which
+/// `crates/popnei-linalg` gives as
+/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX).
+///
+/// The individuals x individuals matrix of that many holds 2147395600
+/// values, 17 GB, which no browser tab gives and few machines do. It is a
+/// size of a dataset and belongs to no one calculation: the principal
+/// components of the variants and the kinship each re-export it and check
+/// it at their own entry, since the pass over a row reads one variant and
+/// knows nothing of a matrix.
+pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize =
+    popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX.isqrt();
+
 /// The code of a genotype with an allele missing, which is not a dosage:
 /// [`MAX_PLOIDY_OF_THE_VARIANTS`] is what keeps the dosages below it.
 pub(crate) const MISSING_CODE: u8 = u8::MAX;

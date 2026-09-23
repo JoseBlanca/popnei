@@ -282,15 +282,10 @@ pub const DEFAULT_NUM_PRIN_COMPS: usize = 10;
 pub use crate::variant::MAX_PLOIDY_OF_THE_VARIANTS;
 
 /// The most individuals the principal components of the variants are taken
-/// on: the largest number whose square is at most the 2147483647 values
-/// that the routines of BLAS and LAPACK count a matrix in, which
-/// `crates/popnei-linalg` gives as
-/// [`THE_MOST_VALUES_OF_A_MATRIX`](popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX).
-///
-/// The individuals x individuals matrix of that many holds 2147395600
-/// values, 17 GB, which no browser tab gives and few machines do.
-pub const MAX_INDIVIDUALS_OF_THE_VARIANTS: usize =
-    popnei_linalg::THE_MOST_VALUES_OF_A_MATRIX.isqrt();
+/// on, which is the most any calculation of popnei builds a matrix of the
+/// individuals by the individuals for, of [`crate::variant`]. This analysis
+/// checks it at its own entry.
+pub use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// Which size of a dataset is beyond what the principal components of its
 /// variants are taken on.

@@ -30,10 +30,15 @@ use popnei_linalg::add_self_product_lower;
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::pca::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 use crate::variant::{
     DosageOptions, DosageScale, MISSING_ALLELE, Needs, RowPositions, the_standardized_block,
 };
+
+/// The most individuals a kinship is taken of, which is the most any
+/// calculation of popnei builds a matrix of the individuals by the
+/// individuals for, of [`crate::variant`]. This module checks it at its own
+/// entry, before the first block is read.
+pub use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// The kinship of every pair of a set of individuals, which the pass gives
 /// away so that a binding crate hands it to numpy or to a `Float64Array`
