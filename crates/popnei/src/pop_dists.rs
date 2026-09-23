@@ -2774,12 +2774,14 @@ mod tests {
         numbers
     }
 
-    /// Every number of the biallelic panel cut into groups of 50 000 base
-    /// pairs, 24 of them over its two chromosomes, read in blocks of
-    /// `num_vars_per_block` variants. The groups are 24 and not the 12 of
-    /// the runs of ADMIXTOOLS 2 because this goes through the function a
-    /// user calls, which asks for 20 groups at least.
-    fn every_number_of_the_panel(num_vars_per_block: usize) -> Vec<f64> {
+    /// Every number of the biallelic panel cut into the groups `how` says,
+    /// read in blocks of `num_vars_per_block` variants, with a check that
+    /// the variants fell into `num_groups` groups.
+    fn every_number_of_the_panel_cut(
+        how: JackknifeGroups,
+        num_vars_per_block: usize,
+        num_groups: usize,
+    ) -> Vec<f64> {
         let mut reader = reader_of_the_panel("dists/panel.vcf.gz", Some(num_vars_per_block));
         let pops = pops_of_the_file(
             "stats/panel_pops.txt",
@@ -2791,13 +2793,40 @@ mod tests {
             &pops,
             &PopDistOptions {
                 min_num_individuals: 20,
-                groups: JackknifeGroups::OfBasePairs(50_000),
+                groups: how,
             },
         )
         .expect("the sums of the panel");
 
-        assert_eq!(sums.groups().len(), 24, "the groups of the panel");
+        assert_eq!(sums.groups().len(), num_groups, "the groups of the panel");
         every_number_of(&sums)
+    }
+
+    /// Every number of the biallelic panel cut into groups of 50 000 base
+    /// pairs, 24 of them over its two chromosomes, read in blocks of
+    /// `num_vars_per_block` variants. The groups are 24 and not the 12 of
+    /// the runs of ADMIXTOOLS 2 because this goes through the function a
+    /// user calls, which asks for 20 groups at least.
+    fn every_number_of_the_panel(num_vars_per_block: usize) -> Vec<f64> {
+        every_number_of_the_panel_cut(JackknifeGroups::OfBasePairs(50_000), num_vars_per_block, 24)
+    }
+
+    /// Two runs of the same panel that have to give the same bits, which
+    /// `assert_eq!` on the numbers themselves does not say: a NaN is not
+    /// equal to itself, and a standard error the pass has none of is one.
+    fn assert_they_are_the_same_bits(of_one_run: &[f64], of_the_other: &[f64], what: &str) {
+        assert_eq!(
+            of_one_run.len(),
+            of_the_other.len(),
+            "the numbers of {what}"
+        );
+        for (at, (of_one_run, of_the_other)) in of_one_run.iter().zip(of_the_other).enumerate() {
+            assert_eq!(
+                of_one_run.to_bits(),
+                of_the_other.to_bits(),
+                "the number {at} of {what} is {of_one_run} in one run and {of_the_other} in the other"
+            );
+        }
     }
 
     /// The size of the blocks changes no number of the panel beyond the
@@ -2830,7 +2859,20 @@ mod tests {
     /// block are added up in chunks of a fixed size and the chunks are
     /// added into the sums of the pass in the order of the block, so a pool
     /// of one thread and a pool of four give the same bits, which rayon's
-    /// own `sum` would not.
+    /// own `reduce` would not.
+    ///
+    /// The second run is what can fail. The first cuts the panel into
+    /// groups of 50 000 base pairs, which are 50 variants where a chunk is
+    /// `ROWS_PER_CHUNK` rows, so the sums of a group are built from two
+    /// chunks at the most and any order of joining two values and a run of
+    /// zeros gives the same bits. The second asks for no groups, where the
+    /// 1200 variants of the panel come in one block of 19 chunks and all of
+    /// them add into one run of the pairs. Replacing the ordered addition
+    /// of the chunks in `add_the_block` with rayon's own
+    /// `par_chunks(...).map(...).reduce(...)` leaves the first run
+    /// unchanged and makes the second one fail: F_ST of p0 and p1 is then
+    /// the bits 3fbaded19c839733 on one thread and 3fbaded19c839729 on
+    /// four, 0.10496244498389444 against 0.1049624449838943.
     ///
     /// The pools are built here and are not rayon's global one, which has
     /// one thread per core of the machine. rayon is a dependency of the
@@ -2838,17 +2880,30 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn the_number_of_threads_does_not_change_the_measures() {
-        let in_a_pool = |threads| {
+        let in_a_pool = |threads, how, num_vars_per_block, num_groups| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .expect("the pool");
-            pool.install(|| every_number_of_the_panel(100))
+            pool.install(|| every_number_of_the_panel_cut(how, num_vars_per_block, num_groups))
         };
 
-        let on_one = in_a_pool(1);
+        let groups_of_50_000 = JackknifeGroups::OfBasePairs(50_000);
+        let on_one = in_a_pool(1, groups_of_50_000, 100, 24);
         assert_eq!(on_one.len(), 87);
-        assert_eq!(on_one, in_a_pool(4));
+        assert_they_are_the_same_bits(
+            &on_one,
+            &in_a_pool(4, groups_of_50_000, 100, 24),
+            "the panel in 24 groups, read in blocks of 100 variants",
+        );
+
+        let on_one = in_a_pool(1, JackknifeGroups::None, 10_000, 0);
+        assert_eq!(on_one.len(), 15);
+        assert_they_are_the_same_bits(
+            &on_one,
+            &in_a_pool(4, JackknifeGroups::None, 10_000, 0),
+            "the panel in one run of the pairs, read in one block",
+        );
     }
 
     /// The biallelic panel with the variant at 600 000 of `chr1` moved in
