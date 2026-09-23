@@ -50,8 +50,8 @@ which half it is about.** Three operations are reached from popnei today.
 once per block by the principal component analysis, at
 `crates/popnei/src/pca.rs:223` and `:875`. `product` is called three
 times from `pca.rs` and once from `crates/popnei/src/ld.rs:784`, which is
-six times per pair of tiles.
-`eigh_lower`, the eigendecomposition, is called once per analysis. The
+six times per pair of tiles. `eigh_lower`, the eigendecomposition, is
+called once per analysis. The
 other eleven — a Cholesky factorization and the solve, the log of the
 determinant and the inverse that come off it, the thin QR of a design,
 the solve against a triangular matrix of either half, the rank, and the
@@ -471,6 +471,16 @@ result is bit identical either way, which makes this a pure speed
 question. Gate on `n` times `sides` in `the_threads`, after a trial crate
 finds where the two cross.
 
+**Confirmed by the benchmark of section 9, and it is the largest single
+gain this review found.** On that exact shape, a 5 x 5 with one right hand
+side for each of 10000 individuals, faer takes **0.0535 ms on one thread
+against 0.1456 ms on the pool: pinning it is 2.7 times faster**. The
+fork-join is not merely wasted, it costs nearly two thirds of the call.
+Accelerate is 0.0700 ms at one thread and 0.0765 ms on its own threads, so
+faer pinned is also the fastest of the four. The association study will
+call this shape once per variant, so the gate is worth putting in before
+it has a caller, and it is bit identical either way.
+
 **L7. The eigendecomposition needs three n x n matrices alive at once, and
 that is the browser's ceiling before time is.**
 `crates/popnei-linalg/src/faer.rs:393-417`. The reached three. Confidence
@@ -634,8 +644,92 @@ that.
 
 ### What the experiments did not settle
 
-L1's benchmark is being built and its result goes here when it lands.
-Nothing else in section 5 was run: L3, L4, L6 and L7 are all about the
-eleven operations, and none of them can be timed until either that
-benchmark or the association study gives them a caller. That is not a gap
-this review can close by working longer.
+L1's benchmark was built and section 9 is what it says. L3, L4 and L7
+were not run: they are about the eleven operations and about peak memory
+in a browser, and the benchmark of section 9 is what would let the first
+two be timed, which is work for whoever takes them up. L6 was not run as
+an experiment of its own and did not need to be: the benchmark measured
+its shape on both backends and both thread counts and settled it, which
+is in L6 above.
+
+## 9. The benchmark the crate did not have, and what it says about the spec
+
+`crates/popnei-linalg/benches/ops.rs` at `a58b8f7`, with its `[[bench]]`
+entry, `harness = false` and the same shape as the eight in
+`crates/popnei/benches/`. It times eleven of the fourteen operations on the
+shapes popnei calls them at, builds every matrix with the generator of
+"How it is verified" of `docs/specs/linalg.md` so that no file is read, and
+runs on either backend: `cargo bench -p popnei-linalg --bench ops`, and the
+same with `--no-default-features` for faer. `--ops` picks operations by
+name, `--sizes` the orders, `--runs` defaults to 5.
+
+It answers L2, the finding that three measurements of the same call spanned
+32 per 100. A region of many calls is timed with one clock and the time of
+one call is printed, from 300 calls for the thin QR to 200000 for the
+solve against a 5 x 5. **On the thin QR the spread across five regions is
+now 0.2 per 100, against the 32 per 100 of three bests of 20 single
+calls.** Where an operation overwrites what it was given, the refill is
+inside the region and a second measurement times the refill alone, and the
+printed line gives both and their difference.
+
+Both backends print the same checksum for every one of the twelve
+measurements to ten digits, so the two are computing the same thing.
+
+### The two tables of the spec, taken again
+
+**"What the seven of the GWAS cost" holds.** Every cell reproduces once
+the threads are matched to the column: the six cells of the faer one-thread
+column are all within 2 per 100, and the loosest are Accelerate at n = 1000,
+24 per 100 above, and faer on the pool at n = 2000 and 5000, 18 and 12 per
+100 below, which are the sizes where the threads make the number depend on
+what else the machine is doing. That table can be trusted and can now be
+taken again on demand, which was the point of building this.
+
+**"Speed" does not close, and three of its numbers cannot all be right.**
+It says the crate call on a block of 5000 x 1000 is 12.7 ms, that `dsyrk`
+inside it is 12.05 ms and that the checks are 1.68 ms; 12.05 plus 1.68 is
+13.73, not 12.7. Four paragraphs earlier the same section gives `dsyrk` on
+the same block at one thread as 10.5 ms. **The crate call measured here,
+checks and all, is 10.973 ms, which is below the 12.05 ms the spec gives
+`dsyrk` alone.** Those four numbers came from three different scratch
+crates, none of which survives. What this benchmark now fixes is the crate
+call; separating the routine from the checks would need a measurement it
+does not make. The eigendecomposition rows of the same section are closer:
+on faer 7, 1 and 2 per 100 below, and on Accelerate 18 per 100 below at
+n = 1000, 9 below at 2000 and 3 above at 5000.
+
+The one cell with no explanation is the Cholesky and solve of one system of
+the size of the coefficients, which the spec gives as 0.060, 0.173 and
+0.320 µs at orders 3, 7 and 11 and which measures 0.0769, 0.1957 and 0.3633
+here, 13 to 28 per 100 above. The gap is the same size on both backends and
+at all three orders, so it is neither a backend matter nor the refill, which
+is 4 to 11 nanoseconds of a call of 77 to 363. The likeliest cause is that
+the trial crate did not rebuild the matrix between calls: a factorization
+run twice over the same buffer factors the factorization, which is a
+different and cheaper thing to time.
+
+### Numbers the spec has no cell for
+
+Measured at one thread, Apple M5 Pro, 23 September 2026, load average
+below 1 before each run.
+
+| measurement | Accelerate | faer |
+|---|---|---|
+| `product`, `c = a b'`, the r² tile shape | 4.280 ms | 33.588 ms |
+| `log_determinant_with_cholesky`, n = 5000 | 20.55 µs | 20.78 µs |
+| `solve_triangular` lower, n sides, n = 5000 | 340.64 ms | 2.1884 s |
+| `solve_triangular` upper, 5 x 5, one side | 0.0373 µs | 0.0317 µs |
+
+The log of the determinant costs the same on both backends within 1 per
+100, which is what it should: no backend routine runs, and the 20.55 µs at
+n = 5000 is this crate's own two passes over the diagonal plus 5000 calls
+of `ln`.
+
+### What the benchmark itself still wants
+
+Its one untimed region does not fully warm the 40 MB matrix of
+`add_self_product_lower`: the five timed regions fell 13.914, 12.457,
+11.652, 11.401 and 10.973 ms, one after another, and the best, which is
+what it reports, is the last. Every other measurement is flat to within 2
+per 100 across its regions. That one measurement wants a second untimed
+region before a decision turns on it.
