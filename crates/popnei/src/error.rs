@@ -108,9 +108,10 @@ pub enum Error {
     /// many of its alleles are not the major one, which has a meaning for
     /// two alleles; with the argument true every allele that is not the
     /// major one counts the same. The alleles are those the genotypes
-    /// hold and not those the source lists. The principal components of
-    /// the variants and the kinship both refuse it, and both take that
-    /// argument. In Python it is a `ValueError`.
+    /// hold and not those the source lists. It is the pass over a row that
+    /// refuses it, so every calculation that walks that pass raises it and
+    /// takes that argument; the principal components of the variants are
+    /// the one that does so far. In Python it is a `ValueError`.
     #[error(
         "the variant at the position {position} among those given has {num_alleles} different alleles among its called genotypes, and the dosage of a genotype, how many of its alleles are not the major one, has a meaning for two: pass `transform_to_biallelic` to count every allele that is not the major one the same"
     )]

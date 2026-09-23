@@ -1303,7 +1303,8 @@ fn the_center_and_the_scale_of_the_dosages(
 /// The four passes that standardizing a row is made of are private to this
 /// module, and a benchmark is a crate of its own, so nothing outside can
 /// call them; the compiler inlines all four into one closure, so a
-/// sampling profile of the analysis sees them as one frame. This module is
+/// sampling profile of a calculation that walks the row sees them as one
+/// frame. This module is
 /// behind the cargo feature `bench-internals`, which is off by default and
 /// which nothing of popnei's own builds turn on, and it holds one wrapper
 /// for each of them, with the arguments the private function takes, so

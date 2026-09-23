@@ -19,9 +19,9 @@ license.workspace = true
 default = ["blas"]
 blas = ["popnei-linalg/blas"]
 # What two benchmarks need to call a private function of the library: the
-# modules `variant::bench_internals`, which re-exports the four passes over
-# a row of a block so that `standardize_row` times them one by one, and
-# `ld::bench_internals`, which re-exports the matrix
+# modules `variant::bench_internals`, which re-exports the four passes that
+# turn a variant into standardized dosages so that `standardize_row` times
+# them one by one, and `ld::bench_internals`, which re-exports the matrix
 # of r² with the size of its tiles given, so that `r2_matrix` times the
 # matrix at a tile the library does not choose. Both are private and a
 # benchmark is a crate of its own, so without this nothing outside those
@@ -108,8 +108,9 @@ harness = false
 name = "pca_vars"
 harness = false
 
-# How long each of the four passes over a row of the principal component
-# analysis takes, of the performance review of
+# How long each of the four passes that turn a variant into standardized
+# dosages takes, which the principal components of the variants and the
+# kinship both walk, of the performance review of
 # docs/reports/perf-pca-2026-09-22.md, whose first experiment it is. The
 # profile of a whole analysis sees the four as one frame, because the
 # compiler inlines them, so this one calls each over the rows of one real

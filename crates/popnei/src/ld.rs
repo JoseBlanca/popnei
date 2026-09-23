@@ -1731,7 +1731,7 @@ fn the_dosage_of(value: f64) -> u8 {
 /// and it settles it by timing the matrix at several tiles over one file,
 /// so this module is behind the cargo feature `bench-internals`, which is
 /// off by default and which nothing of popnei's own builds turn on, as
-/// `pca::bench_internals` is.
+/// `variant::bench_internals` is.
 ///
 /// It holds one wrapper, over the private function [`calc_r2_matrix`]
 /// itself calls, so that what the benchmark times is the code the library

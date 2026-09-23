@@ -1,5 +1,7 @@
-//! How long each of the four passes over a row of the principal component
-//! analysis takes, over one real block of variants.
+//! How long each of the four passes that turn a row of a block into
+//! standardized dosages takes, over one real block of variants. The
+//! principal components of the variants and the kinship both walk that
+//! pass; the divisor timed here is the one of the components.
 //!
 //! Standardizing a row of a block turns the genotypes of one variant into
 //! one number per individual, its dosage, centered and divided by the
@@ -40,9 +42,9 @@
 //! functions of the module `variant`, which the principal components and
 //! the kinship both walk, and a benchmark is a crate of its own, so
 //! `variant::bench_internals`, which the feature turns on, is what
-//! re-exports them. cargo runs the benchmark with `crates/popnei` as its working
-//! directory, so a relative path is read from there and an absolute one is
-//! the plainer thing to give.
+//! re-exports them. cargo runs the benchmark with `crates/popnei` as its
+//! working directory, so a relative path is read from there and an
+//! absolute one is the plainer thing to give.
 //!
 //! One run that is not timed comes before the timed ones. It pays the page
 //! faults of the first touch of the buffers a pass writes into, and it is

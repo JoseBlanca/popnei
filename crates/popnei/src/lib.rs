@@ -15,8 +15,10 @@
 //! giving blocks implements and the reader that puts blocks back to a size;
 //! `io` the VCF reader, which parses the lines of a file into the rows of a
 //! block; `variant` what the other modules say about one variant: which
-//! fields a consumer wants, the table of the chromosome names and the view
-//! of one variant of a block; `filters` the variants that a user keeps
+//! fields a consumer wants, the table of the chromosome names, the view of
+//! one variant of a block, and the row helpers over it, which count its
+//! alleles and its genotypes and turn it into one standardized dosage per
+//! individual; `filters` the variants that a user keeps
 //! by a threshold, with the counts of what each filter was given and kept;
 //! and `stats` the populations a statistic is calculated for, each a named
 //! set of individuals, with the pass over the variants that gives, for each
