@@ -902,14 +902,41 @@ pub enum Error {
     )]
     KinshipNoVariantWithVariance,
 
-    /// The source of a kinship has no individual. A kinship is the matrix
-    /// of every pair of the individuals of a dataset, so there is no pair
-    /// to give, and the pass over a block would read its rows in chunks of
-    /// no allele. Every source of popnei has one individual at least, as
-    /// `docs/specs/block.md` says, so it is a caller of the function of the
-    /// core crate with a reader of its own that reaches it. In Python it is
-    /// a `ValueError`.
-    #[error("the source has no individual, and a kinship is the matrix of every pair of them")]
+    /// A value of the matrix of a kinship is not finite, an infinity or a
+    /// NaN, with the place where it is. There is nothing to give for such a
+    /// matrix: every component would be a NaN. The matrix of a pass is
+    /// never one of these, so it is a matrix a user built and then wrote
+    /// into, since the checks of the one they build are made when they
+    /// build it. In Python it is a `ValueError`.
+    ///
+    /// The whole matrix is read for it and not the lower half alone, which
+    /// is what the components take: a value above the diagonal says the
+    /// matrix is wrong as surely as one below it.
+    #[error(
+        "the value at the row {row}, column {col} of the matrix of the kinship is {value}, and the principal components of a kinship need every value finite"
+    )]
+    KinshipValueNotFinite {
+        /// Which row of the matrix holds it, from 0 among the individuals
+        /// of the kinship.
+        row: usize,
+        /// Which column of it holds it, from 0.
+        col: usize,
+        /// The value that is not finite.
+        value: f64,
+    },
+
+    /// A kinship of no individual. A kinship is the matrix of every pair of
+    /// a set of individuals, so there is no pair to give. In Python it is a
+    /// `ValueError`.
+    ///
+    /// Three callers reach it. A pass asked for none of the individuals of
+    /// its reader, which is an `individuals` of no position; its
+    /// components, of a matrix with no row, which is what a user who built
+    /// a kinship by hand from an empty frame has; and a pass over a source
+    /// that has no individual, which no reader of popnei gives, as
+    /// `docs/specs/block.md` says, so that one is a caller of the core
+    /// crate with a reader of its own.
+    #[error("the kinship has no individual, and a kinship is the matrix of every pair of them")]
     KinshipNoIndividual,
 
     /// Two individuals of a kinship have no variant called in both of them,

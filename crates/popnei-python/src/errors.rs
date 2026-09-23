@@ -122,6 +122,19 @@ pub(crate) enum PyPopneiError {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
     },
+    /// An array of two dimensions that is not square, given to a call that
+    /// takes a matrix of the individuals by the individuals, under the name
+    /// of the argument a user wrote it in. The package builds that array
+    /// from the frame of a `Kinship`, which is square by the checks of that
+    /// class, so a user reaches it only through `popnei._core`.
+    MatrixNotSquare {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// How many rows the array has.
+        num_rows: usize,
+        /// How many columns it has.
+        num_columns: usize,
+    },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -232,6 +245,13 @@ impl From<PyPopneiError> for PyErr {
                 "`{name}` does not lie in memory row after row, and popnei reads the \
                  values of an array as they lie: `numpy.ascontiguousarray({name})` \
                  gives one that does"
+            )),
+            PyPopneiError::MatrixNotSquare {
+                name,
+                num_rows,
+                num_columns,
+            } => PyValueError::new_err(format!(
+                "`{name}` is {num_rows} by {num_columns}, and the matrix of a kinship                  is a square one of the individuals by the individuals"
             )),
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a

@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::filters::resolve_individuals;
-use popnei::kinship::{Kinship, calc_kinship, principal_components};
+use popnei::kinship::{calc_kinship, principal_components_of};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
@@ -218,22 +218,19 @@ pub fn kinship_principal_components(
     if num_individuals.checked_mul(num_individuals) != Some(num_values) {
         // The `Kinship` of the package holds one value for each pair of its
         // individuals, which its constructor is what checks, so a caller
-        // that arrives here has a defect.
-        return Err(JsPopneiError::Broken(format!(
-            "the kinship of {num_individuals} individuals was given to the \
-             principal components as {num_values} values, which is not one \
-             for each pair of them"
+        // that arrives here wrote the matrix itself. Python says the same
+        // of the same matrix, with a `ValueError`.
+        return Err(JsPopneiError::Refused(format!(
+            "the matrix of a kinship of {num_individuals} individuals holds \
+             one value for each pair of them, and this one holds \
+             {num_values}"
         )));
     }
-    // The two counts of a kinship are not read by its components, which
-    // take the matrix and the individuals alone.
-    let kinship = Kinship {
-        num_individuals,
-        num_vars: 0,
-        num_vars_given: 0,
-        matrix,
-    };
-    let pcs = principal_components(&kinship, num_pcs)?;
+    // The matrix is taken over and the eigendecomposition writes the
+    // eigenvectors over it: a `Kinship` built here would carry two counts
+    // nobody gave and the matrix would be copied to protect a kinship that
+    // is thrown away.
+    let pcs = principal_components_of(matrix, num_individuals, num_pcs)?;
     Ok(PcsOfAKinship {
         num_comps: pcs.num_comps,
         projections: Some(pcs.projections),

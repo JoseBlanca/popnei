@@ -28,7 +28,6 @@
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2, PyUntypedArrayMethods as _};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use popnei::block::BlockReader;
@@ -183,15 +182,11 @@ pub(crate) fn kinship_principal_components<'py>(
     let num_pcs = count_of_at_least("num_pcs", 0, num_pcs)?;
     let (num_rows, num_columns) = matrix.as_array().dim();
     if num_rows != num_columns {
-        // The package builds this array out of the frame of a `Kinship`,
-        // which is square by the checks of that class, so only a caller of
-        // `popnei._core` itself arrives here.
-        return Err(PyValueError::new_err(format!(
-            "`matrix` is {num_rows} by {num_columns}, and the kinship a \
-             component is taken of is a square matrix of the individuals by \
-             the individuals"
-        ))
-        .into());
+        return Err(PyPopneiError::MatrixNotSquare {
+            name: "matrix",
+            num_rows,
+            num_columns,
+        });
     }
     // The layout is asked of the array itself and not of `as_slice`, which
     // takes an array that lies column after column as well: the core would
@@ -205,17 +200,15 @@ pub(crate) fn kinship_principal_components<'py>(
         .map_err(|_| PyPopneiError::ArrayNotContiguous { name: "matrix" })?;
     // The values are copied while the interpreter is held, since the array
     // they are in belongs to Python and the closure below has to own what
-    // it reads. The two counts of the result are not read by the
-    // components, which take the matrix and the individuals alone.
-    let kinship = Kinship {
-        num_individuals: num_rows,
-        num_vars: 0,
-        num_vars_given: 0,
-        matrix: values.to_vec(),
-    };
+    // it reads. That one copy is what the components work in: they take the
+    // matrix over, and the eigendecomposition writes the eigenvectors over
+    // it. A `Kinship` built here would carry two counts nobody gave and the
+    // matrix would be copied a second time to protect a kinship that is
+    // thrown away.
+    let matrix = values.to_vec();
     // The eigendecomposition of a matrix of thousands of individuals takes
     // seconds and the interpreter is of no use to it.
-    let pcs = py.detach(|| popnei::kinship::principal_components(&kinship, num_pcs))?;
+    let pcs = py.detach(|| popnei::kinship::principal_components_of(matrix, num_rows, num_pcs))?;
     // The Ctrl-C that arrived while the interpreter was released is raised
     // before numpy is called: the first array of a process imports the C API
     // of numpy, that import fails with the exception that is pending, and

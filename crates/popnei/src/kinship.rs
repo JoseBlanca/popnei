@@ -257,27 +257,60 @@ pub struct KinshipPcs {
 /// dosages, and the two agree only when the genotypes are in Hardy
 /// Weinberg proportions.
 ///
-/// The matrix is copied, since the eigendecomposition writes the
+/// The matrix is copied here, since the eigendecomposition writes the
 /// eigenvectors over the matrix it is given and the caller keeps its
 /// kinship: 800 MB at 10000 individuals.
+/// [`principal_components_of`] takes a matrix by value and copies nothing,
+/// which is what a caller that does not keep a [`Kinship`] calls.
 ///
 /// # Errors
 ///
 /// [`Error::KinshipNoIndividual`] when the kinship has no individual,
-/// which leaves nobody to place along anything, and
-/// [`Error::KinshipLinalg`] when the eigendecomposition could not be done.
+/// which leaves nobody to place along anything,
+/// [`Error::KinshipValueNotFinite`] when a value of the matrix is an
+/// infinity or a NaN, and [`Error::KinshipLinalg`] when the
+/// eigendecomposition could not be done.
 pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<KinshipPcs> {
-    let num_individuals = kinship.num_individuals;
+    principal_components_of(kinship.matrix.clone(), kinship.num_individuals, num_pcs)
+}
+
+/// The same components, of a matrix this takes over.
+///
+/// `matrix` is `num_individuals` x `num_individuals`, row after row, and
+/// its lower half is what is read: the eigendecomposition writes the
+/// eigenvectors over it, so nothing is copied here and the memory of one
+/// matrix is what the components cost besides the decomposition's own. A
+/// caller that keeps its kinship calls [`principal_components`], which
+/// copies.
+///
+/// Every value is checked to be finite before the decomposition, the upper
+/// half among them, although only the lower half is read: a matrix a user
+/// built and then wrote a NaN into is a wrong argument, and what the
+/// linear algebra would say of it names a matrix `g` and a row of it.
+///
+/// # Errors
+///
+/// [`Error::KinshipNoIndividual`] when `num_individuals` is 0, which
+/// leaves nobody to place along anything,
+/// [`Error::KinshipValueNotFinite`] when a value of the matrix is an
+/// infinity or a NaN, with where it is, and [`Error::KinshipLinalg`] when
+/// the matrix does not hold one value for each pair of the individuals or
+/// the eigendecomposition could not be done.
+pub fn principal_components_of(
+    matrix: Vec<f64>,
+    num_individuals: usize,
+    num_pcs: usize,
+) -> Result<KinshipPcs> {
     if num_individuals == 0 {
         return Err(Error::KinshipNoIndividual);
     }
+    the_values_are_finite(&matrix, num_individuals)?;
     // The eigendecomposition reads the lower half of the matrix and writes
-    // the eigenvectors over it, and the caller keeps its kinship.
-    let eigen = eigh_lower(kinship.matrix.clone(), num_individuals).map_err(|source| {
-        Error::KinshipLinalg {
-            operation: "eigendecomposition",
-            source,
-        }
+    // the eigenvectors over it, so the matrix this was given is what it
+    // works in.
+    let eigen = eigh_lower(matrix, num_individuals).map_err(|source| Error::KinshipLinalg {
+        operation: "eigendecomposition",
+        source,
     })?;
     // The matrix is the individuals by the individuals, so the tolerance
     // of `docs/specs/pca.md`, the largest eigenvalue times the larger side
@@ -296,6 +329,33 @@ pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<Kinship
         num_comps,
         projections,
     })
+}
+
+/// That every value of the matrix of a kinship is finite, with where the
+/// first one that is not is.
+///
+/// The whole matrix is read and not the lower half alone: a user who wrote
+/// a value into a frame after it was checked wrote it somewhere, and an
+/// infinity or a NaN above the diagonal says the matrix is wrong as surely
+/// as one below it.
+///
+/// # Errors
+///
+/// [`Error::KinshipValueNotFinite`] with the row and the column of the
+/// value, counted from 0 among the individuals of the kinship.
+fn the_values_are_finite(matrix: &[f64], num_individuals: usize) -> Result<()> {
+    for (row, of_the_row) in matrix.chunks(num_individuals.max(1)).enumerate() {
+        for (col, value) in of_the_row.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(Error::KinshipValueNotFinite {
+                    row,
+                    col,
+                    value: *value,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How many variants each pair of individuals had called in both of them,
@@ -2225,5 +2285,46 @@ mod components {
         };
 
         assert!(matches!(error, Error::KinshipNoIndividual), "{error}");
+    }
+
+    /// A value of the matrix that is not finite is a wrong matrix, and the
+    /// message names the row and the column it is at. The frame of a
+    /// `Kinship` is checked when the object is built and a user can write
+    /// into it afterwards, so this is where such a value arrives; without
+    /// the check the linear algebra refuses it and names a matrix `g`, an
+    /// internal name of `crates/popnei-linalg`, and Python calls a wrong
+    /// matrix a defect of popnei.
+    #[test]
+    fn a_value_of_the_matrix_that_is_not_finite_is_refused_with_where_it_is() {
+        // The matrix is 4 x 4: the entry 4 is the row 1 and the column 0,
+        // below the diagonal and read by the eigendecomposition, and the
+        // entry 1 is the row 0 and the column 1, above it and read by
+        // nothing.
+        for (at, row, col) in [(4, 1, 0), (1, 0, 1)] {
+            let mut kinship = the_kinship_of_the_worked_example();
+            kinship.matrix[at] = f64::NAN;
+
+            let error = match principal_components(&kinship, 2) {
+                Ok(pcs) => panic!("{} components were given", pcs.num_comps),
+                Err(error) => error,
+            };
+
+            let message = error.to_string();
+            assert!(
+                matches!(
+                    error,
+                    Error::KinshipValueNotFinite {
+                        row: found_row,
+                        col: found_col,
+                        value,
+                    } if found_row == row && found_col == col && value.is_nan()
+                ),
+                "{message}"
+            );
+            assert!(
+                message.contains("not finite") || message.contains("finite"),
+                "{message}"
+            );
+        }
     }
 }
