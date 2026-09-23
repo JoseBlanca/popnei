@@ -1376,13 +1376,14 @@ mod tests {
         scale: DosageScale::OfHardyWeinberg,
     };
 
-    /// The standardized dosages of one diploid variant of
-    /// `num_individuals` individuals, with the divisor `options` says, and
-    /// whether the variant was used.
-    fn the_row_of(gts: &[i8], num_individuals: usize, options: &DosageOptions) -> (Vec<f64>, bool) {
+    /// The standardized dosages of one variant of `ploidy` alleles per
+    /// genotype, with the divisor `options` says, and whether the variant
+    /// was used. The individuals are the alleles over the ploidy.
+    fn the_row_of(gts: &[i8], ploidy: usize, options: &DosageOptions) -> (Vec<f64>, bool) {
+        let num_individuals = gts.len().checked_div(ploidy).expect("a ploidy above 0");
         let mut scratch = RowScratch::of(num_individuals);
         let mut row = vec![0.0; num_individuals];
-        let used = the_standardized_row(gts, 2, 0, options, &mut scratch, &mut row)
+        let used = the_standardized_row(gts, ploidy, 0, options, &mut scratch, &mut row)
             .expect("the standardizing of the row");
         (row, used)
     }
@@ -2040,7 +2041,7 @@ mod tests {
     )]
     fn the_divisor_under_hardy_weinberg_gives_the_standardized_dosages_of_the_worked_example() {
         // v0: 0/0 0/1 1/1 0/1.
-        let (row, used) = the_row_of(&[0, 0, 0, 1, 1, 1, 0, 1], 4, &UNDER_HARDY_WEINBERG);
+        let (row, used) = the_row_of(&[0, 0, 0, 1, 1, 1, 0, 1], 2, &UNDER_HARDY_WEINBERG);
         assert!(used, "v0 has variance");
         assert_close(
             &row,
@@ -2049,7 +2050,7 @@ mod tests {
         );
 
         // v1: 0/0 0/1 ./. 1/1.
-        let (row, used) = the_row_of(&[0, 0, 0, 1, -1, -1, 1, 1], 4, &UNDER_HARDY_WEINBERG);
+        let (row, used) = the_row_of(&[0, 0, 0, 1, -1, -1, 1, 1], 2, &UNDER_HARDY_WEINBERG);
         assert!(used, "v1 has variance");
         assert_close(
             &row,
@@ -2078,7 +2079,7 @@ mod tests {
     )]
     fn the_row_pass_divides_by_what_its_caller_asked_for() {
         let gts = [0_i8, 0, 0, 0, 1, 1, 1, 1];
-        let (of_the_dosages, used) = the_row_of(&gts, 4, &OF_THE_DOSAGES);
+        let (of_the_dosages, used) = the_row_of(&gts, 2, &OF_THE_DOSAGES);
         assert!(used, "the variant has variance");
         assert_close(
             &of_the_dosages,
@@ -2086,12 +2087,77 @@ mod tests {
             "the dosages divided by their own standard deviation",
         );
 
-        let (under_hardy_weinberg, used) = the_row_of(&gts, 4, &UNDER_HARDY_WEINBERG);
+        let (under_hardy_weinberg, used) = the_row_of(&gts, 2, &UNDER_HARDY_WEINBERG);
         assert!(used, "the variant has variance");
         assert_close(
             &under_hardy_weinberg,
             &[-1.41421356237, -1.41421356237, 1.41421356237, 1.41421356237],
             "the dosages divided by the deviation under Hardy Weinberg",
+        );
+    }
+
+    /// The divisor under Hardy Weinberg reads both the ploidy and the
+    /// allele frequency of the variant, `sqrt(ploidy * p * (1 - p))` with
+    /// `p` the mean dosage over the ploidy.
+    ///
+    /// Every other test of that divisor is of a diploid variant whose mean
+    /// dosage is 1, where `p` is 0.5, so `p * (1 - p)` and `p * p` are the
+    /// same number and the ploidy is the 2 a constant would hold. The three
+    /// variants here each break one of those: the first is diploid with `p`
+    /// of 0.125, the second is tetraploid and the third haploid.
+    ///
+    /// The values are those of pyNei's `_calc_dosages`, which divides by
+    /// `sqrt(ploidy * freqs * (1 - freqs))`, run on 24 September 2026.
+    #[test]
+    fn the_divisor_under_hardy_weinberg_reads_the_ploidy_and_the_frequency() {
+        // 0/0 0/0 0/0 0/1: the allele 0 was called seven times and the
+        // allele 1 once, so the dosages are 0, 0, 0, 1, their mean is 0.25
+        // and `p` is 0.125. With `p * p` in place of `p * (1 - p)` the
+        // divisor would be sqrt(0.03125) and not sqrt(0.21875).
+        let (row, used) = the_row_of(&[0, 0, 0, 0, 0, 0, 0, 1], 2, &UNDER_HARDY_WEINBERG);
+        assert!(used, "the diploid variant has variance");
+        assert_close(
+            &row,
+            &[
+                -0.534522483825,
+                -0.534522483825,
+                -0.534522483825,
+                1.603567451475,
+            ],
+            "the standardized dosages of a diploid variant of p 0.125",
+        );
+
+        // 0/0/0/0 0/0/0/1 0/0/1/1 0/1/1/1: the dosages are 0, 1, 2, 3,
+        // their mean is 1.5 and `p` is 0.375, so each value is
+        // (dosage - 1.5) / sqrt(4 * 0.375 * 0.625). A ploidy read as 2
+        // would divide by sqrt(2 * 0.375 * 0.625) instead, and `p * p`
+        // would divide by sqrt(4 * 0.375 * 0.375).
+        let (row, used) = the_row_of(
+            &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1],
+            4,
+            &UNDER_HARDY_WEINBERG,
+        );
+        assert!(used, "the tetraploid variant has variance");
+        assert_close(
+            &row,
+            &[
+                -1.5491933384829668,
+                -0.5163977794943222,
+                0.5163977794943222,
+                1.5491933384829668,
+            ],
+            "the standardized dosages of a tetraploid variant",
+        );
+
+        // 0 0 1 1: the dosages are 0, 0, 1, 1, their mean is 0.5 and `p`
+        // is 0.5, so each value is (dosage - 0.5) / sqrt(1 * 0.5 * 0.5). A
+        // ploidy read as 2 would divide by sqrt(2 * 0.5 * 0.5).
+        let (row, used) = the_row_of(&[0, 0, 1, 1], 1, &UNDER_HARDY_WEINBERG);
+        assert!(used, "the haploid variant has variance");
+        assert_close(
+            &row,
+            &[-1.0, -1.0, 1.0, 1.0],
+            "the standardized dosages of a haploid variant",
         );
     }
 
