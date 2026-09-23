@@ -211,8 +211,16 @@ no mean back, and a study reports that mean as the `allele_freq` of every
 variant, including the ones it cannot test. So work package 2 has its own
 row, which calls the two vectorized passes of `variant` that do apply,
 `count_alleles` and `the_codes_of_the_genotypes`, and adds the mean and the
-fill for a missing genotype. `ld.rs` is the precedent for a module with its
-own dosage rule.
+fill for a missing genotype.
+
+`ld.rs` is the precedent for a module having its own dosage rule, and for
+that much only: it reads its rows one after another and has no rayon, so it
+is no precedent for the drive over the rows and its wasm twin, which the
+review of this work package measured as the larger half of about 120
+duplicated lines. Whether the two rows become one, with the scale made
+optional so that a study can ask for the dosage itself, is for the owner at
+the end of this plan: the change is in `variant.rs`, which another plan owns
+while this one runs, and `gwas-logistic` would be its third caller.
 
 ### Its tasks
 
