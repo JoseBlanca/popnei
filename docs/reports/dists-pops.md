@@ -18,6 +18,17 @@ Nei's D_A, Jost's D, Nei's G_ST and the standardized G''_ST, with the
 variants that counted for each pair, the f_2 of each pair within each
 resampling group, the groups themselves and the counts of the pass.
 
+Four of those deserve their names, since the rest of this report uses
+them. The variants that counted are per pair and not one number for the
+call, because a variant counts for a pair only when both of its
+populations have enough called genotypes at it, so two pairs are means
+over different variants. The f_2 of each pair within each group is what
+the statistics of three and four populations will later be built from
+without reading the genotypes again. The counts of the pass are how many
+variants the source gave and how many each filter kept. And the standard
+errors come back beside each measure, with a method that gives them as a
+square matrix like the distances themselves.
+
 What each of the seven answers, since the plan named them and this report
 has not:
 
@@ -64,10 +75,9 @@ ran into is written down; the plan has no open point left.
 ## How to read the rest
 
 A section for each work package in the order it was done, then the two
-reviews, then what is asked of the owner. Each task's section gives the
-tokens its subagent spent, which are there only so that the next plan can
-judge how big a task should be: they ran from 124 630 to 273 503, and
-nothing in them is a cost to the owner or a number to act on.
+reviews, then what is asked of the owner. The token counts in the task
+sections, 124 630 to 273 503, are kept only so that the next plan can
+judge how big a task should be.
 
 ## What was in place before the first task
 
@@ -131,7 +141,9 @@ pair that population is in, which is the rule the spec already had for two
 populations of one called genotype each, and it is written into the item
 in `f310edd`, a commit of its own before the code.
 
-It takes a haploid dataset and a `min_num_individuals` of 1 to reach,
+It takes a haploid dataset, and a threshold of 1 on how many called
+genotypes a population needs at a variant for that variant to count, to
+reach,
 since a genotype of two alleles or more that was called whole gives two
 called alleles or more, so no value of either panel changes. The
 orchestrator took it as a small choice made and written down rather than
@@ -359,10 +371,10 @@ passed, while showing that the numbers do move: f_2 for one pair is
 `3fa515b0b9944282` on one thread and `3fa515b0b994427b` on four. The
 fixture cuts the panel into groups of 50 variants and a chunk is 64 rows,
 so each group is built from at most two chunks and any order of two terms
-gives the same bits. The report's earlier claim that the test fails when
-the chunks are cut by the number of threads is true but is about another
-property: that mutation moves the chunk boundaries, not the order they are
-joined in.
+gives the same bits. The mutation this report described earlier, cutting
+the chunks by the number of threads, does make the test fail, but it moves
+where the chunk boundaries fall rather than the order the parts are added
+in, which is the property at issue.
 
 **The corrected diversities are pinned only where nothing can tell them
 apart.** All four variants of the worked example give the two populations
@@ -385,7 +397,9 @@ TypeScript and not in Python. Several doc comments state a bound or a
 number that is not the code's: a count said to be limited by a `u32` that
 is a `u64`, and a standard error quoted from a different run than the test
 uses. The map of the modules in `docs/architecture.md` still has no row
-for this module and gives its old one pyNei's function name.
+for this module, and the row for the distances between individuals,
+where these distances had been listed before they existed, names a pyNei
+function that popnei deliberately does not have.
 
 **One finding not taken.** The `errors` reviewer asked for a check on a
 `saturating_mul` that could make a chunk's sums be skipped. The `numbers`
@@ -499,8 +513,10 @@ the three cases it did not have.
 
 **One finding not taken, with the reason.** An overflow of the counter of
 groups in `standard_error` becomes no standard error rather than an error.
-The subagent answered that the counter is bounded by the groups, which the
-memory already bounds, so it cannot overflow, and that raising there would
+The subagent answered that the counter cannot exceed the number of
+resampling groups, and that number is already bounded by the machine's
+memory, since each group costs 48 bytes for every pair, so it cannot
+overflow, and that raising there would
 change the `Option<f64>` the spec fixes for that method. The orchestrator
 weighed that as it weighs a reviewer and took it: the bound holds.
 
