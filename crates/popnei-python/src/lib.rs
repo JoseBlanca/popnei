@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 
 mod dists;
 mod errors;
+mod gwas;
 mod kinship;
 mod ld;
 mod pca;
@@ -103,8 +104,15 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
 
+    // The one of `calc_gwas` that is the core's as well: whether a study
+    // makes the GRAMMAR-Gamma approximation when the user asks for nothing.
+    #[pymodule_export]
+    const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX;
+
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
+    #[pymodule_export]
+    use super::gwas::calc_gwas;
     #[pymodule_export]
     use super::kinship::{calc_kinship, kinship_principal_components};
     #[pymodule_export]
