@@ -176,6 +176,32 @@ for a continuous trait with no kinship, since the only test of a linear
 model is its t test; and the Wald test for a binomial trait with a kinship,
 since it would fit one mixed model per variant.
 
+The core crate is given the tested individuals as their positions among the
+individuals the source has, with their phenotype and the design already
+built, as "The Rust interface" below has it. So the refusals about a name
+and about a frame are made where those are, in the Python and the TypeScript
+layers: an individual of the phenotype that the `Variants` has not, a
+covariate that does not cover a tested individual, and a covariate value
+that is missing or is not a number. The core makes the rest over the
+positions and the numbers it holds, and three more that only it can see.
+
+The positions rise, and any other order is a `ValueError`. They are the
+order the source has the individuals in, and the phenotype, the rows of the
+design and the dosages of a block are read together row by row, so an order
+that is not the source's measures one individual's trait against another
+individual's genotypes. A position that repeats the one before it is the
+repeated individual above, and one that falls back is refused as an order
+that is not the source's, which is also what a repeat with another
+individual between its two halves gives. A phenotype that is not a finite
+number is a `ValueError` naming where it is: the individuals tested are
+those that have a phenotype, so a NaN is an individual that should not have
+been tested at all, and an infinity would carry through the null model into
+the effect of every variant. And the phenotype holds one value for each
+tested individual, the design one row of its columns for each, and the
+design has the column of ones at least; none of the three can be reached
+from Python or from TypeScript, which build the three from the same
+individuals, so each is a `RuntimeError`.
+
 ### The variants that have no answer
 
 A variant whose dosages are all the same among the tested individuals has no
