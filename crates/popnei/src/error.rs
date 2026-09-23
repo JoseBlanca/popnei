@@ -1360,6 +1360,56 @@ pub enum Error {
         source: popnei_linalg::Error,
     },
 
+    /// The score test was asked of a continuous trait with no kinship.
+    /// The only test of a linear model is the t test of the effect it
+    /// fitted, and a score test of it would be the same test with the
+    /// residual variance held at the null, which no program reports. It is
+    /// pyNei's refusal of the same pair, and in Python it is a
+    /// `ValueError`.
+    #[error(
+        "a continuous trait with no kinship is a linear model, whose only test is the t test of the effect it fitted; ask for the Wald test or for none"
+    )]
+    GwasScoreTestOfALinearModel,
+
+    /// The Wald test was asked of a binomial trait with a kinship. Such a
+    /// test fits the model again with each variant in it, and the model
+    /// here is a logistic mixed one, so it would be one mixed model fit
+    /// for every variant of the dataset. It is pyNei's refusal of the same
+    /// pair, and in Python it is a `ValueError`.
+    #[error(
+        "a binomial trait with a kinship is a logistic mixed model, and a Wald test of it would fit one mixed model for every variant; ask for the score test or for none"
+    )]
+    GwasWaldTestOfALogisticMixedModel,
+
+    /// The variants a study was given are more than this machine counts
+    /// them in, which is 4294967295 in WebAssembly, where a `usize` is 32
+    /// bits. Every variant gets a row of the result and is named by its
+    /// position among those the reader gave, and neither is a number that
+    /// can be counted past the end. In Python it is a `ValueError`.
+    #[error(
+        "the study was given more variants than this machine counts them in, which is {largest}",
+        largest = usize::MAX
+    )]
+    GwasVariantsTooLarge,
+
+    /// A model of a study answered for another number of variants than the
+    /// block it was given holds. It answers for the variants that have
+    /// variance among the tested individuals, one `beta`, one `se` and one
+    /// `p_value` for each of them, and the message names the column that
+    /// is not of that size. It is a defect of popnei, so in Python it is a
+    /// `RuntimeError`.
+    #[error(
+        "the model answered {num_values} values of `{column}` for a block of which {num_with_variance} variants have variance among the tested individuals, and it answers for each of those"
+    )]
+    GwasAnswersOfAnotherSize {
+        /// Which of the three columns is not of that size.
+        column: &'static str,
+        /// How many values it holds.
+        num_values: usize,
+        /// How many variants of the block have variance.
+        num_with_variance: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
