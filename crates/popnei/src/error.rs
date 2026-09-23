@@ -1380,7 +1380,9 @@ pub enum Error {
     /// it is a `RuntimeError`.
     #[error("the {operation} of the association study could not be done: {source}")]
     GwasLinalg {
-        /// What was being computed: the rank of the design.
+        /// What was being computed: the rank of the design, the thin QR a
+        /// model is fitted with, a solve against it, or a product of a
+        /// block of variants with something the null model holds.
         operation: &'static str,
         /// What the linear algebra said.
         source: popnei_linalg::Error,
@@ -1434,6 +1436,30 @@ pub enum Error {
         num_values: usize,
         /// How many variants of the block have variance.
         num_with_variance: usize,
+    },
+
+    /// The GRAMMAR-Gamma approximation was asked for by a study with no
+    /// kinship. It stands in for the denominator of a mixed model's test,
+    /// which is a product with the covariance of the random effect the
+    /// kinship is, and a study without one has no such denominator to
+    /// approximate. The user gives a kinship or asks for no approximation.
+    /// It is pyNei's refusal of the same pair, and in Python it is a
+    /// `ValueError`.
+    #[error(
+        "the GRAMMAR-Gamma approximation stands in for the denominator of a mixed model's test, and a study with no kinship has no such denominator; give a kinship or ask for no approximation"
+    )]
+    GwasGrammarGammaWithoutAKinship,
+
+    /// The trait and the kinship of a study ask for one of the models
+    /// popnei has not written yet, which the message names. The linear
+    /// model, a continuous trait with no kinship, is the one that is
+    /// written; the linear mixed model is being written and the two
+    /// logistic ones come after it. In Python it is a `ValueError`, since
+    /// it is the study the user asked for that popnei cannot run.
+    #[error("popnei cannot run this study yet: {what}")]
+    GwasModelNotBuilt {
+        /// Which model the study needs and what it is of, in words.
+        what: &'static str,
     },
 
     /// A name that was given for a column of a block is not one of the
