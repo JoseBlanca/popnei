@@ -1,0 +1,881 @@
+# The gwas module
+
+23 September 2026. The association study tells a user of popnei which of
+their variants are associated with a trait they measured: for each variant,
+the effect of one more copy of a non major allele, how uncertain that effect
+is, and the p-value of the test that the effect is 0. There is no code. This
+spec covers the whole `gwas` row of section 9 of `docs/architecture.md`, the
+four null models, the two tests and the two distributions that turn a
+statistic into a p-value.
+
+It stands on four specs. `docs/specs/kinship.md` gives the matrix that the
+two mixed models take, and the dosage rules that this module uses are the
+ones it takes from `docs/specs/pca.md`. `docs/specs/linalg.md` gives the
+seven operations the fits are built from. `docs/specs/variant.md` gives the
+allele counts of one variant and the pass stats.
+
+How the null model of the logistic mixed model is fitted is not pyNei's way,
+and `docs/reports/glmm-method/README.md` has the measurements that led there.
+
+## What every model shares
+
+### What it gives
+
+A **trait** is one number per individual: **continuous**, a measurement, or
+**binomial**, 0 or 1. The user may also give **covariates**, other numbers
+per individual whose effect on the trait is not of interest but has to be
+taken out, such as the sex or the field the plant grew in.
+
+Two individuals that share ancestry resemble each other at every variant and
+in the trait, so a variant that only marks the ancestry looks associated.
+popnei accounts for this in two ways, and a user can take either or both.
+The top principal components of the panel, from `Kinship.principal_components`
+or `do_pca_from_variants`, go in as covariates, which is enough for
+individuals that are not close relatives. Or the **kinship**, the matrix of
+`docs/specs/kinship.md`, goes in as the covariance of a random effect, which
+is what a panel with families in it needs; a model with such a term is a
+**mixed model**. Both at once is the Q+K model of a strongly subdivided
+panel.
+
+Trait against kinship gives the four models, by the names the literature
+gives them:
+
+| | no kinship | with kinship |
+|---|---|---|
+| **continuous** | `lm`, a linear model | `lmm`, a linear mixed model |
+| **binomial** | `glm`, a logistic regression | `glmm`, a logistic mixed model |
+
+Each is fitted once **without any variant in it**, which is the **null
+model**, and then every variant is tested against what that model left
+unexplained. Fitting the null once and reusing it for every variant is what
+makes a study of a million variants possible; holding the variance
+components of a mixed model at their null values for every variant is called
+P3D, and EMMAX, rrBLUP and GMMAT all do it.
+
+There are two tests, and which one is available depends on the model.
+
+- A **Wald test** fits the model again with the variant in it and asks how
+  many of its own standard errors the variant's effect is away from 0. It
+  needs a fit per variant, so it is used where that fit is cheap.
+- A **score test** never fits the model with the variant in it. It asks how
+  steeply the fit would improve if the variant's effect were let off 0,
+  measured at the null model, and compares that slope with how uncertain it
+  is. It costs no fit per variant.
+
+Under the null both statistics have the same distribution in large samples;
+they differ in what they cost and in what they assume. The default is the
+Wald test where a per variant fit is cheap, a continuous trait or a binomial
+one without a kinship, and the score test for a binomial trait with a
+kinship, where a Wald test would mean one mixed model fit per variant.
+
+Each variant becomes one number per individual, its **dosage**, and the
+dosage, the major allele and the rule that gives a genotype with any allele
+missing the mean of its variant are those of `docs/specs/pca.md`. They are
+computed over the individuals that are tested and not over the whole panel,
+so a variant's mean, its frequency and whether it varies at all are all of
+those individuals. `allele_freq` of the result is the mean dosage over the
+ploidy: the frequency of the alleles that are not the major one, which for a
+biallelic variant is the minor allele frequency, and which is what plink2
+reports as `A1_FREQ`.
+
+### Its Python function, and its TypeScript one
+
+```python
+calc_gwas(
+    variants: Variants,
+    phenotype: pandas.Series,
+    trait: TraitType | str,
+    covariates: pandas.DataFrame | None = None,
+    kinship: Kinship | None = None,
+    test: TestType | str | None = None,
+    use_grammar_gamma_approx: bool = False,
+    transform_to_biallelic: bool = False,
+) -> GWASResult
+```
+
+`phenotype` is a series indexed by individual name; a frame of one column is
+taken as that column. `trait` is `"continuous"` or `"binomial"`, the two
+values of `TraitType`. `test` is `"wald"` or `"score"`, the two values of
+`TestType`, and `None` takes the default above.
+
+`GWASResult` is a frozen dataclass. `stats` is a frame with one row per
+variant, in the order the variants came: `chrom`, `pos` and `id` when the
+variants carry them, then `allele_freq`, `beta`, `se` and `p_value`. `beta`
+is the effect of one more copy of a non major allele, in the units of the
+trait for a continuous one and as a log odds ratio for a binomial one.
+`null_model` is a `NullModel`, with `model`, one of the four values of
+`GWASModel`; `covariate_effects`, a series over the intercept and the
+covariates; `residual_variance`, `None` for a binomial trait;
+`genetic_variance`, `None` without a kinship; `heritability`, the genetic
+variance over the sum of the two, only for the `lmm`; and `num_individuals`.
+Then `trait`, `test`, `individuals`, the names of those that were tested as
+a tuple, `used_grammar_gamma_approx`, and `pass_stats`.
+
+It mirrors `calc_gwas` of `pynei/gwas.py`. The differences from pyNei, which
+`docs/objectives.md` asks to be written down:
+
+- `samples` is `individuals`, in `GWASResult` and in `NullModel`, the name
+  `docs/glossary.md` gives.
+- `num_threads` is not an argument, as no calculation of popnei has one.
+- `pass_stats` is new, as it is for every consumer of a `Variants`.
+- `chrom`, `pos` and `id` are columns of `stats` whenever the source has
+  them. pyNei leaves each out when the chunk has no such column, which its
+  own test asserts; popnei asks the reader for them and gives them.
+- `transform_to_biallelic` is new, and it is the argument
+  `do_pca_from_variants` and `calc_kinship` have, for the same reason: a
+  variant with more than two alleles among its called genotypes is refused
+  unless it is true, where pyNei collapses every allele that is not the
+  major one silently. The owner decided it for the kinship on 23 September
+  2026, for being the more explicit of the two to a user, and it holds here
+  for the same reason; neither reference panel has such a variant, so no
+  literal moves. `docs/objectives.md` asks the calculations that collapse a
+  multiallelic variant to say so.
+- The null model of the logistic mixed model is fitted by another route,
+  which gives the same numbers 1.9 to 2.1 times faster. It is the item for
+  that model, below.
+
+In TypeScript it is `calcGwas(variants, {phenotype, trait, covariates,
+kinship, test, useGrammarGammaApprox, transformToBiallelic})`. `phenotype` is an object of
+individual name to number, and `covariates` an object of covariate name to
+such an object. The result has `stats` with each column as its own typed
+array, `chrom` and `id` as arrays of strings, `pos` as a `Float64Array` and
+`alleleFreq`, `beta`, `se` and `pValue` as `Float64Array`s, and then
+`nullModel`, `trait`, `test`, `individuals`, `usedGrammarGammaApprox` and
+`passStats`.
+
+### Which individuals are tested, and the design
+
+The individuals tested are those that have a phenotype: in the `phenotype`
+series, not NaN, and present in the `Variants`. They are kept **in the order
+the variants have them**, whatever order the phenotype was given in. An
+individual in the phenotype that the `Variants` does not have is a
+`ValueError` naming it, and a repeated individual in the phenotype is one
+too.
+
+The **design** is the matrix of one row per tested individual and one column
+per number the model fits: a column of ones for the intercept, always added,
+and one column for each covariate. The covariates are a frame indexed by
+individual, which must cover every tested individual and hold no missing
+value and no value that is not a number; each of the three raises a
+`ValueError`, and the one for a value that is not a number says to code a
+categorical covariate, with `pandas.get_dummies` for instance.
+
+Two refusals protect the fits. A design whose columns are not independent, a
+covariate that is constant or a copy of another, is a `ValueError` saying
+the covariates are collinear; it is found with the rank of
+`docs/specs/linalg.md`, whose tolerance is numpy's, so a design popnei
+refuses is a design pyNei refuses. And a design with no more rows than
+columns plus one is refused, since there would be nothing left to estimate
+the uncertainty from.
+
+For a binomial trait, a phenotype that is not 0 or 1 everywhere is a
+`ValueError`, and so is one where every individual has the same value.
+
+Asking for a test the model does not have is a `ValueError`: the score test
+for a continuous trait with no kinship, since the only test of a linear
+model is its t test; and the Wald test for a binomial trait with a kinship,
+since it would fit one mixed model per variant.
+
+### The variants that have no answer
+
+A variant whose dosages are all the same among the tested individuals has no
+variance and cannot be tested. Its row is still in `stats`, with its
+`allele_freq`, and `beta`, `se` and `p_value` are NaN. This is where a
+variant with one allele lands, and also one where every tested individual is
+heterozygous, and one with no called genotype at all, whose dosages are all
+the mean of nothing, which pyNei sets to 0.
+
+A variant of the logistic Wald test whose fit runs away also gets three
+NaNs, which the item for that model says.
+
+`test_monomorphic_and_missing_variants` of pyNei asserts exactly this on 50
+variants of 60 individuals where the first has one allele and the second has
+no called genotype: the first two p-values are NaN and the other 48 are
+between 0 and 1.
+
+### How it runs
+
+One pass over the blocks. The null model is fitted before the pass, from the
+trait, the design and the kinship alone, and no block is read for it. Then
+each block is turned into its dosages, with rayon across the rows, and the
+variants that vary are tested together as a matrix, because every test but
+the logistic Wald one is a product of the block with something the null
+model holds. What is kept from one block to the next is nothing but the
+rows of `stats` already computed, which grow with the variants and not with
+the individuals: four numbers per variant, 32 MB for a million.
+
+`reblock` goes before it, so that a filter's uneven blocks do not reach the
+matrix work, and because the `use_grammar_gamma_approx` pass below takes the
+first variants of the first block and its answer would otherwise depend on
+what the source gave.
+
+With `use_grammar_gamma_approx` there is a second pass, which is opened
+first and reads one block. Everything else is one pass.
+
+### How it is verified
+
+Four programs, all run on 23 September 2026 by
+`tests/reference/gwas/make_reference.py`, which runs them on popnei's own
+VCFs: plink2 v2.0.0-a.7.7, and R 4.6.1 with GMMAT 1.5.0 and rrBLUP 4.6.3.
+pyNei ran the same four on its own vars files of the same genotypes when its
+reference was made, and every number this script produced matches what pyNei
+stored **to the bit**: the largest difference over the nine files, 49
+numeric columns of 1200 variants each, is 0. So the numbers do not depend on
+which library read the genotypes.
+
+The datasets are the two panels of `docs/specs/kinship.md`, 200 individuals
+and 1200 biallelic diploid variants on two chromosomes, once with every
+genotype called and once with 3 in 100 missing whole. The trait was
+simulated from the genotypes with a heritability of 0.5 and five causal
+variants of effect 0.6, with two covariates, `cov1` continuous and `cov2`
+binary, and the three subpopulations differing in their mean so that the
+structure confounds the trait. `tests/reference/gwas/phenotypes.csv` holds
+the traits, the covariates and the subpopulation of each individual, and
+`causal_vars.csv` the five causal variants, `var0052`, `var0629`, `var0751`,
+`var1137` and `var1188`. The literals below also carry `var0000`, which is
+not causal.
+
+The mixed models are given the kinship that plink2 wrote for the panel with
+every genotype called, so that they are tested against a kinship that came
+from neither popnei nor pyNei.
+
+Each model item says what it is checked against and how closely. Three
+checks are common to all four:
+
+- Every column of `stats` against the reference program of that model over
+  all 1200 variants, at the Python `calc_gwas`.
+- The six variants above as literals in the cargo tests, at `calc_gwas` of
+  "The Rust interface".
+- Against pyNei, both libraries on the same panel with the same arguments,
+  at the Python `calc_gwas`: `beta`, `se` and `p_value` within 1e-9
+  relative, and the variants that have NaN exactly the same ones.
+
+Two more hold for every model. That the block size changes nothing: the same
+panel read in blocks of 77 gives `stats` equal to the default within 1e-12
+relative, which is `test_chunks_and_threads_do_not_matter` of pyNei. And
+that the study finds what was planted: of the 10 variants with the smallest
+p-value under the `lmm`, at least 3 are among the 5 causal ones.
+
+In TypeScript, `calcGwas` is tested under node against the same six literals
+for each model.
+
+## The linear model
+
+### What it gives
+
+A continuous trait, covariates and no kinship. The trait is a straight line
+in the covariates plus the variant, and the test is the t test of that line:
+`beta` is the slope on the variant, `se` its standard error, and `p_value`
+the two sided probability that a t with `n - c - 1` degrees of freedom, `n`
+the individuals and `c` the columns of the design, is further from 0 than
+`beta / se`. It is what plink2's `--glm` computes.
+
+The null model is fitted with a thin QR of the design, `d = q r`: the
+coefficients are the `c` of `r c = q' y`, the residuals are `y - q q' y`,
+and the residual sum of squares is their squared length. `residual_variance`
+is that sum over `n - c`.
+
+Every variant is then tested on the residuals. The covariates are taken out
+of the dosages of the block in one product, `x - (x q) q'`, and after that
+the effect of the variant is the plain slope of the trait's residuals on the
+variant's residuals:
+
+    xx   = the squared length of each variant's residuals
+    num  = each variant's residuals times the trait's residuals
+    beta = num / xx
+    rss  = the null's residual sum of squares - beta * num
+    se   = sqrt(rss / (n - c - 1) / xx)
+
+That `rss` is what the variant leaves unexplained, so each variant gets its
+own estimate of the residual variance, which is what makes this a t test and
+not a normal one.
+
+### How it is verified
+
+Against plink2 `--glm hide-covar` on the panel with every genotype called,
+with `cov1` and `cov2` as covariates, which writes
+`tests/reference/gwas/plink2.panel_called.glm.linear.tsv`, 1200 rows with no
+`NA`. plink2 tests the minor allele and popnei the non major one, which here
+are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
+
+Over all 1200 variants: `allele_freq` within 1e-6 absolute, `beta` and `se`
+within 1e-5 absolute, and `p_value` within 1e-5 relative. plink2 writes six
+significant digits, and those are the units of its last digit.
+
+The literals, from plink2 on 23 September 2026:
+
+| variant | beta | se | p |
+|---|---|---|---|
+| var0000 | -0.424136 | 0.139354 | 0.00265846 |
+| var0052 | -0.697724 | 0.122348 | 4.28981e-08 |
+| var0629 | -0.813852 | 0.161809 | 1.10646e-06 |
+| var0751 | -0.0963977 | 0.130636 | 0.461451 |
+| var1137 | -0.171137 | 0.145987 | 0.242511 |
+| var1188 | -0.655393 | 0.138912 | 4.51958e-06 |
+
+## The linear mixed model
+
+### What it gives
+
+A continuous trait with a kinship. Beside the covariates the trait carries a
+random effect whose covariance is the kinship times a variance, so that two
+related individuals are expected to resemble each other before any variant
+is looked at. The covariance of the trait under the null is
+
+    V = genetic_variance * k + residual_variance * i
+
+with `k` the kinship and `i` the identity.
+
+The two variances are estimated by **restricted maximum likelihood**, which
+is maximum likelihood on the part of the trait that the covariates cannot
+explain, so that fitting the covariates does not drag the variances down.
+Only their ratio matters to the search: with `delta` the residual variance
+over the genetic one, the kinship is eigendecomposed once, `k = e diag(l)
+e'`, the trait and the design are turned by `e'`, and then every value of
+`delta` costs one number per individual instead of a matrix. pyNei searches
+`log(delta)` over 101 points evenly spaced from -10 to 10 and then runs 60
+steps of a golden section search in the bracket around the best of them,
+which is `_reml_delta` of `pynei/gwas.py`; popnei reproduces that search
+point for point, because the numbers it gives are GMMAT's.
+
+The eigenvalues of the kinship are clamped at 0 before use. A kinship of
+genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
+on the panel; the per pair denominators of `docs/specs/kinship.md` put them
+there, -0.0321 on the panel with 3 in 100 genotypes missing, and a negative
+eigenvalue would make `V` not a covariance.
+
+`heritability` is the genetic variance over the sum of the two, which is the
+share of the trait's variance that the kinship explains.
+
+Every variant is then tested through the **projection matrix**
+
+    p = V⁻¹ - V⁻¹ d (d' V⁻¹ d)⁻¹ d' V⁻¹
+
+individuals by individuals, which takes the covariates out of anything it is
+applied to and weights it by the covariance. With `x` the dosages of a
+variant, `num` is `x' p y` and `den` is `x' p x`, and then:
+
+- The **Wald test**, the default, is `beta = num / den` with
+  `se = sqrt((y' p y - num²/den) / ((n - c - 1) * den))` and a two sided t
+  with `n - c - 1` degrees of freedom. It holds the ratio of the two
+  variances at the null and estimates their scale again with the variant in,
+  which is what rrBLUP does.
+- The **score test** is `beta = num / den`, `se = 1 / sqrt(den)` and a chi
+  square with one degree of freedom of `num² / den`. It holds both variances
+  at the null, which is what GMMAT does.
+
+`y' p y` is the generalized residual sum of squares of the null over the
+genetic variance, and the restricted maximum likelihood makes it exactly
+`n - c`. A cargo test asserts that on the panel, 197 within 1e-6, which is
+`test_reml_identity` of pyNei and is the cheapest check that the fit is at
+its optimum.
+
+### How it is verified
+
+The Wald test against rrBLUP 4.6.3's `GWAS` with `P3D = TRUE`, which holds
+the variance components at the null as popnei does. rrBLUP takes every fixed
+effect as a factor, so only the binary covariate `cov2` was given to it, and
+popnei is run with the same one covariate for this comparison. It reports
+`-log10(p)`, so that is what is compared, over all 1200 variants within
+1e-4, from `tests/reference/gwas/rrblup.panel_called.lmm.tsv`.
+
+The literals, `-log10(p)`: var0000 0.215210, var0052 3.618699, var0629
+4.339896, var0751 2.065325, var1137 1.319283, var1188 2.367279.
+
+The score test against GMMAT 1.5.0's `glmm.score`, with both covariates, on
+both panels, from `gmmat.panel_called.lmm.score.tsv` and
+`gmmat.panel.lmm.score.tsv`. GMMAT reports the variance of the score, which
+is `den`, and the p-value. Over all 1200 variants: `1 / se²` against GMMAT's
+`VAR` within 1e-5 relative, and `|log10(p / p_GMMAT)|` below 1e-4. The
+p-values are compared in `log10` because they span 23 orders of magnitude
+and what a user reads is the exponent.
+
+The literals, the variance of the score and the p-value, with every genotype
+called and then with 3 in 100 missing:
+
+| variant | VAR | p | VAR, missing | p, missing |
+|---|---|---|---|---|
+| var0000 | 29.8774 | 0.360526 | 29.9961 | 0.495719 |
+| var0052 | 43.8076 | 0.00118985 | 46.0763 | 0.00105895 |
+| var0629 | 31.7241 | 4.81005e-05 | 31.9307 | 7.37888e-05 |
+| var0751 | 44.5825 | 0.00439226 | 44.422 | 0.00675644 |
+| var1137 | 43.3724 | 0.013926 | 42.1841 | 0.0125321 |
+| var1188 | 47.3766 | 0.0010734 | 47.9106 | 0.00150577 |
+
+With genotypes missing, GMMAT gives a missing genotype the mean of its
+variant, which it calls `impute2mean` and which is popnei's rule too; that
+is why the two agree on the second panel.
+
+The null model against GMMAT's `glmmkin`, from `gmmat.null_models.tsv`,
+within 1e-5 absolute: `genetic_variance` 1.221617, `residual_variance`
+0.342359, and the three covariate effects 4.678021, 0.473361 and 1.110279.
+`heritability` is 1.221617 / (1.221617 + 0.342359).
+
+## The logistic model
+
+### What it gives
+
+A binomial trait and no kinship. The chance that an individual is a 1 is a
+logistic curve in the covariates and the variant, and `beta` is a log odds
+ratio: the change in the log odds of being a 1 for one more copy of a non
+major allele.
+
+The null model is fitted by iteratively reweighted least squares, which
+turns each step of the logistic fit into a weighted linear one: with `mu`
+the fitted chance for each individual, the weight is `mu (1 - mu)`, and the
+step solves the design weighted by those against the difference between the
+trait and `mu`. It stops when the largest change in a coefficient is below
+1e-8, in at most 50 steps, and a fit that has not converged by then is an
+error, not a warning.
+
+The **score test**, which needs only the null, tests every variant of a
+block at once. With `w` the weights, `resid` the trait minus `mu` and `d`
+the design:
+
+    num = x' resid
+    den = x' w x - (x' w d) (d' w d)⁻¹ (d' w x)
+
+and then `beta = num / den`, `se = 1 / sqrt(den)` and a chi square with one
+degree of freedom of `num² / den`. The covariates take the place of the
+projection matrix of the mixed models, and nothing is inverted per variant.
+
+The **Wald test**, the default, fits one logistic regression per variant
+with the variant in the model, starting from the null's coefficients and an
+effect of 0 for the variant. Each step needs one system of `c + 1` unknowns
+per variant, which is a Cholesky factorization and a solve of a matrix the
+size of the coefficients; `docs/specs/linalg.md` decided that a stack of
+those is a loop in the caller and not an operation of the crate, and
+measured one 7 x 7 factored and solved at 0.173 µs, so a block of 5000
+variants costs 0.9 ms for one step. `se` is the square root of the last
+diagonal entry of the inverse of that system's matrix, and the p-value is a
+chi square with one degree of freedom of `(beta / se)²`.
+
+A variant whose Wald fit runs away gets NaN for all three. Three things mark
+it, and popnei reproduces all three: a step that is not finite, which
+includes the system the factorization refuses as singular; a coefficient
+whose absolute value passes 30; and a fit still moving after 50 steps. The
+threshold of 30 is inherited from pyNei and nobody has measured it. A
+variant that separates the cases from the controls perfectly has no finite
+effect and is what these catch: the panel has exactly one, `var0006`.
+
+plink2 does not give up on that variant. It falls back to a Firth penalized
+regression, which adds a term that pulls the estimate back from infinity and
+gives a finite answer; its `FIRTH?` column says `Y` for that one variant and
+`N` for the other 1199. popnei gives NaN, as pyNei does (**Open 1**, below).
+
+### How it is verified
+
+Against plink2 `--glm hide-covar` on the panel with every genotype called,
+which writes `plink2.panel_called.glm.logistic.hybrid.tsv`. plink2 reports
+the odds ratio, so `beta` is compared with its logarithm.
+
+The one variant plink2 fell back to Firth for is left out of the comparison,
+and instead a test asserts that popnei's NaNs are exactly the variants
+plink2 marked `FIRTH?` `Y`, which is `var0006` and no other. Over the other
+1199: `beta` within 1e-4 absolute, `se` within 1e-4 absolute, and `p_value`
+within 5e-3 relative. That last tolerance is loose because plink2 stops its
+logistic fit earlier than popnei does, not because of rounding; the six
+literals below are held to 1e-5 on `beta`, 1e-4 on `se` and 5e-3 on `p`, the
+same as pyNei holds them.
+
+| variant | beta, a log odds ratio | se | p |
+|---|---|---|---|
+| var0000 | -0.5725786945415258 | 0.261917 | 0.0288081 |
+| var0052 | -0.8528230964300417 | 0.248979 | 0.000614166 |
+| var0629 | -0.949570924908968 | 0.323553 | 0.00333739 |
+| var0751 | -0.2659166667836026 | 0.219207 | 0.225098 |
+| var1137 | -0.42744848150358195 | 0.252402 | 0.0903561 |
+| var1188 | -0.830184139078324 | 0.264071 | 0.00166771 |
+
+`beta` carries more digits than plink2 prints because plink2 gives the odds
+ratio and these are its logarithm.
+
+The score test against R 4.6.1's `anova(glm, test = "Rao")`, one logistic
+regression per variant fitted by R, from `r.panel_called.glm.score.tsv`.
+R reports the score statistic and its p-value. Over all 1200 variants the
+statistic `(beta / se)²` is within 1e-2 absolute and `|log10(p / p_R)|`
+below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
+1e-8 in the deviance, which is what those tolerances are.
+
+The literals, the score statistic and its p-value: var0000 4.938245 and
+0.026268700, var0052 12.484427 and 0.000410359, var0629 9.165576 and
+0.002466100, var0751 1.480401 and 0.223711736, var1137 2.911424 and
+0.087954199, var1188 10.382961 and 0.001271835.
+
+## The logistic mixed model
+
+### What it gives
+
+A binomial trait with a kinship, and the only test it has is the score test.
+
+It is fitted by **penalized quasi-likelihood**: for a fixed variance of the
+kinship effect, `tau`, the 0/1 trait is turned into a continuous **working
+trait**, each individual carrying a weight that says how much its 0 or 1
+tells us at the fit so far, and a weighted linear mixed model is fitted to
+that working trait; the working trait and the weights are then made again
+from the new fit, and so on. One pass of that is a **linearization**. `tau`
+then takes one Newton step from the restricted maximum likelihood, using the
+**average information** in place of the second derivative, and the whole
+thing starts again. It is the model GMMAT fits, and on the panel it takes 8
+steps on `tau` and 22 linearizations.
+
+Taking the step on `tau` after every single linearization instead makes the
+two updates fight and `tau` cycle for ever, which pyNei's `_GLMMNull` records
+and a trial here reproduced. `tau` is kept from cycling by a bracket: a
+`tau` whose derivative asks for a larger one and a `tau` whose derivative
+asks for a smaller one are remembered, the answer lies between them, and a
+Newton step that would leave that interval is replaced by the geometric mean
+of its two ends. `tau` at the boundary, where the kinship explains nothing,
+is 0 and the fit stops there.
+
+At convergence the residual `p y` of the score test is simply the trait
+minus `mu`, and `den` is `x' p x` with the same projection matrix as the
+linear mixed model. `residual_variance` and `heritability` are `None`: a
+logistic model has no free residual variance.
+
+### How popnei fits it, and why not pyNei's way
+
+pyNei inverts an individuals by individuals matrix once per linearization,
+22 times on the panel and 25 at 4000 individuals. popnei does not. The
+measurements are in `docs/reports/glmm-method/README.md`, and the two things
+that change are:
+
+- The covariance `sigma = tau * k + w⁻¹`, with `w⁻¹` the weights on the
+  diagonal, is factored with a Cholesky and applied by solving, never
+  inverted. A Cholesky costs a third of an inverse: 0.126 s against 0.376 s
+  at 4000 individuals, numpy 2.5.3 on Accelerate on the owner's Apple M5
+  Pro.
+- The one quantity that seemed to need every entry of the inverse, the trace
+  of `p k`, comes from an identity. `tau k = sigma - w⁻¹`, so
+  `trace(sigma⁻¹ k) = (n - trace(sigma⁻¹ w⁻¹)) / tau`, and
+  `trace(sigma⁻¹ w⁻¹)` is the sum of the squares of the entries of
+  `l⁻¹ w^-1/2`, the Cholesky factor solved against with one right hand side
+  for each individual. It is wanted once per step on `tau`, 7 to 9 times
+  over a fit, not once per linearization.
+
+The inverse is formed once, at the end, because the score test wants the
+projection matrix as a matrix.
+
+The two fits take the same steps in the same order and stop at the same
+place; only the arithmetic of each step differs. `tau` agrees with pyNei's
+to 2.9e-15 relative on the panel, the covariate effects to 3.3e-15, the
+projection matrix to 1.4e-15, and the p-values of all 1200 variants give the
+same largest `|log10(p / p_GMMAT)|` to every digit printed, 8.497e-06. The
+null fit takes 0.095 s against pyNei's 0.195 s at 1000 individuals, 0.608
+against 1.199 at 2000, and 5.285 against 9.959 at 4000.
+
+The owner asked for a cheaper fit on 23 September 2026 before this spec was
+written. The options not taken, all measured in that report: an
+eigendecomposition of the weighted kinship per linearization, which would
+make the search over `tau` cost one number per individual but costs 3.33 s
+at 4000 individuals against an inverse's 0.376; a conjugate gradient solve,
+which wins for a sparse kinship and loses about twofold for popnei's dense
+one; and a stochastic estimate of the trace, which could give no more than a
+further 1.7 because the 25 Cholesky factorizations are 3.1 s of the 5.3 and
+which would stop the fit being the same calculation twice. What is not known
+is where the ratio settles above 4000 individuals, where nothing was run,
+and that it has not been measured in Rust: both sides here are numpy on the
+same BLAS.
+
+### A kinship that is not positive semidefinite
+
+A Cholesky factorization refuses a matrix that is not positive definite
+where pyNei's inverse carried on, and the per pair denominators of
+`docs/specs/kinship.md` can leave the kinship with an eigenvalue below 0. It
+does not stop this fit at any missing rate tried. On 400 individuals and
+2000 variants, the smallest eigenvalue of the kinship runs from -0.033 at 3
+genotypes missing in 100 to -1.06 at 50 in 100, and both fits succeed at
+every rate, giving a `tau` between 1.26 and 1.48. The reason is that a
+weight is at most 0.25, so `w⁻¹` puts at least 4 on every diagonal entry of
+`sigma`, and `sigma` only goes indefinite once `tau` passes about 3.8 even
+at 50 in 100.
+
+If a dataset ever reaches it, the factorization gives the `Singular` of
+`docs/specs/linalg.md` with the row it stopped at, and `calc_gwas` turns it
+into an error naming the kinship and saying that missing genotypes can make
+one that is not a covariance. It is not a defect of popnei and not a wrong
+argument, so it is neither a `RuntimeError` nor a plain `ValueError` about a
+type: it is a `ValueError` about the data.
+
+### How it is verified
+
+Against GMMAT's `glmm.score` on both panels, from
+`gmmat.panel_called.glmm.score.tsv` and `gmmat.panel.glmm.score.tsv`, to the
+same tolerances as the linear mixed model: `1 / se²` against `VAR` within
+1e-5 relative and `|log10(p / p_GMMAT)|` below 1e-4.
+
+| variant | VAR | p | VAR, missing | p, missing |
+|---|---|---|---|---|
+| var0000 | 6.48664 | 0.702659 | 6.43005 | 0.685719 |
+| var0052 | 8.98834 | 0.0306703 | 8.73718 | 0.0291759 |
+| var0629 | 6.49956 | 0.0895104 | 6.19348 | 0.12319 |
+| var0751 | 10.563 | 0.0142331 | 10.1532 | 0.026766 |
+| var1137 | 9.098 | 0.093808 | 8.92384 | 0.108032 |
+| var1188 | 9.05095 | 0.0262737 | 8.7063 | 0.0196806 |
+
+The null model against `glmmkin`, within 1e-5 absolute: `genetic_variance`
+1.508057, `residual_variance` `None`, and the covariate effects -1.416464,
+0.753476 and 1.583210.
+
+## The GRAMMAR-Gamma approximation
+
+### What it gives
+
+`x' p x`, the denominator of both mixed model tests, is a product of the
+dosages of a block with an individuals by individuals matrix, so it costs
+work proportional to the square of the individuals for every variant. The
+approximation replaces it with `gamma` times the squared length of the
+variant's centered dosages, which is linear in the individuals, with one
+`gamma` estimated once from the first variants that vary.
+
+`gamma` is the mean, over the first 100 variants that vary of the first
+block, of the exact `x' p x` divided by the approximate one. It is
+`NUM_VARS_FOR_GAMMA` in pyNei and 100 here, inherited, and nobody has
+measured whether 100 is the right number.
+
+It is `use_grammar_gamma_approx=True`, false by default, and asking for it
+without a kinship is a `ValueError`, since there is no projection matrix to
+approximate.
+
+What it costs in accuracy grows with how strongly the panel is structured,
+because one `gamma` stands in for a quantity that really differs from
+variant to variant. On the panel, `test_grammar_gamma_approx` of pyNei
+asserts that the median of `log10(p_approx / p_exact)` is within 0.1 of 0
+and the largest is within 1.5, so a p-value can be out by a factor of 30 in
+the worst case while the middle of the distribution barely moves.
+
+### How it is verified
+
+There is no program outside the project to check it against: GMMAT and
+rrBLUP compute the exact denominator. What is checked is the relation to
+popnei's own exact answer, on the panel with the `lmm` and both covariates,
+which is pyNei's test above: the median and the largest of
+`log10(p_approx / p_exact)`, and that `beta` agrees with the exact one
+within 0.5 relative. Also that `used_grammar_gamma_approx` is in the result
+and that asking for it without a kinship raises.
+
+## The two distributions
+
+### What they give
+
+Two functions turn a statistic into a p-value, and numpy has neither, which
+is why pyNei wrote both.
+
+- `chi2_sf_1df(x)`, the chance that a chi square with one degree of freedom
+  is above `x`, which every score test and the logistic Wald test need. It
+  is `erfc(sqrt(x / 2))`, the complementary error function, which gives how
+  much of a normal distribution lies past a point.
+- `t_sf_two_sided(t, df)`, the chance that a Student t with `df` degrees of
+  freedom is further from 0 than `t`, which the linear model and the linear
+  mixed model's Wald test need. It is the regularized incomplete beta
+  function `I_x(df/2, 1/2)` at `x = df / (df + t²)`.
+
+popnei takes `erfc` from the `libm` crate, a pure Rust port of musl's math
+library with no C in it, which builds for both wasm targets, checked as a
+library on 23 September 2026. Measured against scipy 1.18.1's `chi2.sf` over
+65 points from 1e-6 to 200, `libm`'s `erfc` is within 2.9e-14 relative, and
+at `x = 100` it gives 1.523971e-23, so the tail is right where a strong
+variant needs it. The option not taken was to write `erfc` here: pyNei takes
+it from Python's `math`, which is C's, so pyNei is not a precedent for
+writing one, and reaching 1e-12 relative in a tail of 1e-23 by hand is work
+with no reward.
+
+The regularized incomplete beta is not in `libm` and is written here, as
+pyNei writes it: the continued fraction of Numerical Recipes evaluated by
+Lentz's method, with the front factor in logarithms through `lgamma`, which
+`libm` does have, and the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used
+whenever `x` is above `(a + 1) / (a + b + 2)`, where the fraction converges
+slowly. `x` at or below 0 gives 0 and at or above 1 gives 1.
+
+### How it is verified
+
+Against scipy 1.18.1, whose numbers go into the cargo tests as literals, at
+`chi2_sf_1df` and `t_sf_two_sided` of "The Rust interface", which are public
+for this reason. The cases are pyNei's, in `test_distributions`:
+
+- The incomplete beta at the four pairs `(0.5, 0.5)`, `(10, 0.5)`,
+  `(98.5, 0.5)` and `(2.5, 7)`, over `x` drawn uniformly in (0, 1), within
+  1e-12 absolute. The pair `(98.5, 0.5)` is what a t with 197 degrees of
+  freedom uses, next to the panel's 196: 200 individuals less the three
+  columns of its design less one for the variant.
+- `t_sf_two_sided` at 5, 17 and 197 degrees of freedom, over a spread of `t`
+  including 10, 20 and 40, within 1e-10 relative.
+- `chi2_sf_1df` over a chi square sample and at 30, 50 and 100, within 1e-12
+  relative.
+
+popnei's and pyNei's p-values differ by the difference between two `erfc`
+implementations, about 1e-14 relative, which is five orders below the 1e-9
+the two libraries are compared within for a whole study.
+
+## The Rust interface
+
+What a study is given. The design is `num_individuals` x `num_coefs`, row
+after row, with its column of ones already in it, because the Python and
+TypeScript layers are what turn a user's frame into one. `kinship` is
+`num_individuals` x `num_individuals`, row after row, already cut to the
+individuals that are tested and in their order.
+
+```rust
+pub enum TraitType { Continuous, Binomial }
+pub enum TestType { Wald, Score }
+pub enum GwasModel { Lm, Lmm, Glm, Glmm }
+
+pub struct GwasInput<'a> {
+    /// One value per tested individual: the measurement, or 0.0 or 1.0.
+    pub phenotype: &'a [f64],
+    pub trait_type: TraitType,
+    /// num_individuals x num_coefs, row after row, the intercept first.
+    pub design: &'a [f64],
+    pub num_coefs: usize,
+    pub kinship: Option<&'a [f64]>,
+    /// None takes the default for the trait and the kinship.
+    pub test: Option<TestType>,
+    pub use_grammar_gamma_approx: bool,
+    /// The positions of the tested individuals among those the reader
+    /// gives, in the order `phenotype` and `design` have them.
+    pub individuals: &'a [usize],
+    pub transform_to_biallelic: bool,
+}
+```
+
+What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
+that has no answer.
+
+```rust
+pub struct NullModel {
+    pub model: GwasModel,
+    pub test: TestType,
+    /// One per column of the design.
+    pub covariate_effects: Vec<f64>,
+    pub residual_variance: Option<f64>,
+    pub genetic_variance: Option<f64>,
+    pub heritability: Option<f64>,
+    pub num_individuals: usize,
+}
+
+pub struct Gwas {
+    pub num_vars: usize,
+    pub null_model: NullModel,
+    pub allele_freq: Vec<f64>,
+    pub beta: Vec<f64>,
+    pub se: Vec<f64>,
+    pub p_value: Vec<f64>,
+    pub used_grammar_gamma_approx: bool,
+}
+```
+
+One pass over a reader, or two when `use_grammar_gamma_approx` is true, the
+second being opened over the same variants as the PCA's is. The pass borrows
+its readers and does not take them, asks for the genotypes and for `chrom`,
+`pos` and `id`, and puts `reblock` before each.
+
+```rust
+pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
+    reader: &mut R1,
+    gamma_pass: Option<&mut R2>,
+    input: &GwasInput<'_>,
+) -> Result<Gwas>;
+```
+
+The two distributions, public so that the cargo tests check them against
+scipy's numbers where the value can be seen.
+
+```rust
+/// The chance that a chi square with one degree of freedom is above `x`.
+pub fn chi2_sf_1df(x: f64) -> f64;
+
+/// The chance that a Student t with `df` degrees of freedom is further
+/// from 0 than `t`, both tails.
+pub fn t_sf_two_sided(t: f64, df: f64) -> f64;
+```
+
+What this module calls in `linalg`: the thin QR of the design and the solve
+against its upper triangular `r`; the Cholesky factorization and its solve,
+log determinant and inverse; `solve_triangular` reading the lower half, for
+the trace of the logistic mixed model; the rank of the design; the
+eigendecomposition of the kinship; and the product, in all four of its
+combinations.
+
+Three things about that crate the fits have to know. It refuses what it is
+given and not what it produced, so a solve or an inverse off a covariance
+that is positive definite and nearly not can come back `Ok` holding an
+infinity; noticing a fit that has run away is this module's job, which is
+what the three marks of the logistic Wald test do. The rank uses numpy's
+tolerance, which is what makes a design popnei refuses a design pyNei
+refuses. And the two backends agree on the rank between about 1e-300 and
+1e154; a design of dosages and covariates is nowhere near either end, since
+a dosage is 0 to the ploidy, but popnei does not scale the covariates a user
+gives, so a covariate in extreme units could get there.
+
+## Speed
+
+From the table of section 2.1 of `docs/rust_core.md`, over 100000 variants x
+1000 individuals, the linear model takes pyNei 0.35 s and plink2 0.10 s. The
+number to reach for the `lm` is plink2's 0.10 s on that dataset.
+
+For the mixed models `docs/rust_core.md` reports pyNei level with GMMAT on
+one thread, 1.5 s against 1.6 s over the same dataset, and 3x faster with
+six threads. The number to reach is GMMAT's 1.6 s, and popnei should beat it
+because the null fit is 1.9 to 2.1 times cheaper for the `glmm` and the per
+variant work is the same product.
+
+Where the time goes at many individuals was measured for this spec, numpy
+2.5.3 on Accelerate on the owner's Apple M5 Pro, with the score test of
+100000 variants beside the null fit it feeds: at 1000 individuals the fit is
+0.095 s and the test 0.32 s, at 2000 it is 0.608 s and 1.26 s, and at 4000 it
+is 5.285 s and 5.13 s. So the fit and the test are of the same order once
+the individuals reach a few thousand, and `use_grammar_gamma_approx` is what
+addresses the test half.
+
+None of this has been measured for popnei; the measurements come when the
+code exists, on the panel and on the 100000 x 1000 dataset of
+`docs/rust_core.md`.
+
+## Open points
+
+The owner decides this one, and until then the implementer follows its
+"meanwhile".
+
+**Open 1: a variant that separates the cases from the controls.** Its
+logistic effect is infinite and its Wald fit runs away. pyNei gives NaN for
+`beta`, `se` and `p_value`; plink2 falls back to a Firth penalized
+regression, which adds a term that pulls the estimate back from infinity,
+and reports a finite answer marked `FIRTH?` `Y`. The panel has exactly one
+such variant of 1200, `var0006`. The options are to reproduce pyNei and give
+NaN, which loses a variant that plink2 reports and which a user cannot tell
+apart from a variant with no variance, since both are three NaNs; to give
+NaN but say which variants they were, a count in the result or a column
+saying why each NaN is there, which costs one field and tells the user where
+to look; or to implement the Firth regression, which is a second fitting
+method for one variant in a thousand and which no part of popnei needs
+otherwise. Recommendation: the middle one, NaN with a reason. The numbers
+stay pyNei's and plink2's comparison stays as it is, and a user who sees a
+variant vanish learns whether it had no variance or a runaway fit, which are
+different things to do something about. Meanwhile the implementer gives NaN
+with no reason, as pyNei does, since no literal of this spec moves either
+way and the column can be added without changing a number.
+
+## Not in this spec
+
+- The kinship itself, its per pair denominators and its principal
+  components: `docs/specs/kinship.md`. This module only takes one.
+- The dosage of a genotype, the major allele and what a missing one gets:
+  `docs/specs/pca.md`, which this spec takes unchanged and does not repeat.
+- The seven operations of linear algebra, their backends, their errors and
+  what each one costs: `docs/specs/linalg.md`.
+- The measurements behind popnei's fit of the logistic mixed model, the
+  three routes that were tried and dropped, and what is not known about it:
+  `docs/reports/glmm-method/README.md`.
+- Multiple testing. popnei gives a p-value per variant and no Bonferroni,
+  no false discovery rate and no genomic control, because pyNei has none and
+  a user applies their own to the column. If popnei ever adds one it gets
+  its own item here.
+- A joint model of a multiallelic variant, one row per variant and allele,
+  which `docs/rust_core.md` leaves open. This module collapses every allele
+  that is not the major one, as `transform_to_biallelic` says.
+- Fitting the logistic mixed model without a dense individuals by
+  individuals factorization at all, which needs a sparse kinship and a
+  different algorithm: `docs/reports/glmm-method/README.md` says what was
+  measured and why it was not taken.
+- Interactions between a variant and a covariate, and testing several
+  variants together. pyNei has neither and popnei does not add them.
