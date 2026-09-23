@@ -748,6 +748,21 @@ The linear algebra crate is at 149 either way, being this plan's alone;
 clippy --workspace --all-targets -- -D warnings` and `cargo wasm-check`
 all clean.
 
+The merge keeps this branch's documents and not `main`'s, which the tests
+do not check, since none of them reads a document. `main` had changed
+`docs/specs/linalg.md` after this branch's base, in `06a4ca2`, but that
+commit is an ancestor of this branch, so there is nothing to resolve: the
+spec in the merged tree is this branch's file, compared by its hash.
+
+And the order of the merges, from the session writing
+`docs/specs/gwas.md`. Its branch `spec/gwas` started from `main` with this
+spec merged in, so it carries `174d795` and `7ccc709`, and it never
+changed `docs/specs/linalg.md`, its copy being the older one: merging it
+leaves whatever `main` holds, so the two branches merge in either order
+with nothing to resolve. It should still go second, since its text names
+`solve_triangular` and `TheHalfThatHoldsTheMatrix`, which `main` does not
+have until this branch is in.
+
 The trial crate is left in `tmp/`, not committed, as the plan said. What
 replaces it is the cargo tests of the four work packages, which assert the
 same literals through the crate's own checks and error type.
@@ -848,17 +863,38 @@ from 0". Five operations now raise it and only one factors anything: for
 the other four the matrix was handed in as a factorization, or, for the
 triangular solve of a QR's `r`, was never a factorization at all.
 
-- **Reword it** to say what was found rather than what was being done,
-  "the matrix a is singular at its row 3, counting from 0". Costs a
-  sentence of the spec, one line of the code and one assertion of a test.
-- **Leave it.** Costs nothing, and the message is defensible for four of
-  the five, the spec saying that the row is where the factorization that
-  would have produced that matrix stops.
+The condition my earlier recommendation put on this has been met.
+`docs/specs/gwas.md` has decided what a user sees for each case, and the
+session writing it asked on 23 September 2026 for the wording to change
+now, with a reason from the caller's side that is worth more than mine.
+It catches this error in two places that mean different things. In the fit
+of a mixed model null, where missing genotypes have made the kinship
+indefinite, it raises a `ValueError` naming the kinship, and it does not
+want the word "singular" reaching the user, because the matrix that failed
+is not the one the user gave: it is one built from theirs. In the per
+variant fit of the logistic Wald test, the message is never shown at all,
+the variant getting NaN for its effect, its standard error and its
+p-value, so there the error only has to be cheap to make and to match on.
+Both places want the argument's name and the row, which the two fields
+already carry, and neither wants a conclusion about the caller's data.
 
-Recommended: reword it when `docs/specs/gwas.md` decides what a user sees
-for each case, since that spec is what turns this error into the message a
-user reads, and doing both at once is one change instead of two. I did not
-do it now, because a message is a value a user sees.
+- **Reword it to drop the conclusion.** That session proposes "the
+  factorization of a stopped at its row 3, counting from 0". It is true of
+  the four operations that take a factorization and not of the fifth,
+  where `a` is a triangular matrix and nothing factored it. A wording true
+  of all five says only where it failed: "the matrix a failed at its row
+  3, counting from 0". Costs a sentence of the spec, one line of the code
+  and one assertion of a test, and the two fields do not change, so
+  nothing that matches on the error moves.
+- **Leave it.** Costs nothing. The other session says it will wrap the
+  error in both of its places anyway, so no user sees the wording either
+  way; what it costs is a message that is wrong about four of its five
+  producers for whoever reads the crate next.
+
+Recommended: reword it, to "the matrix a failed at its row 3, counting
+from 0". I have not, because a message is a value a user sees and this is
+the decision I put to the owner; a session writing another spec cannot
+make it, however good its reason.
 
 ## How the work went
 
