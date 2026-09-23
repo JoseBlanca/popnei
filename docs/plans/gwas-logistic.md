@@ -1,6 +1,8 @@
 # Plan: the association study of a binomial trait
 
-23 September 2026. State: draft, not yet approved by the owner. It builds
+23 September 2026. State: under way. The owner approved it on 23
+September 2026 and it is being carried out on the branch
+`plan/gwas-logistic`. It builds
 the rest of `docs/specs/gwas.md`: the logistic model, the logistic mixed
 model, the GRAMMAR-Gamma approximation that both mixed models can use, and
 the measurements. It is the last of three plans; `kinship` and `gwas-linear`
@@ -43,7 +45,7 @@ Not built, with where it goes:
   ratio of 1.88 to 2.06 is checked in Rust, which the report measured
   between two numpy programs and could not say would hold.
 
-The spec has one open point, and it changes one task of this plan.
+Two open points of the spec change work of this plan.
 
 **Open 1 of `docs/specs/gwas.md`, the variant that separates the cases from
 the controls.** Meanwhile, task 1.2 gives it NaN for its effect, its
@@ -53,6 +55,17 @@ owner chooses NaN with a reason, a task is added to work package 1 for the
 field and its column in both packages, and no number moves. If they choose
 the Firth regression, that is a work package of its own and a change to the
 spec first, and the plink2 comparison gains the variant it now leaves out.
+
+**Open 2 of `docs/specs/gwas.md`, a variant there is nothing left to test.**
+It is one rule in four places, and two of them are tests of this plan: the
+score test of the logistic model in task 1.1 and the score test of the
+logistic mixed model in task 2.3. Meanwhile, both refuse a variant of which
+the design leaves at most the tested individuals times 2.2e-16 of what there
+was, and give it the three NaNs a variant with no variance gets. No literal
+of either panel is near that threshold, so nothing in the deliverables moves
+either way. If the owner chooses to form the residual exactly instead, both
+tasks lose the comparison and gain the exact quantity, which for these two
+is a product with the projection matrix per variant.
 
 ## What has to be in place
 
@@ -94,7 +107,8 @@ on request.
    of `r.panel_called.glm.score.tsv` over all 1200 variants, and a cargo
    test asserts the six literals within 1e-3 and 1e-3.
 2. The Wald test is plink2's. The check: a pytest test gets `beta` and `se`
-   within 1e-4 absolute and `p_value` within 5e-3 relative of
+   within 1e-4 times the `se` of that variant and `p_value` within 5e-3
+   relative of
    `plink2.panel_called.glm.logistic.hybrid.tsv` over the 1199 variants
    plink2 did not fall back to Firth for, and a cargo test asserts the six
    literals within 1e-5, 1e-4 and 5e-3.
