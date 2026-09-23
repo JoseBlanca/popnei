@@ -900,6 +900,18 @@ out of rounds is not an error: the four pairs of arguments this module uses
 converge in at most 40 rounds, measured on 23 September 2026 over the cases
 of "How it is verified".
 
+**Neither guard is reached by any test of popnei, and both stay.** Measured
+on 23 September 2026 on a built implementation of this section: with `tiny`
+replaced by 0.0, and separately with the stop at `eps` disabled, all three
+tests of "How it is verified" still pass, over every call they make. They
+are here because the recipe and pyNei have them, and removing `eps` only
+makes the fraction run its 500 rounds and give the same answer. `tiny` is
+the one that would matter, and nobody has shown that no `x` in (0, 1) at
+these four pairs of arguments drives a denominator to 0; 79 calls are a thin
+sample of a continuous interval. So a reader who finds two lines that no
+test covers should know that this was measured and not overlooked, and leave
+them where they are.
+
 ### How it is verified
 
 Against scipy 1.18.1, whose numbers go into the cargo tests as literals, at
@@ -915,6 +927,16 @@ for this reason. The cases are pyNei's, in `test_distributions`:
   including 10, 20 and 40, within 1e-10 relative.
 - `chi2_sf_1df` over a chi square sample and at 30, 50 and 100, within 1e-12
   relative.
+
+How far those three bounds are from the differences they allow, measured on
+23 September 2026 on a built implementation: the chi square's worst is
+1.8e-14 relative, 57 times inside its bound; the incomplete beta's worst is
+8.5e-15 absolute at the pair `(98.5, 0.5)`, 117 times inside; and the
+Student t's worst is 2.0e-13 relative at `t = -1.4178` with 197 degrees of
+freedom, 500 times inside. So these three are not the round numbers that
+"How it is verified" of "What every model shares" warns about, and they do
+not need lowering to where they break: the room has been measured and it is
+there.
 
 popnei's and pyNei's p-values differ by the difference between two `erfc`
 implementations, about 1e-14 relative, which is five orders below the 1e-9
