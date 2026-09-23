@@ -886,12 +886,18 @@ is 5/5 while it has 2 genotypes for the `min_num_individuals` test.
 
 From them, per variant,
 
-| variant | H_b | H_w | f_2 | sum sqrt(p_1a p_2a) |
-|---|---|---|---|---|
-| 1 | 0.722222 | 0.333333 | 0.388889 | 0.745356 |
-| 2 | 0.805556 | 0.533333 | 0.272222 | 0.608380 |
-| 3 | 0 | 0 | 0 | 1 |
-| 4 | 0.5 | 0.6 | -0.1 | 1 |
+| variant | H_b | H_w | f_2 | sum sqrt(p_1a p_2a) | H_S' | H_T' |
+|---|---|---|---|---|---|---|
+| 1 | 0.722222 | 0.333333 | 0.388889 | 0.745356 | 0.333333 | 0.527778 |
+| 2 | 0.805556 | 0.533333 | 0.272222 | 0.608380 | 0.541667 | 0.673611 |
+| 3 | 0 | 0 | 0 | 1 | 0 | 0 |
+| 4 | 0.5 | 0.6 | -0.1 | 1 | 0.5 | 0.5 |
+
+H_S' and H_T' are the corrected diversity within the two populations and
+over the two pooled, which "Jost's D" below defines and which only the
+three measures there read; they are in this table because one pass builds
+all six sums, and their means over the four variants, 0.34375 and
+0.425347, are what that item works from.
 
 and the sums over the four variants are 2.027778 for H_b, 1.466667 for
 H_w and 0.561111 for f_2. Each item below takes its number from here.
