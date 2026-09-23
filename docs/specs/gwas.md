@@ -518,7 +518,7 @@ The same subtraction is in the linear mixed model's Wald test, `y' p y`
 minus `num² / den`, where it cancels too and where the cheap repair is not
 available: forming the residual exactly there costs a product with the
 projection matrix per variant. That is **Open 2**, below, which is one rule
-over the three places a variant can be left with nothing to test.
+over the four places a variant can be left with nothing to test.
 
 ### How it is verified
 
