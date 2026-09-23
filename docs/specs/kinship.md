@@ -507,7 +507,10 @@ above `MAX_PLOIDY_OF_THE_VARIANTS`, which the row pass of
 `crates/popnei/src/variant.rs` raises, and more than
 `MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, whose constant is of
 `crates/popnei/src/pca.rs` and which this module checks at its own entry,
-as "How it runs" has it. And whatever the reader and `linalg` fail
+as "How it runs" has it. A reader that gives more variants than a `usize`
+counts, which is 4294967295 in a browser, where a `usize` is 32 bits; the
+PCA has that case and the kinship needs its own, since the pass they share
+takes the error from its caller. And whatever the reader and `linalg` fail
 with.
 
 The components of a kinship, `num_pcs` of them at most and fewer when the

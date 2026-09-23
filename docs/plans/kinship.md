@@ -191,12 +191,15 @@ both packages, all of which exist.
 - [ ] 2.0 Move the three functions that drive a whole block of variants,
       `the_standardized_rows` with its arm for the threads and its arm for
       WebAssembly and `the_standardized_rows_one_by_one`, out of `pca.rs`
-      into `crates/popnei/src/variant.rs` as `pub(crate)`, leaving
-      `the_standardized_block` in `pca.rs` calling them. Added on 23
-      September 2026 after the review of work package 1: since task 1.1 they
-      hold nothing that is the PCA's, they take a `DosageOptions` and no
+      into `crates/popnei/src/variant.rs` as `pub(crate)`, and with them
+      `the_standardized_block`, which turns a block into its standardized
+      rows and moves the rows that were used to the front of the buffer,
+      leaving in `pca.rs` a wrapper that builds the divisor and the error of
+      too many variants from the options of the PCA. Added on 23 September
+      2026 after the review of work package 1: since task 1.1 they hold
+      nothing that is the PCA's, they take a `DosageOptions` and no
       `VariantPcaOptions`, and the kinship needs the same drive over a
-      block, so 2.1 would otherwise copy about 150 lines including the pair
+      block, so 2.1 would otherwise copy about 200 lines including the pair
       of arms for the threads and for WebAssembly, which is a second place
       where the two can drift apart. Needs 1.1. Serves deliverables 2 and 3
       of this work package by keeping one drive over a block.
