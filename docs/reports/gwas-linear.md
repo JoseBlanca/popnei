@@ -51,14 +51,15 @@ this plan could not make it, because `variant.rs` belonged to the plan
 `kinship` while this one ran, and `gwas-logistic` would be the third caller
 of whichever shape wins.
 
-**One thing worth doing before the next plan touches this module.**
-`crates/popnei/src/gwas.rs` is about 7200 lines and wants splitting into a
-directory. It was not split because the session that runs `gwas-logistic` is
-held waiting on that file, and two sessions restructuring and extending one
-file at once is what this plan was told to avoid. A reviewer read the seams
-and they are clean: the two distributions, the study and its design, the
-dosages, the result, the linear model, the linear mixed model, and the pass
-over the blocks.
+**Nothing is asked about the size of the module**, and this is here so that
+nobody waits on a decision that is not wanted. `crates/popnei/src/gwas.rs`
+is about 7200 lines and wants splitting into a directory. It was not split
+because the session that runs `gwas-logistic` is held waiting on that file,
+and two sessions restructuring and extending one file at once is what this
+plan was told to avoid. A reviewer read the seams and they are clean: the
+two distributions, the study and its design, the dosages, the result, the
+linear model, the linear mixed model, and the pass over the blocks. Whoever
+splits it can do so from that list without asking anything.
 
 ## The names this report uses
 
@@ -86,10 +87,36 @@ of 101 points over that ratio's logarithm, then 60 steps of a golden section
 search, which narrows a bracket by a fixed fraction each step. This is
 pyNei's procedure step for step, and the plan required reproducing it.
 
-**`y' p y`.** A quadratic form: the trait, seen through the projection that
-removes the covariates and the relatedness, multiplied back by itself. It is
-the generalized residual sum of squares of the null model, and REML makes it
-equal to the individuals less the columns of the design — 197 on this panel.
+**`y' p y`, and `num` over `den`.** `y' p y` is a quadratic form: the trait,
+seen through the projection that removes the covariates and the relatedness,
+multiplied back by itself. It is the generalized residual sum of squares of
+the null model, and REML makes it equal to the individuals less the columns
+of the design — 197 on this panel, where there are 200 individuals and a
+design of three columns, the intercept and two covariates. A variant's own
+test spends one more degree of freedom, for the variant, so its 196 and this
+197 are different numbers and not a discrepancy. `num` and `den` are that
+variant's two intermediate quantities, the numerator and denominator whose
+ratio is its effect; both tests compute them identically and differ only
+after.
+
+**`sf`**, in `chi2_sf_1df` and `t_sf_two_sided`, is the survival function:
+the chance of being above a value rather than below it, which is what a
+p-value is. Those two functions are what every test of this plan ends in.
+
+**The worked example** is the six-individual, three-variant case that
+`docs/specs/gwas.md` writes out in full with every number, so that a test can
+assert it without a reference file. It is the check with the most room in
+the plan, because nothing in it is rounded for printing.
+
+**A `Reblock`** sits over any reader and hands on blocks of a fixed number
+of variants whatever sizes the reader gave. It matters below because it
+means a study reads the same blocks however the file was written, which made
+one check compare a computation with itself.
+
+**The GRAMMAR-Gamma approximation** is a cheaper stand-in for the mixed
+model's per-variant denominator. It belongs to the plan `gwas-logistic`,
+which builds it once for both mixed models, and this plan refuses it by
+name.
 
 **The three reference programs**, each the standard tool for one of the
 models, run on popnei's own data by `tests/reference/gwas/make_reference.py`:
@@ -103,14 +130,33 @@ Accelerate natively and through faer in WebAssembly, so every number of this
 plan was checked on both; where they differ, the two builds of popnei would
 give a user different digits.
 
-**How a tolerance is written here.** A bound "of `se`" is a multiple of that
-variant's standard error, which is the scale of what the study estimates —
-an effect's own magnitude means nothing for a variant with no effect, so
-nothing is bounded relative to it. A bound "in `log10`" compares the
-logarithms of two p-values, which is the scale a p-value is read on. And
-"the bound is 1.5e-7, breaking at 5.17e-8" means the test passes at 1.5e-7
-and was lowered until it failed, which happened at 5.17e-8: the gap between
-the two is the room the check has.
+**How a tolerance is written here.** Four conventions, and every bound below
+is one of them.
+
+A bound "of `se`" is a multiple of that variant's standard error, which is
+the scale of what the study estimates — an effect's own magnitude means
+nothing for a variant with no effect, so nothing is bounded relative to it.
+Where such a bound and a difference are given as one pair of numbers, both
+are absolute and both are that variant's: "worst 3.69e-6 against a bound of
+6.90e-6" means that at the variant where popnei and the reference differ
+most, they differ by 3.69e-6 and were allowed 6.90e-6.
+
+A bound "in `log10`" or "in `-log10(p)`" is the same thing said twice: the
+difference between the logarithms of two p-values, which is the scale a
+p-value is read on. Whether the sign is carried makes no difference to a
+difference.
+
+"The bound is 1.5e-7, breaking at 5.17e-8" means the test passes at 1.5e-7
+and was then lowered until it failed, which happened at 5.17e-8. The gap
+between the two is the room the check has. The spec asks for both numbers
+because a bound with nothing measured against it says nothing.
+
+A reference program's **printing floor** is how much of a difference its own
+printing can account for. plink2 and GMMAT print six significant digits, so
+a value is rounded by up to half a unit in the sixth — and a comparison
+cannot see popnei's arithmetic below that. A check "21 times above its
+floor" has room; one at its floor says popnei computes the same quantity and
+no more.
 
 ## What this report is
 
@@ -138,8 +184,7 @@ with `expected usize, found u64`, `crates/popnei-python/src/kinship.rs:102`
 failed clippy's `useless_conversion` on a `u64::try_from` that had become a
 conversion to its own type, and `crates/popnei/src/kinship.rs:944` failed
 `chunks_exact_to_as_chunks`. So `cargo clippy --workspace --all-targets --
--D warnings` failed in four crates. The other checks passed. This is a
-branch caught part way through a review fix, not a defect of it.
+-D warnings` failed in four crates. The other checks passed.
 
 The branch therefore starts from `b387def`, "the kinship spec: the bits of
 plink2, the variants a pass gave, and where the limit of the individuals
@@ -292,15 +337,16 @@ The remaining findings were documentation: the `libm` justification named
 `erfc` and not `lgamma`, which the code also calls; the crate doc of
 `lib.rs` names every public module and had no clause for `gwas`; the module
 doc never expanded `sf` and gave the chi square to the score test alone; the
-panel's degrees of freedom were written as 197 and 195 where the spec's
-`n - c - 1` gives 198 and 196; and the script decided whether to append its
+degrees of freedom of a variant's test on the panel were written as 197 and
+195 where the spec's `n - c - 1` gives 198 and 196 (this is not the 197 of
+`y' p y` above, which is `n - c`: the variant's own test spends one more,
+for the variant); and the script decided whether to append its
 largest draw with a float equality, which would have silently printed a
 shorter array had a duplicate landed on a sampled rank.
 
 ### What the owner should know
 
-**The plan's own warning was false, and this is the useful thing the review
-found.** "What could go wrong" said the two guards of the continued fraction
+**The plan's own warning was false.** "What could go wrong" said the two guards of the continued fraction
 are what make it converge and that dropping either gives numbers right for
 most arguments and wrong for some. Neither is true for any argument either
 plan can reach. The first denominator is bounded below by `2 / (a + b + 2)`
@@ -330,9 +376,7 @@ reviewer confirmed by setting it to 0. Whoever first wants popnei past 10000
 individuals has to come back to this function before trusting its p-values,
 and the front factor in logarithms is where to start. Fixing the small `t`
 defect cost about thirteen per cent here, taking the room at 9997 from 2.4
-times to 1.8; the trade was seven orders of magnitude gained against that,
-and it is the one place in this work package where making one number
-better made another worse.
+times to 1.8; the trade was seven orders of magnitude gained against that.
 
 **The spec's written recipe is now behind the code.** The spec writes the
 symmetry branch as `cf(b, a, 1 - x)` and the front factor's last term as
@@ -455,8 +499,7 @@ that silently returned a longer slice on a broken invariant now returns an
 empty one; and a doc comment of work package 1's said a refusal was "not
 written yet" which task 2.1 had written an hour later.
 
-One finding did not hold, and the subagent refuted it with evidence rather
-than accepting it. The review asked for a test of the linear algebra error,
+One finding did not hold. The review asked for a test of the linear algebra error,
 the one case of the fourteen with none. After the non-finite refusal was
 added, that error became unreachable from a test: a design of no rows or no
 columns is refused earlier by two other cases, a non-finite value is now the
@@ -573,9 +616,8 @@ Two counts were written into the plan on 24 September 2026 and both were
 wrong: that 1198 of the 1200 failed, and that the two which passed were the
 two whose `beta` passes 1. Both came from a subagent's report and were
 carried into the plan and into the spec without being run. The orchestrator
-ran them and they are three and six. The plan records both wrong counts
-rather than replacing them quietly, because the next reader meets the
-reasoning and not only its conclusion.
+ran them and they are three and six. The plan records both wrong counts rather than
+replacing them quietly.
 
 **Deliverable 4 named one test where it needed two.** Every pass puts a
 `Reblock` over its reader, so a panel read from a vars file in 16 batches of
@@ -730,7 +772,7 @@ associated.
 | 2, the fit is at its optimum | two cargo tests | the fitted ratio 7.72e-8 from pyNei's on Accelerate and 6.94e-8 on faer, against 2.5e-7; `y' p y` 197 within 1e-6 |
 | 3, the Wald test is rrBLUP's | the same pytest run | over all 1200 variants, worst 1.9973e-5 on Accelerate and 1.9956e-5 on faer at `var0572`, against 1e-4 in `-log10(p)` |
 | 4, the score test is GMMAT's, both panels | the same pytest run | `1/se²` worst 4.4268e-6 and 5.4234e-6 against 1e-5 relative; the p-value 4.6204e-5 and 4.7552e-5 against 1e-4 in `log10` |
-| 5, the study finds what was planted | the same pytest run | 4 of the 5 causal variants among the 10 smallest p-values, on both backends |
+| 5, the study finds what was planted | the same pytest run | 4 of the 5 causal variants among the 10 smallest p-values, where the plan asks for at least 3; the same panel under the plain linear model gives 1, so the check fails a model that ignores relatedness |
 | 6, popnei and pyNei agree, and TypeScript | the same pytest run and `npm test` | the bound 1.5e-7, breaking at 5.173e-8 on Accelerate and 4.648e-8 on faer; 325 node tests |
 
 The checks after the fixes: fmt and clippy clean, 786 tests in the core
@@ -776,8 +818,7 @@ against its formula.
 ### What the review found
 
 Six reviewers ran: spec, tests, numbers, errors, api and binding. Nineteen
-findings held, the most of any work package of this plan, and almost none of
-them was a wrong calculation.
+findings held, and almost none was a wrong calculation.
 
 **A variant could come back with an effect and no standard error, and the
 two builds disagreed about which.** The Wald test's denominator is `y' p y`
@@ -909,8 +950,15 @@ terms:
 So the line lies between 3.3 per cent and 29 per cent, and the safe
 direction is to refuse: a matrix that far from a covariance is not a
 kinship, and clamping it returns ordinary-looking numbers with nothing to
-say they are wrong. What nobody has measured is where between those two a
-real dataset stops.
+say they are wrong.
+
+What nobody has measured is how far a real dataset goes, and that is the one
+thing this decision wants that the report cannot give. The measurement is
+cheap and is not this plan's: take the panels `docs/specs/kinship.md`
+already has, raise the missing genotypes until the smallest eigenvalue stops
+falling, and see where it settles. Until somebody runs it, any line between
+the two is a guess, and the branch's own behaviour — clamp everything — is
+the most permissive guess available.
 
 ### What the owner should know
 
@@ -954,4 +1002,4 @@ approached, because the projection annihilates the design, so any affine
 image of the trait gives equality in exact arithmetic. That is what let a
 later reviewer construct the case that produced the NaN, which is what
 changed the spec. Asking for a measurement early, from whoever has the
-pieces in hand, and separating it from the decision, is worth repeating.
+pieces in hand, and separating it from the decision that will use it.
