@@ -908,12 +908,51 @@ pub(crate) struct RowScratch {
     /// major allele and how many different alleles the variant has.
     allele_counts: AlleleCounts,
     /// How many called genotypes have each dosage, 0 to the ploidy.
-    dosage_counts: [u32; 255],
+    dosage_counts: [u32; DOSAGES_OF_A_ROW],
     /// The standardized value of each code, which the second pass over
     /// the row looks up: one entry for each value of a byte, so that the
     /// lookup has no bound to check.
-    values: [f64; 256],
+    values: [f64; VALUES_OF_A_ROW],
 }
+
+/// How many counters the dosage counts of a row hold, one for each dosage
+/// a variant of [`MAX_PLOIDY_OF_THE_VARIANTS`] can have.
+const DOSAGES_OF_A_ROW: usize = 255;
+
+/// How many values the lookup of a row holds, one for each of the 256
+/// values of a byte, so that every code has an entry and the lookup has no
+/// bound to check.
+const VALUES_OF_A_ROW: usize = 256;
+
+/// The two buffers above are sized for the dosages of
+/// [`MAX_PLOIDY_OF_THE_VARIANTS`] and nothing compares that limit with
+/// them while the pass runs, so the three are compared when this compiles.
+///
+/// A limit raised above what they hold is silently wrong and not a panic:
+/// a dosage would be written where [`MISSING_CODE`] is read, and a
+/// genotype with an allele missing would be given a value of its own in
+/// place of the mean of its variant, with no error to show it. The three
+/// `#[expect(clippy::arithmetic_side_effects)]` of the passes over a row
+/// rest on the same bound.
+const _: () = {
+    // A dosage is 0 to the ploidy, so the largest ploidy has one dosage
+    // more than itself, and each of them needs a counter.
+    assert!(
+        MAX_PLOIDY_OF_THE_VARIANTS < DOSAGES_OF_A_ROW,
+        "the dosages of the largest ploidy, which are the ploidy and one more, each need a counter"
+    );
+    // What is left of the values of a byte once the dosages have taken
+    // theirs is what the code of a genotype with an allele missing is one
+    // of.
+    assert!(
+        DOSAGES_OF_A_ROW < VALUES_OF_A_ROW,
+        "the code of a genotype with an allele missing needs a value of its own beside the dosages"
+    );
+    assert!(
+        MISSING_CODE == u8::MAX,
+        "the code of a genotype with an allele missing is the last value of a byte, above every dosage"
+    );
+};
 
 /// The largest ploidy a variant is turned into dosages at, which is one
 /// less than the largest the VCF reader takes.
@@ -946,11 +985,11 @@ impl RowScratch {
         RowScratch {
             codes: vec![0; num_individuals],
             allele_counts: [0; 128],
-            dosage_counts: [0; 255],
+            dosage_counts: [0; DOSAGES_OF_A_ROW],
             // A genotype with an allele missing takes the mean of the
             // dosages of its variant, which is 0 once the variant is
             // centered, and this entry is never written again.
-            values: [0.0; 256],
+            values: [0.0; VALUES_OF_A_ROW],
         }
     }
 }
@@ -1147,7 +1186,11 @@ pub(crate) fn the_codes_of_any_ploidy(
     clippy::arithmetic_side_effects,
     reason = "a run holds 255 codes at most, so a counter of one byte counts it without wrapping, and each total counts the genotypes of the variant, which the counts of its alleles checked to be a number a u32 holds"
 )]
-pub(crate) fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; 255]) {
+pub(crate) fn the_counts_of_the_codes(
+    codes: &[u8],
+    num_dosages: usize,
+    counts: &mut [u32; DOSAGES_OF_A_ROW],
+) {
     for total in counts.iter_mut().take(num_dosages) {
         *total = 0;
     }
@@ -1198,7 +1241,7 @@ pub(crate) fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: 
     reason = "the called genotypes are at most the individuals of the variant, which the counts of its alleles checked to be a number a u32 holds, and each dosage is 254 at most, so the sum of the dosages is below 2^53"
 )]
 pub(crate) fn the_center_and_the_scale_of_the_dosages(
-    counts: &[u32; 255],
+    counts: &[u32; DOSAGES_OF_A_ROW],
     num_dosages: usize,
     num_individuals: usize,
     scale: DosageScale,
@@ -1268,7 +1311,8 @@ pub mod bench_internals {
     use std::num::NonZeroUsize;
 
     use super::{
-        DosageOptions, DosageScale, RowScratch, the_center_and_the_scale_of_the_dosages,
+        DOSAGES_OF_A_ROW, DosageOptions, DosageScale, RowScratch, VALUES_OF_A_ROW,
+        the_center_and_the_scale_of_the_dosages,
         the_codes_of_the_genotypes as codes_of_the_genotypes,
         the_counts_of_the_codes as counts_of_the_codes, the_standardized_row as standardized_row,
     };
@@ -1321,7 +1365,11 @@ pub mod bench_internals {
 
     /// How many genotypes have each dosage, which is
     /// `the_counts_of_the_codes` of this module.
-    pub fn the_counts_of_the_codes(codes: &[u8], num_dosages: usize, counts: &mut [u32; 255]) {
+    pub fn the_counts_of_the_codes(
+        codes: &[u8],
+        num_dosages: usize,
+        counts: &mut [u32; DOSAGES_OF_A_ROW],
+    ) {
         counts_of_the_codes(codes, num_dosages, counts);
     }
 
@@ -1335,10 +1383,10 @@ pub mod bench_internals {
     /// centered dosages are divided by, which the caller of the row
     /// chooses.
     pub fn the_standardized_values(
-        dosage_counts: &[u32; 255],
+        dosage_counts: &[u32; DOSAGES_OF_A_ROW],
         num_dosages: usize,
         codes: &[u8],
-        values: &mut [f64; 256],
+        values: &mut [f64; VALUES_OF_A_ROW],
         row: &mut [f64],
         scale: DosageScale,
     ) -> bool {
