@@ -14,9 +14,9 @@ also gives `product` a typed first operand, so that it computes all four
 of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
-Where the plan stands on 23 September 2026: work package 1 is under way,
-task 1.1 done and task 1.2 running. Work packages 2 and 3 have not
-started.
+Where the plan stands on 23 September 2026: work package 1 is built and
+its four deliverables check out; its review is running. Work packages 2
+and 3 have not started.
 
 This report is written as the work goes. Each work package gets a section
 below when it is done, with the command that checked each deliverable and
@@ -84,4 +84,41 @@ backend call each. It is the right call for one commit inside a work
 package, and nothing outside the crate can reach it: no caller in popnei
 names that case.
 
-The subagent used 123480 tokens.
+That subagent used 123480 tokens.
+
+### Task 1.2, the two combinations that turn the first operand
+
+`d8655ba`. `c = a' b` and `c = a' b'` on both backends: one `dgemm` each
+in `crates/popnei-linalg/src/blas.rs`, with a `trans` flag set and no
+copy, and one `matmul` over a transposed matrix reference each in
+`crates/popnei-linalg/src/faer.rs`, which is another reference over the
+same values. Three tests,
+`the_same_matrix_comes_out_of_the_product_four_ways` and two named for
+the first operand, and the crate's doc comment now says four products and
+not two.
+
+Checked by the orchestrator: fmt, clippy with the warnings denied, `cargo
+wasm-check` and ruff clean; `cargo test --workspace` `472 passed` with 2
+ignored in the core crate and `45 passed` in the linear algebra crate;
+`cargo test -p popnei-linalg --no-default-features` `40 passed`; `uv run
+maturin develop && uv run pytest` `257 passed`. The linear algebra crate
+went from 42 to 45 tests and from 37 to 40 on faer, which is the three
+the task added, and every other number is what it was.
+
+The four pairs of operands of the test are the spec's, read from "How it
+is verified" of "The product with its first operand turned" and not
+worked out again: A of 2 x 3 with rows (1, 2, 0) and (0, 1, 3), the same
+matrix the other way round, the B with rows (1, 1), (2, 0) and (0, 3),
+and that one the other way round. All four combinations write the 2 x 2
+with rows (5, 1) and (2, 9), asserted exactly.
+
+That subagent used 144252 tokens.
+
+### The deliverables of work package 1
+
+| Deliverable | Command | What it gave |
+| --- | --- | --- |
+| 1, the typed first operand and its four callers | `grep -c ByTheRowsOfTheResult crates/popnei/src/pca.rs crates/popnei/src/ld.rs`; `cargo test --workspace` | `3` and `1`; `472 passed` in the core crate, the same tests as before and none of them changed |
+| 2, the four combinations give one matrix | `cargo test -p popnei-linalg --lib four_ways -- --list`; `cargo test -p popnei-linalg` and the same `--no-default-features` | `the_same_matrix_comes_out_of_the_product_four_ways`, `1 test`, where the filter gave `0 tests` before; `45 passed` and `40 passed` |
+| 3, what the new combinations refuse | `cargo test -p popnei-linalg --lib first_operand -- --list` | the two tests of the dimensions and of the value that is not finite, `2 tests`, where the filter gave `0 tests` before |
+| 4, the comment about the vector instructions | `grep -c "Open 1" crates/popnei-linalg/Cargo.toml` | `0`, where it was `1` before |

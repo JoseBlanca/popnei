@@ -175,7 +175,7 @@ branch this starts from.
       without its callers. Built from "The Rust interface" and "The
       product with its first operand turned" of `docs/specs/linalg.md`.
       Serves deliverables 1 and 4. Needs nothing.
-- [ ] 1.2 The two combinations that are new: `c = a' b` and `c = a' b'`
+- [x] 1.2 The two combinations that are new: `c = a' b` and `c = a' b'`
       on both backends, one function each in
       `crates/popnei-linalg/src/blas.rs` and in
       `crates/popnei-linalg/src/faer.rs`, reached from the `match` in
