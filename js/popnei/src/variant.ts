@@ -376,6 +376,57 @@ export class Variants {
   }
 
   /**
+   * Keeps the variants whose r² against every variant kept no more than
+   * `maxDist` base pairs behind them on their chromosome is at most
+   * `maxAllowedR2`.
+   *
+   * r² is the square of the correlation, across the individuals called at
+   * both variants, between the dosages of two variants, where the dosage
+   * of a genotype is how many of its alleles are not the major allele of
+   * its variant. It is 1 when the dosage of an individual at one variant
+   * fixes its dosage at the other and 0 when knowing one says nothing
+   * about the other, so two variants with a high r² say the same thing
+   * about these individuals, and what this filter leaves is a set of
+   * variants that says each thing once. A principal component analysis or
+   * a kinship over variants that repeat one another counts that stretch of
+   * the genome as many times as it has variants, and this is the filter a
+   * user puts before them.
+   *
+   * The variants a candidate is compared with, its window, are those the
+   * filter has already kept that are on its chromosome and no more than
+   * `maxDist` base pairs behind it, and of two variants above the
+   * threshold the one that comes first is the one kept. A variant whose
+   * called genotypes hold one dosage, and one with no called genotype at
+   * all, is dropped at every threshold, having nothing to tell another
+   * variant apart with; a pair whose r² cannot be worked out, the
+   * individuals called at both holding one dosage, drops neither of the
+   * two.
+   *
+   * The dosages are read over every individual of the dataset. A user who
+   * wants them read over one population puts the filter of individuals
+   * before this one. Neither argument has a default.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `maxAllowedR2` is not a number from 0 to 1 or is
+   * not given, when `maxDist` is not a whole number of 1 or more, and when
+   * a filter of this kind is set already. It also throws when the variants
+   * were freed and when `init` has not been awaited. The variants of each
+   * chromosome have to come together and in order of position, which is
+   * what this filter alone of popnei asks of a source: a position below
+   * the one before it on the same chromosome, and a chromosome that had
+   * already ended, are an `Error` thrown by the block of the pass that
+   * would have held that variant, and not by this call.
+   */
+  filterByLd(maxAllowedR2: number, maxDist: number): void {
+    theWasmHasToBeLoaded();
+    this.#stepsThatWereNotFreed().filter_by_ld(
+      aNumber("maxAllowedR2", maxAllowedR2),
+      wholeNumberOfOneOrMore("maxDist", maxDist),
+    );
+  }
+
+  /**
    * The variants of the source, block by block, from its start.
    *
    * Every call reads the source from its start, so a `Variants` can be

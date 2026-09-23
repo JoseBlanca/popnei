@@ -19,11 +19,14 @@ gives back the counts of the
 pass it made over the source, in a `passStats`: how many variants it took,
 and how many each filter of the `Variants` was given and kept. A filter is
 a step, a method of the `Variants` that `steps` then lists, and there are
-three of them: `filterByMissingData`, which keeps the variants whose missing
+four of them: `filterByMissingData`, which keeps the variants whose missing
 genotypes divided by all the individuals are at most the threshold it is
 given, `filterByMaf`, over the count of the commonest allele of a variant
-divided by its called alleles, and `filterByObsHet`, over its heterozygous
-genotypes divided by its called ones.
+divided by its called alleles, `filterByObsHet`, over its heterozygous
+genotypes divided by its called ones, and `filterByLd`, which keeps the
+variants whose r² against every variant kept within a window behind them on
+their chromosome is at most the threshold, so that what is left does not
+repeat what a variant near it already said.
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,

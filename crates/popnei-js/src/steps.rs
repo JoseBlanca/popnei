@@ -11,8 +11,8 @@
 //! already there, which "The Rust interface" of `docs/specs/filters.md` asks
 //! of it.
 //!
-//! The three methods that add a filter are here as well, one for each of the
-//! three numbers of a variant a filter compares, and each of them refuses at
+//! The four methods that add a filter are here as well, one for each of the
+//! four numbers of a variant a filter compares, and each of them refuses at
 //! the call what a user cannot filter by: a threshold that is not a number
 //! from 0 to 1, under the name of the argument they wrote it in, and a
 //! second filter of a kind the list holds, with the threshold of the one
@@ -25,7 +25,9 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
-use popnei::filters::{VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind};
+use popnei::filters::{
+    LdFilter, VarFilter, VarFilteringCriterion, refuse_a_second_filter_of_a_kind,
+};
 
 use crate::errors::JsPopneiError;
 
@@ -44,7 +46,7 @@ pub(crate) enum Step {
 
 impl Step {
     /// The kind of the step, which is the name its counts have for a
-    /// TypeScript user, `"missing_data"`, `"maf"` or `"obs_het"`.
+    /// TypeScript user, `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`.
     fn kind(self) -> &'static str {
         match self {
             Step::Filter(criterion) => criterion.kind(),
@@ -53,12 +55,30 @@ impl Step {
 
     /// The arguments of the step, each with the name a TypeScript user
     /// writes for it, `maxAllowedMaf`.
+    ///
+    /// The filter by linkage disequilibrium has two, its threshold first
+    /// and the window it compares a variant within after it, and each of
+    /// the other three has its threshold alone.
     fn args(self) -> Vec<(&'static str, f64)> {
         match self {
-            Step::Filter(criterion) => vec![(argument_of(criterion), criterion.threshold())],
+            Step::Filter(criterion) => {
+                let mut args = vec![(argument_of(criterion), criterion.threshold())];
+                if let Some(max_dist) = criterion.max_dist() {
+                    // The window was written by a user as a number of
+                    // JavaScript and crossed as a `u32`, so it is far below
+                    // the 2^53 a float64 holds exactly.
+                    args.push((THE_WINDOW_OF_THE_LD_FILTER, max_dist as f64));
+                }
+                args
+            }
         }
     }
 }
+
+/// The name a TypeScript user writes the window of the filter by linkage
+/// disequilibrium under, how many base pairs behind a variant the variants
+/// it is compared with reach.
+const THE_WINDOW_OF_THE_LD_FILTER: &str = "maxDist";
 
 /// The name a TypeScript user writes the threshold of `criterion` under,
 /// which is the argument of the method that adds the filter.
@@ -71,11 +91,9 @@ fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
         VarFilteringCriterion::MaxMissingRate(_) => "maxAllowedMissingRate",
         VarFilteringCriterion::MaxMaf(_) => "maxAllowedMaf",
         VarFilteringCriterion::MaxObsHet(_) => "maxAllowedObsHet",
-        // The filter by linkage disequilibrium, whose step the package does
-        // not add yet: task 3.5 of `docs/plans/ld.md` is the one that gives
-        // a user `filterByLd`, and this is the name its threshold has
-        // there. The arm is here because a criterion the core added has to
-        // be named, and a wildcard would name the next one wrong.
+        // The threshold of the filter by linkage disequilibrium, the first
+        // of the two arguments of `filterByLd`; the window is the other,
+        // and `Step::args` is where it is named.
         VarFilteringCriterion::MaxLdR2 { .. } => "maxAllowedR2",
     }
 }
@@ -185,13 +203,38 @@ impl Steps {
         self.add(VarFilteringCriterion::MaxObsHet(max_allowed_obs_het))
     }
 
+    /// The variants whose r² against every variant kept no more than
+    /// `max_dist` base pairs behind them on their chromosome is at most
+    /// `max_allowed_r2` are kept.
+    ///
+    /// `max_dist` crosses as a `u32`, which the package is what refuses a
+    /// window of 0 or one that is not a whole number for: 4294967295 base
+    /// pairs are 17 times the longest chromosome that has been assembled.
+    ///
+    /// # Errors
+    ///
+    /// The two of [`Steps::filter_by_missing_data`], and a `max_dist` of 0,
+    /// which reaches no variant but the ones at the very position of the
+    /// variant its window is of.
+    pub fn filter_by_ld(
+        &mut self,
+        max_allowed_r2: f64,
+        max_dist: u32,
+    ) -> Result<(), JsPopneiError> {
+        self.add(VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2,
+            max_dist: u64::from(max_dist),
+        })
+    }
+
     /// How many arguments each step has, which is what cuts `arg_names` and
     /// `arg_values` into the arguments of each step.
     ///
     /// # Errors
     ///
     /// When a step has more arguments than a JavaScript array of counts
-    /// holds, which no step of this crate has: a filter takes one threshold.
+    /// holds, which no step of this crate has: a filter takes a threshold
+    /// and, by linkage disequilibrium, a window with it.
     pub fn num_args_per_step(&self) -> Result<Vec<u32>, JsPopneiError> {
         self.steps
             .iter()
@@ -227,15 +270,17 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, and when the list
-    /// holds a filter of the kind of `criterion` already. The core is what
-    /// says both: the filter built here is dropped, and every pass builds
-    /// its own from the criterion, so the rule that a threshold has to keep
-    /// and which filters can stand together are written in one place. The
-    /// threshold is refused first, since it is wrong whatever the list
-    /// holds. After either, the list is as it was.
+    /// When the threshold is not a number from 0 to 1, when the window of
+    /// the filter by linkage disequilibrium is 0, and when the list holds a
+    /// filter of the kind of `criterion` already. The core is what says all
+    /// three: the filter built here is dropped, and every pass builds its
+    /// own from the criterion, so the rules its arguments have to keep and
+    /// which filters can stand together are written in one place. The
+    /// arguments are refused first, since they are wrong whatever the list
+    /// holds. After any of the three, the list is as it was.
     fn add(&mut self, criterion: VarFilteringCriterion) -> Result<(), JsPopneiError> {
-        VarFilter::new(criterion).map_err(|error| under_the_argument(error, criterion))?;
+        refuse_the_arguments_no_filter_takes(criterion)
+            .map_err(|error| under_the_argument(error, criterion))?;
         refuse_a_second_filter_of_a_kind(&criteria_of(&self.steps), criterion)?;
         self.steps.push(Step::Filter(criterion));
         Ok(())
@@ -244,6 +289,30 @@ impl Steps {
     /// Every argument of every step, the arguments of the first step first.
     fn args(&self) -> Vec<(&'static str, f64)> {
         self.steps.iter().flat_map(|step| step.args()).collect()
+    }
+}
+
+/// Nothing when the core builds the filter of `criterion`, and what it
+/// refused of its arguments otherwise.
+///
+/// The filter is built to have its arguments read and is dropped: which
+/// numbers they may be is the core's rule, which it says of the filters of
+/// every pass and not of this call alone. Which filter a criterion makes is
+/// the core's too, and the two are not one type: the three thresholds are a
+/// `VarFilter` over the variant in front of it, and the filter by linkage
+/// disequilibrium keeps the variants it has kept before, which
+/// `VarFilter::new` refuses to stand for.
+fn refuse_the_arguments_no_filter_takes(
+    criterion: VarFilteringCriterion,
+) -> Result<(), popnei::Error> {
+    match criterion {
+        VarFilteringCriterion::MaxMissingRate(_)
+        | VarFilteringCriterion::MaxMaf(_)
+        | VarFilteringCriterion::MaxObsHet(_) => VarFilter::new(criterion).map(|_filter| ()),
+        VarFilteringCriterion::MaxLdR2 {
+            max_allowed_r2,
+            max_dist,
+        } => LdFilter::new(max_allowed_r2, max_dist).map(|_filter| ()),
     }
 }
 

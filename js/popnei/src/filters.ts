@@ -7,7 +7,10 @@
  * `filterByMissingData`, over the missing rate of a variant, `filterByMaf`,
  * over its major allele frequency, and `filterByObsHet`, over its observed
  * heterozygosity, and each of them keeps the variants whose number is at
- * most the threshold it was given.
+ * most the threshold it was given. The fourth, `filterByLd`, compares a
+ * variant with the variants kept behind it on its chromosome instead of
+ * with a number of its own, and keeps the ones that do not repeat what a
+ * variant near them already said.
  *
  * What is here is what a user reads of them: the step that a filter is in
  * the steps of a `Variants`, and the counts that a pass holds for each
@@ -43,17 +46,18 @@ export interface FilteringStats {
 export interface Step {
   /**
    * What the step does, which is the name its counts have in the counts of
-   * a pass: `"missing_data"`, `"maf"` or `"obs_het"`.
+   * a pass: `"missing_data"`, `"maf"`, `"obs_het"` or `"ld"`.
    */
   kind: string;
 
   /**
    * What the step was given, under the names of the arguments of the method
-   * that added it, `{maxAllowedMaf: 0.95}`.
+   * that added it, `{maxAllowedMaf: 0.95}` and `{maxAllowedR2: 0.3,
+   * maxDist: 10000}`.
    *
-   * The values are what the argument of that method takes, so that the
+   * The values are what the arguments of that method take, so that the
    * steps of the later filters, which take other arguments than a
-   * threshold, fit in it. The value of each of the three filters that are
+   * threshold, fit in it. The value of each of the four filters that are
    * there is a number, and it arrives here as an `unknown` all the same, so
    * a user who does arithmetic with a threshold narrows it first: `const
    * maf = step.args["maxAllowedMaf"]; if (typeof maf === "number") ...`.
