@@ -284,7 +284,7 @@ the plan.
       "The solve of a factorized matrix" and "The log of the determinant"
       of "What the seven give". Serves deliverables 2 and 3. Needs 2.1 for
       the tests, which factor before they solve.
-- [ ] 2.3 `invert_with_cholesky`: `dpotri` on a copy of the factorization
+- [x] 2.3 `invert_with_cholesky`: `dpotri` on a copy of the factorization
       in the buffer the caller gave, and faer's
       `llt::inverse::inverse`, whose scratch of n x n is asked for with
       `try_new` of `dyn_stack` so that a machine without the memory gets

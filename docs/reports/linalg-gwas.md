@@ -15,7 +15,8 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is under way with tasks 2.1 and 2.2 done.
+reviewed and fixed, and work package 2 is built and its five deliverables check out; its
+review is running.
 Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
@@ -270,6 +271,56 @@ later faer which wanted memory fails a test instead of ending the process.
 That test is why the faer build has 70 tests and not 69.
 
 That subagent used 155982 tokens.
+
+### Task 2.3, the inverse
+
+`8af207e`. `invert_with_cholesky`, `dpotri` on a copy of the lower half of
+the factorization in the buffer the caller gave in the BLAS backend, and
+faer's `llt::inverse::inverse` in the other, whose scratch of n x n is
+asked for with `try_new` of `dyn_stack` so that a machine without the
+memory gets `Memory` and not the end of the process. 11 tests. faer asks
+8000000 bytes at n = 1000, which is the number the spec records, and a
+test of the faer backend now asserts it.
+
+**What the task found, which is a change the spec did not have.** An `l`
+whose diagonal holds an entry that is not above 0 is not a factorization
+`cholesky_lower` ever gives, since that is where it stops, but a caller
+holds `l` and `inverse` as two buffers and can pass one that never was a
+factorization. Measured on 23 September 2026 on an `l` with a 0 at its row
+1: `dpotri` gives an `info` of 2, and faer's inverse gives **no error at
+all** and writes infinities and NaN into the caller's buffer. The
+orchestrator checked it by taking the guard out and running the test
+again: faer returns `Ok`. That is a silent wrong result, which the owner
+ruled out on 21 September 2026, so the diagonal is read in the crate above
+both backends and the caller gets the `Singular` that
+`log_determinant_with_cholesky` already gives for the same diagonal and
+that the spec already has the triangular solve give for the same faer
+behaviour. No case was added to the error enum. `4d5cab5` writes it into
+"The errors the seven add"; that commit comes after the code and not
+before, which is not the order the `coding` skill asks for, because the
+case was found while the task was written.
+
+### The deliverables of work package 2
+
+Every check is `cargo test -p popnei-linalg --lib <filter> -- --list`, and
+every filter printed `0 tests` before the work package.
+
+| Deliverable | Filter | What it gave |
+| --- | --- | --- |
+| 1, the factorization and the row it stops at | `cholesky` | 34 tests |
+| 2, the solve with its right hand sides as rows | `solve_with` | 12 tests |
+| 3, the log of the determinant | `determinant` | 7 tests |
+| 4, the inverse | `invert` | 11 tests |
+| 5, the `Singular` case and its message | `singular` | 3 tests |
+
+Both backends pass: `cargo test -p popnei-linalg` `85 passed` and
+`--no-default-features` `82 passed`, against 47 and 42 before the work
+package. The rest, run by the orchestrator: fmt, clippy with the warnings
+denied, `cargo wasm-check` and ruff clean; `cargo test --workspace` `472
+passed` with 2 ignored in the core crate; `uv run maturin develop && uv
+run pytest` `257 passed`.
+
+Those subagents used 176640, 155982 and 174752 tokens.
 
 ## What is waiting on the owner
 
