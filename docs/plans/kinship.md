@@ -40,6 +40,12 @@ Not built, with where it goes:
 - **The pruning by linkage disequilibrium** a user normally does before a
   kinship, which is already built and is a step of the `Variants`:
   `docs/specs/filters.md`.
+- **What it costs.** "Speed" of the spec asks for the kinship of 100000
+  variants x 1000 individuals against plink2's 0.23 s, and for the same run
+  with 3 in 100 genotypes missing, which adds the second product. The owner
+  decided on 23 September 2026 that the measurements of a plan are made in a
+  session of their own once it is merged, with the `performance-review`
+  skill, and not as its last work package.
 
 The spec has no open point.
 
@@ -264,46 +270,6 @@ tolerance, which on the panel with genotypes missing is not all of the first
 first 10 components and the panel's third eigenvalue is 3.36 against a
 tolerance of 7.67e-13, so a disagreement there means the tolerance, not the
 eigendecomposition.
-
-## Work package 4: what it costs
-
-### What it gives
-
-The numbers "Speed" of the spec asks for, in the report, so that the next
-person knows what the kinship costs and whether it is worth changing.
-
-### Its deliverables
-
-1. The kinship of 100000 variants x 1000 individuals is timed against
-   plink2's `--make-rel square` on the same dataset, and against the same
-   run with 3 in 100 genotypes missing, which adds the second product. The
-   check: `docs/reports/kinship.md` holds both numbers with the machine, the
-   threads and the date, beside plink2's 0.23 s from section 2.1 of
-   `docs/rust_core.md` and the 0.157 s and 0.149 s the spec measured for the
-   two products alone in numpy.
-2. A benchmark that can be run again. The check: `cargo bench --bench
-   kinship` runs, in the form the benches of `crates/popnei/benches` already
-   have.
-
-### What it stands on
-
-Work packages 2 and 3. Of its tasks 4.1 needs only what 2.2 built.
-
-### Its tasks
-
-- [ ] 4.1 The benchmark and the measurement, native, with the dataset
-      simulated as `docs/rust_core.md` section 6 says it was for pyNei, and
-      the report. Built from "Speed" of `docs/specs/kinship.md`. Serves
-      deliverables 1 and 2. Needs 2.2.
-
-### What could go wrong
-
-The spec's own arithmetic says most of the calculation is one matrix product
-and that plink2's 0.23 s is close to what that product costs, so there is
-little room. A popnei number far below 0.157 s means the product is not
-being done, which is what deliverable 1 of work package 2 would already have
-caught, and a number far above it means the row pass and not the product,
-which is where `docs/rust_core.md` says 0.65 s of pyNei's 0.81 s sits.
 
 ## How the whole plan is checked
 

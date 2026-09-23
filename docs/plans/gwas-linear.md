@@ -34,7 +34,12 @@ Not built, with where it goes:
 - **The GRAMMAR-Gamma approximation**, which both mixed models can use:
   `gwas-logistic`, because it is one item over both and building it once is
   cheaper than building the linear half of it here.
-- **The speed measurements**, for the same reason: `gwas-logistic`.
+- **What it costs.** "Speed" of the spec asks for the linear model against
+  plink2's 0.10 s and the mixed ones against GMMAT's 1.6 s and 2.2 s, over
+  100000 variants x 1000 individuals. The owner decided on 23 September 2026
+  that the measurements of a plan are made in a session of their own once it
+  is merged, with the `performance-review` skill, and not as one of its work
+  packages.
 - **The kinship** the linear mixed model takes: the plan `kinship`.
 
 The spec's one open point, the variant that separates the cases from the

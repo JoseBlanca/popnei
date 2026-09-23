@@ -24,8 +24,6 @@ Built, through the core crate, both binding crates and both packages:
 - The logistic mixed model with its score test, fitted the way
   `docs/reports/glmm-method/README.md` measured, checked against GMMAT.
 - `use_grammar_gamma_approx`, on both mixed models.
-- The speed of the four models, against plink2, GMMAT and pyNei, native and
-  under wasm.
 
 Not built, with where it goes:
 
@@ -34,6 +32,16 @@ Not built, with where it goes:
 - **Multiple testing, a joint model of a multiallelic variant, a sparse
   kinship and interactions**: "Not in this spec" of the spec, none of them
   in popnei.
+- **What it costs.** "Speed" of the spec asks for the four models over
+  100000 variants x 1000 individuals, for the null fit of the logistic mixed
+  model at 1000, 2000 and 4000 individuals against the 0.095, 0.608 and
+  5.285 seconds that `docs/reports/glmm-method/README.md` measured in numpy,
+  and for the per variant test with and without the approximation. The owner
+  decided on 23 September 2026 that the measurements of a plan are made in a
+  session of their own once it is merged, with the `performance-review`
+  skill, and not as one of its work packages. That session is also where the
+  ratio of 1.88 to 2.06 is checked in Rust, which the report measured
+  between two numpy programs and could not say would hold.
 
 The spec has one open point, and it changes one task of this plan.
 
@@ -250,52 +258,6 @@ is wrong in a way that does not grow with the structure of the panel would
 pass it. What would catch that is the factor itself, which is a mean of
 ratios that are all near each other on a panel like this one, so a factor
 far from the ratios it was averaged from is the sign to look for.
-
-## Work package 4: what it costs
-
-### What it gives
-
-The numbers "Speed" of the spec asks for, in the report.
-
-### Its deliverables
-
-1. The four models timed on 100000 variants x 1000 individuals, against the
-   numbers of sections 2.1 and 2.4 of `docs/rust_core.md`: pyNei 0.35 s and
-   plink2 0.10 s for the linear model, and pyNei 1.5 s against GMMAT's 1.6 s
-   and 2.2 s for the mixed ones. The check: `docs/reports/gwas-logistic.md`
-   holds each with the machine, the threads and the date.
-2. The null fit of the logistic mixed model against pyNei's, at 1000, 2000
-   and 4000 individuals, beside the 0.095, 0.608 and 5.285 seconds against
-   0.195, 1.199 and 9.959 that `docs/reports/glmm-method/README.md`
-   measured in numpy, so that the report says whether Rust kept the ratio.
-3. The per variant test with and without the approximation, which is what
-   says whether the approximation is worth its accuracy.
-4. Benchmarks that can be run again. The check: `cargo bench --bench gwas`
-   runs, in the form `crates/popnei/benches` already has.
-
-### What it stands on
-
-Work packages 1, 2 and 3.
-
-### Its tasks
-
-- [ ] 4.1 The benchmarks and the native measurements of the four models and
-      of the approximation, and the report. Built from "Speed" of
-      `docs/specs/gwas.md`. Serves deliverables 1, 3 and 4. Needs 3.1.
-- [ ] 4.2 The measurement of the logistic mixed model's null fit at the
-      three sizes, against the report's numpy numbers. Built from "How
-      popnei fits it, and why not pyNei's way" and
-      `docs/reports/glmm-method/README.md`. Serves deliverable 2. Needs
-      2.2, and it can run beside 4.1.
-
-### What could go wrong
-
-The report's ratio of 1.88 to 2.06 was measured between two numpy programs
-on the same BLAS, and the part that is not BLAS is Python there and Rust
-here. The report says so and says it does not know which way that moves the
-ratio. A Rust ratio far from 2 is a measurement to report and not a defect,
-and the thing to check before reporting it is that the number of Cholesky
-factorizations is still the 22 of deliverable 3 of work package 2.
 
 ## How the whole plan is checked
 
