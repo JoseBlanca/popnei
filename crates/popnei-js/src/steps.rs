@@ -93,12 +93,12 @@ const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
 ///
 /// # Errors
 ///
-/// When `max_dist` is not a whole number from 0 to 2^53 - 1, which is a
-/// defect of the package: `js/popnei/src/arguments.ts` refuses a window
-/// that is not a whole number of 1 or more before the call, and 0 is left
-/// to the core, whose message says what a window of 0 base pairs reaches.
-/// It is checked and not cast as it comes because a NaN would arrive as a
-/// window of 0 and take out every variant that has another at its own
+/// When `max_dist` is not a whole number from 1 to 2^53 - 1, which is a
+/// defect of the package and not something a user can write:
+/// `js/popnei/src/arguments.ts` refuses a window that is not a whole
+/// number of 1 or more before the call, 0 and the negatives among them.
+/// It is checked here and not cast as it comes because a NaN would arrive
+/// as a window of 0 and take out every variant that has another at its own
 /// position, saying nothing.
 fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
     let whole = max_dist.trunc();
@@ -107,16 +107,17 @@ fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
         reason = "a float64 is or is not the whole number it was truncated to"
     )]
     let is_whole = whole == max_dist;
-    if !max_dist.is_finite() || !is_whole || max_dist < 0.0 || max_dist > LARGEST_WINDOW {
+    if !max_dist.is_finite() || !is_whole || max_dist < 1.0 || max_dist > LARGEST_WINDOW {
         return Err(JsPopneiError::Broken(format!(
             "the window of the filter by linkage disequilibrium arrived as {max_dist}, \
-             and it is a whole number of base pairs from 0 to {LARGEST_WINDOW}"
+             and it is a whole number of base pairs from 1 to {LARGEST_WINDOW}, which \
+             is a defect of popnei; please report it"
         )));
     }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "checked above to be a whole number between 0 and 2^53 - 1"
+        reason = "checked above to be a whole number between 1 and 2^53 - 1"
     )]
     let base_pairs = max_dist as u64;
     Ok(base_pairs)
@@ -258,10 +259,9 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// The two of [`Steps::filter_by_missing_data`], a `max_dist` of 0,
-    /// which reaches no variant but the ones at the very position of the
-    /// variant its window is of, and a `max_dist` that is not a whole
-    /// number of base pairs the core holds.
+    /// The two of [`Steps::filter_by_missing_data`], and a `max_dist` that
+    /// is not a whole number of base pairs from 1 to 2^53 - 1, which the
+    /// package refuses before the call and which is a defect here.
     pub fn filter_by_ld(
         &mut self,
         max_allowed_r2: f64,
@@ -316,14 +316,17 @@ impl Steps {
     ///
     /// # Errors
     ///
-    /// When the threshold is not a number from 0 to 1, when the window of
-    /// the filter by linkage disequilibrium is 0, and when the list holds a
-    /// filter of the kind of `criterion` already. The core is what says all
-    /// three: the filter built here is dropped, and every pass builds its
-    /// own from the criterion, so the rules its arguments have to keep and
-    /// which filters can stand together are written in one place. The
-    /// arguments are refused first, since they are wrong whatever the list
-    /// holds. After any of the three, the list is as it was.
+    /// When the threshold is not a number from 0 to 1, and when the list
+    /// holds a filter of the kind of `criterion` already. The core is what
+    /// says both: the filter built here is dropped, and every pass builds
+    /// its own from the criterion, so the rules its arguments have to keep
+    /// and which filters can stand together are written in one place. The
+    /// threshold is refused first, since it is wrong whatever the list
+    /// holds. After either, the list is as it was. The window of the filter
+    /// by linkage disequilibrium is a rule of the core as well, a window of
+    /// 0 reaching no variant but the ones at the very position of the
+    /// variant it is the window of, and no window of 0 arrives here: the
+    /// package refuses it at the call.
     fn add(&mut self, criterion: VarFilteringCriterion) -> Result<(), JsPopneiError> {
         refuse_the_arguments_no_filter_takes(criterion)
             .map_err(|error| under_the_argument(error, criterion))?;
