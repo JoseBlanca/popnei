@@ -14,6 +14,7 @@ from popnei.filters import FilteringStats, Step
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
 from popnei.pca import PCAResult, do_pca, do_pca_from_variants
+from popnei.pop_dists import PopDistMeasure, PopDists, calc_pop_dists
 from popnei.stats import (
     PerIndividualStats,
     PerVarDistribs,
@@ -43,6 +44,8 @@ __all__ = [
     "PerVarDistribs",
     "PerVarStat",
     "PolyVarsStats",
+    "PopDistMeasure",
+    "PopDists",
     "StatsDistrib",
     "Step",
     "Variants",
@@ -51,6 +54,7 @@ __all__ = [
     "calc_pairwise_kosman_dists",
     "calc_per_individual_stats",
     "calc_per_var_distribs",
+    "calc_pop_dists",
     "do_pca",
     "do_pca_from_variants",
     "open_vars",

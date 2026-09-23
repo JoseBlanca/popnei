@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 mod dists;
 mod errors;
 mod pca;
+mod pop_dists;
 mod source;
 mod stats;
 mod steps;
@@ -90,6 +91,8 @@ mod _core {
     use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]
     use super::pca::{pca, pca_of_variants};
+    #[pymodule_export]
+    use super::pop_dists::calc_pop_dists;
     #[pymodule_export]
     use super::source::Blocks;
     #[pymodule_export]

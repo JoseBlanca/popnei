@@ -852,6 +852,20 @@ pub enum Error {
         ploidy: usize,
     },
 
+    /// A user asked for a measure of how far apart two populations are
+    /// under a name that is of none of the seven. The names are those of
+    /// the fields of the result, and they are
+    /// `pop_dists::PopDistMeasure::NAMES`, which the message lists. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`{name}` is not one of the measures of how far apart two populations are, which are {the_seven}",
+        the_seven = the_seven_measures()
+    )]
+    PopDistMeasureOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
     /// The variants were asked to be cut into resampling groups of 0 base
     /// pairs. A group is a stretch of one chromosome and holds one base
     /// pair at least. A caller who wants each variant in a group of its own
@@ -1391,17 +1405,28 @@ fn a_pass_that_gave_no_variant(
     )
 }
 
+/// The seven measures of how far apart two populations are under the names
+/// a user writes them, for the message that refuses a name that is of none
+/// of them: "`fst`, `f2`, `chord`, `da`, `dest`, `gst` and
+/// `gst_standardized`".
+fn the_seven_measures() -> String {
+    listed(&crate::pop_dists::PopDistMeasure::NAMES)
+}
+
 /// The five statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
 fn the_five_statistics() -> String {
-    let named: Vec<String> = crate::stats::PerVarStat::NAMES
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect();
+    listed(&crate::stats::PerVarStat::NAMES)
+}
+
+/// `names` in one sentence, each in backticks, the last one after an "and":
+/// "`maf` and `obs_het`".
+fn listed(names: &[&'static str]) -> String {
+    let named: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
     match named.split_last() {
         Some((last, before)) => format!("{} and {last}", before.join(", ")),
-        // `NAMES` holds five names, so it has a last one.
+        // Every table of names this is called with holds names.
         None => String::new(),
     }
 }

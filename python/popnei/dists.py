@@ -37,7 +37,10 @@ class Distances:
     It is what every distance calculation of popnei gives, and a user builds
     one themselves from distances that were calculated elsewhere, with
     ``Distances(dist_vector, names=...)`` or with
-    :meth:`Distances.from_square_dists`.
+    :meth:`Distances.from_square_dists`. The pairs of the measures of
+    :func:`popnei.calc_pop_dists` are pairs of populations, and everything
+    below reads the same way with the populations in the place of the
+    individuals: their names are the :attr:`names`.
 
     ``dists == other`` is true for the same object and false for any other,
     as it is for a :class:`popnei.Block`: two results are not compared value
@@ -88,6 +91,21 @@ class Distances:
 
     It is ``None`` in a ``Distances`` built from distances that were
     calculated elsewhere, which no pass over a source gave.
+    """
+
+    standard_errors: numpy.ndarray | None = None
+    """How far each distance would move if the variants it was calculated
+    over were drawn again, a read only float64 array with one value for each
+    pair in the order of :attr:`dist_vector`.
+
+    A pair that has a distance and no standard error is NaN, and the field
+    itself is ``None`` when the calculation gave none: the Kosman distances
+    between individuals never give one, and
+    :func:`popnei.calc_pop_dists` gives one for each measure only when it
+    was asked to cut the variants into resampling groups.
+
+    The array is not copied when a ``Distances`` is built from one, as
+    :attr:`dist_vector` is not.
     """
 
     def __post_init__(self) -> None:
@@ -141,6 +159,9 @@ class Distances:
                 )
         object.__setattr__(self, "dist_vector", vector)
         object.__setattr__(self, "names", names)
+        object.__setattr__(
+            self, "standard_errors", _errors_of(self.standard_errors, num_pairs)
+        )
 
     def __repr__(self) -> str:
         """How many individuals the distances are of, and not the distances.
@@ -211,6 +232,26 @@ class Distances:
         first, second = numpy.triu_indices(num_individuals, k=1)
         square[first, second] = self.dist_vector
         square[second, first] = self.dist_vector
+        return pandas.DataFrame(square, index=self.names, columns=self.names)
+
+    def square_standard_errors(self) -> pandas.DataFrame | None:
+        """The N x N frame of the standard errors, indexed by name on both
+        sides, and ``None`` where :attr:`standard_errors` is ``None``.
+
+        The standard error of a pair is in both of its cells and the
+        diagonal is NaN, where the square matrix of the distances has 0: a
+        distance of an individual or a population with itself is 0 and known,
+        and how far that 0 would move is nothing the calculation gives.
+
+        It is built at every read, out of the vector.
+        """
+        if self.standard_errors is None:
+            return None
+        num_names = len(self.names)
+        square = numpy.full((num_names, num_names), numpy.nan, dtype=numpy.float64)
+        first, second = numpy.triu_indices(num_names, k=1)
+        square[first, second] = self.standard_errors
+        square[second, first] = self.standard_errors
         return pandas.DataFrame(square, index=self.names, columns=self.names)
 
     @property
@@ -331,6 +372,42 @@ def _min_num_vars_of(min_num_snps: int | None) -> int:
             f"could reach it, and every distance would be missing"
         )
     return wanted
+
+
+def _errors_of(standard_errors, num_pairs: int) -> numpy.ndarray | None:
+    """The standard errors of a ``Distances`` as a read only array of
+    float64, one for each of its `num_pairs` pairs, and ``None`` for the
+    result of a calculation that gave none.
+
+    # Raises
+
+    ``ValueError`` when they hold what is no number and when they are not
+    one for each pair, which would leave a standard error beside the
+    distance of another pair in the square matrix.
+    """
+    if standard_errors is None:
+        return None
+    try:
+        errors = numpy.asarray(standard_errors, dtype=numpy.float64)
+    except (TypeError, ValueError) as problem:
+        raise ValueError(
+            f"`standard_errors` is of the type "
+            f"`{type(standard_errors).__name__}` and holds what is no number, "
+            f"and the standard error of a distance is one: {problem}"
+        ) from None
+    if errors.ndim != 1 or errors.shape[0] != num_pairs:
+        raise ValueError(
+            f"`standard_errors` holds {errors.size} values and "
+            f"`dist_vector` holds {num_pairs} distances, and the standard "
+            f"error of each pair goes beside the distance of that pair: give "
+            f"one for each of them, or `None` where there are none"
+        )
+    if errors.flags.writeable:
+        # A view of the array and not the array itself, so that the one a
+        # user gave is theirs to write into afterwards, as `dist_vector` is.
+        errors = errors.view()
+        errors.flags.writeable = False
+    return errors
 
 
 def _num_individuals_of(num_pairs: int) -> int:

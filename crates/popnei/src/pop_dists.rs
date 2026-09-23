@@ -512,6 +512,70 @@ pub enum PopDistMeasure {
     GstStandardized,
 }
 
+impl PopDistMeasure {
+    /// The name of each of the seven measures, in the order of the variants
+    /// above.
+    ///
+    /// The names are what a Python and a TypeScript user writes in
+    /// `measures`, and each one is the field of the result that holds that
+    /// measure. They are here and not in the binding crates so that a
+    /// rename is one change and not four.
+    pub const NAMES: [&'static str; 7] = [
+        "fst",
+        "f2",
+        "chord",
+        "da",
+        "dest",
+        "gst",
+        "gst_standardized",
+    ];
+
+    /// The name a user writes for this measure, which is the field of the
+    /// result that holds it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        let of_the_seven = match self {
+            PopDistMeasure::Fst => 0,
+            PopDistMeasure::F2 => 1,
+            PopDistMeasure::Chord => 2,
+            PopDistMeasure::Da => 3,
+            PopDistMeasure::Dest => 4,
+            PopDistMeasure::Gst => 5,
+            PopDistMeasure::GstStandardized => 6,
+        };
+        // The seven names are there, one for each variant of the enum.
+        PopDistMeasure::NAMES
+            .get(of_the_seven)
+            .copied()
+            .unwrap_or("")
+    }
+
+    /// The measure a user named.
+    ///
+    /// # Errors
+    ///
+    /// A name that is of none of the seven, with the seven names.
+    pub fn of_name(name: &str) -> Result<PopDistMeasure> {
+        // The names are in [`PopDistMeasure::NAMES`] alone, in the order of
+        // the variants, so a name that is renamed is renamed in one place.
+        match PopDistMeasure::NAMES
+            .iter()
+            .position(|known| *known == name)
+        {
+            Some(0) => Ok(PopDistMeasure::Fst),
+            Some(1) => Ok(PopDistMeasure::F2),
+            Some(2) => Ok(PopDistMeasure::Chord),
+            Some(3) => Ok(PopDistMeasure::Da),
+            Some(4) => Ok(PopDistMeasure::Dest),
+            Some(5) => Ok(PopDistMeasure::Gst),
+            Some(6) => Ok(PopDistMeasure::GstStandardized),
+            Some(_) | None => Err(Error::PopDistMeasureOfAnUnknownName {
+                name: name.to_owned(),
+            }),
+        }
+    }
+}
+
 /// The six sums of one pair of populations over a set of variants: what
 /// every measure of that pair is a ratio of.
 ///
@@ -2739,5 +2803,65 @@ mod tests {
                 if *fields == Needs::CHROM_POS),
             "{error:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pop_dist_measure {
+    use super::PopDistMeasure;
+    use crate::error::Error;
+
+    /// The name of each measure is what a user writes in `measures` and the
+    /// field of the result that holds it, and `of_name` gives back the
+    /// measure of each name. The names live in `NAMES` alone, so a rename is
+    /// one change; the literals here are the names of the fields of
+    /// `PopDists` in Python and in TypeScript.
+    #[test]
+    fn each_name_is_the_name_of_the_measure_it_gives_back() {
+        assert_eq!(
+            PopDistMeasure::NAMES,
+            [
+                "fst",
+                "f2",
+                "chord",
+                "da",
+                "dest",
+                "gst",
+                "gst_standardized"
+            ]
+        );
+        for (name, measure) in [
+            ("fst", PopDistMeasure::Fst),
+            ("f2", PopDistMeasure::F2),
+            ("chord", PopDistMeasure::Chord),
+            ("da", PopDistMeasure::Da),
+            ("dest", PopDistMeasure::Dest),
+            ("gst", PopDistMeasure::Gst),
+            ("gst_standardized", PopDistMeasure::GstStandardized),
+        ] {
+            assert_eq!(
+                PopDistMeasure::of_name(name).unwrap_or_else(|error| panic!("{name}: {error}")),
+                measure
+            );
+            assert_eq!(measure.name(), name);
+        }
+    }
+
+    /// A name that is of none of the seven is refused, with the seven names:
+    /// a user who writes one of them wrong has to read which they are.
+    #[test]
+    fn a_name_of_no_measure_is_refused_with_the_seven() {
+        for name in ["fsts", "FST", "", "f2 "] {
+            let error = PopDistMeasure::of_name(name).unwrap_err();
+            assert!(
+                matches!(&error, Error::PopDistMeasureOfAnUnknownName { name: found }
+                    if found == name),
+                "{name}: {error:?}"
+            );
+            let message = error.to_string();
+            for of_the_seven in PopDistMeasure::NAMES {
+                assert!(message.contains(of_the_seven), "{message}");
+            }
+        }
     }
 }
