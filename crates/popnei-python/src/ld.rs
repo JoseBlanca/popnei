@@ -236,7 +236,7 @@ fn the_square_of<'py>(
 /// the error is a pass whose matrix fits once and not twice: 30000 variants
 /// on a machine with 12 GB free. No test reaches it, since one that did
 /// would have to take the memory of the machine it runs on. What a user
-/// gets there is a `MemoryError` that says how many values could not be
+/// gets there is a `ValueError` that says how many values could not be
 /// held and that the matrix is held twice while it crosses, and their
 /// interpreter goes on.
 ///

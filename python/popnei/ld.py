@@ -125,9 +125,8 @@ def calc_rogers_huff_r2_matrix(
     variants and has the memory raises it; one who has not puts a filter on
     the ``Variants`` first.
 
-    A cap raised above what the machine gives is a ``MemoryError`` and not a
-    ``ValueError``: the call says what the user meant, and the same call on
-    a machine with the memory free gives the matrix. The matrix is held
+    A cap raised above what the machine then gives is a ``ValueError`` too,
+    one that says how many values could not be held. The matrix is held
     twice while it is copied into the numpy array, 400 MB at 5000 variants
     while the call runs and 200 MB afterwards, so that is the memory to
     have.
