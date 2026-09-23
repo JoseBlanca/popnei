@@ -619,7 +619,8 @@ mean of the two counts that Jost's D corrects with, "Jost's D" below, is
 pair at all, so that the seven numbers are over the same variants and a
 pair has one count of them. It is the only case where the count of called
 genotypes is not the whole test, and it cannot arise at a
-`min_num_samples` of 2 or more.
+`min_num_samples` of 2 or more. pyNei drops the same variant by another
+route, "What pyNei does that is odd" of Jost's D below.
 
 ### How it runs
 
@@ -1087,6 +1088,20 @@ where the sum of the inverses is not finite, which is a population with
 no called genotype. popnei does not reach that case, because such a
 population has fewer than `min_num_samples` called genotypes for any
 threshold above 0 and the variant is dropped before the mean is taken.
+
+A variant where both populations have exactly one called genotype, which
+needs `min_num_samples` at 1, comes to the same answer in both libraries
+by different routes. In pyNei the factor n/(n - 1) is 1/0, and what it
+multiplies is always 0, because one diploid genotype has an expected
+heterozygosity of exactly half its observed one, so H_S - H_obs/2n is 0;
+inf times 0 is NaN, and `numpy.nansum` then leaves the variant out of both
+sums and out of the count. Measured on pyNei at commit ef0ca6e, two
+variants of four individuals in two populations of two, the first with one
+called genotype in each population, `min_num_samples=1`: D is 0.25, the
+same as over the second variant alone, and two RuntimeWarnings are
+printed, a division by zero and an invalid multiply. popnei leaves the
+variant out by the rule of "Variants that do not count" above, with no
+NaN made and nothing printed.
 
 ### How it is verified
 
