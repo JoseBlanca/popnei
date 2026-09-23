@@ -236,15 +236,17 @@ Weinberg and not otherwise.
 
 One pass over the blocks, each block taken as a matrix. Per block, with
 rayon across its rows, every variant is turned into its standardized dosages
-and the ones with no variance are dropped, which is the row pass of
-`pca_of_variants` in `crates/popnei/src/pca.rs` with one number changed, the
+and the ones with no variance are dropped, which is the row pass the
+principal components of the variants make with one number changed, the
 divisor: that pass divides by the standard deviation of the dosages and this
 one by `sqrt(ploidy * p * (1 - p))`. Everything else is the same, the codes
 of the genotypes, the table of allele counts and the lookup of one
-standardized value per code. Whether the two call one helper with the
-divisor as an argument or keep two copies is the implementation plan's to
-decide, and this spec asks only that a change to the dosage rule of
-`docs/specs/pca.md` cannot leave the two disagreeing. Then two products, both in
+standardized value per code. This spec asks only that a change to the dosage
+rule of `docs/specs/pca.md` cannot leave the two disagreeing, and left the
+choice between one helper and two copies to the implementation plan.
+`docs/plans/kinship.md` chose one helper and built it on 23 September 2026:
+`the_standardized_row` of `crates/popnei/src/variant.rs`, which each caller
+gives its own divisor, moved there from `crates/popnei/src/pca.rs`. Then two products, both in
 `linalg`: the standardized dosages of the block multiplied by themselves
 into an individuals by individuals accumulator, and, when any genotype of
 the block is missing, the same of the matrix of ones and zeros that says
