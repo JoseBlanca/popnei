@@ -603,3 +603,40 @@ It is reviewed together with work package 3, which the `code-review` skill
 allows when two work packages are one piece of code: neither adds a count
 or a sum, both add ratios of sums work package 1 already accumulates, and
 both touch the same function.
+
+## Work package 3
+
+### Task 3.1, the chord distance and Nei's D_A
+
+Three commits, `86d38a8` and `86bbc8c` for the spec and `3a9e540` for the
+code. 164 542 tokens. `cargo test -p popnei --lib pop_dists::` gives `56
+passed; 0 failed` against 53, and the workspace `577 passed; 0 failed; 2
+ignored`. No count and no sum were added: D_A is 1 minus the mean of the
+sum of the square roots the pass already builds, and the chord distance is
+its square root.
+
+Deliverable 1 is met, and the agreement with adegenet is closer than the
+1e-12 relative asked for. On the biallelic panel the chord of all three
+pairs is the same double the reference file prints, 0 apart. On the
+multiallelic panel the furthest is 6.7e-16 absolute, 2.0e-15 relative.
+
+**A case of the last bits that would have given a NaN.** The sum of the
+square roots can exceed the variants that counted by the last bits of a
+double: two populations with the same frequencies at every variant give
+0.2 + 0.4 + 0.3 + 0.1 = 1 + 2.2e-16, which makes D_A a small negative
+number and the chord distance, its square root, a NaN. D_A is 0 there
+instead, which the spec now says, in a commit before the code, and a test
+of two populations alike at every variant pins it.
+
+**A number the spec claimed before the code existed.** The chord item said
+popnei was 1.25e-15 from adegenet on the biallelic panel and 3.3e-16 on
+the multiallelic. Both were written before there was code to measure. The
+item now carries what was measured, 0 and 6.7e-16.
+
+### One more point for the owner, which nothing rests on
+
+With all seven measures having a value, the machinery that refuses the
+name of a measure that has none refuses nothing: the list in the core, a
+function in each binding crate, and two messages that are now unreachable
+and untested. Task 3.1 kept it rather than drop public API from three
+crates on its own judgement. The options are at the end of this report.

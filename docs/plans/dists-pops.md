@@ -294,7 +294,7 @@ adds no count and no sum either.
 
 ### Its tasks
 
-- [ ] 3.1 The chord distance and Nei's D_A out of that sum, in
+- [x] 3.1 The chord distance and Nei's D_A out of that sum, in
   `crates/popnei/src/pop_dists.rs`, with the cargo tests of deliverable 1.
   From "What it gives" of the chord item. Serves deliverable 1. Needs work
   package 1.
