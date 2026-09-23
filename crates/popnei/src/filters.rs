@@ -356,10 +356,14 @@ impl fmt::Display for TheOrderOfTheVariants {
 /// It is a type of its own and not a [`VarFilter`]: it holds the window
 /// between one block and the next, where a `VarFilter` reads each block on
 /// its own and keeps nothing but its two counts. The window holds, for each
-/// variant of it, its dosages as the three matrices of
-/// [`LdDosages`](crate::ld::LdDosages), 24 bytes for each individual, with
-/// its chromosome and its position: for 250 kept variants of 1000
-/// individuals, 6 MB.
+/// variant of it, its genotypes, its chromosome and its position, one byte
+/// for each allele: 500 KB for 250 kept variants of 1000 diploid
+/// individuals. The three matrices of
+/// [`LdDosages`](crate::ld::LdDosages), 24 bytes for each individual and
+/// variant, are built over the whole window when a set of candidates
+/// arrives and are given back when it has been settled, so the 6 MB of
+/// those 250 variants of 1000 individuals is held while a block is
+/// filtered and not between two blocks.
 ///
 /// The dosages are read over every individual of the dataset. A user who
 /// wants them read over one population puts the filter of individuals
@@ -374,27 +378,13 @@ pub struct LdFilter {
     /// The variants kept that are still within `max_dist` of the last
     /// variant read, in the order they were kept, which is the order of
     /// their positions.
-    window: Vec<TheVariantOfTheWindow>,
+    window: TheWindow,
     /// The chromosome and the position of the last variant read, and
     /// `None` before the first block.
     before: Option<TheVariantBefore>,
     /// The number of every chromosome the filter has read a variant of,
     /// which is what says that a chromosome has come back.
     chroms_read: Vec<u32>,
-}
-
-/// One variant of the window of an [`LdFilter`]: a variant it kept, with
-/// what the r² of a candidate against it is worked out from.
-#[derive(Debug)]
-struct TheVariantOfTheWindow {
-    /// The number of its chromosome in the table of the reader that gave
-    /// the block it came in.
-    chrom: u32,
-    /// Its position, 1 based as in a VCF.
-    pos: u64,
-    /// Its dosages over every individual of the dataset, one variant of the
-    /// three matrices of `docs/specs/ld.md`.
-    dosages: LdDosages,
 }
 
 /// The chromosome and the position of the variant the filter read last,
@@ -446,7 +436,7 @@ impl LdFilter {
             max_allowed_r2,
             max_dist,
             stats: FilteringStats::default(),
-            window: Vec::new(),
+            window: TheWindow::default(),
             before: None,
             chroms_read: Vec::new(),
         })
@@ -522,19 +512,13 @@ impl LdFilter {
         // source whose positions do not rise is refused whatever else the
         // block holds.
         let order = self.the_order_read(chroms, positions)?;
-        let settled = the_variants_that_stay(self, block, chroms, positions)?;
+        let settled =
+            the_variants_that_stay(self, block, chroms, positions, THE_VARS_SETTLED_AT_A_TIME)?;
         block.retain_vars(&settled.keep)?;
         // Nothing of the filter has changed until here, so an error above
         // left the window, the counts and the place in the source as they
-        // were.
-        let held = self.window.len();
-        self.window.drain(..settled.left.min(held));
-        self.window.extend(
-            settled
-                .added
-                .into_iter()
-                .skip(settled.left.saturating_sub(held)),
-        );
+        // were: the block was settled against a window of its own.
+        self.window = settled.window;
         self.before = order.before;
         self.chroms_read = order.chroms_read;
         // A `usize` is 64 bits on the targets popnei builds natively for
@@ -622,54 +606,134 @@ impl fmt::Debug for LdFilter {
             .field("max_allowed_r2", &self.max_allowed_r2)
             .field("max_dist", &self.max_dist)
             .field("stats", &self.stats)
-            .field("vars_in_the_window", &self.window.len())
+            .field("vars_in_the_window", &self.window.num_vars())
             .field("before", &self.before)
             .finish_non_exhaustive()
     }
 }
 
 /// Which variants of a block the filter by linkage disequilibrium keeps,
-/// what its window loses over that block and what joins it.
+/// with the window it leaves behind.
 struct TheBlockSettled {
     /// One value for each variant of the block, in its order.
     keep: Vec<bool>,
     /// How many of them stayed.
     kept: usize,
-    /// How many variants, of the window the filter held and of the ones
-    /// this block adds to it, have left the window: they are the first of
-    /// them, a window holding its variants in the order of their positions.
-    left: usize,
-    /// The variants of the block that were kept, in their order, as the
-    /// window holds them.
-    added: Vec<TheVariantOfTheWindow>,
+    /// The window once every variant of the block has been settled: the
+    /// variants the filter had kept that the last variant of the block has
+    /// not left behind, with the ones the block added to them.
+    window: TheWindow,
 }
 
-/// The variants a candidate is compared with: the ones the filter held when
-/// the block arrived and the ones the block has added, with the ones the
-/// filter has left behind taken off the front.
-struct TheWindow<'a> {
-    /// What the filter held when the block arrived.
-    held: &'a [TheVariantOfTheWindow],
-    /// What the block has added to it.
-    added: Vec<TheVariantOfTheWindow>,
-    /// How many of the two together, from the front, are behind the window
-    /// of the variant being read.
-    left: usize,
+/// The variants a candidate is compared with: the ones the filter has kept
+/// that are on the candidate's chromosome and no more than `max_dist` base
+/// pairs behind it, in the order of their positions.
+///
+/// It holds the genotypes of those variants and not their dosages, because
+/// the whole window is one operand of the products of `docs/specs/ld.md`
+/// when a set of candidates arrives: [`TheWindow::dosages`] builds the
+/// three matrices of every variant of it together, so the r² of a set of
+/// candidates against the window is one call of
+/// [`r2_between`](crate::ld::r2_between) and not one call for each variant
+/// kept. The genotypes are one byte for each allele where the three
+/// matrices are 24 bytes for each individual, so a diploid window holds
+/// between two blocks a twelfth of what they would be.
+#[derive(Debug, Default)]
+struct TheWindow {
+    /// The number of the chromosome of each variant of it, in the table of
+    /// the reader that gave the block it came in.
+    chroms: Vec<u32>,
+    /// The position of each of them, 1 based as in a VCF.
+    poss: Vec<u64>,
+    /// The genotypes of each of them over every individual of the dataset,
+    /// one variant after another, as a block holds them.
+    gts: Vec<i8>,
+    /// How many individuals the block the variants of the window came in
+    /// had, which their dosages are built over.
+    num_individuals: usize,
+    /// How many alleles the genotype of one individual holds in that same
+    /// block.
+    ploidy: usize,
 }
 
-impl TheWindow<'_> {
-    /// The variant at that place of the two together, and `None` past the
-    /// last of them.
-    fn at(&self, at: usize) -> Option<&TheVariantOfTheWindow> {
-        match self.held.get(at) {
-            Some(variant) => Some(variant),
-            None => self.added.get(at.checked_sub(self.held.len())?),
-        }
+impl TheWindow {
+    /// How many variants it holds.
+    fn num_vars(&self) -> usize {
+        self.poss.len()
     }
 
-    /// The variants of the window, the ones left behind taken off.
-    fn live(&self) -> impl Iterator<Item = &TheVariantOfTheWindow> {
-        self.held.iter().chain(self.added.iter()).skip(self.left)
+    /// How many alleles the genotypes of one variant of it hold.
+    fn alleles_per_var(&self) -> usize {
+        // The genotypes of a block of this many individuals of this ploidy
+        // are in memory, so their product is a number this machine counted.
+        self.num_individuals.saturating_mul(self.ploidy)
+    }
+
+    /// A window of the same variants, which a block is settled against and
+    /// which the filter takes over once the block has been settled, so that
+    /// a block that is refused leaves the window of the filter as it was.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the genotypes of the window or of its two columns.
+    fn copy_of(&self) -> Result<TheWindow> {
+        Ok(TheWindow {
+            chroms: the_copy_of(&self.chroms, "the chromosomes of the window")?,
+            poss: the_copy_of(&self.poss, "the positions of the window")?,
+            gts: the_copy_of(&self.gts, "the genotypes of the window")?,
+            num_individuals: self.num_individuals,
+            ploidy: self.ploidy,
+        })
+    }
+
+    /// Takes the individuals and the ploidy of `block`, or refuses a block
+    /// that does not hold the dataset the variants of the window came from.
+    ///
+    /// The window keeps the genotypes of its variants and reads them as the
+    /// individuals and the ploidy of the source, so a block of other
+    /// individuals or of another ploidy would give the window dosages read
+    /// off the wrong alleles. It is the error of `docs/specs/block.md` for
+    /// blocks of one source that do not hold the same dataset, which is a
+    /// defect of the reader and not of what a user wrote.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BlocksDoNotFitTogether`] when the block holds another
+    /// number of individuals or another ploidy than the variants of the
+    /// window were read in.
+    fn takes_the_block(&mut self, block: &Block) -> Result<()> {
+        if self.num_vars() == 0 {
+            self.num_individuals = block.num_individuals;
+            self.ploidy = block.ploidy;
+            return Ok(());
+        }
+        if self.num_individuals != block.num_individuals || self.ploidy != block.ploidy {
+            return Err(Error::BlocksDoNotFitTogether {
+                num_individuals: self.num_individuals,
+                ploidy: self.ploidy,
+                found_num_individuals: block.num_individuals,
+                found_ploidy: block.ploidy,
+            });
+        }
+        Ok(())
+    }
+
+    /// The three matrices of `docs/specs/ld.md` over every variant of the
+    /// window, which one call of [`r2_between`](crate::ld::r2_between) then
+    /// reads a whole set of candidates against.
+    ///
+    /// The genotypes are lent to the dosages and taken back with the memory
+    /// they have, so the window is as it was and nothing of it is copied.
+    ///
+    /// # Errors
+    ///
+    /// What [`LdDosages::of_block`](crate::ld::LdDosages::of_block)
+    /// refuses, a window this machine has not the memory of the three
+    /// matrices for among them.
+    fn dosages(&mut self) -> Result<LdDosages> {
+        let num_vars = self.num_vars();
+        the_dosages_of(&mut self.gts, num_vars, self.num_individuals, self.ploidy)
     }
 
     /// Takes off the variants that a variant at `pos` of the chromosome
@@ -677,68 +741,237 @@ impl TheWindow<'_> {
     /// more than `max_dist` base pairs behind it. They are the first of the
     /// window, whose variants are in the order of their positions.
     fn leave_behind(&mut self, chrom: u32, pos: u64, max_dist: u64) {
-        while let Some(within) = self.at(self.left).map(|variant| {
-            variant.chrom == chrom
-                && pos
-                    .checked_sub(variant.pos)
-                    .is_some_and(|dist| dist <= max_dist)
-        }) {
-            if within {
-                break;
-            }
-            self.left = self.left.saturating_add(1);
-        }
+        let left = self
+            .chroms
+            .iter()
+            .zip(&self.poss)
+            .take_while(|(of_it, at_it)| {
+                **of_it != chrom || pos.checked_sub(**at_it).is_none_or(|dist| dist > max_dist)
+            })
+            .count();
+        let alleles = left
+            .saturating_mul(self.alleles_per_var())
+            .min(self.gts.len());
+        self.chroms.drain(..left);
+        self.poss.drain(..left);
+        self.gts.drain(..alleles);
     }
 
     /// Adds a variant the filter has kept, which is ahead of every variant
-    /// of the window.
-    fn push(&mut self, variant: TheVariantOfTheWindow) {
-        self.added.push(variant);
+    /// of the window, with its genotypes over every individual of the
+    /// dataset.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// one more variant of the window.
+    fn push(&mut self, chrom: u32, pos: u64, gts: &[i8]) -> Result<()> {
+        the_room_for(&mut self.chroms, 1, "the chromosomes of the window")?;
+        the_room_for(&mut self.poss, 1, "the positions of the window")?;
+        the_room_for(&mut self.gts, gts.len(), "the genotypes of the window")?;
+        self.chroms.push(chrom);
+        self.poss.push(pos);
+        self.gts.extend_from_slice(gts);
+        Ok(())
     }
 }
 
-/// Which variants of the block the filter keeps, with what its window loses
-/// and gains over it.
+/// The dosages of the `num_vars` variants whose genotypes are in `gts`,
+/// over the `num_individuals` individuals of the ploidy `ploidy`.
 ///
-/// The variants are settled [`THE_VARS_SETTLED_AT_A_TIME`] at a time. The r²
-/// of each variant of the window against a whole set of them is one call,
-/// and the r² of the variants of the set against one another is one more:
-/// what cannot be done that way is a candidate against the variants kept
-/// inside its own set, since whether one of them is kept decides what the
-/// next one is compared with, so those are read out of the r² of the set in
-/// the order of the variants.
+/// The buffer is given back as it was, with the memory it has and with the
+/// genotypes in it, whether the dosages were built or not: the sets of a
+/// block share one allocation, and the window lends its own genotypes and
+/// keeps them.
+///
+/// # Errors
+///
+/// What [`LdDosages::of_block`](crate::ld::LdDosages::of_block) refuses,
+/// which its `# Errors` lists, a set of variants this machine has not the
+/// memory of the three matrices for among them.
+fn the_dosages_of(
+    gts: &mut Vec<i8>,
+    num_vars: usize,
+    num_individuals: usize,
+    ploidy: usize,
+) -> Result<LdDosages> {
+    let mut block = Block {
+        num_vars,
+        num_individuals,
+        ploidy,
+        gts: std::mem::take(gts),
+        chrom: None,
+        pos: None,
+        id: None,
+        alleles: None,
+        qual: None,
+    };
+    let dosages = LdDosages::of_block(&block, &[]);
+    *gts = std::mem::take(&mut block.gts);
+    dosages
+}
+
+/// Asks this machine for room for `more` values in `vector`, which `what`
+/// names.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it. The memory is
+/// asked for with `try_reserve`, which gives it back as an error where a
+/// `push` or an `extend` would end the process, as `docs/specs/filters.md`
+/// asks for a window this machine has not the memory of.
+fn the_room_for<T>(vector: &mut Vec<T>, more: usize, what: &'static str) -> Result<()> {
+    vector
+        .try_reserve(more)
+        .map_err(|_| Error::LdNoMemory { what, values: more })
+}
+
+/// A copy of `values`, which `what` names, with its memory asked of this
+/// machine and not taken.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it.
+fn the_copy_of<T: Copy>(values: &[T], what: &'static str) -> Result<Vec<T>> {
+    let mut copy: Vec<T> = Vec::new();
+    copy.try_reserve_exact(values.len())
+        .map_err(|_| Error::LdNoMemory {
+            what,
+            values: values.len(),
+        })?;
+    copy.extend_from_slice(values);
+    Ok(copy)
+}
+
+/// A buffer of `values` values of `value`, which `what` names, with its
+/// memory asked of this machine and not taken.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when the machine does not give it.
+fn the_buffer_of<T: Clone>(value: T, values: usize, what: &'static str) -> Result<Vec<T>> {
+    let mut buffer: Vec<T> = Vec::new();
+    buffer
+        .try_reserve_exact(values)
+        .map_err(|_| Error::LdNoMemory { what, values })?;
+    buffer.resize(values, value);
+    Ok(buffer)
+}
+
+/// Grows `buffer` to `values` values of 0, and leaves it as it is when it
+/// holds that many already.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when this machine does not give the memory of the
+/// values it has not.
+fn the_buffer_grown_to(buffer: &mut Vec<f64>, values: usize, what: &'static str) -> Result<()> {
+    let more = values.saturating_sub(buffer.len());
+    if more == 0 {
+        return Ok(());
+    }
+    the_room_for(buffer, more, what)?;
+    buffer.resize(values, 0.0);
+    Ok(())
+}
+
+/// Which variants of the block the filter keeps, with the window it leaves
+/// behind.
+///
+/// The variants are settled `at_a_time` at a time. The r² of a whole set of
+/// them against the whole window is one call, over one set of the products
+/// of `docs/specs/ld.md`, and the r² of the variants of the set against one
+/// another is one more: what cannot be done that way is a candidate against
+/// the variants kept inside its own set, since whether one of them is kept
+/// decides what the next one is compared with, so those are read out of the
+/// r² of the set in the order of the variants.
+///
+/// `at_a_time` changes no result, which
+/// `the_variants_kept_do_not_change_with_the_variants_settled_at_a_time`
+/// asserts at 1, at 3 and at 256: the rule reads the positions of the
+/// variants and never the end of a set or of a block, and the six sums of a
+/// pair are whole numbers that an `f64` holds exactly, so a pair has the
+/// same r² in whichever set it is worked out.
+/// [`THE_VARS_SETTLED_AT_A_TIME`] is what the filter passes.
 ///
 /// `chroms` and `positions` are the columns of the block, which
 /// [`Block::check`] has found to hold one value for each of its variants.
 ///
 /// # Errors
 ///
-/// What [`LdDosages::of_block`](crate::ld::LdDosages::of_block) and
+/// [`Error::BlocksDoNotFitTogether`] when the block holds other individuals
+/// or another ploidy than the variants of the window were read in,
+/// [`Error::LdNoMemory`] when this machine does not give the memory of the
+/// window, of the genotypes of a set or of the r² of one, and what
+/// [`LdDosages::of_block`](crate::ld::LdDosages::of_block) and
 /// [`r2_between`](crate::ld::r2_between) refuse.
 fn the_variants_that_stay(
     filter: &LdFilter,
     block: &Block,
     chroms: &[u32],
     positions: &[u64],
+    at_a_time: usize,
 ) -> Result<TheBlockSettled> {
-    let dosages = LdDosages::of_block(block, &[])?;
-    let at_a_time = THE_VARS_SETTLED_AT_A_TIME.min(block.num_vars).max(1);
-    let mut window = TheWindow {
-        held: &filter.window,
-        added: Vec::new(),
-        left: 0,
-    };
-    let mut keep = Vec::with_capacity(block.num_vars);
-    let mut first = 0;
+    let alleles_per_var = block.alleles_per_var()?;
+    // The block is settled against a window of its own, which the filter
+    // takes over once every variant of the block has been settled, so a
+    // block that is refused leaves the window of the filter as it was.
+    let mut window = filter.window.copy_of()?;
+    window.takes_the_block(block)?;
+    let at_a_time = at_a_time.min(block.num_vars).max(1);
+    // The buffers of a set, asked for once and written over by every set of
+    // the block: the genotypes of a set are at most the genotypes of the
+    // block, which are in memory, and the r² of the pairs of a set of 256
+    // variants is 65536 values, 512 KB. A count that saturates here is more
+    // memory than any machine gives, so it comes back as the error of the
+    // memory and never as a buffer of the wrong size.
+    let mut keep: Vec<bool> = Vec::new();
+    the_room_for(
+        &mut keep,
+        block.num_vars,
+        "the variants of the block that stay",
+    )?;
+    let mut gts_of_the_set: Vec<i8> = Vec::new();
+    the_room_for(
+        &mut gts_of_the_set,
+        at_a_time.saturating_mul(alleles_per_var),
+        "the genotypes of a set of candidates",
+    )?;
+    let mut dropped = the_buffer_of(false, at_a_time, "the candidates of a set that are dropped")?;
+    let mut r2_of_the_set = the_buffer_of(
+        0.0,
+        at_a_time.saturating_mul(at_a_time),
+        "the r² of the pairs of a set",
+    )?;
+    let mut r2_against_the_window: Vec<f64> = Vec::new();
+    let mut first: usize = 0;
     for (chroms_of_the_set, positions_of_the_set) in
         chroms.chunks(at_a_time).zip(positions.chunks(at_a_time))
     {
         let num_vars = chroms_of_the_set.len();
-        let set = dosages.rows(first, num_vars)?;
-        // The variants of the window are the same for every variant of the
-        // set, so each of them is one call over the whole set: which of
-        // them drop a candidate cannot change with what the set does.
-        let mut dropped = vec![false; num_vars];
+        // The genotypes of the set are cut out of the block by the sizes
+        // the block states, which `Block::check` has found to hold.
+        let from = first.saturating_mul(alleles_per_var);
+        let to = from.saturating_add(num_vars.saturating_mul(alleles_per_var));
+        let Some(gts_of_the_variants) = block.gts.get(from..to) else {
+            return Err(Error::BlockArrayOfAnotherSize {
+                array: "gts",
+                found: block.gts.len(),
+                expected: to,
+            });
+        };
+        gts_of_the_set.clear();
+        gts_of_the_set.extend_from_slice(gts_of_the_variants);
+        let set = the_dosages_of(
+            &mut gts_of_the_set,
+            num_vars,
+            block.num_individuals,
+            block.ploidy,
+        )?;
+        // Which of the variants of the window drop a candidate cannot
+        // change with what the set does, so the whole window is read
+        // against the whole set in one call.
+        dropped.fill(false);
         if let (Some(chrom), Some(pos)) = (chroms_of_the_set.first(), positions_of_the_set.first())
         {
             // A variant of the window that the first variant of the set has
@@ -746,26 +979,47 @@ fn the_variants_that_stay(
             // rise and the chromosomes do not come back.
             window.leave_behind(*chrom, *pos, filter.max_dist);
         }
-        let mut r2_of_a_variant_of_the_window = vec![0.0; num_vars];
-        for kept in window.live() {
-            r2_between(&kept.dosages, &set, &mut r2_of_a_variant_of_the_window)?;
-            for ((dropped_it, r2), (chrom, pos)) in dropped
-                .iter_mut()
-                .zip(&r2_of_a_variant_of_the_window)
-                .zip(chroms_of_the_set.iter().zip(positions_of_the_set))
+        if window.num_vars() > 0 {
+            let values = window.num_vars().saturating_mul(num_vars);
+            the_buffer_grown_to(
+                &mut r2_against_the_window,
+                values,
+                "the r² of a set of candidates against the window",
+            )?;
+            let of_the_window = window.dosages()?;
+            let Some(r2_of_the_window) = r2_against_the_window.get_mut(..values) else {
+                // The buffer was grown to that many values, so this is not
+                // reached.
+                return Err(Error::LdR2OfAnotherSize {
+                    num_values: r2_against_the_window.len(),
+                    num_vars_of_a: window.num_vars(),
+                    num_vars_of_b: num_vars,
+                });
+            };
+            r2_between(&of_the_window, &set, r2_of_the_window)?;
+            for ((r2_of_a_variant, chrom_of_it), pos_of_it) in r2_of_the_window
+                .chunks_exact(num_vars)
+                .zip(&window.chroms)
+                .zip(&window.poss)
             {
-                let within = *chrom == kept.chrom
-                    && pos
-                        .checked_sub(kept.pos)
-                        .is_some_and(|dist| dist <= filter.max_dist);
-                if !within {
-                    // The variants after this one are further ahead or on a
-                    // later chromosome, and this variant of the window is
-                    // behind the window of all of them.
-                    break;
-                }
-                if *r2 > filter.max_allowed_r2 {
-                    *dropped_it = true;
+                for ((dropped_it, r2), (chrom, pos)) in dropped
+                    .iter_mut()
+                    .zip(r2_of_a_variant)
+                    .zip(chroms_of_the_set.iter().zip(positions_of_the_set))
+                {
+                    let within = chrom == chrom_of_it
+                        && pos
+                            .checked_sub(*pos_of_it)
+                            .is_some_and(|dist| dist <= filter.max_dist);
+                    if !within {
+                        // The variants after this one are further ahead or
+                        // on a later chromosome, and this variant of the
+                        // window is behind the window of all of them.
+                        break;
+                    }
+                    if *r2 > filter.max_allowed_r2 {
+                        *dropped_it = true;
+                    }
                 }
             }
         }
@@ -773,10 +1027,20 @@ fn the_variants_that_stay(
         // compared with the variants kept inside it: at most 256 variants
         // are settled at a time, so this is 65536 values, 512 KB, whatever
         // the size of the block.
-        let mut r2_of_the_set = vec![0.0; num_vars.saturating_mul(num_vars)];
-        r2_between(&set, &set, &mut r2_of_the_set)?;
+        let values = num_vars.saturating_mul(num_vars);
+        let Some(r2_of_the_pairs) = r2_of_the_set.get_mut(..values) else {
+            // The buffer holds the square of the variants a set settles at
+            // a time and a set is at most that many, so this is not
+            // reached.
+            return Err(Error::LdR2OfAnotherSize {
+                num_values: r2_of_the_set.len(),
+                num_vars_of_a: num_vars,
+                num_vars_of_b: num_vars,
+            });
+        };
+        r2_between(&set, &set, r2_of_the_pairs)?;
         let mut after_it = dropped.as_mut_slice();
-        for ((r2_of_the_variant, (chrom, pos)), variant) in r2_of_the_set
+        for ((r2_of_the_variant, (chrom, pos)), variant) in r2_of_the_pairs
             .chunks_exact(num_vars)
             .zip(chroms_of_the_set.iter().zip(positions_of_the_set))
             .zip(0..num_vars)
@@ -816,21 +1080,24 @@ fn the_variants_that_stay(
                     *dropped_later = true;
                 }
             }
-            window.push(TheVariantOfTheWindow {
-                chrom: *chrom,
-                pos: *pos,
-                dosages: set.rows(variant, 1)?,
-            });
+            // The genotypes of the variant, which the window keeps and
+            // builds its dosages from when the next set arrives.
+            let of_it = variant.saturating_mul(alleles_per_var);
+            let Some(gts_of_it) =
+                gts_of_the_variants.get(of_it..of_it.saturating_add(alleles_per_var))
+            else {
+                return Err(Error::BlockArrayOfAnotherSize {
+                    array: "gts",
+                    found: block.gts.len(),
+                    expected: to,
+                });
+            };
+            window.push(*chrom, *pos, gts_of_it)?;
         }
         first = first.saturating_add(num_vars);
     }
     let kept = keep.iter().filter(|stays| **stays).count();
-    Ok(TheBlockSettled {
-        keep,
-        kept,
-        left: window.left,
-        added: window.added,
-    })
+    Ok(TheBlockSettled { keep, kept, window })
 }
 
 /// A reader that gives the variants of its source that pass one filter.
