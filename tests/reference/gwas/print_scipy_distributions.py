@@ -12,13 +12,13 @@ version of either: scipy's `betainc` and `t.sf` are asserted to 1e-12 and 1e-10
 of themselves, and numpy's generator is what the arguments are drawn with, so
 another version of either would print other numbers.
 
-What it prints is the four `const` blocks of `mod distributions` of
+What it prints is the five `const` blocks of `mod distributions` of
 crates/popnei/src/gwas.rs, in the order they are there, ready to be pasted
 over them. Every number is Python's `repr`, which gives the fewest digits that
 read the same `f64` back; clippy refuses an `f64` literal of 17 digits, which
 is what a fixed 17 digit format would print.
 
-The three blocks are:
+The blocks are:
 
 - `SCIPY_CHI2_SF_1DF`, 16 pairs of `x` and `chi2.sf(x, 1)`. They are already in
   gwas.rs, printed again here so that the whole test file can be got from
@@ -26,8 +26,8 @@ The three blocks are:
   differs is a scipy or a numpy that is not the one above.
 - `BETA_X` and `SCIPY_BETAINC`, 10 values of `x` and, for each of the four
   pairs `(a, b)` the module uses, `betainc(a, b, x)`.
-- `T_VALUES` and `SCIPY_T_SF_TWO_SIDED`, 13 values of `t` and, for each of the
-  three degrees of freedom, `2 * t.sf(|t|, df)`.
+- `T_VALUES` and `SCIPY_T_SF_TWO_SIDED`, 15 values of `t` and, for each of the
+  five degrees of freedom, `2 * t.sf(|t|, df)`.
 
 The arguments are pyNei's, from `test_distributions` of its `test/test_gwas.py`:
 the incomplete beta over `x` drawn uniformly in (0, 1), the Student t over
@@ -39,6 +39,13 @@ square over a sample of itself with 30, 50 and 100 added. pyNei asserts over
 incomplete beta of the pair `(98.5, 0.5)`, the one a Student t with 197 degrees
 of freedom uses, through the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)`, which is
 the second of the two branches of the function.
+
+Two arguments of the Student t are not pyNei's and are here for what they catch.
+The degrees of freedom 997 and 9997 are the ones "How it is verified" of the
+spec now names, panels of 1000 and of 10000 individuals, because the error of
+the function grows with them. The `t` of 1e-07 and 1e-05 are below the
+`sqrt(df * eps)` where `x = df / (df + t * t)` rounds to 1.0 and a `1 - x` read
+back from it has lost every digit it had.
 """
 
 import numpy
@@ -49,9 +56,12 @@ SCIPY_VERSION = "1.18.1"
 NUMPY_VERSION = "2.5.3"
 
 # The four pairs of "How it is verified" of "The two distributions" of
-# docs/specs/gwas.md, and the three degrees of freedom of the same section.
+# docs/specs/gwas.md, and the five degrees of freedom of the same section.
 BETA_PAIRS = [(0.5, 0.5), (10.0, 0.5), (98.5, 0.5), (2.5, 7.0)]
-DEGREES_OF_FREEDOM = [5.0, 17.0, 197.0]
+DEGREES_OF_FREEDOM = [5.0, 17.0, 197.0, 997.0, 9997.0]
+# The `t` added to the sample: the two that round `df / (df + t * t)` to 1.0,
+# and the three of the spec.
+ADDED_T = [1e-07, 1e-05, 10.0, 20.0, 40.0]
 
 
 def check_versions() -> None:
@@ -75,10 +85,10 @@ def check_versions() -> None:
 def spaced_ranks(sample: numpy.ndarray, step: int) -> numpy.ndarray:
     """The sample sorted and read every `step` ranks, with its largest at the end."""
     ordered = numpy.sort(sample)
-    taken = ordered[::step]
-    if taken[-1] != ordered[-1]:
-        taken = numpy.concatenate([taken, ordered[-1:]])
-    return taken
+    ranks = list(range(0, len(ordered), step))
+    if ranks[-1] != len(ordered) - 1:
+        ranks.append(len(ordered) - 1)
+    return ordered[ranks]
 
 
 def rust_number(value: float) -> str:
@@ -136,9 +146,9 @@ def print_beta() -> None:
 
 
 def print_t() -> None:
-    """The 13 values of `t` and `2 * t.sf(|t|, df)` at each of the three `df`."""
+    """The 15 values of `t` and `2 * t.sf(|t|, df)` at each of the five `df`."""
     sample = numpy.random.default_rng(0).standard_normal(1000) * 3
-    t = numpy.concatenate([spaced_ranks(sample, 111), [10.0, 20.0, 40.0]])
+    t = numpy.concatenate([spaced_ranks(sample, 111), ADDED_T])
     print_row("T_VALUES", t)
     print()
     rows = [2 * stats.t.sf(numpy.abs(t), df) for df in DEGREES_OF_FREEDOM]
