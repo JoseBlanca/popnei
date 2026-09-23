@@ -33,10 +33,12 @@ license = "MIT"
 # `default = ["blas"]` of its own, so the default build is unchanged.
 popnei = { path = "crates/popnei", version = "0.1.0", default-features = false }
 popnei-linalg = { path = "crates/popnei-linalg", version = "0.1.0", default-features = false }
-# The three routines of BLAS and LAPACK that crates/popnei-linalg calls
-# natively, dsyrk, dsyevd and dgemm: the product of a matrix with itself,
-# the eigendecomposition of a symmetric matrix and the product of two
-# matrices, which docs/specs/linalg.md names one by one. `blas` and
+# The six routines of BLAS and LAPACK that crates/popnei-linalg calls
+# natively, dsyrk, dsyevd, dgemm, dpotrf, dpotrs and dpotri: the product
+# of a matrix with itself, the eigendecomposition of a symmetric matrix,
+# the product of two matrices, the Cholesky factorization of a symmetric
+# positive definite matrix and the solve and the inverse that come off
+# that factorization, which docs/specs/linalg.md names one by one. `blas` and
 # `lapack` hold the declaration of each routine and nothing else, one
 # `unsafe fn` over slices whose lengths nothing checks against the
 # dimensions, which is why those calls live in a crate of their own and
@@ -96,10 +98,11 @@ faer = { version = "0.24.4", default-features = false, features = [
 # alone, to turn on the feature `wasm-simd128-enable`, without which its
 # products do not use the 128 bit vector instructions of WebAssembly. This
 # feature is what puts them in: gemm's kernels carry their own annotation,
-# so the flag `-C target-feature=+simd128`, which is Open 1 of
-# docs/specs/linalg.md and is not set anywhere, gives a module that is the
-# same file byte for byte on rustc 1.98, as
-# docs/reports/pca-measurement.md measured on 22 September 2026. With the
+# so the flag `-C target-feature=+simd128` adds nothing to the products,
+# which docs/reports/pca-measurement.md measured on 22 September 2026. That
+# flag is set for both wasm targets by .cargo/config.toml, where the dists
+# module needs it and not these products; "The wasm builds and the vector
+# instructions" of docs/specs/linalg.md has the whole of it. With the
 # feature the analysis of 100000 variants x 1000 individuals takes 4.500 s
 # under node 26 and without it 7.066 s.
 #

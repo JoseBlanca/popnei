@@ -355,6 +355,17 @@ and not for WebAssembly. So task 4.3 of `docs/plans/pca.md`, which sets the flag
 in the two build commands, would change no built file, and the owner's answer to
 Open 1 changes no time.
 
+That stopped being true later the same day, and the paragraph above is kept as
+it was measured. The commit `7f3b6cc` put the bit count of `sums_of_two` of the
+`dists` module behind `cfg(target_feature = "simd128")`, with the flag set for
+both wasm targets in `.cargo/config.toml` so that it compiles, and from then on
+the flag changes the module: built again on 23 September 2026 on the same
+machine, the WebAssembly of `crates/popnei-js` in release is 2249734 bytes with
+the flag and 2246645 without it, with different md5 sums. What the paragraph
+says of the products still holds, since nothing of the linear algebra reads that
+feature. "The wasm builds and the vector instructions" of `docs/specs/linalg.md`
+carries both.
+
 **The cargo feature is what the targets of the spec are about.** With
 `wasm-simd128-enable` taken off the `gemm` of the workspace manifest, a build
 that popnei does not ship, the same analysis takes 7.066 s for the 100000 and

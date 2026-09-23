@@ -24,7 +24,7 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::{TheSecondOperand, product};
+use popnei_linalg::{TheFirstOperand, TheSecondOperand, product};
 
 use crate::block::Block;
 use crate::block::BlockReader;
@@ -777,11 +777,13 @@ impl TheSumsOfThePairs {
                 values: of_the_others,
                 cols,
             };
-            product(of_the_variants, rows, inner, of_the_others, into).map_err(|source| {
-                Error::LdLinalg {
-                    operation: sum,
-                    source,
-                }
+            let of_the_variants = TheFirstOperand::ByTheRowsOfTheResult {
+                values: of_the_variants,
+                rows,
+            };
+            product(of_the_variants, inner, of_the_others, into).map_err(|source| Error::LdLinalg {
+                operation: sum,
+                source,
             })
         };
         sum_of(&a.called, &b.called, &mut num_individuals, "n")?;

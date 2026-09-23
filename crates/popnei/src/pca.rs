@@ -27,7 +27,9 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::num::NonZeroUsize;
 
-use popnei_linalg::{Eigen, TheSecondOperand, add_self_product_lower, eigh_lower, product};
+use popnei_linalg::{
+    Eigen, TheFirstOperand, TheSecondOperand, add_self_product_lower, eigh_lower, product,
+};
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
@@ -668,8 +670,10 @@ fn the_weights_of_a_second_pass<R: BlockReader>(
         // block whose rows all had no variance has no row here and writes
         // nothing.
         product(
-            &standardized,
-            kept,
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: &standardized,
+                rows: kept,
+            },
             num_individuals,
             TheSecondOperand::ByTheValuesSummedOver {
                 values: after.scaled_vectors,
@@ -1440,8 +1444,10 @@ fn the_components_of_the_product_of_the_traits(
     }
     let mut projections = vec![0.0; num_values_of(num_rows, num_comps)];
     product(
-        standardized,
-        num_rows,
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: standardized,
+            rows: num_rows,
+        },
         num_cols,
         TheSecondOperand::ByTheValuesSummedOver {
             values: &weights_by_trait,
@@ -1486,8 +1492,10 @@ fn the_components_of_the_product_of_the_rows(
     let vectors_by_row = the_scaled_vectors_of(eigen, num_rows, num_comps);
     let mut weights_by_trait = vec![0.0; num_values_of(num_cols, num_comps)];
     product(
-        standardized,
-        num_cols,
+        TheFirstOperand::ByTheRowsOfTheResult {
+            values: standardized,
+            rows: num_cols,
+        },
         num_rows,
         TheSecondOperand::ByTheValuesSummedOver {
             values: &vectors_by_row,
