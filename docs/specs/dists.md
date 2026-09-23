@@ -586,6 +586,13 @@ last position of its variants, both included; and `pass_stats`, the
 `PassStats` of `docs/specs/variant.md` that every result of a consumer
 has.
 
+Each `Distances` of a `PopDists` carries that same `pass_stats`, and each
+`Distances` of TypeScript the same `passStats`: the measures come out of
+one pass, and a user who takes one of them out of the result keeps the
+counts of the pass that gave it, as they do with the Kosman distances.
+The `pass_stats` of a `Distances` is `None` only in one a user built
+themselves from distances that were calculated elsewhere.
+
 `Distances` gains one field for this item, `standard_errors`, a read only
 float64 array with one value for each pair in the order of
 `dist_vector`, NaN where there is none, and `None` when the calculation
