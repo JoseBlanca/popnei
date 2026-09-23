@@ -358,7 +358,7 @@ else.
 
 ### Its tasks
 
-- [ ] 3.1 `thin_qr`: `dgeqrf` and then `dorgqr` on a column major copy of
+- [x] 3.1 `thin_qr`: `dgeqrf` and then `dorgqr` on a column major copy of
       the matrix in `blas.rs`, which is the reference's
       `thin_qr_by_transposing` and not its `thin_qr`, and faer's `qr` with
       `compute_thin_Q` and `thin_R` in `faer.rs`, both writing the two

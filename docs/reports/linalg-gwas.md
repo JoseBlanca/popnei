@@ -15,8 +15,8 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is done, reviewed and fixed. Work package 3 has not
-started.
+reviewed and fixed, and work package 2 is done, reviewed and fixed, and work package 3 is under
+way with task 3.1 done.
 Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
@@ -404,6 +404,38 @@ pytest` `257 passed`. Over the whole work package the crate went from 47
 tests to 93 and from 42 to 90.
 
 That subagent used 229755 tokens for the fixes.
+
+## Work package 3: the thin QR, the triangular solve and the rank
+
+### Task 3.1, the thin QR
+
+`75855dc`. `thin_qr` above both backends: `dgeqrf` and then `dorgqr` on a
+column major copy of the design in the BLAS one, which is the route the
+spec chose, and faer's `qr` with `compute_thin_Q` and `thin_R` on the
+buffer as it lies in the other. Nine tests, which fix the sign of each
+column of `q` by making the diagonal of `r` positive before comparing,
+since the sign is the backend's. The crate went from 93 tests to 102 and
+from 90 to 99 on faer, and every other check is what it was.
+
+**Deliverable 4 wanted a measurement, and it says the fast route is the
+one that runs.** On a design of 10000 x 5, the best of 20 runs, `thin_qr`
+takes 0.207 ms on Accelerate and 0.288 ms on faer, against the 0.165 ms
+and 0.256 ms that "What the seven of the GWAS cost" measured of the
+routines alone. The route this task did not take, `dgelqf` on the buffer
+as it lies, is 2.98 ms, so there is no mistaking one for the other. What
+the crate adds to the spec's numbers is the walk over the 50000 values of
+the design for one that is not finite and the two buffers it allocates for
+the caller, which is the same kind of difference "Speed" of the spec
+already records for `add_self_product_lower`. `grep -c dgelqf` of the BLAS
+backend is 0, which is the other half of that deliverable.
+
+The task made the mutation the orchestrator asked for: with `rows` and
+`cols` exchanged in the call to a backend, four of the nine tests fail on
+each, LAPACK refusing an argument of `dorgqr` and faer giving other
+numbers; the other five are the ones the crate refuses before a backend
+runs.
+
+That subagent used 195434 tokens.
 
 ## What is waiting on the owner
 
