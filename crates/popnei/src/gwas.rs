@@ -2262,6 +2262,42 @@ const LOG_DELTA_STEP: f64 = 0.2;
 /// grid leaves to 1.156e-13.
 const GOLDEN_SECTION_STEPS: usize = 60;
 
+/// How near the smallest value of the criterion over the grid has to be
+/// to the largest for the two variances to be arbitrary: the points of the
+/// grid times the distance from 1 to the next `f64`, as a share of the
+/// largest value's own size.
+///
+/// It is the test of **Open 3** of `docs/specs/gwas.md`, one comparison at
+/// the end of the grid. It is not
+/// [`the_share_that_is_nothing`], which is a share of the scale a sum was
+/// formed from and is about a quantity that cancelled to nothing; this is
+/// about a function that never varied, and what it counts is the points
+/// that were evaluated and not the individuals.
+///
+/// Measured on 24 September 2026 on a kinship close to a multiple of the
+/// identity: the criterion spans 1.1e-12 over the 101 points, where this
+/// allows 2.2e-14 of a value of about 221, which is 4.9e-12.
+const THE_SPAN_OF_A_FLAT_CRITERION: f64 = LOG_DELTA_POINTS as f64 * f64::EPSILON;
+
+/// Whether the restricted maximum likelihood told the two variances of a
+/// trait apart.
+///
+/// For a kinship close to a multiple of the identity the model is the
+/// ordinary linear one whatever the split between them, so the criterion is
+/// flat and which point of the grid wins is rounding. `beta` and `p_value`
+/// are untouched, the test being scale free; what is arbitrary is exactly
+/// the two variances and the heritability, which is what a user reads a
+/// heritability off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TheSplitOfTheTrait {
+    /// The criterion has a minimum, and the two variances are the fit's.
+    Identified,
+    /// The criterion is flat over the whole grid: the study is still given
+    /// and every variant still answered, and the two variances and the
+    /// heritability come back as nothing.
+    NotIdentified,
+}
+
 /// The ratio a golden section step shrinks its bracket by,
 /// `(sqrt(5) - 1) / 2`, which is `golden` of `_reml_delta` of
 /// `pynei/gwas.py`.
@@ -2546,20 +2582,36 @@ impl<'a> RemlSearch<'a> {
     /// number that was kept, and the spec asks for pyNei's search step for
     /// step because the two variances it gives are GMMAT's.
     ///
+    /// What comes back beside the ratio is whether the grid told the two
+    /// variances apart at all, which is the one comparison **Open 3** of
+    /// `docs/specs/gwas.md` asks for: the smallest value of the criterion
+    /// against the largest, over the same 101 points the grid already
+    /// evaluated, so it costs nothing.
+    ///
     /// # Errors
     ///
     /// Whatever [`RemlSearch::fit_at`] fails with, at any of the 221
     /// evaluations.
-    fn the_delta(&mut self) -> Result<f64> {
+    fn the_delta(&mut self) -> Result<(f64, TheSplitOfTheTrait)> {
         let mut best_at = 0_usize;
         let mut smallest = f64::INFINITY;
+        let mut largest = f64::NEG_INFINITY;
         for at in 0..LOG_DELTA_POINTS {
             let value = self.criterion(the_log_delta_at(at))?;
+            largest = largest.max(value);
             if value < smallest {
                 smallest = value;
                 best_at = at;
             }
         }
+        // The criterion is negative on the panels and its size is what the
+        // share is of, so the largest absolute value of the two is what the
+        // span is measured against.
+        let of_its_own_size = smallest.abs().max(largest.abs());
+        let split = match largest - smallest <= THE_SPAN_OF_A_FLAT_CRITERION * of_its_own_size {
+            true => TheSplitOfTheTrait::NotIdentified,
+            false => TheSplitOfTheTrait::Identified,
+        };
         let mut low = the_log_delta_at(best_at.saturating_sub(1));
         let mut high = the_log_delta_at(
             best_at
@@ -2575,7 +2627,7 @@ impl<'a> RemlSearch<'a> {
                 low = from_the_top;
             }
         }
-        Ok(((low + high) / 2.0).exp())
+        Ok((((low + high) / 2.0).exp(), split))
     }
 }
 
@@ -2619,6 +2671,12 @@ pub(crate) struct LinearMixedModel {
     /// The genetic variance over the sum of the two, which is the share of
     /// the trait's variance that the kinship explains.
     heritability: f64,
+    /// Whether the criterion of the search told the two variances apart.
+    /// The three numbers above are the fit's own whatever this says, and
+    /// the projection matrix is built from them either way, because a
+    /// covariance of the right shape is needed to test a variant; what it
+    /// decides is whether a user is given them.
+    split: TheSplitOfTheTrait,
     /// The projection matrix `p`, `num_individuals` x `num_individuals`,
     /// row after row, which every variant is tested through.
     projection: Vec<f64>,
@@ -2778,7 +2836,7 @@ impl LinearMixedModel {
             num_coefs,
             degrees_of_freedom_of_the_null,
         );
-        let delta = search.the_delta()?;
+        let (delta, split) = search.the_delta()?;
         // The search leaves the weights and the effects at whichever point
         // it evaluated last, so the fit is taken again at the `delta` it
         // gave, as `_LMMNull` of `pynei/gwas.py` does.
@@ -2828,6 +2886,7 @@ impl LinearMixedModel {
             genetic_variance,
             residual_variance,
             heritability,
+            split,
             largest_of_the_projection: projection
                 .chunks_exact(num_individuals.max(1))
                 .zip(0..)
@@ -2851,13 +2910,25 @@ impl LinearMixedModel {
     /// variance that the kinship explains.
     #[must_use]
     pub(crate) fn null_model(&self, test: TestType) -> NullModel {
+        // A fit that could not tell the two variances apart gives none of
+        // the three numbers built from them, which is the meanwhile of
+        // **Open 3** of `docs/specs/gwas.md`: what it would give instead is
+        // decided by the last bit of an eigenvalue, and a heritability of
+        // 0.967 from one seed and 6.5e-5 from another looks reliable and is
+        // not. It is `None` and not 0 and not NaN, because `None` is what
+        // the linear model gives for the two numbers it has not, and a user
+        // meets one way of saying that a number is not there.
+        let of_the_split = match self.split {
+            TheSplitOfTheTrait::Identified => Some(()),
+            TheSplitOfTheTrait::NotIdentified => None,
+        };
         NullModel {
             model: GwasModel::Lmm,
             test,
             covariate_effects: self.coefs.clone(),
-            residual_variance: Some(self.residual_variance),
-            genetic_variance: Some(self.genetic_variance),
-            heritability: Some(self.heritability),
+            residual_variance: of_the_split.map(|()| self.residual_variance),
+            genetic_variance: of_the_split.map(|()| self.genetic_variance),
+            heritability: of_the_split.map(|()| self.heritability),
             num_individuals: self.num_individuals,
         }
     }
@@ -6838,6 +6909,12 @@ mod lmm {
     /// The `heritability` is asserted with them because it is the only
     /// number of `NullModel` that is built from the two variances rather
     /// than read off the fit.
+    ///
+    /// That all three are given at all is the other end of the check of
+    /// **Open 3** of `docs/specs/gwas.md`: this kinship tells the two
+    /// variances apart, so the fit reports them, where the identity of
+    /// [`lmm::a_kinship_that_does_not_tell_the_variances_apart_gives_none_of_them`]
+    /// does not and it reports none of them.
     #[test]
     fn the_null_of_the_panel_is_gmmats_two_variances_and_three_effects() {
         let fitted = the_null_of_the_panel("panel_called");
@@ -7325,6 +7402,92 @@ mod lmm {
 
     /// The positions of those six among the individuals the reader gives.
     const THE_INDIVIDUALS_OF_SIX: [usize; 6] = [0, 1, 2, 3, 4, 5];
+
+    /// The trait of the worked example of `docs/specs/gwas.md`, which the
+    /// design and the one variant of the fixture below leave something of:
+    /// the fixture of the flat criterion needs a trait the model can fit,
+    /// where [`THE_TRAIT_OF_SIX`] is one it explains exactly.
+    const THE_WORKED_TRAIT_OF_SIX: [f64; 6] = [2.0, 3.0, 5.0, 4.0, 4.0, 7.0];
+
+    /// A kinship that does not tell the two variances apart gives the study
+    /// with the three fields of those variances empty, which is the
+    /// meanwhile of **Open 3** of `docs/specs/gwas.md`.
+    ///
+    /// The identity is such a kinship, and it is what a user passes to mean
+    /// no relatedness: with it the model is the ordinary linear one
+    /// whatever the split between the genetic variance and the residual
+    /// one, so the restricted maximum likelihood has nothing to choose
+    /// between them and its criterion is flat over the whole grid. What the
+    /// study gave before this, measured on 25 September 2026 on this
+    /// fixture: a `genetic_variance` of 0.00022769126788113066 and a
+    /// `heritability` of 6.830738036433921e-05, which reads as a small
+    /// number and is an arbitrary one. Perturbing such a kinship by 1e-15
+    /// gave heritabilities of 6.5e-5, 7.1e-5 and 0.967 over three seeds.
+    ///
+    /// The study is still given and every variant still answered: `beta`
+    /// and `p_value` do not depend on the split, because the test is scale
+    /// free and the model is the linear one here, and they are what the
+    /// user mostly came for. The variant is the `v0` of the worked example,
+    /// whose effect the spec gives as 1.5, so what this asserts of the
+    /// answers is the spec's own number and not popnei's.
+    ///
+    /// The three fields are `None` and not 0 and not NaN: `None` is what
+    /// the linear model gives for the two it has not, so a user meets one
+    /// way of saying that a number is not there and not three.
+    #[test]
+    fn a_kinship_that_does_not_tell_the_variances_apart_gives_none_of_them() {
+        let mut vcf = String::from(THE_HEADER_OF_SIX);
+        vcf.push_str("1\t1000\tv0\tA\tT\t.\t.\t.\tGT");
+        for genotype in ["0/0", "0/1", "1/1", "0/0", "0/1", "1/1"] {
+            vcf.push('\t');
+            vcf.push_str(genotype);
+        }
+        vcf.push('\n');
+        let study = GwasInput {
+            phenotype: &THE_WORKED_TRAIT_OF_SIX,
+            trait_type: TraitType::Continuous,
+            design: &THE_DESIGN_OF_SIX,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_SIX),
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_SIX,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study over an identity kinship: {error}"),
+        };
+
+        let null = &result.null_model;
+        assert_eq!(null.model, GwasModel::Lmm, "the model that was fitted");
+        assert_eq!(
+            null.genetic_variance, None,
+            "the genetic variance of a fit that cannot tell the two apart"
+        );
+        assert_eq!(
+            null.residual_variance, None,
+            "the residual variance of such a fit"
+        );
+        assert_eq!(null.heritability, None, "the heritability of such a fit");
+        assert_eq!(
+            null.covariate_effects.len(),
+            2,
+            "the effects are the fit's own and are given"
+        );
+        assert_eq!(result.num_vars, 1, "the variants of the fixture");
+        let beta = result.beta[0];
+        assert!(
+            (beta - 1.5).abs() <= 1e-12,
+            "the effect of v0 is {beta} and the worked example gives 1.5, which the              split between the two variances cannot move"
+        );
+        let p_value = result.p_value[0];
+        assert!(
+            (0.0..=1.0).contains(&p_value) && p_value.is_finite(),
+            "the p-value of v0 is {p_value}"
+        );
+    }
 
     /// A variant that leaves nothing of the trait has no answer under the
     /// Wald test, which is the third place the meanwhile of **Open 2** of

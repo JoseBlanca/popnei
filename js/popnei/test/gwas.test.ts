@@ -812,6 +812,60 @@ test("the kinship is read in the order the source has the individuals", () => {
   assert.deepEqual([...backwards.stats.se], [...inTheSourcesOrder.stats.se]);
 });
 
+test("a kinship that does not tell the two variances apart gives none of them", () => {
+  // The identity is what a user passes to mean no relatedness, and with it
+  // the model is the ordinary linear one whatever the split between the
+  // genetic variance and the residual one: the criterion of the search is
+  // flat over the whole grid and which point wins is rounding. The three
+  // fields are `undefined`, which is what the linear model gives for the
+  // two it has not, and not 0 and not NaN. The rows are still the worked
+  // example's, because the test is scale free. It is the meanwhile of
+  // Open 3 of `docs/specs/gwas.md`, and the test below is its other end.
+  const result = gwasOf(WORKED_EXAMPLE, {
+    phenotype: THE_TRAIT,
+    trait: "continuous",
+    covariates: THE_COVARIATE,
+    kinship: theKinshipOfTheWorkedExample(),
+  });
+
+  assert.equal(result.nullModel.model, "lmm");
+  assert.equal(result.nullModel.geneticVariance, undefined);
+  assert.equal(result.nullModel.residualVariance, undefined);
+  assert.equal(result.nullModel.heritability, undefined);
+  assert.equal(result.nullModel.numIndividuals, 6);
+  for (const { id, beta, pValue } of THE_ROWS) {
+    const at = rowOf(result, id);
+    if (Number.isNaN(beta)) {
+      assert.ok(Number.isNaN(result.stats.beta[at] as number), `beta of ${id}`);
+      continue;
+    }
+    assertWithin(
+      result.stats.beta[at] as number,
+      beta,
+      OF_THE_WORKED_EXAMPLE,
+      `the effect of ${id}`,
+    );
+    assertWithin(
+      result.stats.pValue[at] as number,
+      pValue,
+      OF_THE_WORKED_EXAMPLE,
+      `the p-value of ${id}`,
+    );
+  }
+});
+
+test("the panel tells the two variances apart and gives all three", () => {
+  // The other end of the test above: a rule that gave nothing wherever a
+  // mixed model was fitted would pass that one and take the heritability
+  // away from every user. The numbers are GMMAT's and are asserted where
+  // the six literals are.
+  const result = theMixedStudyOfThePanel();
+
+  assert.notEqual(result.nullModel.geneticVariance, undefined);
+  assert.notEqual(result.nullModel.residualVariance, undefined);
+  assert.notEqual(result.nullModel.heritability, undefined);
+});
+
 test("a tested individual the kinship has not is refused by name", () => {
   assert.throws(
     () =>

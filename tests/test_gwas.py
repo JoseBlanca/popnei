@@ -1570,6 +1570,71 @@ def test_the_kinship_is_read_in_the_order_the_source_has_the_individuals() -> No
     assert list(written_backwards.stats["se"]) == list(in_the_sources_order.stats["se"])
 
 
+def test_a_kinship_that_does_not_tell_the_variances_apart_gives_none_of_them(
+    worked_example: pathlib.Path,
+) -> None:
+    """A study over an identity kinship gives its rows and no variances.
+
+    The identity is what a user passes to mean no relatedness, and with it
+    the model is the ordinary linear one whatever the split between the
+    genetic variance and the residual one: the restricted maximum likelihood
+    has nothing to choose between them and its criterion is flat over the
+    whole grid, so which point wins is rounding. What the study gave before
+    this, on 25 September 2026, was a ``heritability`` of 6.83e-05, which
+    reads as a small number and is an arbitrary one; perturbing such a
+    kinship by 1e-15 gave 6.5e-5, 7.1e-5 and 0.967 over three seeds.
+
+    The three fields are ``None`` and not 0 and not NaN, which is what the
+    linear model gives for the two it has not, so a user meets one way of
+    saying that a number is not there. The rows are still there and still
+    the worked example's, because the test is scale free.
+
+    It is the meanwhile of **Open 3** of `docs/specs/gwas.md`, and the test
+    of the panel above is its other end: that fit is not flat and reports
+    all three.
+    """
+    result = _the_worked_example(
+        worked_example, kinship=_the_kinship_of_the_worked_example()
+    )
+
+    assert result.null_model.model == GWASModel.LMM
+    assert result.null_model.genetic_variance is None
+    assert result.null_model.residual_variance is None
+    assert result.null_model.heritability is None
+    assert result.null_model.covariate_effects.index.tolist() == ["intercept", "cov"]
+    assert result.null_model.num_individuals == 6
+    for at, (variant, _freq, beta, _se, p_value) in enumerate(WORKED_EXAMPLE_ROWS):
+        if numpy.isnan(beta):
+            assert numpy.isnan(result.stats["beta"][at]), variant
+            continue
+        assert result.stats["beta"][at] == pytest.approx(
+            beta, rel=OF_THE_WORKED_EXAMPLE
+        ), variant
+        # The p-value is the worked example's as well: with an identity
+        # kinship the mixed model's Wald test is the linear model's t test,
+        # and both have the 3 degrees of freedom of 6 individuals less 2
+        # coefficients and the variant.
+        assert result.stats["p_value"][at] == pytest.approx(
+            p_value, rel=OF_THE_WORKED_EXAMPLE
+        ), variant
+
+
+def test_the_panel_tells_the_two_variances_apart_and_gives_all_three() -> None:
+    """The panel's own kinship is not flat, so its study reports the two
+    variances and the heritability.
+
+    It is the other end of the test above: a rule that gave ``None``
+    wherever a mixed model was fitted would pass that one and take the
+    heritability away from every user. The numbers themselves are GMMAT's
+    and are asserted where the null model is.
+    """
+    result = _the_mixed_study_of(PANEL, "score")
+
+    assert result.null_model.genetic_variance is not None
+    assert result.null_model.residual_variance is not None
+    assert result.null_model.heritability is not None
+
+
 def test_a_kinship_that_is_not_a_kinship_is_refused_by_its_type() -> None:
     """The matrix itself is what a user gives instead, and what that gave
     before this check was the `AttributeError` of an object with no `matrix`
