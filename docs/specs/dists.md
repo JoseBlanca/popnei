@@ -616,8 +616,12 @@ difference from pyNei to be written down. Four are decided here:
   the same argument. No value changes.
 
 In TypeScript, `calcPopDists(variants, pops, options)`, with `pops` an
-object of population name to the names of its individuals and the same
-defaults. Each measure is a `Float64Array` in the order of the distance
+object of population name to the names of its individuals. `options` has
+`jackknifeGroup` as a required field, a number, the string `"variant"` or
+`null`, since Python has no default for it either, and `measures` and
+`minNumIndividuals` optional with the same defaults. A missing
+`jackknifeGroup` is a `TypeError` of the declarations and an `Error` at
+run time, since a web application may call it from untyped JavaScript. Each measure is a `Float64Array` in the order of the distance
 vector with its `standardErrors` beside it, `numVars` an `Int32Array`,
 `f2Groups` a `Float64Array` of groups x pairs with its two lengths given,
 and `groupIds` an array of `{chrom, start, end}`.
@@ -1322,6 +1326,8 @@ memory for the sums, asked of the machine at the first block. Each is a
 individual of the reader and a population with no individual.
 
 ```rust
+/// It has no `Default`: both fields are the caller's to decide, and the
+/// groups have no default anywhere in popnei.
 pub struct PopDistOptions {
     /// How many called genotypes a pop needs at a variant for that variant
     /// to count for a pair the pop is in.
