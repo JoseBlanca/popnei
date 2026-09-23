@@ -515,9 +515,10 @@ subtracted. The two forms agree wherever pyNei's subtraction has not already
 cancelled, so no literal of this spec moves.
 
 The same subtraction is in the linear mixed model's Wald test, `y' p y`
-minus `num² / den`. It has now been measured and it does cancel, which is
-**Open 3**, below: the repair there is not the cheap one, so it is a trade
-and not a defect with one answer.
+minus `num² / den`, where it cancels too and where the cheap repair is not
+available: forming the residual exactly there costs a product with the
+projection matrix per variant. That is **Open 2**, below, which is one rule
+over the three places a variant can be left with nothing to test.
 
 ### How it is verified
 
@@ -682,7 +683,9 @@ backends and not one, as "How it is verified" of "What every model shares"
 asks of every tolerance here.
 
 The eigenvalues of the kinship are clamped at 0 before use. A kinship of
-genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
+genotypes with nothing missing has none below 0 but for rounding,
+-3.4416913763379853e-15 against a largest of 17.26914115545746 on
+`panel_called`, measured on plink2's f64 matrix on 24 September 2026
 on the panel; the per pair denominators of `docs/specs/kinship.md` put them
 there, -0.0321 on the panel with 3 in 100 genotypes missing, and a negative
 eigenvalue would make `V` not a covariance.
@@ -1388,7 +1391,7 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides these three, and until then the implementer follows the
+The owner decides these four, and until then the implementer follows the
 "meanwhile" of each. A third, what the two layers do with a phenotype that
 is not a number, was decided on 23 September 2026 and is in "Its Python
 function, and its TypeScript one" of "What every model shares", with the
@@ -1413,88 +1416,120 @@ different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
 
-**Open 2: a variant the design leaves nothing of.** It arises in both
-models and the quantity differs. In the linear model it is `xx`, the squared
-length of the variant's dosages once the covariates are taken out of them,
-which is 0 in exact arithmetic for a variant that is a combination of the
-design's columns. In both score tests it is `x' p x`, which is 0 or above in
-exact arithmetic and which rounding can put just below for a variant with
-almost no variance left once the covariates and the kinship are taken out.
-Either way `beta` is a number divided by noise.
+**Open 2: a variant there is nothing left to test.** One rule in three
+places, so it is one decision. In the linear model the quantity is `xx`,
+what is left of a variant's dosages once the covariates are taken out. In
+both score tests it is `x' p x`. And in the linear mixed model's Wald test
+it is `y' p y` minus `num² / den`, what the variant leaves of the trait
+rather than what the design leaves of the variant. In each, the number can
+round to 0 or below and `beta` is then something divided by noise.
 
-What happens today, measured on 23 September 2026 on eight individuals with
-a covariate marking two subpopulations of four and a variant fixed one way
-in each: popnei and pyNei agree to the bit and give `beta` 5.36e13, `se`
-6.95e14 and a p-value of 0.941, which reads as a variant that was tested and
-showed nothing. plink2 gives `NA`, `NA`, `NA` with `ERRCODE CORR_TOO_HIGH`.
-So it is inherited from the oracle and is not a divergence from it, and
-neither reference panel reaches it: the 1200 rows have no `NA`.
+All three are reachable and all three were measured on 23 and 24 September
+2026.
 
-The options are to give such a variant the three NaNs, as a variant with no
-variance gets, or to let the numbers through as pyNei does.
-Recommendation: the three NaNs, refused before the effect is formed. A
-number claims the variant was tested and showed a large effect when it was
-not testable, and plink2 refusing the same variant says that is the
-conventional answer and not popnei being fussy.
+The linear model: eight individuals, a covariate marking two subpopulations
+of four and a variant fixed one way in each. popnei and pyNei agree to the
+bit at `beta` 5.36e13, `se` 6.95e14 and `p` 0.941, which reads as a variant
+that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
+`ERRCODE CORR_TOO_HIGH`.
 
-The threshold, which the recommendation needs and which is the part worth
-the owner's eye: refuse when what the design leaves is at most `n` times
-2.2e-16 of what there was, `n` being the tested individuals. That is the
-tolerance shape `docs/specs/pca.md` already uses for a component with no
-variance and the rank of the design uses for a covariate that is not
-independent, so the three agree. It has room at both ends: on the case above
-the collinear variant leaves 6.5e-32 of its squared length against a
-threshold of 1.8e-15, while an ordinary variant of the same fixture leaves
-0.43. Nothing plausible sits in the thirteen orders between them. Meanwhile
-the implementer refuses at that threshold and gives the three NaNs; no
-literal of this spec moves, since no variant of either panel reaches it.
+The linear mixed model's Wald test: six individuals, one covariate, an
+identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
+`beta` 1.00000 with `se` and `p_value` NaN, while the score test on the same
+call with one argument changed gives `se` 0.500 and `p` 0.0455. The
+cancellation is hit exactly and not approached, because the projection
+annihilates the design, so any affine image of the trait gives
+`num² / den = y' p y` in exact arithmetic. On `panel_called` it comes out
+8.53e-13 on Accelerate against 3.98e-13 on faer where 0 is exact, 46 per
+cent apart, so `se` would be 1.93e-8 on one build and 1.32e-8 on the other.
 
-**Open 3: the linear mixed model's Wald test cancels too.** `se` there is
-built from `y' p y` minus `num² / den`, the same shape as the linear model's
-subtraction, and the same cancellation reaches it. It is not approached but
-hit exactly: the projection annihilates the design, so any affine image of
-the trait, the trait mapped into dosages between 0 and 2, gives
-`num² / den = y' p y` in exact arithmetic. Measured at the fitted null of
-`panel_called` on 23 September 2026: the difference comes out 8.53e-13 on
-Accelerate and 3.98e-13 on faer where 0 is exact, which is 4.3e-15 and
-2.0e-15 of the 197 that the restricted maximum likelihood makes `y' p y`.
-Both stayed positive, so no NaN appeared, but the sign is whatever the
-rounding chose and the two differ by 46 per cent, so `se` would be 1.93e-8
-on one backend and 1.32e-8 on the other. Adding noise of 1e-6 of the dosage
-scale takes the difference to 2e-4 relative and 1e-4 of noise takes it to
-2e-8, so it bites only where a variant explains essentially the whole trait.
+Two options.
 
-Three options, and the first two cost nothing per variant.
+Refuse, and give the three NaNs that "The variants that have no answer"
+already means: when what is left falls to `n` times 2.2e-16 of what there
+was, which is 1.8e-15 on the collinear fixture against 6.5e-32 measured, and
+8.5e-12 on the panel against 8.53e-13. It is one comparison in each of the
+three places and costs nothing per variant.
 
-Leave it, and record the measurement. The number is wrong in its last digits
-rather than absent, it needs an association far stronger than the linear
-model's case needed, and a user reading either `se` draws the same
-conclusion.
+Or form the residual exactly, which for the linear model is a pass over the
+block's dosages and is what "The linear model" already does, and for the
+mixed model's Wald test is `r' p r` per variant, a product with the
+projection matrix that roughly doubles that test and is the cost
+`use_grammar_gamma_approx` exists to avoid.
 
-Refuse the variant, as **Open 2** refuses one the design leaves nothing of:
-here it is the model that is left nothing of, and the test is the same shape
-and the same cost, one comparison. Refuse when `y' p y` minus `num² / den`
-falls to `n` times 2.2e-16 of `y' p y`, which is 8.5e-12 on the panel
-against the 8.53e-13 measured, and give the three NaNs. Both backends then
-refuse the same variant, so the builds agree, and a variant that explains
-the whole of a trait after the covariates and the kinship is the trait
-written as a genotype or a mistake in the data, which is what plink2 says of
-its own version of this by refusing it.
+Recommendation: refuse. Leaving it is not among the options any more, and it
+was until the NaN was reproduced: a row with a finite `beta` beside a NaN
+`se` and `p_value` is a fourth kind of NaN that this spec does not describe,
+so a user filtering on a missing effect keeps it and reads 1.0 as an effect
+that was measured. That is the argument that settled the linear model's
+subtraction, and the same evidence has now appeared one model along. The
+exact form is worth having where it is cheap, and it is already taken for
+the linear model; where it costs a matrix product per variant it buys only
+the band just above the floor, which needs a variant explaining 99.9999 per
+cent of the trait, and that is for the performance session to weigh once
+there are numbers. Meanwhile the implementer refuses at that threshold in
+all three places, because a meanwhile that returns NaN where the score test
+returns 0.0455 is not a safe thing to build on; no literal moves, since no
+variant of either panel comes near.
 
-Form `r' p r` for the residual `r` of each variant, which is exact and costs
-a product with the projection matrix per variant, roughly doubling the Wald
-test. That is the cost `use_grammar_gamma_approx` exists to avoid, so the
-fix and the approximation pull against each other.
+**Open 3: a kinship that does not identify the two variances.** For a
+kinship close to a multiple of the identity, the model is the ordinary
+linear one whatever the split between the genetic and the residual variance,
+so the restricted maximum likelihood has nothing to choose between them and
+its criterion is flat. Measured on 24 September 2026: over the 101 grid
+points the criterion spans 1.1e-12, less than one unit in the last place of
+its own size, and perturbing such a kinship by symmetric noise of 1e-15 gave
+a `heritability` of 6.5e-5, 7.1e-5 and 0.967 over three seeds, the grid
+minimum jumping from index 98 to index 33. A kinship of all zeros gives
+0.99988 and one of all ones 0.99995. `beta` and `p_value` are untouched,
+because the test is scale free and the model is the linear one there; the
+damage is exactly `genetic_variance`, `residual_variance` and
+`heritability`, which is what a user reads a heritability off.
 
-Recommendation: refuse. It is one comparison, it makes the two builds give
-the same answer rather than two that differ by half, and it is the rule Open
-2 already proposes one level up, so a user meets one rule and not two. What
-it does not fix is the band just above the floor, where the backends differ
-by 2e-4 relative at 1e-6 of noise; only the third option reaches that, and
-it needs a variant explaining 99.9999 per cent of the trait. Meanwhile the
-implementer leaves the Wald test as it is and records the measurement, which
-is what `docs/plans/gwas-linear.md` did; no literal moves, since no variant
-of either panel comes near.
+It is not a contrived input: a panel of unrelated individuals lands there,
+and so does a user passing an identity matrix to mean no relatedness.
+
+The options are to give the three fields as they come, which is pyNei's
+behaviour and which returns a heritability decided by the last bit; to pin
+the tie to the lowest grid index, so that at least the two backends agree on
+which arbitrary answer they give; or to give the study and set the three
+fields to `None`, with the result saying why. Recommendation: the third.
+Refusing the whole study would be wrong, because the association tests are
+valid there and are what the user mostly came for; returning a number is
+worse than returning nothing, because a heritability of 0.967 from one seed
+and 6.5e-5 from another looks reliable and is not; and agreeing on an
+arbitrary number, which the second option buys, only makes the two builds
+tell the same untruth. The test is one comparison at the end of the grid:
+the smallest value within about `101 * 2.2e-16` of the largest. Meanwhile
+the implementer gives the study with the three fields `None`.
+
+**Open 4: how negative an eigenvalue is still rounding.** The linear mixed
+model clamps a negative eigenvalue of the kinship at 0, and nothing bounds
+how negative. Forcing one eigenvalue of `panel_called`'s kinship to -5,
+which is 29 per cent of its largest, is clamped in silence and the fit
+returns ordinary looking numbers, `genetic_variance` 1.22162,
+`heritability` 0.781096 and `y' p y` 197.0000000000; so does forcing fifty
+of them to -2. What a legitimate kinship reaches is measured in
+`docs/specs/kinship.md`: -3.4e-15 of a largest of 17.27 with nothing
+missing, -0.0321 at 3 genotypes missing in 100, and -1.06 against a largest
+of 32.5 at 50 in 100, which is 3.3 per cent. So the line is somewhere
+between 3.3 per cent, which is real data, and 29 per cent, which is not a
+kinship, and nothing has been measured in between. The options are to leave
+it unbounded, or to refuse when the smallest eigenvalue is below some
+fraction of the largest. Recommendation: refuse, at a tenth of the largest,
+which is three times the worst a legitimate kinship reached and well below
+the 29 per cent that is silently accepted today. The fraction is a judgement
+and it is the owner's; those two numbers are what there is to judge it on.
+Meanwhile the implementer refuses at a tenth and says so in the report.
+
+Two things about the same clamp are decided rather than open, because
+neither has a second answer. A NaN eigenvalue is refused and not clamped:
+`f64::max` turns one into a legitimate 0, and `calc_gwas` refuses a kinship
+that is not finite before it gets there, so only a caller of the core crate
+reaches it. And the core checks that the kinship is symmetric, which the
+`Kinship` of both packages already checks and the core did not: the
+eigendecomposition reads the lower triangle, so an asymmetric matrix was
+being read as its lower half mirrored, with no word to the caller.
 
 ## Not in this spec
 
