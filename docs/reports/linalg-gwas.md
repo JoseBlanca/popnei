@@ -50,8 +50,15 @@ not made" has the numbers. The session writing `docs/specs/gwas.md` and
 `docs/specs/kinship.md` asked to be told when this branch is ready, so
 that the three can be merged together if you want that.
 
-And four decisions, none of which stops anything and each of which
-"What is waiting on the owner" gives with its options and its cost.
+Two decisions were answered on 23 September 2026 and are done: the
+message of the error a matrix that could not be factored gives now says
+where it failed and not why, and a diagonal entry that is subnormal is
+left as it is, with the reason written down in `docs/specs/gwas.md`. Two
+are still open, and neither stops anything: how the decision about the
+vector instructions of WebAssembly is worded, and whether a new product
+replaces a buffer and a loop in the principal component analysis. "What is
+waiting on the owner" has all four, the answered ones with what decided
+them.
 
 ## Before the first task
 
@@ -851,50 +858,45 @@ either, and the spec already requires that test of the association study.
   measurement and both answers into the spec. Costs nothing, and the
   divergence stays.
 
-Recommended: leave it. A caller that does not test its own result for
-being finite is broken whichever answer it gets, and the spec makes that
-test the association study's.
+The owner answered this on 23 September 2026: leave it, and the record
+stands. What made it safe is the caller's side, from the session writing
+`docs/specs/gwas.md`: the three marks of a logistic fit that is running
+away test for a value that is not finite and not for an infinity, so
+LAPACK's infinity and faer's NaN land on the same mark, the variant gets
+its NaNs either way, and Python natively, Python under pyodide and
+TypeScript mark the same variants. That spec records the reason, so it is
+not left as something two sessions happened to agree on. If the owner
+later has the crate refuse the entry, that module gets a `Singular` there,
+which is already one of the same three marks, so nothing of it moves
+either way.
 
-### 4. Whether the message of `Singular` should stop naming a factorization
+### 4. The message of `Singular`: answered, and done
 
-A matrix that cannot be factored gives an error whose message is "the
-matrix a is singular: the factorization stopped at its row 3, counting
-from 0". Five operations now raise it and only one factors anything: for
-the other four the matrix was handed in as a factorization, or, for the
-triangular solve of a QR's `r`, was never a factorization at all.
+The owner answered this on 23 September 2026: the message is "the matrix a
+failed at its row 3, counting from 0". `9371389` has the spec and
+`21793d3` the code, in that order, and the two fields are untouched, so
+nothing that matches on the error moved.
 
-The condition my earlier recommendation put on this has been met.
-`docs/specs/gwas.md` has decided what a user sees for each case, and the
-session writing it asked on 23 September 2026 for the wording to change
-now, with a reason from the caller's side that is worth more than mine.
-It catches this error in two places that mean different things. In the fit
-of a mixed model null, where missing genotypes have made the kinship
-indefinite, it raises a `ValueError` naming the kinship, and it does not
-want the word "singular" reaching the user, because the matrix that failed
-is not the one the user gave: it is one built from theirs. In the per
-variant fit of the logistic Wald test, the message is never shown at all,
-the variant getting NaN for its effect, its standard error and its
-p-value, so there the error only has to be cheap to make and to match on.
-Both places want the argument's name and the row, which the two fields
-already carry, and neither wants a conclusion about the caller's data.
+What it was. Five operations raise that error and only `cholesky_lower`
+factors anything, so the old message, "the matrix a is singular: the
+factorization stopped at its row 3, counting from 0", was wrong about four
+of them: three take a matrix handed in as a factorization, and the solve
+against a triangular matrix has nothing factor it at all, an `r` from a QR
+being the result of a factorization and not a factorization of the matrix
+named.
 
-- **Reword it to drop the conclusion.** That session proposes "the
-  factorization of a stopped at its row 3, counting from 0". It is true of
-  the four operations that take a factorization and not of the fifth,
-  where `a` is a triangular matrix and nothing factored it. A wording true
-  of all five says only where it failed: "the matrix a failed at its row
-  3, counting from 0". Costs a sentence of the spec, one line of the code
-  and one assertion of a test, and the two fields do not change, so
-  nothing that matches on the error moves.
-- **Leave it.** Costs nothing. The other session says it will wrap the
-  error in both of its places anyway, so no user sees the wording either
-  way; what it costs is a message that is wrong about four of its five
-  producers for whoever reads the crate next.
-
-Recommended: reword it, to "the matrix a failed at its row 3, counting
-from 0". I have not, because a message is a value a user sees and this is
-the decision I put to the owner; a session writing another spec cannot
-make it, however good its reason.
+What decided it was the caller's side, from the session writing
+`docs/specs/gwas.md`. It catches this error in two places that mean
+different things to a user. In the fit of a mixed model null whose kinship
+missing genotypes have made indefinite, it raises a `ValueError` naming
+the kinship and will not let the word "singular" reach the user, because
+the matrix that failed was built from the user's data and not given by
+them. In the per variant fit of the logistic Wald test the message is
+never shown at all, the variant getting NaN for its effect, its standard
+error and its p-value. Both want the argument and the row, which the two
+fields carry, and neither wants a conclusion about the caller's data. That
+session's own wording, "the factorization of a stopped at its row 3", was
+not taken, being true of four of the five.
 
 ## How the work went
 
