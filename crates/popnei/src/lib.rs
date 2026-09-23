@@ -35,7 +35,11 @@
 //! out from; and `kinship` gives how much more of their genome every pair
 //! of individuals shares than two drawn at random from the same panel
 //! would, which is the matrix a mixed model of an association study takes
-//! as the covariance of its random effect. The modules that follow them
+//! as the covariance of its random effect; and `gwas` tests every variant
+//! against a trait of the individuals, giving the effect of each variant on
+//! the trait, the uncertainty of that effect and its p-value, of which what
+//! is written so far is the two functions that turn the statistic of a test
+//! into a p-value. The modules that follow them
 //! are being written, and
 //! `docs/architecture.md` has their order.
 //!

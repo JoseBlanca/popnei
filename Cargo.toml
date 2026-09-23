@@ -114,10 +114,13 @@ gemm = { version = "0.19.0", default-features = false, features = [
   "wasm-simd128-enable",
 ] }
 # The mathematical functions that Rust's standard library has not, of which
-# the association study calls one: `erfc`, the complementary error function,
+# the association study calls two. `erfc`, the complementary error function,
 # which gives how much of a normal distribution lies further from 0 than a
 # point and which every p-value of a chi square with one degree of freedom
-# is, as "The two distributions" of docs/specs/gwas.md has it. It is the
+# is; and `lgamma`, the logarithm of the gamma function, which the front
+# factor of the regularized incomplete beta is built from and which every
+# p-value of a Student t goes through. Both are in "The two distributions"
+# of docs/specs/gwas.md. It is the
 # port to Rust of the mathematical library of musl, with no C in it and no
 # dependency, so it builds for the two wasm targets, and it is the crate
 # Rust's own `std` uses for the same functions on a target with no system
