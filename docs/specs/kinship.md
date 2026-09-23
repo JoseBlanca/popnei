@@ -84,7 +84,7 @@ calc_kinship(
 ) -> Kinship
 ```
 
-`Kinship` is a frozen dataclass with two fields and one property.
+`Kinship` is a frozen dataclass with three fields and one property.
 `matrix` is a frame of individuals by individuals with the names as index
 and columns, and `num_vars` is how many variants it was built from.
 `individuals` is a property, the index of the matrix as a tuple, as pyNei's
@@ -291,10 +291,12 @@ the refusal from the row and writes none of its own. The error is
 More than `MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, 46340, is not
 refused by the row, which reads one variant and knows nothing of the
 matrix: the individuals by individuals matrix would hold more values than
-the 2147483647 that BLAS and LAPACK count in. That constant is of
-`crates/popnei/src/pca.rs`, where `pca_of_variants` checks it at its own
-entry, and `calc_kinship` checks it at its own entry too, in
-`crates/popnei/src/kinship.rs`, before the first block is read.
+the 2147483647 that BLAS and LAPACK count in. That constant lives in
+`crates/popnei/src/variant.rs` beside `MAX_PLOIDY_OF_THE_VARIANTS`, since
+it is a size of a dataset and belongs to no calculation, and
+`crates/popnei/src/pca.rs` and `crates/popnei/src/kinship.rs` re-export it;
+`pca_of_variants` checks it at its own entry and `calc_kinship` checks it at
+its own too, before the first block is read.
 
 A `num_pcs` of 0 gives a result with no components and is not an error, as
 asking a PCA for none is not.
@@ -308,15 +310,30 @@ source gave.
 ### How it is verified
 
 Against plink2 v2.0.0-a.7.7, the arm64 build of 18 September 2026, whose
-`--make-rel square` writes this same matrix:
+`--make-rel square` writes this same matrix, in two forms:
 
     plink2 --vcf <file> --make-rel square --out <prefix>
+    plink2 --vcf <file> --make-rel square bin --out <prefix>
 
-which writes `<prefix>.rel`, 200 lines of 200 numbers separated by tabs, and
-`<prefix>.rel.id`, the individuals in that order. Run on 23 September 2026
-by `tests/reference/kinship/make_reference.py`, which also checks every
-literal below against what it has just produced, so that running it is a
-check that this spec has not drifted.
+The first writes `<prefix>.rel`, 200 lines of 200 numbers separated by tabs
+with six significant digits, and the second `<prefix>.rel.bin`, the same
+40000 entries as little endian `f64`; both write `<prefix>.rel.id`, the
+individuals in that order. Run on 23 September 2026 by
+`tests/reference/kinship/make_reference.py`, which also checks every literal
+below against what it has just produced, so that running it is a check that
+this spec has not drifted.
+
+The two forms are for two different readers. The table of literals below is
+read from the text, by a person checking this spec by eye. The tests compare
+against the bits, within 1e-12 relative. The text alone is not a check of
+the arithmetic: six significant digits round an entry near 1 by up to 5e-6,
+so a comparison with it within 1e-5 absolute passes an error of up to 5e-6
+and has no room left to find one in. That rounding is also relative while
+such a bound is absolute, so the bound holds only while the entries stay
+near 1: on a panel of 60 individuals and 600 variants where most alleles are
+private, whose diagonal reaches 19.66, popnei is 1.14e-13 from plink2's bits
+and 1.83e-05 from the text of the same matrix, which a bound of 1e-5 would
+have called a failure of a right answer.
 
 The two datasets are the same 200 individuals, `s000` to `s199`, and 1200
 biallelic diploid variants twice:
@@ -332,16 +349,22 @@ biallelic diploid variants twice:
 plink2 kept the order of the VCF in both, checked against `.rel.id`.
 
 Against pyNei's `calc_kinship` on the same two panels, the largest absolute
-difference from plink2 is 4.95e-06 and 4.93e-06 over the 40000 entries, and
-`num_vars` is 1200 in both. plink2 writes six significant digits, so an
-entry near 1 is rounded by up to 5e-6, which is what those two numbers are.
-The tests compare within 1e-5 absolute, one unit of the last digit plink2
-prints for an entry of that size.
+difference from the text plink2 prints is 4.95e-06 and 4.93e-06 over the
+40000 entries, and `num_vars` is 1200 in both. Those two numbers are the
+rounding of the six digits and not a difference of the arithmetic: against
+the bits, popnei is 4.44e-16 from plink2 on the panel with every genotype
+called and 5.55e-16 on the one with genotypes missing.
 
-The literals of the cargo tests, made at `calc_kinship` of "The Rust
-interface" on the two VCFs read with the VCF reader, from plink2 on 23
-September 2026. The individuals `s000` to `s003` are full sibs, and so are
-`s100` and `s101`:
+The cargo tests read the two VCFs with the VCF reader, call `calc_kinship`
+of "The Rust interface", and compare the whole of each matrix, all 40000
+entries, with `tests/reference/kinship/<name>.plink2.rel.bin.gz` within
+1e-12 relative. Beside that, one test for each entry of the table below
+asserts the digits plink2 printed for it, within 1e-5 absolute, which is
+what six significant digits of an entry near 1 allow and is the bound the
+table and no other test is held to.
+
+The literals, from plink2 on 23 September 2026. The individuals `s000` to
+`s003` are full sibs, and so are `s100` and `s101`:
 
 | dataset | pair | plink2 |
 |---|---|---|
@@ -491,15 +514,32 @@ numpy without copying it.
 pub struct Kinship {
     pub num_individuals: usize,
     /// How many variants had variance among these individuals and were used.
-    pub num_vars: usize,
+    pub num_vars: u64,
+    /// How many variants the reader gave, used or not, which is the
+    /// `num_vars` of the pass stats.
+    pub num_vars_given: u64,
     /// num_individuals x num_individuals, row after row, symmetric.
     pub matrix: Vec<f64>,
 }
 ```
 
+Both counts run over the whole dataset and are `u64`, as
+`docs/specs/dists.md` has `KosmanSums::num_vars`: a `usize` is 32 bits in a
+browser, and the same dataset would then give one count natively and another
+in wasm.
+
+`num_vars_given` is what every other calculation over a pass hands out,
+`Pca::num_cols`, `Stats.num_vars` and `KosmanSums::num_vars`, and it is what
+a binding fills the `num_vars` of the pass stats with. Without it each
+binding counts the variants again in a reader of its own between the pass
+and its source. It is counted after `reblock`, which is where the pass sees
+the variants; `reblock` gives every variant it is given, so that count is
+the one a reader before it would make.
+
 One pass over a reader. `individuals` are the positions among those the
 reader gives, in the order the result has them, and `None` is all of them in
-the reader's order. `transform_to_biallelic` says that a variant of more
+the reader's order. An `individuals` of no position is the error of a source
+with no individual below, since there is no pair to give a kinship of. `transform_to_biallelic` says that a variant of more
 than two alleles is read with every allele that is not the major one
 counting the same, as it does for the PCA. The pass borrows the reader and
 does not take it, so that whoever built the chain of filters reads its
@@ -524,8 +564,8 @@ pass that gave no variant at all, which every consumer already has. A ploidy
 above `MAX_PLOIDY_OF_THE_VARIANTS`, which the row pass of
 `crates/popnei/src/variant.rs` raises, and more than
 `MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, whose constant is of
-`crates/popnei/src/pca.rs` and which this module checks at its own entry,
-as "How it runs" has it. A reader that gives more variants than a `usize`
+`crates/popnei/src/variant.rs` and which this module checks at its own
+entry, as "How it runs" has it. A reader that gives more variants than a `usize`
 counts, which is 4294967295 in a browser, where a `usize` is 32 bits; the
 PCA has that case and the kinship needs its own, since the pass they share
 takes the error from its caller. A source with no individual, which leaves
