@@ -165,7 +165,7 @@ branch this starts from.
 
 ### Its tasks
 
-- [ ] 1.1 `TheFirstOperand` and the new signature of `product` in
+- [x] 1.1 `TheFirstOperand` and the new signature of `product` in
       `crates/popnei-linalg/src/lib.rs`, with the two combinations that
       exist today wired to the backend functions they already call, the
       27 tests that name `product` moved to the new call form, the four

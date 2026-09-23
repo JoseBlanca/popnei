@@ -14,8 +14,9 @@ also gives `product` a typed first operand, so that it computes all four
 of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
-Where the plan stands on 23 September 2026: the work has just begun and
-no work package is done.
+Where the plan stands on 23 September 2026: work package 1 is under way,
+task 1.1 done and task 1.2 running. Work packages 2 and 3 have not
+started.
 
 This report is written as the work goes. Each work package gets a section
 below when it is done, with the command that checked each deliverable and
@@ -50,3 +51,37 @@ One trap for anybody who runs the checks here. `uv run maturin develop
 it sends the process a ctrl-C 0.1 s into a write that a release build has
 already finished. The check of the `coding` skill is the debug build, and
 with it all 257 pass.
+
+## Work package 1: the product with its first operand turned
+
+### Task 1.1, the typed first operand and its four callers
+
+`8d7fb27`. `product` takes a `TheFirstOperand` beside its
+`TheSecondOperand`, the four calls of it in the core crate name
+`ByTheRowsOfTheResult`, and the comment of
+`crates/popnei-linalg/Cargo.toml` says the owner's decision about the
+rustc flag instead of naming an open point.
+
+Checked by the orchestrator, each command run in the worktree: `cargo fmt
+--all --check` clean, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo test --workspace` `472 passed` and `42 passed`
+with 2 ignored, `cargo test -p popnei-linalg --no-default-features` `37
+passed`, `cargo wasm-check` clean, ruff clean, `uv run maturin develop &&
+uv run pytest` `257 passed`. Every one is what it was before the task, so
+nothing the principal component analysis or the r² computes moved.
+`grep -c ByTheRowsOfTheResult` gives 3 in `pca.rs` and 1 in `ld.rs`, and
+`grep -c "Open 1" crates/popnei-linalg/Cargo.toml` gives 0, which are
+deliverables 1 and 4. The diff of `pca.rs` and of `ld.rs` is the four
+calls and one `use` line and nothing else; no test of either was touched.
+
+One thing the task had to settle. The two combinations whose first
+operand is `ByTheValuesSummedOver` have no backend behind them until task
+1.2, and the enum lets a caller ask for them, so the task made those two
+arms give `Error::Dimension` with a message that says the product is not
+built yet, rather than an `unreachable` that would be a wrong matrix or a
+panic waiting to happen. Task 1.2 replaces the two arm bodies with one
+backend call each. It is the right call for one commit inside a work
+package, and nothing outside the crate can reach it: no caller in popnei
+names that case.
+
+The subagent used 123480 tokens.
