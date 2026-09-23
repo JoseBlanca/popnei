@@ -21,7 +21,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::filters::resolve_individuals;
-use popnei::kinship::calc_kinship;
+use popnei::kinship::{Kinship, calc_kinship, principal_components};
 
 use crate::errors::JsPopneiError;
 use crate::source::{OpenSource, PassCounts};
@@ -149,6 +149,94 @@ pub(crate) fn kinship_of_the_variants(
         matrix: Some(kinship.matrix),
         individuals: Some(of_the_matrix),
         counts,
+    })
+}
+
+/// Where each individual of a kinship falls along the directions in which
+/// the panel varies most, on their way to TypeScript.
+///
+/// The projections leave the memory of wasm the first time they are asked
+/// for and the call after that gives nothing, as the matrix of
+/// [`KinshipOfVariants`] does: the package reads them once, into the object
+/// a user holds, and frees this.
+#[wasm_bindgen]
+pub struct PcsOfAKinship {
+    /// How many components were given, which is the `num_pcs` that were
+    /// asked for or the components the matrix has when it has fewer.
+    num_comps: usize,
+    /// The individuals x `num_comps` projections, row after row, and `None`
+    /// once they were given to JavaScript.
+    projections: Option<Vec<f64>>,
+}
+
+#[wasm_bindgen]
+impl PcsOfAKinship {
+    /// How many components were given: a kinship measures a pair against
+    /// the average pair of the panel, which takes one direction out of it,
+    /// so a panel of 200 individuals has 199 components and not 200.
+    #[must_use]
+    pub fn num_comps(&self) -> usize {
+        self.num_comps
+    }
+
+    /// Where each individual falls along each component, the individuals x
+    /// `num_comps` row after row, or `undefined` when they were read
+    /// already.
+    pub fn projections(&mut self) -> Option<Vec<f64>> {
+        self.projections.take()
+    }
+}
+
+/// The principal components of the kinship `matrix`, the individuals of
+/// `num_individuals` x the same individuals row after row, `num_pcs` of them
+/// at most.
+///
+/// With `lambda_j` the eigenvalues of the matrix from the largest and `u_j`
+/// its eigenvectors, the component `j` is `u_j * sqrt(lambda_j)`: where each
+/// individual falls along the direction in which the panel varies the `j`th
+/// most. A component whose eigenvalue is not above the tolerance of
+/// `docs/specs/pca.md` is not given, and in every component the projection
+/// of the largest absolute value is positive, which is the rule that makes
+/// the two backends of the eigendecomposition and the three builds of
+/// popnei give one answer.
+///
+/// The matrix is the one a `Kinship` of the package holds, a calculated one
+/// or one a user built, so the package is what has checked that it is
+/// square, symmetric and finite before this is called.
+///
+/// # Errors
+///
+/// When the matrix holds no individual, and when the eigendecomposition
+/// could not be done.
+#[wasm_bindgen]
+pub fn kinship_principal_components(
+    matrix: Vec<f64>,
+    num_individuals: usize,
+    num_pcs: usize,
+) -> Result<PcsOfAKinship, JsPopneiError> {
+    let num_values = matrix.len();
+    if num_individuals.checked_mul(num_individuals) != Some(num_values) {
+        // The `Kinship` of the package holds one value for each pair of its
+        // individuals, which its constructor is what checks, so a caller
+        // that arrives here has a defect.
+        return Err(JsPopneiError::Broken(format!(
+            "the kinship of {num_individuals} individuals was given to the \
+             principal components as {num_values} values, which is not one \
+             for each pair of them"
+        )));
+    }
+    // The two counts of a kinship are not read by its components, which
+    // take the matrix and the individuals alone.
+    let kinship = Kinship {
+        num_individuals,
+        num_vars: 0,
+        num_vars_given: 0,
+        matrix,
+    };
+    let pcs = principal_components(&kinship, num_pcs)?;
+    Ok(PcsOfAKinship {
+        num_comps: pcs.num_comps,
+        projections: Some(pcs.projections),
     })
 }
 

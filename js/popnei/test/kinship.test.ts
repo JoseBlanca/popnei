@@ -411,3 +411,183 @@ test("a matrix that is not a Float64Array says what was given", () => {
     { message: /an object of the type `Array` was given/ },
   );
 });
+
+/**
+ * The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on 23
+ * September 2026, which "How it is verified" of the spec gives. No call
+ * gives an eigenvalue: a component is `u_j * sqrt(lambda_j)` and `u_j` has
+ * length 1, so the sum of the squares of a component's projections is its
+ * eigenvalue. This package runs on faer, which the wasm builds take, and
+ * measured there the first of the three is 17.269141155457458, 2.6e-10 of
+ * itself from the literal below.
+ */
+const EIGENVALUES_OF_THE_PANEL = [17.26914116, 12.44731524, 3.35871258];
+
+/** How far a sum of squares may be from its eigenvalue, as a part of it. */
+const OF_THE_EIGENVALUES = 1e-9;
+
+/**
+ * How many components a panel of 200 individuals has: a kinship measures a
+ * pair against the average pair of the panel, which takes one direction out
+ * of it, so the last eigenvalue is 0 or below and its component is not
+ * given.
+ */
+const COMPONENTS_OF_THE_PANEL = 199;
+
+/**
+ * The two components of the worked example, individual after individual,
+ * from numpy 2.5.3 on 23 September 2026 through "How it is verified", which
+ * writes them to 12 significant digits. `i1` is 0 in both, since its
+ * standardized dosage is 0 at both variants that were used, and numpy gives
+ * it as -6e-17.
+ *
+ * The bound is absolute and not relative to each projection for that reason:
+ * a projection of 0 has no digits to be relative to, and the ones that are
+ * not 0 here are near 1. Measured on faer, the furthest is 3e-12 from the
+ * literal.
+ */
+const OF_THE_WORKED_EXAMPLE_COMPONENTS = [
+  1.45989777643, -0.212872996577, 0, 0, -1.34910400096, -0.550866821327,
+  -0.461372751067, 0.937211435408,
+];
+
+/** How far a projection of the worked example may be from its literal. */
+const OF_THE_PROJECTIONS = 1e-9;
+
+/**
+ * The kinship of two individuals called at one variant, `0/0` and `1/1`:
+ * its matrix is 2 on the diagonal and -2 off it, its first component is
+ * 1.41421356 and -1.41421356, and its second eigenvalue is 0. It is where
+ * the tolerance of the sign rule is read: the two projections are one
+ * number with opposite signs, and the rule gives the first of the two the
+ * positive sign.
+ */
+const OF_TWO_INDIVIDUALS = Float64Array.from([2, -2, -2, 2]);
+const ITS_FIRST_COMPONENT = [1.41421356, -1.41421356];
+
+/**
+ * How far a projection of that kinship may be from its literal. The spec
+ * writes those two to 9 significant digits, where it writes the projections
+ * of the worked example to 12, and the value is the square root of 2:
+ * 1.4142135623730951, which is 2.4e-9 from the digits printed, so a bound of
+ * 1e-9 would fail on a right answer.
+ */
+const OF_THE_DIGITS_OF_THE_SQUARE_ROOT = 1e-8;
+
+/** The projection of the individual `row` on the component `column`. */
+function projectionOf(
+  pcs: { numComps: number; projections: Float64Array },
+  row: number,
+  column: number,
+): number {
+  return pcs.projections[row * pcs.numComps + column] as number;
+}
+
+/** The sum of the squares of the projections of a component, which is its
+ * eigenvalue. */
+function eigenvalueOf(
+  pcs: { numComps: number; projections: Float64Array },
+  numIndividuals: number,
+  component: number,
+): number {
+  let sum = 0;
+  for (let row = 0; row < numIndividuals; row += 1) {
+    const value = projectionOf(pcs, row, component);
+    sum += value * value;
+  }
+  return sum;
+}
+
+test("the three largest eigenvalues of the panel", () => {
+  const kinship = kinshipOf(PANEL_VCF);
+  const pcs = kinship.principalComponents(3);
+
+  assert.equal(pcs.numComps, 3);
+  assert.equal(pcs.projections.length, PANEL_NUM_INDIVIDUALS * 3);
+  for (const [component, eigenvalue] of EIGENVALUES_OF_THE_PANEL.entries()) {
+    const ours = eigenvalueOf(pcs, PANEL_NUM_INDIVIDUALS, component);
+    assert.ok(
+      Math.abs(ours - eigenvalue) <= Math.abs(eigenvalue) * OF_THE_EIGENVALUES,
+      `the eigenvalue of PC${component} is ${ours} and not ${eigenvalue}`,
+    );
+  }
+});
+
+test("a panel of 200 individuals has 199 components", () => {
+  const kinship = kinshipOf(PANEL_VCF);
+  const pcs = kinship.principalComponents(PANEL_NUM_INDIVIDUALS);
+
+  assert.equal(pcs.numComps, COMPONENTS_OF_THE_PANEL);
+  assert.equal(
+    pcs.projections.length,
+    PANEL_NUM_INDIVIDUALS * COMPONENTS_OF_THE_PANEL,
+  );
+});
+
+test("the projection of the largest absolute value is positive in every component", () => {
+  const kinship = kinshipOf(PANEL_VCF);
+  const pcs = kinship.principalComponents(PANEL_NUM_INDIVIDUALS);
+
+  for (let component = 0; component < pcs.numComps; component += 1) {
+    let largest = 0;
+    let at = 0;
+    for (let row = 0; row < PANEL_NUM_INDIVIDUALS; row += 1) {
+      const value = Math.abs(projectionOf(pcs, row, component));
+      if (value > largest) {
+        largest = value;
+        at = row;
+      }
+    }
+    assert.ok(
+      projectionOf(pcs, at, component) > 0,
+      `the component ${component} is turned round`,
+    );
+  }
+});
+
+test("the two components of the worked example", () => {
+  const kinship = kinshipOf(WORKED_EXAMPLE);
+  const pcs = kinship.principalComponents(6);
+
+  assert.equal(pcs.numComps, 2);
+  for (const [at, projection] of OF_THE_WORKED_EXAMPLE_COMPONENTS.entries()) {
+    const ours = pcs.projections[at] as number;
+    assert.ok(
+      Math.abs(ours - projection) <= OF_THE_PROJECTIONS,
+      `the projection ${at} is ${ours} and not ${projection}`,
+    );
+  }
+});
+
+test("the components of a kinship a user built, and the sign of the rule", () => {
+  const kinship = new Kinship(OF_TWO_INDIVIDUALS, ["a", "b"], 1);
+  const pcs = kinship.principalComponents(2);
+
+  assert.equal(pcs.numComps, 1);
+  for (const [at, projection] of ITS_FIRST_COMPONENT.entries()) {
+    const ours = pcs.projections[at] as number;
+    assert.ok(
+      Math.abs(ours - projection) <= OF_THE_DIGITS_OF_THE_SQUARE_ROOT,
+      `the projection of ${at} is ${ours} and not ${projection}`,
+    );
+  }
+});
+
+test("no component asked for gives none, and is no error", () => {
+  const kinship = kinshipOf(WORKED_EXAMPLE);
+  const pcs = kinship.principalComponents(0);
+
+  assert.equal(pcs.numComps, 0);
+  assert.equal(pcs.projections.length, 0);
+});
+
+test("a numPcs that counts no components is refused", () => {
+  const kinship = new Kinship(OF_TWO_INDIVIDUALS, ["a", "b"], 1);
+
+  assert.throws(() => kinship.principalComponents(-1), {
+    message: /`numPcs` is a whole number of 0 or more/,
+  });
+  assert.throws(() => kinship.principalComponents(2.5), {
+    message: /`numPcs` is a whole number of 0 or more/,
+  });
+});

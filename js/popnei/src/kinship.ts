@@ -19,7 +19,10 @@
  * variance.
  */
 
-import { default_transform_to_biallelic as defaultTransformToBiallelic } from "../wasm/popnei.js";
+import {
+  default_transform_to_biallelic as defaultTransformToBiallelic,
+  kinship_principal_components as kinshipPrincipalComponents,
+} from "../wasm/popnei.js";
 
 import {
   aBoolean,
@@ -28,6 +31,7 @@ import {
   wholeNumberOfZeroOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
+import { theValuesOf } from "./pca.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 
@@ -145,6 +149,66 @@ export class Kinship {
   }
 
   /**
+   * Where each individual falls along the `numPcs` directions in which the
+   * panel varies most, taken from this matrix.
+   *
+   * A user gives these to an association study as covariates, which is how
+   * the structure of a panel is accounted for without a mixed model, and
+   * they cost an eigendecomposition of a matrix that is already in hand
+   * rather than a second pass over the variants. With `lambda_j` the
+   * eigenvalues of the kinship from the largest and `u_j` its eigenvectors,
+   * the component `j` is `u_j * sqrt(lambda_j)`.
+   *
+   * In every component the projection of the largest absolute value is
+   * positive, which is the rule that makes the numbers the same whichever
+   * library did the decomposition, in TypeScript as in Python: a component
+   * multiplied by -1 is the same component.
+   *
+   * A component whose eigenvalue is not above `lambda_1 * n * 2.2e-16`, with
+   * `n` the individuals, is not given, so asking for more components than
+   * the matrix has gives those it has and `numComps` says how many. A
+   * kinship measures a pair against the average pair of the panel, which
+   * takes one direction out of it, so a panel of 200 individuals has 199
+   * components and not 200. A `numPcs` of 0 gives no component and is no
+   * error.
+   *
+   * These are close to the principal components of the variants the kinship
+   * was calculated from and they are not the same: the kinship divides each
+   * variant by `sqrt(ploidy * p * (1 - p))` and `doPcaFromVariants` by the
+   * standard deviation of its dosages, and the two agree only when the
+   * genotypes are in Hardy Weinberg proportions.
+   *
+   * It is pyNei's `Kinship.principal_components`, which gives exactly
+   * `num_pcs` components whatever their eigenvalue, taking the square root
+   * of the absolute value of one below 0, and leaves the sign of each
+   * component to the library that decomposed the matrix.
+   *
+   * @throws {Error} When `numPcs` is not a whole number of 0 or more, when
+   * the eigendecomposition could not be done, and when `init` has not been
+   * awaited.
+   */
+  principalComponents(numPcs: number): KinshipPcs {
+    theWasmHasToBeLoaded();
+    const wanted = wholeNumberOfZeroOrMore("numPcs", numPcs);
+    const calculated = kinshipPrincipalComponents(
+      this.matrix,
+      this.individuals.length,
+      wanted,
+    );
+    try {
+      // The projections are moved out of the result and not cloned, as the
+      // matrix of `calcKinship` is: they are read once, into the object
+      // this gives back, and the memory of wasm is freed after it.
+      return {
+        numComps: calculated.num_comps(),
+        projections: theValuesOf(calculated.projections(), "projections"),
+      };
+    } finally {
+      calculated.free();
+    }
+  }
+
+  /**
    * The rows and the columns of `individuals`, in the order they are named
    * here, with `numVars` and `passStats` as they are.
    *
@@ -258,6 +322,29 @@ function theMatrixIsSymmetric(
       }
     }
   }
+}
+
+/**
+ * Where each individual of a kinship falls along the directions in which the
+ * panel varies most.
+ *
+ * The rows of `projections` are the individuals of the kinship in the order
+ * it has them, which its `individuals` names, and its columns are the
+ * components from the one the panel varies most along. It is what the Python
+ * package gives as a pandas frame indexed by the names of the individuals.
+ */
+export interface KinshipPcs {
+  /**
+   * How many components were given: the `numPcs` that were asked for, or
+   * the components the matrix has above the tolerance when it has fewer.
+   */
+  readonly numComps: number;
+  /**
+   * Where each individual falls along each component, the individuals x
+   * `numComps`, row after row: the projection of the individual `i` on the
+   * component `j` is the value at `i * numComps + j`.
+   */
+  readonly projections: Float64Array;
 }
 
 /** How the kinship of the variants of a dataset is taken. */
