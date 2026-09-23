@@ -123,6 +123,42 @@ diploids is 0 for the same genotype, 1 for two genotypes with no allele
 in common and 0.5 otherwise, averaged over the variants at which both
 genotypes are called. `docs/specs/dists.md`.
 
+**Hudson's F_ST.** The distance between two populations that says how
+much of the diversity the two hold together lies between them rather than
+within them, estimated as Bhatia et al. (2013) recommend for SNPs: the
+sum over the variants of the between population heterozygosity minus the
+within one, over the sum of the between one. `fst` in identifiers.
+`docs/specs/dists.md`. Not used: the fixation index, and F_ST alone where
+a text could mean Nei's G_ST, which popnei also gives and which is a
+different number.
+
+**f_2.** The distance between two populations that is how far their allele
+frequencies have drifted apart, the numerator of Hudson's F_ST over the
+variants that counted, with the sampling bias taken out. It adds up along
+a tree, which is what f_3 and f_4 are built on. `f2` in identifiers.
+`docs/specs/dists.md`.
+
+**chord distance.** The distance between two populations of Cavalli-Sforza
+and Edwards: the square root of every allele frequency puts each
+population on a sphere of radius 1, and the distance is the straight line
+between them. It is Euclidean, so a principal coordinate analysis of a
+matrix of them has no negative eigenvalues. Its square is Nei's D_A.
+`chord` and `da` in identifiers. `docs/specs/dists.md`.
+
+**Jost's D.** The distance between two populations that says how much of
+their allelic variety is not shared, 0 when they have the same alleles at
+the same frequencies and 1 when they share none. It answers a different
+question from F_ST, and it is the one to read on markers with many
+alleles. pyNei: `calc_jost_dest_pop_dists`, and `dest` in identifiers,
+after the D_est the literature writes. `docs/specs/dists.md`.
+
+**resampling group.** The variants that a standard error leaves out
+together: a stretch of one chromosome, or one variant. The literature
+calls it a block and calls the method the block jackknife; popnei says
+group, because a block here is the run of variants a reader gives.
+`jackknife_group` in identifiers. `docs/specs/dists.md`. Not used: block,
+window.
+
 **distance vector.** The distances of every pair of N individuals or
 populations as one array, in the order (0, 1), (0, 2), ..., (0, N-1),
 (1, 2), ..., the upper triangle of the square matrix row by row.
