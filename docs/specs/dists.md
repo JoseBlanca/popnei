@@ -765,6 +765,39 @@ variant is its own group, which is what a dataset of a few hundred
 microsatellite loci scattered over a genome wants, and which a dataset of
 linked SNPs must not use.
 
+A length needs the variants of each chromosome to come together and in
+order of position, and the pass refuses a source whose variants go back.
+The cut compares the position of a variant with the first position of the
+group being filled, so a variant that goes back joins that group instead
+of starting one of its own: on the biallelic panel cut into groups of
+5000 base pairs, with the variant at 600 000 of `chr1` moved in front of
+the variant at 1000, the 1200 variants fall into 121 groups where the
+panel in order gives 240, one of those groups holds every variant of
+`chr1` and carries 600 000 as its first position and 599 000 as its last,
+and the standard error of f_2 for p0 and p1 is 0.0018968 where the panel
+in order gives 0.0017814, 6 in 100 higher. f_2 itself does not move, and
+neither do the six sums: they are sums over the variants and nothing in
+them depends on where the groups were cut. A standard error resampled
+over groups that are not the stretches the user asked for is a number
+nobody should quote, so the pass raises instead of giving it. A variant
+whose position is below the position of the variant before it on the same
+chromosome, and a variant of a chromosome that the variant before it had
+left, are an error that names the chromosome and the two positions, and
+that says which of the two cases it is. In Python it is a `ValueError`,
+as a source this calculation cannot be made over. Sorting the variants
+instead would hold the whole dataset in memory, which the streaming goal
+of `docs/objectives.md`, that a dataset never has to fit in memory, does
+not allow.
+
+`"variant"` and no groups at all take a source in any order. Each variant
+is its own group with `"variant"` whatever order the variants come in, so
+leaving a group out leaves that one variant out and no standard error
+moves; with no groups the pass asks for neither the chromosome nor the
+position and has nothing to check. The linkage disequilibrium filter of
+`docs/specs/filters.md` refuses the same two cases for the same reason,
+and it and these groups are the two parts of popnei that need the
+variants of each chromosome to come together and in order of position.
+
 The estimator is the delete-m jackknife for unequal m of Busing, Meijer
 and van der Leeden (1999, Statistics and Computing 9: 3, DOI
 10.1023/A:1008800423698), which is what the f-statistics literature uses,
@@ -1389,7 +1422,10 @@ and asks it for the genotypes, and for the chromosome and the position
 too when the groups are stretches of a chromosome. Its errors: a pass that
 gave no variant, `PassGaveNoVariant`, the case that every calculation over
 a pass raises and that the Kosman item above describes; fewer than two populations;
-fewer than 20 resampling groups; and the
+fewer than 20 resampling groups; a variant that goes back where the
+groups are stretches of a chromosome, which is either a position below
+the position of the variant before it on that chromosome or a chromosome
+the variant before it had left, "The standard errors" above; and the
 memory for the sums, asked of the machine at the first block. Each is a
 `ValueError` in Python. `Pops` is the populations of
 `docs/specs/stats.md`, which already refuses a name that is not an
