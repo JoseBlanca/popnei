@@ -761,10 +761,27 @@ mod tests {
         }
     }
 
-    /// The entries of the two reference panels are plink2's within one unit
-    /// of the last digit it prints for an entry of that size: it writes six
-    /// significant digits, so an entry near 1 is rounded by up to 5e-6.
+    /// What the table of literals of `docs/specs/kinship.md` is held to, one
+    /// unit of the last digit plink2 prints for an entry near 1: its text
+    /// holds six significant digits, so it rounds such an entry by up to
+    /// 5e-6. It is the bound of those eleven numbers and of nothing else;
+    /// the whole of each matrix is compared with the `f64` plink2 holds,
+    /// where there is room to find an error of the arithmetic.
     const OF_PLINK2: f64 = 1e-5;
+
+    /// What the 40000 entries of each panel are held to against the `f64` of
+    /// plink2, relative to the entry.
+    ///
+    /// Measured over both panels with this bound lowered until it failed:
+    /// every entry is within 4e-13 and one is not within 3e-13, an entry of
+    /// 4.88e-05 that is 1.59e-17 from plink2's. The largest ratios are all
+    /// at the smallest entries, where the two libraries add the same
+    /// products in a different order; the largest difference in absolute
+    /// terms is 4.44e-16 and 5.55e-16. This bound is between two and three
+    /// times the worst of them, so it holds and it would catch an error of
+    /// the arithmetic of 1e-11 relative, where the 1e-5 absolute of the text
+    /// plink2 prints would pass one of 5e-6.
+    const OF_THE_BITS_OF_PLINK2: f64 = 1e-12;
 
     /// The worked example is whole numbers, which pyNei gives within
     /// 4.4e-16, so nothing of it is near this.
@@ -901,6 +918,54 @@ mod tests {
         match individuals.iter().position(|held| held == name) {
             Some(at) => at,
             None => panic!("{name} is not an individual of the file"),
+        }
+    }
+
+    /// The 40000 entries of one of the panels as plink2 holds them, the
+    /// little endian `f64` of `--make-rel square bin`, row after row.
+    ///
+    /// The text of `--make-rel square` beside it holds six significant
+    /// digits, which rounds an entry near 1 by up to 5e-6: it is what the
+    /// table of literals of `docs/specs/kinship.md` is read from, and these
+    /// are what the whole of the matrix is compared with.
+    fn the_bits_of_plink2(name: &str) -> Vec<f64> {
+        use std::io::Read;
+
+        let path = the_reference_path(&format!("{name}.plink2.rel.bin.gz"));
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let mut bytes = Vec::new();
+        if let Err(error) = flate2::read::GzDecoder::new(file).read_to_end(&mut bytes) {
+            panic!("{path}: {error}", path = path.display());
+        }
+        bytes
+            .chunks_exact(8)
+            .map(|eight| f64::from_le_bytes(eight.try_into().expect("eight bytes of an f64")))
+            .collect()
+    }
+
+    /// Every entry of the matrix is plink2's within 1e-12 relative, and the
+    /// individuals are `s000` to `s199` in the order plink2 wrote them in,
+    /// which is the order of the VCF and what `<name>.plink2.rel.id` says.
+    fn assert_the_matrix_is_plink2s(panel: &(Vec<String>, Kinship), name: &str) {
+        let (individuals, kinship) = panel;
+        for (at, individual) in individuals.iter().enumerate() {
+            assert_eq!(individual, &format!("s{at:03}"), "the individual at {at}");
+        }
+        let of_plink2 = the_bits_of_plink2(name);
+        assert_eq!(
+            of_plink2.len(),
+            kinship.matrix.len(),
+            "the entries of {name}"
+        );
+        for (at, (entry, expected)) in kinship.matrix.iter().zip(&of_plink2).enumerate() {
+            let apart = (entry - expected).abs();
+            assert!(
+                apart <= OF_THE_BITS_OF_PLINK2 * expected.abs(),
+                "the entry {at} of {name} is {entry} and plink2 has {expected}, {apart} apart"
+            );
         }
     }
 
@@ -1165,6 +1230,20 @@ mod tests {
         assert_eq!(missing.num_vars, 1200);
         assert_eq!(called.num_individuals, 200);
         assert_eq!(missing.num_individuals, 200);
+    }
+
+    /// The whole of the matrix, all 40000 entries, against the `f64` plink2
+    /// wrote, which is the check of the arithmetic; the eleven tests below
+    /// are of the eleven literals of the spec and of the six digits its
+    /// table holds.
+    #[test]
+    fn the_whole_matrix_with_every_genotype_called_is_plink2s() {
+        assert_the_matrix_is_plink2s(&the_panel_called(), "panel_called");
+    }
+
+    #[test]
+    fn the_whole_matrix_with_genotypes_missing_is_plink2s() {
+        assert_the_matrix_is_plink2s(&the_panel_with_genotypes_missing(), "panel");
     }
 
     #[test]
