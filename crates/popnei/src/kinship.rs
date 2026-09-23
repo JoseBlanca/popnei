@@ -41,8 +41,8 @@ use crate::variant::{
 pub use crate::variant::MAX_INDIVIDUALS_OF_THE_VARIANTS;
 
 /// The kinship of every pair of a set of individuals, which the pass gives
-/// away so that a binding crate hands it to numpy or to a `Float64Array`
-/// without copying it.
+/// away so that the Python binding hands the matrix to numpy without
+/// copying it; the wasm binding copies it into a `Float64Array`.
 #[derive(Debug, Clone)]
 pub struct Kinship {
     /// How many individuals the matrix has on each of its two sides.
@@ -51,7 +51,14 @@ pub struct Kinship {
     /// used. A variant whose called genotypes all have one dosage, and one
     /// with no called genotype, are in neither the sum of a pair nor its
     /// denominator.
-    pub num_vars: usize,
+    pub num_vars: u64,
+    /// How many variants the reader gave, used or not, which is the
+    /// `num_vars` of the pass stats.
+    ///
+    /// It is counted after `reblock`, which is where this pass sees the
+    /// variants; `reblock` gives every variant it is given, so it is the
+    /// count a reader between the pass and its source would make.
+    pub num_vars_given: u64,
     /// `num_individuals` x `num_individuals`, row after row, symmetric.
     pub matrix: Vec<f64>,
 }
@@ -189,6 +196,7 @@ pub fn calc_kinship<R: BlockReader>(
     Ok(Kinship {
         num_individuals,
         num_vars,
+        num_vars_given,
         matrix: gram,
     })
 }
@@ -215,9 +223,9 @@ struct ThePass {
     /// How many variants each pair had called in both.
     denominators: Denominators,
     /// How many variants had variance and were used.
-    num_vars: usize,
+    num_vars: u64,
     /// How many variants the reader gave, used or not.
-    num_vars_given: usize,
+    num_vars_given: u64,
 }
 
 /// The one pass over the blocks: each block is standardized into a buffer
@@ -251,8 +259,8 @@ fn the_pass_over_the_blocks<R: BlockReader>(
 ) -> Result<ThePass> {
     let mut gram = vec![0.0; the_values_of(num_individuals)];
     let mut denominators = Denominators::OfEveryPair;
-    let mut num_vars = 0_usize;
-    let mut num_vars_given = 0_usize;
+    let mut num_vars = 0_u64;
+    let mut num_vars_given = 0_u64;
     // The two buffers of one block, kept from one block to the next so that
     // a pass over a million variants asks for them once. The rows that were
     // not used are left as they were and nothing reads them.
@@ -271,7 +279,12 @@ fn the_pass_over_the_blocks<R: BlockReader>(
             ploidy,
             options,
             RowPositions {
-                first: num_vars_given,
+                // Where the first variant of this block is among those the
+                // reader has given, which the error of a variant with more
+                // than two alleles names. A pass of more variants than a
+                // `usize` counts is the error of a pass too large, and in
+                // WebAssembly, where a `usize` is 32 bits, it is reachable.
+                first: usize::try_from(num_vars_given).map_err(|_| the_variants_are_too_many())?,
                 too_many: the_variants_are_too_many,
             },
             &mut standardized,
@@ -295,10 +308,10 @@ fn the_pass_over_the_blocks<R: BlockReader>(
             )?;
         }
         num_vars = num_vars
-            .checked_add(kept)
+            .checked_add(the_count_of(kept))
             .ok_or_else(the_variants_are_too_many)?;
         num_vars_given = num_vars_given
-            .checked_add(block.num_vars)
+            .checked_add(the_count_of(block.num_vars))
             .ok_or_else(the_variants_are_too_many)?;
     }
     Ok(ThePass {
@@ -334,7 +347,7 @@ fn the_denominators_of_the_block(
     used: &[bool],
     kept: usize,
     num_individuals: usize,
-    num_vars_before: usize,
+    num_vars_before: u64,
     called: &mut Vec<f64>,
     denominators: &mut Denominators,
 ) -> Result<()> {
@@ -464,7 +477,7 @@ fn the_entries_of(
     gram: &mut [f64],
     num_individuals: usize,
     denominators: &Denominators,
-    num_vars: usize,
+    num_vars: u64,
 ) -> Result<()> {
     match *denominators {
         Denominators::OfEveryPair => {
@@ -608,6 +621,17 @@ fn the_values_of(num_individuals: usize) -> usize {
 )]
 fn the_values_of_the_rows(num_vars: usize, num_individuals: usize) -> usize {
     num_vars * num_individuals
+}
+
+/// A count of the variants of one block as the count over the whole dataset
+/// it is added to.
+///
+/// A `usize` is 64 bits natively and 32 in WebAssembly, and both of them fit
+/// in a `u64`. A platform where one did not would give the largest `u64`
+/// here, which the sum of the pass refuses as more variants than it counts
+/// instead of wrapping.
+fn the_count_of(num_vars: usize) -> u64 {
+    u64::try_from(num_vars).unwrap_or(u64::MAX)
 }
 
 /// The error of a pass that gave more variants than a `usize` counts, which
