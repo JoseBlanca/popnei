@@ -86,20 +86,36 @@ So on both hot paths the crate's own code is 3 to 4 per 100 of the time
 and the library underneath is 60 to 78. The rest of the analysis is the
 decompression of the file, 21%, and the standardizing of the rows, 8%.
 
-## 2. The verdict: run the experiments, and two decisions are the owner's
+## 2. The verdict: run the experiments, and they were run
 
-There are candidates and their order is in section 3. None is an "apply":
-the largest thing this crate's own code costs on a measured path is the
-scan, at 2.9% and 3.6% of on-CPU samples, and the three reviewers who
-looked at it disagree by three times about whether a cheaper loop would
-recover any of it. That disagreement is what the first experiment
-settles.
+The experiments of section 3 were run, and sections 8 and 9 hold what they
+gave. In short:
 
-Two things are the owner's and are in section 5 as such: whether to take
-the promise, which is a change to "Errors" of `docs/specs/linalg.md`; and
-what to do about the eigendecomposition on faer giving a different result
-at each number of threads, which is a departure from popnei's own rule and
-was found by measurement in this review.
+**No optimization of this crate's code is kept.** The crate's own code is
+3 to 4 per 100 of both measured paths and the library underneath is 60 to
+78, so there was little here to take. The one change that was tried, a
+cheaper form of the scan, was measured on both benchmarks and reverted: it
+is genuinely cheaper in isolation and neither benchmark can see it.
+
+**One thing is kept: the benchmark the crate did not have**, at `a58b8f7`.
+It times eleven of the fourteen operations on both backends, and it makes
+the numbers of `docs/specs/linalg.md` reproducible for the first time.
+Building it found two things nothing else would have: the table of the
+seven operations of the association study holds, and "Speed" does not add
+up.
+
+**One finding is confirmed and worth taking when there is a caller.** On
+the shape the association study will use once per variant, a 5 x 5 with
+one right hand side for each of 10000 individuals, faer on one thread is
+2.7 times faster than faer on the pool. That is L6, and it is the largest
+gain this review found.
+
+**Two things are the owner's** and are in section 5 as such: whether to
+take the promise, which is a change to "Errors" of `docs/specs/linalg.md`;
+and what to do about the eigendecomposition on faer giving a different
+result at each number of threads, which is a departure from popnei's own
+rule, was found by measurement here, and whose cure was priced and is
+expensive.
 
 ## 3. The measurement plan
 
