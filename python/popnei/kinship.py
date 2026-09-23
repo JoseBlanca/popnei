@@ -87,10 +87,11 @@ class Kinship:
         ``TypeError`` when `matrix` is not a pandas frame and when a row or
         a column of it is labelled with what is no name, which are the two
         faults of a type. ``ValueError`` when it holds what is no number;
-        when it is not square; when its index and its columns are not the
-        same individuals in the same order; when an individual is named
-        twice; when an entry is not finite; and when it is further from its
-        own transpose than 1e-9 of its largest absolute entry.
+        when it is not square; when it has no row at all; when its index and
+        its columns are not the same individuals in the same order; when an
+        individual is named twice; when an entry is not finite; and when it
+        is further from its own transpose than 1e-9 of its largest absolute
+        entry.
         """
         if not isinstance(self.matrix, pandas.DataFrame):
             raise TypeError(
@@ -106,6 +107,16 @@ class Kinship:
                 f"the frame is {rows} by {columns}, and the kinship of a set "
                 f"of individuals is a square matrix with one row and one "
                 f"column for each of them"
+            )
+        if rows == 0:
+            # A frame of no row is square and names nobody twice, so every
+            # other check here lets it past, and only
+            # `principal_components` would have complained. TypeScript
+            # refuses it in its constructor and the two packages refuse the
+            # same matrices.
+            raise ValueError(
+                "the frame has no row, and a kinship is the matrix of every "
+                "pair of a set of individuals: there is no pair in it"
             )
         names = list(self.matrix.index)
         columns_of = list(self.matrix.columns)
@@ -156,7 +167,16 @@ class Kinship:
         frame of no columns and is no error, as asking a principal component
         analysis for no components is not; a negative one, and what is no
         whole number, are a ``ValueError`` and a ``TypeError`` that name the
-        argument.
+        argument. A matrix of no individual, and one holding a value that is
+        not finite, are a ``ValueError`` too: the checks of ``__post_init__``
+        are made when the object is built and the frame it holds can be
+        written into afterwards, so they are made again here, and the second
+        of the two names the row and the column of the value.
+
+        The lower half of the matrix is what the components are taken from,
+        since it is symmetric: a value written above its diagonal after the
+        object was built changes no component, and is refused only for not
+        being finite.
 
         These are close to the principal components of the variants the
         kinship was calculated from and they are not the same, because the
@@ -175,10 +195,13 @@ class Kinship:
         value gives means nothing. And pyNei leaves the sign of a component
         to the library that decomposed the matrix.
         """
-        # A frame of one dtype lies column after column, which the core
-        # would read as the transpose: for a matrix that is symmetric only
-        # within the tolerance of `__post_init__` that is other numbers, and
-        # the core reads the lower half alone.
+        # A frame of one dtype lies column after column, and the binding
+        # crate refuses an array that does not lie row after row, naming
+        # `matrix` and `numpy.ascontiguousarray`: without this line a user
+        # gets that `ValueError` for a frame of theirs that is right. The
+        # copy is what the core works in, and reading it as it lies would be
+        # reading the transpose, which for a matrix that is symmetric only
+        # within the tolerance of `__post_init__` is other numbers.
         values = numpy.ascontiguousarray(
             self.matrix.to_numpy(dtype=numpy.float64), dtype=numpy.float64
         )

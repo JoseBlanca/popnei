@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     /// Where the individual of that name is in the file.
-    fn individual_at(individuals: &[String], name: &str) -> usize {
+    pub(super) fn individual_at(individuals: &[String], name: &str) -> usize {
         match individuals.iter().position(|held| held == name) {
             Some(at) => at,
             None => panic!("{name} is not an individual of the file"),
@@ -1956,8 +1956,8 @@ mod cases {
 #[cfg(test)]
 mod components {
     use super::tests::{
-        the_kinship_of, the_panel_called, the_panel_with_genotypes_missing, the_worked_example,
-        variant, vcf_of,
+        individual_at, the_kinship_of, the_panel_called, the_panel_with_genotypes_missing,
+        the_worked_example, variant, vcf_of,
     };
     use super::{Kinship, KinshipPcs, principal_components, the_components_with_variance};
     use crate::error::Error;
@@ -1970,8 +1970,15 @@ mod components {
     const OF_NUMPY: f64 = 1e-9;
 
     /// The three largest eigenvalues of `panel_called`, from numpy 2.5.3 on
-    /// 23 September 2026.
-    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] = [17.26914116, 12.44731524, 3.35871258];
+    /// 23 September 2026, written to 15 digits.
+    ///
+    /// They had 9, and popnei is 4e-16 of itself from what numpy gives
+    /// while the third of them rounded to 9 digits is 8.5e-10 away, 85% of
+    /// the 1e-9 they are held to: a change that is right and moves an
+    /// eigenvalue by 1.5e-10 would have reddened this and the two suites
+    /// that assert the same three numbers.
+    const THE_EIGENVALUES_OF_THE_PANEL: [f64; 3] =
+        [17.269_141_155_457_5, 12.447_315_235_850_9, 3.358_712_577_141_36];
 
     /// The projections of the two components of the worked example of "How
     /// it is verified" of `docs/specs/kinship.md`, from numpy 2.5.3 on 23
@@ -2076,8 +2083,9 @@ mod components {
     }
 
     /// The sum of the squares of the projections of a component is its
-    /// eigenvalue, and the three largest of `panel_called` are 17.26914116,
-    /// 12.44731524 and 3.35871258 from numpy 2.5.3.
+    /// eigenvalue, and the three largest of `panel_called` are
+    /// 17.2691411554575, 12.4473152358509 and 3.35871257714136 from numpy
+    /// 2.5.3.
     #[test]
     fn the_first_three_components_of_the_panel_hold_the_eigenvalues_numpy_gives() {
         let (_, kinship) = the_panel_called();
@@ -2252,6 +2260,72 @@ mod components {
 
         assert_eq!(of_the_called.num_comps, 199, "panel_called");
         assert_eq!(of_the_missing.num_comps, 199, "panel");
+    }
+
+    /// The projection of `s000` and of `s199` on the first component of
+    /// `panel_called`, from numpy 2.5.3 on 24 September 2026 with the sign
+    /// rule applied: 0.0506331222853770 and -0.2797284741269570.
+    ///
+    /// They say which individual each row of the matrix of projections
+    /// belongs to, which nothing else of this crate reads: the two tests of
+    /// a panel above it are a sum over the rows and the sign of the largest
+    /// of them, and both are the same numbers when two individuals are
+    /// swapped for each other. Swapping the rows 0 and 1 of the
+    /// eigenvectors leaves every other test of the crate passing.
+    #[test]
+    fn the_first_component_of_the_panel_places_two_named_individuals_where_numpy_does() {
+        let (individuals, kinship) = the_panel_called();
+
+        let pcs = the_components_of(&kinship, 10);
+
+        assert_eq!(pcs.num_comps, 10);
+        for (name, of_numpy) in [
+            ("s000", 0.050_633_122_285_377),
+            ("s199", -0.279_728_474_126_957),
+        ] {
+            let at = individual_at(&individuals, name);
+            // The projections are the individuals x the components, row
+            // after row, so the first component of an individual is where
+            // its row starts.
+            let projection = pcs.projections[at * pcs.num_comps];
+            assert!(
+                (projection - of_numpy).abs() < OF_NUMPY,
+                "the first component of {name} is {projection} and numpy gives {of_numpy}"
+            );
+        }
+    }
+
+    /// The components come in the order of their eigenvalues, from the
+    /// largest, which is what makes `PC0` the direction the panel varies
+    /// most along.
+    ///
+    /// The eigenvalue of a component is the sum of the squares of its
+    /// projections, since a component is `u_j * sqrt(lambda_j)` and `u_j`
+    /// has length 1. All 199 of a panel are read: two components past the
+    /// tenth can be swapped for each other with every literal of every
+    /// suite still asserting what it did, and a user who asks for 60
+    /// components gets two of them in the wrong order.
+    #[test]
+    fn the_components_of_a_panel_come_in_the_order_of_their_eigenvalues() {
+        let (_, called) = the_panel_called();
+        let (_, missing) = the_panel_with_genotypes_missing();
+
+        for (name, kinship) in [("panel_called", called), ("panel", missing)] {
+            let pcs = the_components_of(&kinship, 200);
+            let mut of_the_component: Vec<f64> = vec![0.0; pcs.num_comps];
+            for of_the_individual in pcs.projections.chunks_exact(pcs.num_comps) {
+                for (sum, projection) in of_the_component.iter_mut().zip(of_the_individual) {
+                    *sum += projection * projection;
+                }
+            }
+            for (at, pair) in of_the_component.windows(2).enumerate() {
+                let (this, next) = (pair[0], pair[1]);
+                assert!(
+                    this >= next,
+                    "the eigenvalue of the component {at} of {name} is {this} and the one after it {next}"
+                );
+            }
+        }
     }
 
     /// Asking for no component is not an error and gives none, as asking a

@@ -418,10 +418,18 @@ test("a matrix that is not a Float64Array says what was given", () => {
  * gives an eigenvalue: a component is `u_j * sqrt(lambda_j)` and `u_j` has
  * length 1, so the sum of the squares of a component's projections is its
  * eigenvalue. This package runs on faer, which the wasm builds take, and
- * measured there the first of the three is 17.269141155457458, 2.6e-10 of
+ * measured there the first of the three is 17.269141155457458, 3e-16 of
  * itself from the literal below.
+ *
+ * The three are written to 15 digits and not to the 9 they had: at 9
+ * digits the third of them is 8.5e-10 from what popnei gives, 85% of the
+ * bound below, and a change that is right and moves an eigenvalue by
+ * 1.5e-10 would have reddened this file and the two other suites that
+ * assert the same three numbers.
  */
-const EIGENVALUES_OF_THE_PANEL = [17.26914116, 12.44731524, 3.35871258];
+const EIGENVALUES_OF_THE_PANEL = [
+  17.2691411554575, 12.4473152358509, 3.35871257714136,
+];
 
 /** How far a sum of squares may be from its eigenvalue, as a part of it. */
 const OF_THE_EIGENVALUES = 1e-9;

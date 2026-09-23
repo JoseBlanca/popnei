@@ -581,9 +581,13 @@ normalization, and it was not run. What is checked instead:
   the first 10 components within 1e-9 relative, the absolute value because
   pyNei does not fix the sign. Each component of popnei has to obey the
   sign rule exactly.
-- That the three largest eigenvalues of `panel_called` are 17.26914116,
-  12.44731524 and 3.35871258, from numpy 2.5.3 on 23 September 2026, within
-  1e-9 relative. No function gives an eigenvalue, so the check is made at
+- That the three largest eigenvalues of `panel_called` are
+  17.2691411554575, 12.4473152358509 and 3.35871257714136, from numpy 2.5.3
+  on 23 September 2026, within 1e-9 relative. They are written to 15 digits
+  and not to 9: popnei is 4e-16 of itself from what numpy gives, and the
+  third of them rounded to 9 digits is 8.5e-10 away, which is 85% of that
+  bound, so a change that is right and moves an eigenvalue by 1.5e-10 would
+  redden all three suites. No function gives an eigenvalue, so the check is made at
   `principal_components`, on the sum of the squares of each component's
   projections: a component is `u_j * sqrt(lambda_j)` and `u_j` has length 1,
   so that sum is `lambda_j` itself.

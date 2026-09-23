@@ -9,12 +9,16 @@ genotype called as a gzipped VCF, and, for it and for the panel of
 that `plink2 --make-rel square` wrote for it with the individuals of that
 matrix in its order.
 
-The two checks the spec asks for are against plink2 v2.0.0-a.7.7, within
-1e-5 absolute, which is one unit of the last of the six significant digits
-plink2 prints for an entry near 1; and against pyNei at commit ef0ca6e,
-which `pyproject.toml` names, within 1e-12 relative, because the two
-libraries add the variants of a pair in different orders. pyNei reads the
-same VCFs, so both libraries are given the same genotypes.
+The two checks the spec asks for are against plink2 v2.0.0-a.7.7 and against
+pyNei at commit ef0ca6e, which `pyproject.toml` names. pyNei reads the same
+VCFs, so both libraries are given the same genotypes. Each entry is held
+within a share of the largest absolute entry of the matrix it is compared
+with, the rule of "How it is verified" of the spec: an entry of a kinship is
+a sum of products that cancel, so it can be as near 0 as the data makes it
+while the rounding of its sum stays where it was, and a bound relative to
+the entry asks the smallest entries for an accuracy no arithmetic gives. The
+one entry read from the digits plink2 prints is held to 1e-5 absolute, which
+is what six significant digits of an entry near 1 allow.
 
 The datasets that no file holds are written here as small VCFs: the worked
 example of the spec, the pair of individuals that were never called
@@ -45,16 +49,21 @@ PANELS = ("panel_called", "panel")
 PANEL_NUM_VARS = 1200
 PANEL_NUM_INDIVIDUALS = 200
 
-# What the tests compare within, and why. The whole of each matrix is held
-# to 1e-12 relative against the float64 plink2 wrote, which "How it is
-# verified" of the spec gives: the worst entry of the two panels is 3.3e-13
-# away as a ratio, at the smallest entries, where the two libraries add the
-# same products in a different order, so 1e-12 is two to three times the
-# worst and not a wide margin. pyNei is held to the same bound for the same
-# reason. The one entry read from the text plink2 prints is held to 1e-5
-# absolute, which is what six significant digits of an entry near 1 allow.
-OF_PLINK2 = 1e-12
-OF_PYNEI = 1e-12
+# What the tests compare within, and why. Each entry of a matrix is held to
+# a share of the largest absolute entry of the matrix it is compared with,
+# 1.23 on both panels: the rule and the reason for it are in "How it is
+# verified" of the spec, and the cargo tests of the core hold their entries
+# to the same one. Measured over the 40000 entries of each panel on 24
+# September 2026, the largest difference as a share of that entry is 3.6e-16
+# and 4.5e-16 from plink2 with the linear algebra on Accelerate and 3.3e-15
+# and 2.3e-15 on faer, which `maturin develop --no-default-features` and the
+# wheel of pyodide build; from pyNei it is 0 on both panels on Accelerate,
+# where the two libraries give the same bits, and 3.3e-15 and 2.5e-15 on
+# faer. The bound is thirty times the worst of those. The one entry read
+# from the text plink2 prints is held to 1e-5 absolute, which is what six
+# significant digits of an entry near 1 allow.
+OF_PLINK2 = 1e-13
+OF_PYNEI = 1e-13
 OF_THE_PRINTED_DIGITS = 1e-5
 
 # The individuals 10 to 49 of the panel with every genotype called, the 40
@@ -193,6 +202,14 @@ def _panel(name: str) -> Path:
     return REFERENCE_KINSHIP_DIR / f"{name}.vcf.gz"
 
 
+def _assert_the_values_are(ours, theirs, share: float) -> None:
+    """Every value of `ours` within `share` of the largest absolute value of
+    `theirs`, which is the rule of "How it is verified" of the spec."""
+    numpy.testing.assert_allclose(
+        ours, theirs, rtol=0, atol=share * numpy.abs(theirs).max()
+    )
+
+
 def _plink2_matrix(name: str) -> numpy.ndarray:
     """The 40000 entries of a panel as plink2 holds them, the little endian
     float64 of `--make-rel square bin`, row after row.
@@ -232,9 +249,7 @@ def test_every_entry_of_a_panel_is_the_one_plink2_wrote(name: str) -> None:
     assert kinship.individuals == _plink2_individuals(name)
     assert kinship.matrix.shape == (PANEL_NUM_INDIVIDUALS, PANEL_NUM_INDIVIDUALS)
     assert of_plink2.shape == kinship.matrix.shape
-    numpy.testing.assert_allclose(
-        kinship.matrix.to_numpy(), of_plink2, rtol=OF_PLINK2, atol=0
-    )
+    _assert_the_values_are(kinship.matrix.to_numpy(), of_plink2, OF_PLINK2)
     if name == "panel_called":
         assert kinship.matrix.loc["s000", "s001"] == pytest.approx(
             OF_TWO_FULL_SIBS, abs=OF_THE_PRINTED_DIGITS
@@ -253,9 +268,7 @@ def test_every_entry_of_a_panel_is_pyneis(name: str) -> None:
 
     assert ours.num_vars == theirs.num_vars
     assert ours.individuals == tuple(theirs.samples)
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_the_kinship_of_40_individuals_is_not_the_40_rows_of_the_whole_panel() -> None:
@@ -289,9 +302,7 @@ def test_the_kinship_of_40_individuals_is_pyneis() -> None:
 
     assert ours.num_vars == theirs.num_vars
     assert ours.individuals == tuple(theirs.samples)
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_the_individuals_are_taken_in_the_order_they_were_named(vcf_of) -> None:
@@ -409,9 +420,7 @@ def test_a_variant_of_three_alleles_is_refused_and_transformed_when_asked(
     theirs = pynei_kinship(vars_from_vcf(path))
 
     assert ours.num_vars == theirs.num_vars
-    numpy.testing.assert_allclose(
-        ours.matrix.to_numpy(), theirs.matrix.to_numpy(), rtol=OF_PYNEI, atol=0
-    )
+    _assert_the_values_are(ours.matrix.to_numpy(), theirs.matrix.to_numpy(), OF_PYNEI)
 
 
 def test_a_pair_with_no_variant_called_in_both_names_the_two(vcf_of) -> None:
@@ -650,6 +659,31 @@ def test_a_matrix_holding_an_infinity_is_refused_as_well() -> None:
         _kinship_of([[numpy.inf, 0.5], [0.5, 1.0]], ["a", "b"])
 
 
+def test_a_matrix_of_no_row_is_refused() -> None:
+    """A frame with no row at all, which is square and names nobody twice,
+    so every other check of the class lets it past.
+
+    TypeScript refuses it in its constructor and the two packages refuse the
+    same matrices; before this it was `principal_components` alone that
+    complained, and everything else a user did with it worked."""
+    with pytest.raises(ValueError, match="no row"):
+        Kinship(matrix=pandas.DataFrame(), num_vars=10)
+
+
+def test_a_value_written_into_the_matrix_after_it_was_built_is_refused() -> None:
+    """The frame of a frozen `Kinship` is not frozen, so the checks made
+    when it was built hold only then: the components make them again.
+
+    Without that, the linear algebra is what refuses the matrix, with a
+    `RuntimeError` that calls a wrong matrix a defect of popnei and names
+    `g`, which is a matrix of `crates/popnei-linalg`."""
+    kinship = _kinship_of([[1.0, 0.5], [0.5, 1.0]], ["a", "b"])
+    kinship.matrix.iloc[1, 0] = numpy.nan
+
+    with pytest.raises(ValueError, match="row 1, column 0"):
+        kinship.principal_components(2)
+
+
 def test_filter_individuals_refuses_a_call_that_names_no_individual() -> None:
     """An empty list, which would give a kinship of nobody carrying the
     `num_vars` of the panel it came from."""
@@ -781,7 +815,13 @@ def test_the_kinship_of_a_calculation_passes_the_checks_of_a_matrix(vcf_of) -> N
 # gives an eigenvalue, so they are read from the projections: a component is
 # `u_j * sqrt(lambda_j)` and `u_j` has length 1, so the sum of the squares of
 # a component's projections is its eigenvalue.
-EIGENVALUES_OF_PANEL_CALLED = (17.26914116, 12.44731524, 3.35871258)
+#
+# They are written to 15 digits and not to the 9 they had: popnei is 4e-16
+# of itself from what numpy gives, and the third eigenvalue rounded to 9
+# digits is 8.5e-10 away, which is 85% of the 1e-9 they are held to. A
+# change that is right and moves an eigenvalue by 1.5e-10 would have
+# reddened this.
+EIGENVALUES_OF_PANEL_CALLED = (17.2691411554575, 12.4473152358509, 3.35871257714136)
 
 # How many components a panel of 200 individuals has. A kinship measures a
 # pair against the average pair of the panel, which takes one direction out
@@ -789,17 +829,26 @@ EIGENVALUES_OF_PANEL_CALLED = (17.26914116, 12.44731524, 3.35871258)
 # `panel_called` and -0.0321 on `panel`, against a tolerance of 7.67e-13.
 COMPONENTS_OF_A_PANEL = 199
 
-# How many components the comparison with pyNei is over, and the tolerance
-# the spec asks for. pyNei takes the square root of the absolute value of an
-# eigenvalue below 0 and popnei does not, so the two agree on the components
-# above the tolerance alone; the third eigenvalue of the panel with genotypes
-# missing is 3.36, far above it. Measured on 23 September 2026 with numpy on
-# Accelerate, the worst projection of the first 10 components is 1.27e-11 of
-# itself away from pyNei's on `panel_called` and 2.44e-11 on `panel`, and the
-# smallest projection compared is 8.5e-06, so no projection is near enough to
-# 0 for the bound to ask of it what no arithmetic gives.
-FIRST_COMPONENTS = 10
-OF_THE_PROJECTIONS_OF_PYNEI = 1e-9
+# The comparison with pyNei is over every component a panel has, 199 of
+# them, and not over the first ten alone: two components past the tenth can
+# be swapped for each other and nothing else of either suite notices.
+#
+# Each projection is held within a share of the largest absolute projection
+# of pyNei's, as the entries of the matrix are and for the same reason: the
+# smallest projection of the 199 components is 1.7e-06 and a bound relative
+# to it would ask of it what no arithmetic gives. Measured on 24 September
+# 2026, the worst projection is 1.3e-13 of the largest away from pyNei's on
+# both panels with numpy and popnei both on Accelerate, and 5.1e-13 and
+# 1.7e-12 with popnei on faer, where the last components, whose eigenvalues
+# are close together, are what differs. The bound is six times the worst of
+# those.
+#
+# pyNei takes the square root of the absolute value of an eigenvalue below
+# 0 and popnei does not, so the two agree on the components above the
+# tolerance alone, which is why this asks for the 199 a panel has and not
+# for 200.
+COMPONENTS_OF_PYNEI = 199
+OF_THE_PROJECTIONS_OF_PYNEI = 1e-11
 
 # The kinship of two individuals called at one variant, `0/0` and `1/1`,
 # which "How it is verified" gives: its matrix is 2 on the diagonal and -2
@@ -820,25 +869,31 @@ def _the_pops() -> pandas.Series:
 
 
 @pytest.mark.parametrize("name", PANELS)
-def test_the_first_ten_components_of_a_panel_are_pyneis(name: str) -> None:
-    """Both libraries on the same panel, projection by projection.
+def test_every_component_of_a_panel_is_pyneis(name: str) -> None:
+    """Both libraries on the same panel, projection by projection, over
+    every one of the 199 components a panel has.
 
     The absolute value of each of them is what is compared: the sign of a
     component is popnei's own rule and pyNei gives whatever LAPACK gave, and
     a component multiplied by -1 is the same component.
+
+    All 199 and not the first ten: two components past the tenth can be
+    swapped for each other with every other test of every suite still
+    passing, and a user who asks for 60 gets two of them in the wrong order.
     """
-    ours = calc_kinship(open_vcf(_panel(name))).principal_components(FIRST_COMPONENTS)
+    ours = calc_kinship(open_vcf(_panel(name))).principal_components(
+        COMPONENTS_OF_PYNEI
+    )
     theirs = pynei_kinship(vars_from_vcf(_panel(name))).principal_components(
-        FIRST_COMPONENTS
+        COMPONENTS_OF_PYNEI
     )
 
-    assert ours.shape == (PANEL_NUM_INDIVIDUALS, FIRST_COMPONENTS)
+    assert ours.shape == (PANEL_NUM_INDIVIDUALS, COMPONENTS_OF_PYNEI)
     assert list(ours.index) == list(theirs.index)
-    numpy.testing.assert_allclose(
+    _assert_the_values_are(
         numpy.abs(ours.to_numpy()),
         numpy.abs(theirs.to_numpy()),
-        rtol=OF_THE_PROJECTIONS_OF_PYNEI,
-        atol=0,
+        OF_THE_PROJECTIONS_OF_PYNEI,
     )
 
 
