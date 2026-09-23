@@ -954,8 +954,10 @@ products of each:
 | popnei, at the tile of 1000 variants it uses | 76263680 | 13131840 |
 
 So popnei does about half the arithmetic and takes 0.386 s against numpy's
-0.455 s: **per unit of arithmetic popnei is about 1.5 times slower than
-numpy on Accelerate**, on the same machine and through the same library.
+0.455 s, which is 0.848 of numpy's time for 0.509 of its product cells, so
+**per unit of arithmetic popnei is about 1.7 times slower than numpy on
+Accelerate**, on the same machine and through the same library. On the
+calculation alone, 0.380 s against the same 0.455 s, it is 1.6 times.
 Meeting 0.50 s says the calculation is fast enough for a user; it does not
 say the code is level with numpy. Whether the target should be restated as
 about 0.25 s, which is the like-for-like figure, is Open 3 below.
@@ -1099,7 +1101,7 @@ instead of six on the diagonal, so it does about half that arithmetic:
 76263680 cells of products against numpy's 150000000. It takes 0.386 s, so
 it meets the target. The options are to keep 0.50 s, which is what a user
 waits for and which the calculation now meets; or to restate it as about
-0.25 s, the like-for-like figure, against which popnei is 1.5 times slower
+0.25 s, the like-for-like figure, against which popnei is 1.7 times slower
 than numpy on Accelerate through the same library, which is what would say
 whether the code itself is good. What the second costs is that the spec
 then states a target popnei does not meet, and no experiment of
