@@ -1468,11 +1468,17 @@ a pass raises and that the Kosman item above describes; fewer than two populatio
 fewer than 20 resampling groups; a variant that goes back where the
 groups are stretches of a chromosome, which is either a position below
 the position of the variant before it on that chromosome or a chromosome
-the variant before it had left, "The standard errors" above; and the
-memory for the sums, asked of the machine at the first block. Each is a
-`ValueError` in Python. `Pops` is the populations of
-`docs/specs/stats.md`, which already refuses a name that is not an
-individual of the reader and a population with no individual.
+the variant before it had left, "The standard errors" above; the
+memory for the sums, asked of the machine at the first block; populations
+that make more pairs than a `usize` counts, which is about 93000 of them
+where a `usize` is 32 bits, as it is in wasm; and a reader whose ploidy is
+0 or above 255, the largest a reader of popnei gives, which the allele
+frequencies of a population are raised to. Each is a `ValueError` in
+Python. One more is a `RuntimeError`, a defect of popnei: the sums of a
+resampling group that do not hold one place for each pair of the
+populations, which the rows of every block are added into. `Pops` is the
+populations of `docs/specs/stats.md`, which already refuses a name that is
+not an individual of the reader and a population with no individual.
 
 ```rust
 /// It has no `Default`: both fields are the caller's to decide, and the
