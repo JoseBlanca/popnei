@@ -1490,8 +1490,26 @@ popnei gives the later one, which the owner decided on 23 September 2026:
 it is what a reader of the microsatellite literature now sees, and it is
 the only one of the two that a program outside the project computes, so it
 is the only one whose literals are not popnei's own arithmetic against
-nothing. The option not taken was Hedrick's G'_ST, which a user who wants
-it gets from `gst` with one division, G_ST * (1 + H_S) / (1 - H_S).
+nothing. The option not taken was Hedrick's G'_ST, which is
+G_ST * (1 + mean H_S') / (1 - mean H_S').
+
+No result of popnei carries the mean H_S' of a pair, and a user who
+wants G'_ST takes it from G_ST and D, which together determine it. With
+d = mean H_T' - mean H_S',
+
+    d         = 1 / (1 / G_ST - 1 + 2 / D)
+    mean H_S' = 1 - 2 * d / D
+    G'_ST     = G_ST * (1 + mean H_S') / (1 - mean H_S')
+
+For p0 and p1 of the biallelic panel that gives a mean H_S' of 0.351109
+and the G'_ST of 0.115481 written above as 0.1155. The unbiased expected
+heterozygosity of `docs/specs/stats.md` is not that mean: it corrects
+for the sample in another way and is of one population and not of the
+two pooled. Over those same two populations, at the same default of 20
+called genotypes, its mean is 0.351160, which agrees with the mean H_S'
+to four digits and would give a G'_ST that nobody could tell from the
+right one. The doc comment of `gst_standardized`, in both packages,
+carries the three lines above for that reason.
 
 Neither is Hudson's F_ST, although all three are called fixation measures.
 They differ in what they correct for and in how the variants are combined:
