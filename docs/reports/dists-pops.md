@@ -1,15 +1,49 @@
 # Work report: the distances between populations
 
-The plan `docs/plans/dists-pops.md` is under way on the branch
+The plan `docs/plans/dists-pops.md` is done, on the branch
 `plan/dists-pops`, in the worktree `.claude/worktrees/plan-dists-pops`,
-since 23 September 2026. It builds seven distances between every pair of
-populations out of one pass over the variants, each with a jackknife
-standard error, through the core crate, both binding crates and both
-packages. Nothing is merged into `main` and nothing is pushed.
+23 September 2026. All eleven of its tasks are carried out, every
+deliverable of its three work packages was checked by running it, and both
+reviews are done and their findings fixed. Nothing is merged into `main`
+and nothing is pushed: that is asked of the owner at the end of this
+report, with four smaller decisions.
 
-This report is written while the work goes. It has a section for each
-work package as it finishes, and the top of it will say, when the plan is
-done, what exists that did not and what is asked of the owner.
+## What exists now that did not
+
+A user calls `calc_pop_dists(variants, pops, jackknife_group=...)` in
+Python or `calcPopDists` in TypeScript and gets, for every pair of
+populations out of one pass over the variants, seven numbers with a
+jackknife standard error each: Hudson's F_ST, f_2, the chord distance,
+Nei's D_A, Jost's D, Nei's G_ST and the standardized G''_ST, with the
+variants that counted for each pair, the f_2 of each pair within each
+resampling group, the groups themselves and the counts of the pass.
+
+How far the numbers are from the programs they were checked against, each
+measured on the commit this report ends at:
+
+| against | measure | how far |
+|---|---|---|
+| pyNei, live | Jost's D | 5.5e-15 relative, worst of three pairs, biallelic panel; 8.5e-15 multiallelic |
+| adegenet 2.1.11 | the chord distance | the same double for all three pairs of the biallelic panel read in one block; 6.7e-16 absolute, 2.0e-15 relative, multiallelic |
+| plink2 v2.0.0-a.7.7 | Hudson's F_ST | 4.9e-7 absolute, biallelic; 4.0e-8 multiallelic |
+| ADMIXTOOLS 2.0.10 | f_2 and its standard error | within 1e-12 relative at three block sizes |
+| mmod 1.3.3 | Jost's D, G_ST, G''_ST | 7.2e-5 to 1.9e-4 biallelic, 9.0e-5 to 4.7e-4 multiallelic, which is an estimator difference and not an error |
+
+The tests: 61 in the core module where the branch began with 0, 39 in
+Python and 236 in the TypeScript package, where neither file existed. The
+whole suite is 582 cargo tests in the core crate, 353 Python tests and 236
+TypeScript tests, all passing, with every check of the `coding` skill
+green.
+
+The spec gained fifteen paragraphs it did not have, each in a commit of
+its own before the code that needed it, and `docs/architecture.md` gained
+a row for the new module. Everything the spec left unsaid that the work
+ran into is written down; the plan has no open point left.
+
+## This report is written while the work goes
+
+It has a section for each work package as it finished, in the order they
+were done. What the owner has to decide is at the end.
 
 ## What was in place before the first task
 
@@ -778,3 +812,110 @@ constants with each other and could not fail. The clamp that keeps D_A at
 zero or above would have turned a NaN into a zero, since that is what the
 maximum of a NaN and zero gives, which was a hazard rather than a defect
 since no NaN can reach it today.
+
+## What is asked of the owner
+
+### The merge
+
+The branch `plan/dists-pops` is not merged and not pushed. It is based on
+`spec/dists-pops`, not on `main`, because `docs/specs/dists.md` is on that
+branch and was not merged when this plan started. So the order to merge is
+two orders: `spec/dists-pops` into `main` and then this branch, or this
+branch into `spec/dists-pops` and the pair into `main`. Nothing else on
+either branch conflicts with `main` as it stood when this plan began, but
+`main` has moved since and the merge will say.
+
+The speed was deliberately left out of this plan, and the performance
+review measures it after the merge, which the owner decided on 23
+September 2026. Nothing here has been timed and no speed is claimed.
+
+### Four decisions, none of which the plan rests on
+
+**1. A `Distances` of populations says "individuals".** `repr` of any of
+the seven gives `<Distances of 3 individuals, 3 pairs>`. The class was
+written for the distances between individuals and the spec gives it only
+the new `standard_errors` field for this item, so the noun stayed. Two
+subagents noticed it without being asked.
+
+- Take the noun out of the repr: `<Distances of 3 names, 3 pairs>` or
+  `<Distances of 3, 3 pairs>`. One line, no new field, and the individual
+  case reads slightly worse.
+- Give `Distances` what its names are of, a field set by whoever builds
+  it. One field on a public frozen dataclass and its TypeScript twin, and
+  both repr lines then read right.
+
+Recommended: the second. The class now serves two things and a reader of
+either should not be told the other.
+
+**2. G''_ST where Jost's D has no value.** Both divide by 1 minus the mean
+corrected within-population diversity. The spec gives the exception to
+Jost's D "for Dest alone", so where that mean is exactly 1 and the two
+corrected diversities differ, G''_ST comes out infinite. Where they are
+equal it is a 0 over 0, which this plan's review made give no value like
+the rest. Both are reachable from genotypes, the second by four
+individuals in two populations with one variant of four distinct
+homozygotes.
+
+- Leave it. "Alone" is explicit and may be deliberate.
+- Give G''_ST the same exception. One arm of one match, and the word
+  "alone" comes out of the spec.
+
+Recommended: the second, unless "alone" was a decision. An infinity is not
+a missing value, and popnei's rule everywhere else is that a value which
+cannot be computed is absent rather than a number a user might plot.
+
+**3. Jost's D and G''_ST can leave the range 0 to 1.** When half-called
+genotypes make a population's called alleles more than twice its called
+genotypes, or at a ploidy above 2, the mean corrected within-population
+diversity can pass 1, and then D and G''_ST cross a pole: a reviewer
+measured D at -18.5, then -7.5e14, then 19.0 as one variant was added at a
+time. pyNei does the same, and a reviewer confirmed popnei reproduces
+pyNei's numbers there, so popnei is faithful and this is inherited, not
+introduced. The spec says D runs 0 to 1, and the guard in the code tests
+that divisor for exactly zero, which catches one point of something that
+crosses zero.
+
+- Leave it and say in the spec that the bound holds for whole-called
+  diploids only, which this plan has not yet done.
+- Give D and G''_ST no value where that mean is at or above 1, which
+  departs from pyNei in a case pyNei gets wrong.
+
+Recommended: the second, with the first done either way. The objectives
+put being right first, and a distance of -7.5e14 is not a number to hand
+anybody; but it is a departure from pyNei on a value a user sees, which is
+why it is here and not decided.
+
+**4. The machinery that refuses a measure with no value.** All seven
+measures now have one, so the list in the core and the refusal in each
+package refuse nothing. The two reviewers who were asked disagreed: one
+would remove it, since the core already matches on the measure with no
+catch-all arm and a measure without a formula is a compile error, so the
+only case the separate list can still catch is a measure popnei computes
+that someone forgot to list, which it would then refuse wrongly; the other
+would keep the two lines and reword the messages. The orchestrator took
+the second, because rewording removed the real defect, which was messages
+that described the state of this plan, and removing public API from three
+crates on a reviewer's opinion is not a thing to do without the owner.
+
+- Leave it as it is now.
+- Remove it, and take `THAT_HAVE_A_VALUE`, `has_a_value` and
+  `names_that_have_a_value` out of the core and the two binding crates.
+
+Recommended: leave it until f_3 and f_4 are written, which is a spec of
+their own and the next thing that would add a measure. Then whoever writes
+them will know whether it earns its place.
+
+### Two things for an issue, not for this branch
+
+Neither is this plan's code and both are small.
+
+- Population names that look like numbers come out in a different order
+  in TypeScript than in Python, because JavaScript puts integer-like
+  object keys first. Nothing is mislabelled, since the result carries the
+  population order, but the pairs come out in a different order in the two
+  packages. It affects `docs/specs/stats.md`'s functions too, and the fix
+  is an API decision: take the populations as an array of pairs, or refuse
+  a name JavaScript would reorder.
+- `cargo wasm-check` builds the core and the linear algebra crates only,
+  so the pyo3 crate, which the `coding` skill says builds twice, is never
+  checked for emscripten by the routine commands.
