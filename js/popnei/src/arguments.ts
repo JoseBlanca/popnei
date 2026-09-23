@@ -75,14 +75,20 @@ export function wholeNumberOfOneOrMore(
  * `value` when it is a whole number of 0 or more that the core holds, and an
  * `Error` that names `argument` and what was given otherwise.
  *
- * Two arguments come through here. `numPrinComps`, how many components the
- * weights are asked for, where 0 is the call that asks for none: a negative
- * number would arrive as a count of about four thousand million, which the
- * generated code makes of it, and be read as more components than any
- * dataset has. And `minNumSnps`, how many variants a pair of individuals
- * needs before it gets a distance, where 0 is every pair that was called at
- * all, and a negative number is refused, where pyNei takes one and does with
- * it what it does with 0.
+ * What it refuses is what would reach the core as another number: the
+ * generated code throws the fraction of 2.5 away, keeps 2^32 + 2 modulo
+ * 2^32 and turns a negative number into a count of about four thousand
+ * million. Whether the number is one the argument takes, a histogram of 1
+ * bin or more and a ploidy of 1 to 255, is a rule of the core, which holds
+ * for every pass and not for this call alone.
+ *
+ * The arguments that come through here all take 0: `numPrinComps`, how many
+ * components the weights are asked for, where 0 asks for none;
+ * `minNumSnps`, how many variants a pair of individuals needs before it
+ * gets a distance, where 0 is every pair that was called at all and where
+ * pyNei takes a negative number and does with it what it does with 0; and
+ * `minNumIndividuals`, `ploidy` and `histKwargs.numBins` of the per variant
+ * statistics, whose own rules the core holds.
  *
  * @throws {Error} When `value` is not such a number.
  */
@@ -172,6 +178,27 @@ export function distanceInBasePairs(argument: string, value: unknown): number {
 }
 
 /**
+ * `value` when it is a string, and an `Error` that names `argument` and what
+ * was given otherwise.
+ *
+ * Which strings the argument takes, the two kinds of bins of a histogram
+ * among them, is a rule of the core: it refuses a name it does not know and
+ * writes the ones it knows in the message. What the generated code does with
+ * what is no string at all is to throw a `TypeError` of its own, which names
+ * neither the argument nor what was given.
+ *
+ * @throws {Error} When `value` is not a string.
+ */
+export function aString(argument: string, value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(
+      `popnei: \`${argument}\` is a name, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
  * `value` when it is a number, and an `Error` that names `argument` and what
  * was given otherwise.
  *
@@ -247,6 +274,18 @@ export function bytes(argument: string, value: unknown): Uint8Array {
   return value;
 }
 
+/** What one of the names is and an example of one, for the message. */
+export interface WhatTheNamesAre {
+  /** What one name is, `field` or `individual`. */
+  oneOfThem: string;
+  /**
+   * A name of that kind, `chrom` or `ind00`, which the message writes
+   * inside the array the user should have written. What they gave is
+   * written there instead when it is one name as a string.
+   */
+  anExample: string;
+}
+
 /**
  * The values of `value` when it is a `Float64Array` that holds a table of
  * `numRows` rows of `numCols` values each, row after row, and that the
@@ -303,7 +342,8 @@ export function valuesOfATable(
 
 /**
  * The names of `value` when it is an array of strings, and an `Error`
- * otherwise.
+ * otherwise, which says what one of them is, a `field` or an `individual`,
+ * and writes an example of it in what the user should have written.
  *
  * One name written where the array goes, `fields: "alleles"`, is the case
  * this catches: a string spread into an array is its letters, and popnei
@@ -311,12 +351,17 @@ export function valuesOfATable(
  *
  * @throws {Error} When `value` is not an array of strings.
  */
-export function namesOfFields(argument: string, value: unknown): string[] {
+export function namesOf(
+  argument: string,
+  value: unknown,
+  whatTheNamesAre: WhatTheNamesAre,
+): string[] {
   if (!Array.isArray(value) || value.some((name) => typeof name !== "string")) {
+    const { oneOfThem, anExample } = whatTheNamesAre;
     throw new Error(
       `popnei: \`${argument}\` is an array of names, and ${whatWasGiven(value)} ` +
-        `was given; one field is asked for with ${argument}: ` +
-        `${typeof value === "string" ? `["${value}"]` : '["chrom"]'}`,
+        `was given; one ${oneOfThem} is asked for with ${argument}: ` +
+        `["${typeof value === "string" ? value : anExample}"]`,
     );
   }
   return value as string[];

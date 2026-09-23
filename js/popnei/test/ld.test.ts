@@ -359,9 +359,11 @@ test("a source with no variant says so", async () => {
     ),
   );
   try {
+    // The sentence is the core's, the one every calculation over a pass
+    // gives, which `dists.test.ts` asserts whole for the distances.
     assert.throws(
       () => calcRogersHuffR2Matrix(variants),
-      /the source has no variant/,
+      /the pass gave no variant and its source holds none/,
     );
   } finally {
     variants.free();

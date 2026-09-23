@@ -16,17 +16,22 @@
 //! `io` the VCF reader, which parses the lines of a file into the rows of a
 //! block; `variant` what the other modules say about one variant: which
 //! fields a consumer wants, the table of the chromosome names and the view
-//! of one variant of a block; and `filters` the variants that a user keeps
-//! by a threshold, with the counts of what each filter was given and kept.
-//! The modules that calculate are being written. `pca` gives the
-//! principal components of a table of numbers, individuals by traits,
-//! and of the variants of a reader; `dists` holds the Kosman distance of
-//! every pair of individuals over the variants of a reader, counted from
-//! the genotypes of each block as sets of bits; and `ld` reads the
-//! genotypes as dosages, how many alleles of a genotype are not the major
-//! allele of its variant, which is what r², how much the genotype of one
-//! variant says about the genotype of another, is worked out from.
-//! `docs/architecture.md` has the order of the ones that follow.
+//! of one variant of a block; `filters` the variants that a user keeps
+//! by a threshold, with the counts of what each filter was given and kept;
+//! and `stats` the populations a statistic is calculated for, each a named
+//! set of individuals, with the pass over the variants that gives, for each
+//! population, the mean and the histogram of five statistics of a variant:
+//! the observed heterozygosity, the major allele frequency, the expected
+//! heterozygosity, plain and unbiased, and how many variants vary. `pca`
+//! gives the principal components of a table of numbers, individuals by
+//! traits, and of the variants of a reader; `dists` holds the Kosman
+//! distance of every pair of individuals over the variants of a reader,
+//! counted from the genotypes of each block as sets of bits; and `ld`
+//! reads the genotypes as dosages, how many alleles of a genotype are not
+//! the major allele of its variant, which is what r², how much the
+//! genotype of one variant says about the genotype of another, is worked
+//! out from. The modules that follow them are being written, and
+//! `docs/architecture.md` has their order.
 //!
 //! The linear algebra those modules need, the products of matrices and
 //! the eigendecomposition, is not a module here but a crate beside this
@@ -43,6 +48,7 @@ pub mod filters;
 pub mod io;
 pub mod ld;
 pub mod pca;
+pub mod stats;
 pub mod variant;
 
 pub use error::{Error, Result};

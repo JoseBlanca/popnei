@@ -28,11 +28,10 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::filters::FilteringStats;
 use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, R2Matrix as R2MatrixOfTheCore, calc_r2_matrix};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, of_the_pass, positions_of};
+use crate::source::{OpenSource, PassCounts, positions_of};
 use crate::steps::{Steps, chain_of};
 
 /// The r² of every pair of the variants of a pass, with the chromosome and
@@ -158,11 +157,7 @@ pub(crate) fn r2_matrix_of(
 ) -> Result<R2Matrix, JsPopneiError> {
     let reader = source.reader(None)?;
     let mut chain = chain_of(reader, steps.steps())?;
-    let calculated = calc_r2_matrix(&mut chain, max_num_vars);
-    let matrix = match calculated {
-        Ok(matrix) => matrix,
-        Err(error) => return Err(of_this_pass(error, &chain.filtering_stats())),
-    };
+    let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
     let num_vars = matrix.num_vars();
     let counted = u64::try_from(num_vars).map_err(|_| {
         JsPopneiError::Broken(format!(
@@ -189,17 +184,17 @@ pub(crate) fn r2_matrix_of(
 
 /// What a pass of this calculation failed with, on its way to a TypeScript
 /// user: the cap on its variants under the name that user wrote it in, and
-/// everything else as `of_the_pass` of `source.rs` gives it, which is the
-/// pass with no variant said with the counts of its filters.
+/// everything else as the core says it.
 ///
 /// The core names the cap `max_num_vars`, which is the argument of the
 /// Python package, and the call a TypeScript user has to look at is
 /// `calcRogersHuffR2Matrix(variants, { maxNumVars })`. It is what
 /// `under_the_argument` of `steps.rs` does for the threshold of a filter.
-fn of_this_pass(
-    error: popnei::Error,
-    filtering: &[(&'static str, FilteringStats)],
-) -> JsPopneiError {
+///
+/// A pass that gave no variant is one of the rest: the core builds that
+/// message itself, with the counts it reads from the chain it was lent, so
+/// that it is the same sentence whichever calculation asked for the pass.
+fn of_this_pass(error: popnei::Error) -> JsPopneiError {
     if let popnei::Error::LdTooManyVars {
         num_vars,
         max_num_vars,
@@ -212,7 +207,7 @@ fn of_this_pass(
             bytes,
         };
     }
-    of_the_pass(error, filtering)
+    JsPopneiError::Core(error)
 }
 
 /// The name of the chromosome of each variant of `matrix`, read through the

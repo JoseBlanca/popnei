@@ -32,6 +32,11 @@ pub enum JsPopneiError {
     /// Something the core read that JavaScript does not hold: a position
     /// above 2^53, which a float64 rounds.
     NotInJavaScript(String),
+    /// An argument this crate refuses before the core sees it, because it
+    /// is the crate and not the core that knows the names a user writes:
+    /// the name of a statistic and the kind of the bins of a histogram,
+    /// each of a finite set of names, whose message writes the set.
+    Refused(String),
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -59,13 +64,6 @@ pub enum JsPopneiError {
         /// pair.
         bytes: u64,
     },
-    /// A pass that gave no variant, and a calculation cannot run over none:
-    /// the source holds no variant, or the filters of the pass kept none.
-    /// The core says that its reader gave no variant, and which of the two
-    /// it was, with the counts of each filter when it was the filters, is
-    /// what this crate adds, because it is the one that holds the chain of
-    /// readers of the pass.
-    NoVariant(String),
     /// The memory of wasm does not take what was asked of it: the bytes of
     /// a file that is being given to popnei. A failed allocation aborts in
     /// wasm, and an abort is a trap that leaves the module unusable, so
@@ -73,7 +71,11 @@ pub enum JsPopneiError {
     NoMemory(String),
     /// Something that cannot happen unless this crate has a defect: a
     /// chromosome whose number is not in the table of the reader that gave
-    /// it.
+    /// it, a variant with more alleles than a JavaScript array of counts
+    /// holds, populations the pass was not given the name or the
+    /// individuals of every one of, a histogram that does not hold one
+    /// count for each bin of its distribution, or a pass that gave a
+    /// different number of names of individuals and of rates.
     Broken(String),
 }
 
@@ -119,7 +121,7 @@ impl From<JsPopneiError> for JsValue {
                  or filter the variants"
             ),
             JsPopneiError::NotInJavaScript(message)
-            | JsPopneiError::NoVariant(message)
+            | JsPopneiError::Refused(message)
             | JsPopneiError::NoMemory(message)
             | JsPopneiError::Broken(message) => message,
         };

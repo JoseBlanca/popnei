@@ -120,23 +120,6 @@ pub(crate) enum PyPopneiError {
         message: String,
     },
 
-    /// A pass that gave a calculation no variant, with the file it read and
-    /// what each filter of its chain was given and kept, the outermost
-    /// filter first.
-    ///
-    /// The core says that the reader gave no variant and no more: it is
-    /// given a chain of readers and does not know whether the source held no
-    /// variant or the steps kept none, and the counts of a pass that could
-    /// not be finished reach nobody otherwise, as "A pass that was not
-    /// finished" of `docs/specs/filters.md` says. This crate holds the chain,
-    /// so it reads them from it and builds the message.
-    NoVariant {
-        /// The file the variants were read from.
-        path: PathBuf,
-        /// The kind of each filter of the pass, how many variants it was
-        /// given and how many it kept, the outermost filter first.
-        filtering: Vec<(&'static str, u64, u64)>,
-    },
     /// A path that a file is already at, given to a call that writes one.
     /// This crate refuses it before the core is called and writes nothing,
     /// which is what `docs/specs/io_vars.md` asks of `write_vars`, as in
@@ -248,13 +231,6 @@ impl From<PyPopneiError> for PyErr {
                  values of an array as they lie: `numpy.ascontiguousarray({name})` \
                  gives one that does"
             )),
-            // A pass that gave no variant is a wrong input of the
-            // calculation and not a result of NaN, so it is a `ValueError`,
-            // whose message starts with the path as that of every error of a
-            // file does.
-            PyPopneiError::NoVariant { path, filtering } => {
-                PyValueError::new_err(of_the_file(no_variant_message(&filtering), Some(path)))
-            }
             // A file that is already at the path is a wrong argument of the
             // call and not an error of the file system, so it is a
             // `ValueError`, whose message starts with the path as that of
@@ -286,54 +262,6 @@ impl From<PyPopneiError> for PyErr {
             PyPopneiError::Python(error) => error,
         }
     }
-}
-
-/// What a user reads of a pass that gave a calculation no variant: which of
-/// the two it was, the source having none or the steps keeping none, and
-/// what each filter was given and kept.
-///
-/// The filters come in the order of the chain, the outermost first, and the
-/// message names them in the order of the steps, which is the one the user
-/// wrote them in. The last of the chain is the innermost, the filter the
-/// source feeds, so a pass whose innermost filter was given no variant is a
-/// pass over a source that has none.
-///
-/// The wording is the one `crates/popnei-js` gives a TypeScript user, word
-/// for word, so that the two languages say the same of the same pass:
-/// `the source has no variant, and a calculation needs 1 variant at least`,
-/// or `the steps kept no variant of the N the source gave, and a calculation
-/// needs 1 variant at least`, and after either, when the pass has filters,
-/// `: the filter `kind` was given n variants and kept m`, joined with `, `.
-fn no_variant_message(filtering: &[(&'static str, u64, u64)]) -> String {
-    // The last filter of the chain is the innermost, the one the source
-    // feeds, so what it was given is what the source gave. A pass with no
-    // filter reaches the calculation from the source itself.
-    let from_the_source = match filtering.last() {
-        Some(&(_, vars_processed, _)) => vars_processed,
-        None => 0,
-    };
-    let what_happened = if from_the_source == 0 {
-        "the source has no variant".to_owned()
-    } else {
-        format!("the steps kept no variant of the {from_the_source} the source gave")
-    };
-    if filtering.is_empty() {
-        return format!("{what_happened}, and a calculation needs 1 variant at least");
-    }
-    let counts: Vec<String> = filtering
-        .iter()
-        .rev()
-        .map(|&(kind, vars_processed, vars_kept)| {
-            format!(
-                "the filter `{kind}` was given {vars_processed} variants and kept \
-                 {vars_kept}"
-            )
-        })
-        .collect();
-    format!(
-        "{what_happened}, and a calculation needs 1 variant at least: {counts}",
-        counts = counts.join(", ")
-    )
 }
 
 /// `raised` with a note that says that the file the call was writing is
@@ -443,12 +371,28 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // the counts have no function in Python, so the genotypes they
         // refuse, the ploidy they were given and a variant of more alleles
         // than a count of them holds are a reader's and not a user's.
-        popnei::Error::GtsNotWholeGenotypes { .. }
+        // The three of `Block::retain_individuals` are of that kind as
+        // well, the indices of the individuals a filter of individuals
+        // keeps: they come from `resolve_individuals`, which refuses the
+        // name behind an index at or beyond the individuals of the block,
+        // behind one that is there twice, and a call that names no
+        // individual at all, so a user who gets one of them has read what a
+        // reader with a defect built. A block that holds the genotypes of
+        // no individual, which a calculation over the variants refuses, is
+        // one more of a reader's: the VCF reader refuses a header with no
+        // individual and a ploidy of 0, which are the two ways a block
+        // comes out like that.
+        popnei::Error::IndividualToKeepNotInTheBlock { .. }
+        | popnei::Error::IndividualToKeepTwice { .. }
+        | popnei::Error::NoIndividualToKeep
+        | popnei::Error::GtsNotWholeGenotypes { .. }
         | popnei::Error::MoreAllelesThanACountHolds { .. }
         | popnei::Error::AlleleBelowTheMissingOne { .. }
+        | popnei::Error::IndividualBeyondTheVariant { .. }
         | popnei::Error::BlocksDoNotFitTogether { .. }
         | popnei::Error::BlockArrayOfAnotherSize { .. }
         | popnei::Error::ReaderGaveABlockOfNoVariants
+        | popnei::Error::BlockWithNoGenotypeOfAVariant { .. }
         | popnei::Error::KeepOfAnotherSize { .. }
         | popnei::Error::VcfParseNotFinished { .. }
         | popnei::Error::VarsBlockDoesNotFit { .. }
@@ -526,7 +470,25 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // to 1, a second filter of a kind the variants are filtered by
         // already, and a window of the filter by linkage disequilibrium
         // that is no base pairs wide, all three of which a user gets at the
-        // call that adds the filter. What is wrong with them is wrong
+        // call that adds the filter. The four of the filter of individuals
+        // are of it too: a name that is
+        // not an individual of the variants, a name that is there twice, a
+        // call that names none, and a second filter of individuals, all of
+        // them what a user wrote in the call that adds the step. The four
+        // of `pops`, the populations a statistic is calculated for, are the
+        // same kind of thing in the argument of the call that calculates
+        // it: a name that is not an individual of the variants, a name
+        // twice in one population, a population that names no individual,
+        // and `pops` with no population at all. The three of the
+        // histogram of a statistic are of the same kind, in `hist_kwargs`:
+        // a histogram of no bin, a range that does not run from a number up
+        // to a larger one, and a range of bins of equal ratio that starts at
+        // 0 or below. So is the ploidy or the exponent of a statistic of one
+        // variant that is 0 or above 255, which the pass of the statistics
+        // names its `ploidy` argument before it comes here. The threshold
+        // below which a variant counts as polymorphic in a population is one
+        // more: `poly_threshold` is a number from 0 to 1, which is where a
+        // major allele frequency lies. What is wrong with them is wrong
         // whatever file is read, so they name no file although some of them
         // are refused while one is being opened.
         popnei::Error::BlockOfNoVariants
@@ -535,6 +497,19 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::VarFilterThresholdOutOfRange { .. }
         | popnei::Error::VarFilterOfAKindThatIsSet { .. }
         | popnei::Error::LdFilterMaxDistTooSmall { .. }
+        | popnei::Error::IndividualNotInTheSource { .. }
+        | popnei::Error::IndividualNamedTwice { .. }
+        | popnei::Error::NoIndividualNamed
+        | popnei::Error::FilterOfIndividualsThatIsSet { .. }
+        | popnei::Error::IndividualOfAPopNotInThePass { .. }
+        | popnei::Error::IndividualNamedTwiceInAPop { .. }
+        | popnei::Error::PopWithNoIndividual { .. }
+        | popnei::Error::NoPop
+        | popnei::Error::HistWithNoBin
+        | popnei::Error::HistRangeNotGoingUp { .. }
+        | popnei::Error::HistLogRangeNotAboveZero { .. }
+        | popnei::Error::StatPloidyOutOfRange { .. }
+        | popnei::Error::PolyThresholdOutOfRange { .. }
         // The four of the table of a principal component analysis that a
         // user writes: a value of it that is not finite, a table to be
         // standardized and not centered, one of fewer than 2 rows or of no
@@ -609,7 +584,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // popnei to refuse. The block with more text
         // or more alleles in one column than a column of a batch takes is
         // one no call from Python reaches: 2147483647 bytes of text or
-        // alleles in one block is more memory than a machine gives.
+        // alleles in one block is more memory than a machine gives. A pass
+        // that gave no variant is here too: which file was read is what a
+        // user needs in order to see whether it is the file that holds
+        // none or the steps that kept none of what it holds, and the
+        // message says which of the two it was.
         _ => PyValueError::new_err(of_the_file(message, path)),
     }
 }

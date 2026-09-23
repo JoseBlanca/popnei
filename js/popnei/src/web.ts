@@ -32,6 +32,17 @@ export type {
   PcaResult,
   VariantsPcaResult,
 } from "./pca.js";
+export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
+export type {
+  BinType,
+  HistKwargs,
+  PerIndividualStats,
+  PerVarDistribs,
+  PerVarDistribsOptions,
+  PerVarStat,
+  PolyVarsStats,
+  StatsDistrib,
+} from "./stats.js";
 export { Variants } from "./variant.js";
 export type { Blocks, IterBlocksOptions, PassStats } from "./variant.js";
 

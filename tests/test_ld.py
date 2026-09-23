@@ -386,7 +386,9 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
     A matrix of no pair is no answer, so a pass that gives no variant is a
     wrong input, as it is for the distances of `docs/specs/dists.md`, and
     the message says whether the source had no variant or the steps kept
-    none.
+    none. It is the one case every calculation over a pass raises, and the
+    core is what writes the sentence, so it is the sentence the distances
+    give.
     """
     path = write_vcf([])
 
@@ -394,7 +396,8 @@ def test_a_source_with_no_variant_is_refused(write_vcf) -> None:
         calc_rogers_huff_r2_matrix(open_vcf(path))
 
     assert str(refusal.value) == (
-        f"{path}: the source has no variant, and a calculation needs 1 variant at least"
+        f"{path}: the pass gave no variant and its source holds none: a "
+        f"statistic of a pass is calculated over the variants it gives"
     )
 
 
@@ -421,9 +424,9 @@ def test_steps_that_kept_no_variant_are_refused_with_what_the_filter_counted(
         calc_rogers_huff_r2_matrix(variants)
 
     assert str(refusal.value) == (
-        f"{path}: the steps kept no variant of the 2 the source gave, and a "
-        f"calculation needs 1 variant at least: the filter `missing_data` "
-        f"was given 2 variants and kept 0"
+        f"{path}: the pass gave no variant: its source gave 2 and the steps "
+        f"kept none of them, the `missing_data` filter was given 2 and kept "
+        f"0; a statistic of a pass is calculated over the variants it gives"
     )
 
 

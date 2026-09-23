@@ -48,20 +48,6 @@ type R2MatrixForPython<'py> = (
     PassCounts,
 );
 
-/// What a pass that could not be finished failed with.
-///
-/// A pass that gave no variant is kept apart from everything else because
-/// the message a user reads is built from the counts of the chain, which the
-/// core does not have: it says whether the source had no variant or the
-/// steps kept none, and what each filter was given and kept.
-enum Refusal {
-    /// What the core refused, which the caller gives the file of the source.
-    Core(popnei::Error),
-    /// The pass gave the calculation no variant, with the counts of each
-    /// filter of its chain, the outermost first.
-    NoVariant(Vec<(&'static str, u64, u64)>),
-}
-
 // The r² of every pair of the variants that the steps of `steps` keep of
 // `source`, with `max_num_vars` the variants the calculation takes before it
 // refuses. What it gives back is the matrix row after row, the name of the
@@ -113,17 +99,12 @@ pub(crate) fn calc_rogers_huff_r2_matrix<'py>(
     // loses only itself, since it writes no file and the `Variants` is as it
     // was.
     let calculated = py.detach(|| over_the_source(source, &steps, max_num_vars));
-    let (matrix, filtering) = match calculated {
-        Ok(calculated) => calculated,
-        // The file of the source goes into every error of the pass, and
-        // `errors.rs` is what leaves it out of the message of the two that
-        // are of the cap a user wrote, as it does for every argument that is
-        // refused while a file is being read.
-        Err(Refusal::Core(error)) => return Err(PyPopneiError::of_the_file(error, &path)),
-        Err(Refusal::NoVariant(filtering)) => {
-            return Err(PyPopneiError::NoVariant { path, filtering });
-        }
-    };
+    // The file of the source goes into every error of the pass, and
+    // `errors.rs` is what leaves it out of the message of the two that are
+    // of the cap a user wrote, as it does for every argument that is refused
+    // while a file is being read.
+    let (matrix, filtering) =
+        calculated.map_err(|error| PyPopneiError::of_the_file(error, &path))?;
     // The variants of the pass, which are the rows of the matrix, go to
     // Python as the `u64` every count of popnei is there: a `usize` is 32
     // bits in WebAssembly and 64 natively, and what a user reads does not
@@ -166,28 +147,21 @@ fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
     max_num_vars: usize,
-) -> Result<TheMatrixOfThePass, Refusal> {
+) -> popnei::Result<TheMatrixOfThePass> {
     // The source is opened at the size of its own blocks: the six sums of a
     // pair run over the individuals, which no block cuts, so the same matrix
     // comes out whatever the size, and no `Reblock` is put over the chain.
-    let reader = source.reader(None).map_err(Refusal::Core)?;
+    let reader = source.reader(None)?;
     // The chain of the pass stays here, lent to the core, so that the counts
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
-    let mut chain = chain_of(reader, steps).map_err(Refusal::Core)?;
-    let matrix = match popnei::ld::calc_r2_matrix(&mut chain, max_num_vars) {
-        Ok(matrix) => matrix,
-        Err(error) => {
-            // A pass that gave no variant is told with the counts of its
-            // filters, which say whether the source had none or the steps
-            // kept none and which nothing else would carry out of a pass
-            // that could not be finished.
-            if matches!(error, popnei::Error::ReaderGaveNoVariants) {
-                return Err(Refusal::NoVariant(filtering_of(chain.as_ref())));
-            }
-            return Err(Refusal::Core(error));
-        }
-    };
+    let mut chain = chain_of(reader, steps)?;
+    // A pass that gave no variant is the core's `PassGaveNoVariant`, which
+    // the core builds with the counts it reads from the chain it was lent:
+    // they say whether the source had none or the steps kept none, and
+    // nothing else would carry them out of a pass that could not be
+    // finished.
+    let matrix = popnei::ld::calc_r2_matrix(&mut chain, max_num_vars)?;
     Ok((matrix, filtering_of(chain.as_ref())))
 }
 

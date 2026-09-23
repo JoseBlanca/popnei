@@ -20,7 +20,7 @@ import { Steps } from "../wasm/popnei.js";
 import {
   aNumber,
   distanceInBasePairs,
-  namesOfFields,
+  namesOf,
   whatWasGiven,
   wholeNumberOfOneOrMore,
 } from "./arguments.js";
@@ -120,14 +120,38 @@ export function passStatsOf(counts: PassCounts): PassStats {
   }
 }
 
+/**
+ * The kind of an argument whose value is the threshold of a filter, which
+ * is in `arg_thresholds`, of one whose value is the names of the
+ * individuals to keep, which are in `arg_individuals`, and of one whose
+ * value is a window of base pairs, which is in `arg_distances`. They are
+ * the three numbers `arg_kinds` of the binding crate gives.
+ */
+const A_THRESHOLD = 0;
+const THE_NAMES_OF_INDIVIDUALS = 1;
+const A_DISTANCE = 2;
+
 /** The steps of the core as the steps a user reads, in their order. */
 function stepsOf(steps: StepsOfTheCore): Step[] {
   const kinds = steps.kinds();
   const names = steps.arg_names();
-  const values = steps.arg_values();
   const numArgsPerStep = steps.num_args_per_step();
+  // The value of an argument crosses in the array of its kind: the
+  // threshold of a filter is one number, and the individuals to keep are
+  // their names, one argument after another. Which array each argument is
+  // read from is the kind that crosses beside it, and an argument of a
+  // kind this version of the package does not know is thrown for and not
+  // read as a threshold.
+  const argKinds = steps.arg_kinds();
+  const numNamesPerArg = steps.num_names_per_arg();
+  const thresholds = steps.arg_thresholds();
+  const individuals = steps.arg_individuals();
+  const distances = steps.arg_distances();
   const ofEachStep: Step[] = [];
-  let first = 0;
+  let firstArg = 0;
+  let nextThreshold = 0;
+  let nextDistance = 0;
+  let firstName = 0;
   for (const [step, kind] of kinds.entries()) {
     // The arguments of every step cross flat, the ones of the first step
     // first, and how many each step has is what cuts them apart.
@@ -138,19 +162,57 @@ function stepsOf(steps: StepsOfTheCore): Step[] {
           "arguments every one of them has",
       );
     }
-    const args: Record<string, number> = {};
-    for (let argument = first; argument < first + numArgs; argument += 1) {
+    const args: Record<string, unknown> = {};
+    for (let argument = firstArg; argument < firstArg + numArgs; argument += 1) {
       const name = names[argument];
-      const value = values[argument];
-      if (name === undefined || value === undefined) {
+      const argKind = argKinds[argument];
+      const numNames = numNamesPerArg[argument];
+      if (name === undefined || argKind === undefined || numNames === undefined) {
         throw new Error(
           `popnei: the step \`${kind}\` of these variants holds ${numArgs} ` +
-            `arguments and not the name and the value of every one of them`,
+            `arguments and not the name and the kind of every one of them`,
         );
       }
-      args[name] = value;
+      if (argKind === A_THRESHOLD) {
+        const threshold = thresholds[nextThreshold];
+        if (threshold === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a threshold and has no number",
+          );
+        }
+        args[name] = threshold;
+        nextThreshold += 1;
+      } else if (argKind === A_DISTANCE) {
+        const distance = distances[nextDistance];
+        if (distance === undefined) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              "variants is a window of base pairs and has no number",
+          );
+        }
+        args[name] = distance;
+        nextDistance += 1;
+      } else if (argKind === THE_NAMES_OF_INDIVIDUALS) {
+        const kept = individuals.slice(firstName, firstName + numNames);
+        if (kept.length !== numNames) {
+          throw new Error(
+            `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+              `variants holds ${numNames} names and not every one of them`,
+          );
+        }
+        args[name] = kept;
+        firstName += numNames;
+      } else {
+        throw new Error(
+          `popnei: the argument \`${name}\` of the step \`${kind}\` of these ` +
+            `variants is of the kind ${argKind}, which this version of the ` +
+            "package does not know; the package and the wasm it was built " +
+            "with are of one version",
+        );
+      }
     }
-    first += numArgs;
+    firstArg += numArgs;
     ofEachStep.push({ kind, args });
   }
   return ofEachStep;
@@ -242,21 +304,36 @@ export class Variants {
    *
    * The names of the individuals and the ploidy are read here, from the
    * header of the VCF or the schema of the vars file that was read once, so
-   * that they answer without the core.
+   * that they answer without the core. The names go to the steps as well,
+   * which resolve the names of a filter of individuals against them.
    */
   constructor(source: SourceOfVariants) {
+    const steps = new Steps(source.individuals());
     this.#source = source;
-    this.#steps = new Steps();
-    this.#individuals = Object.freeze(source.individuals());
+    this.#steps = steps;
+    // The names of the individuals the next pass gives, which the steps are
+    // what says: those of the source until a filter of individuals is put
+    // on them. They are kept in JavaScript so that `individuals` answers
+    // after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
     this.#ploidy = source.ploidy();
   }
 
-  /** The names of the individuals, in the order the source has them. */
+  /**
+   * The names of the individuals the next pass gives, in its order.
+   *
+   * They are those of the source, in the order the source has them, until
+   * `filterIndividuals` is put on the `Variants`: from then on they are the
+   * ones that filter keeps, in the order they were named, which is the
+   * order of the genotypes of every block. A pass changes nothing of them,
+   * so they are the same read before one and after one, and they answer
+   * after `free` as well: they are in JavaScript.
+   */
   get individuals(): readonly string[] {
     return this.#individuals;
   }
 
-  /** How many individuals the source holds. */
+  /** How many individuals the next pass gives the genotypes of. */
   get numIndividuals(): number {
     return this.#individuals.length;
   }
@@ -438,6 +515,53 @@ export class Variants {
   }
 
   /**
+   * Keeps the genotypes of `individuals` at every variant and drops those of
+   * the rest.
+   *
+   * Every variant stays: the step takes columns of the genotypes away and no
+   * row, so it has no entry in the counts of a pass. The individuals are
+   * kept in the order they are named here, which is the order of the
+   * genotypes of every block and of the rows of every result over
+   * individuals, so it is also the way to put a dataset's individuals in the
+   * order a user wants. pyNei's `filter_samples` keeps them in the order of
+   * the source instead.
+   *
+   * A step of it is what every step that comes after it sees:
+   * `filterByMissingData` before the call divides by all the individuals of
+   * the source, and after it by the kept ones alone. `individuals` and
+   * `numIndividuals` are the kept ones from the call on, since they are what
+   * the next pass gives.
+   *
+   * The call adds a step and gives nothing back.
+   *
+   * @throws {Error} When `individuals` is not an array of names, which one
+   * name written as a string is: the call would ask for the individuals
+   * `i`, `n`, `d` and so on. A name that is not an individual of the source
+   * is an `Error` that names it, where pyNei drops it in silence and gives
+   * the individuals it did find; a name that is there twice is one too,
+   * since one individual is kept once; and so is a call with no name,
+   * because variants of nobody are no dataset. A second filter of
+   * individuals on the same `Variants` is an `Error` as well: two lists keep
+   * the individuals that are in both, which is one list, so the second says
+   * that the steps are not what their user thinks. A user who wants two sets
+   * of individuals over one file opens it twice. After any of them the steps
+   * are as they were. It also throws when the variants were freed and when
+   * `init` has not been awaited.
+   */
+  filterIndividuals(individuals: readonly string[]): void {
+    theWasmHasToBeLoaded();
+    const kept = namesOf("individuals", individuals, {
+      oneOfThem: "individual",
+      anExample: "ind00",
+    });
+    const steps = this.#stepsThatWereNotFreed();
+    steps.filter_individuals(kept);
+    // The names the next pass gives, which the core is what says: they are
+    // kept here as well so that `individuals` answers after `free`.
+    this.#individuals = Object.freeze(steps.individuals());
+  }
+
+  /**
    * The variants of the source, block by block, from its start.
    *
    * Every call reads the source from its start, so a `Variants` can be
@@ -469,9 +593,10 @@ export class Variants {
     theWasmHasToBeLoaded();
     const source = this.#sourceThatWasNotFreed();
     const steps = this.#stepsThatWereNotFreed();
-    const fields = namesOfFields(
+    const fields = namesOf(
       "fields",
       options.fields === undefined ? FIELDS_OF_A_BLOCK : options.fields,
+      { oneOfThem: "field", anExample: "chrom" },
     );
     const numVarsPerBlock =
       options.numVarsPerBlock === undefined

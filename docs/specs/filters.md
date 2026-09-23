@@ -6,13 +6,16 @@ with few missing genotypes, those whose commonest allele is not too
 frequent, those with few heterozygous individuals, and those that do not
 repeat what a variant near them on the chromosome already said. It also
 tells the user how many variants each filter was given and how many it
-kept. There is code for the first three and the counts, and none for the
-fourth. This spec develops the row `filters` of the table in section 9
+kept. And it keeps, of every variant, the genotypes of the individuals a
+user names and drops those of the rest. There is code for the three thresholds, the counts and the
+individuals, and none for the filter by linkage disequilibrium. This spec
+develops the row `filters` of the table in section 9
 of `docs/architecture.md`, and it covers the three filters that compare one
-number of a variant with a threshold, the counts, and the filter that
-takes out the variants that repeat what a variant before them said, which
-was added on 22 September 2026. The other filter of that row, the filter
-of individuals, is an item that is not written. It depends on
+number of a variant with a threshold, the counts, the filter of
+individuals and the filter that takes out the variants that repeat what a
+variant before them said, the last two added on 22 September 2026: the
+filter of individuals with `docs/specs/stats.md`, whose statistics per
+population are the first to need it. It depends on
 `docs/specs/block.md`, which has the `Block`, the run of consecutive
 variants held as arrays that the variants flow in, and the `BlockReader`
 trait of everything that gives blocks; on `docs/specs/variant.md`,
@@ -149,7 +152,7 @@ holds in `variants.steps`, a tuple with a `Step` for each step, in order:
 ```python
 @dataclass(frozen=True)
 class Step:
-    kind: str                  # "missing_data", "maf", "obs_het" or "ld"
+    kind: str                  # "missing_data", "maf", "obs_het", "individuals" or "ld"
     args: dict[str, object]    # {"max_allowed_maf": 0.95}
 ```
 
@@ -461,6 +464,175 @@ after a whole `iter_blocks` holds in the next one, whose counts have it;
 and a filter added inside the loop of an `iter_blocks` takes no variant
 out of that pass. The TypeScript test asserts the three pairs of the
 chain and the `Error` of a second maf filter.
+
+## The filter of individuals
+
+### What it gives
+
+Keeps, of every variant, the genotypes of the individuals the user names
+and drops those of the rest. Every variant stays. It is what a user puts
+on a `Variants` before a calculation over some of their individuals, one
+population of the dataset or the individuals that have a phenotype, and
+the threshold filters after it in the steps see the kept individuals
+alone: the missing rate then divides by them, and the maf and the
+observed heterozygosity are over their genotypes, as in pyNei, where a
+chunk that went through `filter_samples` holds the kept individuals and
+no other. The kept individuals come in the order the user named them,
+so the filter is also the way to put the individuals in the order a user
+wants, the populations together, and the rows of the per individual
+statistics and of a distance matrix come out that way; it costs nothing,
+since the gather of a row takes any order. The owner decided it on 22
+September 2026; the option not taken was the order of the source, which
+is pyNei's: `filter_samples(v, ["ind05", "ind00", "ind49"])` on
+`many.vcf` gives `ind00, ind05, ind49`, whatever the order of the
+argument, where bcftools's `-s` gives the order of the argument.
+
+### In Python and in TypeScript
+
+```python
+Variants.filter_individuals(individuals: Sequence[str]) -> None
+```
+
+It is a step, as the three threshold filters are: it adds itself at the
+end of the steps of the `Variants`, reads nothing and returns nothing, and
+every pass that starts afterwards runs it. Its kind is `"individuals"`
+and its `args` is `{"individuals": (...)}`, the names as a tuple. After
+it, `variants.individuals` and `variants.num_individuals` are the kept
+individuals, since they are what the next pass gives, and the `pops` of
+`docs/specs/stats.md`, the populations a statistic is calculated for as
+a dict of name to individuals, names individuals among them.
+
+It mirrors `filter_samples` of `pynei/var_filters.py`, a function that
+takes a `Variants` and returns another, with the name `docs/glossary.md`
+gives, individual for pyNei's sample. The differences:
+
+- It takes names alone. pyNei takes a sequence of names or a slice; its
+  type hint says indices too, but `numpy.isin` matches them as names,
+  and `filter_samples(v, [0, 1, 2])` on `many.vcf` keeps no individual.
+  The objectives give a user the individuals as a tuple of names, so
+  names are what the user has.
+- A name that is not an individual of the source is a `ValueError` that
+  names it. pyNei's `numpy.isin` drops it in silence: `filter_samples(v,
+  ["ind05", "nope"])` on `many.vcf` gives a `Variants` of one individual,
+  run at commit ef0ca6e.
+- A name that is there twice is a `ValueError` that names it. pyNei keeps
+  the individual once.
+- No name at all is a `ValueError`: every source of popnei refuses a
+  dataset of no individuals, as `docs/specs/block.md` says.
+- A second filter of individuals on one `Variants` is a `ValueError`, as
+  a second threshold filter of one kind is, by the owner's rule of 21
+  September 2026: two lists keep the individuals that are in both, which
+  is one list. pyNei takes it.
+- It has no entry in `pass_stats.filtering`, since it takes no variant
+  out. pyNei's `gather_filtering_stats` lists it under the kind `sample`,
+  with every variant processed and kept.
+- The kept individuals come in the order of the argument, and not of the
+  source, under "What it gives".
+
+The three refusals of the names are made at the call, against the
+individuals of the source, with `resolve_individuals` of "The Rust
+interface", which the reader of the filter calls too when a pass builds
+its chain. pyNei's `calc_ld_and_dist_per_pop` puts several filters of
+individuals over one filtered `Variants`, one per population; in popnei
+a calculation over several populations takes `pops`, as those of
+`docs/specs/stats.md` do, and a user who wants two sets of individuals
+over one source opens it twice.
+
+In TypeScript, `variants.filterIndividuals(names)`, which returns
+nothing, with the step `{kind: "individuals", args: {individuals:
+[...]}}` in `steps`, and the errors an `Error` at the call.
+
+### What pyNei asserts
+
+`test_filter_samples` of `test/test_filters.py` asserts, on three variants
+of five individuals, that keeping the first three by name and by a slice
+gives their genotypes;
+`test_sample_filter_metadata_does_not_depend_on_the_call_order`, that
+the `samples` and the `num_samples` of the filtered `Variants` are the
+kept ones, read before a pass or after it, and
+`test_filtered_samples_are_a_tuple`, that they are a tuple; and
+`test_several_vars_can_share_one_filtered_source`, that two filters of
+individuals over one filtered `Variants` each give their own
+individuals, with chunks of 1 to 4 variants.
+
+### How it runs
+
+A reader over a reader, with the rules of a threshold filter under "How
+it runs" above: it takes a block from its source, compacts the genotypes
+of every row with `retain_individuals` of "The Rust interface", and gives
+the block on with the `num_individuals` of the kept ones and its other
+columns as they were. The compaction is in two passes over the array of
+the block, because the kept individuals can come in any order, i5 before
+i1, so a genotype cannot be moved over one that is still to be read, and
+because the rows shrink, so where a row will start is inside the row
+before it. The first pass runs with rayon over the rows at their source
+width, which are disjoint, and gathers the kept genotypes of each row
+through a buffer of the thread, kept individuals x ploidy alleles, back
+into the front of that row; the second packs the shortened rows to the
+front of the array, one after another, on one thread, as `retain_vars` of
+`docs/specs/block.md` does. It allocates no block, keeps nothing from
+one block to the next, and needs no `reblock`. Its `individuals()` gives
+the kept names, and its ploidy,
+its chromosome table and its filtering stats are those of its source. It
+always needs the genotypes, and passes on what its consumer asks for with
+them added. It sits in the chain where its step is among the steps, so a
+threshold filter before it counts over every individual and one after it
+over the kept ones. The blocks are the size of its source's, worked out
+from the individuals of the source and not from the kept ones. The
+`reblock` that `iter_blocks` puts at the end of the chain sizes its blocks
+for the individuals of the reader it is given, which are the kept ones, as
+`docs/specs/block.md` says of `Reblock::new`, so above 500 individuals,
+where the default size falls below the largest it takes, the blocks a user
+reads after the filter hold more variants than the source's.
+
+### How it is verified
+
+Against bcftools 1.24 on `many.vcf` of the threshold filters, read with
+every variant given, which is `only_passed` false in the tests of the
+three layers: the default of `open_vcf` keeps the variants that passed
+their filters alone, and 50 of the 500 variants of `many.vcf` did not
+pass, so the 500, the 423 and the 26 below are the counts of that reading
+and of no other. `bcftools view -s ind05,ind00,ind49 many.vcf` keeps
+the three individuals, in that order, which `bcftools query -l` prints of
+its output, and the missing data filter at 0 after it,
+
+    bcftools view -s ind05,ind00,ind49 many.vcf | bcftools view -H -i "F_MISSING<=0"
+
+keeps 423 of the 500 variants, the first five at the positions 1000,
+1037, 1074, 1111 and 1148, where the same filter over the 50 individuals
+keeps 26. In one command, `-s` with `-i`, bcftools applies the filter
+before it takes the individuals out, and keeps 26. pyNei's
+`filter_samples` and `filter_by_missing_data(0)` after it keep the same
+423, with the counts 500 given and 500 kept for the first and 500 and
+423 for the second. The genotypes of the three at the first variant,
+position 1000, are `1|1`, `1/1` and `1/1`, and at position 1074 `0/1`,
+`2|1` and `1|2`.
+
+The cargo tests, at `next_block` of an `IndividualsReader` over a
+`VcfReader` on `many.vcf`: the blocks hold 3 individuals, `individuals()`
+gives the three names, the genotypes of each are the column of the
+source at every variant, 500 variants come out and `filtering_stats` is
+empty; with a `FilteredReader` of the missing data filter at 0 over it,
+423 variants with those five positions first and the counts 500 and 423;
+with the same filter under it instead, 26. At `resolve_individuals`, a
+name that is not an individual, a name twice and no name are each the
+error, and the three names give the indices 5, 0 and 49. At
+`Block::retain_individuals`, on the six variants of the worked example of
+the threshold filters: keeping i5 and i1 gives rows of two genotypes,
+`0/. 0/0` for variant 1 and `./. 0/1` for variant 3, and an index of 5 is
+the error with the block as it was.
+
+Against pyNei, a pytest test at `filter_individuals`: `many.vcf` in both
+libraries with the three individuals, and the genotypes of popnei's
+blocks, joined, are those of pyNei's chunks, joined, column by name,
+since pyNei gives them in the order of the source; with the missing data
+filter at 0 after it, both keep 423 variants, and popnei's
+`pass_stats.filtering` has the missing data filter alone, with 500 and
+423. The tests of the step: `steps` has `("individuals", {"individuals":
+(...)})`, `individuals` and `num_individuals` are the kept ones, and a
+second filter of individuals, an unknown name, a name twice and no name
+are each a `ValueError`. The TypeScript test, under node, asserts the
+three names, the 423 and the `Error` of an unknown name.
 
 ## The filter by linkage disequilibrium
 
@@ -818,6 +990,7 @@ The TypeScript test, under node, reads `ld.vcf.gz` from a `Uint8Array`
 and asserts the 133 variants of the second row of the table, their first
 five positions, and the `Error` of a `maxAllowedR2` of 1.5.
 
+
 ## The Rust interface
 
 What a filter compares, with the largest value that keeps the variant.
@@ -897,6 +1070,77 @@ impl<R: BlockReader> FilteredReader<R> {
 impl<R: BlockReader> BlockReader for FilteredReader<R> { /* ... */ }
 ```
 
+The steps of a pass. Each binding crate keeps its list of steps as a
+list of these, and `chain_of` below takes them. With them, the names of
+the kept individuals as indices, which the binding crates call at the
+call of the method, against the individuals of the source, and the
+reader of the filter calls when the chain is built. Its errors are new
+cases of the error of the crate, each a `ValueError` in Python: a name
+that is not an individual, with the name; a name twice, with the name;
+and no name. A fourth new case is a second filter of individuals on a
+`Variants` that has one, whose message says so and names the kind; the
+case of a second threshold filter, which carries two thresholds, stays
+as it is. With them also the individuals the next pass gives, which each
+binding crate answers with when a user reads the individuals of their
+`Variants`: which step says who the next pass holds is of the filters and
+not of Python or of TypeScript.
+
+```rust
+#[non_exhaustive]
+pub enum PassStep {
+    VarFilter(VarFilteringCriterion),
+    /// The names of the individuals to keep, in the order to keep them.
+    KeepIndividuals(Vec<String>),
+}
+impl PassStep {
+    /// "missing_data", "maf", "obs_het" or "individuals".
+    pub fn kind(&self) -> &'static str;
+}
+
+/// The index of each of `names` among `individuals`, in the order of
+/// `names`.
+pub fn resolve_individuals(names: &[String], individuals: &[String]) -> Result<Vec<usize>>;
+
+/// The names of the individuals the next pass gives, in its order: the
+/// names the last `KeepIndividuals` of `steps` keeps, and `of_the_source`
+/// when no step is one.
+pub fn individuals_of(steps: &[PassStep], of_the_source: &[String]) -> Vec<String>;
+
+pub struct IndividualsReader<R: BlockReader> { /* private */ }
+impl<R: BlockReader> IndividualsReader<R> {
+    /// What `resolve_individuals` refuses against `reader.individuals()`.
+    pub fn new(reader: R, individuals: &[String]) -> Result<IndividualsReader<R>>;
+}
+impl<R: BlockReader> BlockReader for IndividualsReader<R> { /* ... */ }
+```
+
+The method of `Block`, of `docs/specs/block.md`, that the reader compacts
+each block with, which that spec leaves to this item.
+
+```rust
+impl Block {
+    /// It keeps the genotypes of the individuals `keep`, indices into the
+    /// individuals of the block, in that order, within the array of the
+    /// block, and sets `num_individuals`. An error, with the block as it
+    /// was, for an index at or beyond the individuals, an index twice, no
+    /// index, and a block with variants and no genotypes.
+    pub fn retain_individuals(&mut self, keep: &[usize]) -> Result<()>;
+}
+```
+
+Its first three refusals are three new cases of the error of the crate.
+They mark a defect of popnei, a `RuntimeError` in Python, and not a wrong
+input of a user, as the `keep` of `retain_vars` that has not one value for
+each variant of its block does: the indices come from
+`resolve_individuals`, which refuses the name behind each of them, so no
+call of a user reaches them. Each carries what finds the cause, the index
+and the individuals of the block for an index at or beyond them, and the
+index for one that is there twice. A block with variants and no genotypes
+is the error of a field that is not in the block, the one
+`VarFilter::filter_block` gives for the same block, and a block whose
+arrays are not of the size it states is the error `Block::check` finds,
+since the rows are cut out of the genotypes by those sizes.
+
 The filter by linkage disequilibrium, which is a type of its own and not
 a `VarFilter`: it holds the window of `docs/specs/ld.md` between one
 block and the next, where a `VarFilter` reads each block on its own and
@@ -944,22 +1188,23 @@ it gives, once the chain is built, and every filter of the chain passes
 them on with the genotypes added.
 
 ```rust
-/// One reader over `reader` for each criterion, in their order, so that
-/// each filter sees what the one before it kept: a `FilteredReader` for
-/// the three that compare one number of a variant and an
-/// `LdFilteredReader` for `MaxLdR2`. No criterion gives `reader` as it
-/// is.
+/// One reader over `reader` for each step, in their order, so that each
+/// filter sees what the one before it kept: a `FilteredReader` for a
+/// `VarFilter` step, an `LdFilteredReader` for a `MaxLdR2` one and an
+/// `IndividualsReader` for a `KeepIndividuals` one. No step gives
+/// `reader` as it is.
 ///
 /// # Errors
 ///
 /// What `VarFilter::new` and `LdFilter::new` refuse, a threshold that is
-/// not a number from 0 to 1 and a `max_dist` below 1, and what
-/// `FilteredReader::new` and `LdFilteredReader::new` refuse, a criterion
-/// of the kind of one before it in `criteria` or of a filter that
-/// `reader` holds already.
+/// not a number from 0 to 1 and a `max_dist` below 1; what
+/// `IndividualsReader::new` refuses; and a step of the kind of one before
+/// it in `steps` or, for a threshold filter or the filter by linkage
+/// disequilibrium, of a filter that `reader` holds already, which
+/// `FilteredReader::new` and `LdFilteredReader::new` refuse.
 pub fn chain_of(
     reader: Box<dyn BlockReader>,
-    criteria: &[VarFilteringCriterion],
+    steps: &[PassStep],
 ) -> Result<Box<dyn BlockReader>>;
 ```
 
@@ -1007,12 +1252,13 @@ TypeScript.
 
 ```rust
 /// The error of a second filter of one kind when `new` is of the kind of
-/// one of `set`, the criteria of the filters that are set already. The
-/// error carries both thresholds, the one of `new` and the one that is
-/// set, which a chain of readers cannot say and the criteria can.
+/// one of `set`, the steps that are set already. For a threshold filter
+/// the error carries both thresholds, the one of `new` and the one that
+/// is set, which a chain of readers cannot say and the steps can; for the
+/// filter of individuals it carries the kind.
 pub fn refuse_a_second_filter_of_a_kind(
-    set: &[VarFilteringCriterion],
-    new: VarFilteringCriterion,
+    set: &[PassStep],
+    new: &PassStep,
 ) -> Result<()>;
 ```
 
@@ -1088,9 +1334,10 @@ above, and this section gets the numbers.
 
 None. What the owner decided on 21 September 2026 about the three
 threshold filters and the counts, and on 22 September 2026 about the
-filter by linkage disequilibrium, in chat, is written where it applies,
-with the option that was not taken. The two open points of the filter by
-linkage disequilibrium that the owner has to answer are in
+filter by linkage disequilibrium and about the order of the kept
+individuals, in chat, is written where it applies, with the option that
+was not taken. The two open points of the filter by linkage
+disequilibrium that the owner has to answer are in
 `docs/specs/ld.md`, because both are about the r² itself: whether the
 curve of linkage disequilibrium against distance also carries a sample of
 pairs, which this filter does not touch, and how the major allele of a
@@ -1099,10 +1346,6 @@ filter compares.
 
 ## Not in this spec
 
-- The filter of individuals, pyNei's `filter_samples`, and taking
-  individuals out of a block: a later item of this spec. pyNei ignores a
-  name that no individual has, and gives the individuals in the order of
-  the source whatever the order of the argument; that item decides both.
 - The variants of a region of a chromosome, which
   `docs/specs/io_vars.md` leaves to this spec: a later item.
 - A lowest maf, or a threshold on the frequency of the minor allele: pyNei

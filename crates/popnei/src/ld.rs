@@ -1015,7 +1015,14 @@ fn the_r2_matrix_in_tiles_of<R: BlockReader + ?Sized>(
     let vars_per_tile = vars_per_tile.max(1);
     let pass = the_dosages_of_the_pass(reader, max_num_vars, vars_per_tile)?;
     if pass.num_vars == 0 {
-        return Err(Error::ReaderGaveNoVariants);
+        let filters = reader.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            // The filter nearest the source was given what the source
+            // gave; with no filter the pass gave what the source gave,
+            // which is nothing.
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
     }
     let r2 = the_r2_of_the_tiles(&pass.tiles, pass.num_vars, max_num_vars)?;
     Ok(R2Matrix {
@@ -3361,6 +3368,9 @@ mod tests {
     }
 
     /// A reader with no variant is an error and not a matrix of no cell.
+    /// It is the one case every calculation over a pass raises, which
+    /// carries the counts of the filters of the reader; this reader has
+    /// none, so the error says that the source of the pass gave no variant.
     #[test]
     fn a_reader_with_no_variant_is_an_error() {
         let mut reader = GivenBlocks::of(Vec::new(), 6, 2);
@@ -3368,7 +3378,13 @@ mod tests {
         let error = calc_r2_matrix(&mut reader, 5000).expect_err("the reader has no variant");
 
         assert!(
-            matches!(error, Error::ReaderGaveNoVariants),
+            matches!(
+                &error,
+                Error::PassGaveNoVariant {
+                    num_vars_of_the_source: 0,
+                    filters,
+                } if filters.is_empty()
+            ),
             "the reader with no variant gave: {error:?}"
         );
     }

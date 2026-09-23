@@ -75,11 +75,20 @@ harness = false
 name = "filter_vars"
 harness = false
 
+# What the per variant pass of the stats module costs over blocks that are
+# already in memory, of the performance review of
+# docs/reports/perf-stats-2026-09-22.md. It builds one block, gives it to
+# the pass a stated number of times and prints one wall time per run, so it
+# runs without a harness, as the three above do.
+[[bench]]
+name = "stats_pass"
+harness = false
+
 # How long the Kosman distance of every pair of individuals takes, of the
 # performance review of docs/specs/dists.md, against the 0.97 s on one
 # thread and the 0.38 s on 18 cores of "Speed" of that spec. It takes the
 # path of a vars file and the runs on its command line and prints one wall
-# time per run, so it runs without a harness, as the three above do.
+# time per run, so it runs without a harness, as the four above do.
 [[bench]]
 name = "kosman_dists"
 harness = false
@@ -88,7 +97,7 @@ harness = false
 # takes, of work package 4 of docs/plans/pca.md, against the 0.3 s of
 # "Speed" of docs/specs/pca.md. It takes the path of a VCF or of a vars
 # file, the runs and how many components the weights are given for, and
-# prints one wall time per run, so it runs without a harness, as the three
+# prints one wall time per run, so it runs without a harness, as the five
 # above do. It builds no pool of threads: those come from
 # RAYON_NUM_THREADS and VECLIB_MAXIMUM_THREADS in the environment of the
 # command.
@@ -102,7 +111,7 @@ harness = false
 # profile of a whole analysis sees the four as one frame, because the
 # compiler inlines them, so this one calls each over the rows of one real
 # block and prints a time for each. It takes the path of a vars file and
-# the runs on its command line, so it runs without a harness, as the four
+# the runs on its command line, so it runs without a harness, as the six
 # above do, and it needs the cargo feature that makes the four reachable.
 [[bench]]
 name = "standardize_row"

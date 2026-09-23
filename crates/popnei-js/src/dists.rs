@@ -6,10 +6,8 @@
 //! `docs/architecture.md` leaves to a binding crate. It builds the chain of
 //! readers of the pass from the steps of the `Variants`, keeps that chain
 //! while the calculation runs so that the counts of its filters can be read
-//! when it returns, turns the two integers the core keeps for each pair into
-//! the distance vector, writing NaN where a pair has no distance, and, for a
-//! pass that gave no variant, says whether the source had none or the steps
-//! kept none, which only the chain knows.
+//! when it returns, and turns the two integers the core keeps for each pair
+//! into the distance vector, writing NaN where a pair has no distance.
 //!
 //! [`KosmanDistances`] is the result on its way out. It lives in the memory
 //! of wasm, which the garbage collector of JavaScript does not see, so the
@@ -26,7 +24,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::dists::calc_kosman_sums;
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, of_the_pass};
+use crate::source::{OpenSource, PassCounts};
 use crate::steps::{Steps, chain_of};
 
 /// The Kosman distance of every pair of individuals, the names of those
@@ -89,8 +87,9 @@ impl KosmanDistances {
 ///
 /// # Errors
 ///
-/// When the pass gives no variant, which says whether the source had none or
-/// the steps kept none; when the sums of a pair go above what a `u32` holds;
+/// When the pass gives no variant, whose message says whether the source had
+/// none or the steps kept none and what each filter was given and kept; when
+/// the sums of a pair go above what a `u32` holds;
 /// when the memory of the tab does not take the two counts of every pair;
 /// and when the source cannot be read, a wrong line of a VCF among the
 /// causes.
@@ -104,11 +103,7 @@ pub(crate) fn kosman_dists_of(
     // The names are the reader's own, taken before the calculation borrows
     // it: the vector and the names then cannot be of two different sources.
     let names = chain.individuals().to_vec();
-    let calculated = calc_kosman_sums(&mut chain);
-    let sums = match calculated {
-        Ok(sums) => sums,
-        Err(error) => return Err(of_the_pass(error, &chain.filtering_stats())),
-    };
+    let sums = calc_kosman_sums(&mut chain)?;
     let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
     let dist_vector = sums
         .dists(min_num_vars)

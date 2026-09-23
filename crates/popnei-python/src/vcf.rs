@@ -76,6 +76,10 @@ impl OpenSource for VcfSource {
         &self.path
     }
 
+    fn ploidy(&self) -> usize {
+        self.options.ploidy
+    }
+
     fn reader(
         &self,
         num_vars_per_block: Option<usize>,

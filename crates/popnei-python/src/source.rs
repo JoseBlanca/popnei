@@ -71,6 +71,11 @@ pub(crate) trait OpenSource: Sync {
     /// The file the source reads, which the errors of a pass over it name.
     fn path(&self) -> &Path;
 
+    /// How many alleles the genotype of one individual holds in the blocks
+    /// of every pass over the source, which a calculation that counts
+    /// genotypes out of called alleles is built with.
+    fn ploidy(&self) -> usize;
+
     /// The reader of one pass over the source, which opens the file again.
     ///
     /// `num_vars_per_block` is the size the caller will ask the blocks for,
@@ -544,9 +549,10 @@ fn no_count(name: &'static str, smallest: usize, value: &Bound<'_, PyAny>) -> Py
     .into()
 }
 
-/// The `value` that was given for the argument `name`, as the threshold of
-/// a filter: the one place where the number a user compares their variants
-/// with crosses from Python.
+/// The `value` that was given for the argument `name`, as a threshold: the
+/// one place where a number that a count of a variant is compared with
+/// crosses from Python, the threshold of a filter and the major allele
+/// frequency below which a variant counts as polymorphic in a population.
 ///
 /// The object is taken as it is and converted here, and not by the
 /// signature, because the conversion of pyo3 answers before any rule of
@@ -598,7 +604,7 @@ fn no_number(name: &'static str, value: &Bound<'_, PyAny>) -> PyPopneiError {
 
 /// What `value` is, as a user reads it: what Python prints for it, `'0.5'`
 /// or `True`, and the name of its type where its own `repr` raised.
-fn written_as(value: &Bound<'_, PyAny>) -> String {
+pub(crate) fn written_as(value: &Bound<'_, PyAny>) -> String {
     if let Ok(printed) = value.repr() {
         return printed.to_string();
     }
@@ -610,7 +616,8 @@ fn written_as(value: &Bound<'_, PyAny>) -> String {
 
 /// The array, which nothing writes into any more: a block is frozen and so
 /// is the result of a calculation, and their arrays hold the memory the core
-/// filled.
+/// filled; the edges of the bins of a pass are one array that the four
+/// distributions of its result share.
 pub(crate) fn read_only<'py, T>(array: Bound<'py, T>) -> Result<Bound<'py, T>, PyPopneiError> {
     array
         .as_any()
