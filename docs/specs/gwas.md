@@ -131,7 +131,7 @@ It mirrors `calc_gwas` of `pynei/gwas.py`. The differences from pyNei, which
   literal moves. `docs/objectives.md` asks the calculations that collapse a
   multiallelic variant to say so.
 - The null model of the logistic mixed model is fitted by another route,
-  which gives the same numbers 1.9 to 2.1 times faster. It is the item for
+  which gives the same numbers 1.88 to 2.06 times faster. It is the item for
   that model, below.
 
 In TypeScript it is `calcGwas(variants, {phenotype, trait, covariates,
@@ -219,9 +219,9 @@ Four programs, all run on 23 September 2026 by
 VCFs: plink2 v2.0.0-a.7.7, and R 4.6.1 with GMMAT 1.5.0 and rrBLUP 4.6.3.
 pyNei ran the same four on its own vars files of the same genotypes when its
 reference was made, and every number this script produced matches what pyNei
-stored to the bit: the largest difference over the nine files, 49
-numeric columns of 1200 variants each, is 0. So the numbers do not depend on
-which library read the genotypes.
+stored to the bit: the largest difference over the nine files and their 58
+numeric columns, 1200 variants in each but the two null models, is 0. So
+the numbers do not depend on which library read the genotypes.
 
 The datasets are the two panels of `docs/specs/kinship.md`, 200 individuals
 and 1200 biallelic diploid variants on two chromosomes, once with every
@@ -258,7 +258,11 @@ checks are common to all four:
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
-relative, which is `test_chunks_and_threads_do_not_matter` of pyNei. And
+relative. It is `test_chunks_and_threads_do_not_matter` of pyNei, which
+compares with `pandas.testing.assert_frame_equal` and so at its default of
+1e-5 relative; 1e-12 is popnei's own, because every test of a variant is
+independent of the others and only the order the blocks were summed in can
+move a digit. And
 that the study finds what was planted: of the 10 variants with the smallest
 p-value under the `lmm`, at least 3 are among the 5 causal ones.
 
@@ -321,6 +325,39 @@ The six literals are held to the same tolerances as the whole columns,
 | var1137 | -0.171137 | 0.145987 | 0.242511 |
 | var1188 | -0.655393 | 0.138912 | 4.51958e-06 |
 
+### The worked example
+
+Six diploid individuals, `i0` to `i5`, one covariate beside the intercept,
+and three variants. The trait is 2, 3, 5, 4, 4, 7 and the covariate 0, 1, 0,
+1, 0, 1.
+
+| variant | genotypes | dosages | kept |
+|---|---|---|---|
+| v0 | 0/0 0/1 1/1 0/0 0/1 1/1 | 0 1 2 0 1 2 | yes |
+| v1 | 0/0 0/1 1/1 ./. 0/1 0/0 | 0 1 2 **0.8** 1 0 | yes |
+| v2 | 0/1 0/1 0/1 0/1 0/1 0/1 | 1 1 1 1 1 1 | no, no variance |
+
+The dosage in bold is the missing genotype of `i3` taking the mean of its
+variant, `(0 + 1 + 2 + 1 + 0) / 5`. The null model has 6 individuals and 2
+coefficients, so its residual sum of squares has 4 degrees of freedom and
+each variant's test has 3. Run through pyNei at commit ef0ca6e:
+
+| | intercept | covariate | rss | residual_variance |
+|---|---|---|---|---|
+| the null | 3.6666666666666683 | 1.0 | 13.333333333333336 | 3.333333333333334 |
+
+| variant | allele_freq | beta | se | p_value |
+|---|---|---|---|---|
+| v0 | 0.5 | 1.5 | 0.600925212577332 | 0.088004892382756 |
+| v1 | 0.4 | 0.3125 | 1.305204592306424 | 0.826200867452417 |
+| v2 | 0.5 | NaN | NaN | NaN |
+
+`v2` keeps its `allele_freq` of 0.5 and has no test, which is the rule of
+"The variants that have no answer". This is the first cargo test of the
+module, asserted at `calc_gwas` of "The Rust interface" within 1e-12
+relative, and it is the one test that needs no reference program and no
+reference file.
+
 ## The linear mixed model
 
 ### What it gives
@@ -353,6 +390,27 @@ moved to whichever of the two has the smaller value, 60 steps whatever
 happens, and `exp((low + high) / 2)` at the end. It is `_reml_delta` of
 `pynei/gwas.py`.
 
+The function it minimizes, with `l` the eigenvalues of the kinship, `u` the
+design turned by the eigenvectors, `uy` the trait turned by them, and
+`w = 1 / (l + delta)` one weight per individual:
+
+    dvd   = u' diag(w) u
+    coefs = the solution of `dvd coefs = u' (w * uy)`
+    resid = uy - u coefs
+    quad  = w' (resid * resid)
+    value = sum(log(l + delta)) + (n - c) * log(quad) + log(det(dvd))
+
+Each evaluation costs one number per individual and one matrix of the size
+of the coefficients, which is what the eigendecomposition bought. With the
+`delta` that minimizes it, and `w`, `coefs` and `resid` recomputed there:
+
+    genetic_variance  = quad / (n - c)
+    residual_variance = delta * genetic_variance
+
+`log(det(dvd))` is the log determinant that comes off the same Cholesky
+factorization the solve above uses, which is why `docs/specs/linalg.md` has
+it as one of the seven.
+
 The eigenvalues of the kinship are clamped at 0 before use. A kinship of
 genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
 on the panel; the per pair denominators of `docs/specs/kinship.md` put them
@@ -382,8 +440,12 @@ variant, `num` is `x' p y` and `den` is `x' p x`, and then:
 `y' p y` is the generalized residual sum of squares of the null over the
 genetic variance, and the restricted maximum likelihood makes it exactly
 `n - c`. A cargo test asserts that on the panel, 197 within 1e-6, which is
-`test_reml_identity` of pyNei and is the cheapest check that the fit is at
-its optimum.
+`test_reml_identity` of pyNei and is the cheapest evidence there is that the
+fit reached its optimum. `y' p y` is in no result, so unlike every other
+check of this spec this one is made at the private function that fits this
+null, and it pins that function's signature. That is accepted: the
+alternative is a field of `NullModel` that exists for one of the four models
+and that no user would read.
 
 ### How it is verified
 
@@ -549,6 +611,14 @@ working trait of the linearization that just finished, and `pw = p w`:
 and `tau` becomes `tau + step`. The whole thing then starts again. It is the model GMMAT fits, and on the panel it takes 8
 steps on `tau` and 22 linearizations.
 
+It starts from the plain logistic null of "The logistic model", fitted with
+no kinship in it: its coefficients give the first linear predictor and the
+first `mu`, and the first working trait and weights come from those. That
+fit in turn starts with every coefficient at 0 but the intercept, which
+starts at `log((m + 1e-6) / (1 - m + 1e-6))` with `m` the mean of the trait.
+An implementation that starts the mixed fit anywhere else walks a different
+path through the bracket and can stop at another `tau`.
+
 Taking the step on `tau` after every single linearization instead makes the
 two updates fight and `tau` cycle for ever, which pyNei's `_GLMMNull` records
 and a trial here reproduced. `tau` is kept from cycling by a bracket: a
@@ -563,11 +633,17 @@ The tolerances and the counts, all inherited from pyNei, which calls them
 linearization stops when the largest change in the linear predictor, over
 its own largest absolute value plus 1, falls below 1e-6. A step on `tau`
 stops the fit when its absolute value falls below `1e-6 * (tau + 1e-6)`.
-Either loop running past 200 rounds is an error, not a warning: the fit did
-not converge. `tau` starts at half the variance of the first working trait,
-which is what `tau` would be if the kinship explained all of it, so that the
-bracket comes down from above rather than up from below. A step that would
-take `tau` to 0 or below, with no bracket yet, quarters it instead; a `tau`
+Either loop running past 200 rounds raises, naming the model and the number
+of rounds. pyNei raises a `RuntimeError` there, and so does its logistic
+fit; popnei raises a `ValueError`, because under the rule of
+`docs/specs/variant.md` a `RuntimeError` is a defect of popnei and a fit
+that will not settle is the data, the same category as the kinship that is
+not a covariance below. The 50 steps of the logistic fit are the same. `tau` starts at half the variance of the first working trait. The whole
+variance is what `tau` would be if the kinship explained all of it, and
+pyNei halves it; either way the start is too large rather than too small, so
+the bracket comes down from above. A step that would
+take `tau` to 0 or below, before both ends of the bracket are known,
+quarters it instead; a `tau`
 that falls below 1e-6 is set to 0, and a second one at 0 ends the fit.
 
 At convergence the residual `p y` of the score test is simply the trait
@@ -606,8 +682,11 @@ same largest `|log10(p / p_GMMAT)|` to every digit printed, 8.497e-06. The
 null fit takes 0.095 s against pyNei's 0.195 s at 1000 individuals, 0.608
 against 1.199 at 2000, and 5.285 against 9.959 at 4000.
 
-The owner asked for a cheaper fit on 23 September 2026 before this spec was
-written. The options not taken, all measured in that report: an
+The owner asked for a cheaper fit on 23 September 2026, before this spec was
+written, and on being shown the measurements directed the linear algebra
+crate to add the lower triangular solve that this route needs, which is the
+decision to build the module around it. The options not taken, all measured
+in that report: an
 eigendecomposition of the weighted kinship per linearization, which would
 make the search over `tau` cost one number per individual but costs 3.33 s
 at 4000 individuals against an inverse's 0.376; a conjugate gradient solve, which
@@ -717,7 +796,8 @@ is why pyNei wrote both.
 popnei takes `erfc` from the `libm` crate, a pure Rust port of musl's math
 library with no C in it, which builds for both wasm targets, checked as a
 library on 23 September 2026. Measured against scipy 1.18.1's `chi2.sf` over
-65 points from 1e-6 to 200, `libm`'s `erfc` is within 2.9e-14 relative, and
+65 points spaced logarithmically from 1e-6 to 200, `libm`'s `erfc` is within
+2.9e-14 relative, and within 3.0e-14 over 65 evenly spaced ones, and
 at `x = 100` it gives 1.523971e-23, so the tail is right where a strong
 variant needs it. The option not taken was to write `erfc` here: pyNei takes
 it from Python's `math`, which is C's, so pyNei is not a precedent for
@@ -836,8 +916,19 @@ pub struct Gwas {
     pub se: Vec<f64>,
     pub p_value: Vec<f64>,
     pub used_grammar_gamma_approx: bool,
+    /// The interned chromosome of each variant, read through
+    /// `chrom_table`, and `None` when the source had no such column.
+    pub chroms: Option<Vec<u32>>,
+    pub chrom_table: ChromTable,
+    pub poss: Option<Vec<u64>>,
+    pub ids: Option<Vec<String>>,
 }
 ```
+
+The three columns are what the Python and TypeScript layers build `chrom`,
+`pos` and `id` of `stats` from, and they are laid out as `docs/specs/ld.md`
+lays out the same three. A VCF and a vars file both carry the chromosome and
+the position, so in practice only `ids` is ever `None`.
 
 One pass over a reader, or two when `use_grammar_gamma_approx` is true, the
 second being opened over the same variants as the PCA's is. The pass borrows
@@ -893,7 +984,7 @@ with GMMAT on one thread over the same dataset, 1.5 s against GMMAT's 1.6 s
 and 2.2 s, and 3x faster with six threads. It does not say which of GMMAT's
 two numbers belongs to which mixed model, so the number to reach is the
 smaller, 1.6 s, for both. Whether popnei beats it is not known: the null fit
-of the `glmm` is 1.9 to 2.1 times cheaper than pyNei's, measured, but at
+of the `glmm` is 1.88 to 2.06 times cheaper than pyNei's, measured, but at
 100000 variants and 1000 individuals the per variant work is the larger
 half, 0.32 s against a fit of 0.095 s by the numbers below, and that work is
 the same product in both libraries.
