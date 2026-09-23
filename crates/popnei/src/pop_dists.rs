@@ -23,6 +23,11 @@
 //! population, and [`PopDistPerVar::of_var`] gives what one variant adds to
 //! the sums of one pair, or nothing when the variant does not count for it.
 //!
+//! [`JackknifeGroups`] says how the variants are cut into the groups that
+//! the standard errors are resampled over, and [`JackknifeWalk`] is the
+//! walk that cuts them: a stretch of one chromosome anchored on its own
+//! first variant, one variant, or no group at all.
+//!
 //! `docs/specs/dists.md` has the design, the formulas and the numbers the
 //! tests assert, and the row `dists` of section 9 of
 //! `docs/architecture.md` is where the module sits.
@@ -35,7 +40,7 @@
     )
 )]
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::stats::{ObsHet, checked_ploidy, raised};
 use crate::variant::{AlleleCounts, GtCounts, count_alleles_of, count_gts_of};
 
@@ -340,9 +345,137 @@ struct OverTheAlleles {
     all_alike_pooled: f64,
 }
 
+/// How the variants are cut into the groups that the standard errors are
+/// resampled over.
+///
+/// A distance between two populations is a mean over variants, and variants
+/// near each other on a chromosome carry much the same history, so treating
+/// each of them as an independent draw makes the error look smaller than it
+/// is. The standard error is built instead by leaving each group out in
+/// turn, which asks for groups long enough that two of them are nearly
+/// independent. The literature calls a group a block and the method the
+/// block jackknife; popnei says group, because a block here is the run of
+/// variants a reader gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JackknifeGroups {
+    /// No standard errors, and the pass does not ask its reader for the
+    /// positions.
+    None,
+    /// Each variant its own group, which is what a few hundred
+    /// microsatellite loci scattered over a genome want and what a panel of
+    /// linked SNPs must not use.
+    PerVariant,
+    /// Stretches of one chromosome this many base pairs long, each one
+    /// anchored on its own first variant. 1 at least.
+    OfBasePairs(u64),
+}
+
+/// One group of variants: the chromosome, and the first and the last
+/// position it holds, both included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupId {
+    /// Its chromosome, as a number in the
+    /// [`ChromTable`](crate::variant::ChromTable) of the reader of the
+    /// pass, which gives the name.
+    pub chrom: u32,
+    /// The position of its first variant, 1 based as in a VCF.
+    pub start: u64,
+    /// The position of its last variant.
+    pub end: u64,
+}
+
+/// The walk over the variants that cuts them into the resampling groups, in
+/// the order the reader gives them.
+///
+/// [`JackknifeWalk::group_of`] takes the chromosome and the position of one
+/// variant and gives the group it falls in, starting a new one where the
+/// cut falls; [`JackknifeWalk::groups`] gives the groups in the order they
+/// were started, which is the order of the result.
+///
+/// With [`JackknifeGroups::OfBasePairs`] a new group starts at the first
+/// variant of a chromosome and at the first variant whose position is the
+/// length or more beyond the first variant of the group being filled. So a
+/// group is anchored on its own first variant and not on a grid of
+/// multiples of the length: cutting at the multiples instead leaves a group
+/// of one variant wherever a variant sits just past a multiple, and one
+/// such group is enough to move the standard error. On the biallelic panel
+/// of `tests/reference/dists/panel.vcf.gz` cut into groups of 100 000 base
+/// pairs, the anchored rule gives 12 groups of 100 variants and a standard
+/// error of f_2 for p0 and p1 of 0.00180, and the multiples give 14 groups,
+/// two of them of one variant, and 0.00242. The anchored rule is the one
+/// ADMIXTOOLS 2 uses, which is what lets the numbers be compared.
+pub(crate) struct JackknifeWalk {
+    /// How the variants are being cut.
+    how: JackknifeGroups,
+    /// The groups in the order they were started, the one being filled
+    /// last.
+    groups: Vec<GroupId>,
+}
+
+impl JackknifeWalk {
+    /// The walk that cuts the variants the way `how` says.
+    ///
+    /// # Errors
+    ///
+    /// A length of 0 base pairs, which is no stretch of a chromosome.
+    pub(crate) fn new(how: JackknifeGroups) -> Result<JackknifeWalk> {
+        if how == JackknifeGroups::OfBasePairs(0) {
+            return Err(Error::JackknifeGroupOfNoBasePairs);
+        }
+        Ok(JackknifeWalk {
+            how,
+            groups: Vec::new(),
+        })
+    }
+
+    /// The group the variant at `chrom` and `pos` falls in, counted from 0,
+    /// and `None` when no groups were asked for.
+    ///
+    /// The variants are given to it in the order the reader gives them, and
+    /// their positions along a chromosome go up in every source popnei
+    /// reads. A group that is being filled takes the variant when it is of
+    /// its chromosome and its position is less than the length beyond the
+    /// first variant of the group; otherwise the variant starts a group of
+    /// its own.
+    pub(crate) fn group_of(&mut self, chrom: u32, pos: u64) -> Option<usize> {
+        match self.how {
+            JackknifeGroups::None => return None,
+            JackknifeGroups::PerVariant => {}
+            JackknifeGroups::OfBasePairs(length) => {
+                if let Some(filling) = self.groups.last_mut()
+                    && filling.chrom == chrom
+                    && pos.saturating_sub(filling.start) < length
+                {
+                    filling.end = pos;
+                    return self.groups.len().checked_sub(1);
+                }
+            }
+        }
+        let at = self.groups.len();
+        self.groups.push(GroupId {
+            chrom,
+            start: pos,
+            end: pos,
+        });
+        Some(at)
+    }
+
+    /// The groups the variants walked so far were cut into, in the order
+    /// they were started.
+    pub(crate) fn groups(&self) -> &[GroupId] {
+        &self.groups
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PopDistPerVar, PopVarCounts, VarSums};
+    use std::path::{Path, PathBuf};
+
+    use super::{GroupId, JackknifeGroups, JackknifeWalk, PopDistPerVar, PopVarCounts, VarSums};
+    use crate::block::BlockReader;
+    use crate::error::Error;
+    use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::Needs;
 
     /// The genotypes of the four variants of the worked example of "How it
     /// is verified" of `docs/specs/dists.md`: 6 diploid individuals, the
@@ -577,6 +710,218 @@ mod tests {
                 .is_none()
         );
         assert!(per_var.of_var(&of_two_genotypes, &of_two_more).is_some());
+    }
+
+    /// The groups a walk cuts `vars` into, each variant given as its
+    /// chromosome and its position, with the group each variant fell in.
+    fn walk_over(how: JackknifeGroups, vars: &[(u32, u64)]) -> (Vec<Option<usize>>, Vec<GroupId>) {
+        let mut walk = match JackknifeWalk::new(how) {
+            Ok(walk) => walk,
+            Err(error) => panic!("{error}"),
+        };
+        let of_each_var = vars
+            .iter()
+            .map(|(chrom, pos)| walk.group_of(*chrom, *pos))
+            .collect();
+        (of_each_var, walk.groups().to_vec())
+    }
+
+    /// The biallelic panel and what R and ADMIXTOOLS 2 give for it live at
+    /// the root of the repository, beside the Python tests that read the
+    /// same file, and not inside this crate.
+    fn reference_dists(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference/dists")
+            .join(name)
+    }
+
+    /// The 12 groups that a length of 100 000 base pairs cuts the biallelic
+    /// panel of 1200 variants into, over its two chromosomes, which is what
+    /// "The standard errors" of `docs/specs/dists.md` says ADMIXTOOLS 2
+    /// cuts it into: 100 variants each, and a new group at the second
+    /// chromosome although its first position is within 100 000 base pairs
+    /// of the first variant of the group the first chromosome ended in.
+    #[test]
+    fn the_panel_is_cut_into_twelve_groups_of_a_hundred_variants() {
+        let expected = [
+            ("chr1", 1000, 100_000),
+            ("chr1", 101_000, 200_000),
+            ("chr1", 201_000, 300_000),
+            ("chr1", 301_000, 400_000),
+            ("chr1", 401_000, 500_000),
+            ("chr1", 501_000, 600_000),
+            ("chr2", 1000, 100_000),
+            ("chr2", 101_000, 200_000),
+            ("chr2", 201_000, 300_000),
+            ("chr2", 301_000, 400_000),
+            ("chr2", 401_000, 500_000),
+            ("chr2", 501_000, 600_000),
+        ];
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&reference_dists("panel.vcf.gz"), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{error}"),
+        };
+        reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+        let mut walk = match JackknifeWalk::new(JackknifeGroups::OfBasePairs(100_000)) {
+            Ok(walk) => walk,
+            Err(error) => panic!("{error}"),
+        };
+        let mut num_vars_of_each_group: Vec<u64> = Vec::new();
+        loop {
+            let block = match reader.next_block() {
+                Ok(Some(block)) => block,
+                Ok(None) => break,
+                Err(error) => panic!("{error}"),
+            };
+            for var in block.variants() {
+                let (Some(chrom), Some(pos)) = (var.chrom(), var.pos()) else {
+                    panic!("the reader gave a variant with no chromosome or no position");
+                };
+                let Some(at) = walk.group_of(chrom, pos) else {
+                    panic!("the variant at {chrom} {pos} fell in no group");
+                };
+                if at == num_vars_of_each_group.len() {
+                    num_vars_of_each_group.push(0);
+                }
+                num_vars_of_each_group[at] = num_vars_of_each_group[at].saturating_add(1);
+            }
+        }
+
+        assert_eq!(walk.groups().len(), 12);
+        assert_eq!(num_vars_of_each_group, vec![100_u64; 12]);
+        for (at, (chrom, start, end)) in expected.into_iter().enumerate() {
+            let group = walk.groups()[at];
+            assert_eq!(reader.chroms().name(group.chrom), Some(chrom), "group {at}");
+            assert_eq!((group.start, group.end), (start, end), "group {at}");
+        }
+    }
+
+    /// The first variant of a chromosome starts a group, however near its
+    /// position is to the first variant of the group being filled: the two
+    /// positions are of different chromosomes and the distance between them
+    /// means nothing.
+    #[test]
+    fn a_new_group_starts_at_each_chromosome() {
+        let vars = [(0, 1000), (0, 1500), (1, 1600), (1, 2000)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars);
+
+        assert_eq!(of_each_var, [Some(0), Some(0), Some(1), Some(1)]);
+        assert_eq!(
+            groups,
+            [
+                GroupId {
+                    chrom: 0,
+                    start: 1000,
+                    end: 1500
+                },
+                GroupId {
+                    chrom: 1,
+                    start: 1600,
+                    end: 2000
+                },
+            ]
+        );
+    }
+
+    /// A group is anchored on its own first variant and not on a grid of
+    /// multiples of the length. The three variants here are 99 999,
+    /// 100 001 and 199 999 base pairs along one chromosome, cut into groups
+    /// of 100 000: anchored, the first two are one group, because 100 001
+    /// is 2 base pairs beyond the first of them, and the third starts
+    /// another, because it is 100 000 beyond it. Cutting at the multiples
+    /// of 100 000 would leave 99 999 in a group of its own and put the
+    /// other two together.
+    #[test]
+    fn a_group_is_anchored_on_its_own_first_variant() {
+        let vars = [(0, 99_999), (0, 100_001), (0, 199_999)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(100_000), &vars);
+
+        assert_eq!(of_each_var, [Some(0), Some(0), Some(1)]);
+        assert_eq!(
+            groups,
+            [
+                GroupId {
+                    chrom: 0,
+                    start: 99_999,
+                    end: 100_001
+                },
+                GroupId {
+                    chrom: 0,
+                    start: 199_999,
+                    end: 199_999
+                },
+            ]
+        );
+    }
+
+    /// The shortest group there is holds the variants of one position and
+    /// nothing else, which says that the length is read and not a number
+    /// the walk keeps for itself.
+    #[test]
+    fn a_length_of_one_base_pair_groups_the_variants_of_one_position() {
+        let vars = [(0, 5), (0, 5), (0, 6)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::OfBasePairs(1), &vars);
+
+        assert_eq!(of_each_var, [Some(0), Some(0), Some(1)]);
+        assert_eq!(groups.len(), 2);
+    }
+
+    /// Each variant its own group, which is what a panel of scattered
+    /// microsatellite loci asks for: a group of one variant holds one
+    /// position, its start and its end.
+    #[test]
+    fn per_variant_gives_one_group_for_each_variant() {
+        let vars = [(0, 10), (0, 20), (1, 5)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::PerVariant, &vars);
+
+        assert_eq!(of_each_var, [Some(0), Some(1), Some(2)]);
+        assert_eq!(
+            groups,
+            [
+                GroupId {
+                    chrom: 0,
+                    start: 10,
+                    end: 10
+                },
+                GroupId {
+                    chrom: 0,
+                    start: 20,
+                    end: 20
+                },
+                GroupId {
+                    chrom: 1,
+                    start: 5,
+                    end: 5
+                },
+            ]
+        );
+    }
+
+    /// No groups at all, which is what a user who asks for no standard
+    /// error gets: every variant falls in none and there is nothing to
+    /// resample over.
+    #[test]
+    fn no_groups_leaves_every_variant_in_none() {
+        let vars = [(0, 10), (0, 20), (1, 5)];
+        let (of_each_var, groups) = walk_over(JackknifeGroups::None, &vars);
+
+        assert_eq!(of_each_var, [None, None, None]);
+        assert!(groups.is_empty());
+    }
+
+    /// A group of 0 base pairs is no stretch of a chromosome: a caller who
+    /// wants each variant in a group of its own asks for that instead. One
+    /// base pair is a length the walk takes.
+    #[test]
+    fn a_length_of_no_base_pairs_is_an_error() {
+        let refused = JackknifeWalk::new(JackknifeGroups::OfBasePairs(0));
+
+        assert!(matches!(refused, Err(Error::JackknifeGroupOfNoBasePairs)));
+        assert!(JackknifeWalk::new(JackknifeGroups::OfBasePairs(1)).is_ok());
     }
 
     /// A ploidy of 0 is not one the frequencies can be raised to, and 256

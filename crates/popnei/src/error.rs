@@ -852,6 +852,16 @@ pub enum Error {
         ploidy: usize,
     },
 
+    /// The variants were asked to be cut into resampling groups of 0 base
+    /// pairs. A group is a stretch of one chromosome and holds one base
+    /// pair at least. A caller who wants each variant in a group of its own
+    /// asks for that, and one who wants no standard error asks for no
+    /// groups; neither is a length.
+    #[error(
+        "the variants were asked to be cut into resampling groups of 0 base pairs, and a group is a stretch of one chromosome 1 base pair long at least"
+    )]
+    JackknifeGroupOfNoBasePairs,
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
