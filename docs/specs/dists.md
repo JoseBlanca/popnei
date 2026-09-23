@@ -805,11 +805,20 @@ second time with `blgsize = 250000`, which cuts the panel into 6 groups
 holding 250, 250 and 100 variants on each of its two chromosomes: there
 ADMIXTOOLS gives 0.0012853754149193656, 0.00099457882673528123 and
 0.0030341885486622044, and the formula above is 9.8e-17 from the furthest of
-them, 5.7e-14 of it. The two runs are
-`tests/reference/pop_dists/panel.f2.tsv` and `panel.f2.uneven.tsv`, which
-`make_reference.py` beside them writes. The tests compare within 1e-12
-relative. No other measure has its standard error checked outside the
-project, because no program prints one for them; what is checked is the
+them, 5.7e-14 of it.
+
+Neither of those two runs reaches the 20 groups the function demands, so
+neither can be asked for through the Python or the TypeScript package, which
+raise instead. A third run can: `blgsize = 55000` cuts each of the two
+chromosomes into 11 groups, ten of 55 variants and one of 50, 22 in all, and
+they are of two sizes as the second run's are. There ADMIXTOOLS gives
+0.0020502481330704485, 0.0016837006366670754 and 0.0019859616713111257. The
+three runs are `tests/reference/pop_dists/panel.f2.tsv`, `panel.f2.uneven.tsv`
+and `panel.f2.min20.tsv`, which `make_reference.py` beside them writes. The
+cargo tests take the first two, and the Python and the TypeScript tests take
+the third, the only one of the three above the 20 group minimum. All compare
+within 1e-12 relative. No other measure has its standard error checked outside
+the project, because no program prints one for them; what is checked is the
 arithmetic they share, which is this.
 
 ### How it is verified
@@ -1051,6 +1060,14 @@ digits the tests assert are the ones
 `tests/reference/pop_dists/panel.f2.tsv` keeps, 0.041181109098151744,
 0.039890789655075122 and 0.042798563747209542, since eight of them are not
 enough for that comparison.
+
+f_2 itself does not depend on how the variants are cut into groups, and only
+the standard error does, but the digits move: the run with `blgsize = 55000`,
+the one the Python and the TypeScript tests use, gives 0.041181109098151751,
+0.039890789655075108 and 0.042798563747209556, which
+`tests/reference/pop_dists/panel.f2.min20.tsv` keeps. They are one and two of
+the last bits of a double away from the three above, 3.5e-16 relative at the
+furthest, and each test asserts the digits of the file it reads.
 
 ADMIXTOOLS reads biallelic genotypes only, so the multiallelic panel is
 checked through plink2 instead: f_2 summed over the loci is plink2's F_ST

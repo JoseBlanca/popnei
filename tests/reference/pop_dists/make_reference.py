@@ -36,12 +36,16 @@ The two panels of docs/specs/dists.md:
 
 It writes, beside itself: micro.vcf.gz and micro_pops.txt, the panel; and, for
 each panel, <name>.hudson_fst.tsv from plink2, <name>.chord.tsv from adegenet,
-<name>.mmod.tsv from mmod, and, for the biallelic one alone, panel.f2.tsv and
-panel.f2.uneven.tsv from admixtools, which reads biallelic genotypes only. The
-two f2 files are the same estimate over groups of 100 000 and of 250 000 base
-pairs: the first cuts the panel into 12 groups of 100 variants and the second
-into 6 that hold 250, 250 and 100 on each of the two chromosomes, which is what
-tells an estimator written for groups of different sizes from one that is not.
+<name>.mmod.tsv from mmod, and, for the biallelic one alone, panel.f2.tsv,
+panel.f2.uneven.tsv and panel.f2.min20.tsv from admixtools, which reads
+biallelic genotypes only. The three f2 files are the same estimate over groups
+of 100 000, of 250 000 and of 55 000 base pairs: the first cuts the panel into
+12 groups of 100 variants, the second into 6 that hold 250, 250 and 100 on each
+of the two chromosomes, which is what tells an estimator written for groups of
+different sizes from one that is not, and the third into 22, ten of 55 variants
+and one of 50 on each chromosome, the only one of the three with the 20 groups
+that popnei's calc_pop_dists demands of a length, so it is the run the Python
+and TypeScript tests can reproduce.
 """
 
 import gzip
@@ -212,12 +216,16 @@ def run_plink2_fst(plink2, vcf, pops_file, name):
 
 
 def run_admixtools_f2(plink2, vcf, pop_of, name):
-    """f_2 of every pair with its jackknife standard error, over two group lengths.
+    """f_2 of every pair with its jackknife standard error, over three group lengths.
 
-    100 000 base pairs cut the panel into 12 groups of 100 variants and 250 000
-    into 6 of 250, 250 and 100 on each chromosome. The second is there because
+    100 000 base pairs cut the panel into 12 groups of 100 variants, 250 000
+    into 6 of 250, 250 and 100 on each chromosome, and 55 000 into 22, ten of 55
+    variants and one of 50 on each chromosome. The second is there because
     groups that all hold the same number of variants cannot tell the delete-m
     jackknife for unequal m from an estimator that takes the groups as equal.
+    The third is of two sizes and has the 20 groups popnei's calc_pop_dists
+    demands, which the other two do not, so it is the run the Python and
+    TypeScript tests can reproduce.
     """
     with tempfile.TemporaryDirectory() as work:
         prefix = pathlib.Path(work) / "panel"
@@ -232,7 +240,8 @@ def run_admixtools_f2(plink2, vcf, pop_of, name):
         program = pathlib.Path(work) / "f2.R"
         program.write_text(ADMIX_PROGRAM)
         for length, into in ((100000, f"{name}.f2.tsv"),
-                             (250000, f"{name}.f2.uneven.tsv")):
+                             (250000, f"{name}.f2.uneven.tsv"),
+                             (55000, f"{name}.f2.min20.tsv")):
             subprocess.run([RSCRIPT, str(program), str(prefix), str(HERE / into),
                             str(length)], check=True, capture_output=True)
 
