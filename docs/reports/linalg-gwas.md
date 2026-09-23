@@ -15,8 +15,8 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed, and work package 2 is done, reviewed and fixed, and work package 3 is under
-way with task 3.1 done.
+reviewed and fixed, and work package 2 is done, reviewed and fixed, and work package 3 is built and its four
+deliverables check out; its review is running.
 Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
@@ -436,6 +436,66 @@ numbers; the other five are the ones the crate refuses before a backend
 runs.
 
 That subagent used 195434 tokens.
+
+### Tasks 3.2 and 3.3, the triangular solve and the rank
+
+`a2dafbb` and `29ba1c7`, each after a commit of the spec, `7437913` and
+`0d1669b`, as the `writing-specs` skill asks when a task needs a number
+the spec has not.
+
+`solve_upper_triangular`, `dtrtrs` with the halves and the transpose
+turned in the BLAS backend and faer's
+`solve_upper_triangular_in_place` in the other, with the diagonal read for
+a 0 in `lib.rs` above both, since faer divides by it and gives an
+infinity while `dtrtrs` gives an `info`. That check is
+`refuse_a_diagonal_entry`, which the review of work package 2 had already
+made general for exactly this. 12 tests. `rank`, `dgesdd` with `jobz` `N`
+on a column major copy and faer's `singular_values`, counting the values
+strictly above numpy's tolerance. 11 tests.
+
+**What the two tasks added to the spec, each before its code.** The
+fixture of the triangular solve had one right hand side against an `n` of
+2, which cannot tell `sides` from `n`, so the task added two more traits
+with their coefficients, from numpy 2.5.3, and the fixture is now three
+right hand sides against an `n` of 2. It chose three and not two for the
+same reason: two against an `n` of 2 would be square. And the five
+matrices of the rank all have a singular value either well above the
+tolerance or at it, so the task added a sixth, the 3 x 2 whose values are
+all 0, of rank 0, which is the only one that tells a count above the
+tolerance from a count at it.
+
+**Deliverable 4's second measurement.** On a design of 10000 x 5, the best
+of 20 runs, `rank` takes 0.1881 ms on Accelerate and 0.2124 ms on faer,
+against the 0.145 ms and 0.159 ms the spec measured of the routines alone
+and the 1.54 ms of the route this task did not take. `thin_qr` measured
+again beside it gave 0.1855 ms, so the gap from the spec's numbers is the
+crate's checks and not the route.
+
+The mutations the orchestrator asked for: `n` and `sides` exchanged in the
+triangular solve fails 4 of its 12 tests on each backend, and the two
+dimensions exchanged in the rank makes the 4 x 3 whose third column is the
+sum of the first two give 3 instead of 2, on each backend.
+
+### The deliverables of work package 3
+
+Every check is `cargo test -p popnei-linalg --lib <filter> -- --list`, and
+every filter printed `0 tests` before the work package.
+
+| Deliverable | Check | What it gave |
+| --- | --- | --- |
+| 1, the thin QR | filter `qr` | 9 tests |
+| 2, the triangular solve and its `Singular` | filter `triangular` | 12 tests |
+| 3, the rank and the tolerance | filter `rank` | 11 tests |
+| 4, the BLAS backend on a column major copy | `grep -c dgeqrf` 17, `grep -c dgelqf` 0, and the timings above | the fast route on both operations |
+
+Both backends pass: `cargo test -p popnei-linalg` `125 passed` and
+`--no-default-features` `122 passed`, against 93 and 90 before the work
+package. The rest, run by the orchestrator: fmt, clippy with the warnings
+denied, `cargo wasm-check` and ruff clean; `cargo test --workspace` `472
+passed` with 2 ignored in the core crate; `uv run maturin develop && uv
+run pytest` `257 passed`.
+
+Those subagents used 195434 and 230876 tokens.
 
 ## What is waiting on the owner
 

@@ -366,7 +366,7 @@ else.
       to 0. Built from "The thin QR of the design" of "What the seven
       give" and its part of "How the seven are verified". Serves
       deliverables 1 and 4. Needs nothing of this work package.
-- [ ] 3.2 `solve_upper_triangular`: `dtrtrs` with the halves and the
+- [x] 3.2 `solve_upper_triangular`: `dtrtrs` with the halves and the
       transpose turned as the reference has them, and faer's
       `solve_upper_triangular_in_place`, with `b` laid out as it is for
       the Cholesky solve, and the diagonal read for a 0 in `lib.rs`, above
@@ -374,7 +374,7 @@ else.
       matrix" and from the paragraph of "The errors the seven add" that
       says why the diagonal is read here. Serves deliverable 2. Needs
       2.1 for `Singular`.
-- [ ] 3.3 `rank`: `dgesdd` with `jobz` `N` on a column major copy in
+- [x] 3.3 `rank`: `dgesdd` with `jobz` `N` on a column major copy in
       `blas.rs` and faer's `singular_values` in `faer.rs`, and above them
       the count of the values strictly above numpy's tolerance, `s *
       max(rows, cols) * 2.220446049250313e-16`, with `s` the largest
