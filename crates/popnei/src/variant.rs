@@ -2157,6 +2157,109 @@ mod tests {
         );
     }
 
+    /// `bench_internals::the_standardized_values` is the tail of
+    /// [`the_standardized_row`] copied, because those two loops are
+    /// written inline in that function and are not one of their own.
+    /// Nothing compared the copy with what it copies, so it could drift
+    /// and the benchmark would then time code the library does not run.
+    ///
+    /// Both are run over one row, under each of the two divisors, and the
+    /// values have to be the same bits. The variant is `0/0 0/1 1/1 0/1
+    /// ./.`, whose last genotype has both of its alleles missing, so the
+    /// entry of [`MISSING_CODE`] is looked up as well.
+    #[cfg(feature = "bench-internals")]
+    #[test]
+    fn the_tail_the_benchmark_times_is_the_tail_the_row_pass_runs() {
+        use std::num::NonZeroUsize;
+
+        use super::bench_internals::{
+            the_codes_of_the_genotypes as the_codes, the_counts_of_the_codes as the_counts,
+            the_standardized_values,
+        };
+        use super::{DOSAGES_OF_A_ROW, VALUES_OF_A_ROW};
+
+        const GTS: [i8; 10] = [0, 0, 0, 1, 1, 1, 0, 1, -1, -1];
+        const NUM_INDIVIDUALS: usize = 5;
+        const PLOIDY: usize = 2;
+        // The dosages of a diploid genotype are 0, 1 and 2.
+        const NUM_DOSAGES: usize = 3;
+
+        for options in [&OF_THE_DOSAGES, &UNDER_HARDY_WEINBERG] {
+            let (whole, used) = the_row_of(&GTS, PLOIDY, options);
+            assert!(used, "the variant has variance");
+
+            let mut allele_counts: AlleleCounts = [0; 128];
+            count_alleles(&GTS, &mut allele_counts).expect("the counts of the alleles");
+            let mut codes = vec![0_u8; NUM_INDIVIDUALS];
+            the_codes(
+                &GTS,
+                NonZeroUsize::new(PLOIDY).expect("a ploidy above 0"),
+                the_major_allele(&allele_counts),
+                &mut codes,
+            );
+            let mut dosage_counts = [0_u32; DOSAGES_OF_A_ROW];
+            the_counts(&codes, NUM_DOSAGES, &mut dosage_counts);
+            let mut values = [0.0_f64; VALUES_OF_A_ROW];
+            let mut of_the_tail = vec![0.0; NUM_INDIVIDUALS];
+            let used = the_standardized_values(
+                &dosage_counts,
+                NUM_DOSAGES,
+                &codes,
+                &mut values,
+                &mut of_the_tail,
+                options.scale,
+            );
+            assert!(used, "the variant has variance");
+
+            for (individual, (tail, row)) in of_the_tail.iter().zip(whole.iter()).enumerate() {
+                assert_eq!(
+                    tail.to_bits(),
+                    row.to_bits(),
+                    "the individual {individual}: the tail gives {tail} and the row {row}"
+                );
+            }
+        }
+    }
+
+    /// A thread keeps the buffers of one row and they are as long as the
+    /// rows it has read so far, so the first row of a source of more
+    /// individuals than the last one had finds a buffer of codes that is
+    /// too short and the pass grows it.
+    ///
+    /// Without that the codes, and then the standardized values, would be
+    /// written for the individuals the buffer holds and the rest of the
+    /// row would be left as it was, and the counts of the dosages would be
+    /// of those individuals alone, which gives another mean and another
+    /// divisor: a wrong row with no error and no panic.
+    ///
+    /// The variant is `v0` of the worked example of "How it is verified"
+    /// of `docs/specs/kinship.md`, four individuals read with the buffers
+    /// of two.
+    #[test]
+    #[expect(
+        clippy::approx_constant,
+        reason = "the standardized dosage of a variant whose divisor is sqrt(0.5), written with the 12 significant digits of every literal here, is the first digits of sqrt(2)"
+    )]
+    fn a_row_of_more_individuals_than_the_buffers_hold_is_written_whole() {
+        let mut scratch = RowScratch::of(2);
+        let mut row = vec![0.0; 4];
+        let used = the_standardized_row(
+            &[0, 0, 0, 1, 1, 1, 0, 1],
+            2,
+            0,
+            &UNDER_HARDY_WEINBERG,
+            &mut scratch,
+            &mut row,
+        )
+        .expect("the standardizing of the row");
+        assert!(used, "the variant has variance");
+        assert_close(
+            &row,
+            &[-1.41421356237, 0.0, 1.41421356237, 0.0],
+            "the standardized dosages of four individuals read with the buffers of two",
+        );
+    }
+
     /// The divisor under Hardy Weinberg reads both the ploidy and the
     /// allele frequency of the variant, `sqrt(ploidy * p * (1 - p))` with
     /// `p` the mean dosage over the ploidy.
@@ -2271,39 +2374,56 @@ mod tests {
     /// A variant with more than two different alleles among its called
     /// genotypes is refused whatever the centered dosages are divided by,
     /// and the message names the position of the variant among those given
-    /// and the argument that turns the refusal off. Here the divisor is
-    /// the one of the kinship, which is not the one of the principal
-    /// components of the variants.
+    /// and the argument that turns the refusal off.
     ///
-    /// The variant is `0/1 2/3 0/1 2/3 ./.` of five diploid individuals,
-    /// which holds the four alleles 0, 1, 2 and 3.
+    /// The variant is `0/1 0/2 0/0 0/1 ./.` of five diploid individuals,
+    /// which holds the three alleles 0, 1 and 2: three and not four,
+    /// because three is where the refusal begins, and a variant of four
+    /// would leave `num_alleles > 3` passing.
+    ///
+    /// The message is asserted whole. Deliverable 3 of work package 1 of
+    /// `docs/plans/kinship.md` asks for it to be the same for both
+    /// callers, and its middle clause is not read anywhere else.
     #[test]
     fn a_variant_of_more_than_two_alleles_is_refused_whatever_the_dosages_are_divided_by() {
+        const OF_THREE_ALLELES: [i8; 10] = [0, 1, 0, 2, 0, 0, 0, 1, -1, -1];
+
         let mut scratch = RowScratch::of(5);
         let mut row = vec![0.0; 5];
-        match the_standardized_row(
-            &THE_SIX_VARIANTS[2],
-            2,
-            3,
-            &UNDER_HARDY_WEINBERG,
-            &mut scratch,
-            &mut row,
-        ) {
-            Err(Error::VariantWithMoreThanTwoAlleles {
-                position,
-                num_alleles,
-            }) => {
-                assert_eq!(position, 3);
-                assert_eq!(num_alleles, 4);
-                let message = Error::VariantWithMoreThanTwoAlleles {
+        for (what, options) in [
+            (
+                "divided by the standard deviation of the dosages",
+                &OF_THE_DOSAGES,
+            ),
+            (
+                "divided by the deviation under Hardy Weinberg",
+                &UNDER_HARDY_WEINBERG,
+            ),
+        ] {
+            match the_standardized_row(&OF_THREE_ALLELES, 2, 3, options, &mut scratch, &mut row) {
+                Err(Error::VariantWithMoreThanTwoAlleles {
                     position,
                     num_alleles,
+                }) => {
+                    assert_eq!(position, 3, "{what}");
+                    assert_eq!(num_alleles, 3, "{what}");
+                    let message = Error::VariantWithMoreThanTwoAlleles {
+                        position,
+                        num_alleles,
+                    }
+                    .to_string();
+                    assert_eq!(
+                        message,
+                        "the variant at the position 3 among those given has 3 different alleles \
+                         among its called genotypes, and the dosage of a genotype, how many of \
+                         its alleles are not the major one, has a meaning for two: pass \
+                         `transform_to_biallelic` to count every allele that is not the major one \
+                         the same",
+                        "{what}"
+                    );
                 }
-                .to_string();
-                assert!(message.contains("at the position 3"), "{message}");
-                assert!(message.contains("transform_to_biallelic"), "{message}");
+                other => panic!("{what}: a variant of three alleles was read: {other:?}"),
             }
-            other => panic!("a variant of four alleles was read: {other:?}"),
         }
 
         // With that argument every allele that is not the major one counts
@@ -2312,15 +2432,9 @@ mod tests {
             transform_to_biallelic: true,
             ..UNDER_HARDY_WEINBERG
         };
-        let used = the_standardized_row(
-            &THE_SIX_VARIANTS[2],
-            2,
-            3,
-            &biallelic,
-            &mut scratch,
-            &mut row,
-        )
-        .expect("the standardizing of the row");
+        let used =
+            the_standardized_row(&OF_THREE_ALLELES, 2, 3, &biallelic, &mut scratch, &mut row)
+                .expect("the standardizing of the row");
         assert!(used, "the variant has variance");
     }
 }
