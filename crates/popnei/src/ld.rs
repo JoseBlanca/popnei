@@ -950,9 +950,9 @@ fn the_r2_matrix_in_tiles_of<R: BlockReader + ?Sized>(
 ) -> Result<R2Matrix> {
     // The matrix holds the square of the variants of the pass and the pass
     // takes `max_num_vars` of them at most, so this is what says that every
-    // count of values below is a number this machine counts: it takes
-    // 65535 variants in WebAssembly, where a `usize` is 32 bits, and
-    // 3037000499 natively.
+    // count of values below is a number this machine counts: the largest
+    // number whose square a `usize` holds, 65535 in WebAssembly, where a
+    // `usize` is 32 bits, and 4294967295 natively.
     if max_num_vars.checked_mul(max_num_vars).is_none() {
         return Err(Error::LdMaxNumVarsTooLarge { max_num_vars });
     }
@@ -963,7 +963,7 @@ fn the_r2_matrix_in_tiles_of<R: BlockReader + ?Sized>(
     if pass.num_vars == 0 {
         return Err(Error::ReaderGaveNoVariants);
     }
-    let r2 = the_r2_of_the_tiles(&pass.tiles, pass.num_vars)?;
+    let r2 = the_r2_of_the_tiles(&pass.tiles, pass.num_vars, max_num_vars)?;
     Ok(R2Matrix {
         num_vars: pass.num_vars,
         r2,
@@ -1252,21 +1252,30 @@ fn the_variants_pass_the_cap(num_vars: usize, max_num_vars: usize) -> Error {
 /// itself is given to [`r2_between`] as one reference twice, which is what
 /// makes it take the four products of a set against itself and not six.
 ///
+/// `max_num_vars` is what the pass was allowed, which the caller has found
+/// to have a square this machine counts.
+///
 /// # Errors
 ///
-/// [`Error::LdNoMemory`] when this machine does not give the memory of the
-/// matrix or of the r² of one pair of tiles, and what [`r2_between`]
-/// refuses.
-fn the_r2_of_the_tiles(tiles: &[LdDosages], num_vars: usize) -> Result<Vec<f64>> {
+/// [`Error::LdMaxNumVarsTooLarge`] when the square of the variants of the
+/// pass is not a number this machine counts, which the caller's check makes
+/// unreachable; [`Error::LdNoMemory`] when this machine does not give the
+/// memory of the matrix or of the r² of one pair of tiles; and what
+/// [`r2_between`] refuses.
+fn the_r2_of_the_tiles(
+    tiles: &[LdDosages],
+    num_vars: usize,
+    max_num_vars: usize,
+) -> Result<Vec<f64>> {
     // The caller has refused a `max_num_vars` whose square is not a number
     // this machine counts and the pass gave at most that many variants, so
-    // the square below is there; what the error says is the same thing of
-    // the variants of the pass.
+    // the square below is there. The error names the number the user wrote
+    // and not the variants of the pass, which is the number they would
+    // lower: a pass of more variants than `max_num_vars` was stopped before
+    // this.
     let values = num_vars
         .checked_mul(num_vars)
-        .ok_or(Error::LdMaxNumVarsTooLarge {
-            max_num_vars: num_vars,
-        })?;
+        .ok_or(Error::LdMaxNumVarsTooLarge { max_num_vars })?;
     let mut matrix = a_vector_of(
         f64::NAN,
         values,
