@@ -278,6 +278,30 @@ Weinberg and not otherwise.
 
 ### How it runs
 
+Before its rows are read, every block is checked against the reader that
+gave it: a block with no variants, and one whose individuals or ploidy
+disagree with the reader's, are the two reader defects `docs/specs/block.md`
+names, and this pass refuses both with the errors that spec gives them. The
+check is not a formality. The drive over the rows pairs the genotypes cut
+into one chunk per variant with the output buffer cut into one row per
+individual, and a buffer sized from a ploidy that is not the block's comes
+out with fewer rows than there are variants; the pairing then truncates to
+the shorter of the two, so the variants past that point are not read at all
+and the pass returns as though the block had held only the ones it managed.
+The loss then wears the costume of a variant dropped for having no variance,
+which is a legitimate outcome, so nothing downstream can tell the two apart.
+
+Reproduced on 23 September 2026 while `docs/plans/kinship.md` was carried
+out: a block of five individuals at a ploidy of 2, read as five at a ploidy
+of 5, gave `Ok([])` for its one variant. **No caller can reach it today**,
+and that is worth knowing before anyone decides the guard is redundant:
+`pca_of_variants`, `calc_kinship` and the pass of `docs/specs/gwas.md` all
+put `reblock` in front, and `Reblock` refuses such a block already with the
+same error. So the guard is for the caller that one day does not, and it is
+cheap because the error exists. This pass asks for both, since `reblock` is
+here for the size of the blocks and not for this, and a later change to why
+it is here should not silently take the check away with it.
+
 One pass over the blocks, each block taken as a matrix. Per block, with
 rayon across its rows, every variant is turned into its standardized dosages
 and the ones with no variance are dropped, which is the row pass the
