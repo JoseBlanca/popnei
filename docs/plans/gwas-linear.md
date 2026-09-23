@@ -61,6 +61,13 @@ these counts and takes none away:
   -D warnings`: clean.
 - `cargo test --workspace`: 604 in the core crate, 2 ignored, 149 in the
   linear algebra crate, 136 of them on faer.
+- `cargo test -p popnei --no-default-features`, the core crate on faer,
+  which is the backend the wasm build uses and so what runs in a browser.
+  It was in no check list until 23 September 2026 and is in the `coding`
+  skill now. Any tolerance this plan adds is chosen against both backends:
+  faer sits about seven times further from plink2 than Accelerate does on
+  the same data, which the order and the blocking of the sums allow and
+  which a bound fixed on Accelerate alone would fail under wasm.
 - `cargo test -p popnei --lib gwas -- --list`: `0 tests`.
 - `uv run maturin develop && uv run pytest`: 347 passed, 0 failed.
 - `npm run build && npm test` in `js/popnei`: 242 pass, 0 fail.
