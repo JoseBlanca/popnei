@@ -74,6 +74,13 @@ pub enum KinshipTooLarge {
     Individuals(usize),
     /// The reader gave more variants than a `usize` counts, which is
     /// 4294967295 in WebAssembly, where a `usize` is 32 bits.
+    ///
+    /// No test reaches it and none can reach it natively: a reader would
+    /// have to give 18446744073709551616 variants, one for every value of
+    /// a `u64` and one more. It is here for the browser, where a dataset of
+    /// 4295 million variants is a file of that many lines and not a size of
+    /// this world either, and for the rule that a count popnei cannot hold
+    /// is an error and never a number that wrapped.
     Variants,
 }
 
@@ -648,8 +655,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Denominators, Kinship, ThePass, calc_kinship, the_denominators_of_the_block,
-        the_pass_over_the_blocks,
+        Denominators, Kinship, KinshipTooLarge, MAX_INDIVIDUALS_OF_THE_VARIANTS, ThePass,
+        calc_kinship, the_denominators_of_the_block, the_pass_over_the_blocks,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -852,6 +859,19 @@ mod tests {
         }
     }
 
+    /// A reader over the bytes of a VCF of that ploidy, which the reader is
+    /// told and does not read from the file.
+    fn reader_of_the_ploidy(vcf: &[u8], ploidy: usize) -> VcfReader<Cursor<Vec<u8>>> {
+        let options = VcfOptions {
+            ploidy,
+            ..VcfOptions::default()
+        };
+        match VcfReader::new(Cursor::new(vcf.to_vec()), options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("the reader was not built: {error}"),
+        }
+    }
+
     /// The kinship of every individual of a VCF held in memory, with a
     /// variant of more than two alleles refused.
     pub(super) fn the_kinship_of(vcf: &[u8], num_vars_per_block: Option<usize>) -> Kinship {
@@ -913,6 +933,26 @@ mod tests {
         the_kinship_of_the_panel(&the_dists_path("panel.vcf.gz"))
     }
 
+    /// The kinship of that panel with the reader giving `num_vars_per_block`
+    /// variants at a time, where `the_panel_with_genotypes_missing` lets the
+    /// reader choose the size.
+    fn the_kinship_of_the_panel_in_blocks_of(num_vars_per_block: usize) -> Kinship {
+        let options = VcfOptions {
+            ploidy: 2,
+            num_vars_per_block: Some(num_vars_per_block),
+            ..VcfOptions::default()
+        };
+        let path = the_dists_path("panel.vcf.gz");
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => kinship,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        }
+    }
+
     /// Where the individual of that name is in the file.
     fn individual_at(individuals: &[String], name: &str) -> usize {
         match individuals.iter().position(|held| held == name) {
@@ -941,8 +981,10 @@ mod tests {
             panic!("{path}: {error}", path = path.display());
         }
         bytes
-            .chunks_exact(8)
-            .map(|eight| f64::from_le_bytes(eight.try_into().expect("eight bytes of an f64")))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|eight| f64::from_le_bytes(*eight))
             .collect()
     }
 
@@ -1221,6 +1263,49 @@ mod tests {
         }
     }
 
+    /// The third worked example of "How it is verified" of
+    /// `docs/specs/kinship.md`, the one of a ploidy that is not 2: 3
+    /// individuals and 2 tetraploid variants, where the ploidy is in the
+    /// divisor of each variant twice and the genotype of `i2` at `v1` has
+    /// two of its four alleles missing, so it is missing whole and is in the
+    /// denominator of no pair. The numbers are pyNei's, read from an array
+    /// of genotypes because its VCF parser refuses a ploidy above 2.
+    #[test]
+    fn the_worked_example_of_four_alleles_to_a_genotype_gives_the_numbers_of_pynei() {
+        let vcf = vcf_of(
+            3,
+            &[
+                variant(&["0/0/0/0", "0/0/1/1", "1/1/1/1"]),
+                variant(&["0/0/0/0", "0/0/0/1", "0/0/./."]),
+            ],
+        );
+        let mut reader = reader_of_the_ploidy(&vcf, 4);
+
+        let kinship = match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => kinship,
+            Err(error) => panic!("the kinship was not taken: {error}"),
+        };
+
+        assert_eq!(kinship.num_vars, 2);
+        let of_pynei = [
+            16.0 / 7.0,
+            -2.0 / 7.0,
+            -4.0,
+            -2.0 / 7.0,
+            2.0 / 7.0,
+            0.0,
+            -4.0,
+            0.0,
+            4.0,
+        ];
+        for (at, (entry, expected)) in kinship.matrix.iter().zip(of_pynei).enumerate() {
+            assert!(
+                (entry - expected).abs() < OF_THE_WORKED_EXAMPLE,
+                "the entry {at} of the matrix is {entry} and pyNei gives {expected}"
+            );
+        }
+    }
+
     #[test]
     fn the_variants_used_of_both_panels_are_the_1200_of_the_files() {
         let (_, called) = the_panel_called();
@@ -1316,8 +1401,14 @@ mod tests {
         );
     }
 
-    /// The matrix is the same whichever of them is the major allele, so the
-    /// two halves of the matrix hold the same number for a pair.
+    /// Every entry above the diagonal holds the entry below it.
+    ///
+    /// The two halves are not worked out twice: the linear algebra writes
+    /// the lower half of the products and the pass copies it into the upper
+    /// one, so what this reads is that the copy reached every entry. A
+    /// matrix given away with the upper half as it was allocated would hold
+    /// 40000 zeros there and fail here, and a copy that missed a row or a
+    /// column would fail at its first entry.
     #[test]
     fn the_matrix_of_the_panel_is_symmetric() {
         let (_, kinship) = the_panel_with_genotypes_missing();
@@ -1335,34 +1426,33 @@ mod tests {
         }
     }
 
-    /// The blocks are joined and cut to one size before the pass, so the
-    /// size the reader gave does not change the variants; the sum over the
-    /// blocks is in floating point and the boundaries decide its last bits,
-    /// which is why this is compared within the tolerance of plink2 and not
-    /// bit by bit.
+    /// The size of block the reader gave changes no bit of the matrix,
+    /// because `reblock` joins and cuts the blocks to one size before the
+    /// pass: the panel is 1200 variants and the size for 200 individuals is
+    /// 10000, so the pass reads one block whether the reader gave 37
+    /// variants at a time or the size it chooses.
+    ///
+    /// The two are compared bit for bit and not within a tolerance. The sum
+    /// over the blocks is in floating point, so a pass that saw the blocks
+    /// of the reader as they came would give other last bits here, and that
+    /// is the whole of what this reads: 0 of the 40000 entries differ.
     #[test]
-    fn the_panel_read_in_blocks_of_37_variants_gives_the_same_entries() {
-        let options = VcfOptions {
-            ploidy: 2,
-            num_vars_per_block: Some(37),
-            ..VcfOptions::default()
-        };
-        let path = the_dists_path("panel.vcf.gz");
-        let mut reader = match VcfReader::from_path(&path, options) {
-            Ok(reader) => reader,
-            Err(error) => panic!("{path}: {error}", path = path.display()),
-        };
-        let individuals = reader.individuals().to_vec();
-        let kinship = match calc_kinship(&mut reader, None, false) {
-            Ok(kinship) => kinship,
-            Err(error) => panic!("{path}: {error}", path = path.display()),
-        };
+    fn the_panel_read_in_blocks_of_37_variants_gives_the_matrix_bit_for_bit() {
+        let of_37 = the_kinship_of_the_panel_in_blocks_of(37);
+        let of_the_default = the_panel_with_genotypes_missing().1;
 
-        let panel = (individuals, kinship);
-        assert_eq!(panel.1.num_vars, 1200);
-        assert_the_entry_is(&panel, "s000", "s000", 1.09626);
-        assert_the_entry_is(&panel, "s000", "s001", 0.650379);
-        assert_the_entry_is(&panel, "s100", "s101", 0.604119);
+        assert_eq!(of_37.num_vars, of_the_default.num_vars);
+        assert_eq!(of_37.num_vars_given, of_the_default.num_vars_given);
+        assert_eq!(of_37.matrix.len(), of_the_default.matrix.len());
+        for (at, (entry, of_the_default)) in
+            of_37.matrix.iter().zip(&of_the_default.matrix).enumerate()
+        {
+            assert_eq!(
+                entry.to_bits(),
+                of_the_default.to_bits(),
+                "the entry {at} is {entry} in blocks of 37 and {of_the_default} in the size popnei chooses"
+            );
+        }
     }
 
     /// A variant with three alleles among its called genotypes is an error,
@@ -1437,6 +1527,60 @@ mod tests {
         };
 
         assert!(matches!(error, Error::KinshipNoIndividual), "{error}");
+    }
+
+    /// More individuals than the individuals x individuals matrix holds
+    /// values for are refused at the entry, before a block is read: the
+    /// matrix of 46341 would hold more than the 2147483647 values the
+    /// linear algebra counts in. The reader here has four individuals and
+    /// is never asked for a block.
+    #[test]
+    fn more_individuals_than_a_matrix_of_them_counts_in_are_refused_at_the_entry() {
+        let too_many = MAX_INDIVIDUALS_OF_THE_VARIANTS
+            .checked_add(1)
+            .expect("one individual more than the largest matrix holds");
+        let mut reader = reader_over(&vcf_of(4, &the_worked_example()), None);
+
+        let error = match calc_kinship(&mut reader, Some(&vec![0; too_many]), false) {
+            Ok(kinship) => panic!("the kinship was taken over {} variants", kinship.num_vars),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::KinshipVariantsTooLarge {
+                    problem: KinshipTooLarge::Individuals(num_individuals),
+                } if num_individuals == too_many
+            ),
+            "{message}"
+        );
+        assert!(message.contains("46341 individuals"), "{message}");
+    }
+
+    /// A ploidy above the 254 a dosage is written at is refused by the pass
+    /// over a row, which this one gets the error from and writes none of its
+    /// own: the message names no calculation, since the two that walk that
+    /// pass both raise it.
+    #[test]
+    fn a_ploidy_above_what_a_dosage_is_written_at_is_refused_by_the_row() {
+        let of_255_alleles = ["0"; 255].join("/");
+        let vcf = vcf_of(2, &[variant(&[&of_255_alleles, &of_255_alleles])]);
+        let mut reader = reader_of_the_ploidy(&vcf, 255);
+
+        let error = match calc_kinship(&mut reader, None, false) {
+            Ok(kinship) => panic!("the kinship was taken over {} variants", kinship.num_vars),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        assert!(
+            matches!(error, Error::VariantPloidyTooLarge { ploidy: 255 }),
+            "{message}"
+        );
+        assert!(!message.contains("kinship"), "{message}");
+        assert!(!message.contains("principal component"), "{message}");
     }
 
     /// An individual that is not in the dataset is refused by the block,
@@ -1527,6 +1671,10 @@ mod cases {
     /// Two individuals with no variant called in both are refused, with
     /// their positions and how many variants each of them has called. pyNei
     /// divides by 0 and leaves the NaN in the matrix.
+    ///
+    /// `i0` is called at two of the three variants and `i2` at one, so the
+    /// two counts of the message are different numbers and the one that
+    /// belongs to each of the two is read.
     #[test]
     fn a_pair_with_no_variant_called_in_both_is_refused_naming_the_two() {
         let error = the_kinship_refused(&vcf_of(
@@ -1534,6 +1682,7 @@ mod cases {
             &[
                 variant(&["0/0", "0/1", "./."]),
                 variant(&["./.", "0/1", "1/1"]),
+                variant(&["0/0", "1/1", "./."]),
             ],
         ));
 
@@ -1544,12 +1693,53 @@ mod cases {
                 Error::KinshipPairWithNoVariantCalled {
                     one: 0,
                     other: 2,
-                    num_vars_of_one: 1,
+                    num_vars_of_one: 2,
                     num_vars_of_other: 1,
                 }
             ),
             "{message}"
         );
+        assert!(
+            message.contains("2 variants are called in the first and 1 in the second"),
+            "{message}"
+        );
+    }
+
+    /// An individual with no called genotype at all, which is a sequencing
+    /// that failed, is named on its own: every pair it is in has no variant
+    /// called in both, and what a user has to do is leave that one
+    /// individual out, not one of a pair. It is the entry of that individual
+    /// with itself that has no variant, and for `i0` it is the first entry
+    /// of the matrix that is read.
+    #[test]
+    fn an_individual_with_no_called_genotype_is_named_on_its_own() {
+        let error = the_kinship_refused(&vcf_of(
+            3,
+            &[
+                variant(&["./.", "0/1", "1/1"]),
+                variant(&["./.", "0/0", "1/1"]),
+            ],
+        ));
+
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::KinshipPairWithNoVariantCalled {
+                    one: 0,
+                    other: 0,
+                    num_vars_of_one: 0,
+                    num_vars_of_other: 0,
+                }
+            ),
+            "{message}"
+        );
+        assert!(
+            message.contains("has no called genotype among the variants that were used"),
+            "{message}"
+        );
+        assert!(message.contains("leave it out"), "{message}");
+        assert!(!message.contains("one of the two"), "{message}");
     }
 
     /// A dataset in which no variant varies is refused: every variant has

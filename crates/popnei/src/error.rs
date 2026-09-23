@@ -880,11 +880,17 @@ pub enum Error {
     /// asked for: every one of them has one dosage among its called
     /// genotypes, or no called genotype at all. A kinship measures a pair
     /// against the average pair of the panel, and a panel whose variants
-    /// all give every individual the same dosage has no such average. It
-    /// is pyNei's "No variant varies among the samples, there is no
-    /// kinship", and in Python it is a `ValueError`.
+    /// give every individual the same dosage has no such average. It is
+    /// pyNei's "No variant varies among the samples, there is no kinship",
+    /// and in Python it is a `ValueError`.
+    ///
+    /// The message says the dosage and not the genotype, which is what the
+    /// rule reads: a variant where every individual is `0/1`, one where
+    /// every genotype is missing, and one of three alleles read as
+    /// biallelic where the genotypes are `0/1`, `0/2` and `0/1`, all have
+    /// one dosage among their called genotypes and different genotypes.
     #[error(
-        "every variant has the same genotype in every individual, and there is no kinship to take from them"
+        "no variant has more than one dosage among its called genotypes, so none of them varies among these individuals and there is no kinship to take"
     )]
     KinshipNoVariantWithVariance,
 
@@ -904,8 +910,14 @@ pub enum Error {
     /// which a user can drop from the panel. The positions are among the
     /// individuals the kinship was asked for, in the order it has them. In
     /// Python it is a `ValueError`.
+    ///
+    /// The two are the same individual when it has no called genotype at
+    /// all among the variants that were used, which is an ordinary
+    /// sequencing that failed, and the message then names that one
+    /// individual instead of telling a user to drop one of the two.
     #[error(
-        "the individuals at the positions {one} and {other} have no variant called in both of them, so their entry of the kinship would be divided by no variant at all: {num_vars_of_one} variants are called in the first and {num_vars_of_other} in the second; leave one of the two out"
+        "{said}",
+        said = a_pair_with_no_variant_called(*one, *other, *num_vars_of_one, *num_vars_of_other)
     )]
     KinshipPairWithNoVariantCalled {
         /// Where the first of the two is among the individuals of the
@@ -1684,6 +1696,42 @@ fn a_pass_that_gave_no_variant(
          kept none of them, {counts}; a statistic of a pass is calculated over the \
          variants it gives",
         counts = of_each_filter.join(", "),
+    )
+}
+
+/// What [`Error::KinshipPairWithNoVariantCalled`] says: the two individuals
+/// that have no variant called in both of them, or the one individual that
+/// has no called genotype at all among the variants that were used.
+///
+/// The entry of a pair is divided by how many variants both of its
+/// individuals were called at, and both cases are that number being 0. A
+/// pair reaches it when each of the two was called somewhere and never
+/// together; one individual reaches it, against itself, when its sequencing
+/// failed, and then every pair it is in has no variant either, so what a
+/// user has to do is leave that one out and not one of a pair.
+fn a_pair_with_no_variant_called(
+    one: usize,
+    other: usize,
+    num_vars_of_one: u64,
+    num_vars_of_other: u64,
+) -> String {
+    if one == other {
+        return format!(
+            "the individual at the position {one} has no called genotype among the \
+             variants that were used, so its entry of the kinship would be divided by \
+             no variant at all; leave it out"
+        );
+    }
+    format!(
+        "the individuals at the positions {one} and {other} have no variant called in \
+         both of them, so their entry of the kinship would be divided by no variant at \
+         all: {num_vars_of_one} {said} called in the first and {num_vars_of_other} in \
+         the second; leave one of the two out",
+        said = if num_vars_of_one == 1 {
+            "variant is"
+        } else {
+            "variants are"
+        },
     )
 }
 
