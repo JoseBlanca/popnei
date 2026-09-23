@@ -1667,7 +1667,14 @@ fn the_dosage_of(value: f64) -> u8 {
 #[cfg(feature = "bench-internals")]
 #[doc(hidden)]
 pub mod bench_internals {
-    use super::{R2Matrix, the_r2_matrix_in_tiles_of as r2_matrix_in_tiles_of};
+    use super::{R2Matrix, THE_VARS_OF_A_TILE, the_r2_matrix_in_tiles_of as r2_matrix_in_tiles_of};
+
+    /// How many variants a tile holds when the library chooses, which is
+    /// what [`calc_r2_matrix`](super::calc_r2_matrix) passes on. The
+    /// benchmark takes it as the tile it runs at when its command line
+    /// names none, so the number it reports by default is the number the
+    /// library uses and cannot drift from it.
+    pub const VARS_OF_A_TILE: usize = THE_VARS_OF_A_TILE;
     use crate::block::BlockReader;
     use crate::error::Result;
 

@@ -140,9 +140,11 @@ const DEFAULT_RUNS: usize = 5;
 const DEFAULT_MAX_NUM_VARS: usize = 5000;
 
 /// How many variants a tile of the products holds when the command line
-/// does not say, which is `THE_VARS_OF_A_TILE` of `ld`, the number the
-/// library uses.
-const DEFAULT_VARS_PER_TILE: usize = 256;
+/// does not say. It is taken from the library, so a run with no
+/// `--vars-per-tile` measures the tile `calc_r2_matrix` really uses and a
+/// change of that constant cannot leave this benchmark reporting the old
+/// one under the new name.
+const DEFAULT_VARS_PER_TILE: usize = popnei::ld::bench_internals::VARS_OF_A_TILE;
 
 /// The fields the matrix asks its reader for, which the pass that reads
 /// and computes nothing asks for too.
