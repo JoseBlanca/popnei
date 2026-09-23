@@ -268,12 +268,22 @@ impl LdDosages {
             num_individuals,
         };
         let values = the_values_of(block.num_vars, num_individuals).ok_or_else(too_large)?;
+        // The individuals each variant has a value for: the ones asked for,
+        // or every individual of the block when none were named.
+        let mut of_them: Vec<usize> = Vec::new();
+        of_them
+            .try_reserve_exact(num_individuals)
+            .map_err(|_| Error::LdNoMemory {
+                what: "the individuals of the dosages",
+                values: num_individuals,
+            })?;
+        match individuals.is_empty() {
+            true => of_them.extend(0..block.num_individuals),
+            false => of_them.extend_from_slice(individuals),
+        }
         let mut dosages = LdDosages {
             num_vars: block.num_vars,
-            individuals: match individuals.is_empty() {
-                true => (0..block.num_individuals).collect(),
-                false => individuals.to_vec(),
-            },
+            individuals: of_them,
             dosages: a_vector_of(0.0, values, &the_memory_for("the dosages", values))?,
             called: a_vector_of(0.0, values, &the_memory_for("the called genotypes", values))?,
             squares: a_vector_of(
@@ -281,8 +291,16 @@ impl LdDosages {
                 values,
                 &the_memory_for("the squares of the dosages", values),
             )?,
-            has_variance: vec![false; block.num_vars],
-            maf: vec![None; block.num_vars],
+            has_variance: a_vector_of(
+                false,
+                block.num_vars,
+                &the_memory_for("the variants that have variance", block.num_vars),
+            )?,
+            maf: a_vector_of(
+                None,
+                block.num_vars,
+                &the_memory_for("the major allele frequency of each variant", block.num_vars),
+            )?,
         };
         if values == 0 {
             // No variant, or no individual to read at each of them: the
@@ -310,12 +328,16 @@ impl LdDosages {
         // empty.
         let mut chosen = match individuals.is_empty() {
             true => Vec::new(),
-            false => vec![
-                MISSING_ALLELE;
-                num_individuals
+            false => {
+                let alleles = num_individuals
                     .checked_mul(of_a_genotype.get())
-                    .ok_or_else(too_large)?
-            ],
+                    .ok_or_else(too_large)?;
+                a_vector_of(
+                    MISSING_ALLELE,
+                    alleles,
+                    &the_memory_for("the genotypes of the individuals asked for", alleles),
+                )?
+            }
         };
         let mut counts: AlleleCounts = [0; 128];
         let rows = dosages
@@ -368,7 +390,9 @@ impl LdDosages {
     /// # Errors
     ///
     /// When those are not variants of these dosages: the error names both
-    /// numbers and how many variants there are.
+    /// numbers and how many variants there are. [`Error::LdNoMemory`] when
+    /// this machine does not give the memory of the matrices of those
+    /// variants, which is asked for with `try_reserve_exact` and not taken.
     pub fn rows(&self, first: usize, num_vars: usize) -> Result<LdDosages> {
         let of_other_variants = || Error::LdRowsNotInTheDosages {
             first,
@@ -385,26 +409,39 @@ impl LdDosages {
         // saturates.
         let from = first.saturating_mul(self.num_individuals());
         let values = num_vars.saturating_mul(self.num_individuals());
+        let to = from.saturating_add(values);
+        // The rows of the variants asked for, which are rows of these
+        // dosages: what is not there is the error above and not a set of
+        // fewer values than it says it has.
+        let (Some(dosages), Some(called), Some(squares), Some(has_variance), Some(maf)) = (
+            self.dosages.get(from..to),
+            self.called.get(from..to),
+            self.squares.get(from..to),
+            self.has_variance.get(first..end),
+            self.maf.get(first..end),
+        ) else {
+            return Err(of_other_variants());
+        };
         Ok(LdDosages {
             num_vars,
-            individuals: self.individuals.clone(),
-            dosages: the_values_from(&self.dosages, from, values),
-            called: the_values_from(&self.called, from, values),
-            squares: the_values_from(&self.squares, from, values),
-            has_variance: self
-                .has_variance
-                .iter()
-                .skip(first)
-                .take(num_vars)
-                .copied()
-                .collect(),
-            maf: self
-                .maf
-                .iter()
-                .skip(first)
-                .take(num_vars)
-                .copied()
-                .collect(),
+            individuals: the_copy_of(
+                &self.individuals,
+                &the_memory_for("the individuals of the dosages", self.individuals.len()),
+            )?,
+            dosages: the_copy_of(dosages, &the_memory_for("the dosages", values))?,
+            called: the_copy_of(called, &the_memory_for("the called genotypes", values))?,
+            squares: the_copy_of(
+                squares,
+                &the_memory_for("the squares of the dosages", values),
+            )?,
+            has_variance: the_copy_of(
+                has_variance,
+                &the_memory_for("the variants that have variance", num_vars),
+            )?,
+            maf: the_copy_of(
+                maf,
+                &the_memory_for("the major allele frequency of each variant", num_vars),
+            )?,
         })
     }
 
@@ -1385,10 +1422,19 @@ fn the_values_of(num_vars: usize, num_individuals: usize) -> Option<usize> {
         .filter(|values| *values <= MAX_VALUES_OF_THE_DOSAGES)
 }
 
-/// The `values` values of `matrix` from `from`, which is one matrix of a
-/// run of variants of another.
-fn the_values_from(matrix: &[f64], from: usize, values: usize) -> Vec<f64> {
-    matrix.iter().skip(from).take(values).copied().collect()
+/// A copy of `values`, with its memory asked of this machine with
+/// `try_reserve_exact` and not taken, as `docs/specs/linalg.md` asks for
+/// the workspace of the eigendecomposition.
+///
+/// # Errors
+///
+/// What `not_given` gives, when the machine does not give the memory.
+fn the_copy_of<T: Copy>(values: &[T], not_given: &impl Fn() -> Error) -> Result<Vec<T>> {
+    let mut copy: Vec<T> = Vec::new();
+    copy.try_reserve_exact(values.len())
+        .map_err(|_| not_given())?;
+    copy.extend_from_slice(values);
+    Ok(copy)
 }
 
 /// The genotypes of the individuals of `individuals`, in the order they are
