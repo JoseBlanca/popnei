@@ -211,8 +211,9 @@ The r² gains because the three matrices of a tile are built once and used
 in every pair that tile takes part in, so the same buffer is scanned four
 to six times per pair; of the 160 million values scanned only 15 million
 are distinct, and removing the other 145 million is nine tenths of the
-0.017 s that taking the scan out entirely was measured to save there. **The analysis gains nothing from this crate's
-side**, because every block is a new matrix: the caller would run the same
+0.017 s that taking the scan out entirely was measured to save there.
+**The analysis gains nothing from this crate's side**, because every
+block is a new matrix: the caller would run the same
 scan one line earlier. The analysis's share only comes if `pca.rs` also
 proves each block finite as it standardizes it, from a table of at most
 `ploidy + 1` entries, which is the half of H3 that lives in that module
