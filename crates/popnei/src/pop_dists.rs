@@ -835,10 +835,13 @@ impl PairSums {
 /// out negative, and popnei does not clamp them.
 ///
 /// A pair whose sum of H_b is 0, which takes two populations fixed for the
-/// same allele at every variant that counted for them, has a F_ST of 0 over
-/// 0, a NaN. "The Rust interface" of the spec lists the cases with no value
-/// and that is not one of them, and a caller sees the same thing either
-/// way: the binding crates write a NaN for a `None` as well.
+/// same allele at every variant that counted for them, has no F_ST: the
+/// division is 0 over 0. It is a `None` and not the NaN that division
+/// gives, although the binding crates write a NaN for a `None` too, because
+/// a NaN of one group is a pseudo-value of NaN in
+/// [`PopDistSums::standard_error`] and a standard error of NaN for the
+/// whole pair, where the `None` is a group the jackknife can say something
+/// about: "The standard errors" of the spec has what it says.
 ///
 /// Jost's D, Nei's G_ST and the standardized G''_ST are ratios of the means
 /// of the corrected H_S and H_T instead, which [`PopDistPerVar::of_var`]
@@ -854,9 +857,10 @@ impl PairSums {
 ///
 /// Each of the three is a ratio of the means and not a mean of the per
 /// variant ratios, which is what pyNei's `_calc_jost_from_ht_hs` computes
-/// for D. D has no value where H_S' is exactly 1, the division by 1 - H_S'
-/// that "The Rust interface" of the spec gives to D alone; G''_ST divides
-/// by that same 1 - H_S' and comes out infinite there.
+/// for D. Each has no value where its own divisor is 0, as F_ST has none
+/// where the sum of H_b is: D where H_S' is exactly 1, G_ST where the mean
+/// corrected H_T is 0, which is the pair fixed for the same allele above,
+/// and G''_ST where either of those two happens, since it divides by both.
 ///
 /// The chord distance and Nei's D_A come out of the third sum, the square
 /// roots of the products of the frequencies added over the alleles of each
@@ -890,17 +894,17 @@ fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
     // NaN.
     let nei_d_a = (1.0 - sums.sqrt_of_the_products / num_vars).max(0.0);
     match measure {
-        PopDistMeasure::Fst => Some(between_minus_within / sums.h_b),
+        PopDistMeasure::Fst => (sums.h_b != 0.0).then(|| between_minus_within / sums.h_b),
         PopDistMeasure::F2 => Some(between_minus_within / num_vars),
         PopDistMeasure::Dest => (one_minus_mean_h_s != 0.0).then(|| {
             (NUM_POPS_OF_A_PAIR / (NUM_POPS_OF_A_PAIR - 1.0)) * between_the_pops
                 / one_minus_mean_h_s
         }),
-        PopDistMeasure::Gst => Some(between_the_pops / mean_h_t),
-        PopDistMeasure::GstStandardized => Some(
-            NUM_POPS_OF_A_PAIR * between_the_pops
-                / ((NUM_POPS_OF_A_PAIR * mean_h_t - mean_h_s) * one_minus_mean_h_s),
-        ),
+        PopDistMeasure::Gst => (mean_h_t != 0.0).then(|| between_the_pops / mean_h_t),
+        PopDistMeasure::GstStandardized => {
+            let divisor = (NUM_POPS_OF_A_PAIR * mean_h_t - mean_h_s) * one_minus_mean_h_s;
+            (divisor != 0.0).then(|| NUM_POPS_OF_A_PAIR * between_the_pops / divisor)
+        }
         PopDistMeasure::Chord => Some(nei_d_a.sqrt()),
         PopDistMeasure::Da => Some(nei_d_a),
     }
@@ -1047,8 +1051,9 @@ impl PopDistSums {
 
     /// The jackknife standard error of the measure of the pair. `None`
     /// where [`measure`](PopDistSums::measure) is `None`, where no groups
-    /// were asked for, and where every variant of the pair fell in one
-    /// group.
+    /// were asked for, where every variant of the pair fell in one group,
+    /// and where a group that holds variants of the pair leaves the measure
+    /// without a value when it is taken out.
     ///
     /// It is the delete-m jackknife for unequal m of Busing, Meijer and van
     /// der Leeden (1999, Statistics and Computing 9: 3, DOI
@@ -1093,11 +1098,12 @@ impl PopDistSums {
         let mut num_groups: usize = 0;
         let mut jackknife_estimate = 0.0;
         for group in 0..self.groups.len() {
-            let Some(pseudo) =
-                self.pseudo_value_of(measure, pair, group, over_all_value, &over_all)
-            else {
-                continue;
-            };
+            let pseudo =
+                match self.of_the_group_left_out(measure, pair, group, over_all_value, &over_all) {
+                    OfTheGroupLeftOut::NoVariantOfThePair => continue,
+                    OfTheGroupLeftOut::NoValueWithoutIt => return None,
+                    OfTheGroupLeftOut::PseudoValue(pseudo) => pseudo,
+                };
             #[expect(
                 clippy::arithmetic_side_effects,
                 reason = "the loop runs once for each of the groups, so the count reaches self.groups.len() at most, which is a usize"
@@ -1112,11 +1118,12 @@ impl PopDistSums {
         }
         let mut variance = 0.0;
         for group in 0..self.groups.len() {
-            let Some(pseudo) =
-                self.pseudo_value_of(measure, pair, group, over_all_value, &over_all)
-            else {
-                continue;
-            };
+            let pseudo =
+                match self.of_the_group_left_out(measure, pair, group, over_all_value, &over_all) {
+                    OfTheGroupLeftOut::NoVariantOfThePair => continue,
+                    OfTheGroupLeftOut::NoValueWithoutIt => return None,
+                    OfTheGroupLeftOut::PseudoValue(pseudo) => pseudo,
+                };
             let from_the_estimate = pseudo.value - jackknife_estimate;
             variance += from_the_estimate * from_the_estimate / (pseudo.weight - 1.0);
         }
@@ -1125,26 +1132,34 @@ impl PopDistSums {
         Some((variance / num_groups as f64).sqrt())
     }
 
-    /// The pseudo-value of one group and its weight h_j, and `None` when no
-    /// variant of the pair fell in the group or when the group holds every
-    /// variant of it, which leaves no measure to compare with.
-    fn pseudo_value_of(
+    /// What one group gives the jackknife of the measure: its pseudo-value,
+    /// or that no variant of the pair fell in it, or that the measure has no
+    /// value with it left out, which takes the standard error of the pair
+    /// away.
+    fn of_the_group_left_out(
         &self,
         measure: PopDistMeasure,
         pair: usize,
         group: usize,
         over_all_value: f64,
         over_all: &PairSums,
-    ) -> Option<PseudoValue> {
-        let of_the_group = self.of_the_group(group, pair)?;
+    ) -> OfTheGroupLeftOut {
+        let Some(of_the_group) = self.of_the_group(group, pair) else {
+            return OfTheGroupLeftOut::NoVariantOfThePair;
+        };
         if of_the_group.num_vars == 0 {
-            return None;
+            return OfTheGroupLeftOut::NoVariantOfThePair;
         }
         // The counts are below 2^53, where a `f64` holds the whole numbers
         // exactly, and the group holds a variant, which the line above says.
         let weight = over_all.num_vars as f64 / of_the_group.num_vars as f64;
-        let without_the_group = value_of(measure, &over_all.without(of_the_group)?)?;
-        Some(PseudoValue {
+        let Some(without_the_group) = over_all
+            .without(of_the_group)
+            .and_then(|rest| value_of(measure, &rest))
+        else {
+            return OfTheGroupLeftOut::NoValueWithoutIt;
+        };
+        OfTheGroupLeftOut::PseudoValue(PseudoValue {
             value: weight * over_all_value - (weight - 1.0) * without_the_group,
             weight,
         })
@@ -1193,6 +1208,27 @@ impl PopDistSums {
     fn index_of_the_pair(&self, i: usize, j: usize) -> Option<usize> {
         index_of_the_pair(self.num_pops, i, j)
     }
+}
+
+/// What one group left out gives the jackknife of one measure of one pair.
+///
+/// A group that holds no variant of the pair is not one of the g of "The
+/// standard errors" of `docs/specs/dists.md`, and the jackknife goes on
+/// without it. A group that holds variants of the pair and leaves the
+/// measure without a value when it is taken out ends the standard error of
+/// that measure: the weights 1/h_j of the g groups add to 1, so leaving one
+/// of them out of the sums would drop the jackknife estimate below the
+/// measure by that group's weight and the variance would be taken around a
+/// centre no group put there.
+#[derive(Debug, Clone, Copy)]
+enum OfTheGroupLeftOut {
+    /// The pseudo-value u_j of the group and its weight h_j.
+    PseudoValue(PseudoValue),
+    /// No variant of the pair fell in the group.
+    NoVariantOfThePair,
+    /// The group holds variants of the pair and the measure has no value
+    /// with it left out.
+    NoValueWithoutIt,
 }
 
 /// The pseudo-value of one group, u_j, with the weight h_j the variance
@@ -2593,6 +2629,67 @@ mod tests {
         .expect("the sums of the two populations of two")
     }
 
+    /// The genotypes of the 25 variants of "How it is verified" of
+    /// `docs/specs/dists.md` where the two populations are fixed for the
+    /// same allele: 4 diploid individuals, the two alleles of each after
+    /// those of the one before, pop1 the first two and pop2 the last two,
+    /// 24 variants with every genotype `0/0` and a last one where pop1
+    /// holds the allele 0 and pop2 the allele 1.
+    fn fixed_for_the_same_allele() -> Vec<[i8; 8]> {
+        let mut of_the_vars = vec![[0; 8]; 24];
+        of_the_vars.push([0, 0, 0, 0, 1, 1, 1, 1]);
+        of_the_vars
+    }
+
+    /// The sums of the one pair of two populations of two individuals over
+    /// `of_the_vars`, one block of them in the order given, at
+    /// `min_num_individuals` called genotypes and with each variant its own
+    /// resampling group.
+    ///
+    /// The variants lie 1000 base pairs apart on one chromosome. It is the
+    /// pass without the checks `calc_pop_dist_sums` makes, which ask a user
+    /// for 20 groups at the least.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the variants of a fixture, at the positions 1000 and up"
+    )]
+    fn sums_of_the_pair_of_two_per_variant(
+        of_the_vars: &[[i8; 8]],
+        min_num_individuals: u32,
+    ) -> PopDistSums {
+        let individuals: Vec<String> = (0..4).map(|number| format!("i{number}")).collect();
+        let named = [
+            ("pop1".to_owned(), individuals[..2].to_vec()),
+            ("pop2".to_owned(), individuals[2..].to_vec()),
+        ];
+        let pops = Pops::from_names(&named, &individuals).expect("the two populations of two");
+        let block = Block {
+            num_vars: of_the_vars.len(),
+            num_individuals: 4,
+            ploidy: 2,
+            gts: of_the_vars.iter().flatten().copied().collect(),
+            chrom: Some(vec![0; of_the_vars.len()]),
+            pos: Some(
+                (0..of_the_vars.len())
+                    .map(|var| 1000 * (var + 1) as u64)
+                    .collect(),
+            ),
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of(individuals, vec![block], false);
+        sums_of_the_pass(
+            &mut reader,
+            &pops,
+            &PopDistOptions {
+                min_num_individuals,
+                groups: JackknifeGroups::PerVariant,
+            },
+        )
+        .expect("the sums of the two populations of two")
+    }
+
     /// The genotypes of one variant of 10 diploid individuals, the two
     /// alleles of each after those of the one before, where each of the two
     /// populations of five holds the alleles 0, 1, 2 and 3 at the counts 2,
@@ -2903,18 +3000,121 @@ mod tests {
         );
     }
 
-    /// Jost's D divides by 1 - the mean corrected H_S, so a pair whose mean
-    /// corrected H_S came to exactly 1 has no D. It is the one case of "The
-    /// Rust interface" of `docs/specs/dists.md` that belongs to a single
-    /// measure, and the spec gives it to Dest alone: G_ST, which divides by
-    /// the mean corrected H_T, has a value there, and the standardized
-    /// G''_ST divides by that same 1 - H_S and comes out infinite.
+    /// Two populations fixed for the same allele at every variant that
+    /// counted for them have no F_ST, no G_ST and no G''_ST: their sum of
+    /// H_b and their mean corrected H_T are both 0, and each of the three
+    /// divides by one of the two. The four that do not, f_2, Jost's D, the
+    /// chord distance and Nei's D_A, are 0 there, which "Variants that do
+    /// not count" of `docs/specs/dists.md` asks for: two populations that
+    /// hold the same one allele everywhere are as near as a pair can be.
+    ///
+    /// A value of NaN instead would be a distance with a count of variants
+    /// above 0 beside it, and the test below is what it costs: a NaN cannot
+    /// be told from a number by the jackknife that reads it.
+    #[test]
+    fn two_pops_fixed_for_the_same_allele_have_no_fst_no_gst_and_no_gst_standardized() {
+        let sums = sums_of_the_pair_of_two_over(&[[0; 8], [0; 8]]);
+
+        assert_eq!(sums.num_vars_of(0, 1), Some(2));
+        for measure in [
+            PopDistMeasure::Fst,
+            PopDistMeasure::Gst,
+            PopDistMeasure::GstStandardized,
+        ] {
+            assert_eq!(
+                sums.measure(measure, 0, 1),
+                None,
+                "the {} of two populations fixed for the same allele",
+                measure.name()
+            );
+        }
+        for measure in [
+            PopDistMeasure::F2,
+            PopDistMeasure::Dest,
+            PopDistMeasure::Chord,
+            PopDistMeasure::Da,
+        ] {
+            assert_eq!(
+                sums.measure(measure, 0, 1),
+                Some(0.0),
+                "the {} of two populations fixed for the same allele",
+                measure.name()
+            );
+        }
+    }
+
+    /// The 25 variants of "How it is verified" of `docs/specs/dists.md`,
+    /// each its own group: the two populations are fixed for the same
+    /// allele at 24 of them and hold a different one at the last, so that
+    /// one group carries the whole sum of H_b and the whole sum of the
+    /// corrected H_T. Left out, it leaves F_ST, G_ST and G''_ST without a
+    /// value, and the three have no standard error at all, although each of
+    /// them is 1 over the 25 variants.
+    ///
+    /// The other four have a value with every group left out, so they have
+    /// a standard error over the same 25 groups: f_2 is 0.04 with one of
+    /// 0.04, Jost's D and Nei's D_A the same two numbers, and the chord
+    /// distance 0.2 with 0.195959. Before the divisors were guarded, the
+    /// group left out gave the three a pseudo-value of NaN, and what a user
+    /// read for them was a standard error of NaN with a value of 1 beside
+    /// it.
+    #[test]
+    fn a_measure_that_a_group_left_out_leaves_without_a_value_has_no_standard_error() {
+        let sums = sums_of_the_pair_of_two_per_variant(&fixed_for_the_same_allele(), 2);
+
+        assert_eq!(sums.num_vars_of(0, 1), Some(25));
+        assert_eq!(sums.groups().len(), 25);
+        for measure in [
+            PopDistMeasure::Fst,
+            PopDistMeasure::Gst,
+            PopDistMeasure::GstStandardized,
+        ] {
+            let named = measure.name();
+            assert_it_is_within(
+                sums.measure(measure, 0, 1),
+                1.0,
+                1e-12,
+                &format!("the {named}"),
+            );
+            assert_eq!(
+                sums.standard_error(measure, 0, 1),
+                None,
+                "the standard error of the {named}"
+            );
+        }
+        for (measure, value, standard_error) in [
+            (PopDistMeasure::F2, 0.04, 0.04),
+            (PopDistMeasure::Dest, 0.04, 0.04),
+            (PopDistMeasure::Da, 0.04, 0.04),
+            (PopDistMeasure::Chord, 0.2, 0.195959),
+        ] {
+            let named = measure.name();
+            assert_it_is_within(
+                sums.measure(measure, 0, 1),
+                value,
+                1e-6,
+                &format!("the {named}"),
+            );
+            assert_it_is_within(
+                sums.standard_error(measure, 0, 1),
+                standard_error,
+                1e-6,
+                &format!("the standard error of the {named}"),
+            );
+        }
+    }
+
+    /// Jost's D and the standardized G''_ST both divide by 1 - the mean
+    /// corrected H_S, so a pair whose mean corrected H_S came to exactly 1
+    /// has neither. G_ST divides by the mean corrected H_T instead and has
+    /// a value there, which is what "Variants that do not count" of
+    /// `docs/specs/dists.md` says of the three.
     ///
     /// No genotypes of a panel reach a mean corrected H_S of exactly 1, so
     /// the sums are written here as a pass would have left them: two
     /// variants whose corrected H_S added to 2.
     #[test]
-    fn the_dest_of_a_pair_whose_mean_corrected_h_s_is_one_has_no_value() {
+    fn the_dest_and_the_gst_standardized_of_a_pair_whose_mean_corrected_h_s_is_one_have_no_value() {
         let sums = PopDistSums::of_the_pass(
             2,
             2,
@@ -2935,9 +3135,9 @@ mod tests {
             sums.measure(PopDistMeasure::Gst, 0, 1).is_some(),
             "the G_ST of a pair whose mean corrected H_S is 1"
         );
-        assert!(
-            sums.measure(PopDistMeasure::GstStandardized, 0, 1)
-                .is_some_and(f64::is_infinite),
+        assert_eq!(
+            sums.measure(PopDistMeasure::GstStandardized, 0, 1),
+            None,
             "the G''_ST of a pair whose mean corrected H_S is 1"
         );
     }
