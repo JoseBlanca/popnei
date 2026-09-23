@@ -1297,6 +1297,16 @@ the wrong length is read as another shape and gives numbers, and a NaN in
 one comes back much later as the linear algebra crate's refusal of a value
 that is not finite, naming a matrix at whichever routine met it first.
 
+A matrix of the wrong length is a `RuntimeError` in Python, as a phenotype
+or a design of another size is: both binding crates cut the kinship to the
+tested individuals themselves, so no user gives one of another length. A
+value of it that is not finite is a `ValueError` naming the row, the column
+and the value, since it is the matrix the user brought;
+`Kinship.__post_init__` of "Its Python function, and its TypeScript one" of
+`docs/specs/kinship.md` refuses a matrix that holds a value that is not a
+number, so what reaches this is a caller of the core crate or an infinity
+that came out of the user's own arithmetic.
+
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
 
