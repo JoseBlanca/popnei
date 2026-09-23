@@ -25,7 +25,7 @@ and all nine pass:
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | `cargo test --workspace` | 787 core tests, 2 ignored; 149 in the linear algebra crate |
 | `cargo test -p popnei --no-default-features` | the same 787, 2 ignored, on faer |
-| `cargo test -p popnei-linalg --no-default-features` | 149 |
+| `cargo test -p popnei-linalg --no-default-features` | 136 |
 | `cargo wasm-check` | clean on both wasm targets |
 | `uv run ruff format --check && uv run ruff check` | clean |
 | `uv run maturin develop && uv run pytest` | 499 passed in 21.03 s |
@@ -34,6 +34,36 @@ and all nine pass:
 The faer run is the one that matters most to this plan, because it is the
 linear algebra a browser runs and because every tolerance below has to hold
 on it as well as on Accelerate.
+
+The linear algebra crate has 149 tests with its default features and 136
+without: 13 of them are of the system BLAS and LAPACK, which the faer build
+does not have. The two counts are not a loss.
+
+## The module was split before anything was added to it
+
+`crates/popnei/src/gwas.rs` had reached 8035 lines and this plan adds two
+models to it, so it is now the directory `crates/popnei/src/gwas/`, seven
+modules and a `mod.rs`, at 3f77fa8. The seams are the ones a reviewer of
+`plan/gwas-linear` read and reported as clean: `distributions` for the two
+functions that turn a statistic into a p-value, `study` for what a user asks
+for and what a study is refused for, `dosages` for the dosage of each tested
+individual at each variant of a block, `result` for what a study gives back,
+`linear` and `linear_mixed` for the two models that exist, and `pass` for
+`calc_gwas` and the one pass over the blocks. A logistic model is a module
+beside the other two.
+
+Nothing but the address of the code changed, and three things say so: no
+file outside `crates/popnei/src/gwas` is in the commit, so no caller of the
+crate had to be adjusted; every line of the old file is in the new directory
+unchanged but for the import lists, sixteen items widened from private to
+`pub(super)` or `pub(crate)` because they now cross a module boundary, and
+the doc links that a submodule can no longer resolve by a bare name; and
+every check gives the count it gave before, 787 core tests with 2 ignored on
+both backends, 149 and 136 in the linear algebra crate, 499 pytest and 325
+node.
+
+The plan's tasks name `crates/popnei/src/gwas.rs` as where their code goes.
+That file no longer exists and the tasks build in the directory instead.
 
 ## What the owner's four open points would change
 
