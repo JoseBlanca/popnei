@@ -32,7 +32,7 @@ use popnei_linalg::{
 
 use crate::block::{Block, BlockReader, Reblock};
 use crate::error::{Error, Result};
-use crate::variant::{DosageOptions, DosageScale, Needs, RowScratch, the_standardized_row};
+use crate::variant::{DosageOptions, DosageScale, Needs, RowPositions, the_standardized_rows};
 
 /// Whether the table is centered, which `do_pca` of pyNei does by default
 /// and so does popnei.
@@ -935,7 +935,10 @@ fn the_standardized_block(
         num_individuals,
         ploidy,
         &the_dosages_of(options),
-        first_position,
+        RowPositions {
+            first: first_position,
+            too_many: the_variants_are_too_many,
+        },
         standardized,
     )?;
     // The rows that were used are moved to the start of the buffer. A
@@ -992,131 +995,6 @@ fn the_dosages_of(options: &VariantPcaOptions) -> DosageOptions {
         transform_to_biallelic: options.transform_to_biallelic,
         scale: DosageScale::OfTheDosages,
     }
-}
-
-/// The rows of a block standardized into `standardized`, and whether each
-/// variant was used, in the order of the block.
-///
-/// The rows are read on the threads of rayon, as section 3 of
-/// `docs/architecture.md` asks: no row reads another and each one writes
-/// its own values, so neither the values nor the variants that are left
-/// out depend on how many threads there are. The threads are those of the
-/// pool the caller is running in, and rayon's global pool only when the
-/// caller is in none. Each thread keeps the buffers of one row and
-/// allocates nothing per variant.
-///
-/// `gts` holds the rows of the block, `alleles_per_var` alleles each, and
-/// `alleles_per_var` is 1 or more; `standardized` holds one value for each
-/// individual of each of those rows, and a row that is not used is left as
-/// it was.
-///
-/// The error is the one of the first row of the block that has one,
-/// wherever the threads found it: each row gives its own result and they
-/// are read in the order of the block, so a user who reports a file gets
-/// the same message every time.
-///
-/// # Errors
-///
-/// What the standardizing of one row refuses, and
-/// [`Error::PcaVariantsTooLarge`] when the position of a variant is beyond
-/// what a `usize` counts.
-#[cfg(not(target_family = "wasm"))]
-fn the_standardized_rows(
-    gts: &[i8],
-    alleles_per_var: usize,
-    num_individuals: usize,
-    ploidy: usize,
-    options: &DosageOptions,
-    first_position: usize,
-    standardized: &mut [f64],
-) -> Result<Vec<bool>> {
-    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
-    use rayon::slice::{ParallelSlice, ParallelSliceMut};
-
-    let rows: Vec<Result<bool>> = gts
-        .par_chunks_exact(alleles_per_var)
-        .zip(standardized.par_chunks_exact_mut(num_individuals))
-        .enumerate()
-        .map_init(
-            || RowScratch::of(num_individuals),
-            |scratch, (var, (gts, row))| {
-                let position = first_position
-                    .checked_add(var)
-                    .ok_or_else(the_variants_are_too_many)?;
-                the_standardized_row(gts, ploidy, position, options, scratch, row)
-            },
-        )
-        .collect();
-    rows.into_iter().collect()
-}
-
-/// The same rows, read one after another, which is what WebAssembly does:
-/// it has no threads.
-///
-/// # Errors
-///
-/// The same as the rows read on threads.
-#[cfg(target_family = "wasm")]
-fn the_standardized_rows(
-    gts: &[i8],
-    alleles_per_var: usize,
-    num_individuals: usize,
-    ploidy: usize,
-    options: &DosageOptions,
-    first_position: usize,
-    standardized: &mut [f64],
-) -> Result<Vec<bool>> {
-    the_standardized_rows_one_by_one(
-        gts,
-        alleles_per_var,
-        num_individuals,
-        ploidy,
-        options,
-        first_position,
-        standardized,
-    )
-}
-
-/// The rows read one after another into the buffers of one row: what
-/// WebAssembly does, and what the test that compares the two ways of
-/// reading a block calls. `alleles_per_var` is 1 or more, as it is for the
-/// rows read on threads.
-///
-/// # Errors
-///
-/// What the standardizing of one row refuses, and
-/// [`Error::PcaVariantsTooLarge`] when the position of a variant is beyond
-/// what a `usize` counts.
-#[cfg(any(target_family = "wasm", test))]
-fn the_standardized_rows_one_by_one(
-    gts: &[i8],
-    alleles_per_var: usize,
-    num_individuals: usize,
-    ploidy: usize,
-    options: &DosageOptions,
-    first_position: usize,
-    standardized: &mut [f64],
-) -> Result<Vec<bool>> {
-    let mut scratch = RowScratch::of(num_individuals);
-    let mut used = Vec::new();
-    for (var, (gts, row)) in gts
-        .chunks_exact(alleles_per_var)
-        .zip(standardized.chunks_exact_mut(num_individuals))
-        .enumerate()
-    {
-        let position = first_position
-            .checked_add(var)
-            .ok_or_else(the_variants_are_too_many)?;
-        used.push(the_standardized_row(
-            gts,
-            ploidy,
-            position,
-            options,
-            &mut scratch,
-            row,
-        )?);
-    }
-    Ok(used)
 }
 
 /// Where the traits of the table are in the copy of it that is centered
@@ -1633,24 +1511,28 @@ mod tests {
 
     use super::{
         AfterTheFirstPass, DosageOptions, DosageScale, FirstPass, MAX_INDIVIDUALS_OF_THE_VARIANTS,
-        MAX_PLOIDY_OF_THE_VARIANTS, Pca, PcaOptions, RowScratch, TraitScale, VariantPcaOptions,
+        MAX_PLOIDY_OF_THE_VARIANTS, Pca, PcaOptions, TraitScale, VariantPcaOptions,
         VariantsOfTheSecondPass, VariantsTooLarge, fix_the_signs, pca, pca_of_variants,
-        the_components_with_variance, the_first_pass, the_scaled_vectors_of, the_standardized_row,
+        the_components_with_variance, the_first_pass, the_scaled_vectors_of,
         the_weights_of_a_second_pass,
     };
     // The two ways of reading the rows of a block are one function in
     // WebAssembly, which has no threads, so the test that compares them,
-    // and what only it uses, are of the targets that have them.
+    // and what only it uses, are of the targets that have them. Both of
+    // them, and the pass over one row they walk, are of [`crate::variant`]:
+    // the kinship drives a block of variants the same way.
     #[cfg(not(target_family = "wasm"))]
-    use super::{the_row_of, the_standardized_rows, the_standardized_rows_one_by_one};
+    use super::the_row_of;
     use crate::block::{Block, BlockReader, Reblock};
     use crate::error::{Error, Result};
     use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{
-        ChromTable, MISSING_ALLELE, MISSING_CODE, Needs, the_codes_of_any_ploidy,
-        the_codes_of_the_genotypes,
+        ChromTable, MISSING_ALLELE, MISSING_CODE, Needs, RowScratch, the_codes_of_any_ploidy,
+        the_codes_of_the_genotypes, the_standardized_row,
     };
+    #[cfg(not(target_family = "wasm"))]
+    use crate::variant::{RowPositions, the_standardized_rows, the_standardized_rows_one_by_one};
 
     /// The tolerance of "How it is verified" of `docs/specs/pca.md`: every
     /// literal here and in the reference files is written with 12
@@ -2472,6 +2354,18 @@ mod tests {
     const PCA_DOSAGES: DosageOptions = DosageOptions {
         transform_to_biallelic: false,
         scale: DosageScale::OfTheDosages,
+    };
+
+    /// A block that holds the first variant the reader gave, with the
+    /// error this analysis raises when a reader gives more variants than a
+    /// `usize` counts.
+    ///
+    /// Only the test of the two ways of reading the rows of a block uses
+    /// it, and that test is of the targets that have threads.
+    #[cfg(not(target_family = "wasm"))]
+    const THE_FIRST_POSITIONS: RowPositions = RowPositions {
+        first: 0,
+        too_many: super::the_variants_are_too_many,
     };
 
     /// The worked example of "How it is verified" of "The PCA of the
@@ -3355,7 +3249,7 @@ mod tests {
             num_individuals,
             2,
             &PCA_DOSAGES,
-            0,
+            THE_FIRST_POSITIONS,
             &mut on_threads,
         )
         .expect("the rows read on the threads of rayon");
@@ -3366,7 +3260,7 @@ mod tests {
             num_individuals,
             2,
             &PCA_DOSAGES,
-            0,
+            THE_FIRST_POSITIONS,
             &mut one_by_one,
         )
         .expect("the rows read one after another");

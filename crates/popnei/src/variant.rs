@@ -5,7 +5,9 @@
 //! row helpers over it: the counts of its alleles and its genotypes, its
 //! major allele, and the pass that turns it into one standardized dosage
 //! per individual, which the principal components of the variants and the
-//! kinship both walk with their own divisor.
+//! kinship both walk with their own divisor, with the drive that takes a
+//! whole block of variants through it, on the threads of rayon or one
+//! after another where there are none.
 //!
 //! The variants flow in blocks, which [`crate::block`] holds, and a
 //! calculation that works variant by variant walks the [`VariantRef`] of
@@ -1295,6 +1297,155 @@ fn the_center_and_the_scale_of_the_dosages(
         }
     };
     Some((mean, divisor))
+}
+
+/// Where a block sits among the variants a reader has given, and the error
+/// the calculation that is driving the block raises when the reader gives
+/// more of them than a `usize` counts.
+///
+/// A row is standardized with the position of its variant among those the
+/// reader gave, which is what the error of a variant with more than two
+/// alleles names, so the count is from the first variant of the reader and
+/// not from the first of the block. Which error a count above `usize::MAX`
+/// raises belongs to the calculation, whose message names it: the pass
+/// over the rows knows only that there is no position left.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RowPositions {
+    /// Which variant of those the reader has given the first row of the
+    /// block is, counted from 0.
+    pub first: usize,
+    /// The error of a position beyond what a `usize` counts, which is
+    /// 4294967295 in WebAssembly, where a `usize` is 32 bits.
+    pub too_many: fn() -> Error,
+}
+
+/// The rows of a block standardized into `standardized`, and whether each
+/// variant was used, in the order of the block.
+///
+/// The rows are read on the threads of rayon, as section 3 of
+/// `docs/architecture.md` asks: no row reads another and each one writes
+/// its own values, so neither the values nor the variants that are left
+/// out depend on how many threads there are. The threads are those of the
+/// pool the caller is running in, and rayon's global pool only when the
+/// caller is in none. Each thread keeps the buffers of one row and
+/// allocates nothing per variant.
+///
+/// `gts` holds the rows of the block, `alleles_per_var` alleles each, and
+/// `alleles_per_var` is 1 or more; `standardized` holds one value for each
+/// individual of each of those rows, and a row that is not used is left as
+/// it was. `options` says what the centered dosages are divided by and
+/// whether a variant of more than two alleles is read, and `positions`
+/// where the block sits among the variants the reader has given.
+///
+/// The error is the one of the first row of the block that has one,
+/// wherever the threads found it: each row gives its own result and they
+/// are read in the order of the block, so a user who reports a file gets
+/// the same message every time.
+///
+/// # Errors
+///
+/// What the standardizing of one row refuses, and
+/// [`RowPositions::too_many`] when the position of a variant is beyond
+/// what a `usize` counts.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn the_standardized_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+    use rayon::slice::{ParallelSlice, ParallelSliceMut};
+
+    let rows: Vec<Result<bool>> = gts
+        .par_chunks_exact(alleles_per_var)
+        .zip(standardized.par_chunks_exact_mut(num_individuals))
+        .enumerate()
+        .map_init(
+            || RowScratch::of(num_individuals),
+            |scratch, (var, (gts, row))| {
+                let position = positions
+                    .first
+                    .checked_add(var)
+                    .ok_or_else(positions.too_many)?;
+                the_standardized_row(gts, ploidy, position, options, scratch, row)
+            },
+        )
+        .collect();
+    rows.into_iter().collect()
+}
+
+/// The same rows, read one after another, which is what WebAssembly does:
+/// it has no threads.
+///
+/// # Errors
+///
+/// The same as the rows read on threads.
+#[cfg(target_family = "wasm")]
+pub(crate) fn the_standardized_rows(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    the_standardized_rows_one_by_one(
+        gts,
+        alleles_per_var,
+        num_individuals,
+        ploidy,
+        options,
+        positions,
+        standardized,
+    )
+}
+
+/// The rows read one after another into the buffers of one row: what
+/// WebAssembly does, and what the test of [`crate::pca`] that compares the
+/// two ways of reading a block calls. `alleles_per_var` is 1 or more, as
+/// it is for the rows read on threads.
+///
+/// # Errors
+///
+/// What the standardizing of one row refuses, and
+/// [`RowPositions::too_many`] when the position of a variant is beyond
+/// what a `usize` counts.
+#[cfg(any(target_family = "wasm", test))]
+pub(crate) fn the_standardized_rows_one_by_one(
+    gts: &[i8],
+    alleles_per_var: usize,
+    num_individuals: usize,
+    ploidy: usize,
+    options: &DosageOptions,
+    positions: RowPositions,
+    standardized: &mut [f64],
+) -> Result<Vec<bool>> {
+    let mut scratch = RowScratch::of(num_individuals);
+    let mut used = Vec::new();
+    for (var, (gts, row)) in gts
+        .chunks_exact(alleles_per_var)
+        .zip(standardized.chunks_exact_mut(num_individuals))
+        .enumerate()
+    {
+        let position = positions
+            .first
+            .checked_add(var)
+            .ok_or_else(positions.too_many)?;
+        used.push(the_standardized_row(
+            gts,
+            ploidy,
+            position,
+            options,
+            &mut scratch,
+            row,
+        )?);
+    }
+    Ok(used)
 }
 
 /// What the benchmark `standardize_row` calls to time each pass over a row
