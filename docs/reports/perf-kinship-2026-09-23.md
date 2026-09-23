@@ -97,8 +97,10 @@ run; and both bindings run once per call.
 
 ## 2. The verdict: apply, and the target is out of reach
 
-Two things are true at once and the first is the one that decides what to
-do next.
+One change was made and kept: **the panel with 3 in 100 genotypes missing
+falls from 0.695 s to 0.562 s**, 19 per 100, with the fully-called panel
+unchanged and every number of the result bit for bit what it was. Section
+9 has it. Two things decide what to do next, and the first is the larger.
 
 **The 0.23 s cannot be reached by making popnei's own code faster, and
 this is now measured rather than argued.** Of the 0.399 s the fully-called
@@ -138,8 +140,9 @@ variants each individual is missing, plus the variants both are missing —
 and at 3 in 100 missing the pairwise term is about 2.2 million increments
 a block against 5 thousand million floating point operations. Because both
 routes sum whole numbers below 2^53, the denominators come out bit for
-bit the same. That is H1, and it is **the largest gain this review found**: a matching
-profile, a mechanism, and a proof that it changes no result.
+bit the same. That is H1, **the largest gain this review found and the one it took**: a
+matching profile, a mechanism, and a proof that it changes no result. It
+is at `d222d27` and section 9 has its numbers.
 
 Beside it, the next largest item on the fully-called panel is not
 arithmetic at all: **the file is read on the same thread that then does
@@ -219,6 +222,7 @@ of them does: popnei its vars file, pyNei its own, plink2 its `.pgen`.
 | | every genotype called | 3 in 100 missing |
 |---|---|---|
 | popnei, the core crate | **0.399 s** | **0.713 s** |
+| popnei after the change of section 9 | 0.399 s | **0.562 s** |
 | popnei, called from Python | 0.408 s, 0.19 GB | 0.723 s, 0.25 GB |
 | pyNei | 0.903 s, 0.40 GB | 1.579 s, 0.44 GB |
 | plink2 `--make-rel square` | **0.232 s** | **0.805 s** |
@@ -245,11 +249,12 @@ write is not in these numbers.
 **popnei misses the target by 0.167 s and is 1.72 times plink2** on the
 panel the target is stated on.
 
-**popnei is 1.13 times faster than plink2 on the panel with genotypes
-missing**, 0.713 s against 0.805 s. The ranges do not overlap: plink2's
-slowest of 20 runs is 824 ms and popnei's worst of ten is 802 ms. Both
-programs are much slower on that panel than on the other, plink2 by 3.5
-times and popnei by 1.8.
+**popnei is faster than plink2 on the panel with genotypes missing**,
+0.713 s against 0.805 s before the change of section 9 and 0.562 s after
+it, 1.13 and 1.43 times. The ranges never overlap: plink2's slowest of 20
+runs is 824 ms and popnei's worst of ten was 802 ms before the change.
+Both programs are much slower on that panel than on the other, plink2 by
+3.5 times and popnei by 1.8 before the change and 1.4 after it.
 
 **popnei is 2.2 times faster than pyNei on both panels and holds half the
 memory.** Section 2.1 of `docs/rust_core.md` gives pyNei 0.81 s for this
@@ -927,3 +932,113 @@ kinship a browser number at all.
   passes the half, the transpose and the leading dimension so that neither
   product copies anything, and the faer backend asks for the lower
   triangle so it computes the half too.
+
+## 9. What the experiments showed
+
+Each entry has the two measurements, the dataset and the machine, and ends
+in one of: applied, with the commit; no gain, closed; not run, with the
+reason; or for the owner.
+
+### H1, the denominators counted instead of multiplied: applied at `d222d27`
+
+A block with a missing genotype no longer always builds the matrix of the
+genotypes that were called. It adds up, over the variants it used, the
+square of how many individuals each is missing in — which is what the
+counting costs — and takes the cheaper of two routes that add the same
+whole numbers to the same entries. The product route is kept and is still
+reached by a block above the crossover.
+
+Best of five timed runs, two invocations a side, one thread, Apple M5 Pro,
+load average 1.61 to 1.79 throughout, with the baseline side rebuilt from
+`b89ea41` and both sides measured in one sitting:
+
+| | before | after |
+|---|---|---|
+| 3 in 100 genotypes missing | 0.695 and 0.696 s | **0.562 and 0.562 s** |
+| every genotype called | 0.394 and 0.395 s | 0.390 and 0.392 s |
+
+**The panel with genotypes missing falls by 0.133 s, 19 per 100**, against
+a threshold of 0.10 s, and the fully-called panel does not rise. **popnei
+now takes 0.562 s there against plink2's 0.805 s, 1.43 times faster.**
+
+The count was gated before any timing was looked at. In a fresh sampling
+profile of the panel with genotypes missing, the second product is gone
+from the run entirely:
+
+| | before | after |
+|---|---|---|
+| the denominators of a block, its own code | 1458 | 3785 |
+| the `dsyrk` under it | 3600 | **0** |
+| the two together | 5058 of 12222 | 3785 of 12254 |
+| `dsyrk` anywhere in the run | 7584 | 4674 |
+| physical footprint | 131.8 MB, peak 141.3 | **93.2 MB**, peak 97.3 |
+
+The footprint falls to within 7 MB of the 86.3 MB the fully-called panel
+holds, which was the whole of what the 40 MB buffer cost.
+
+**The numbers did not move, and a test now holds them.**
+`the_two_routes_to_the_denominators_agree_entry_for_entry` runs one block
+through each route into two matrices that both start at the variants of
+earlier blocks, on both sides of the crossover, and compares their lower
+halves with the bits of each `f64` and not within a tolerance. It also
+counts the pairs that lost a variant and fails if none did, so a fixture
+where the two agree trivially cannot pass; and it was checked against a
+deliberate defect, dropping an individual's pair with itself from the
+intersection, which it caught. The benchmark printed the same mean of the
+diagonal and the same largest entry to six digits before and after on both
+panels, and the two whole-matrix comparisons against plink2 pass on both
+backends.
+
+Every check of the `coding` skill passes, with one test more than the
+baseline: `cargo fmt`, `cargo clippy` and `cargo wasm-check` clean; 723
+passing in the core crate with 2 ignored where there were 722, and 149 in
+the linear algebra crate; 723 and 136 on faer; 443 pytest; 300 in
+JavaScript.
+
+**The crossover, and what it cost to find.** A trial binary ran both
+routes over one block of 5 million genotypes at twelve rates of missing
+genotypes, checking at each rate that the two give the same matrix. The
+product costs 5.1 picoseconds a multiply-add at every shape tried; one
+increment of the counted route costs 0.64 nanoseconds at 1000
+individuals, 0.98 at 3000 and 1.33 at 6000, because the matrix it walks
+is 8, 72 and 288 MB. So the two cross at a sum of the squares of 1 part in
+139 of the variants used times the individuals squared at 1000
+individuals, 1 in 289 at 3000 and 1 in 524 at 6000. The constant is the
+largest of the three, so the counted route is never the slower one up to
+6000 individuals; what that costs is that between about 4 and about 7 in
+100 genotypes missing at 1000 individuals a block takes the product where
+the counts would have been up to twice as fast.
+
+**What it added.** A struct of three buffers where the pass carried one;
+three private functions; one constant measured on this machine, which is
+the one thing that will drift, and getting it wrong costs speed and never
+a number; and the invariant that the two routes add exactly the same whole
+numbers to the same entries, which the new test holds.
+
+**Two things it did not do, one change per measurement.**
+
+- **Holding the denominators as a count rather than as an `f64` does not
+  fall out cleanly while both routes exist**, though a count fits in 32
+  bits at every size `docs/objectives.md` names and that would halve the
+  800 MB at 10000 individuals. The product route writes its result through
+  a routine that needs a matrix of `f64`, so a matrix of counts would need
+  a second accumulator of the same shape for the blocks that take it —
+  which is the buffer this change just removed. It falls out only if the
+  product route goes entirely, which means accepting the counted route
+  above the crossover too.
+- **Choosing the route per variant rather than per block is worth about
+  another 0.04 s.** The block is walked twice today, once to decide and
+  once by the route, and the decision could be made for each variant on
+  its own count, since the denominator is a sum over the variants and the
+  product can be taken over the rows that go to it. The trial timed the
+  deciding walk at 2.1 ms a block, which is 42 ms over this panel's 20
+  blocks.
+
+### What the other experiments did not settle
+
+H2, H3 and the findings of section 6 below them were not run. H1 was taken
+first because it is the largest and because it is the one whose effect on
+the numbers is provable rather than argued; the rest are in the order of
+section 4 for whoever takes them up. H3 is unaffected by what H1 changed:
+the new code still asks whether a block has a missing genotype by reading
+the block, and still pays 0.012 s for it on the panel that has none.
