@@ -314,19 +314,24 @@ The rest, in the order of what they would have cost:
   it inherits the blind spot this review found, so the eleven plink2
   literals of that section are what will close it there.
 
-### How the work went
+### How the work went, for whoever revises a skill or writes a plan
 
-Task 1.1 took one subagent 197000 tokens over 112 tool calls and 15
-minutes. The seven reviewers took 756000 tokens between them, from 79000
-for the binding to 122000 for the numbers, and ran in parallel in about 13
-minutes. The fixes took the subagent that wrote the code another 119000
-tokens over 20 minutes; sending them back to it rather than to a fresh one
-cost nothing in re-reading.
+The owner can stop here; what follows is for the next plan and the skills.
+
+Task 1.1 cost 197000 tokens to build. Reviewing it cost 756000 across seven
+reviewers, and fixing what they found cost another 119000: so the review
+and its fixes came to four and a half times the building, and found two
+wrong divisors that all 607 tests passed. That ratio is the argument for
+reviewing a work package this small at all.
 
 Sending all seven categories rather than choosing among them was worth it
-here: the finding that mattered most came from `tests`, which was the
-slowest of the seven and the only one that mutates the code, and three of
-the others found the PCA-named ploidy error from three different sides.
+here: the finding that mattered most came from `tests`, the slowest of the
+seven and the only one that mutates the code, and three of the others found
+the PCA-named ploidy error from three different sides.
+
+The fixes went back to the subagent that wrote the code rather than to a
+fresh one, and it needed no re-reading to place them, so a fix round costs
+about what its findings cost to describe.
 
 ## Work package 2: the matrix
 
@@ -533,15 +538,18 @@ default reading and so becomes the first real guard on re-blocking.
 - pyNei's VCF reader raises `IndexError` above a ploidy of 2, so the
   tetraploid test takes its numbers from `Variants.from_gt_array` instead.
 
-### How the work went
+### How the work went, for whoever revises a skill or writes a plan
 
-Building the work package took four subagents about 940000 tokens: 144000
-for the move of the block pass, 427000 for the core and its two fix rounds,
-315000 for Python, 251000 for TypeScript. The seven reviewers took 1035000
-between them, from 127000 for the architecture to 166000 for the spec.
+The owner can stop here; what follows is for the next plan and the skills.
 
-The review cost more than the building and found four wrong numbers that
-every one of the 637 tests passed. The single most useful thing it did was
+Four subagents built this work package for about 940000 tokens and seven
+reviewers read it for 1035000, so the review cost 1.1 times the building,
+against 4.5 times for work package 1, which was a tenth the size. A review
+does not scale with the work: it is closer to a fixed cost per work package
+than to a share of one, which is the number to plan with.
+
+That review found four wrong numbers that every one of the 637 tests
+passed. The single most useful thing it did was
 mutate the code: the `tests` reviewer, the slowest of the seven at thirteen
 minutes, found three of the four, and the orchestrator confirmed each by
 rerunning the mutation before and after the fix.
@@ -796,11 +804,20 @@ and the proof did not, and the spec now says which is which.
   value that cancelled to near 0 is no guide to its own error. It is loose
   by at most 1.4x on these panels.
 
-### How the work went
+### How the work went, for whoever revises a skill or writes a plan
 
-Two subagents built it, about 307000 tokens, and five reviewers took 732000
-between them. The fix round took another 130000.
+The owner can stop here; what follows is for the next plan and the skills.
+
+Two subagents built it for about 307000 tokens, five reviewers read it for
+732000 and the fix round cost 130000, so review and fixes came to 2.8 times
+the building. Five categories were sent rather than seven, `api` paired
+with `errors` and `binding` with `architecture`, and nothing was lost by it:
+every category still reported findings that held.
 
 The `numbers` reviewer was the most useful of the five and the slowest, at
-seventeen minutes: it proved the bound rather than checking it, and it was
-the only one to test the spec's *reasoning* rather than its numbers.
+seventeen minutes. It was the only one that proved a bound rather than
+measuring it, and the only one that tested the spec's *reasoning* rather
+than its numbers, which is how the account of 199 components of 200 was
+found to be true of a panel with nothing missing and not of one with
+genotypes missing. A reviewer told to check numbers checks numbers; this
+one was told to check a claim.
