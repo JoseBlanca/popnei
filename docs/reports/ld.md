@@ -11,13 +11,15 @@ can now work out every number this plan set out to give, and nobody has
 yet measured how long it takes.
 
 Where the merge stands. `main` moved 110 commits while this plan ran, and
-the two sides changed 26 files in common, so the merge is a piece of work
-and not a formality: `main` now builds the chain of a pass from a list of
+the two sides changed 26 files in common, so the merge was a piece of work
+and not a formality: `main` builds the chain of a pass from a list of
 steps where this branch built the filter by linkage disequilibrium into
-the list of criteria it built from before. The branch is being merged as
-this project has merged its others, `main` into the branch first, so that
-`main` is never left unable to build. Until that is done the three work
-packages are on `plan/ld` and nowhere else.
+the list of criteria it built from before. `main` was merged into
+`plan/ld` on 23 September 2026, as this project has merged its others,
+into the branch first, so that `main` is never left unable to build. What
+the merge had to reconcile, and the three numbers it did not move, are in
+the message of that commit. The three work packages are still on `plan/ld`
+and nowhere else until the owner orders `plan/ld` into `main`.
 
 ## What exists now that did not
 
