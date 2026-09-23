@@ -508,11 +508,16 @@ Writing it as one number instead put a bound in this spec that no correct
 implementation could pass, measured on the whole panel on 23 September 2026:
 at `var0482`, `beta` 1.0389 and `se` 0.19, six significant digits round a
 value above 1 by up to 5e-6 where they round one below 1 by 5e-7, while the
-budget `1e-5 * se` is 1.9e-6. The printing alone was 2.6 times the whole
-allowance, and 1198 of the 1200 variants failed. The two that passed were
-the two whose `beta` stayed below 1. The share the printing takes grows with
-the value while the budget grows with `se`, and the two come apart wherever
-an effect is large and its standard error is not.
+budget `1e-5 * se` was 1.9e-6. The printing alone was 2.6 times the whole
+allowance. Three variants of the 1200 failed, `var0398`, `var0482` and
+`var1001`, and the worst was 1.938e-5 of `se`; with the second term they all
+pass. What decides a failure is not whether `beta` passes 1 but whether half
+a unit in the last printed digit passes `1e-5` times that variant's `se`,
+which for a `beta` between 1 and 10 means an `se` below 0.5: six variants
+meet that and three of them fail, since the printing error is at most half a
+digit and usually less. The share the printing takes grows with the value
+while the budget grows with `se`, and the two come apart wherever an effect
+is large and its standard error is not.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
@@ -1343,26 +1348,41 @@ different things to do something about. Meanwhile the implementer gives NaN
 with no reason, as pyNei does, since no literal of this spec moves either
 way and the column can be added without changing a number.
 
-**Open 2: a variant whose score denominator rounds to 0 or below.** `x' p x`
-is 0 or above in exact arithmetic, and rounding can put it just below for a
-variant with almost no variance left once the covariates and the kinship are
-taken out. The options are to give that variant three NaNs, as a variant
-with no variance gets, which says the study could not test it and throws
-away a `beta` that is meaningless anyway; or to let the statistic through to
-`chi2_sf_1df`, which gives 1.0 for an argument of 0 or below, so the user
-sees a p-value of 1 beside a `beta` and an `se` that are large and wrong.
-Recommendation: three NaNs, refused before the statistic is formed, at
-`den <= 0`. A p-value of 1 is a claim that the variant was tested and showed
-nothing, and nothing was tested; and "The variants that have no answer"
-already means the three NaNs together, so a NaN p-value beside a finite
-`beta` would be a fourth thing a user has to learn to read. It costs the
-distinction between a variant with no variance at all and one whose variance
-the null model absorbed, which no reference program reports either. This
-came from the session building `gwas-linear` on 23 September 2026, which met
-it in the score test of the linear mixed model. Meanwhile the implementer
-refuses at `den <= 0` and gives the three NaNs; if the owner chooses the
-other, the change is one comparison and no literal of this spec moves, since
-no variant of either panel reaches it.
+**Open 2: a variant the design leaves nothing of.** It arises in both
+models and the quantity differs. In the linear model it is `xx`, the squared
+length of the variant's dosages once the covariates are taken out of them,
+which is 0 in exact arithmetic for a variant that is a combination of the
+design's columns. In both score tests it is `x' p x`, which is 0 or above in
+exact arithmetic and which rounding can put just below for a variant with
+almost no variance left once the covariates and the kinship are taken out.
+Either way `beta` is a number divided by noise.
+
+What happens today, measured on 23 September 2026 on eight individuals with
+a covariate marking two subpopulations of four and a variant fixed one way
+in each: popnei and pyNei agree to the bit and give `beta` 5.36e13, `se`
+6.95e14 and a p-value of 0.941, which reads as a variant that was tested and
+showed nothing. plink2 gives `NA`, `NA`, `NA` with `ERRCODE CORR_TOO_HIGH`.
+So it is inherited from the oracle and is not a divergence from it, and
+neither reference panel reaches it: the 1200 rows have no `NA`.
+
+The options are to give such a variant the three NaNs, as a variant with no
+variance gets, or to let the numbers through as pyNei does.
+Recommendation: the three NaNs, refused before the effect is formed. A
+number claims the variant was tested and showed a large effect when it was
+not testable, and plink2 refusing the same variant says that is the
+conventional answer and not popnei being fussy.
+
+The threshold, which the recommendation needs and which is the part worth
+the owner's eye: refuse when what the design leaves is at most `n` times
+2.2e-16 of what there was, `n` being the tested individuals. That is the
+tolerance shape `docs/specs/pca.md` already uses for a component with no
+variance and the rank of the design uses for a covariate that is not
+independent, so the three agree. It has room at both ends: on the case above
+the collinear variant leaves 6.5e-32 of its squared length against a
+threshold of 1.8e-15, while an ordinary variant of the same fixture leaves
+0.43. Nothing plausible sits in the thirteen orders between them. Meanwhile
+the implementer refuses at that threshold and gives the three NaNs; no
+literal of this spec moves, since no variant of either panel reaches it.
 
 ## Not in this spec
 
