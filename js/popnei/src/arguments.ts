@@ -418,8 +418,15 @@ export function popsOfTheObject(value: unknown): {
  * which is where the Python package puts it too: the article that would
  * come before it is `a` for a `Uint8Array` and `an` for an `Array`, and no
  * rule of the letters tells the two apart.
+ *
+ * The empty string is said in words: written in the backticks the other
+ * strings get, it would be an empty pair of them, and a reader would take
+ * the message for one that lost its value.
  */
 export function whatWasGiven(value: unknown): string {
+  if (value === "") {
+    return "the empty string";
+  }
   if (typeof value === "string") {
     return `the string \`${value}\``;
   }

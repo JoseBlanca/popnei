@@ -1,10 +1,12 @@
 {
   "what_it_is": [
     "The calls of an association study that Python and TypeScript both",
-    "refuse, and what both messages have to say. It is the one file of this",
-    "directory that no reference program wrote: the others are what plink2,",
-    "GMMAT and rrBLUP answered, and this is a list the two test suites read",
-    "so that neither layer can refuse something the other accepts.",
+    "refuse, the values that neither refuses because both read them as a",
+    "number, and the three that TypeScript alone refuses. It is the one file",
+    "of this directory that no reference program wrote: the others are what",
+    "plink2, GMMAT and rrBLUP answered, and this is a list the two test",
+    "suites read so that neither layer can refuse something the other",
+    "accepts without this file saying that it does.",
     "",
     "`case` is the call, which each suite writes in its own language over",
     "the worked example of `docs/specs/gwas.md`; a case that a suite has no",
@@ -12,7 +14,23 @@
     "is a regular expression that the message of both layers has to hold, so",
     "it is written out of the words the two share and not out of one of",
     "them: the names of the arguments differ between the two languages, and",
-    "so does the quoting of a name in a message."
+    "so does the quoting of a name in a message.",
+    "",
+    "`refusals` are the calls both layers refuse. `coercions` are the calls",
+    "where a value that is not a number reaches the study as one, with",
+    "`float` in Python and `Number` in TypeScript: each of them is the",
+    "worked example written another way, so each suite asserts the null",
+    "model that example gives and no case there has a `match`.",
+    "",
+    "`refused_in_typescript_alone` is the one divergence the spec settled,",
+    "on 23 September 2026. Python says that an individual has no phenotype",
+    "with a name that the series has not, with `None` or with NaN;",
+    "TypeScript says it with a key that the object has not, and that is the",
+    "only way to say it there, because `Number` turns `null` into 0 and",
+    "`undefined` into NaN and a NaN phenotype would leave a typo out of the",
+    "study in silence. Each suite asserts its own half: the TypeScript one",
+    "the refusal of `match`, and the Python one a study of the five",
+    "individuals that `i2` is not among."
   ],
   "refusals": [
     {
@@ -62,6 +80,43 @@
     {
       "case": "fewer individuals than the design has columns plus two",
       "match": "individuals are tested and the design has"
+    },
+    {
+      "case": "a phenotype that is a name",
+      "match": "the phenotype of .i2. is .*tall.*, and a trait is a number"
+    },
+    {
+      "case": "a phenotype that is the empty string",
+      "match": "the phenotype of .i2. is .*, and a trait is a number"
+    },
+    {
+      "case": "a covariate that is a name",
+      "match": "the value of the covariate .cov. at .i2. is .*north.*, and a covariate is a number"
+    }
+  ],
+  "coercions": [
+    {
+      "case": "a phenotype written as strings"
+    },
+    {
+      "case": "a covariate written as strings"
+    },
+    {
+      "case": "a covariate written as booleans"
+    }
+  ],
+  "refused_in_typescript_alone": [
+    {
+      "case": "a phenotype that is null",
+      "match": "the phenotype of .i2. is null"
+    },
+    {
+      "case": "a phenotype that is undefined",
+      "match": "the phenotype of .i2. is undefined"
+    },
+    {
+      "case": "a phenotype that is NaN",
+      "match": "the phenotype of .i2. is NaN"
     }
   ]
 }

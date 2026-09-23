@@ -239,6 +239,20 @@ const PANEL_VCF = await referenceKinship("panel_called.vcf.gz");
 const PHENOTYPES = theColumnsOfTheFile(await referenceGwas("phenotypes.csv"));
 
 /**
+ * The three lists of `tests/reference/gwas/refusals_of_both_layers.json`,
+ * which the Python suite walks as well: the calls both layers refuse, the
+ * values both read as a number, and the ones TypeScript alone refuses. That
+ * file says what each list is and why the third one is there.
+ */
+const OF_BOTH_LAYERS = JSON.parse(
+  await referenceGwas("refusals_of_both_layers.json"),
+) as {
+  refusals: { case: string; match: string }[];
+  coercions: { case: string }[];
+  refused_in_typescript_alone: { case: string; match: string }[];
+};
+
+/**
  * A VCF of the individuals `names` with one data line for each of
  * `variants`, every variant declaring the two alleles `A` and `C` and
  * carrying its id and a position of its own.
@@ -669,8 +683,27 @@ test("a covariate that is not finite is refused by its name", () => {
 });
 
 /**
- * The call of each case of `refusals_of_both_layers.json`, over the worked
- * example.
+ * The study of the worked example with `options` written over its trait and
+ * its covariate, as a function that makes it.
+ *
+ * It is what the cases of `refusals_of_both_layers.json` are written with,
+ * and the option it is given is typed as it reaches a user's editor and not
+ * as `calcGwas` declares it: a case of that file is a call popnei has to
+ * answer for, a kinship of `"a matrix"` among them.
+ */
+function theStudyWith(options: Record<string, unknown>): () => GwasResult {
+  return () =>
+    gwasOf(WORKED_EXAMPLE, {
+      phenotype: THE_TRAIT,
+      trait: "continuous",
+      covariates: THE_COVARIATE,
+      ...options,
+    } as Parameters<typeof calcGwas>[1]);
+}
+
+/**
+ * The call of each case of `refusals` of `refusals_of_both_layers.json`,
+ * over the worked example.
  *
  * The Python suite holds the same cases under the same names, and each
  * suite writes the call in its own language: the names of the options
@@ -680,63 +713,184 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
   const cov = THE_COVARIATE["cov"] as Record<string, number>;
   const { i5: _withoutI5, ...ofFive } = cov;
   const { i5: _alsoWithoutI5, ...ofThree } = THE_TRAIT;
-  const study = (options: Record<string, unknown>) => () =>
-    gwasOf(WORKED_EXAMPLE, {
-      phenotype: THE_TRAIT,
-      trait: "continuous",
-      covariates: THE_COVARIATE,
-      ...options,
-    } as Parameters<typeof calcGwas>[1]);
   return {
-    "a kinship": study({ kinship: "a matrix" }),
-    "the grammar gamma approximation": study({ useGrammarGammaApprox: true }),
-    "the score test": study({ test: "score" }),
-    "a test of another name": study({ test: "rao" }),
-    "a trait of another name": study({ trait: "quantitative" }),
-    "a binomial trait": study({
+    "a kinship": theStudyWith({ kinship: "a matrix" }),
+    "the grammar gamma approximation": theStudyWith({
+      useGrammarGammaApprox: true,
+    }),
+    "the score test": theStudyWith({ test: "score" }),
+    "a test of another name": theStudyWith({ test: "rao" }),
+    "a trait of another name": theStudyWith({ trait: "quantitative" }),
+    "a binomial trait": theStudyWith({
       phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
       trait: "binomial",
     }),
-    "a covariate named intercept": study({ covariates: { intercept: cov } }),
-    "a covariate that has no value for a tested individual": study({
+    "a covariate named intercept": theStudyWith({
+      covariates: { intercept: cov },
+    }),
+    "a covariate that has no value for a tested individual": theStudyWith({
       covariates: { cov: ofFive },
     }),
-    "a covariate that is not finite": study({
+    "a covariate that is not finite": theStudyWith({
       covariates: { cov: { ...cov, i2: Number.POSITIVE_INFINITY } },
     }),
-    "a covariate that is a copy of another": study({
+    "a covariate that is a copy of another": theStudyWith({
       covariates: { cov, twice: cov },
     }),
-    "an individual of the phenotype that the variants have not": study({
+    "an individual of the phenotype that the variants have not": theStudyWith({
       phenotype: { ...THE_TRAIT, i9: 5 },
     }),
-    "fewer individuals than the design has columns plus two": study({
+    "fewer individuals than the design has columns plus two": theStudyWith({
       phenotype: { i0: 2, i1: 3, i2: 5 },
+    }),
+    "a phenotype that is a name": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: "tall" },
+    }),
+    "a phenotype that is the empty string": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: "" },
+    }),
+    "a covariate that is a name": theStudyWith({
+      covariates: { cov: { ...cov, i2: "north" } },
     }),
   };
 }
 
-test("both layers refuse the same calls", async () => {
-  const listed = JSON.parse(
-    await referenceGwas("refusals_of_both_layers.json"),
-  ) as { refusals: { case: string; match: string }[] };
-  const calls = theCallsThatAreRefused();
-
-  assert.ok(listed.refusals.length > 0, "the file lists no refusal");
-  for (const { case: name, match } of listed.refusals) {
-    const call = calls[name];
-    assert.ok(
-      call !== undefined,
-      `\`${name}\` is in refusals_of_both_layers.json and this suite has no ` +
-        "call for it: a refusal both layers make is written in both",
+/**
+ * The call of each case of `coercions` of that file: the worked example with
+ * one of its values written as something that is not a number.
+ *
+ * Each of them is the worked example and nothing else, so each gives the
+ * null model that example gives, which is what both suites assert of them:
+ * `Number` here and `float` in Python read the same number out of the
+ * string and out of the boolean.
+ */
+function theCallsThatAreCoerced(): Record<string, () => GwasResult> {
+  const cov = THE_COVARIATE["cov"] as Record<string, number>;
+  const written = (
+    values: Record<string, number>,
+    how: (of: number) => unknown,
+  ) =>
+    Object.fromEntries(
+      Object.entries(values).map(([individual, value]) => [
+        individual,
+        how(value),
+      ]),
     );
-    assert.throws(call, new RegExp(match), name);
-  }
+  return {
+    "a phenotype written as strings": theStudyWith({
+      phenotype: written(THE_TRAIT, String),
+    }),
+    "a covariate written as strings": theStudyWith({
+      covariates: { cov: written(cov, String) },
+    }),
+    // The covariate of the worked example is 0 and 1, which is what a
+    // boolean is read as: false, true, false, true, false, true.
+    "a covariate written as booleans": theStudyWith({
+      covariates: { cov: written(cov, (of) => of === 1) },
+    }),
+  };
+}
+
+/**
+ * The call of each case of `refused_in_typescript_alone` of that file: a
+ * phenotype written as what Python has for an individual with no phenotype
+ * and TypeScript has not.
+ *
+ * The Python suite holds the same cases and asserts the other half of each,
+ * that the individual is left out of the study.
+ */
+function theCallsThatTypescriptAloneRefuses(): Record<string, () => GwasResult> {
+  return {
+    "a phenotype that is null": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: null },
+    }),
+    "a phenotype that is undefined": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: undefined },
+    }),
+    "a phenotype that is NaN": theStudyWith({
+      phenotype: { ...THE_TRAIT, i2: Number.NaN },
+    }),
+  };
+}
+
+/**
+ * The call of each case of `listed`, which is one list of
+ * `refusals_of_both_layers.json`, with the case this suite has no call for
+ * and the call the list does not hold failing here: that is what binds the
+ * file to the two suites.
+ */
+function theCallsOf<OfTheList extends { case: string }>(
+  listed: OfTheList[],
+  calls: Record<string, () => GwasResult>,
+  list: string,
+): [OfTheList, () => GwasResult][] {
+  assert.ok(listed.length > 0, `\`${list}\` of the file lists nothing`);
   assert.deepEqual(
     Object.keys(calls).sort(),
-    listed.refusals.map(({ case: name }) => name).sort(),
-    "this suite makes a call that the file does not list",
+    listed.map(({ case: name }) => name).sort(),
+    `the cases of \`${list}\` of refusals_of_both_layers.json and the calls ` +
+      "this suite writes are not the same: a case of the file is answered " +
+      "for in both suites, which is what makes it bind",
   );
+  return listed.map((ofTheList) => [
+    ofTheList,
+    calls[ofTheList.case] as () => GwasResult,
+  ]);
+}
+
+test("both layers refuse the same calls", () => {
+  for (const [{ case: name, match }, call] of theCallsOf(
+    OF_BOTH_LAYERS.refusals,
+    theCallsThatAreRefused(),
+    "refusals",
+  )) {
+    assert.throws(call, new RegExp(match), name);
+  }
+});
+
+test("both layers read a value that is not a number as the number it holds", () => {
+  for (const [{ case: name }, call] of theCallsOf(
+    OF_BOTH_LAYERS.coercions,
+    theCallsThatAreCoerced(),
+    "coercions",
+  )) {
+    const result = call();
+
+    assert.equal(result.nullModel.numIndividuals, 6, name);
+    assertWithin(
+      result.nullModel.covariateEffects["intercept"] as number,
+      THE_NULL.intercept,
+      OF_THE_WORKED_EXAMPLE,
+      `the intercept of the study with ${name}`,
+    );
+    assertWithin(
+      result.nullModel.covariateEffects["cov"] as number,
+      THE_NULL.cov,
+      OF_THE_WORKED_EXAMPLE,
+      `the effect of the covariate of the study with ${name}`,
+    );
+    assertWithin(
+      result.nullModel.residualVariance as number,
+      THE_NULL.residualVariance,
+      OF_THE_WORKED_EXAMPLE,
+      `the residual variance of the study with ${name}`,
+    );
+  }
+});
+
+test("what says no phenotype in python is refused here, by the individual", () => {
+  // `Number` turns `null` into 0 and `undefined` into NaN, and an
+  // individual whose trait is NaN is one the user asked to test and popnei
+  // would leave out with nothing to show it. A key the object has not is
+  // what says that an individual has no phenotype here, and the Python
+  // suite asserts of these three that its layer tests five individuals.
+  for (const [{ case: name, match }, call] of theCallsOf(
+    OF_BOTH_LAYERS.refused_in_typescript_alone,
+    theCallsThatTypescriptAloneRefuses(),
+    "refused_in_typescript_alone",
+  )) {
+    assert.throws(call, new RegExp(match), name);
+  }
 });
 
 test("a covariate named intercept is refused with the name it collides with", () => {

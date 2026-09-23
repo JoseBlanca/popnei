@@ -966,6 +966,12 @@ def _the_calls_that_are_refused(
     of_three[["i3", "i4", "i5"]] = numpy.nan
     named = _the_trait()
     named["i9"] = 5.0
+    a_name = _the_trait().astype(object)
+    a_name["i2"] = "tall"
+    empty = _the_trait().astype(object)
+    empty["i2"] = ""
+    covariate_of_names = covariates.astype(object)
+    covariate_of_names.loc["i2", "cov"] = "north"
     binomial = pandas.Series(
         [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
@@ -1002,12 +1008,106 @@ def _the_calls_that_are_refused(
         "fewer individuals than the design has columns plus two": lambda: (
             _the_worked_example(worked_example, phenotype=of_three)
         ),
+        "a phenotype that is a name": lambda: _the_worked_example(
+            worked_example, phenotype=a_name
+        ),
+        "a phenotype that is the empty string": lambda: _the_worked_example(
+            worked_example, phenotype=empty
+        ),
+        "a covariate that is a name": lambda: _the_worked_example(
+            worked_example, covariates=covariate_of_names
+        ),
     }
 
 
+def _the_calls_that_are_coerced(worked_example: pathlib.Path) -> dict:
+    """The call of each case of the `coercions` of
+    `refusals_of_both_layers.json`: the worked example with one of its
+    values written as something that is not a number, which `float` reads
+    the number out of.
+
+    The TypeScript suite holds the same cases under the same names and
+    asserts the same null model of each of them.
+    """
+    trait_of_strings = pandas.Series(
+        [str(value) for value in WORKED_EXAMPLE_TRAIT],
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
+    covariate_of_strings = pandas.DataFrame(
+        {"cov": [str(value) for value in WORKED_EXAMPLE_COVARIATE]},
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
+    # The covariate of the worked example is 0 and 1, which is what a
+    # boolean is read as: False, True, False, True, False, True.
+    covariate_of_booleans = pandas.DataFrame(
+        {"cov": [value == 1.0 for value in WORKED_EXAMPLE_COVARIATE]},
+        index=list(WORKED_EXAMPLE_INDIVIDUALS),
+    )
+    return {
+        "a phenotype written as strings": lambda: _the_worked_example(
+            worked_example, phenotype=trait_of_strings
+        ),
+        "a covariate written as strings": lambda: _the_worked_example(
+            worked_example, covariates=covariate_of_strings
+        ),
+        "a covariate written as booleans": lambda: _the_worked_example(
+            worked_example, covariates=covariate_of_booleans
+        ),
+    }
+
+
+def _the_calls_that_typescript_alone_refuses(worked_example: pathlib.Path) -> dict:
+    """The call of each case of the `refused_in_typescript_alone` of that
+    same file: a phenotype that says here, and not in TypeScript, that `i2`
+    has none.
+
+    `None` is what this layer has for the `null` and the `undefined` of
+    TypeScript, which is why two of the three are the same call here; NaN is
+    what a table read from a file holds where a value is blank, and it is
+    the third.
+    """
+    of_none = _the_trait().astype(object)
+    of_none["i2"] = None
+    of_nan = _the_trait()
+    of_nan["i2"] = numpy.nan
+    return {
+        "a phenotype that is null": lambda: _the_worked_example(
+            worked_example, phenotype=of_none
+        ),
+        "a phenotype that is undefined": lambda: _the_worked_example(
+            worked_example, phenotype=of_none
+        ),
+        "a phenotype that is NaN": lambda: _the_worked_example(
+            worked_example, phenotype=of_nan
+        ),
+    }
+
+
+def _the_calls_of(which: str, calls: dict) -> list[tuple[dict, object]]:
+    """Each case of the list `which` of `refusals_of_both_layers.json` with
+    the call this suite writes for it.
+
+    A case of the file this suite has no call for, and a call this suite
+    makes that the file does not list, fail here: that is what binds the
+    file to the two suites.
+    """
+    listed = json.loads(
+        (REFERENCE_GWAS_DIR / "refusals_of_both_layers.json").read_text()
+    )[which]
+
+    assert listed, f"`{which}` of the file lists nothing"
+    assert sorted(calls) == sorted(case["case"] for case in listed), (
+        f"the cases of `{which}` of refusals_of_both_layers.json and the "
+        f"calls this suite writes are not the same: a case of the file is "
+        f"answered for in both suites, which is what makes it bind"
+    )
+    return [(case, calls[case["case"]]) for case in listed]
+
+
 def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None:
-    """Every call of `tests/reference/gwas/refusals_of_both_layers.json` is
-    a `ValueError` whose message holds what that file says.
+    """Every call of the `refusals` of
+    `tests/reference/gwas/refusals_of_both_layers.json` is a `ValueError`
+    whose message holds what that file says.
 
     The TypeScript suite walks the same file, so a refusal that one layer
     has and the other has not is a case in the file that one of the two
@@ -1016,23 +1116,62 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
     against its own copy of the literals, which is how they came to refuse
     `test` differently for a day.
     """
-    listed = json.loads(
-        (REFERENCE_GWAS_DIR / "refusals_of_both_layers.json").read_text()
-    )["refusals"]
-    calls = _the_calls_that_are_refused(worked_example)
+    for case, call in _the_calls_of(
+        "refusals", _the_calls_that_are_refused(worked_example)
+    ):
+        with pytest.raises(ValueError, match=case["match"]):
+            call()
 
-    assert listed, "the file lists no refusal"
-    for refusal in listed:
-        case = refusal["case"]
-        assert case in calls, (
-            f"`{case}` is in refusals_of_both_layers.json and this suite has "
-            f"no call for it: a refusal both layers make is written in both"
-        )
-        with pytest.raises(ValueError, match=refusal["match"]):
-            calls[case]()
-    assert sorted(calls) == sorted(refusal["case"] for refusal in listed), (
-        "this suite makes a call that the file does not list"
-    )
+
+def test_both_layers_read_a_value_that_is_not_a_number_as_the_number_it_holds(
+    worked_example: pathlib.Path,
+) -> None:
+    """Every call of the `coercions` of that file gives the null model of
+    the worked example.
+
+    A trait read from a file arrives as strings often enough that refusing
+    it would be a divergence users feel, so `float` here and `Number` in
+    TypeScript read the number out of the value, which is what pyNei does
+    and what the spec settled on 23 September 2026. Each of these calls is
+    the worked example with one of its values written another way, so each
+    of them gives the numbers the worked example gives.
+    """
+    for case, call in _the_calls_of(
+        "coercions", _the_calls_that_are_coerced(worked_example)
+    ):
+        result = call()
+
+        assert result.null_model.num_individuals == 6, case["case"]
+        for name in ("intercept", "cov"):
+            assert result.null_model.covariate_effects[name] == pytest.approx(
+                WORKED_EXAMPLE_NULL[name], rel=OF_THE_WORKED_EXAMPLE
+            ), f"the effect of {name} with {case['case']}"
+        assert result.null_model.residual_variance == pytest.approx(
+            WORKED_EXAMPLE_NULL["residual_variance"], rel=OF_THE_WORKED_EXAMPLE
+        ), f"the residual variance with {case['case']}"
+
+
+def test_what_typescript_alone_refuses_is_an_individual_with_no_phenotype_here(
+    worked_example: pathlib.Path,
+) -> None:
+    """Every call of the `refused_in_typescript_alone` of that file leaves
+    `i2` untested here, where TypeScript refuses it.
+
+    Python says that an individual has no phenotype with a name the series
+    has not, with `None` and with NaN, which is pandas' missing value;
+    TypeScript says it with a key the object has not, and that is the only
+    way to say it there, since `Number` turns `null` into 0 and `undefined`
+    into NaN. The TypeScript suite asserts the other half of each of these
+    three, the refusal and its message.
+    """
+    for case, call in _the_calls_of(
+        "refused_in_typescript_alone",
+        _the_calls_that_typescript_alone_refuses(worked_example),
+    ):
+        result = call()
+
+        assert result.individuals == ("i0", "i1", "i3", "i4", "i5"), case["case"]
+        assert result.null_model.num_individuals == 5, case["case"]
 
 
 def test_what_is_not_a_variants_is_refused_by_its_type() -> None:

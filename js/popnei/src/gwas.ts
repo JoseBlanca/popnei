@@ -191,11 +191,18 @@ export interface GwasResult {
 export interface CalcGwasOptions {
   /**
    * What was measured on each individual, under its name: the individuals
-   * that are tested are those that have a number here and that the
-   * `Variants` has. An individual whose value is NaN, `null` or `undefined`
-   * has no phenotype and is not tested.
+   * that are tested are those that have a value here and that the
+   * `Variants` has.
+   *
+   * A value that is not a number is read as one, as `float` reads it in the
+   * Python package and in pyNei: the string `"1.7"`, which is how a trait
+   * read from a file arrives, and `true` and `false`. What holds no number
+   * is an `Error` naming the individual, `null`, `undefined`, the empty
+   * string and NaN among them. An individual with no phenotype is left out
+   * of the object altogether, which is the only way to say so here and is
+   * what leaves it untested.
    */
-  phenotype: Readonly<Record<string, number | null | undefined>>;
+  phenotype: Readonly<Record<string, number | string | boolean>>;
   /**
    * What the trait is: `"continuous"`, a measurement, or `"binomial"`, 0 for
    * an individual that has not a condition and 1 for one that has. A
@@ -213,8 +220,15 @@ export interface CalcGwasOptions {
    * accounted for. A covariate whose values are names and not numbers, the
    * field a plant grew in, is given as one covariate for each of its values,
    * 1 for the individuals of that value and 0 for the others.
+   *
+   * A value that is not a number is read as one here as it is in the
+   * phenotype, the string `"1.7"` and `true` and `false` among them, and
+   * one that holds no number is an `Error` naming the covariate and the
+   * individual.
    */
-  covariates?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  covariates?: Readonly<
+    Record<string, Readonly<Record<string, number | string | boolean>>>
+  >;
   /**
    * Which test is made of every variant, and the default of the model when
    * it is not given. What `calcGwas` fits is the linear model, whose only
@@ -268,16 +282,18 @@ export interface CalcGwasOptions {
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed; when the
  * options are not given at all; when `phenotype` is not an object of a name
- * to a number; when a name of it is of nobody the pass gives; when `trait`
- * is not one of the two names and when `test` is not one of the two; when a
- * covariate is not an object of a name to a number, does not cover a tested
- * individual, or holds a value that is missing or is not a number; when a
- * covariate is named `intercept`, which is the name the effect of the column
- * of ones comes back under; when `kinship` or `useGrammarGammaApprox` holds
- * a value, which the linear mixed model brings; when the score test is asked
- * for, which a linear model has not; when no individual is
- * tested or they are fewer than the columns of the design plus two; when a
- * phenotype or a covariate is not a finite number; when the columns of the
+ * to a value that holds a number, which `null`, `undefined`, the empty
+ * string and NaN do not; when a name of it is of nobody the pass gives; when
+ * `trait` is not one of the two names and when `test` is not one of the two;
+ * when a covariate is not an object of a name to such a value, does not
+ * cover a tested individual, or holds a value that is missing or holds no
+ * number; when a covariate is named `intercept`, which is the name the
+ * effect of the column of ones comes back under; when `kinship` or
+ * `useGrammarGammaApprox` holds a value, which the linear mixed model
+ * brings; when the score test is asked for, which a linear model has not;
+ * when no individual is tested or they are fewer than the columns of the
+ * design plus two; when a phenotype or a covariate is not a finite number
+ * once it is read as one; when the columns of the
  * design are not independent; when the trait is binomial, which is a
  * logistic model and is being written; when the source cannot be read, a
  * wrong line of a VCF among the causes; when a variant has more than two
@@ -381,12 +397,12 @@ interface TestedIndividual {
  * by row: a study that took them in the order the phenotype was written in
  * would measure one individual's trait against another's genotypes.
  *
- * @throws {Error} When `phenotype` is not an object of a name to a number,
- * when a name of it is of nobody the pass gives, and when a value of it is
- * neither a number nor missing.
+ * @throws {Error} When `phenotype` is not an object of a name to a value
+ * that holds a number, when a name of it is of nobody the pass gives, and
+ * when a value of it holds no number.
  */
 function theTestedIndividuals(
-  phenotype: Readonly<Record<string, number | null | undefined>>,
+  phenotype: Readonly<Record<string, number | string | boolean>>,
   ofThePass: readonly string[],
 ): TestedIndividual[] {
   if (
@@ -411,25 +427,83 @@ function theTestedIndividuals(
   }
   const tested: TestedIndividual[] = [];
   for (const [position, name] of ofThePass.entries()) {
-    const value = phenotype[name];
-    // A missing phenotype is an individual that is not tested, which is what
-    // a name that is not in the object is: `null` is what a phenotype read
-    // from JSON holds where a NaN was written.
-    if (value === undefined || value === null) {
+    // An individual the object has no key for has no phenotype and is not
+    // tested, and that is the only way to say so here: `Number` turns
+    // `null` into 0 and `undefined` into NaN, so a value that was meant as
+    // a missing one is refused below with the individual's name. The Python
+    // package says the same thing with a name its series has not, with
+    // `None` and with NaN, which is pandas' missing value, and the spec of
+    // the study settled the two on 23 September 2026.
+    if (!Object.hasOwn(phenotype, name)) {
       continue;
     }
-    if (typeof value !== "number") {
+    const value: unknown = phenotype[name];
+    if (value === null || value === undefined) {
       throw new Error(
-        `popnei: the phenotype of \`${name}\` is ` +
-          `${whatWasGiven(value)}, and a trait is a number`,
+        `popnei: the phenotype of \`${name}\` is ${whatWasGiven(value)}, and ` +
+          "a trait is a number: an individual with no phenotype is left out " +
+          "of `phenotype` altogether, which is what leaves it untested",
       );
     }
-    if (Number.isNaN(value)) {
-      continue;
+    const number = theNumberOf(value);
+    if (number === undefined) {
+      throw new Error(
+        `popnei: the phenotype of \`${name}\` is ${whatWasGiven(value)}, and ` +
+          "a trait is a number: a trait whose values are names is not a " +
+          "trait of a study, and one that is 0 and 1 is written as those " +
+          'numbers with trait: "binomial"',
+      );
     }
-    tested.push({ name, position, phenotype: value });
+    // A phenotype that is not finite is refused here, where the individual
+    // has a name. A NaN is an individual the user asked to test and popnei
+    // would leave out with nothing to show it, and an infinity would carry
+    // through the null model into the effect of every variant. The core
+    // refuses both as well, by the place of the individual, which is what a
+    // caller of the wasm module reads.
+    if (!Number.isFinite(number)) {
+      throw new Error(
+        `popnei: the phenotype of \`${name}\` is ${number}, and a study is ` +
+          "fitted on numbers: an individual with no phenotype is left out " +
+          "of `phenotype` altogether, which is what leaves it untested",
+      );
+    }
+    tested.push({ name, position, phenotype: number });
   }
   return tested;
+}
+
+/**
+ * `value` as the number a study is fitted on, and `undefined` when it holds
+ * none.
+ *
+ * What it takes is what `float` takes in Python, which is what pyNei reads
+ * and what the Python package of popnei kept: a number, a whole number, a
+ * boolean, and a string that holds a number, which is how a trait read from
+ * a file arrives. `Number` is wider than `float` in three ways, and each of
+ * them is cut out here because what `Number` gives is a value and not an
+ * error. A string that holds no number gives NaN, where `float` raises, so
+ * a string is a number here only when its `Number` is one. A blank string
+ * gives 0, where `float` raises on it as well. And an array, an object and
+ * a date are read as numbers by `Number` and refused by `float`, so only
+ * the four types above are read at all.
+ *
+ * NaN and the infinities come back as themselves, as `float('nan')` and
+ * `float('inf')` give them: what a study does with one is the caller's to
+ * say, and the caller is what has the name of the individual it is of.
+ */
+function theNumberOf(value: unknown): number | undefined {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return Number(value);
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return undefined;
+  }
+  const number = Number(value);
+  return Number.isNaN(number) ? undefined : number;
 }
 
 /** One covariate: its name and its value for each tested individual. */
@@ -443,13 +517,15 @@ interface Covariate {
  * `tested`, in their order.
  *
  * @throws {Error} When `covariates` is not an object of a name to an object
- * of a name to a number, when one of them is named `intercept`, when one
- * does not cover a tested individual, and when a value of one is missing or
- * is not a number.
+ * of a name to a value that holds a number, when one of them is named
+ * `intercept`, when one does not cover a tested individual, and when a value
+ * of one is missing or holds no number.
  */
 function theCovariates(
   covariates:
-    | Readonly<Record<string, Readonly<Record<string, number>>>>
+    | Readonly<
+        Record<string, Readonly<Record<string, number | string | boolean>>>
+      >
     | undefined,
   tested: readonly string[],
 ): Covariate[] {
@@ -498,13 +574,15 @@ function theCovariates(
  * in their order.
  *
  * @throws {Error} When an individual has no value, and when a value is
- * missing or is not a number. A covariate whose values are names is refused
- * here, and what a user does with one is to give one covariate for each of
- * its values, 1 for the individuals of that value and 0 for the others.
+ * missing or holds no number. A value that is not a number is read as one
+ * first, as the phenotype's is. A covariate whose values are names is
+ * refused here, and what a user does with one is to give one covariate for
+ * each of its values, 1 for the individuals of that value and 0 for the
+ * others.
  */
 function theValuesOfTheCovariate(
   name: string,
-  values: Readonly<Record<string, number>>,
+  values: Readonly<Record<string, number | string | boolean>>,
   tested: readonly string[],
 ): number[] {
   return tested.map((individual) => {
@@ -516,7 +594,8 @@ function theValuesOfTheCovariate(
           "that is tested",
       );
     }
-    if (typeof value !== "number" || Number.isNaN(value)) {
+    const number = theNumberOf(value);
+    if (number === undefined) {
       throw new Error(
         `popnei: the value of the covariate \`${name}\` at \`${individual}\` ` +
           `is ${whatWasGiven(value)}, and a covariate is a number: one ` +
@@ -524,18 +603,18 @@ function theValuesOfTheCovariate(
           "them, 1 for the individuals of that value and 0 for the others",
       );
     }
-    // An infinity is a number to JavaScript and not to a fit, and this is
-    // the layer that has the name of the covariate and of the individual:
-    // the core refuses it as well, by their places among the columns and
-    // the rows, which is what a caller of the core crate reads.
-    if (!Number.isFinite(value)) {
+    // A NaN and an infinity are numbers to JavaScript and not to a fit, and
+    // this is the layer that has the name of the covariate and of the
+    // individual: the core refuses them as well, by their places among the
+    // columns and the rows, which is what a caller of the core crate reads.
+    if (!Number.isFinite(number)) {
       throw new Error(
         `popnei: the value of the covariate \`${name}\` at \`${individual}\` ` +
-          `is ${value}, and a study is fitted on numbers: it would carry ` +
+          `is ${number}, and a study is fitted on numbers: it would carry ` +
           "through the null model into the effect of every variant",
       );
     }
-    return value;
+    return number;
   });
 }
 
