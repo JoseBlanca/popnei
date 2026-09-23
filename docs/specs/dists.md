@@ -504,9 +504,9 @@ difference is f_2.
 ```python
 def calc_pop_dists(variants: Variants,
                    pops: dict[str, Sequence[str]],
+                   jackknife_group: int | Literal["variant"] | None,
                    measures: Sequence[PopDistMeasure] | None = None,
                    min_num_individuals: int = 20,
-                   jackknife_group: int | Literal["variant"] | None = 5_000_000,
                    ) -> PopDists
 ```
 
@@ -542,6 +542,33 @@ and `None` asks for no standard errors. `None` is the only one of the
 three that does not need the chromosome and the position of the variants:
 `"variant"` needs them too, because every group says which chromosome and
 which positions it holds.
+
+It has no default and the call fails without it. The right length depends
+on the linkage disequilibrium of the populations being compared, which
+popnei cannot know and which a default would decide silently and usually
+wrongly; a user who has not thought about it should get no standard error
+rather than one that looks like the others. The owner decided that on 23
+September 2026, and the option not taken was a default of 5 000 000 base
+pairs, which would have been right for a whole genome SNP panel of a plant
+and meaningless for a panel of scattered microsatellite loci.
+
+The docstring says how to choose it, because this is where a user needs
+help and not a rule. A group has to be longer than the distance over which
+r^2 stays above its background, since two groups that share linkage
+disequilibrium are not the independent draws the standard error takes them
+for, and there have to be at least 20 groups. The number of the
+f-statistics literature is 5 centimorgans, which is ADMIXTOOLS 2's default
+`blgsize` of 0.05 Morgans and about 5 megabases in humans, where a
+centimorgan is about a megabase. It does not carry over by itself: linkage
+disequilibrium runs 6.1 to 12.5 centimorgans at r^2 = 0.2 in cultivated
+tomato and falls off within 18 kilobases in its wild relative
+*S. pimpinellifolium*, and tomato recombines at about 200 kilobases per
+centimorgan in the euchromatin of chromosome 2 and hardly at all across
+the pericentromere, so one length in base pairs is several different
+lengths in centimorgans along one chromosome. A user who does not know the
+decay distance of their own panel measures it with the curve of r^2
+against distance of `docs/specs/ld.md`. A panel of scattered
+microsatellite loci has no linkage to speak of and takes `"variant"`.
 
 `PopDists` is a frozen dataclass with one `Distances` for each measure
 that was asked for, under the name of the measure, `fst`, `f2`, `chord`,
@@ -737,10 +764,13 @@ A group with one variant, m_j = 1, has h_j = n and its pseudo-value is
 defined; h_j - 1 is zero only when a group holds every variant of the
 pair, which is the g = 1 case. So the formula never divides by zero.
 
-How many groups are enough is not something popnei can know, and a
-standard error from a handful of them is not one a user should quote. The
-result carries the number of groups, and the function raises when it is
-below 20 (**Open 1**, below).
+How many groups are enough is not something popnei can know before it has
+read the variants, and a standard error from a handful of them is not one
+a user should quote. The result carries the number of groups, and the
+function raises when a length or `"variant"` was asked for and fewer than
+20 groups come out, with the number in the message, so that a user who
+chose a length too long for their data is told rather than handed a number
+built from three groups.
 
 It is verified against ADMIXTOOLS 2.0.10, which computes f_2 with this same
 jackknife, in the run of the f_2 item below: with the 12 groups that
@@ -1139,9 +1169,9 @@ NaN made and nothing printed.
 
 Against `pairwise_D` of mmod 1.3.3 under R 4.6.1, on the same genotypes
 read by `df2genind`. mmod computes a different estimator of the same
-quantity (**Open 2**, below): its `HsHt` leaves the observed heterozygosity term out of both
-corrections and uses 2n/(2n - 1) where the formula above uses n/(n - 1)
-and subtracts H_obs/(2n). So the check is an agreement and not an
+quantity (**Open 1**, below): its `HsHt` leaves the observed
+heterozygosity term out of both corrections and uses 2n/(2n - 1) where the
+formula above uses n/(n - 1) and subtracts H_obs/(2n). So the check is an agreement and not an
 equality, and the spec states both formulas so that the next reader knows
 which popnei computes.
 
@@ -1184,7 +1214,7 @@ take, (1 - H_S)/(1 + H_S) for two populations. The two are different
 numbers, 0.1155 against 0.1620 for p0 and p1 of the biallelic panel, and
 popnei gives the later one because it is what a reader of the
 microsatellite literature now sees and the only one of the two that a
-program outside the project computes (**Open 3**, below).
+program outside the project computes (**Open 2**, below).
 
 Neither is Hudson's F_ST, although all three are called fixation measures.
 They differ in what they correct for and in how the variants are combined:
@@ -1198,7 +1228,7 @@ Against `pairwise_Gst_Nei` and `pairwise_Gst_Hedrick` of mmod 1.3.3. The
 second computes the G''_ST above and not the G'_ST its name suggests: its
 `Gst_Hedrick` is `n * (Ht - Hs) / ((n * Ht - Hs) * (1 - Hs))`, which is
 Meirmans and Hedrick's formula. Both carry the same difference of
-estimator as Jost's D, Open 2, so the check is an agreement within 5e-4,
+estimator as Jost's D, Open 1, so the check is an agreement within 5e-4,
 the same tolerance.
 
 On the biallelic panel mmod gives 0.0553896690, 0.0541614926 and
@@ -1213,7 +1243,7 @@ apart at the furthest. pyNei has neither measure, so there is no
 comparison with it.
 
 Hedrick's G'_ST has no reference program: mmod does not compute it and
-nothing else on the owner's machine does. If Open 3 is answered for it, its
+nothing else on the owner's machine does. If Open 2 is answered for it, its
 literals are popnei's own arithmetic and the spec says so, which is what
 the objectives ask to be written down.
 
@@ -1285,8 +1315,7 @@ and asks it for the genotypes, and for the chromosome and the position
 too when the groups are stretches of a chromosome. Its errors: a pass that
 gave no variant, `PassGaveNoVariant`, the case that every calculation over
 a pass raises and that the Kosman item above describes; fewer than two populations;
-fewer resampling groups than the standard errors need
-(**Open 1**, below); and the
+fewer than 20 resampling groups; and the
 memory for the sums, asked of the machine at the first block. Each is a
 `ValueError` in Python. `Pops` is the populations of
 `docs/specs/stats.md`, which already refuses a name that is not an
@@ -1413,27 +1442,10 @@ first and writes the numbers to reach into this section.
 
 ## Open points
 
-The owner decides these three. Until then the implementer follows the
+The owner decides these two. Until then the implementer follows the
 "meanwhile" of each.
 
-**Open 1: the default of `jackknife_group`, and a dataset with few
-groups.** A standard error from a handful of groups is not one to quote,
-and the number of groups a dataset gives depends on how its variants are
-spread, which popnei learns only while reading. The options are to default
-to 5 000 000 base pairs, the length the f-statistics literature uses, and
-to raise when fewer than 20 groups come out, naming the number and the
-argument that fixes it, which makes the first call of a user with 300
-microsatellite loci on one chromosome fail until they pass `"variant"`; to
-default to 5 000 000 and give the standard errors whatever the number of
-groups, with the number in the result, which lets a user quote a standard
-error built from 3 groups without being told; or to default to `None`, no
-standard errors unless they are asked for, which costs the user who wants
-them one argument and never surprises the one who does not.
-Recommendation: the first. It is the one that says what is wrong instead
-of giving a number that looks like the others, and one argument fixes it.
-Meanwhile the implementer writes the first, with 20 as the threshold.
-
-**Open 2: which estimator of Jost's D.** popnei reproduces pyNei's, the
+**Open 1: which estimator of Jost's D.** popnei reproduces pyNei's, the
 Nei and Chesser correction as GenAlEx prints it, which subtracts the
 observed heterozygosity term. mmod, the R package a user is likeliest to
 check against, leaves that term out and uses 2n/(2n - 1) where pyNei uses
@@ -1457,7 +1469,7 @@ of popnei has the argument. The ploidies: every one is taken, since the
 paper's formula 2 is for any ploidy and `gd.kosman` computes it, which
 the tetraploid and the haploid datasets of "How it is verified" show.
 
-**Open 3: which standardized G_ST.** G_ST cannot reach 1 when the
+**Open 2: which standardized G_ST.** G_ST cannot reach 1 when the
 populations are diverse, and there are two ways of rescaling it so that it
 can. Hedrick's G'_ST (2005) divides G_ST by the largest value it could
 take. Meirmans and Hedrick's G''_ST (2011) rescales it so that it reaches 1
