@@ -958,15 +958,28 @@ the VCF reader, the vars file reader and `reblock` implement too.
     fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)>;
 ```
 
-This module adds three cases to the error of the crate, a threshold out
-of range, a `max_dist` below 1 and a second filter of one kind, with the
-kind, which both binding crates give their user as the wrong input of a
-function. A user has to
-get the second one when they call the method that adds the filter, and no
-reader exists then, so the binding crate looks for the kind among the
-steps of the `Variants` with this function, which both crates call as they
-call `chain_of`: which filters can stand together is of the filters and
-not of Python or of TypeScript.
+This module adds five cases to the error of the crate. Four are the
+wrong input of a function, which both binding crates give their user as
+such, a `ValueError` in Python: a threshold out of range, a `max_dist`
+below 1, a second filter of one kind, with the kind, and a variant whose
+position does not rise within its chromosome, which names the variant and
+both positions and which the filter by linkage disequilibrium is the one
+reader of popnei to refuse.
+
+The fifth is a defect of a caller of the core crate and not of a user,
+and so a `RuntimeError`: the plain filter of a threshold, `VarFilter`,
+built for the criterion of the filter by linkage disequilibrium, which
+that filter does not answer because whether a variant is kept turns on
+the variants kept before it and not on the variant alone. Nothing a user
+writes reaches it; `chain_of` sends that criterion to the reader that
+does answer it.
+
+A user has to get the refusal of a second filter of one kind when they
+call the method that adds the filter, and no reader exists then, so the
+binding crate looks for the kind among the steps of the `Variants` with
+this function, which both crates call as they call `chain_of`: which
+filters can stand together is of the filters and not of Python or of
+TypeScript.
 
 ```rust
 /// The error of a second filter of one kind when `new` is of the kind of
