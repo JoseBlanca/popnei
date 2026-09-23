@@ -2090,9 +2090,8 @@ impl LinearModel {
         })?;
         let degrees_of_freedom = self.degrees_of_freedom as f64;
         // The share of its own squared length that a variant has to keep
-        // once the design is taken out of it to be worth testing, which is
-        // the threshold of **Open 2** of `docs/specs/gwas.md`.
-        let share_that_is_nothing = self.num_individuals as f64 * f64::EPSILON;
+        // once the design is taken out of it to be worth testing.
+        let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
         for ((row, num), of_the_variant) in self
             .residualized
             .chunks_exact(self.num_individuals)
@@ -2155,6 +2154,28 @@ impl LinearModel {
     }
 }
 
+/// The share of what a quantity was that has to be left of it for it to be
+/// worth testing, which is the threshold of the meanwhile of **Open 2** of
+/// `docs/specs/gwas.md`: the tested individuals times the distance from 1
+/// to the next `f64`.
+///
+/// The rounding of a sum of `n` products is about `n` times 2.2e-16 times
+/// the largest term of the sum, so a quantity that has fallen to that share
+/// of the scale it was formed from is the rounding of a cancellation and
+/// not a quantity. It is used in the three places that spec item names: `xx`
+/// in the linear model, what the variant's own squared length is weighted
+/// against; `x' p x` in both score tests, weighted against the variant's
+/// squared length times the largest value of the diagonal of the projection
+/// matrix; and `y' p y` minus `num² / den` in the linear mixed model's Wald
+/// test, weighted against `y' p y` itself.
+///
+/// It is written here once because the two logistic models add two more
+/// callers, and because a threshold that differed between the places would
+/// be a rule with three answers.
+fn the_share_that_is_nothing(num_individuals: usize) -> f64 {
+    num_individuals as f64 * f64::EPSILON
+}
+
 /// How many points the search for the ratio of the two variances of a
 /// linear mixed model starts with: 101, evenly spaced in the log of that
 /// ratio between [`LOG_DELTA_LOWEST`] and 10.
@@ -2179,9 +2200,25 @@ const LOG_DELTA_STEP: f64 = 0.2;
 
 /// How many steps of the golden section search are made after the grid,
 /// whatever the bracket has come to: 60, from `_reml_delta` of
-/// `pynei/gwas.py`. Each one shrinks the bracket to 0.618 of what it was,
-/// so 60 of them take the 0.4 the grid leaves to 1.4e-13.
+/// `pynei/gwas.py`. Each one shrinks the bracket to
+/// [`GOLDEN_SECTION_RATIO`] of what it was, so 60 of them take the 0.4 the
+/// grid leaves to 1.156e-13.
 const GOLDEN_SECTION_STEPS: usize = 60;
+
+/// The ratio a golden section step shrinks its bracket by,
+/// `(sqrt(5) - 1) / 2`, which is `golden` of `_reml_delta` of
+/// `pynei/gwas.py`.
+///
+/// It is the one number that makes the two interior points of a bracket
+/// reusable: the point the new bracket inherits sits where the next step
+/// would have put it. pyNei evaluates both of them again at every step all
+/// the same, and popnei reproduces that, so what this ratio decides here is
+/// only where the points fall and not how many are evaluated. It is one of
+/// the six things "The linear mixed model" of `docs/specs/gwas.md` asks to
+/// be reproduced, and it is a named constant because a literal `0.61` in
+/// its place changes every number of this model and is caught by nothing
+/// that does not have pyNei to compare against.
+const GOLDEN_SECTION_RATIO: f64 = 0.618_033_988_749_894_9;
 
 /// The point of the grid at `at`, which is 0 to
 /// [`LOG_DELTA_POINTS`] less one.
@@ -2472,10 +2509,9 @@ impl<'a> RemlSearch<'a> {
                 .saturating_add(1)
                 .min(LOG_DELTA_POINTS.saturating_sub(1)),
         );
-        let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
         for _ in 0..GOLDEN_SECTION_STEPS {
-            let from_the_top = high - ratio * (high - low);
-            let from_the_bottom = low + ratio * (high - low);
+            let from_the_top = high - GOLDEN_SECTION_RATIO * (high - low);
+            let from_the_bottom = low + GOLDEN_SECTION_RATIO * (high - low);
             if self.criterion(from_the_top)? < self.criterion(from_the_bottom)? {
                 high = from_the_bottom;
             } else {
@@ -2534,10 +2570,22 @@ pub(crate) struct LinearMixedModel {
     projected_trait: Vec<f64>,
     /// The largest value of the diagonal of that matrix, which is what a
     /// variant's own squared length is weighted by to say how much of the
-    /// variant the projection has left. The projection matrix is 0 or
-    /// above as a quadratic form, so no value of its diagonal is below 0
-    /// and the largest of them is at most its largest eigenvalue, which is
-    /// what bounds `x' p x` over `x' x`.
+    /// variant the projection has left.
+    ///
+    /// What bounds `x' p x` over `x' x` is the largest eigenvalue of the
+    /// projection, and this is not that: the matrix is 0 or above as a
+    /// quadratic form, so no value of its diagonal is below 0 and the
+    /// largest of them is at most that eigenvalue, which makes this an
+    /// under-estimate of the scale the threshold is meant to measure. By
+    /// how much was measured on 25 September 2026: the largest eigenvalue
+    /// is 1.697 times the largest diagonal entry on `panel_called` and
+    /// 1.725 times it on `panel`, so the threshold sits about 1.7 times
+    /// below the scale. It is the diagonal that is taken because it costs
+    /// one walk over the matrix where the eigenvalue costs a
+    /// decomposition, and a threshold under-estimated by 1.7 is a threshold
+    /// 1.7 times tighter than it was meant to be, not one that lets a
+    /// variant through: on `panel_called` the smallest real denominator is
+    /// about 30 against a threshold of 5e-11.
     largest_of_the_projection: f64,
     /// The trait through the projection matrix, `y' p y`.
     ypy: f64,
@@ -2576,7 +2624,8 @@ impl LinearMixedModel {
     ///
     /// The eigenvalues of the kinship are clamped at 0 before use. A
     /// kinship of genotypes with nothing missing has none below 0 but for
-    /// rounding, -3.3e-15 on the panel of `docs/specs/gwas.md`; the per
+    /// rounding, -3.4416913763379853e-15 on the panel of
+    /// `docs/specs/gwas.md`, measured with numpy on 25 September 2026; the per
     /// pair denominators of `docs/specs/kinship.md` put them there,
     /// -0.0321 on the panel with 3 in 100 genotypes missing, and a
     /// negative eigenvalue would make the covariance of the trait not a
@@ -2865,9 +2914,9 @@ impl LinearMixedModel {
         let degrees_of_freedom = self.degrees_of_freedom;
         let ypy = self.ypy;
         // The share of what the variant was that the projection has to
-        // leave of it for it to be worth testing, which is the threshold of
-        // **Open 2** of `docs/specs/gwas.md`.
-        let share_that_is_nothing = self.num_individuals as f64 * f64::EPSILON;
+        // leave of it, and the share of `y' p y` that the Wald test's
+        // subtraction has to leave, for the variant to be worth testing.
+        let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
         let largest_of_the_projection = self.largest_of_the_projection;
         for ((row, num), of_the_variant) in self
             .projected
@@ -2892,12 +2941,36 @@ impl LinearMixedModel {
             }
             let beta = num / den;
             let statistic = num * num / den;
-            let (se, p_value) = match test {
+            let answered = match test {
                 TestType::Wald => {
-                    let se = ((ypy - statistic) / (degrees_of_freedom * den)).sqrt();
-                    (se, t_sf_two_sided(beta / se, degrees_of_freedom))
+                    // What the variant leaves of `y' p y`. The projection
+                    // annihilates the design, so any affine image of the
+                    // trait gives `num² / den = y' p y` in exact
+                    // arithmetic, and what this holds for such a variant is
+                    // the rounding of that cancellation, of whichever sign
+                    // it fell on and differing by half between the two
+                    // backends. `se` would be the square root of a number
+                    // divided by noise, or of a negative one, which is the
+                    // NaN beside a finite `beta` that **Open 2** of
+                    // `docs/specs/gwas.md` records.
+                    let left = ypy - statistic;
+                    if left <= share_that_is_nothing * ypy {
+                        None
+                    } else {
+                        let se = (left / (degrees_of_freedom * den)).sqrt();
+                        Some((se, t_sf_two_sided(beta / se, degrees_of_freedom)))
+                    }
                 }
-                TestType::Score => (1.0 / den.sqrt(), chi2_sf_1df(statistic)),
+                // The score test divides by `den` and forms no such
+                // subtraction, so a variant that explains the whole of what
+                // the null left is answered here.
+                TestType::Score => Some((1.0 / den.sqrt(), chi2_sf_1df(statistic))),
+            };
+            let Some((se, p_value)) = answered else {
+                self.beta.push(f64::NAN);
+                self.se.push(f64::NAN);
+                self.p_value.push(f64::NAN);
+                continue;
             };
             self.beta.push(beta);
             self.se.push(se);
@@ -6502,7 +6575,8 @@ mod lmm {
         the_study_of, the_trait_and_the_design_of_the_panel,
     };
     use super::{
-        BlockReader, Design, Gwas, GwasInput, GwasModel, LinearMixedModel, TestType, TraitType,
+        BlockReader, Design, GOLDEN_SECTION_RATIO, GOLDEN_SECTION_STEPS, Gwas, GwasInput,
+        GwasModel, LOG_DELTA_POINTS, LinearMixedModel, TestType, TraitType, the_log_delta_at,
     };
     use crate::error::Error;
     use crate::io::vcf::{VcfOptions, VcfReader};
@@ -6719,20 +6793,35 @@ mod lmm {
     }
 
     /// `y' p y` is the individuals less the columns of the design, 197 on
-    /// both panels within 1e-6, which is deliverable 2 of work package 4
-    /// of `docs/plans/gwas-linear.md` and `test_reml_identity` of pyNei.
+    /// both panels within 1e-6, which is `test_reml_identity` of pyNei.
     ///
-    /// It is the generalized residual sum of squares of the null over the
-    /// genetic variance, and the restricted maximum likelihood makes it
-    /// exactly that number when the fit is at its optimum. It is the
-    /// cheapest evidence there is that the search settled where it should,
-    /// and it is the one check of this spec made at the private function
-    /// that fits the null, since `y' p y` is in no result.
+    /// **What it does not check is that the search reached its optimum**,
+    /// which this comment and deliverable 2 of work package 4 of
+    /// `docs/plans/gwas-linear.md` both said until 25 September 2026. The
+    /// genetic variance is that same generalized residual sum of squares
+    /// divided by the same degrees of freedom, so `y' p y` comes to `n - c`
+    /// for any `delta` whatever: it is an algebraic identity and not
+    /// evidence about where the search landed. Measured that day by
+    /// multiplying the fitted `delta` by a million, it came out
+    /// 196.99999999999872, 1.3e-12 away, while every comparison with GMMAT
+    /// and rrBLUP went red.
+    ///
+    /// What it does check is worth keeping, and it is two things. That the
+    /// clamp of the negative eigenvalues works, which is why the second
+    /// panel is here. And that the projection matrix and the quadratic form
+    /// agree with each other: `p` is built from the inverse of the
+    /// covariance and the design, and `y' p y` is the trait through it, so
+    /// the identity fails if either is formed wrong. Where the search
+    /// landed is
+    /// [`lmm::the_delta_the_search_lands_on_for_the_panel_is_pyneis`].
+    ///
+    /// It is the one check of this spec made at the private function that
+    /// fits the null, since `y' p y` is in no result.
     ///
     /// The second panel is here for the clamp of the eigenvalues at 0. Its
     /// kinship, the one plink2 wrote for the panel with 3 in 100 genotypes
     /// missing whole, has a smallest eigenvalue of -0.0321 where the
-    /// panel with every genotype called has -3.3e-15. Without the clamp
+    /// panel with every genotype called has -3.44e-15. Without the clamp
     /// the weights of the criterion go negative at every `delta` below
     /// 0.0321, which is 33 of the 101 points of the grid, and the Cholesky
     /// factorization of the weighted design refuses them, so the fit comes
@@ -7117,6 +7206,484 @@ mod lmm {
         0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 1.0,
     ];
 
+    /// The header of the six individuals of the fixture of the Wald test's
+    /// own cancellation, below.
+    const THE_HEADER_OF_SIX: &str = "##fileformat=VCFv4.2\n\
+        ##contig=<ID=1>\n\
+        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\n";
+
+    /// The design of that fixture: six individuals and one covariate that
+    /// is 0 and 1, beside the intercept.
+    const THE_DESIGN_OF_SIX: [f64; 12] = [
+        1.0, 0.0, //
+        1.0, 1.0, //
+        1.0, 0.0, //
+        1.0, 1.0, //
+        1.0, 0.0, //
+        1.0, 1.0,
+    ];
+
+    /// Its trait, `2 + 3 * cov + 1 * dosage` with the dosages of the first
+    /// variant below, 0, 1, 2, 0, 1, 2: a trait the design and that variant
+    /// together explain exactly, and nothing else about it matters.
+    const THE_TRAIT_OF_SIX: [f64; 6] = [2.0, 6.0, 4.0, 5.0, 3.0, 7.0];
+
+    /// The identity, which is the kinship of six individuals with no recent
+    /// ancestor in common and is what a user passes to mean no relatedness.
+    const THE_KINSHIP_OF_SIX: [f64; 36] = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+
+    /// The positions of those six among the individuals the reader gives.
+    const THE_INDIVIDUALS_OF_SIX: [usize; 6] = [0, 1, 2, 3, 4, 5];
+
+    /// A variant that leaves nothing of the trait has no answer under the
+    /// Wald test, which is the third place the meanwhile of **Open 2** of
+    /// `docs/specs/gwas.md` refuses.
+    ///
+    /// This one is not the variant the design explains, which the test
+    /// below covers: it is a variant the design leaves whole and that
+    /// explains the whole of what the null model left. `se` is built from
+    /// `y' p y` minus `num² / den`, and the projection annihilates the
+    /// design, so any affine image of the trait gives `num² / den = y' p y`
+    /// in exact arithmetic and what is left is rounding. The trait here is
+    /// `2 + 3 * cov + 1 * dosage`, which is exactly that.
+    ///
+    /// What the study gave before the threshold was there, measured on 25
+    /// September 2026: `beta` 1.00000 with `se` and `p_value` NaN under the
+    /// Wald test, where the score test on the same fixture answers. A
+    /// finite `beta` beside a NaN `se` is a fourth kind of NaN that the
+    /// spec does not describe, so a user filtering on a missing effect
+    /// keeps the row and reads 1.0 as an effect that was measured. That is
+    /// what took "leave it alone" out of the options of that open point.
+    ///
+    /// The score test is asserted to answer the same variant, because it
+    /// divides by `den` and never forms the subtraction: the two tests
+    /// differ here, and a refusal written in the wrong place would take the
+    /// score test's answer away with it.
+    ///
+    /// What this fixture does not check is the size of the threshold, and
+    /// no fixture can check it on both backends. What is left is 0 in exact
+    /// arithmetic, so its sign is whatever the rounding chose, and there is
+    /// no regime between the rounding and a threshold that is the rounding
+    /// scale. Measured with the threshold set to 0 on 25 September 2026:
+    /// faer answers this variant with an `se` of 1.2167e-8, so faer is
+    /// where the size is guarded, while Accelerate leaves a value at or
+    /// below 0 and the sign alone refuses it. The evidence that the size is
+    /// right is the panel, where what is left comes out 8.53e-13 on
+    /// Accelerate and 3.98e-13 on faer against a threshold of 8.67e-12, and
+    /// that measurement is in **Open 2** of the spec.
+    #[test]
+    fn a_variant_that_leaves_nothing_of_the_trait_has_no_wald_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_SIX);
+        for (var, genotypes) in [
+            ["0/0", "0/1", "1/1", "0/0", "0/1", "1/1"],
+            ["0/0", "0/1", "1/1", "1/1", "0/1", "0/0"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let pos = var.saturating_add(1).saturating_mul(1000);
+            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in genotypes {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        let study_with = |test| GwasInput {
+            phenotype: &THE_TRAIT_OF_SIX,
+            trait_type: TraitType::Continuous,
+            design: &THE_DESIGN_OF_SIX,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_SIX),
+            test: Some(test),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_SIX,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let of_the_wald = match the_study_of(&mut reader, &study_with(TestType::Wald)) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of six under the Wald test: {error}"),
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let of_the_score = match the_study_of(&mut reader, &study_with(TestType::Score)) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of six under the score test: {error}"),
+        };
+
+        assert_eq!(of_the_wald.num_vars, 2, "the variants of the fixture");
+        assert!(
+            of_the_wald.beta[0].is_nan()
+                && of_the_wald.se[0].is_nan()
+                && of_the_wald.p_value[0].is_nan(),
+            "the variant that leaves nothing of the trait was answered under the Wald \
+             test with a beta of {beta}, an se of {se} and a p-value of {p_value}",
+            beta = of_the_wald.beta[0],
+            se = of_the_wald.se[0],
+            p_value = of_the_wald.p_value[0]
+        );
+        // The variant is in the result with its frequency, as every variant
+        // that has no answer is.
+        let found = of_the_wald.allele_freq[0];
+        assert!(
+            (found - 0.5).abs() <= 1e-12,
+            "the frequency of v0 is {found} and its dosages are half the alleles"
+        );
+        assert!(
+            of_the_wald.beta[1].is_finite()
+                && of_the_wald.se[1] > 0.0
+                && (0.0..=1.0).contains(&of_the_wald.p_value[1]),
+            "the ordinary variant beside it was answered under the Wald test with a beta \
+             of {beta}, an se of {se} and a p-value of {p_value}",
+            beta = of_the_wald.beta[1],
+            se = of_the_wald.se[1],
+            p_value = of_the_wald.p_value[1]
+        );
+        assert!(
+            of_the_score.beta[0].is_finite()
+                && of_the_score.se[0] > 0.0
+                && (0.0..=1.0).contains(&of_the_score.p_value[0]),
+            "the score test of the same variant answered a beta of {beta}, an se of {se} \
+             and a p-value of {p_value}, where it divides by `den` and forms no \
+             subtraction",
+            beta = of_the_score.beta[0],
+            se = of_the_score.se[0],
+            p_value = of_the_score.p_value[0]
+        );
+    }
+
+    /// The `delta` that pyNei's `_reml_delta` fitted for `panel_called`,
+    /// the residual variance over the genetic one, taken on 25 September
+    /// 2026 with the kinship plink2 wrote, the trait `cont` and the
+    /// covariates `cov1` and `cov2`, with the eigenvalues clamped at 0 as
+    /// `_LMMNull` clamps them.
+    const OF_PYNEI_DELTA: f64 = 0.280_252_265_667_530_1;
+
+    /// How far popnei's `delta` may be from that: 2.5e-7 relative.
+    ///
+    /// It is not a bound on popnei's arithmetic but on how far two
+    /// implementations of this search land apart, and it is wide because
+    /// the criterion is flat at its minimum: an eigenvalue moving in its
+    /// last bits moves `delta` by about the square root of that. Measured
+    /// on 25 September 2026, popnei sits 7.72e-8 from pyNei on Accelerate
+    /// and 6.94e-8 on faer, and the two backends sit 7.8e-9 from each
+    /// other. This is 3.2 times the worse of the two.
+    ///
+    /// What it catches is a search that landed somewhere else: multiplying
+    /// the fitted `delta` by a million, which the `y' p y` identity below
+    /// does not notice, fails here. What it does not catch is a wrong value
+    /// of one of the six constants the spec asks to be reproduced, and that
+    /// is why it is not the only guard of them: shifting the grid's lowest
+    /// point to -10.1 moves `delta` to 1.635e-7 from pyNei and a ratio of
+    /// 0.61 in place of the golden one to 9.22e-8, both measured the same
+    /// day, and a bound tight enough to see either would be 1.2 times the
+    /// distance popnei legitimately sits at. The grid and the ratio are
+    /// pinned to the bit by the two tests above instead.
+    const OF_PYNEI_THE_SEARCH: f64 = 2.5e-7;
+
+    /// The width the bracket of the golden section search is left with:
+    /// the 0.4 the grid's two neighbours span, shrunk by
+    /// [`GOLDEN_SECTION_RATIO`] sixty times.
+    ///
+    /// It is `0.4 * ((math.sqrt(5) - 1) / 2) ** 60` in Python, which gives
+    /// 1.1555841497399695e-13, and it is what says that the ratio and the
+    /// number of steps are both pyNei's: a ratio of 0.61 leaves 3.9e-13 and
+    /// fifty steps leave 1.2e-9.
+    const THE_BRACKET_AFTER_THE_SEARCH: f64 = 1.155_584_149_739_969_5e-13;
+
+    /// The grid the search starts on is `numpy.linspace(-10, 10, 101)`, to
+    /// the bit.
+    ///
+    /// Three of the six things "The linear mixed model" of
+    /// `docs/specs/gwas.md` asks to be reproduced are in this one
+    /// assertion: how many points there are, where the lowest is and the
+    /// step between them. None of the three is guarded by any comparison
+    /// with a reference program, because the criterion is flat enough at
+    /// its minimum that moving the grid moves `delta` by less than the
+    /// distance popnei and pyNei legitimately sit apart, which the comment
+    /// on [`OF_PYNEI_THE_SEARCH`] measures.
+    ///
+    /// The literals are numpy's own, printed on 25 September 2026, and they
+    /// are asserted with `total_cmp` and not within a tolerance: the
+    /// points come out of `start + at * step` in both libraries, so they
+    /// agree to the bit or the grid is another grid. The 45th of them is
+    /// -1.1999999999999993 and not -1.2, which is what says the step is
+    /// multiplied before the start is added.
+    #[test]
+    fn the_grid_of_the_search_is_the_101_points_numpy_gives() {
+        assert_eq!(
+            LOG_DELTA_POINTS, 101,
+            "the points of numpy.linspace(-10, 10, 101)"
+        );
+        for (at, expected) in [
+            (0_usize, -10.0_f64),
+            (1, -9.8),
+            (44, -1.199_999_999_999_999_3),
+            (45, -1.0),
+            (50, 0.0),
+            (99, 9.8),
+            (100, 10.0),
+        ] {
+            let found = the_log_delta_at(at);
+            assert_eq!(
+                found.total_cmp(&expected),
+                std::cmp::Ordering::Equal,
+                "the point {at} of the grid is {found} and numpy.linspace gives {expected}"
+            );
+        }
+    }
+
+    /// The ratio of the golden section is pyNei's, and sixty steps of it
+    /// leave the bracket where pyNei leaves it.
+    ///
+    /// The constant is written out rather than computed, so this asserts it
+    /// against the expression `_reml_delta` of `pynei/gwas.py` evaluates,
+    /// `(math.sqrt(5) - 1) / 2`, which is correctly rounded in both
+    /// languages and so is the same `f64`. The width the bracket is left
+    /// with is the other half: it is the ratio and the number of steps
+    /// together, and it is what a flat 0.61 in place of the ratio changes,
+    /// where the comparison with pyNei cannot see it.
+    #[test]
+    fn the_golden_section_of_the_search_is_pyneis_ratio_and_sixty_steps() {
+        let of_pynei = (5.0_f64.sqrt() - 1.0) / 2.0;
+        assert_eq!(
+            GOLDEN_SECTION_RATIO.total_cmp(&of_pynei),
+            std::cmp::Ordering::Equal,
+            "the ratio is {GOLDEN_SECTION_RATIO} and (sqrt(5) - 1) / 2 is {of_pynei}"
+        );
+        assert_eq!(GOLDEN_SECTION_STEPS, 60, "the steps of `_reml_delta`");
+        let mut width = 0.4_f64;
+        for _ in 0..GOLDEN_SECTION_STEPS {
+            width *= GOLDEN_SECTION_RATIO;
+        }
+        let apart = (width - THE_BRACKET_AFTER_THE_SEARCH).abs();
+        assert!(
+            apart <= 1e-24,
+            "sixty steps leave a bracket of {width} where Python leaves \
+             {THE_BRACKET_AFTER_THE_SEARCH}, {apart} away"
+        );
+    }
+
+    /// The `delta` the search lands on for the panel is pyNei's, within
+    /// 2.5e-7 relative.
+    ///
+    /// `delta` is the ratio of the two variances and is where the whole
+    /// search ends up: the two variances, the heritability, the projection
+    /// matrix and every variant's answer are built from it. The comparison
+    /// with GMMAT is of the two variances at 1e-5 absolute, which is a
+    /// looser statement about the same number, and the `y' p y` identity
+    /// below says nothing about it at all.
+    ///
+    /// The comment on [`OF_PYNEI_THE_SEARCH`] has what this bound catches
+    /// and what it cannot.
+    #[test]
+    fn the_delta_the_search_lands_on_for_the_panel_is_pyneis() {
+        let fitted = the_null_of_the_panel("panel_called");
+
+        // The two variances are read off the fit and not off its
+        // `NullModel`, so that what this asserts stays the search's own
+        // answer whatever a later item of the spec does with the fields a
+        // user reads.
+        let found = fitted.residual_variance / fitted.genetic_variance;
+        let apart = (found - OF_PYNEI_DELTA).abs() / OF_PYNEI_DELTA;
+        assert!(
+            apart <= OF_PYNEI_THE_SEARCH,
+            "the search landed on a delta of {found} and pyNei's `_reml_delta` gives \
+             {OF_PYNEI_DELTA}, {apart} of it away against the {OF_PYNEI_THE_SEARCH} allowed"
+        );
+    }
+
+    /// A trait that the kinship explains nothing of puts the search at the
+    /// top end of the grid, where the best point is bracketed by that end
+    /// and the one point below it.
+    ///
+    /// The clamping of the best point's neighbours at the ends of the grid
+    /// is one of the six things "The linear mixed model" of
+    /// `docs/specs/gwas.md` asks to be reproduced, and nothing reached it:
+    /// measured on 25 September 2026 over every fixture of both suites, the
+    /// best index is 44, 46, 47 or 85 and never 0 or 100. A trait of pure
+    /// noise does reach it, and it is not a contrived input: it is what a
+    /// study of a trait the panel's relatedness has nothing to do with
+    /// gives.
+    ///
+    /// `delta` is the residual variance over the genetic one, so a trait
+    /// with no genetic part sends it up. The grid's top is `exp(10)`,
+    /// 22026.5, and the search cannot go past it: without the clamp the
+    /// bracket would run to `exp(10.2)` and the fit would land somewhere
+    /// pyNei's never does. Measured the same day, the trait below gives a
+    /// `log(delta)` of 10.0000 and a heritability of 4.54e-5.
+    ///
+    /// The trait is `sin(at * 7.3)` over the 200 individuals, which is a
+    /// fixed sequence that follows nothing of the kinship; `sin` is not
+    /// rounded the same on every platform and nothing here depends on its
+    /// last bits.
+    #[test]
+    fn a_trait_the_kinship_explains_nothing_of_lands_at_the_end_of_the_grid() {
+        let individuals = the_individuals_of_the_kinship("panel_called");
+        let kinship = the_kinship_of("panel_called");
+        let phenotype: Vec<f64> = (0..individuals.len())
+            .map(|at| (at as f64 * 7.3).sin())
+            .collect();
+        // The intercept alone: a covariate would take a part of a trait
+        // that is meant to be nothing but noise.
+        let design = vec![1.0_f64; individuals.len()];
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Continuous,
+            design: &design,
+            num_coefs: 1,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, individuals.len()) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of the trait of noise: {error}"),
+        };
+        let fitted = match LinearMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the null model of the trait of noise: {error}"),
+        };
+
+        let log_delta = (fitted.residual_variance / fitted.genetic_variance).ln();
+        let top = the_log_delta_at(LOG_DELTA_POINTS.saturating_sub(1));
+        assert!(
+            (log_delta - top).abs() <= 1e-9,
+            "the search landed at a log delta of {log_delta} and the grid's top is \
+             {top}, which is where a trait the kinship explains nothing of belongs"
+        );
+        assert!(
+            log_delta <= top,
+            "the search landed past the top of the grid, at {log_delta}, which is the \
+             clamp of the best point's neighbours not holding"
+        );
+    }
+
+    /// How many variants a study reads in one block,
+    /// [`crate::block::MAX_NUM_VARS_PER_BLOCK`], which does not depend on
+    /// how many individuals it has.
+    const VARS_OF_ONE_BLOCK: usize = 10_000;
+
+    /// A mixed model over more variants than one block holds answers the
+    /// same in its second block as in its first.
+    ///
+    /// The linear model has this test and the mixed one had none: 200
+    /// individuals give 10000 variants to a block, so the 1200 variant
+    /// panel is one block in every other test of this module and the loop
+    /// over the blocks runs once. What it covers is the buffers of the
+    /// model and of the dosages being reused, the rows of the second block
+    /// being added after the first's and not over them, and the columns of
+    /// the variants growing across the blocks. Commenting out the three
+    /// `clear()` calls of [`LinearMixedModel::test_the_block`] passes every
+    /// other test of the crate and fails this one.
+    ///
+    /// The two patterns are those of the fixture below, one that the
+    /// projection leaves nothing of and one it answers, so the study
+    /// carries a refused variant and an answered one into its second
+    /// block. Every number asserted is the answer the same pattern got in
+    /// the first block, which is what the test is about; what those numbers
+    /// are is the fixture below and the six literals of the panel.
+    #[test]
+    fn a_mixed_study_of_more_variants_than_one_block_answers_the_same_in_every_block() {
+        let patterns = [
+            ["0/0", "0/0", "0/0", "0/0", "1/1", "1/1", "1/1", "1/1"],
+            ["0/1", "0/0", "1/1", "0/0", "0/1", "1/1", "0/0", "0/1"],
+        ];
+        let num_vars = VARS_OF_ONE_BLOCK.saturating_add(100);
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        for var in 0..num_vars {
+            let pos = var.saturating_add(1).saturating_mul(10);
+            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in patterns[var % patterns.len()] {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        let study = GwasInput {
+            phenotype: &THE_TRAIT_OF_TWO_SUBPOPULATIONS,
+            trait_type: TraitType::Continuous,
+            design: &THE_DESIGN_OF_TWO_SUBPOPULATIONS,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_TWO_SUBPOPULATIONS),
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the mixed study of {num_vars} variants: {error}"),
+        };
+
+        assert!(
+            num_vars > VARS_OF_ONE_BLOCK,
+            "the study has to read more than one block"
+        );
+        assert_eq!(result.num_vars, num_vars, "the variants of the study");
+        let ids = result.ids.as_deref().expect("the ids of the variants");
+        assert_eq!(ids.len(), num_vars, "one id for each variant");
+        for var in [0, VARS_OF_ONE_BLOCK, num_vars.saturating_sub(1)] {
+            assert_eq!(ids[var], format!("v{var}"), "the id of the variant {var}");
+        }
+        // Every variant of the first pattern is the one the projection
+        // leaves nothing of, wherever it fell, and every variant of the
+        // second has the answer the second variant of the fixture below
+        // got. The answers of the first block are what the rest are
+        // compared with, so nothing here is a literal of this test.
+        let (of_the_refused, of_the_answered) = (0_usize, 1_usize);
+        for var in 0..num_vars {
+            let of_the_pattern = match var % patterns.len() {
+                0 => of_the_refused,
+                _ => of_the_answered,
+            };
+            if of_the_pattern == of_the_refused {
+                assert!(
+                    result.beta[var].is_nan()
+                        && result.se[var].is_nan()
+                        && result.p_value[var].is_nan(),
+                    "the variant {var}, which the projection leaves nothing of, was \
+                     answered with a beta of {beta}",
+                    beta = result.beta[var]
+                );
+                continue;
+            }
+            for (found, first, what) in [
+                (
+                    result.allele_freq[var],
+                    result.allele_freq[of_the_pattern],
+                    "the frequency",
+                ),
+                (result.beta[var], result.beta[of_the_pattern], "the effect"),
+                (result.se[var], result.se[of_the_pattern], "the error"),
+                (
+                    result.p_value[var],
+                    result.p_value[of_the_pattern],
+                    "the p-value",
+                ),
+            ] {
+                assert_eq!(
+                    found.total_cmp(&first),
+                    std::cmp::Ordering::Equal,
+                    "{what} of the variant {var} is {found} and the same pattern in the \
+                     first block answered {first}"
+                );
+            }
+        }
+    }
+
     /// A variant that the projection leaves nothing of has no answer under
     /// either test, which is the meanwhile of **Open 2** of
     /// `docs/specs/gwas.md`.
@@ -7149,6 +7716,12 @@ mod lmm {
     /// number: its effect is popnei's own, since no reference program was
     /// run on this fixture, and the six literals of the panel are what says
     /// the numbers are right.
+    ///
+    /// The size of the threshold is guarded here on faer alone, and the
+    /// test above says why no fixture can guard it on both: with the
+    /// threshold set to 0, measured on 25 September 2026, faer answers this
+    /// variant with a `beta` of 2.13 and an `se` of 2.7e7 and Accelerate
+    /// refuses it on the sign of its -4.44e-16.
     #[test]
     fn a_variant_the_projection_leaves_nothing_of_has_no_answer() {
         let mut vcf = String::from(THE_HEADER_OF_EIGHT);
