@@ -609,6 +609,16 @@ hundredfold at 100 groups.
 - `crates/popnei/src/pop_dists.rs:1096`, `f2_of_every_group` collects a
   `flat_map`, whose lower size hint is 0, so it grows by doubling for
   19000 values. Microseconds against a pass; for a later reader.
+- `tests/test_io_vars.py`, the test that a Ctrl-C while `write_vars` runs
+  raises and leaves no file, **fails against a release build**, and a
+  performance review installs one: it sends itself the signal 0.1 s in,
+  against a write its own comment measures at 0.313 s "in the build
+  `maturin develop` makes", and in release the write is over before the
+  signal arrives. It passes again after `uv run maturin develop`. Nothing
+  is wrong with the code; the test is tied to the build profile, and the
+  next person who times popnei from Python will meet it. The fix is for
+  the test to measure the write rather than assume its time, or to skip
+  where the build is release.
 
 ## 13. What this code already does well
 
