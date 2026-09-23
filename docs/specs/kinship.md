@@ -246,7 +246,8 @@ rule of `docs/specs/pca.md` cannot leave the two disagreeing, and left the
 choice between one helper and two copies to the implementation plan.
 `docs/plans/kinship.md` chose one helper and built it on 23 September 2026:
 `the_standardized_row` of `crates/popnei/src/variant.rs`, which each caller
-gives its own divisor, moved there from `crates/popnei/src/pca.rs`. Then two products, both in
+gives its own divisor, moved there from `crates/popnei/src/pca.rs`. Then
+two products, both in
 `linalg`: the standardized dosages of the block multiplied by themselves
 into an individuals by individuals accumulator, and, when any genotype of
 the block is missing, the same of the matrix of ones and zeros that says
@@ -268,14 +269,27 @@ genotype is seen. Section 5 of `docs/rust_core.md` leaves it open how far
 this goes in a browser, where the heap is 32 bit and a kinship of 10000
 individuals is already 800 MB of the 4 GB that addresses.
 
-Two datasets are refused, both for reasons the PCA's row pass already
-refuses them for and with the same limits, `MAX_PLOIDY_OF_THE_VARIANTS` and
-`MAX_INDIVIDUALS_OF_THE_VARIANTS` of `crates/popnei/src/pca.rs`: a ploidy
-above 254, because a genotype is written as one byte holding its dosage or
-the missing code, and more than 46340 individuals, because the individuals
-by individuals matrix would hold more values than the 2147483647 that BLAS
-and LAPACK count in. A `num_pcs` of 0 gives a result with no components and
-is not an error, as asking a PCA for none is not.
+Two datasets are refused, at the same two limits the PCA refuses them at,
+and the checks are in different places.
+
+A ploidy above `MAX_PLOIDY_OF_THE_VARIANTS`, 254, is refused by the row
+pass itself, because a genotype is written as one byte holding its dosage
+or the code of a genotype with an allele missing. That constant and that
+check live in `crates/popnei/src/variant.rs`, beside the pass, and
+`crates/popnei/src/pca.rs` re-exports the constant; `calc_kinship` gets
+the refusal from the row and writes none of its own. The error is
+`VariantPloidyTooLarge`, which names no calculation.
+
+More than `MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, 46340, is not
+refused by the row, which reads one variant and knows nothing of the
+matrix: the individuals by individuals matrix would hold more values than
+the 2147483647 that BLAS and LAPACK count in. That constant is of
+`crates/popnei/src/pca.rs`, where `pca_of_variants` checks it at its own
+entry, and `calc_kinship` checks it at its own entry too, in
+`crates/popnei/src/kinship.rs`, before the first block is read.
+
+A `num_pcs` of 0 gives a result with no components and is not an error, as
+asking a PCA for none is not.
 
 `reblock` goes before it, as it does before the PCA and for the same two
 reasons: a filter leaves blocks of uneven size, and the sum over blocks is
@@ -489,9 +503,11 @@ which argument to pass, as the PCA's is. A pair of individuals with no
 variant called in both, with the two positions and how many variants each
 of them has called. No variant with variance among these individuals, and a
 pass that gave no variant at all, which every consumer already has. A ploidy
-above `MAX_PLOIDY_OF_THE_VARIANTS` and more than
-`MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, both of
-`crates/popnei/src/pca.rs`. And whatever the reader and `linalg` fail
+above `MAX_PLOIDY_OF_THE_VARIANTS`, which the row pass of
+`crates/popnei/src/variant.rs` raises, and more than
+`MAX_INDIVIDUALS_OF_THE_VARIANTS` individuals, whose constant is of
+`crates/popnei/src/pca.rs` and which this module checks at its own entry,
+as "How it runs" has it. And whatever the reader and `linalg` fail
 with.
 
 The components of a kinship, `num_pcs` of them at most and fewer when the
