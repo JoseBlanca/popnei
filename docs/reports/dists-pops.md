@@ -566,7 +566,7 @@ work the plan gave two layers turned out to be tests and doc comments.
 
 **The exact comparison, which is the strongest check popnei has for this
 measure.** popnei's Jost's D against a live pyNei, worst of the three
-pairs: 5.6e-15 relative on the biallelic panel at a `min_num_individuals`
+pairs: 5.5e-15 relative on the biallelic panel at a `min_num_individuals`
 of 20, 5.1e-15 at 47 where the pairs part, and 8.5e-15 on the
 multiallelic panel. The bound asserted is 1e-12. The counts at 47 are
 688, 688 and 1200, which is what pins `num_vars` being per pair.
@@ -610,8 +610,8 @@ both touch the same function.
 
 Three commits, `86d38a8` and `86bbc8c` for the spec and `3a9e540` for the
 code. 164 542 tokens. `cargo test -p popnei --lib pop_dists::` gives `56
-passed; 0 failed` against 53, and the workspace `577 passed; 0 failed; 2
-ignored`. No count and no sum were added: D_A is 1 minus the mean of the
+passed; 0 failed` against 53, and `cargo test --workspace` `577 passed; 0 failed; 2
+ignored` in the core crate beside `35 passed` in the linear algebra one. No count and no sum were added: D_A is 1 minus the mean of the
 sum of the square roots the pass already builds, and the chord distance is
 its square root.
 
