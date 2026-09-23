@@ -30,6 +30,7 @@
 //! account for the structure of the panel without a mixed model.
 
 use std::fmt;
+use std::mem;
 
 use popnei_linalg::{add_self_product_lower, eigh_lower};
 
@@ -418,11 +419,12 @@ fn the_pass_over_the_blocks<R: BlockReader>(
     let mut denominators = Denominators::OfEveryPair;
     let mut num_vars = 0_u64;
     let mut num_vars_given = 0_u64;
-    // The two buffers of one block, kept from one block to the next so that
-    // a pass over a million variants asks for them once. The rows that were
-    // not used are left as they were and nothing reads them.
+    // The buffers of one block, kept from one block to the next so that a
+    // pass over a million variants asks for them once. The rows of
+    // `standardized` that were not used are left as they were and nothing
+    // reads them.
     let mut standardized: Vec<f64> = Vec::new();
-    let mut called: Vec<f64> = Vec::new();
+    let mut buffers = TheBuffersOfTheDenominators::default();
     while let Some(mut block) = blocks.next_block()? {
         if let Some(individuals) = individuals {
             // The frequencies, the means and the denominators are of the
@@ -460,7 +462,7 @@ fn the_pass_over_the_blocks<R: BlockReader>(
                 kept,
                 num_individuals,
                 num_vars,
-                &mut called,
+                &mut buffers,
                 &mut denominators,
             )?;
         }
@@ -479,14 +481,33 @@ fn the_pass_over_the_blocks<R: BlockReader>(
     })
 }
 
+/// The buffers the denominators of a block are worked out in, kept from
+/// one block to the next so that a pass over a million variants asks the
+/// machine for them once.
+#[derive(Default)]
+struct TheBuffersOfTheDenominators {
+    /// The genotypes that were called, one value for each individual of
+    /// each variant that was used, which the route of the product
+    /// multiplies by itself. It stays empty while no block takes that
+    /// route, and it is the largest buffer of the kinship when one does:
+    /// 40 MB at 5000 variants of 1000 individuals.
+    called: Vec<f64>,
+    /// The individuals one variant has a missing genotype in, in growing
+    /// order, which the route of the counts fills again for each variant.
+    of_the_variant: Vec<usize>,
+    /// How many of the variants of the block that were used each
+    /// individual has a missing genotype in, which the route of the
+    /// counts fills again for each block.
+    of_each_individual: Vec<u64>,
+}
+
 /// The variants of one block that each pair had called in both, added to
 /// the denominators of the blocks before it.
 ///
 /// `used` says which variants of the block have variance, `kept` how many
 /// of them that is, 1 or more, and `num_vars_before` how many variants the
-/// blocks before this one used. `called` is the buffer the genotypes that
-/// were called are written into, one value for each individual of each
-/// variant that was used, which is kept from one block to the next.
+/// blocks before this one used. `buffers` holds what the two routes below
+/// work in, which is kept from one block to the next.
 ///
 /// A block with no missing genotype adds its variants to every pair
 /// alike, so it is a number added to each entry and not a product, which
@@ -505,13 +526,12 @@ fn the_denominators_of_the_block(
     kept: usize,
     num_individuals: usize,
     num_vars_before: u64,
-    called: &mut Vec<f64>,
+    buffers: &mut TheBuffersOfTheDenominators,
     denominators: &mut Denominators,
 ) -> Result<()> {
     let alleles_per_var = block.alleles_per_var()?;
-    let any_missing =
-        the_rows_used(block, used, alleles_per_var).any(|row| row.contains(&MISSING_ALLELE));
-    if !any_missing {
+    let sum_of_the_squares = the_sum_of_the_squares_of_the_missing(block, used, alleles_per_var);
+    if sum_of_the_squares == 0 {
         // Every pair had every variant of the block, so this block is a
         // number and not a product.
         if let Denominators::OfThePair(of_the_pairs) = denominators {
@@ -523,17 +543,236 @@ fn the_denominators_of_the_block(
         }
         return Ok(());
     }
-    the_called_genotypes_of(block, used, alleles_per_var, kept, num_individuals, called);
-    if let Denominators::OfThePair(of_the_pairs) = denominators {
-        return add_the_called_genotypes(called, kept, num_individuals, of_the_pairs);
-    }
-    // The blocks before this one had no genotype missing, so each of their
-    // variants is in the denominator of every pair: the matrix starts at
+    // The matrix is taken out of the denominators and put back below, so
+    // that one call of each route serves both the block that makes it and
+    // the blocks that add to it. The blocks before the first one with a
+    // genotype missing had no genotype missing, so each of their variants
+    // is in the denominator of every pair: the matrix it makes starts at
     // that count in every entry and not at 0, which would lose them.
-    let mut of_the_pairs = vec![num_vars_before as f64; the_values_of(num_individuals)];
-    add_the_called_genotypes(called, kept, num_individuals, &mut of_the_pairs)?;
+    let mut of_the_pairs = match *denominators {
+        Denominators::OfThePair(ref mut of_the_pairs) => mem::take(of_the_pairs),
+        Denominators::OfEveryPair => {
+            vec![num_vars_before as f64; the_values_of(num_individuals)]
+        }
+    };
+    // The two routes add the same whole numbers to the same entries, so
+    // they leave the matrix the same bit for bit; the test
+    // `the_two_routes_to_the_denominators_agree_entry_for_entry` holds
+    // them to that.
+    let added =
+        if the_counts_are_cheaper_than_the_product(sum_of_the_squares, kept, num_individuals) {
+            the_counted_denominators_of(
+                block,
+                used,
+                alleles_per_var,
+                kept,
+                num_individuals,
+                buffers,
+                &mut of_the_pairs,
+            );
+            Ok(())
+        } else {
+            the_called_genotypes_of(
+                block,
+                used,
+                alleles_per_var,
+                kept,
+                num_individuals,
+                &mut buffers.called,
+            );
+            add_the_called_genotypes(&buffers.called, kept, num_individuals, &mut of_the_pairs)
+        };
     *denominators = Denominators::OfThePair(of_the_pairs);
-    Ok(())
+    added
+}
+
+/// The sum over the variants of a block that were used of the square of
+/// how many individuals each of them has a missing genotype in, which is 0
+/// when every one of those genotypes was called.
+///
+/// It is what the choice between the two routes is made on, because it is
+/// the work the route of the counts does: that route touches the entry of
+/// every pair of individuals a variant is missing in both of, and those
+/// pairs are that square, halved.
+///
+/// The sum saturates where a `u64` ends instead of raising. A block whose
+/// missing genotypes make that many pairs is one the product is cheaper
+/// for by a wide margin, and a saturated sum is what sends it there.
+fn the_sum_of_the_squares_of_the_missing(
+    block: &Block,
+    used: &[bool],
+    alleles_per_var: usize,
+) -> u64 {
+    // The rows of the block hold one genotype of its ploidy for each of
+    // its individuals, and a ploidy of 0 does not reach here: the pass
+    // that standardized the same rows refuses it.
+    let ploidy = block.ploidy.max(1);
+    let mut total = 0_u64;
+    for genotypes in the_rows_used(block, used, alleles_per_var) {
+        // A row with nothing missing is left at the whole row read at
+        // once, which stops at the first allele that is missing and which
+        // the compiler reads several bytes at a time. The genotypes of a
+        // row are only cut apart where there is something to count, so a
+        // block with every genotype called costs what it did when this
+        // was the `any` of one row that had a missing allele.
+        if !genotypes.contains(&MISSING_ALLELE) {
+            continue;
+        }
+        let missing = the_count_of(
+            genotypes
+                .chunks_exact(ploidy)
+                .filter(|genotype| genotype.contains(&MISSING_ALLELE))
+                .count(),
+        );
+        total = total.saturating_add(missing.saturating_mul(missing));
+    }
+    total
+}
+
+/// How many of the increments of the route of the counts one entry of the
+/// product's result pays for, which is where the two routes cross.
+///
+/// The product does the individuals squared times the variants that were
+/// used multiply-adds, which took 5.1 ps each on the Accelerate of this
+/// machine at every shape tried; the route of the counts does the sum of
+/// the squares of the missing, halved, read-modify-writes scattered over
+/// the matrix of the denominators, and one of those took 0.64 ns at 1000
+/// individuals, 0.98 ns at 3000 and 1.33 ns at 6000, since the matrix they
+/// walk is 8, 72 and 288 MB and falls out of the caches. So the two routes
+/// crossed at a sum of the squares of 1 part in 139 of the variants used
+/// times the individuals squared at 1000 individuals, 1 in 289 at 3000 and
+/// 1 in 524 at 6000. Measured on 23 September 2026 on an Apple M5 Pro with
+/// a trial that ran both routes over one block of 5 million genotypes at
+/// twelve rates of missing genotypes, on one thread, and checked at each
+/// of them that the two gave the same matrix.
+///
+/// 512 is taken from the largest of those three, so that the route of the
+/// counts is not the slower one at up to 6000 individuals. What that costs
+/// is the blocks between 1 part in 512 and 1 in 139 at 1000 individuals,
+/// from about 4 to about 7 in 100 genotypes missing, which go to the
+/// product where the counts would have been up to twice as fast.
+const THE_INCREMENTS_AN_ENTRY_OF_THE_PRODUCT_PAYS_FOR: u64 = 512;
+
+/// Whether counting the denominators of a block is cheaper than the
+/// product of its genotypes that were called with itself.
+///
+/// `sum_of_the_squares` is what [`the_sum_of_the_squares_of_the_missing`]
+/// gave for the block and `kept` how many of its variants were used. A
+/// product that would not fit in a `u64` saturates, which sends the block
+/// to the counts, and a block of that many values does not exist: the
+/// individuals are at most 46340 and the variants of a block at most
+/// 10000, whose product with the individuals again is 2.1e13.
+fn the_counts_are_cheaper_than_the_product(
+    sum_of_the_squares: u64,
+    kept: usize,
+    num_individuals: usize,
+) -> bool {
+    let individuals = the_count_of(num_individuals);
+    let of_the_product = the_count_of(kept)
+        .saturating_mul(individuals)
+        .saturating_mul(individuals);
+    sum_of_the_squares.saturating_mul(THE_INCREMENTS_AN_ENTRY_OF_THE_PRODUCT_PAYS_FOR)
+        <= of_the_product
+}
+
+/// The variants of a block that each pair had called in both, counted into
+/// the lower half of the denominators with no product.
+///
+/// With `kept` the variants of the block that were used and `M` the ones
+/// an individual has a missing genotype in, the pair `i`, `j` gains
+///
+/// ```text
+/// kept - |M_i| - |M_j| + |M_i and M_j|
+/// ```
+///
+/// which is the variants of the block that neither of the two is missing.
+/// Every term is a count of whole things and every one of them is far
+/// below 2^53, so each entry grows by exactly the whole number the product
+/// of the genotypes that were called would have added to it.
+///
+/// It is the route for a block with few missing genotypes. The third term
+/// is what costs: it is one increment for each pair of individuals a
+/// variant is missing in both of, which is quadratic in how many
+/// individuals a variant is missing in, where the product does the
+/// individuals squared for every variant whatever is missing.
+fn the_counted_denominators_of(
+    block: &Block,
+    used: &[bool],
+    alleles_per_var: usize,
+    kept: usize,
+    num_individuals: usize,
+    buffers: &mut TheBuffersOfTheDenominators,
+    of_the_pairs: &mut [f64],
+) {
+    // The rows of the block hold one genotype of its ploidy for each of
+    // its individuals, and a ploidy of 0 does not reach here: the pass
+    // that standardized the same rows refuses it.
+    let ploidy = block.ploidy.max(1);
+    buffers.of_each_individual.clear();
+    buffers.of_each_individual.resize(num_individuals, 0);
+    for genotypes in the_rows_used(block, used, alleles_per_var) {
+        // A row with nothing missing adds nothing to any pair here: its
+        // variant is in the count of every one of them, which the last
+        // loop of this pass adds. The whole row is read at once for that,
+        // as in the pass that chose this route.
+        if !genotypes.contains(&MISSING_ALLELE) {
+            continue;
+        }
+        buffers.of_the_variant.clear();
+        for (at, genotype) in genotypes.chunks_exact(ploidy).enumerate() {
+            if genotype.contains(&MISSING_ALLELE) {
+                buffers.of_the_variant.push(at);
+            }
+        }
+        for one in &buffers.of_the_variant {
+            // The block holds one genotype for each individual of the
+            // matrix, which the pass that standardized the same rows
+            // checked, so every individual a variant is missing in has its
+            // count here; a count is at most the variants of the block,
+            // which is far from where a `u64` saturates.
+            if let Some(count) = buffers.of_each_individual.get_mut(*one) {
+                *count = count.saturating_add(1);
+            }
+        }
+        // The individuals a variant is missing in come in growing order,
+        // so the pair of the one being read with any of those before it,
+        // itself included, is in the lower half of the matrix. The pair of
+        // an individual with itself is wanted: the entry of `i` with `i`
+        // is kept - |M_i|, which the three terms give.
+        for (upto, one) in buffers.of_the_variant.iter().enumerate() {
+            // The individual is below the individuals of the matrix, so
+            // the row of its pairs starts inside it.
+            let Some(row) = one
+                .checked_mul(num_individuals)
+                .and_then(|start| of_the_pairs.get_mut(start..))
+            else {
+                continue;
+            };
+            for other in buffers.of_the_variant.iter().take(upto.saturating_add(1)) {
+                if let Some(value) = row.get_mut(*other) {
+                    *value += 1.0;
+                }
+            }
+        }
+    }
+    for ((one, row), of_one) in of_the_pairs
+        .chunks_exact_mut(num_individuals.max(1))
+        .enumerate()
+        .zip(&buffers.of_each_individual)
+    {
+        // The counts are whole numbers at or below the variants of the
+        // block, so each of them is exact in an `f64` and the entry grows
+        // by a whole number. The sum of the three terms is at or above 0,
+        // though this one term alone can be below it.
+        let of_the_row = kept as f64 - *of_one as f64;
+        for (value, of_other) in row
+            .iter_mut()
+            .zip(&buffers.of_each_individual)
+            .take(one.saturating_add(1))
+        {
+            *value += of_the_row - *of_other as f64;
+        }
+    }
 }
 
 /// The product of the genotypes that were called with themselves, added to
@@ -801,12 +1040,20 @@ fn the_variants_are_too_many() -> Error {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::arithmetic_side_effects,
+        reason = "small literals in tests: the sizes and the patterns of the fixtures"
+    )]
+
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
 
     use super::{
-        Denominators, Kinship, KinshipTooLarge, MAX_INDIVIDUALS_OF_THE_VARIANTS, ThePass,
-        calc_kinship, the_denominators_of_the_block, the_pass_over_the_blocks,
+        Denominators, Kinship, KinshipTooLarge, MAX_INDIVIDUALS_OF_THE_VARIANTS,
+        TheBuffersOfTheDenominators, ThePass, add_the_called_genotypes, calc_kinship,
+        the_called_genotypes_of, the_counted_denominators_of,
+        the_counts_are_cheaper_than_the_product, the_denominators_of_the_block,
+        the_pass_over_the_blocks, the_sum_of_the_squares_of_the_missing, the_values_of,
     };
     use crate::block::{Block, BlockReader};
     use crate::error::{Error, Result};
@@ -1279,7 +1526,7 @@ mod tests {
         let missing = block_of(3, 2, &[0, 0, 0, 0, 0, 0, 0, 0, 1, 1, MISSING, MISSING]);
         let called_again = block_of(3, 2, &[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
         let mut of_the_blocks = Denominators::OfEveryPair;
-        let mut buffer = Vec::new();
+        let mut buffers = TheBuffersOfTheDenominators::default();
 
         the_denominators_of_the_block(
             &called,
@@ -1287,7 +1534,7 @@ mod tests {
             2,
             3,
             0,
-            &mut buffer,
+            &mut buffers,
             &mut of_the_blocks,
         )
         .expect("the denominators of the first block");
@@ -1302,7 +1549,7 @@ mod tests {
             1,
             3,
             2,
-            &mut buffer,
+            &mut buffers,
             &mut of_the_blocks,
         )
         .expect("the denominators of the second block");
@@ -1312,7 +1559,7 @@ mod tests {
             1,
             3,
             3,
-            &mut buffer,
+            &mut buffers,
             &mut of_the_blocks,
         )
         .expect("the denominators of the third block");
@@ -1363,6 +1610,126 @@ mod tests {
             assert!(
                 (count - expected).abs() < OF_THE_WORKED_EXAMPLE,
                 "the entry {at} of the denominators is {count} and the variants called in both are {expected}"
+            );
+        }
+    }
+
+    /// A block of `num_individuals` individuals of the ploidy 2 and
+    /// `num_vars` variants in which the genotype of the individual `ind`
+    /// of the variant `var` is missing when `(var * 5 + ind * 7) % period`
+    /// is 0, and is `0|0` or `0|1` otherwise.
+    ///
+    /// A `period` of 32 leaves 4 of 128 individuals missing in each
+    /// variant, and one of 3 leaves 42 or 43 of them.
+    fn a_block_with_a_genotype_missing_every(
+        num_individuals: usize,
+        num_vars: usize,
+        period: usize,
+    ) -> Block {
+        let mut gts = Vec::with_capacity(num_individuals * num_vars * 2);
+        for var in 0..num_vars {
+            for ind in 0..num_individuals {
+                if (var * 5 + ind * 7) % period == 0 {
+                    gts.push(MISSING);
+                    gts.push(MISSING);
+                } else {
+                    gts.push(0);
+                    gts.push(i8::from((var + ind) % 3 == 0));
+                }
+            }
+        }
+        block_of(num_individuals, 2, &gts)
+    }
+
+    /// The two routes to the denominators of a block leave the same
+    /// matrix, entry for entry and not within a tolerance.
+    ///
+    /// Both add whole numbers far below 2^53 to the same `f64`: the
+    /// product of the genotypes that were called sums the 1 and the 0 of
+    /// each variant, and the counts add the variants of the block less
+    /// the ones either individual is missing plus the ones both are.
+    /// Whole numbers that small add exactly in an `f64` in any order, so a
+    /// difference of one bit here is a defect and not rounding.
+    ///
+    /// Two blocks are read, one on each side of where the two routes
+    /// cross, and each is checked to take the route it should: the first
+    /// has 4 of its 128 individuals missing in each variant and goes to
+    /// the counts, the second has 42 or 43 and goes to the product. Both
+    /// drop two of their ten variants, so a route that counted the
+    /// variants it was given and not the ones that were used would show
+    /// here.
+    #[test]
+    fn the_two_routes_to_the_denominators_agree_entry_for_entry() {
+        let num_individuals = 128;
+        let used = [true, true, false, true, true, true, true, false, true, true];
+        let kept = used.iter().filter(|was_used| **was_used).count();
+        // What the blocks before this one used, which both matrices start
+        // at in every entry, as the pass builds them.
+        let before = 7.0;
+
+        for (period, the_counts_are_cheaper) in [(32_usize, true), (3, false)] {
+            let block = a_block_with_a_genotype_missing_every(num_individuals, used.len(), period);
+            let alleles_per_var = block.alleles_per_var().expect("the alleles of one variant");
+            let squares = the_sum_of_the_squares_of_the_missing(&block, &used, alleles_per_var);
+            assert!(
+                squares > 0,
+                "no genotype of the block of one missing every {period} is missing"
+            );
+            assert_eq!(
+                the_counts_are_cheaper_than_the_product(squares, kept, num_individuals),
+                the_counts_are_cheaper,
+                "which route the block of a genotype missing every {period} takes, \
+                 whose sum of the squares of the missing is {squares}"
+            );
+
+            let mut of_the_counts = vec![before; the_values_of(num_individuals)];
+            let mut of_the_product = vec![before; the_values_of(num_individuals)];
+            let mut buffers = TheBuffersOfTheDenominators::default();
+            the_counted_denominators_of(
+                &block,
+                &used,
+                alleles_per_var,
+                kept,
+                num_individuals,
+                &mut buffers,
+                &mut of_the_counts,
+            );
+            let mut called = Vec::new();
+            the_called_genotypes_of(
+                &block,
+                &used,
+                alleles_per_var,
+                kept,
+                num_individuals,
+                &mut called,
+            );
+            add_the_called_genotypes(&called, kept, num_individuals, &mut of_the_product)
+                .expect("the product of the genotypes that were called with themselves");
+
+            // How many pairs lost a variant to a missing genotype: a
+            // fixture where none did would have the two routes agree on
+            // the count of every pair alike and show nothing.
+            let mut pairs_that_lost_one = 0_usize;
+            for one in 0..num_individuals {
+                for other in 0..=one {
+                    let at = one * num_individuals + other;
+                    assert_eq!(
+                        of_the_counts[at].to_bits(),
+                        of_the_product[at].to_bits(),
+                        "the entry of the pair {one}, {other} of the block of a genotype \
+                         missing every {period}: the counts give {} and the product {}",
+                        of_the_counts[at],
+                        of_the_product[at]
+                    );
+                    if of_the_counts[at] < before + kept as f64 {
+                        pairs_that_lost_one += 1;
+                    }
+                }
+            }
+            assert!(
+                pairs_that_lost_one > 0,
+                "every pair of the block of a genotype missing every {period} had every \
+                 variant, so the two routes agreeing says nothing"
             );
         }
     }
