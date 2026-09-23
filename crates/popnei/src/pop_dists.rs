@@ -1568,7 +1568,7 @@ mod tests {
     use crate::stats::Pops;
     use crate::variant::{ChromTable, Needs};
 
-    /// The genotypes of the four variants of the worked example of "How it
+    /// The genotypes of the five variants of the worked example of "How it
     /// is verified" of `docs/specs/dists.md`: 6 diploid individuals, the
     /// two alleles of each after those of the one before, with -1 for an
     /// allele that was not called.
@@ -1576,13 +1576,26 @@ mod tests {
     /// The variants are, with pop1 the first three individuals and pop2 the
     /// last three: one biallelic variant where the populations differ; one
     /// of three alleles; one where both are fixed for the allele 0, with a
-    /// missing genotype in pop1 and a half called one in pop2; and one that
-    /// is the same in both, every genotype heterozygous.
-    const WORKED_EXAMPLE: [[i8; 12]; 4] = [
+    /// missing genotype in pop1 and a half called one in pop2; one that is
+    /// the same in both, every genotype heterozygous; and one where the
+    /// populations hold different alleles and differ in their called
+    /// genotypes, 3 against 2, and in their called alleles, 6 against 4,
+    /// which is what tells the corrections of H_S and H_T from the readings
+    /// of them that the other four cannot.
+    const WORKED_EXAMPLE: [[i8; 12]; 5] = [
         [0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1],
         [0, 1, 1, 2, 2, 2, 0, 0, 0, 1, 0, 0],
         [0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, -1],
         [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+        [0, 0, 0, 0, 0, 1, 1, 1, -1, -1, 1, 2],
+    ];
+
+    /// The genotypes of the variant at a ploidy of 4 of the same section,
+    /// the four alleles of each of the same 6 individuals: pop1 has 3
+    /// called genotypes of 12 called alleles and pop2 has 2 of 8, and the
+    /// two hold different alleles.
+    const AT_A_PLOIDY_OF_FOUR: [i8; 24] = [
+        0, 0, 1, 1, 0, 1, 1, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, -1, -1, -1, -1,
     ];
 
     /// The individuals of the first population of the worked example.
@@ -1632,6 +1645,7 @@ mod tests {
             ([1, 2, 3], 6, 3, [5, 1, 0], 6, 3),
             ([4, 0, 0], 4, 2, [5, 0, 0], 5, 2),
             ([3, 3, 0], 6, 3, [3, 3, 0], 6, 3),
+            ([5, 1, 0], 6, 3, [0, 3, 1], 4, 2),
         ];
         for (var, (of_pop1, n_1, called_1, of_pop2, n_2, called_2)) in
             expected.into_iter().enumerate()
@@ -1658,6 +1672,7 @@ mod tests {
             (0.805556, 0.533333, 0.272222, 0.608380, 0.541667, 0.673611),
             (0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
             (0.5, 0.6, -0.1, 1.0, 0.5, 0.5),
+            (0.875, 0.416667, 0.458333, 0.353553, 0.410714, 0.642857),
         ];
         for (var, (h_b, h_w, f2, sqrt_of_the_products, h_s, h_t)) in
             expected.into_iter().enumerate()
@@ -1684,6 +1699,47 @@ mod tests {
                 &format!("H_T' of the variant {var}"),
             );
         }
+    }
+
+    /// The variant at a ploidy of 4 of the same section, which is the one
+    /// number of this file that the ploidy is read for: E_P and H_T raise
+    /// the frequencies to it, and a suite whose genotypes all hold two
+    /// alleles cannot tell the ploidy from the 2 of a square. Raising them
+    /// to 2 here gives H_S' 0.407738 and H_T' 0.459077 against the
+    /// 0.864330 and 0.873157 of the ploidy, and pyNei at a ploidy of 4
+    /// gives the second pair.
+    ///
+    /// The two populations also differ in their called genotypes, 3 against
+    /// 2, and in the alleles they hold.
+    #[test]
+    fn a_variant_at_a_ploidy_of_four_has_the_values_of_the_spec() {
+        let gts = &AT_A_PLOIDY_OF_FOUR;
+        let per_var = match PopDistPerVar::new(4, 1) {
+            Ok(per_var) => per_var,
+            Err(error) => panic!("{error}"),
+        };
+        let of_pop1 = counts_of(gts, 4, &POP1);
+        let of_pop2 = counts_of(gts, 4, &POP2);
+
+        assert_eq!(of_pop1.allele_counts()[..3], [6, 5, 1]);
+        assert_eq!(of_pop1.called_alleles(), 12);
+        assert_eq!(of_pop1.gts().called, 3);
+        assert_eq!(of_pop2.allele_counts()[..3], [7, 1, 0]);
+        assert_eq!(of_pop2.called_alleles(), 8);
+        assert_eq!(of_pop2.gts().called, 2);
+        let Some(sums) = per_var.of_var(&of_pop1, &of_pop2) else {
+            panic!("the variant does not count for the pair");
+        };
+        assert_the_value_is(sums.h_b, 0.510417, "H_b");
+        assert_the_value_is(sums.h_w, 0.435606, "H_w");
+        assert_the_value_is(sums.f2(), 0.074811, "f_2");
+        assert_the_value_is(
+            sums.sqrt_of_the_products,
+            0.889656,
+            "the sum of the square roots",
+        );
+        assert_the_value_is(sums.corrected_h_s, 0.864330, "H_S'");
+        assert_the_value_is(sums.corrected_h_t, 0.873157, "H_T'");
     }
 
     /// The third variant of the worked example, where both populations are
@@ -2386,9 +2442,9 @@ mod tests {
     }
 
     /// The F_ST and the f_2 of the worked example of "How it is verified" of
-    /// `docs/specs/dists.md`: the sums over its four variants are 2.027778
-    /// for H_b and 1.466667 for H_w, so F_ST is 0.561111 / 2.027778 and f_2
-    /// is 0.561111 / 4. Both are ratios of the sums and not means of the
+    /// `docs/specs/dists.md`: the sums over its five variants are 2.902778
+    /// for H_b and 1.883333 for H_w, so F_ST is 1.019444 / 2.902778 and f_2
+    /// is 1.019444 / 5. Both are ratios of the sums and not means of the
     /// per variant ratios, which for F_ST is undefined at the third
     /// variant.
     #[test]
@@ -2397,35 +2453,35 @@ mod tests {
 
         assert_it_is_within(
             sums.measure(PopDistMeasure::Fst, 0, 1),
-            0.276712,
+            0.351196,
             1e-6,
             "the F_ST of the worked example",
         );
         assert_it_is_within(
             sums.measure(PopDistMeasure::F2, 0, 1),
-            0.140278,
+            0.203889,
             1e-6,
             "the f_2 of the worked example",
         );
-        assert_eq!(sums.num_vars_of(0, 1), Some(4));
+        assert_eq!(sums.num_vars_of(0, 1), Some(5));
         assert_eq!(sums.num_vars_of(1, 0), sums.num_vars_of(0, 1));
     }
 
     /// The groups the variants were cut into change no measure: the sums of
     /// a pair are added group by group and the division happens once,
-    /// whether the four variants of the worked example fall in four groups,
+    /// whether the five variants of the worked example fall in five groups,
     /// in one or in none.
     #[test]
     fn the_measures_are_the_same_whatever_the_groups() {
-        let of_four = sums_of_the_worked_example(JackknifeGroups::PerVariant);
+        let of_five = sums_of_the_worked_example(JackknifeGroups::PerVariant);
         let of_one = sums_of_the_worked_example(JackknifeGroups::OfBasePairs(100_000));
         let of_none = sums_of_the_worked_example(JackknifeGroups::None);
 
-        assert_eq!(of_four.groups().len(), 4);
+        assert_eq!(of_five.groups().len(), 5);
         assert_eq!(of_one.groups().len(), 1);
         assert!(of_none.groups().is_empty());
         for measure in [PopDistMeasure::Fst, PopDistMeasure::F2] {
-            let found = of_four.measure(measure, 0, 1);
+            let found = of_five.measure(measure, 0, 1);
             assert_it_is_the_same_number(
                 found,
                 of_one.measure(measure, 0, 1).expect("the measure"),
@@ -2447,7 +2503,10 @@ mod tests {
     fn the_f2_of_a_group_of_one_variant_is_that_variants_f2() {
         let sums = sums_of_the_worked_example(JackknifeGroups::PerVariant);
 
-        for (var, f2) in [0.388889, 0.272222, 0.0, -0.1].into_iter().enumerate() {
+        for (var, f2) in [0.388889, 0.272222, 0.0, -0.1, 0.458333]
+            .into_iter()
+            .enumerate()
+        {
             assert_it_is_within(
                 sums.f2_of_group(var, 0, 1),
                 f2,
@@ -2455,7 +2514,7 @@ mod tests {
                 &format!("the f_2 of the group of the variant {var}"),
             );
         }
-        assert_eq!(sums.f2_of_group(4, 0, 1), None);
+        assert_eq!(sums.f2_of_group(5, 0, 1), None);
     }
 
     /// A pass of one variant has an F_ST equal to that variant's, so the
@@ -2704,7 +2763,7 @@ mod tests {
     /// example of "How it is verified" of `docs/specs/dists.md`, which the
     /// tests above assert on sums built group by group: the same numbers
     /// come out of the loop over the blocks of a reader, which cuts the
-    /// four variants into the two blocks of this reader.
+    /// five variants into the three blocks of this reader.
     ///
     /// With no groups asked for there is no standard error and the sums are
     /// one run of the pairs, the one pair here.
@@ -2723,18 +2782,18 @@ mod tests {
         .expect("the sums of the worked example");
 
         assert_eq!(sums.num_pops(), 2);
-        assert_eq!(sums.num_vars(), 4);
-        assert_eq!(sums.num_vars_of(0, 1), Some(4));
+        assert_eq!(sums.num_vars(), 5);
+        assert_eq!(sums.num_vars_of(0, 1), Some(5));
         assert_eq!(sums.groups(), []);
         assert_it_is_within(
             sums.measure(PopDistMeasure::Fst, 0, 1),
-            0.276712,
+            0.351196,
             1e-6,
             "the F_ST of the worked example",
         );
         assert_it_is_within(
             sums.measure(PopDistMeasure::F2, 0, 1),
-            0.140278,
+            0.203889,
             1e-6,
             "the f_2 of the worked example",
         );
@@ -3054,15 +3113,15 @@ mod tests {
                 groups: JackknifeGroups::PerVariant,
             },
         )
-        .expect_err("a pass of four groups");
+        .expect_err("a pass of five groups");
 
         assert!(
             matches!(&error, Error::TooFewJackknifeGroups { num_groups, at_least }
-                if *num_groups == 4 && *at_least == MIN_NUM_JACKKNIFE_GROUPS),
+                if *num_groups == 5 && *at_least == MIN_NUM_JACKKNIFE_GROUPS),
             "{error:?}"
         );
         let message = error.to_string();
-        assert!(message.contains("into 4 resampling groups"), "{message}");
+        assert!(message.contains("into 5 resampling groups"), "{message}");
         assert!(message.contains("20 at least"), "{message}");
     }
 
