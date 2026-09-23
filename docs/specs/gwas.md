@@ -106,20 +106,32 @@ than its oracle here. The option not taken was to refuse in both, which is
 what the Python docstring says a trait is and which would have made the
 layers agree by making Python stricter than pyNei.
 
-The two coercions are not the same coercion, and this is what makes them
-one. `float("abc")` raises, while JavaScript's `Number("abc")` gives NaN,
-and a NaN phenotype means an individual with no phenotype, which is dropped;
-so a TypeScript that merely coerced would turn a user's typo into a silently
-missing individual where Python raises at them. TypeScript therefore coerces
-and then refuses whatever did not arrive as a finite number. Three values
-need saying because `Number` gives each of them something plausible and
-wrong: `null` becomes 0, the empty string becomes 0, and `undefined` becomes
-NaN. All three are refused, naming the individual. A key that is absent from
-the object is an individual with no phenotype, as an absent or NaN entry is
-in Python, and that is the only way to say so.
+The two coercions are not the same coercion, and one rule is what makes
+them one. **A value means an individual with no phenotype exactly when
+Python's `float` of it gives NaN, or the entry is not there, and it is
+refused exactly when Python's `float` of it raises.** TypeScript is written
+to that rule and not to JavaScript's own coercion, which agrees with it
+nowhere that matters: `Number("abc")` gives NaN where `float` raises, so a
+typo would become a silently missing individual instead of an error;
+`Number(null)` and `Number("")` give 0, so a blank cell would become a
+phenotype of zero; and `Number(undefined)` gives NaN, so a key a user forgot
+to fill would vanish rather than be reported.
 
-An infinite phenotype is refused by both, which pyNei accepts: `float("inf")`
-succeeds there and the fit it feeds gives NaN for every variant. `trait` is `"continuous"` or `"binomial"`, the two
+What the rule gives, measured against `float` on 23 September 2026. A number
+that is NaN is a missing phenotype, and so is a key that is absent, which is
+`dropna` at `gwas.py:801`. A string is coerced and refused unless it parses,
+so `"2"` is 2, `""` and `"abc"` are refused, and `"nan"` is a missing
+phenotype because `float("nan")` is NaN. A boolean is 1 or 0. `null` and
+`undefined` are refused, since `float(None)` raises. An infinity is refused
+by both layers, which pyNei does not do: `float("inf")` succeeds there and
+the fit it feeds gives NaN for every variant.
+
+That the two layers refuse the same things is checked and not assumed:
+`tests/reference/gwas/refusals_of_both_layers.json` lists each case with the
+message it gives, and the Python and the node suites both walk it. It was
+written during `docs/plans/gwas-linear.md` because nothing had been checking
+it, and writing it caught two messages about a covariate named `intercept`
+that differed between the languages. `trait` is `"continuous"` or `"binomial"`, the two
 values of `TraitType`. `test` is `"wald"` or `"score"`, the two values of
 `TestType`, and `None` takes the default above.
 
