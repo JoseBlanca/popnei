@@ -1,9 +1,8 @@
 # Plan: the linear algebra the association study needs
 
-23 September 2026. State: under way. Approved by the owner on 23
-September 2026 and carried out the same day; work packages 1 to 3 are
-done, reviewed and fixed, and work package 4 was added by the owner on the
-same day, after the rest was finished, and is what is left. It
+23 September 2026. State: done. Approved by the owner on 23 September
+2026 and carried out the same day, with a fourth work package added by
+them after the first three were finished. It
 builds from `docs/specs/linalg.md`, which went through its first reader
 and its review and whose four open points the owner decided on 23
 September 2026. Three parts of that spec are what is built: "The seven
@@ -455,13 +454,13 @@ Work package 3, whose `solve_upper_triangular` this extends, and task
 
 ### Its tasks
 
-- [ ] 4.1 The spec item: what the lower form gives, its signature and its
+- [x] 4.1 The spec item: what the lower form gives, its signature and its
       errors, and which of the two shapes the interface takes, written
       into `docs/specs/linalg.md` in a commit of its own. Built from the
       request of the session writing `docs/specs/gwas.md` and from the
       existing "The solve against an upper triangular matrix". Serves
       deliverable 1. Needs nothing.
-- [ ] 4.2 The code and its tests, in `crates/popnei-linalg/src/lib.rs`,
+- [x] 4.2 The code and its tests, in `crates/popnei-linalg/src/lib.rs`,
       `blas.rs` and `faer.rs`: `dtrtrs` takes a `uplo` already and faer
       has `solve_lower_triangular_in_place` beside the upper one. Serves
       deliverables 2 and 3. Needs 4.1.

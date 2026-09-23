@@ -584,13 +584,71 @@ tests to 141 and from 90 to 128; the gap between the two backends is the
 
 That subagent used 291256 tokens for the two tasks and the fixes.
 
+### Task 4.2, the code of either half, and the review of work package 4
+
+`28925db`, and `5eb4e7b` after the review. `solve_upper_triangular` is
+`solve_triangular(a, n, half, b, sides)` with the public
+`TheHalfThatHoldsTheMatrix`: the half is the `uplo` of `dtrtrs`, turned by
+the layout, and one of faer's two entry points. Twenty tests name
+`triangular` where twelve did, and the twelve assert what they asserted.
+
+Two reviewers, spec with tests and errors with api and architecture. They
+used 243000 tokens, and fourteen findings held, of which **five were in
+the spec item the orchestrator had written**: the buffer the whole
+one-function decision leans on was named wrongly, and the `l` the section
+gives, read as its upper half, is the diagonal 2, 3, 1 and solves to (4,
+13.333333333333332, 27) and not to the number quoted; "`dtrtrs`, whose
+`uplo` is that half" was the opposite of what the code must pass, since
+popnei's buffer read column after column is the transpose; the explanation
+of faer's last place was not the mechanism, multiplying by the reciprocal
+giving exactly 12 and the bits coming from distributing it; "fourteen
+operations" was left beside "the last seven"; and the `Singular` case
+still said "upper triangular" in both code blocks. `5385750` corrects all
+five, each read back against numpy or the code first.
+
+**The finding that mattered most for the code was a trap and not a live
+defect.** The diagonal is checked with `entry == 0.0`, where the three
+Cholesky operations two screens above check `entry <= 0.0`. A reviewer
+changed the triangular one to match its neighbours and all 148 tests
+passed — yet `thin_qr` really gives a negative diagonal, so that change
+refuses every least squares fit popnei makes. Every fixture used the `r`
+with its sign fixed. `7b419fa` puts the case into "How the seven are
+verified" and `5eb4e7b` has the test, which is the only one that fails
+under that mutation, on both backends.
+
+Eight smaller findings were fixed with it: the doc comments said faer
+answers a 0 diagonal with an infinity where it answers with a NaN as
+often, by the half and the row; the enum derived no `PartialEq`, which
+every other public fieldless enum of popnei derives; twelve call sites
+still called the argument `r`; eleven `// SAFETY:` comments of `blas.rs`
+credited `the_i32_of` with refusing a dimension of 0, which `lib.rs` does;
+a fixture's doc comment carried three wrong claims, one of them a relative
+error that was an absolute one; the lower half's `Singular` test is
+guarded by the faer run alone, since `dtrtrs` gives that error itself, and
+now says so; the lower half's `NotFinite` test reached three of six
+places; and one doc comment named a function that no longer exists.
+
+**What was not taken, and is for the owner.** A diagonal entry that is
+subnormal passes the check, and then `dtrtrs` gives an infinity where faer
+gives a NaN, each with no error, on an input whose exact answer an `f64`
+holds. It is the one place in the crate where the two backends answer
+differently and neither says so. Both answers are not finite, so the test
+a caller must make on its own result catches either, and numpy gives the
+infinity, so refusing such an entry would diverge from the oracle on an
+input it answers. `e076edc` records it, and the three Cholesky operations
+have the same hole. And that the `Singular` message says a factorization
+stopped is true of one of its five producers; it is the spec's message and
+the owner's to reword.
+
+That subagent used 219111 tokens for the task and the fixes.
+
 ## How the whole plan was checked
 
 Run by the orchestrator on the last commit of the branch:
 
 | What | Command | What it gave |
 | --- | --- | --- |
-| the two backends | `cargo test -p popnei-linalg` and the same `--no-default-features` | `141 passed` and `128 passed`, against 42 and 37 when the plan started |
+| the two backends | `cargo test -p popnei-linalg` and the same `--no-default-features` | `149 passed` and `136 passed`, against 42 and 37 when the plan started |
 | the browser target | `cargo check -p popnei-linalg --target wasm32-unknown-unknown --no-default-features` | clean |
 | the pyodide target | the same for `wasm32-unknown-emscripten` | clean |
 | the whole workspace | `cargo test --workspace` | `472 passed`, 2 ignored, in the core crate |
