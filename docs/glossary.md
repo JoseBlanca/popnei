@@ -152,6 +152,20 @@ question from F_ST, and it is the one to read on markers with many
 alleles. pyNei: `calc_jost_dest_pop_dists`, and `dest` in identifiers,
 after the D_est the literature writes. `docs/specs/dists.md`.
 
+**G_ST.** Nei's fixation measure between two populations, the share of the
+diversity of the two that lies between them, from the expected
+heterozygosities corrected for the sample as Nei and Chesser do. It cannot
+reach 1 when the populations are diverse: with two of them its ceiling is
+(1 - H_S)/(1 + H_S). `gst` in identifiers. `docs/specs/dists.md`. Not used:
+F_ST for it, which in popnei is Hudson's and a different number.
+
+**G''_ST.** G_ST rescaled so that it reaches 1 when the two populations
+share no allele, whatever their diversity, as Meirmans and Hedrick (2011)
+define it. `gst_standardized` in identifiers, since the literature's name
+is not an identifier. Hedrick's earlier G'_ST, which divides G_ST by its
+ceiling, is a different number and popnei does not give it.
+`docs/specs/dists.md`.
+
 **resampling group.** The variants that a standard error leaves out
 together: a stretch of one chromosome, or one variant. The literature
 calls it a block and calls the method the block jackknife; popnei says
