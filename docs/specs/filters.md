@@ -645,15 +645,26 @@ source at whatever size they come.
 
 What it keeps from one block to the next is the window: for each variant
 it has kept whose position is within `max_dist` of the newest variant it
-has read, and which is on that variant's chromosome, its dosages held as
-the three matrices that `docs/specs/ld.md` builds for the products of r²,
-with its chromosome and its position. A variant leaves the window when
-the reader passes `max_dist` beyond it or reaches another chromosome. The
-memory is 24 bytes for each individual and each variant of the window:
-for 250 kept variants of 1000 individuals, 6 MB. The variants of a window
-are unlinked to each other by construction, so a window holds few of
-them; a window whose dosages the machine has not the memory for is the
-error of `docs/specs/block.md` for the same case.
+has read, and which is on that variant's chromosome, its genotypes, with
+its chromosome and its position. It keeps the genotypes and not the
+dosages because the whole window is one operand of the products when a
+set of candidates arrives, so the three matrices are built for all of its
+variants together and then let go. Between two blocks the window costs
+one byte for each allele, which is two bytes for each individual and each
+variant of it at a ploidy of 2, where the three matrices are 24: for 250
+kept variants of 1000 individuals, 0.5 MB held and 6 MB while a set is
+settled. A variant leaves the window when the reader passes `max_dist`
+beyond it or reaches another chromosome, which is worked out each time a
+set of variants is settled and not at every variant.
+
+How many variants a window holds is set by the dataset and not bounded by
+the filter. They are unlinked to each other by construction, which keeps
+a window short where the variants of a dataset are linked to their
+neighbours; a dataset whose variants carry no linkage leaves every one of
+them with variance in the window, so a window as wide as a chromosome
+holds every variant of it. A window whose genotypes or whose dosages the
+machine has not the memory for is refused rather than taken, with the
+case of `docs/specs/ld.md` for a matrix this machine cannot hold.
 
 The variants of a block can be compared with the variants that were
 already in the window when the block arrived in one set of the products
