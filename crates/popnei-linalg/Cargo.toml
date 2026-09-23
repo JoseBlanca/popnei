@@ -40,13 +40,13 @@ lapack-src = { workspace = true, optional = true }
 # where it can be: without it the products do not use the 128 bit vector
 # instructions of WebAssembly even in a build told to emit them. Nothing of
 # this crate calls `gemm`, so the dependency is here to add that feature to
-# the one faer uses. The rustc flag that asks the compiler for those same
-# instructions, `-C target-feature=+simd128`, stays off: the owner decided
-# on 23 September 2026 that the feature is what pays and the flag adds
-# nothing, since with the feature on the module built with the flag and the
-# module built without it are the same file, byte for byte, on rustc 1.98.
-# "The wasm builds and the vector instructions" of docs/specs/linalg.md has
-# the decision and the timings.
+# the one faer uses. The feature is what pays for the products: the rustc
+# flag that asks the compiler for those same instructions, `-C
+# target-feature=+simd128`, adds nothing to them, because gemm's kernels
+# carry their own annotation. Nothing is set here for it. The flag is on
+# all the same, set for both wasm targets by .cargo/config.toml, which
+# `sums_of_two` of the dists module needs; "The wasm builds and the vector
+# instructions" of docs/specs/linalg.md has both and the timings.
 [target.'cfg(target_family = "wasm")'.dependencies]
 gemm.workspace = true
 

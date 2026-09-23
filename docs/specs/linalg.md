@@ -111,32 +111,60 @@ the analysis of 100000 variants x 1000 individuals under node takes 7.066
 s against 4.500 s with the feature on, which task 4.2 of
 `docs/plans/pca.md` measured on 22 September 2026.
 
-The flag adds nothing to it. With the feature on, the module built with
-the flag and the module built without it are the same file, byte for byte,
-checked on three builds from empty target directories with rustc 1.98,
-the flag being on the rustc command line of every crate of the build that
-carries it. Nor would the flag cost any browser: the feature already emits
-those instructions, so the floor of Chrome and Edge 91, Firefox 89 and
-Safari 16.4 that `docs/objectives.md` sets is what popnei ships today
-either way, and Open 6 of `docs/specs/pca.md` details it.
+The flag adds nothing to the products. With the feature on, the module
+built with the flag and the module built without it were the same file,
+byte for byte, checked on three builds from empty target directories with
+rustc 1.98 on 22 September 2026, the flag being on the rustc command line
+of every crate of the build that carries it. Nor would the flag cost any
+browser: the feature already emits those instructions, so the floor of
+Chrome and Edge 91, Firefox 89 and Safari 16.4 that `docs/objectives.md`
+sets is what popnei ships today either way, and Open 6 of
+`docs/specs/pca.md` details it.
 
-The owner decided on 23 September 2026 that the feature stays on and the
-flag stays off, since on this rustc the flag changes no file. The options
-not taken were to set the flag in both wasm builds and to set it in the
-wasm package alone; on rustc 1.98 all three give the same files. What is
-not known is whether a later rustc, or a dependency that stops annotating
-its own functions, would make the flag matter, and the measurement that
-would say so is the byte comparison above, run again.
+The flag is on all the same, and for another module. It is set for both
+wasm targets by `.cargo/config.toml`, and by the `wasm-check` alias of
+that file, because `sums_of_two` of the `dists` module counts the bits of
+a pair of individuals sixteen bytes at a time behind
+`cfg(target_feature = "simd128")`, and without the flag the scalar loop
+beside it is what compiles: 5.2 ms against 1.8 ms, which
+`docs/specs/pca.md` has. That code went in on 22 September 2026, in the
+commit `7f3b6cc`, after the byte comparison above was made and before this
+spec was written, so the comparison stopped holding for the module popnei
+ships. Measured again on 23 September 2026 on the same machine, the
+WebAssembly of `crates/popnei-js` built in release with the flag is
+2249734 bytes and without it 2246645, and their md5 sums differ: the 3089
+bytes are that bit count. What was measured of the linear algebra is
+unchanged, since nothing of this crate reads that feature and faer's
+kernels carry their own annotation.
 
-Where the flag would go if it were ever wanted: into the two commands that
-build for wasm, `build:wasm` of `js/popnei/package.json` and
-`scripts/build_pyodide_wheel.sh`, through `RUSTFLAGS`, which is how it was
-tried, and not into `.cargo/config.toml`. A `rustflags` for a target in
-that file makes cargo ignore the `build.rustflags` that the `wasm-check`
-alias of the same file passes to deny warnings, and the alias would stop
-denying them without a word. The pyodide wheel built with the flag in
-`RUSTFLAGS` loaded under pyodide on node 26 on 22 September 2026 and
-passed the smoke test of `tests/pyodide/`.
+The owner decided on 23 September 2026 that the feature stays on and that
+nothing is added for the sake of the linear algebra, since on this rustc
+the flag changes no file of it. The options not taken were to set the flag
+for the products in both wasm builds and in the wasm package alone; on
+rustc 1.98 all three give the same products. What is not known is whether
+a later rustc, or a dependency that stops annotating its own functions,
+would make the flag matter to them, and the measurement that would say so
+is the byte comparison above, run again on a build with the `dists` module
+held still.
+
+The decision was recorded on 23 September 2026 as "the flag stays off",
+which was read back on the same day against the repository and is not
+what the repository does: the paragraph above has where the flag is set
+and what it changes. What the owner chose is unaffected, since the choice
+was about the products, and how the decision is worded is theirs to
+settle.
+
+Where the flag would go if it were ever wanted for the products alone:
+into the two commands that build for wasm, `build:wasm` of
+`js/popnei/package.json` and `scripts/build_pyodide_wheel.sh`, through
+`RUSTFLAGS`, which is how it was tried. Putting it in `.cargo/config.toml`
+has a cost the `wasm-check` alias already pays: a `rustflags` for a target
+in that file makes cargo ignore the `build.rustflags` that the alias would
+otherwise pass to deny warnings, so the alias carries the deny and the
+flag together in its own `--config`, and a flag added to a target of that
+file has to be added to the alias too. The pyodide wheel built with the
+flag in `RUSTFLAGS` loaded under pyodide on node 26 on 22 September 2026
+and passed the smoke test of `tests/pyodide/`.
 
 ### Threads
 
@@ -1220,8 +1248,10 @@ None. The four this spec had were decided by the owner on 23 September
 2026 and each is in the text where its subject is, with the option that
 was not taken and what is still unknown about it:
 
-- The feature of `gemm` stays on and the rustc flag stays off: "The wasm
-  builds and the vector instructions".
+- The feature of `gemm` stays on and nothing is added for the sake of the
+  linear algebra: "The wasm builds and the vector instructions", which
+  also has where the rustc flag is set, for the `dists` module, and how
+  the decision was worded on the day.
 - Every square matrix but the `r` of the QR is factored with a Cholesky
   and not an LU: "Why a Cholesky where numpy uses an LU", which has the
   band of designs that changes.
