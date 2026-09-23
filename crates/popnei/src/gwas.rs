@@ -2013,14 +2013,17 @@ impl LinearModel {
         // once the design is taken out of it to be worth testing, which is
         // the threshold of **Open 2** of `docs/specs/gwas.md`.
         let share_that_is_nothing = self.num_individuals as f64 * f64::EPSILON;
-        for ((row, num), dosages) in self
+        for ((row, num), of_the_variant) in self
             .residualized
             .chunks_exact(self.num_individuals)
             .zip(&self.num)
             .zip(dosages.dosages().chunks_exact(self.num_individuals))
         {
             let xx = row.iter().map(|value| value * value).sum::<f64>();
-            let of_the_dosages = dosages.iter().map(|value| value * value).sum::<f64>();
+            let of_the_dosages = of_the_variant
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>();
             // A variant that is a combination of the columns of the design
             // has nothing left once they are taken out, and what `xx` holds
             // is the rounding of that cancellation: `beta` would be a
