@@ -51,6 +51,7 @@ pub mod block;
 pub mod dists;
 pub mod error;
 pub mod filters;
+pub mod gwas;
 pub mod io;
 pub mod kinship;
 pub mod ld;

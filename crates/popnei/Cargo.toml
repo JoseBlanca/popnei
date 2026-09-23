@@ -36,6 +36,7 @@ arrow-buffer.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
 flate2.workspace = true
+libm.workspace = true
 memchr.workspace = true
 popnei-linalg.workspace = true
 serde_json.workspace = true
