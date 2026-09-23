@@ -2799,18 +2799,24 @@ impl LinearMixedModel {
         let heritability = genetic_variance / (genetic_variance + residual_variance);
         let coefs = std::mem::take(&mut search.coefs);
         drop(search);
-        let TheProjection {
-            matrix: projection,
-            of_the_trait: projected_trait,
-            ypy,
-        } = the_trait_through_the_projection(
-            phenotype,
+        let projection = the_projection_of(
             design,
             &eigenvalues,
             &vectors,
-            genetic_variance,
-            residual_variance,
+            TheVariances {
+                genetic: genetic_variance,
+                residual: residual_variance,
+            },
         )?;
+        let projected_trait = through_the_projection(&projection, phenotype)?;
+        // `y' p y`, the generalized residual sum of squares of the null
+        // over the genetic variance, which the restricted maximum
+        // likelihood makes the individuals less the columns of the design.
+        let ypy = phenotype
+            .iter()
+            .zip(&projected_trait)
+            .map(|(measured, projected)| measured * projected)
+            .sum::<f64>();
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "the individuals less the columns of the design are 2 at least, by \
@@ -3058,36 +3064,41 @@ impl LinearMixedModel {
     }
 }
 
-/// The projection matrix of a fitted linear mixed model, with the trait
-/// taken through it.
+/// The two variances the covariance of a trait under a mixed model is
+/// built from, `v = genetic * k + residual * i` with `k` the kinship and
+/// `i` the identity.
 ///
-/// The three come out of the same products, and a model keeps the first
-/// two because every variant is tested against both: `num` is the variant
-/// times [`TheProjection::of_the_trait`] and `den` the variant times itself
-/// through [`TheProjection::matrix`].
-struct TheProjection {
-    /// `p`, the projection matrix, `num_individuals` x `num_individuals`,
-    /// row after row. It is symmetric, so a product with it gives the same
-    /// matrix whichever side a variant is on.
-    matrix: Vec<f64>,
-    /// `p y`, the trait through it, one value per tested individual.
-    of_the_trait: Vec<f64>,
-    /// `y' p y`, the trait times that, which the restricted maximum
-    /// likelihood makes the individuals less the columns of the design.
-    ypy: f64,
+/// They travel as one value and not as two arguments of the same primitive
+/// side by side, which the `coding` skill forbids for the reason this pair
+/// shows plainly: swapping them compiles, gives an inverse of another
+/// matrix and every variant an answer that is wrong in a way no type
+/// catches.
+#[derive(Debug, Clone, Copy)]
+struct TheVariances {
+    /// The variance of the random effect the kinship is the covariance of.
+    genetic: f64,
+    /// What is left over, the variance of an individual's own noise.
+    residual: f64,
 }
 
-/// The projection matrix of a fitted linear mixed model and the trait
-/// through it.
+/// The projection matrix of a fitted linear mixed model.
 ///
 /// The covariance of the trait under the null is the kinship times the
 /// genetic variance plus the identity times the residual one, `v =
 /// genetic_variance * k + residual_variance * i`, and the
 /// eigendecomposition of the kinship gives its inverse without another
 /// factorization: with `e` the eigenvectors and `l` the eigenvalues, `v⁻¹
-/// = e diag(1 / (genetic_variance * l + residual_variance)) e'`. The
-/// projection matrix is then `p = v⁻¹ - v⁻¹ d (d' v⁻¹ d)⁻¹ d' v⁻¹`, and
-/// `p y` is what every variant's numerator is taken against.
+/// = e diag(1 / (genetic * l + residual)) e'`. The projection matrix is
+/// then `p = v⁻¹ - v⁻¹ d (d' v⁻¹ d)⁻¹ d' v⁻¹`.
+///
+/// The trait through it, `p y`, and `y' p y` are taken at the call site and
+/// not here, although the linear mixed model wants all three: what the
+/// logistic mixed model of the next plan wants of this is the matrix alone,
+/// its `p y` being the trait less the fitted mean and its inverse coming
+/// off a Cholesky factorization, and it has no `y' p y` at all. pyNei keeps
+/// the reusable piece alone in the same way, as `_projection`. Splitting it
+/// while it has one caller costs four lines at that caller and saves the
+/// next plan from splitting a function two models depend on.
 ///
 /// `eigenvectors` is `num_individuals` x `num_individuals`, row after row,
 /// row `j` being the eigenvector of `eigenvalues[j]`. Three matrices of
@@ -3101,14 +3112,12 @@ struct TheProjection {
 /// [`Error::GwasLinalg`] when one of the four products, the Cholesky
 /// factorization of the design weighted by the covariance or the solve
 /// against it could not be done.
-fn the_trait_through_the_projection(
-    phenotype: &[f64],
+fn the_projection_of(
     design: &Design<'_>,
     eigenvalues: &[f64],
     eigenvectors: &[f64],
-    genetic_variance: f64,
-    residual_variance: f64,
-) -> Result<TheProjection> {
+    variances: TheVariances,
+) -> Result<Vec<f64>> {
     let num_individuals = design.num_individuals();
     let num_coefs = design.num_coefs();
     let mut scaled = vec![0.0_f64; eigenvectors.len()];
@@ -3117,7 +3126,7 @@ fn the_trait_through_the_projection(
         .zip(eigenvectors.chunks_exact(num_individuals.max(1)))
         .zip(eigenvalues)
     {
-        let of_the_covariance = genetic_variance * eigenvalue + residual_variance;
+        let of_the_covariance = variances.genetic * eigenvalue + variances.residual;
         for (value, of_the_eigenvector) in into.iter_mut().zip(eigenvector) {
             *value = of_the_eigenvector / of_the_covariance;
         }
@@ -3215,13 +3224,26 @@ fn the_trait_through_the_projection(
     for (entry, explained) in projection.iter_mut().zip(&of_the_design) {
         *entry -= *explained;
     }
-    let mut through = vec![0.0_f64; num_individuals];
+    Ok(projection)
+}
+
+/// The trait through a projection matrix, `p y`, one value per tested
+/// individual.
+///
+/// It is what every variant's numerator is taken against, `num` being the
+/// variant times this.
+///
+/// # Errors
+///
+/// [`Error::GwasLinalg`] when the product could not be done.
+fn through_the_projection(projection: &[f64], phenotype: &[f64]) -> Result<Vec<f64>> {
+    let mut through = vec![0.0_f64; phenotype.len()];
     popnei_linalg::product(
         TheFirstOperand::ByTheRowsOfTheResult {
-            values: &projection,
-            rows: num_individuals,
+            values: projection,
+            rows: phenotype.len(),
         },
-        num_individuals,
+        phenotype.len(),
         TheSecondOperand::ByTheValuesSummedOver {
             values: phenotype,
             cols: 1,
@@ -3232,16 +3254,7 @@ fn the_trait_through_the_projection(
         operation: "product of the projection matrix with the trait",
         source,
     })?;
-    let ypy = phenotype
-        .iter()
-        .zip(&through)
-        .map(|(measured, projected)| measured * projected)
-        .sum::<f64>();
-    Ok(TheProjection {
-        matrix: projection,
-        of_the_trait: through,
-        ypy,
-    })
+    Ok(through)
 }
 
 /// The null model a study has fitted, which every variant is then tested
