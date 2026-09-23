@@ -714,10 +714,23 @@ the end, and the result does not depend on where the block boundaries
 fell nor on how many threads ran. The memory is 48 bytes for each pair
 and each group: 72 KB for 3 populations and 500 groups, and 29 MB for 50
 populations, which is 1225 pairs, and the same 500. It does not grow with
-the variants or with the individuals. The count is a u64, which is what
+the individuals. The count is a u64, which is what
 popnei counts a whole dataset with, and it takes no room of its own: the
 five f64 align the six numbers to 8 bytes, so a u32 count would leave 4
 of them unused and the six would be 48 bytes either way.
+
+It does grow with the variants under one of the three ways of cutting the
+groups. `jackknife_group="variant"` makes a group of each variant, so the
+sums are 48 bytes for each pair and each variant: the biallelic panel of
+`tests/reference/dists/panel.vcf.gz`, 1200 variants cut into 20
+populations, which are 190 pairs, holds 10.9 MB of them, and a million
+variants would hold 144 MB for 3 populations and 9.1 GB for 20. The
+`f2_groups` that crosses to Python and to TypeScript is one f64 for each
+pair and each group, 1.8 MB for that panel and 1.5 GB for the million
+variants of 20 populations. A machine that has not the memory is the
+error of the sums that "The Rust interface" below lists, a `ValueError`
+in Python, and not a wrong number. The docstring of `jackknife_group` in
+both packages says this, where a user choosing `"variant"` reads it.
 
 The cost of the pass grows with the square of the populations: per
 variant it is one pass over the genotypes for the counts, P of them for P
