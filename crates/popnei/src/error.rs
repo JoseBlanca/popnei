@@ -229,6 +229,47 @@ pub enum Error {
         threshold_that_is_set: Option<f64>,
     },
 
+    /// The `max_dist` of the filter by linkage disequilibrium is below 1: a
+    /// window that holds nothing but the variants at the very position of
+    /// the variant it is the window of. It is the number a user writes, in
+    /// `filter_by_ld(0.1, 0)`, so it is refused at the call that adds the
+    /// filter, and in Python it is a `ValueError` that names no file. A
+    /// negative number never reaches the core: the binding crate takes
+    /// `max_dist` as a signed integer and refuses it itself, so that a
+    /// user gets that `ValueError` and not the `OverflowError` that pyo3
+    /// raises when a negative number is asked of a `u64`.
+    #[error(
+        "the max_dist of the filter by linkage disequilibrium is {max_dist}, and a window of 0 base pairs reaches no variant but the ones at the very position of the variant it is the window of: a max_dist is 1 base pair or more"
+    )]
+    LdFilterMaxDistTooSmall {
+        /// The distance that was given for it.
+        max_dist: u64,
+    },
+
+    /// A variant given to the filter by linkage disequilibrium that does
+    /// not come after the one before it: its position falls below the
+    /// position of the variant before it on its chromosome, or it is on a
+    /// chromosome that had already ended. The window of a variant is the
+    /// variants kept behind it on its chromosome, so this filter is the one
+    /// reader of popnei that needs the variants of each chromosome to come
+    /// together and in the order of their positions, where the rest of
+    /// popnei reads a source in any order. The alternative is to subtract
+    /// two positions that run backwards, which on a `u64` wraps to a
+    /// distance of 18 million million million and puts the pair outside
+    /// every window without a word. In Python it is a `ValueError` with the
+    /// file the variants were read from: it is what that source holds.
+    #[error(
+        "the variant {variant} of the ones the filter by linkage disequilibrium has read does not come after the one before it, and that filter compares a variant with the ones it kept behind it on its chromosome: {problem}"
+    )]
+    LdFilterVariantOutOfOrder {
+        /// Which variant it is, counted from 1 over the variants the filter
+        /// has been given since it was built, which are the ones the
+        /// filters before it kept.
+        variant: u64,
+        /// How it does not come after the variant before it.
+        problem: crate::filters::TheOrderOfTheVariants,
+    },
+
     /// A value of the table of a principal component analysis is not
     /// finite, an infinity or a NaN, with the place where it is. There is
     /// nothing to give for such a table: the mean of that trait, and with
@@ -695,6 +736,46 @@ pub enum Error {
         operation: &'static str,
         /// What the linear algebra said.
         source: popnei_linalg::Error,
+    },
+
+    /// The pass gave more variants than the matrix of every pair was
+    /// allowed to take. The matrix holds one r² for each pair, so it grows
+    /// with the square of the variants, 200 MB of `f64` at the 5000 of
+    /// [`crate::ld::MAX_NUM_VARS_OF_THE_MATRIX`] and 80 GB at 100000, and
+    /// `calc_r2_matrix` stops the pass as soon as it passes the number it
+    /// was given rather than reading a dataset it cannot hold the matrix
+    /// of. A user who has the memory raises `max_num_vars`, and one who
+    /// has not puts a filter on the variants. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "the pass gave {num_vars} variants and `max_num_vars` is {max_num_vars}: the matrix of {num_vars} variants holds one r² for each pair of them, {bytes} bytes of 8 each, and the pass was stopped as soon as it passed that number, so its source may hold more variants; raise `max_num_vars` or filter the variants"
+    )]
+    LdTooManyVars {
+        /// How many variants the pass had given when it was stopped, which
+        /// is the first count above `max_num_vars`.
+        num_vars: usize,
+        /// How many variants the calculation was allowed to take.
+        max_num_vars: usize,
+        /// How many bytes the matrix of those variants holds, 8 for each
+        /// pair.
+        bytes: u64,
+    },
+
+    /// The `max_num_vars` of the matrix of every pair is more variants
+    /// than this machine counts the pairs of: the matrix holds one value
+    /// for each pair, which is the variants squared, and that number is
+    /// counted in a `usize`, 64 bits natively and 32 in WebAssembly, where
+    /// 65536 variants already pass it. The number is looked at before the
+    /// pass, so that a cap no matrix could be held under is refused at the
+    /// call and not after a dataset has been read. In Python it is a
+    /// `ValueError` that names no file.
+    #[error(
+        "a `max_num_vars` of {max_num_vars} is more variants than the matrix of every pair is counted in: it holds one r² for each pair, which is the variants squared, and this machine counts to {largest}",
+        largest = usize::MAX
+    )]
+    LdMaxNumVarsTooLarge {
+        /// How many variants the calculation was allowed to take.
+        max_num_vars: usize,
     },
 
     /// A name that was given for a column of a block is not one of the

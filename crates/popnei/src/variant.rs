@@ -152,7 +152,12 @@ impl fmt::Debug for Needs {
 /// numbers are given in the order in which the names first appear among
 /// the variants the reader gives, so two passes over the same source give
 /// the same numbers.
-#[derive(Debug)]
+///
+/// A result that holds the chromosome of each of its variants as a number
+/// keeps a table of its own, cloned from the reader's when the pass ends:
+/// the numbers of the clone are those of the reader, and the result is
+/// read after the reader is gone. `R2Matrix` of [`crate::ld`] is one.
+#[derive(Debug, Clone)]
 pub struct ChromTable {
     names: Vec<String>,
     numbers: HashMap<String, u32>,

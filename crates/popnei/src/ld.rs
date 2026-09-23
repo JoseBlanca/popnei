@@ -27,9 +27,10 @@ use std::num::NonZeroUsize;
 use popnei_linalg::{TheSecondOperand, product};
 
 use crate::block::Block;
+use crate::block::BlockReader;
 use crate::error::{Error, Result};
 use crate::variant::{
-    AlleleCounts, MISSING_ALLELE, Needs, count_alleles, the_major_allele,
+    AlleleCounts, ChromTable, MISSING_ALLELE, Needs, count_alleles, the_major_allele,
     the_major_allele_frequency,
 };
 
@@ -71,6 +72,38 @@ pub const MAX_PLOIDY_OF_THE_DOSAGES: usize = 255;
 /// No dataset of this world reaches it: the objectives of popnei go to
 /// 10000 individuals, and the largest ploidy of an organism is a dozen.
 pub const MAX_ALLELES_OF_A_VARIANT: usize = 94_906_265;
+
+/// How many variants [`calc_r2_matrix`] takes when the user names no
+/// number, which is the default of `calc_rogers_huff_r2_matrix` in Python
+/// and of `calcRogersHuffR2Matrix` in TypeScript.
+///
+/// The matrix holds one r² for each pair of the variants of the pass, so
+/// it grows with the square of them: 200 MB of `f64` at this number and 80
+/// GB at 100000. It is the one result of popnei that grows with the square
+/// of its input, against goal 5 of `docs/objectives.md`, under which a
+/// dataset never has to fit in memory, so a pass of more variants is
+/// refused instead of asking the machine for the matrix of them. "Its
+/// Python function" of `docs/specs/ld.md` gives the number; pyNei has
+/// none and builds the matrix of whatever it is given.
+pub const MAX_NUM_VARS_OF_THE_MATRIX: usize = 5000;
+
+/// How many variants of the matrix one tile of the products holds.
+///
+/// The matrix is taken tile pair by tile pair and not over the whole set
+/// at once, because each of the six sums of "How it runs" of
+/// `docs/specs/ld.md` is a matrix over the pairs of the two tiles: six of
+/// the whole set would be six times the result, 1.2 GB at 5000 variants,
+/// where six of a pair of tiles of this size are 3 MB.
+///
+/// It is the smaller of the two sizes the "Speed" table of that spec was
+/// measured at, on the owner's Apple M5 Pro with the products on
+/// Accelerate: one pair of tiles of 256 variants of 1000 individuals took
+/// 1.9 ms against 5.7 ms for one of 512, and a pass over 100000 variants
+/// at a window of that many took 1.5 s against 2.2 s. Neither number is of
+/// `calc_r2_matrix` itself, which work package 4 of `docs/plans/ld.md`
+/// measures. The matrix does not change with it: the tiles cut the
+/// variants and every sum of a pair runs over the individuals.
+const THE_VARS_OF_A_TILE: usize = 256;
 
 /// How the individuals of two sets of dosages whose r² was asked for
 /// differ.
@@ -757,6 +790,567 @@ fn the_r2_of_a_pair(
     above_the_line * above_the_line / (spread_of_a * spread_of_b)
 }
 
+/// The r² of every pair of the variants a reader gives, with the
+/// chromosome and the position of each of them.
+///
+/// It asks the reader for the genotypes, the chromosome and the position,
+/// and reads it to its end. The reader is borrowed and not taken, so that
+/// whoever built the chain of filters of the pass reads their counts from
+/// it when this returns, as `docs/specs/filters.md` says; how many
+/// variants the calculation took is [`R2Matrix::num_vars`].
+///
+/// `max_num_vars` is how many variants the calculation takes before it
+/// refuses. The matrix holds one r² for each pair of them, so it grows
+/// with the square of the variants, and a pass of more than that number is
+/// an error and not a matrix this machine is asked for the memory of.
+/// [`MAX_NUM_VARS_OF_THE_MATRIX`] is the number a Python or a TypeScript
+/// user gets when they name none.
+///
+/// The r² of a pair is the one [`r2_between`] gives, and the matrix is the
+/// same, to the bit, whatever the size of the blocks the reader gives and
+/// however many threads the products run on: the six sums of a pair are
+/// whole numbers that an `f64` holds exactly and they run over the
+/// individuals, which no block and no tile cuts.
+///
+/// # Errors
+///
+/// [`Error::LdMaxNumVarsTooLarge`] when the matrix of `max_num_vars`
+/// variants holds more values than this machine counts, which is looked at
+/// before the pass; [`Error::LdTooManyVars`] when the pass gives more
+/// variants than that, with both numbers and the memory the matrix would
+/// have needed; [`Error::ReaderGaveNoVariants`] when the reader has no
+/// variant; [`Error::FieldsNotInTheBlock`] when a block holds variants and
+/// no genotypes or no position; [`Error::LdNoMemory`] when this machine
+/// does not give the memory of the matrix, which is asked of it with
+/// `try_reserve_exact` and not taken; what the dosages of a block and the
+/// r² of two tiles refuse; and whatever the reader fails with, which is
+/// given on as it is.
+pub fn calc_r2_matrix<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    max_num_vars: usize,
+) -> Result<R2Matrix> {
+    the_r2_matrix_in_tiles_of(reader, max_num_vars, THE_VARS_OF_A_TILE)
+}
+
+/// The r² of every pair of the variants of a set, with the chromosome and
+/// the position of each of them.
+///
+/// It is what [`calc_r2_matrix`] gives for a pass over a reader.
+#[derive(Debug)]
+pub struct R2Matrix {
+    /// How many variants the matrix is of.
+    num_vars: usize,
+    /// The r² of every pair, `num_vars` rows of `num_vars` values.
+    r2: Vec<f64>,
+    /// The number of the chromosome of each variant, in `chrom_table`.
+    chroms: Vec<u32>,
+    /// The names of the chromosomes, cloned from the reader of the pass,
+    /// so that the numbers above are read after that reader is gone.
+    chrom_table: ChromTable,
+    /// The position of each variant, 1 based as in a VCF.
+    poss: Vec<u64>,
+}
+
+impl R2Matrix {
+    /// How many variants the matrix is of, which is how many the pass
+    /// gave.
+    #[must_use]
+    pub fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
+    /// The r² of every pair, `num_vars` x `num_vars`, row after row.
+    ///
+    /// The value of the row `i` and the column `j` is the r² of the
+    /// variants `i` and `j` of the pass, in the order the reader gave
+    /// them, and a pair that has no r² is NaN, which "What it gives" of
+    /// `docs/specs/ld.md` defines. The two cells of a pair hold the same
+    /// value, and the diagonal is 1 for a variant that has two dosages at
+    /// least among its called genotypes and NaN for one that has not.
+    #[must_use]
+    pub fn r2(&self) -> &[f64] {
+        &self.r2
+    }
+
+    /// The number of the chromosome of each variant, one for each row of
+    /// the matrix, whose name is [`R2Matrix::chrom_table`].
+    #[must_use]
+    pub fn chroms(&self) -> &[u32] {
+        &self.chroms
+    }
+
+    /// The names of the chromosomes of the pass, each with the number the
+    /// rows of the matrix hold.
+    #[must_use]
+    pub fn chrom_table(&self) -> &ChromTable {
+        &self.chrom_table
+    }
+
+    /// The position of each variant, 1 based as in a VCF, one for each row
+    /// of the matrix. The distance of a pair is the difference of two of
+    /// them, and a pair whose variants are on two chromosomes has none.
+    #[must_use]
+    pub fn poss(&self) -> &[u64] {
+        &self.poss
+    }
+}
+
+/// The matrix of every pair of the variants of `reader`, taken in tiles of
+/// `vars_per_tile` variants.
+///
+/// [`calc_r2_matrix`] is this with the tile of the module, and the tests
+/// are what give another: the matrix is the same, to the bit, whatever the
+/// tile, because a sum of a pair runs over the individuals and the tiles
+/// cut the variants.
+///
+/// # Errors
+///
+/// Those of [`calc_r2_matrix`].
+fn the_r2_matrix_in_tiles_of<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    max_num_vars: usize,
+    vars_per_tile: usize,
+) -> Result<R2Matrix> {
+    // The matrix holds the square of the variants of the pass and the pass
+    // takes `max_num_vars` of them at most, so this is what says that every
+    // count of values below is a number this machine counts: it takes
+    // 65535 variants in WebAssembly, where a `usize` is 32 bits, and
+    // 3037000499 natively.
+    if max_num_vars.checked_mul(max_num_vars).is_none() {
+        return Err(Error::LdMaxNumVarsTooLarge { max_num_vars });
+    }
+    // A tile of no variant would take no variant of a block and the pass
+    // would stand still.
+    let vars_per_tile = vars_per_tile.max(1);
+    let pass = the_dosages_of_the_pass(reader, max_num_vars, vars_per_tile)?;
+    if pass.num_vars == 0 {
+        return Err(Error::ReaderGaveNoVariants);
+    }
+    let r2 = the_r2_of_the_tiles(&pass.tiles, pass.num_vars)?;
+    Ok(R2Matrix {
+        num_vars: pass.num_vars,
+        r2,
+        chroms: pass.chroms,
+        chrom_table: reader.chroms().clone(),
+        poss: pass.poss,
+    })
+}
+
+/// The dosages of the variants of a pass, in tiles, with the chromosome
+/// and the position of each variant.
+struct ThePassOfTheMatrix {
+    /// How many variants the pass gave, which is the variants of its tiles
+    /// together.
+    num_vars: usize,
+    /// The dosages of those variants: the tiles of the products, in the
+    /// order of the variants.
+    tiles: Vec<LdDosages>,
+    /// The number of the chromosome of each variant, in the table of the
+    /// reader.
+    chroms: Vec<u32>,
+    /// The position of each variant, 1 based as in a VCF.
+    poss: Vec<u64>,
+}
+
+/// Reads `reader` to its end and gives the dosages of its variants in
+/// tiles of `vars_per_tile` variants, with the chromosome and the position
+/// of each.
+///
+/// # Errors
+///
+/// [`Error::LdTooManyVars`] as soon as the variants pass `max_num_vars`,
+/// so that a source of a million variants is not read to its end to be
+/// refused; [`Error::FieldsNotInTheBlock`] when a block holds variants and
+/// no genotypes or no position; [`Error::BlocksDoNotFitTogether`] when a
+/// block holds other individuals or another ploidy than the reader says
+/// its source has; [`Error::LdNoMemory`] when this machine does not give
+/// the memory of the chromosomes and the positions; what
+/// [`Block::check`] and the dosages of a tile refuse; and whatever the
+/// reader fails with.
+fn the_dosages_of_the_pass<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    max_num_vars: usize,
+    vars_per_tile: usize,
+) -> Result<ThePassOfTheMatrix> {
+    // The genotypes, the chromosome and the position are what this reads,
+    // so a reader over a file leaves the other columns of a variant
+    // unparsed.
+    reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+    let mut tiles =
+        TheTilesOfThePass::of(vars_per_tile, reader.individuals().len(), reader.ploidy());
+    let mut num_vars = 0_usize;
+    let mut chroms: Vec<u32> = Vec::new();
+    let mut poss: Vec<u64> = Vec::new();
+    while let Some(block) = reader.next_block()? {
+        block.check()?;
+        let missing = (Needs::GTS | Needs::CHROM_POS).difference(block.fields());
+        if !missing.is_empty() {
+            return Err(Error::FieldsNotInTheBlock { fields: missing });
+        }
+        if block.num_individuals != tiles.num_individuals || block.ploidy != tiles.ploidy {
+            return Err(Error::BlocksDoNotFitTogether {
+                num_individuals: tiles.num_individuals,
+                ploidy: tiles.ploidy,
+                found_num_individuals: block.num_individuals,
+                found_ploidy: block.ploidy,
+            });
+        }
+        // The count is refused on the next line as soon as it passes the
+        // cap, so what saturates here is a pass that no machine gave: the
+        // message then names the largest number a `usize` holds.
+        let with_the_block = num_vars.saturating_add(block.num_vars);
+        if with_the_block > max_num_vars {
+            return Err(the_variants_pass_the_cap(with_the_block, max_num_vars));
+        }
+        num_vars = with_the_block;
+        // The block holds the two columns, which the fields above say.
+        let (Some(of_its_variants), Some(at_which_they_are)) = (&block.chrom, &block.pos) else {
+            return Err(Error::FieldsNotInTheBlock {
+                fields: Needs::CHROM_POS,
+            });
+        };
+        the_values_of_the_column(
+            &mut chroms,
+            of_its_variants,
+            "the chromosome of each variant",
+        )?;
+        the_values_of_the_column(&mut poss, at_which_they_are, "the position of each variant")?;
+        tiles.take_the_block(&block)?;
+        // The block is given back before the reader is asked for the next
+        // one, so the memory of two blocks is never held at once.
+        drop(block);
+    }
+    Ok(ThePassOfTheMatrix {
+        num_vars,
+        tiles: tiles.done()?,
+        chroms,
+        poss,
+    })
+}
+
+/// The tiles of a pass, which the blocks of the reader are poured into.
+///
+/// A tile is the dosages of `vars_per_tile` variants of the pass, the last
+/// one of what is left, and the tiles are cut at multiples of that number
+/// counted from the first variant of the pass and not where the blocks
+/// end. So the products are taken over the same variants together whatever
+/// the reader gives at a time.
+///
+/// Each tile is built from the genotypes of its own variants, gathered
+/// from the blocks into one buffer that the whole pass shares, and holds
+/// the three matrices of those variants. A pair of tiles is then a pair of
+/// operands of the products as it stands, and nothing of a tile is copied
+/// to take one.
+struct TheTilesOfThePass {
+    /// How many variants a tile holds, 1 at least.
+    vars_per_tile: usize,
+    /// How many individuals the reader says its source has, which is what
+    /// the dosages of every tile are built over.
+    num_individuals: usize,
+    /// How many alleles the genotype of one individual holds.
+    ploidy: usize,
+    /// The genotypes of the tile being filled, variant after variant. It
+    /// is taken back from each tile with the memory it has, so a pass over
+    /// a million variants allocates it once.
+    gts: Vec<i8>,
+    /// How many variants of the tile being filled are in `gts`.
+    vars_of_the_tile: usize,
+    /// The tiles that are full, in the order of the variants.
+    tiles: Vec<LdDosages>,
+}
+
+impl TheTilesOfThePass {
+    /// The tiles of a pass over a source of `num_individuals` individuals
+    /// of the ploidy `ploidy`, each of `vars_per_tile` variants.
+    fn of(vars_per_tile: usize, num_individuals: usize, ploidy: usize) -> TheTilesOfThePass {
+        TheTilesOfThePass {
+            vars_per_tile,
+            num_individuals,
+            ploidy,
+            gts: Vec::new(),
+            vars_of_the_tile: 0,
+            tiles: Vec::new(),
+        }
+    }
+
+    /// Puts the variants of `block` into the tiles, building each tile as
+    /// soon as its variants are all there.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the genotypes of a tile, [`Error::BlockArrayOfAnotherSize`] when
+    /// the genotypes of the block are not its variants times the alleles
+    /// of one variant, and what [`LdDosages::of_block`] refuses.
+    fn take_the_block(&mut self, block: &Block) -> Result<()> {
+        let alleles_per_var = block.alleles_per_var()?;
+        // How many variants of the block are in a tile already.
+        let mut given = 0_usize;
+        while given < block.num_vars {
+            // The tile has room for a variant and the block has one left,
+            // so both of these are 1 at least and the loop moves on.
+            let room = self.vars_per_tile.saturating_sub(self.vars_of_the_tile);
+            let taken = room.min(block.num_vars.saturating_sub(given));
+            // `Block::check` has passed, so the genotypes of the block are
+            // its variants times the alleles of one variant, a number this
+            // machine counted: neither of these saturates.
+            let from = given.saturating_mul(alleles_per_var);
+            let to = from.saturating_add(taken.saturating_mul(alleles_per_var));
+            let Some(genotypes) = block.gts.get(from..to) else {
+                return Err(Error::BlockArrayOfAnotherSize {
+                    array: "gts",
+                    found: block.gts.len(),
+                    expected: to,
+                });
+            };
+            self.gts
+                .try_reserve(genotypes.len())
+                .map_err(|_| Error::LdNoMemory {
+                    what: "the genotypes of a tile",
+                    values: genotypes.len(),
+                })?;
+            self.gts.extend_from_slice(genotypes);
+            self.vars_of_the_tile = self.vars_of_the_tile.saturating_add(taken);
+            given = given.saturating_add(taken);
+            if self.vars_of_the_tile == self.vars_per_tile {
+                self.the_tile_is_full()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The tiles of the pass, with the last one, which holds the variants
+    /// left over from the tile before it.
+    ///
+    /// # Errors
+    ///
+    /// What [`LdDosages::of_block`] refuses.
+    fn done(mut self) -> Result<Vec<LdDosages>> {
+        if self.vars_of_the_tile > 0 {
+            self.the_tile_is_full()?;
+        }
+        Ok(self.tiles)
+    }
+
+    /// Builds the dosages of the variants in the buffer and keeps them as
+    /// the next tile, with the buffer left empty for the tile after it.
+    ///
+    /// # Errors
+    ///
+    /// What [`LdDosages::of_block`] refuses, and [`Error::LdNoMemory`]
+    /// when this machine does not give the memory of the tiles.
+    fn the_tile_is_full(&mut self) -> Result<()> {
+        let mut block = Block {
+            num_vars: self.vars_of_the_tile,
+            num_individuals: self.num_individuals,
+            ploidy: self.ploidy,
+            gts: std::mem::take(&mut self.gts),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let tile = LdDosages::of_block(&block, &[])?;
+        // The buffer is taken back with the memory it has and the tile
+        // after this one is gathered into it.
+        self.gts = std::mem::take(&mut block.gts);
+        self.gts.clear();
+        self.vars_of_the_tile = 0;
+        self.tiles.try_reserve(1).map_err(|_| Error::LdNoMemory {
+            what: "the tiles of the products",
+            values: self.tiles.len(),
+        })?;
+        self.tiles.push(tile);
+        Ok(())
+    }
+}
+
+/// Adds the values of a column of a block to the ones the blocks before it
+/// gave.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`], which `what` names the column of, when this
+/// machine does not give the memory of the values.
+fn the_values_of_the_column<T: Copy>(
+    of_the_pass: &mut Vec<T>,
+    of_the_block: &[T],
+    what: &'static str,
+) -> Result<()> {
+    of_the_pass
+        .try_reserve(of_the_block.len())
+        .map_err(|_| Error::LdNoMemory {
+            what,
+            values: of_the_block.len(),
+        })?;
+    of_the_pass.extend_from_slice(of_the_block);
+    Ok(())
+}
+
+/// The error of a pass of `num_vars` variants where `max_num_vars` were
+/// allowed, with the memory the matrix of those variants would have
+/// needed.
+fn the_variants_pass_the_cap(num_vars: usize, max_num_vars: usize) -> Error {
+    // The bytes of a matrix that was never asked for: they are counted in
+    // a `u64` and not in a `usize`, so that the number in the message is
+    // the right one in WebAssembly too, where a `usize` is 32 bits and the
+    // matrix of 23171 variants is already more bytes than one counts.
+    let of_a_variant = u64::try_from(num_vars).unwrap_or(u64::MAX);
+    let bytes = of_a_variant.saturating_mul(of_a_variant).saturating_mul(8);
+    Error::LdTooManyVars {
+        num_vars,
+        max_num_vars,
+        bytes,
+    }
+}
+
+/// The r² of every pair of the variants of the tiles, `num_vars` rows of
+/// `num_vars` values, row after row.
+///
+/// The pairs are taken tile pair by tile pair, and only the pairs of tiles
+/// from the diagonal up: r² is the same whichever variant of a pair comes
+/// first, so the products of a pair of tiles are taken once and their
+/// values are written into the two halves of the matrix. A tile against
+/// itself is given to [`r2_between`] as one reference twice, which is what
+/// makes it take the four products of a set against itself and not six.
+///
+/// # Errors
+///
+/// [`Error::LdNoMemory`] when this machine does not give the memory of the
+/// matrix or of the r² of one pair of tiles, and what [`r2_between`]
+/// refuses.
+fn the_r2_of_the_tiles(tiles: &[LdDosages], num_vars: usize) -> Result<Vec<f64>> {
+    // The caller has refused a `max_num_vars` whose square is not a number
+    // this machine counts and the pass gave at most that many variants, so
+    // the square below is there; what the error says is the same thing of
+    // the variants of the pass.
+    let values = num_vars
+        .checked_mul(num_vars)
+        .ok_or(Error::LdMaxNumVarsTooLarge {
+            max_num_vars: num_vars,
+        })?;
+    let mut matrix = a_vector_of(
+        f64::NAN,
+        values,
+        &the_memory_for("the matrix of every pair", values),
+    )?;
+    // The r² of one pair of tiles, which every pair of them is written
+    // into: the largest tile against itself, 512 KB at the 256 variants of
+    // `THE_VARS_OF_A_TILE`.
+    let of_the_largest = tiles.iter().map(LdDosages::num_vars).max().unwrap_or(0);
+    let values = of_the_largest.saturating_mul(of_the_largest);
+    let mut of_the_pair = a_vector_of(
+        0.0,
+        values,
+        &the_memory_for("the r² of a pair of tiles", values),
+    )?;
+    let mut first_row = 0_usize;
+    for (of_a, tile_a) in tiles.iter().enumerate() {
+        let mut first_col = first_row;
+        for tile_b in tiles.iter().skip(of_a) {
+            let (rows, cols) = (tile_a.num_vars(), tile_b.num_vars());
+            let values = rows.saturating_mul(cols);
+            let Some(of_the_pair) = of_the_pair.get_mut(..values) else {
+                return Err(Error::LdR2OfAnotherSize {
+                    num_values: values,
+                    num_vars_of_a: rows,
+                    num_vars_of_b: cols,
+                });
+            };
+            // On the diagonal `tile_a` and `tile_b` are the same tile, and
+            // the two arguments are then one reference given twice, which
+            // is what the four products of a set against itself are taken
+            // on.
+            r2_between(tile_a, tile_b, of_the_pair)?;
+            write_the_pair_of_tiles(
+                of_the_pair,
+                (first_row, first_col),
+                (rows, cols),
+                &mut matrix,
+                num_vars,
+            )?;
+            first_col = first_col.saturating_add(cols);
+        }
+        first_row = first_row.saturating_add(tile_a.num_vars());
+    }
+    Ok(matrix)
+}
+
+/// Writes the r² of a pair of tiles into the matrix of the pass, at the
+/// rows of the first tile and the columns of the second and at the cells
+/// the other way round.
+///
+/// `of_the_pair` holds `rows` rows, one for each variant of the first
+/// tile, and `cols` values in each, the r² of that variant against the
+/// variants of the second tile; the matrix holds `num_vars` rows of
+/// `num_vars` values, and the two tiles begin at the variants
+/// `first_row` and `first_col` of the pass. A pair of tiles on the
+/// diagonal writes the square of its own variants and nothing more: its
+/// two halves are already in `of_the_pair`.
+///
+/// # Errors
+///
+/// [`Error::LdRowsNotInTheDosages`] when the cells of the pair are not
+/// cells of the matrix, which is a defect of the tiling and not anything a
+/// caller of the crate wrote.
+fn write_the_pair_of_tiles(
+    of_the_pair: &[f64],
+    (first_row, first_col): (usize, usize),
+    (rows, cols): (usize, usize),
+    matrix: &mut [f64],
+    num_vars: usize,
+) -> Result<()> {
+    let of_other_cells = |first: usize, asked_for: usize| Error::LdRowsNotInTheDosages {
+        first,
+        asked_for,
+        num_vars,
+    };
+    if cols == 0 {
+        return Ok(());
+    }
+    // Every row of the tile is a run of the matrix: the values of one
+    // variant of the first tile against the variants of the second lie
+    // side by side in the row of that variant.
+    for (row, values) in of_the_pair.chunks_exact(cols).enumerate() {
+        // The tile is inside the matrix, whose values are the square of
+        // the variants of the pass, a number this machine counted: none of
+        // these saturates.
+        let from = first_row
+            .saturating_add(row)
+            .saturating_mul(num_vars)
+            .saturating_add(first_col);
+        let Some(into) = matrix.get_mut(from..from.saturating_add(cols)) else {
+            return Err(of_other_cells(first_col, cols));
+        };
+        into.copy_from_slice(values);
+    }
+    if first_row == first_col {
+        // The tile is on the diagonal, so it is square and holds the two
+        // halves of its own variants, which the rows above wrote.
+        return Ok(());
+    }
+    // And the same values the other way round: the cells of a variant of
+    // the second tile lie side by side in the row of that variant, where
+    // they are the column of `of_the_pair` of that variant.
+    for column in 0..cols {
+        let from = first_col
+            .saturating_add(column)
+            .saturating_mul(num_vars)
+            .saturating_add(first_row);
+        let Some(cells) = matrix.get_mut(from..from.saturating_add(rows)) else {
+            return Err(of_other_cells(first_row, rows));
+        };
+        for (cell, values) in cells.iter_mut().zip(of_the_pair.chunks_exact(cols)) {
+            let Some(value) = values.get(column) else {
+                return Err(of_other_cells(first_row, rows));
+            };
+            *cell = *value;
+        }
+    }
+    Ok(())
+}
+
 /// `values` copies of `value`, or the error that `not_given` builds when
 /// this machine did not give the memory for them.
 ///
@@ -920,16 +1514,18 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_PLOIDY_OF_THE_DOSAGES, MAX_VALUES_OF_THE_DOSAGES,
-        TheIndividualsThatDiffer, TheSumsOfThePairs, TheSumsOfTheSecondSet, a_vector_of,
-        r2_between, the_genotypes_of, the_memory_for, the_values_of,
+        LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_NUM_VARS_OF_THE_MATRIX, MAX_PLOIDY_OF_THE_DOSAGES,
+        MAX_VALUES_OF_THE_DOSAGES, R2Matrix, THE_VARS_OF_A_TILE, TheIndividualsThatDiffer,
+        TheSumsOfThePairs, TheSumsOfTheSecondSet, a_vector_of, calc_r2_matrix, r2_between,
+        the_genotypes_of, the_memory_for, the_r2_matrix_in_tiles_of, the_values_of,
     };
     use popnei_linalg::Error as LinalgError;
 
     use crate::block::{Block, BlockReader};
     use crate::error::Error;
+    use crate::filters::FilteringStats;
     use crate::io::vcf::{VcfOptions, VcfReader};
-    use crate::variant::{MISSING_ALLELE, Needs};
+    use crate::variant::{ChromTable, MISSING_ALLELE, Needs};
 
     /// The allele that was not called, which shortens the tables of
     /// genotypes below.
@@ -2322,6 +2918,510 @@ mod tests {
         );
         for (var, expected) in of_pynei.iter().enumerate() {
             assert_eq!(dosages_of(&dosages, var), *expected, "the variant {var}");
+        }
+    }
+
+    /// The five pairs of the table of "How it is verified" of
+    /// `docs/specs/ld.md`, which plink2 v2.0.0-a.7.7 gave for
+    /// `tests/reference/ld/ld.vcf.gz` on 22 September 2026: the
+    /// chromosome and the position of each of the two variants, their r²
+    /// and the individuals both of them were called in.
+    ///
+    /// The last pair is on two chromosomes, which `calc_r2_matrix` gives
+    /// like any other.
+    const THE_PAIRS_OF_THE_TABLE: [(&str, u64, &str, u64, f64, f64); 5] = [
+        ("chr1", 1000, "chr1", 2000, 0.353_466_669_239_891, 94.0),
+        ("chr1", 1000, "chr1", 3000, 0.398_499_910_809_105_63, 94.0),
+        ("chr1", 1000, "chr1", 11000, 0.240_537_842_616_089_57, 93.0),
+        ("chr1", 1000, "chr1", 250_000, 0.025_675_192_781_022_8, 95.0),
+        ("chr1", 1000, "chr2", 1000, 0.008_140_034_754_693_937, 95.0),
+    ];
+
+    /// How many variants of `tests/reference/ld/ld.vcf.gz` have no
+    /// variance and how many have some, from "How it is verified" of
+    /// `docs/specs/ld.md`.
+    const THE_VARIANTS_OF_THE_LD_DATASET: (usize, usize) = (432, 68);
+
+    /// A reader over `tests/reference/ld/ld.vcf.gz`, read as diploid and
+    /// with the variants that failed their FILTER among them, which is
+    /// what plink2 was given, in blocks of `num_vars_per_block` variants.
+    fn the_ld_dataset(
+        num_vars_per_block: Option<usize>,
+    ) -> VcfReader<std::io::BufReader<std::fs::File>> {
+        let path = the_reference_path("ld.vcf.gz");
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block,
+        };
+        VcfReader::from_path(&path, options)
+            .unwrap_or_else(|error| panic!("{path}: {error}", path = path.display()))
+    }
+
+    /// The variant of the matrix that is at `pos` of the chromosome
+    /// `chrom`.
+    fn the_variant_at(matrix: &R2Matrix, chrom: &str, pos: u64) -> usize {
+        let names = u32::try_from(matrix.chrom_table().len()).expect("the chromosomes");
+        let number = (0..names)
+            .find(|number| matrix.chrom_table().name(*number) == Some(chrom))
+            .unwrap_or_else(|| panic!("the matrix has no chromosome {chrom}"));
+        matrix
+            .chroms()
+            .iter()
+            .zip(matrix.poss())
+            .position(|(of_the_var, at)| *of_the_var == number && *at == pos)
+            .unwrap_or_else(|| panic!("the matrix has no variant at {chrom}:{pos}"))
+    }
+
+    /// The r² of the pair of the variants `of_a` and `of_b` of the matrix.
+    fn the_r2_of_the_pair(matrix: &R2Matrix, of_a: usize, of_b: usize) -> f64 {
+        of_the_pair(matrix.r2(), matrix.num_vars(), of_a, of_b)
+    }
+
+    /// How many individuals both variants of the pair were called in,
+    /// which is the n of the table of the spec: the first of the six sums
+    /// of the pair, taken over two sets of one variant each that are not
+    /// one set against itself.
+    fn the_individuals_of_the_pair(dosages: &LdDosages, of_a: usize, of_b: usize) -> f64 {
+        let of_a = dosages.rows(of_a, 1).expect("the variant");
+        let of_b = dosages.rows(of_b, 1).expect("the variant");
+        let sums = TheSumsOfThePairs::of(&of_a, &of_b, 1).expect("the sums");
+        sums.num_individuals
+            .first()
+            .copied()
+            .expect("the individuals of the pair")
+    }
+
+    /// That two matrices of r² hold the same values, to the bit, with NaN
+    /// where both have none.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the two matrices are the same six whole numbers put through the same operations, so a value that is not the same value is not a rounding"
+    )]
+    fn assert_the_matrices_are_the_same(found: &R2Matrix, expected: &R2Matrix, what: &str) {
+        assert_eq!(
+            found.num_vars(),
+            expected.num_vars(),
+            "{what}: the variants are not as many"
+        );
+        assert_eq!(found.chroms(), expected.chroms(), "{what}: the chromosomes");
+        assert_eq!(found.poss(), expected.poss(), "{what}: the positions");
+        for (at, (found, expected)) in found.r2().iter().zip(expected.r2()).enumerate() {
+            assert!(
+                found == expected || (found.is_nan() && expected.is_nan()),
+                "{what}: the pair {at} is {found} and not {expected}"
+            );
+        }
+    }
+
+    /// The matrix of every pair of `tests/reference/ld/ld.vcf.gz` read
+    /// with the VCF reader: the five pairs of the table of "How it is
+    /// verified" of `docs/specs/ld.md` with their n, every one of its
+    /// 250000 cells against the matrix plink2 v2.0.0-a.7.7 wrote for the
+    /// same file, and the 68 variants of one dosage, whose row, whose
+    /// column and whose diagonal cell are NaN.
+    ///
+    /// The rows of plink2's matrix are the variants of the file in the
+    /// order it holds them, which
+    /// `every_pair_of_the_ld_dataset_is_the_r2_plink2_gives` asserts
+    /// against their identifiers, and `calc_r2_matrix` gives the variants
+    /// in the order its reader gave them.
+    #[test]
+    fn the_matrix_of_the_ld_dataset_is_the_one_plink2_gives() {
+        let mut reader = the_ld_dataset(None);
+        let matrix =
+            calc_r2_matrix(&mut reader, MAX_NUM_VARS_OF_THE_MATRIX).expect("the matrix of r²");
+        assert_eq!(matrix.num_vars(), NUM_VARS_OF_A_REFERENCE);
+        assert_eq!(matrix.r2().len(), 250_000, "the cells of the matrix");
+        assert_eq!(matrix.chroms().len(), NUM_VARS_OF_A_REFERENCE);
+        assert_eq!(matrix.poss().len(), NUM_VARS_OF_A_REFERENCE);
+        assert_eq!(matrix.chrom_table().len(), 2, "the chromosomes of the file");
+        // The five pairs of the table, with the n of each: the r² is read
+        // off the matrix and the n off the six sums of the two variants.
+        let block = the_whole_of(
+            &the_reference_path("ld.vcf.gz"),
+            Needs::GTS,
+            NUM_VARS_OF_A_REFERENCE,
+        );
+        let dosages = LdDosages::of_block(&block, &[]).expect("the dosages");
+        for (chrom_of_a, of_a, chrom_of_b, of_b, r2, individuals) in THE_PAIRS_OF_THE_TABLE {
+            let named = format!("the pair of {chrom_of_a}:{of_a} and {chrom_of_b}:{of_b}");
+            let of_a = the_variant_at(&matrix, chrom_of_a, of_a);
+            let of_b = the_variant_at(&matrix, chrom_of_b, of_b);
+            assert_the_r2_is(the_r2_of_the_pair(&matrix, of_a, of_b), r2, &named);
+            assert_the_r2_is_the_same(
+                the_r2_of_the_pair(&matrix, of_a, of_b),
+                the_r2_of_the_pair(&matrix, of_b, of_a),
+                &named,
+            );
+            let found = the_individuals_of_the_pair(&dosages, of_a, of_b);
+            assert!(
+                (found - individuals).abs() < 0.5,
+                "{named}: n is {found} and not {individuals}"
+            );
+        }
+        // And every cell of the matrix against plink2's, the diagonal
+        // among them.
+        let (_, of_plink2) = the_matrix_of_plink2("ld");
+        assert_eq!(
+            matrix.r2().len(),
+            of_plink2.len(),
+            "the two matrices are not as large"
+        );
+        for (at, (found, expected)) in matrix.r2().iter().zip(&of_plink2).enumerate() {
+            match expected.is_nan() {
+                true => assert!(found.is_nan(), "the cell {at} is {found} and not NaN"),
+                false => assert_the_r2_is(*found, *expected, &format!("the cell {at}")),
+            }
+        }
+        // The variants of one dosage have NaN in their row, their column
+        // and their diagonal cell, and each of the others has an r² of 1
+        // against itself.
+        let rows = matrix.r2().as_chunks::<NUM_VARS_OF_A_REFERENCE>().0;
+        let mut with_variance = 0_usize;
+        let mut without_variance = 0_usize;
+        for (var, row) in rows.iter().enumerate() {
+            let diagonal = row.get(var).copied().expect("the diagonal cell");
+            if row.iter().all(|r2| r2.is_nan()) {
+                without_variance = without_variance.checked_add(1).expect("the variants");
+                assert!(
+                    rows.iter()
+                        .all(|row| row.get(var).is_some_and(|r2| r2.is_nan())),
+                    "the row of the variant {var} is all NaN and its column is not"
+                );
+                continue;
+            }
+            with_variance = with_variance.checked_add(1).expect("the variants");
+            assert_the_r2_is(diagonal, 1.0, &format!("the variant {var} against itself"));
+        }
+        assert_eq!(
+            (with_variance, without_variance),
+            THE_VARIANTS_OF_THE_LD_DATASET,
+            "the variants of the dataset with variance and without it"
+        );
+    }
+
+    /// The matrix of `tests/reference/ld/ld.vcf.gz` is the same, to the
+    /// bit, for blocks of 7, 64, 256 and 500 variants and for tiles of
+    /// those sizes, which is 16 ways of cutting the same 500 variants.
+    ///
+    /// The blocks are what a user chooses and the tiles are popnei's own.
+    /// Neither changes a sum: the six sums of a pair are whole numbers
+    /// that an `f64` holds exactly and each of them runs over the
+    /// individuals, which no block and no tile cuts.
+    #[test]
+    fn neither_the_blocks_nor_the_tiles_change_the_matrix() {
+        let sizes = [7, 64, 256, NUM_VARS_OF_A_REFERENCE];
+        let mut reader = the_ld_dataset(Some(NUM_VARS_OF_A_REFERENCE));
+        let of_one_block = the_r2_matrix_in_tiles_of(&mut reader, 5000, THE_VARS_OF_A_TILE)
+            .expect("the matrix of r²");
+        for num_vars_per_block in sizes {
+            for vars_per_tile in sizes {
+                let mut reader = the_ld_dataset(Some(num_vars_per_block));
+                let matrix = the_r2_matrix_in_tiles_of(&mut reader, 5000, vars_per_tile)
+                    .expect("the matrix of r²");
+                assert_the_matrices_are_the_same(
+                    &matrix,
+                    &of_one_block,
+                    &format!("blocks of {num_vars_per_block} and tiles of {vars_per_tile}"),
+                );
+            }
+        }
+    }
+
+    /// The products run on the threads of the backend of the linear
+    /// algebra, which is called from outside rayon, and the matrix is the
+    /// same to the bit on a pool of one thread and on one of four.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those
+    /// alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_matrix() {
+        let in_a_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                let mut reader = the_ld_dataset(Some(64));
+                calc_r2_matrix(&mut reader, MAX_NUM_VARS_OF_THE_MATRIX).expect("the matrix of r²")
+            })
+        };
+
+        let on_one = in_a_pool(1);
+        assert_eq!(on_one.num_vars(), NUM_VARS_OF_A_REFERENCE);
+        assert_the_matrices_are_the_same(&in_a_pool(4), &on_one, "four threads against one");
+    }
+
+    /// The worked example of "How it is verified" of `docs/specs/ld.md`,
+    /// given as two blocks of three and two variants and taken in tiles of
+    /// two, so that the variants of a tile come from two blocks and the
+    /// last tile holds one variant.
+    #[test]
+    fn the_matrix_of_the_worked_example_is_the_one_of_the_spec() {
+        let rows: Vec<&[i8]> = THE_WORKED_EXAMPLE
+            .iter()
+            .map(|row| row.as_slice())
+            .collect();
+        let mut first = block_of(&rows[..3], 6, 2);
+        let mut second = block_of(&rows[3..], 6, 2);
+        the_chrom_and_the_pos_of(&mut first, 0);
+        the_chrom_and_the_pos_of(&mut second, 3);
+        let mut reader = GivenBlocks::of(vec![first, second], 6, 2);
+
+        let matrix = the_r2_matrix_in_tiles_of(&mut reader, 5000, 2).expect("the matrix of r²");
+
+        assert_eq!(matrix.num_vars(), THE_VARS_OF_THE_EXAMPLE);
+        assert_eq!(matrix.chroms(), [0, 0, 0, 0, 0]);
+        assert_eq!(matrix.poss(), [1000, 2000, 3000, 4000, 5000]);
+        assert_eq!(matrix.chrom_table().name(0), Some("chr1"));
+        for (of_a, of_b, _, expected) in THE_PAIRS_OF_THE_EXAMPLE {
+            let named = format!("the pair of the variants {of_a} and {of_b}");
+            assert_the_r2_is(the_r2_of_the_pair(&matrix, of_a, of_b), expected, &named);
+            assert_the_r2_is_the_same(
+                the_r2_of_the_pair(&matrix, of_a, of_b),
+                the_r2_of_the_pair(&matrix, of_b, of_a),
+                &named,
+            );
+        }
+        // v4 has one dosage in every individual, so its row, its column
+        // and its diagonal cell are NaN, and the other four variants have
+        // an r² of 1 against themselves.
+        for var in 0..THE_VARS_OF_THE_EXAMPLE {
+            let r2 = the_r2_of_the_pair(&matrix, 3, var);
+            assert!(r2.is_nan(), "the pair of v4 and the variant {var} is {r2}");
+            let r2 = the_r2_of_the_pair(&matrix, var, 3);
+            assert!(r2.is_nan(), "the pair of the variant {var} and v4 is {r2}");
+            if var != 3 {
+                assert_the_r2_is(
+                    the_r2_of_the_pair(&matrix, var, var),
+                    1.0,
+                    &format!("the variant {var} against itself"),
+                );
+            }
+        }
+    }
+
+    /// A pass of more variants than the calculation was allowed is
+    /// refused, with both numbers and the memory the matrix would have
+    /// needed, at the block that passes the number and not at the end of
+    /// the source.
+    #[test]
+    fn more_variants_than_the_calculation_was_allowed_are_refused() {
+        let mut reader = the_ld_dataset(Some(64));
+
+        let error = calc_r2_matrix(&mut reader, 100).expect_err("the variants are more than 100");
+
+        // The second block of 64 variants is where the pass passes the
+        // 100, and the matrix of 128 variants is 128 x 128 values of 8
+        // bytes.
+        let message = error.to_string();
+        assert!(
+            matches!(
+                error,
+                Error::LdTooManyVars {
+                    num_vars: 128,
+                    max_num_vars: 100,
+                    bytes: 131_072
+                }
+            ),
+            "the variants above the cap gave: {error:?}"
+        );
+        assert!(
+            message.contains("128") && message.contains("100") && message.contains("131072"),
+            "the message holds neither both numbers nor the memory: {message}"
+        );
+    }
+
+    /// A `max_num_vars` whose matrix holds more values than this machine
+    /// counts is refused before the source is read.
+    #[test]
+    fn a_max_num_vars_whose_matrix_is_not_counted_is_refused() {
+        let mut reader = GivenBlocks::of(vec![the_worked_example()], 6, 2);
+
+        let error = calc_r2_matrix(&mut reader, usize::MAX).expect_err("the matrix is not counted");
+
+        assert!(
+            matches!(error, Error::LdMaxNumVarsTooLarge { max_num_vars } if max_num_vars == usize::MAX),
+            "the cap that is not counted gave: {error:?}"
+        );
+        assert_eq!(reader.calls, 0, "the source was read");
+    }
+
+    /// A reader with no variant is an error and not a matrix of no cell.
+    #[test]
+    fn a_reader_with_no_variant_is_an_error() {
+        let mut reader = GivenBlocks::of(Vec::new(), 6, 2);
+
+        let error = calc_r2_matrix(&mut reader, 5000).expect_err("the reader has no variant");
+
+        assert!(
+            matches!(error, Error::ReaderGaveNoVariants),
+            "the reader with no variant gave: {error:?}"
+        );
+    }
+
+    /// A block with variants and no position is the error of a field that
+    /// is not in the block: the matrix carries the chromosome and the
+    /// position of each of its variants.
+    #[test]
+    fn a_block_with_no_position_is_the_error_of_a_field_that_is_not_there() {
+        let mut reader = GivenBlocks::of(vec![the_worked_example()], 6, 2);
+
+        let error = calc_r2_matrix(&mut reader, 5000).expect_err("the block has no position");
+
+        assert!(
+            matches!(error, Error::FieldsNotInTheBlock { fields } if fields == Needs::CHROM_POS),
+            "the block with no position gave: {error:?}"
+        );
+    }
+
+    /// The calculation asks its reader for the genotypes, the chromosome
+    /// and the position, and for nothing else, so a reader over a file
+    /// leaves the other columns of a variant unparsed.
+    #[test]
+    fn the_calculation_asks_its_reader_for_the_genotypes_the_chromosome_and_the_position() {
+        let mut block = the_worked_example();
+        the_chrom_and_the_pos_of(&mut block, 0);
+        let mut reader = GivenBlocks::of(vec![block], 6, 2);
+
+        calc_r2_matrix(&mut reader, 5000).expect("the matrix of r²");
+
+        assert_eq!(reader.needs, Needs::GTS | Needs::CHROM_POS);
+    }
+
+    /// A reader that gives a block of other individuals than it says its
+    /// source has is a reader with a defect, and the rows of its blocks
+    /// cannot be put together into the tiles of one pass.
+    #[test]
+    fn a_block_of_other_individuals_than_the_reader_says_is_an_error() {
+        let mut block = the_worked_example();
+        the_chrom_and_the_pos_of(&mut block, 0);
+        let mut reader = GivenBlocks::of(vec![block], 3, 2);
+
+        let error = calc_r2_matrix(&mut reader, 5000).expect_err("the block is of others");
+
+        assert!(
+            matches!(
+                error,
+                Error::BlocksDoNotFitTogether {
+                    num_individuals: 3,
+                    found_num_individuals: 6,
+                    ..
+                }
+            ),
+            "the block of other individuals gave: {error:?}"
+        );
+    }
+
+    /// The error of the reader is given on as it is, and the variants it
+    /// gave before it are dropped with the calculation.
+    #[test]
+    fn the_error_of_the_reader_is_given_on() {
+        let mut block = the_worked_example();
+        the_chrom_and_the_pos_of(&mut block, 0);
+        let mut reader = GivenBlocks::failing_at(vec![block], 6, 2);
+
+        let error = calc_r2_matrix(&mut reader, 5000).expect_err("the reader failed");
+
+        assert!(
+            error.to_string().contains(THE_READER_FAILED),
+            "the error of the reader gave: {error:?}"
+        );
+    }
+
+    /// The chromosome `chr1` and the positions 1000, 2000 and on, of the
+    /// variant `first` of the dataset up, written into the block.
+    fn the_chrom_and_the_pos_of(block: &mut Block, first: u64) {
+        let num_vars = u64::try_from(block.num_vars).expect("the variants");
+        block.chrom = Some(vec![0; block.num_vars]);
+        block.pos = Some(
+            (first..first.saturating_add(num_vars))
+                .map(|var| var.saturating_add(1).saturating_mul(1000))
+                .collect(),
+        );
+    }
+
+    /// What the reader of these tests says when a test asked it to fail.
+    const THE_READER_FAILED: &str = "the reader of the tests failed";
+
+    /// A reader of blocks written for these tests: it gives the blocks it
+    /// was built with, says how many individuals and what ploidy its
+    /// source has, keeps what it was last asked to fill, and gives an
+    /// error instead of its first block when a test asks for one.
+    struct GivenBlocks {
+        individuals: Vec<String>,
+        ploidy: usize,
+        chroms: ChromTable,
+        /// The blocks still to give, the last one first.
+        left: Vec<Block>,
+        /// Whether it gives an error instead of a block.
+        fails: bool,
+        /// How many times it was asked for a block.
+        calls: usize,
+        /// What it was last asked to fill.
+        needs: Needs,
+    }
+
+    impl GivenBlocks {
+        /// A reader of `num_individuals` individuals of the ploidy
+        /// `ploidy`, named `i000` and on, that gives `blocks` in their
+        /// order and holds the one chromosome `chr1`.
+        fn of(blocks: Vec<Block>, num_individuals: usize, ploidy: usize) -> GivenBlocks {
+            let mut left = blocks;
+            left.reverse();
+            let mut chroms = ChromTable::new();
+            chroms.intern("chr1");
+            GivenBlocks {
+                individuals: (0..num_individuals).map(|at| format!("i{at:03}")).collect(),
+                ploidy,
+                chroms,
+                left,
+                fails: false,
+                calls: 0,
+                needs: Needs::ALL,
+            }
+        }
+
+        /// The same reader, whose first call is an error.
+        fn failing_at(blocks: Vec<Block>, num_individuals: usize, ploidy: usize) -> GivenBlocks {
+            GivenBlocks {
+                fails: true,
+                ..GivenBlocks::of(blocks, num_individuals, ploidy)
+            }
+        }
+    }
+
+    impl BlockReader for GivenBlocks {
+        fn next_block(&mut self) -> crate::error::Result<Option<Block>> {
+            self.calls = self.calls.saturating_add(1);
+            if self.fails {
+                return Err(Error::Io(std::io::Error::other(THE_READER_FAILED)));
+            }
+            Ok(self.left.pop())
+        }
+
+        fn individuals(&self) -> &[String] {
+            &self.individuals
+        }
+
+        fn ploidy(&self) -> usize {
+            self.ploidy
+        }
+
+        fn chroms(&self) -> &ChromTable {
+            &self.chroms
+        }
+
+        fn set_needs(&mut self, needs: Needs) {
+            self.needs = needs;
+        }
+
+        fn filtering_stats(&self) -> Vec<(&'static str, FilteringStats)> {
+            Vec::new()
         }
     }
 }
