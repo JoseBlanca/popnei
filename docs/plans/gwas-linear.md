@@ -131,13 +131,32 @@ Nothing of this plan.
 
 ### What could go wrong
 
-The continued fraction is transcribed in the spec and the two guards in it,
-the `tiny` that keeps a denominator of 0 from dividing and the `eps` that
-stops it, are what make it converge; dropping either gives numbers that are
-right for most arguments and wrong for some. The pair `(98.5, 0.5)` is the
-one a t of 197 degrees of freedom uses and the one closest to the panel, so
-a failure there and not at `(0.5, 0.5)` is the fraction and not the front
+The continued fraction is transcribed in the spec. The pair `(98.5, 0.5)` is
+the one a t of 197 degrees of freedom uses and the one closest to the panel,
+so a failure there and not at `(0.5, 0.5)` is the fraction and not the front
 factor.
+
+This section said until 23 September 2026 that the two guards of the
+fraction, the `tiny` that keeps a denominator of 0 from dividing and the
+`eps` that stops it, are what make it converge, and that dropping either
+gives numbers that are right for most arguments and wrong for some. The
+review of this work package measured that and it is false for every argument
+either plan can reach, so a test writer who believed it would hunt for a
+case that does not exist. The first denominator is bounded below by
+`2 / (a + b + 2)` in both branches, so with `b` of 1 / 2 the `tiny` can fire
+only for a panel of about 4e300 individuals; one reviewer saw a minimum of
+4.0276e-6 over 6009003 calls, which is that bound at 1e6 degrees of freedom,
+and another 4.06e-5 over 116802. The `eps` caps the work and not the digits:
+with it turned off the fraction runs its 500 rounds and the worst value
+moves by 2.3e-13 relative, nothing becoming non-finite. So neither guard can
+be caught by a test on a value, and the only assertion that could fail is
+one on the number of rounds, which is at most 52 over the wide sweep against
+the 500 allowed. Both guards stay, because the recipe and pyNei have them
+and because a caller with another `b` would need the `tiny`.
+
+What the review found instead, in the place this section was pointing away
+from: `t_sf_two_sided` cancelled `1 - x` out of an `x` that had rounded to
+1, and lost up to eight digits for a `t` near 0.
 
 ## Work package 2: what every model shares
 
