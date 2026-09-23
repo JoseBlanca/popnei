@@ -934,9 +934,14 @@ that variant's and no function gives the value of one variant of a longer
 pass. The comparisons against pyNei and the ones on whole panels are made
 at the Python `calc_pop_dists`, where the numbers a user sees come out.
 
-The worked example, which becomes the first cargo tests: 4 variants, 6
+The worked example, which becomes the first cargo tests: 5 variants, 6
 diploid individuals, pop1 = i0, i1, i2 and pop2 = i3, i4, i5,
-`min_num_individuals` 1, `jackknife_group` `"variant"`.
+`min_num_individuals` 1, `jackknife_group` `"variant"`. Its numbers were
+worked out from the formulas above in exact rational arithmetic, and the
+H_S' and the H_T' of each variant and the D of the whole example were
+checked against pyNei at commit ef0ca6e, whose `_calc_pairwise_dest` gives
+the same five pairs of corrected values and whose
+`calc_jost_dest_pop_dists` gives the same D, 0.34753086.
 
 | variant | pop1 | pop2 | what it is for |
 |---|---|---|---|
@@ -944,6 +949,7 @@ diploid individuals, pop1 = i0, i1, i2 and pop2 = i3, i4, i5,
 | 2 | 0/1 1/2 2/2 | 0/0 0/1 0/0 | three alleles |
 | 3 | 0/0 0/0 ./. | 0/0 0/0 0/. | both fixed for allele 0, one missing and one half called genotype |
 | 4 | 0/1 0/1 0/1 | 0/1 0/1 0/1 | the same in both, every genotype heterozygous |
+| 5 | 0/0 0/0 0/1 | 1/1 ./. 1/2 | the populations hold different alleles, and they differ in their called genotypes, 3 against 2, and in their called alleles, 6 against 4 |
 
 The counts that everything comes from, allele 0, 1 and 2 and then the
 called alleles and the called genotypes:
@@ -954,10 +960,21 @@ called alleles and the called genotypes:
 | 2 | 1, 2, 3 | 6 | 3 | 5, 1, 0 | 6 | 3 |
 | 3 | 4, 0, 0 | 4 | 2 | 5, 0, 0 | 5 | 2 |
 | 4 | 3, 3, 0 | 6 | 3 | 3, 3, 0 | 6 | 3 |
+| 5 | 5, 1, 0 | 6 | 3 | 0, 3, 1 | 4 | 2 |
 
 Variant 3 shows the half called genotype: pop2 has 5 called alleles from
 2 called genotypes and one half called one, so its frequency of allele 0
 is 5/5 while it has 2 genotypes for the `min_num_individuals` test.
+
+Variant 5 is the one where the two populations bring different numbers to
+the corrections: the harmonic mean of the called genotypes that H_S' and
+H_T' divide by is 2.4 for 3 genotypes against 2, where the arithmetic mean
+would be 2.5 and H_S' 0.405093 instead of 0.410714, and the pooled
+frequencies that H_T is taken from are (0.416667, 0.458333, 0.125) at
+equal weight, where weighting each population by its called alleles would
+give (0.5, 0.4, 0.1) and H_T' 0.622163 instead of 0.642857. At the other four
+variants the two populations have the same number of called genotypes and
+H_S' and H_T' come out the same under either of those two readings.
 
 From them, per variant,
 
@@ -967,18 +984,39 @@ From them, per variant,
 | 2 | 0.805556 | 0.533333 | 0.272222 | 0.608380 | 0.541667 | 0.673611 |
 | 3 | 0 | 0 | 0 | 1 | 0 | 0 |
 | 4 | 0.5 | 0.6 | -0.1 | 1 | 0.5 | 0.5 |
+| 5 | 0.875 | 0.416667 | 0.458333 | 0.353553 | 0.410714 | 0.642857 |
 
 H_S' and H_T' are the corrected diversity within the two populations and
 over the two pooled, which "Jost's D" below defines and which only the
 three measures there read; they are in this table because one pass builds
-all six sums, and their means over the four variants, 0.34375 and
-0.425347, are what that item works from.
+all six sums, and their means over the five variants, 0.357143 and
+0.468849, are what that item works from.
 
-and the sums over the four variants are 2.027778 for H_b, 1.466667 for
-H_w and 0.561111 for f_2. Each item below takes its number from here.
+and the sums over the five variants are 2.902778 for H_b, 1.883333 for
+H_w and 1.019444 for f_2. Each item below takes its number from here.
 Variant 3, where both populations are fixed for the same allele, has
 H_b = 0 and so a per variant F_ST of 0/0; it adds 0 to both sums and
 nothing else, which is what the ratio of sums is for.
+
+One variant at a ploidy of 4, which no measure of the worked example is
+at. The exponent of E_P and of H_T is the ploidy, so a suite in which
+every genotype holds two alleles cannot tell the ploidy from the 2 of a
+square. The variant is of the same 6 individuals in the same two
+populations, at `min_num_individuals` 1:
+
+| population | genotypes | counts of the alleles 0, 1 and 2 | n_P | called gts |
+|---|---|---|---|---|
+| pop1 | 0/0/1/1 0/1/1/2 0/0/0/1 | 6, 5, 1 | 12 | 3 |
+| pop2 | 0/0/0/0 0/0/0/1 ./././. | 7, 1, 0 | 8 | 2 |
+
+It gives H_b = 0.510417, H_w = 0.435606, f_2 = 0.074811, a sum of the
+square roots of 0.889656, H_S' = 0.864330 and H_T' = 0.873157. pyNei's
+`_calc_pairwise_dest` at a ploidy of 4 gives the same two corrected
+values, 0.86433015 and 0.87315651; raising the frequencies to 2 instead
+of to the ploidy gives 0.407738 and 0.459077, which is what this variant
+is here to tell apart. It is checked at `PopDistPerVar::of_var`, the
+function that reads the ploidy, and not over a pass: the six sums of a
+pass of one variant are that variant's values.
 
 ## Hudson's F_ST
 
@@ -1050,7 +1088,7 @@ multiallelic record and does not reduce it: the same formula on the major
 allele against the rest gives 0.0707950 and on the VCF's reference allele
 against the rest 0.0598407, neither of which is what plink2 printed.
 
-The worked example: 0.561111 / 2.027778 = 0.276712.
+The worked example: 1.019444 / 2.902778 = 0.351196.
 
 ## f_2
 
@@ -1119,7 +1157,7 @@ asserts the F_ST of the item above a second time and nothing of f_2. What
 holds the multiallelic arithmetic is that F_ST, which plink2 computes over
 every allele of a record, and the chord distance against adegenet.
 
-The worked example: 0.561111 / 4 = 0.140278.
+The worked example: 1.019444 / 5 = 0.203889.
 
 ## The chord distance and Nei's D_A
 
@@ -1174,8 +1212,8 @@ they are the same formula, and they part on the multiallelic one,
 0.2287511165 against 0.3143145698. Neither adds anything to the chord
 distance for a tree, and "Not in this spec" says so.
 
-The worked example: the sum of the square roots is 3.353736, D_A =
-1 - 3.353736/4 = 0.161566, and the chord distance is 0.401953.
+The worked example: the sum of the square roots is 3.707290, D_A =
+1 - 3.707290/5 = 0.258542, and the chord distance is 0.508470.
 
 ## Jost's D
 
@@ -1294,8 +1332,9 @@ compare popnei with mmod within 5e-4 on these two panels, which says that
 popnei computes Jost's D and not another statistic, and with pyNei within
 1e-12 relative, which is what pins the estimator.
 
-The worked example: the mean corrected H_S is 0.34375 and the mean
-corrected H_T is 0.425347, so D = 2 * 0.081597 / 0.65625 = 0.248677.
+The worked example: the mean corrected H_S is 0.357143 and the mean
+corrected H_T is 0.468849, so D = 2 * 0.111706 / 0.642857 = 0.347531,
+which is what pyNei gives for the same genotypes.
 
 ## Nei's G_ST and the standardized G''_ST
 
@@ -1358,9 +1397,9 @@ Hedrick's G'_ST has no reference program: mmod does not compute it and
 nothing else on the owner's machine does, which is why popnei does not
 give it.
 
-The worked example: G_ST = 0.081597/0.425347 = 0.191837, and with
-2 mean H_T' - mean H_S' = 0.506944 and 1 - mean H_S' = 0.656250,
-G''_ST = 0.163194/(0.506944 * 0.656250) = 0.490541.
+The worked example: G_ST = 0.111706/0.468849 = 0.238256, and with
+2 mean H_T' - mean H_S' = 0.580556 and 1 - mean H_S' = 0.642857,
+G''_ST = 0.223412/(0.580556 * 0.642857) = 0.598618.
 
 ## The Rust interface
 
