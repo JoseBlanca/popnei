@@ -62,6 +62,13 @@ product and the eigendecomposition, is on `main`. Measured on 23 September
 - `cargo test --workspace`: 604 passing in the core crate, 2 ignored, and
   149 in the linear algebra crate. The same with `--no-default-features` on
   the linear algebra crate, which is the faer backend: 136.
+- `cargo test -p popnei --no-default-features`, the core crate on faer,
+  which is the backend the wasm build uses and so what runs in a browser.
+  It was in no check list until 23 September 2026 and is in the `coding`
+  skill now. Any tolerance this plan adds is chosen against both backends:
+  faer sits about seven times further from plink2 than Accelerate does on
+  the same data, which the order and the blocking of the sums allow and
+  which a bound fixed on Accelerate alone would fail under wasm.
 - `cargo test -p popnei --lib kinship -- --list`: `0 tests`.
 - `cargo test -p popnei --lib pca -- --list`: `47 tests`.
 - `uv run maturin develop && uv run pytest`: 347 passed, 0 failed.
