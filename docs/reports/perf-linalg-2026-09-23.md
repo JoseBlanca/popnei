@@ -48,8 +48,9 @@ checklist says to skip it.
 which half it is about.** Three operations are reached from popnei today.
 `add_self_product_lower`, the product of a matrix with itself, is called
 once per block by the principal component analysis, at
-`crates/popnei/src/pca.rs:223` and `:875`. `product` is called three times from `pca.rs` and once from
-`crates/popnei/src/ld.rs:784`, which is six times per pair of tiles.
+`crates/popnei/src/pca.rs:223` and `:875`. `product` is called three
+times from `pca.rs` and once from `crates/popnei/src/ld.rs:784`, which is
+six times per pair of tiles.
 `eigh_lower`, the eigendecomposition, is called once per analysis. The
 other eleven — a Cholesky factorization and the solve, the log of the
 determinant and the inverse that come off it, the thin QR of a design,
