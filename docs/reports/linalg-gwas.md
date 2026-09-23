@@ -15,7 +15,8 @@ of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
 Where the plan stands on 23 September 2026: work package 1 is done,
-reviewed and fixed. Work packages 2 and 3 have not started. Two things
+reviewed and fixed, and work package 2 is under way with task 2.1 done.
+Work package 3 has not started. Two things
 are waiting on the owner and neither stops the plan; the last section of
 this report says what they are.
 
@@ -193,6 +194,49 @@ pytest` `257 passed`. The crate went from 42 tests to 47 and from 37 to
 42 over the whole work package, and nothing else moved.
 
 That subagent used 180622 tokens for the fixes.
+
+## Work package 2: the Cholesky factorization and the three things off it
+
+### Task 2.1, the factorization and the `Singular` case
+
+`eb9c162`. `cholesky_lower` above both backends, `dpotrf` with `uplo` `U`
+in the BLAS one, since popnei's lower half is the routine's upper half,
+and `cholesky_in_place` of faer's `llt::factor` with faer's default
+regularization, which is the one that refuses a pivot that is not
+positive; and the `Singular` case of the error enum with the fields, the
+doc comment and the message of the spec. Eight tests, all on both
+backends.
+
+Checked by the orchestrator: fmt, clippy with the warnings denied, `cargo
+wasm-check` and ruff clean; `cargo test --workspace` `472 passed` with 2
+ignored in the core crate and `55 passed` in the linear algebra crate;
+`cargo test -p popnei-linalg --no-default-features` `50 passed`; `uv run
+maturin develop && uv run pytest` `257 passed`. The crate went from 47
+tests to 55 and from 42 to 50 on faer, which is the eight the task added.
+`cargo test -p popnei-linalg --lib cholesky -- --list` names all eight,
+where the filter gave `0 tests` before, and `singular` names the one for
+the error.
+
+The row of a matrix that cannot be factored comes out the same on both
+backends, counting from 0, although `dpotrf` gives the leading corner
+counting from 1 and faer an index from 0. The test's matrix stops at the
+middle row of three, so a backend that counted from 1 or from the other
+end gives another number.
+
+Two things the task did differently, both right. It checked the buffer
+with the helper that names the argument `a` and not with the one the plan
+named, which writes `g` into the message and is for the two operations
+whose argument is called `g`. And it built the 1000 x 1000 of the
+generator with a fixture of its own rather than share the
+eigendecomposition's, which would have meant editing a test of
+`eigh_lower` that this work package must leave alone.
+
+Worth knowing: faer leaves the upper half of the buffer untouched, which
+the spec asserts and nothing had checked until now, and a value that is
+not finite there is let through by both backends and stays where it was,
+since only the lower half is read.
+
+That subagent used 176640 tokens.
 
 ## What is waiting on the owner
 

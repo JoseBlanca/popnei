@@ -264,7 +264,7 @@ the plan.
 
 ### Its tasks
 
-- [ ] 2.1 `Singular` in the error enum of
+- [x] 2.1 `Singular` in the error enum of
       `crates/popnei-linalg/src/lib.rs` and `cholesky_lower` above both
       backends, with `dpotrf` in `blas.rs` and
       `llt::factor::cholesky_in_place` in `faer.rs`, the row that LAPACK
