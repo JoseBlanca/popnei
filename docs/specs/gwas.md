@@ -1480,6 +1480,24 @@ threshold of 1.8e-15, while an ordinary variant of the same fixture leaves
 the implementer refuses at that threshold and gives the three NaNs; no
 literal of this spec moves, since no variant of either panel reaches it.
 
+What there was, in a mixed model, is the variant's own squared length
+`x' x` times the largest value of the diagonal of `p`. A projection matrix
+is 0 or above as a quadratic form, so no value of its diagonal is below 0
+and the largest of them is at most its largest eigenvalue, which is what
+bounds `x' p x` over `x' x`; the largest of the diagonal is read once when
+the null is fitted and costs nothing per variant, where `x' v⁻¹ x`, the
+quantity before the design was taken out, would cost a second individuals by
+individuals product for every variant. The room this leaves is narrower
+than the linear model's thirteen orders, and for a reason that is not a
+defect: `xx` there is a squared residual, so a cancellation of 1e-16 shows
+in it as 1e-32, while `x' p x` is linear in the rounding of `p x`. Measured
+on the eight individuals of the case above with a kinship of 1 on the
+diagonal, 0.2 within a subpopulation and 0 across, on 24 September 2026: the
+collinear variant leaves -6.2e-17 of that scale on Accelerate and 2.3e-16 on
+faer, against a threshold of 1.8e-15, and the ordinary variant beside it
+leaves 0.576 on both. Over the 1200 variants of both panels the smallest any
+of them leaves is 0.120, against a threshold of 4.4e-14.
+
 ## Not in this spec
 
 - The kinship itself, its per pair denominators and its principal
