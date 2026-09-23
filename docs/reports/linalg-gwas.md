@@ -14,9 +14,10 @@ also gives `product` a typed first operand, so that it computes all four
 of `a b`, `a b'`, `a' b` and `a' b'`, and adds one case to the crate's
 error enum, `Singular`. The spec behind it is `docs/specs/linalg.md`.
 
-Where the plan stands on 23 September 2026: work package 1 is built and
-its four deliverables check out; its review is running. Work packages 2
-and 3 have not started.
+Where the plan stands on 23 September 2026: work package 1 is done,
+reviewed and fixed. Work packages 2 and 3 have not started. Two things
+are waiting on the owner and neither stops the plan; the last section of
+this report says what they are.
 
 This report is written as the work goes. Each work package gets a section
 below when it is done, with the command that checked each deliverable and
@@ -122,3 +123,106 @@ That subagent used 144252 tokens.
 | 2, the four combinations give one matrix | `cargo test -p popnei-linalg --lib four_ways -- --list`; `cargo test -p popnei-linalg` and the same `--no-default-features` | `the_same_matrix_comes_out_of_the_product_four_ways`, `1 test`, where the filter gave `0 tests` before; `45 passed` and `40 passed` |
 | 3, what the new combinations refuse | `cargo test -p popnei-linalg --lib first_operand -- --list` | the two tests of the dimensions and of the value that is not finite, `2 tests`, where the filter gave `0 tests` before |
 | 4, the comment about the vector instructions | `grep -c "Open 1" crates/popnei-linalg/Cargo.toml` | `0`, where it was `1` before |
+
+### The review of work package 1
+
+Six reviewers, one per category, over `8d7fb27` and `d8655ba`: spec,
+tests, numbers, errors, api and architecture. `binding` was not sent,
+because no function of this crate is reached from Python or from
+TypeScript and neither binding crate names it. They used 746000 tokens
+between them.
+
+**What they found that mattered, and what was done.**
+
+Five of the six found the same gap, and three showed it by mutation: every
+case of the test of the four combinations has a 2 x 2 result, so the rows
+and the columns of the result are the same number, and a backend that
+exchanged the two passed all 45 tests of the crate and all 40 of its faer
+build. The spec's older section asks for "A test of each product on
+matrices that are not square" and its new section had dropped it, so the
+spec was corrected first, in `90e9f08`, with the two matrices that section
+already gives for the same A: `a' b` is the 2 x 1 with rows (1) and (6)
+and `a' b'` the 2 x 1 with rows (2) and (3), checked against numpy 2.5.3
+before they were written. Then the test, in `839e11d`. The orchestrator
+made the mutation itself on both backends afterwards:
+`the_product_that_turns_its_first_operand_writes_a_result_that_is_not_square`
+is the only test of the crate that fails, and it fails on both.
+
+The `tests` reviewer found that
+`the_product_that_turns_its_first_operand_refuses_a_value_that_is_not_finite`
+passes word for word against the code of `8d7fb27`, where neither new
+combination existed, because `lib.rs` refuses a value that is not finite
+before the dispatch. It now also asserts the matrix of a call with nothing
+wrong, which is what its sister test already did.
+
+The `spec` and `architecture` reviewers found that the spec, both
+`Cargo.toml` files and `docs/reports/pca-measurement.md` said the rustc
+flag `-C target-feature=+simd128` is set nowhere and changes no byte, and
+that neither is true. That is `68b29fd`, and what is left of it for the
+owner is below.
+
+The `api` reviewer found four backend functions of identical signature
+told apart by a preposition, `product_by_transpose` being `a b'` and
+`product_of_the_transpose` being `a' b`. They are now `product`,
+`product_with_the_second_turned`, `product_with_the_first_turned` and
+`product_with_both_turned`. The `errors` reviewer found that nothing tells
+a caller that `rows`, `inner` and `cols` are the least a buffer may hold,
+so that a wrong one gives another matrix and no error, which is what
+"Errors" of the spec decides; the `# Errors` of `product` now says it.
+Three smaller gaps were closed with them: the module comment of `blas.rs`
+called `a b'` the call whose `transa` is `T`, which `a' b'` is too; the
+doc of `Error::Dimension` did not name an `inner` of 0; and the test of
+the cap of 2147483647 and the test of an `a` of no rows reached only the
+unturned layout.
+
+**What was not taken, and why.** An `inner` above 2147483647 with `rows`
+at 0 gives an error that names `b`: the sentence is true of `b`, whose
+dimensions really would be out of range, and it prints the number at
+fault. The timings of "What it costs" were measured at the routine and not
+through the crate's checks, which "Speed" of the spec already says of
+every number it gives. `eigh_lower` in the faer backend indexes faer's
+matrices, which is older than this work package and whose indices are
+below `n`.
+
+**The checks after the fixes**, each run by the orchestrator: fmt, clippy
+with the warnings denied, `cargo wasm-check` and ruff clean; `cargo test
+--workspace` `472 passed` with 2 ignored in the core crate and `47
+passed` in the linear algebra crate; `cargo test -p popnei-linalg
+--no-default-features` `42 passed`; `uv run maturin develop && uv run
+pytest` `257 passed`. The crate went from 42 tests to 47 and from 37 to
+42 over the whole work package, and nothing else moved.
+
+That subagent used 180622 tokens for the fixes.
+
+## What is waiting on the owner
+
+Neither of these stops the plan, and work packages 2 and 3 do not depend
+on them.
+
+**How the decision about the vector instructions of WebAssembly is
+worded.** "Open points" of `docs/specs/linalg.md` records the owner's
+decision of 23 September 2026 as "the rustc flag stays off". The flag is
+on: `.cargo/config.toml` sets it for both wasm targets because
+`sums_of_two` of the `dists` module counts the bits of a pair sixteen
+bytes at a time behind `cfg(target_feature = "simd128")`, 1.8 ms against
+5.2 ms, and that code went in on 22 September 2026 in `7f3b6cc`, after the
+byte comparison the decision rests on was measured and before the spec was
+written. Built again on 23 September 2026 on the same machine, the
+WebAssembly of `crates/popnei-js` in release is 2249734 bytes with the
+flag and 2246645 without it, with different md5 sums. What the owner chose
+is untouched, since for the linear algebra the flag still changes no file,
+and `68b29fd` corrected every statement of fact around it; the one
+sentence that is theirs to write is how the decision itself is put.
+
+**Whether `a' b'` should replace a buffer and a loop in the principal
+component analysis.** The `architecture` reviewer found that
+`the_components_of_the_product_of_the_rows` of `crates/popnei/src/pca.rs`
+writes a matrix of the traits by the components and then copies it entry
+by entry into its transpose, and that the fourth combination writes that
+transpose directly. It ran both on both backends and got the same numbers.
+It costs an allocation and a copy of the traits times the components once
+per call, not once per variant, so no result and no time of a whole
+analysis is known to change. It changes the principal component analysis,
+which work package 1 is not allowed to do, so it is left for the owner to
+put in a task or an issue. This repository has no issue open and none has
+been filed, so none was filed for this.
