@@ -174,3 +174,37 @@ spec carries. The task was added by the orchestrator rather than put to
 the owner because it keeps deliverables 5 and 6 as the plan wrote them;
 the alternative was to drop the standard errors from both, which would
 have made a deliverable's check weaker.
+
+### Task 1.5, the Python side
+
+Two commits: `aa821ec`, the spec, and `0532d0e`, the code. 248 657
+tokens. `uv run pytest` gives `335 passed`, of which `tests/test_pop_dists.py`
+is 23, where that file did not exist. The workspace gives `560 passed; 0
+failed; 2 ignored` and the other checks pass.
+
+Deliverable 5 is met. Its one check with no Python-visible consequence is
+that a pass with `jackknife_group=None` asks the reader for no positions:
+what a Python test can see is that there are no standard errors, no
+`f2_groups` and no group, and the test asserts those three and points at
+the cargo test that holds what the reader was asked for.
+
+The seven names of the measures went into the core beside the ones of
+`PerVarStat`, rather than into a table of the binding crate, because task
+1.6 needs the same seven.
+
+The spec gained two cases it had not said, in `aa821ec`, before the code:
+`square_standard_errors` of a result that has no standard errors gives
+`None`, the same answer as the field, rather than an empty frame or a
+refusal; and the `Distances` of each measure names its pairs by the
+populations, so that its square frames are indexed by them on both sides,
+as the Kosman distances' are by the individuals.
+
+### One thing for the owner, which nothing in the plan rests on
+
+`repr` of a `Distances` of populations prints `<Distances of 3
+individuals, 3 pairs>`. The class was written for the Kosman distances
+between individuals and the spec gives it only the new `standard_errors`
+field for this item, so the noun stayed. It is a string a user sees and
+the plan does not depend on it, so the work goes on and it is put to the
+owner at the end of the plan with its two options: the repr loses the
+noun, or `Distances` learns what its names are of.

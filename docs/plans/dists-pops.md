@@ -170,7 +170,7 @@ Nothing in this plan. Outside it, everything of "What has to be in place".
   plan had cut 12 and 6 groups, and `calc_pop_dists` refuses a pass of
   fewer than 20, so neither could be asserted through the packages, which
   deliverables 5 and 6 ask for. Serves deliverables 5 and 6. Needs 1.4.
-- [ ] 1.5 The Python side: the function of `crates/popnei-python` that
+- [x] 1.5 The Python side: the function of `crates/popnei-python` that
   builds the chain with `chain_of`, runs the pass and gives back the
   measures, the standard errors, the counts and `f2_groups`, as the Kosman
   distances do; `PopDists` and `calc_pop_dists` in a new
