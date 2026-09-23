@@ -266,9 +266,23 @@ standard error and its p-value.
    difference is 1.94e-5 of `se`, at `var0482`, whose `beta` is 1.0389 and
    whose `se` is 0.19: six significant digits of a value above 1 round it
    by up to 5e-6 absolute, against a budget of 1e-5 x 0.19 = 1.9e-6, so
-   plink2's printing alone is 2.6 times the whole allowance. 1198 of the
-   1200 failed, and the two that passed were the two whose `beta` stays
-   below 1. With the printed-digit term the bound at `var0482` is 1.9e-6
+   plink2's printing alone is 2.6 times the whole allowance. Three of the
+   1200 fail it, `var0398`, `var0482` and `var1001`. With the printed-digit
+   term none of the 1200 fails.
+
+   Two counts were reported here on 24 September 2026 and both were wrong,
+   so they are written out rather than quietly replaced. That 1198 of the
+   1200 failed: three do. That the two variants which passed were the two
+   whose `beta` passes 1: six variants have a `|beta|` above 1, `var0006`,
+   `var0398`, `var0482`, `var0657`, `var1001` and `var1059`, and three of
+   those six fail. What decides it is not whether `beta` passes 1 but
+   whether half a unit in plink2's last printed digit passes `1e-5` times
+   that variant's `se`, which for a `beta` between 1 and 10 means an `se`
+   below 0.5. Three variants fail rather than five because the printing
+   error is at most half a digit and is usually less. The deliverable had
+   to change either way, since a correct implementation fails it; it failed
+   on three variants and not on 1198. With the printed-digit term the bound
+   at `var0482` is 1.9e-6
    plus 5e-6 = 6.9e-6 and the measured difference is 3.69e-6, 53 per cent
    of it, the same on both linear algebra backends. The spec carries the
    same shape for every comparison against a printed reference, at
