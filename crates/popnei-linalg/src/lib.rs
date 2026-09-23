@@ -3,12 +3,12 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds four: the product of a matrix with
+//! place that has them. It holds six: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; and the product of two matrices,
-//! [`product`], which is two of the four because [`TheSecondOperand`]
-//! says whether the second matrix holds one row for each of the values
-//! summed over or one row for each column of the result.
+//! [`product`], which is the other four, because [`TheFirstOperand`] and
+//! [`TheSecondOperand`] each say how one matrix's buffer is laid out and
+//! the two together choose among `a b`, `a b'`, `a' b` and `a' b'`.
 //! `docs/specs/linalg.md` says what each one gives.
 //!
 //! Every matrix crosses this interface as a `&[f64]` held row after row,
@@ -320,10 +320,8 @@ impl TheSecondOperand<'_> {
 /// [`Error::Dimension`] when `inner` or `cols` is 0, when a buffer holds
 /// fewer values than the rows times the columns of the way it is read, or
 /// when a matrix would hold more than 2147483647 values, which is what
-/// the routines of BLAS and LAPACK count in; and, until the backends have
-/// them, when `a` is held by the values summed over, which is `c = a' b`
-/// and `c = a' b'`. [`Error::NotFinite`] when `a` or `b` holds a value
-/// that is not finite.
+/// the routines of BLAS and LAPACK count in. [`Error::NotFinite`] when
+/// `a` or `b` holds a value that is not finite.
 pub fn product(
     a: TheFirstOperand<'_>,
     inner: usize,
@@ -383,26 +381,14 @@ pub fn product(
             TheFirstOperand::ByTheRowsOfTheResult { .. },
             TheSecondOperand::ByTheColumnsOfTheResult { .. },
         ) => backend::product_by_transpose(values_of_a, rows, inner, values_of_b, cols, c),
-        // The two combinations whose first operand is held by the values
-        // summed over are the `c = a' b` and the `c = a' b'` of "The
-        // product with its first operand turned" of
-        // `docs/specs/linalg.md`, and no backend of this crate has them
-        // yet. The call is refused where it would otherwise be answered
-        // with the matrix of another combination.
         (
             TheFirstOperand::ByTheValuesSummedOver { .. },
             TheSecondOperand::ByTheValuesSummedOver { .. },
-        ) => Err(Error::Dimension {
-            argument: "a",
-            expected: "one row for each row of the result, since the product that turns its first operand, c = a' b, is not built yet".to_owned(),
-        }),
+        ) => backend::product_of_the_transpose(values_of_a, rows, inner, values_of_b, cols, c),
         (
             TheFirstOperand::ByTheValuesSummedOver { .. },
             TheSecondOperand::ByTheColumnsOfTheResult { .. },
-        ) => Err(Error::Dimension {
-            argument: "a",
-            expected: "one row for each row of the result, since the product that turns its first operand, c = a' b', is not built yet".to_owned(),
-        }),
+        ) => backend::product_of_both_transposes(values_of_a, rows, inner, values_of_b, cols, c),
     }
 }
 
@@ -620,7 +606,7 @@ fn refuse_a_value_that_is_not_finite_in_the_lower_half(
 
 #[cfg(test)]
 mod tests {
-    use super::TheFirstOperand::ByTheRowsOfTheResult;
+    use super::TheFirstOperand::{self, ByTheRowsOfTheResult};
     use super::TheSecondOperand::{ByTheColumnsOfTheResult, ByTheValuesSummedOver};
     use super::{Eigen, Error, add_self_product_lower, eigh_lower, product, reverse_the_rows};
 
@@ -649,6 +635,20 @@ mod tests {
     /// The B of its second case, 1 x 3, the row (2, 0, 1). With it the
     /// three dimensions of the product are all different.
     const B_OF_1_BY_3: [f64; 3] = [2.0, 0.0, 1.0];
+
+    /// The A of 2 x 3 written the other way round, 3 x 2 with rows
+    /// (1, 0), (2, 1) and (0, 3), which is what a caller holds that has
+    /// its first operand laid out by the values the product sums over.
+    const A_OF_2_BY_3_THE_OTHER_WAY_ROUND: [f64; 6] = [1.0, 0.0, 2.0, 1.0, 0.0, 3.0];
+
+    /// The B that is not symmetric written the other way round, 2 x 3
+    /// with rows (1, 2, 0) and (1, 0, 3), which is what a caller holds
+    /// that has its second operand laid out by the columns of the result.
+    const B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND: [f64; 6] = [1.0, 2.0, 0.0, 1.0, 0.0, 3.0];
+
+    /// The 2 x 2 that the four combinations all write, rows (5, 1) and
+    /// (2, 9), which is not symmetric.
+    const THE_PRODUCT_THAT_IS_NOT_SYMMETRIC: [f64; 4] = [5.0, 1.0, 2.0, 9.0];
 
     /// The 3 x 3 symmetric matrix of "How it is verified", rows (4, 1, 0),
     /// (1, 3, 0) and (0, 0, 1), with only its lower half given and the
@@ -969,6 +969,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c, vec![7.0, 7.0]);
+    }
+
+    /// The four combinations of "How it is verified" of "The product with
+    /// its first operand turned", each given the matrices its two cases
+    /// say it holds, write the same 2 x 2, rows (5, 1) and (2, 9). That
+    /// matrix is not symmetric, so a backend that wrote the transpose of
+    /// the result fails here; and the four pairs differ in which buffer is
+    /// written the other way round, so a backend that read an operand the
+    /// way another combination reads it gives another matrix for at least
+    /// one of the four.
+    ///
+    /// It is also what tells the two cases of the first operand apart: a
+    /// buffer holds rows times inner values whichever way round it is
+    /// read, so no check of a length can, and only the matrix can.
+    #[test]
+    fn the_same_matrix_comes_out_of_the_product_four_ways() {
+        // Each `c` holds other values first, so a product that added to it
+        // instead of overwriting it would leave them in the result.
+        let mut of_a_b = vec![7.0; 4];
+        product(
+            ByTheRowsOfTheResult {
+                values: &A_OF_2_BY_3,
+                rows: 2,
+            },
+            3,
+            ByTheValuesSummedOver {
+                values: &B_THAT_IS_NOT_SYMMETRIC,
+                cols: 2,
+            },
+            &mut of_a_b,
+        )
+        .unwrap();
+        assert_eq!(of_a_b, THE_PRODUCT_THAT_IS_NOT_SYMMETRIC);
+
+        let mut of_a_turned_and_b = vec![7.0; 4];
+        product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND,
+                rows: 2,
+            },
+            3,
+            ByTheValuesSummedOver {
+                values: &B_THAT_IS_NOT_SYMMETRIC,
+                cols: 2,
+            },
+            &mut of_a_turned_and_b,
+        )
+        .unwrap();
+        assert_eq!(of_a_turned_and_b, THE_PRODUCT_THAT_IS_NOT_SYMMETRIC);
+
+        let mut of_a_and_b_turned = vec![7.0; 4];
+        product(
+            ByTheRowsOfTheResult {
+                values: &A_OF_2_BY_3,
+                rows: 2,
+            },
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND,
+                cols: 2,
+            },
+            &mut of_a_and_b_turned,
+        )
+        .unwrap();
+        assert_eq!(of_a_and_b_turned, THE_PRODUCT_THAT_IS_NOT_SYMMETRIC);
+
+        let mut of_both_turned = vec![7.0; 4];
+        product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND,
+                rows: 2,
+            },
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND,
+                cols: 2,
+            },
+            &mut of_both_turned,
+        )
+        .unwrap();
+        assert_eq!(of_both_turned, THE_PRODUCT_THAT_IS_NOT_SYMMETRIC);
     }
 
     #[test]
@@ -1499,6 +1580,207 @@ mod tests {
                     "the error for the place {place} of {b:?} is {error}"
                 );
             }
+        }
+    }
+
+    /// The two combinations whose first operand is held by the values
+    /// summed over refuse what the two that hold it by the rows of the
+    /// result refuse, and each buffer is checked against the dimensions of
+    /// the way it is read: `a` as inner x rows here, which the message
+    /// says, and `b` as its own case says.
+    #[test]
+    fn the_product_that_turns_its_first_operand_refuses_the_dimensions_the_others_refuse() {
+        let of_the_values = ByTheValuesSummedOver {
+            values: &B_THAT_IS_NOT_SYMMETRIC,
+            cols: 2,
+        };
+        let of_the_values_one_short = ByTheValuesSummedOver {
+            values: &B_THAT_IS_NOT_SYMMETRIC[..5],
+            cols: 2,
+        };
+        let of_the_columns = ByTheColumnsOfTheResult {
+            values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND,
+            cols: 2,
+        };
+        let of_the_columns_one_short = ByTheColumnsOfTheResult {
+            values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND[..5],
+            cols: 2,
+        };
+        for (b, one_short, the_dimensions_of_b) in [
+            (
+                of_the_values,
+                of_the_values_one_short,
+                "3 rows times 2 columns",
+            ),
+            (
+                of_the_columns,
+                of_the_columns_one_short,
+                "2 rows times 3 columns",
+            ),
+        ] {
+            let a = TheFirstOperand::ByTheValuesSummedOver {
+                values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND,
+                rows: 2,
+            };
+            // The call with nothing wrong gives the matrix, so each case
+            // below is refused for the one thing that case changes.
+            let mut c = vec![0.0; 4];
+            product(a, 3, b, &mut c).unwrap();
+            assert_eq!(c, THE_PRODUCT_THAT_IS_NOT_SYMMETRIC);
+
+            let error = product(
+                TheFirstOperand::ByTheValuesSummedOver {
+                    values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND[..5],
+                    rows: 2,
+                },
+                3,
+                b,
+                &mut c,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "a", .. })
+                    && error.to_string().contains("3 rows times 2 columns"),
+                "the error for {b:?} is {error}"
+            );
+
+            let error = product(a, 3, one_short, &mut c).unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "b", .. })
+                    && error.to_string().contains(the_dimensions_of_b),
+                "the error for {b:?} is {error}"
+            );
+
+            let mut shorter_than_the_result = vec![0.0; 3];
+            let error = product(a, 3, b, &mut shorter_than_the_result).unwrap_err();
+            assert!(
+                matches!(error, Error::Dimension { argument: "c", .. }),
+                "the error for {b:?} is {error}"
+            );
+        }
+
+        // The two dimensions that are 1 at least, which no case of an
+        // operand changes.
+        let mut c = vec![0.0; 4];
+        let error = product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND,
+                rows: 2,
+            },
+            3,
+            ByTheColumnsOfTheResult {
+                values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND,
+                cols: 0,
+            },
+            &mut c,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "cols",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+        let error = product(
+            TheFirstOperand::ByTheValuesSummedOver {
+                values: &[],
+                rows: 2,
+            },
+            0,
+            ByTheValuesSummedOver {
+                values: &[],
+                cols: 2,
+            },
+            &mut c,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "inner",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    /// The same two combinations refuse a value that is not finite in
+    /// either operand, wherever in the buffer it sits.
+    #[test]
+    fn the_product_that_turns_its_first_operand_refuses_a_value_that_is_not_finite() {
+        let mut of_the_values_with_one_that_is_not_finite = B_THAT_IS_NOT_SYMMETRIC;
+        of_the_values_with_one_that_is_not_finite[3] = f64::NAN;
+        let mut of_the_columns_with_one_that_is_not_finite =
+            B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND;
+        of_the_columns_with_one_that_is_not_finite[3] = f64::NEG_INFINITY;
+        let of_the_values = ByTheValuesSummedOver {
+            values: &B_THAT_IS_NOT_SYMMETRIC,
+            cols: 2,
+        };
+        let of_the_columns = ByTheColumnsOfTheResult {
+            values: &B_THAT_IS_NOT_SYMMETRIC_THE_OTHER_WAY_ROUND,
+            cols: 2,
+        };
+        for (b, with_one_that_is_not_finite) in [
+            (
+                of_the_values,
+                ByTheValuesSummedOver {
+                    values: &of_the_values_with_one_that_is_not_finite,
+                    cols: 2,
+                },
+            ),
+            (
+                of_the_columns,
+                ByTheColumnsOfTheResult {
+                    values: &of_the_columns_with_one_that_is_not_finite,
+                    cols: 2,
+                },
+            ),
+        ] {
+            for place in 0..A_OF_2_BY_3_THE_OTHER_WAY_ROUND.len() {
+                let mut a = A_OF_2_BY_3_THE_OTHER_WAY_ROUND;
+                a[place] = if place % 2 == 0 {
+                    f64::NAN
+                } else {
+                    f64::INFINITY
+                };
+                let mut c = vec![0.0; 4];
+                let error = product(
+                    TheFirstOperand::ByTheValuesSummedOver {
+                        values: &a,
+                        rows: 2,
+                    },
+                    3,
+                    b,
+                    &mut c,
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(error, Error::NotFinite { argument: "a" }),
+                    "the error for the place {place} of {b:?} is {error}"
+                );
+            }
+            let mut c = vec![0.0; 4];
+            let error = product(
+                TheFirstOperand::ByTheValuesSummedOver {
+                    values: &A_OF_2_BY_3_THE_OTHER_WAY_ROUND,
+                    rows: 2,
+                },
+                3,
+                with_one_that_is_not_finite,
+                &mut c,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "b" }),
+                "the error for {b:?} is {error}"
+            );
         }
     }
 

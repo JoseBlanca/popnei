@@ -1,14 +1,14 @@
-//! The faer backend: the four operations on faer, a linear algebra
+//! The faer backend: the six operations on faer, a linear algebra
 //! library written in Rust, which runs where there is no BLAS to link and
 //! natively when the crate is built with `--no-default-features`.
 //!
 //! faer reads a matrix the way it is told to, so here the buffers are
 //! given to it as what they are, row after row, and its functions are
 //! called as written: no transpose and no turn of the halves, which is
-//! what the BLAS backend beside this file needs. The one transpose here
-//! is the operand of `a b'` that the caller asked to be read the other
-//! way round, which is a matrix reference over the same values and not a
-//! copy.
+//! what the BLAS backend beside this file needs. The transposes here are
+//! the operands that the caller holds the other way round, the second of
+//! `a b'`, the first of `a' b` and both of `a' b'`, each of them a matrix
+//! reference over the same values and not a copy.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -125,6 +125,69 @@ pub(crate) fn product_by_transpose(
     // same values, read the other way round: faer walks them as they lie
     // and nothing is copied.
     matmul(c, Accum::Replace, a, b.transpose(), 1.0, the_threads());
+    Ok(())
+}
+
+/// Writes `a' b` into `c`, with `a` of exactly `inner` x `rows` values,
+/// `b` of `inner` x `cols` and `c` of `rows` x `cols`, all row after row
+/// and every dimension 1 at least.
+///
+/// # Errors
+///
+/// None, as for the products above.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
+)]
+pub(crate) fn product_of_the_transpose(
+    a: &[f64],
+    rows: usize,
+    inner: usize,
+    b: &[f64],
+    cols: usize,
+    c: &mut [f64],
+) -> Result<()> {
+    let a = MatRef::from_row_major_slice(a, inner, rows);
+    let b = MatRef::from_row_major_slice(b, inner, cols);
+    let c = MatMut::from_row_major_slice_mut(c, rows, cols);
+    // The transpose is another reference over the same values, as in the
+    // product above: nothing is copied.
+    matmul(c, Accum::Replace, a.transpose(), b, 1.0, the_threads());
+    Ok(())
+}
+
+/// Writes `a' b'` into `c`, with `a` of exactly `inner` x `rows` values,
+/// `b` of `cols` x `inner` and `c` of `rows` x `cols`, all row after row
+/// and every dimension 1 at least.
+///
+/// # Errors
+///
+/// None, as for the products above.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
+)]
+pub(crate) fn product_of_both_transposes(
+    a: &[f64],
+    rows: usize,
+    inner: usize,
+    b: &[f64],
+    cols: usize,
+    c: &mut [f64],
+) -> Result<()> {
+    let a = MatRef::from_row_major_slice(a, inner, rows);
+    let b = MatRef::from_row_major_slice(b, cols, inner);
+    let c = MatMut::from_row_major_slice_mut(c, rows, cols);
+    // Both operands are read the other way round, and both transposes are
+    // references over the same values: nothing is copied here either.
+    matmul(
+        c,
+        Accum::Replace,
+        a.transpose(),
+        b.transpose(),
+        1.0,
+        the_threads(),
+    );
     Ok(())
 }
 
