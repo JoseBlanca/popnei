@@ -95,68 +95,75 @@ on the threads of rayon; the product runs once per block, and twice per
 block when a genotype is missing; the eigendecomposition runs once per
 run; and both bindings run once per call.
 
-## 2. The verdict: apply, and the target is out of reach
+## 2. The verdict: apply, and the gap to plink2 is the file format
 
 One change was made and kept: **the panel with 3 in 100 genotypes missing
 falls from 0.695 s to 0.562 s**, 19 per 100, with the fully-called panel
 unchanged and every number of the result bit for bit what it was. Section
-9 has it. Two things decide what to do next, and the first is the larger.
+9 has it.
 
-**The 0.23 s cannot be reached by making popnei's own code faster, and
-this is now measured rather than argued.** Of the 0.399 s the fully-called
-panel takes, 0.225 s is inside Accelerate computing the one product the
-calculation is made of. That is 445 thousand million floating point
-operations a second, within about 5 per 100 of what the routine does on
-one thread of this machine: `docs/specs/pca.md` records the same call at
-10.5 ms a block on one thread, `crates/popnei-linalg/benches/ops.rs`
-measures the crate call at 10.973 ms, and the profile gives 11.3 ms. Three
-measurements of different things agree. **So the product alone is 97 per
-100 of plink2's entire 0.232 s.** Everything else popnei does — reading
-the file, standardizing the rows, checking that no value is infinite —
-would have to cost nothing at all, and the calculation would still only
-draw level.
+**Both programs compute the same product with the same library, and what
+separates them is everything around it.** A sampling profile of plink2
+itself, 40 runs, settles what popnei is being compared against.
+`CalcGrm` calls `LoadCenteredVarmajBlock`, which calls
+`ExpandCenteredVarmaj` and `PopulateRescaledDosage`, which call
+`GenoarrLookup16x8bx2`: plink2 expands its 2-bit genotypes into centered
+`f64` dosages through a 16-entry table, and hands the matrix to
+`libBLAS.dylib`, which is Accelerate, the library popnei calls. Where the
+two programs' time goes, as a share of each one's own run:
 
-The reason is not that popnei reads more bytes. Counted over the
-fully-called panel: the genotypes are 200 MB read twice, 400 MB; the
-standardized dosages are 800 MB written, 800 MB read by the finiteness
-scan and at least 800 MB read by the product. Packing the genotypes into 2
-bits, as plink2 holds them, would remove at most 350 MB of 2.8 GB, 13 per
-100 of the traffic, and none of it inside the library that holds 54 per
-100 of the run. **plink2's advantage is that it never builds the matrix of
-f64 at all**: it computes the cross product from the packed genotypes
-themselves. Section 2.2 of `docs/rust_core.md` already names this — "in
-compiled code the packed path is the fast one, which is the first thing a
-Rust core gets to revisit" — and this review is where that comes due. It
-is a change to how the kinship is computed, not a tuning of what is
-there, and section 5 puts it to the owner as such.
+| | popnei | plink2 |
+|---|---|---|
+| the product, in Accelerate | 54.1 | 88.1 |
+| reading the file | 26.5 | 0.3 |
+| turning genotypes into standardized dosages | 14.2 | 7.3 |
+| checking that no value is infinite | 4.6 | none |
+| writing the matrix out | none | 4.1 |
 
-**What is reachable is on the other panel, and it is large.** On the panel
-with 3 in 100 genotypes missing, 41 per 100 of the run is spent working
-out how many variants each pair had called in both of its individuals:
-0.089 s building a 40 MB matrix of ones and zeros, and 0.230 s
-multiplying that matrix by itself. Both can go. The same denominator is
-inclusion and exclusion over exact integer counts — `kept` less the
-variants each individual is missing, plus the variants both are missing —
-and at 3 in 100 missing the pairwise term is about 2.2 million increments
-a block against 5 thousand million floating point operations. Because both
-routes sum whole numbers below 2^53, the denominators come out bit for
-bit the same. That is H1, **the largest gain this review found and the one it took**: a
-matching profile, a mechanism, and a proof that it changes no result. It
-is at `d222d27` and section 9 has its numbers.
+In seconds of the fully-called panel: plink2 spends about 0.202 s in the
+product and 0.028 s on everything else; popnei spends 0.225 s in the
+product and 0.174 s on everything else. **The product is within about a
+tenth of the same in both. The whole of the 0.169 s that separates them is
+popnei's reading and its row pass.**
 
-Beside it, the next largest item on the fully-called panel is not
-arithmetic at all: **the file is read on the same thread that then does
-the product, so 0.110 s of reading never overlaps with 0.225 s of
-computing.** `docs/architecture.md` section 3 asks for a read-ahead thread
-one block ahead and there is none in the code. That is H2. It is worth up
-to the whole 0.110 s and it changes no result, and **it is the one that
-costs the most to build**: a thread, a channel, a second block alive, and
-a path of its own for a browser, which has no threads. It also raises a
-question only the owner can settle, which is whether a run with a reading
-thread still counts as the "one thread" the comparison with `plink2
---threads 1` is made on. O5 puts that as a choice with its options.
+**So the target is not out of reach, and what stands between is the format
+of the file.** A `.pgen` holds a genotype in 2 bits, so plink2's whole
+panel is 24 MB read straight with `fread` and no decompression, which is
+why reading is 0.3 per 100 of its run; and because the format has already
+reduced a genotype to a 2-bit code, expanding it is one indexed table
+lookup, which is why that is 7.3 per 100. popnei's vars file is 78 MB of
+lz4-compressed Arrow holding one byte per allele, so reading it is 0.110 s
+of decompression and the row pass has to count the alleles, find the major
+one, build a code per individual and count the codes before it can do the
+same lookup. Section 2.2 of `docs/rust_core.md` ends "in compiled code the
+packed path is the fast one, which is the first thing a Rust core gets to
+revisit", and this profile is where that comes due — not, as this review
+first concluded, because the packed path avoids the matrix product, but
+because it makes reading and standardizing nearly free. O1 puts it to the
+owner.
 
-**Two correctness matters were found by measuring and are in section 5.**
+Two things follow for what to do next, and neither is about the product.
+
+**The largest gain this review found is on the other panel and it was
+taken.** With 3 in 100 genotypes missing, 41 per 100 of the run worked out
+how many variants each pair had called in both: 0.089 s building a 40 MB
+matrix of ones and zeros and 0.230 s multiplying it by itself. The same
+denominator is inclusion and exclusion over exact integer counts — `kept`
+less the variants each individual is missing, plus the variants both are
+missing — and because both routes sum whole numbers below 2^53 the
+denominators come out bit for bit the same. That is H1, at `d222d27`.
+
+**The next largest on the fully-called panel is not arithmetic either:
+the file is read on the thread that then does the product**, so 0.110 s of
+reading never overlaps with 0.225 s of computing.
+`docs/architecture.md` section 3 asks for a read-ahead thread one block
+ahead and there is none in the code. That is H2. It changes no result and
+**it is the one that costs the most to build**: a thread, a channel, a
+second block alive, and a path of its own for a browser, which has no
+threads. It overlaps the reading rather than making it cheaper, so it and
+O1 are alternatives for the same 0.110 s and not additions.
+
+**Two correctness matters were found by measuring and are in section 6.**
 One is that the rule "no result of popnei depends on the number of
 threads" is asserted by no test. The other is that on faer, which is the
 browser's arithmetic, the number of components a kinship gives can change
@@ -228,26 +235,38 @@ of them does: popnei its vars file, pyNei its own, plink2 its `.pgen`.
 | plink2 `--make-rel square` | **0.232 s** | **0.805 s** |
 
 popnei is the best of five after one untimed run, and the second
-invocation of each gave 0.401 and 0.716 s. plink2 is the mean over 20 runs of the
-whole command under `hyperfine`, the tool that runs a command again and
-again and reports the spread, after one warm run; 232.3 ms with a standard deviation
-of 6.7 and a range of 229.6 to 256.1, and 804.5 ms with a deviation of 7.4
-and a range of 794.3 to 824.1. pyNei is the best of three, and its runs
-spread by under 2 per 100. The memory is the largest resident the Python
-process reached.
+invocation of each gave 0.401 and 0.716 s. plink2 is the mean over 20 runs
+of the whole command under `hyperfine`, the tool that runs a command again
+and again and reports the spread, after one warm run: 232.3 ms with a
+standard deviation of 6.7 and a range of 229.6 to 256.1, and 804.5 ms with
+a deviation of 7.4 and a range of 794.3 to 824.1. pyNei is the best of
+three, and its runs spread by under 2 per 100. The memory is the largest
+resident the Python process reached.
 
 **plink2's 232.3 ms reproduces the 0.23 s that "Speed" of
 `docs/specs/kinship.md` gives it**, so the target is confirmed as a figure
 for the panel with every genotype called, which the spec says but which no
-measurement in the repository had shown. Asking plink2 to write its matrix
-as binary instead of as the 10 MB of text it writes by default moves it by
-1 ms, 231.4 against 232.3, so the difference in what the two programs
-write is not in these numbers.
+measurement in the repository had shown.
+
+**Two things that could have made the comparison unequal were checked and
+do not.** Asking plink2 to write its matrix as binary instead of as the 10
+MB of text it writes by default moves it by 1 ms, 231.4 against 232.3. And
+`plink2 --threads 1` caps plink2's own pool but not Accelerate's, which
+reads `VECLIB_MAXIMUM_THREADS`, so plink2 was timed again with that
+variable set to 1, as popnei's runs have it: 230.0 ms with a deviation of
+2.2 against 229.4 with a deviation of 2.0, and 813.1 against 803.9 on the
+other panel. Accelerate's own threads are worth nothing to plink2 at this
+size, which is what the concurrency reviewer predicted from the matrix
+units being shared by a cluster of cores rather than held one per core.
+The two programs' one-thread numbers are therefore comparable as they
+stand.
 
 **Three things that table says.**
 
 **popnei misses the target by 0.167 s and is 1.72 times plink2** on the
-panel the target is stated on.
+panel the target is stated on, and section 2 says where all of that 0.167 s
+is: not in the product, which the two programs do within a tenth of each
+other, but in reading the file and standardizing the rows.
 
 **popnei is faster than plink2 on the panel with genotypes missing**,
 0.713 s against 0.805 s before the change of section 9 and 0.562 s after
@@ -325,6 +344,24 @@ address each sample fell on: the 182 samples sit at the offset of
 `any_missing`, on the called panel alone, and the 1458 at the offset of
 the loop inside `the_called_genotypes_of`, on the missing panel alone.
 
+### How plink2's own profile was taken
+
+The split of plink2's time in section 2 is from `/usr/bin/sample` over 40
+runs of `plink2 --pfile bigcalled_plink --make-rel square bin --threads 1`,
+each sampled for its whole life, 9700 samples of which 4704 are a thread
+waiting and 4996 on the CPU. One run of plink2 is 0.23 s, too short to
+sample usefully on its own, so each run was started in the background and
+sampled by its process id, and the 40 were added up. The shares in section
+2 are of the 4996 on-CPU samples.
+
+What the call tree says, which is the part that matters more than the
+shares: `Plink2Core` calls `CalcGrm`, which calls `LoadCenteredVarmajBlock`
+→ `LoadBiallelicCenteredVarmaj` → `ExpandCenteredVarmaj` →
+`PopulateRescaledDosage` → `GenoarrLookup16x8bx2`, and then waits in
+`JoinThreadsInternal` while a worker runs `libBLAS.dylib`. The names carry
+it: plink2 rescales its genotypes into dosages, expands them centred, and
+multiplies them in Accelerate.
+
 **The product is at the machine's floor and is most of plink2's whole
 run.** Multiplying a 5000 x 1000 block by its own transpose into a
 1000 x 1000 accumulator, computing half of it, is 5.005e9 floating point
@@ -356,8 +393,8 @@ of section 6 in the order they should be run.
 
 1. **A recipe that shows an experiment did not move the numbers.** Nothing
    in the repository reproduces the four figures the kinship's tolerance
-   turns on, and no test varies the number of threads (H4). A script under
-   `tmp/` prints, for the two small reference panels under
+   turns on, and no test varies the number of threads, which is O2. A
+   script under `tmp/` prints, for the two small reference panels under
    `tests/reference/`, the largest difference from
    plink2's f64 matrix as a share of the largest entry, `num_vars`,
    `num_comps`, and the sha256 of the matrix and of the projections. It is
@@ -399,8 +436,8 @@ of section 6 in the order they should be run.
    H3. Gate on the same profile: `the_denominators_of_the_block`, and the byte
    search of the standard library that it calls and that the profile names
    `memchr_aligned`, must together fall from 366 of 12832 samples on
-   `bigcalled.vars` to under 20. Keep if the fully-called run falls at all; the site is
-   0.012 s of a 0.167 s gap.
+   `bigcalled.vars` to under 20. Keep if the fully-called run falls at
+   all; the site is 0.012 s of a 0.167 s gap.
 
 5. **Reading one block ahead**, H2. Before building anything, instrument:
    three `Duration`s around the reading of a block, the row pass and the
@@ -420,7 +457,7 @@ of section 6 in the order they should be run.
    The same run answers a correctness question the tests do not cover:
    whether the matrix is bit-identical at `VECLIB_MAXIMUM_THREADS` of 1
    and unset. It is two runs and a byte comparison, and every threading
-   experiment should be gated on it (H4).
+   experiment should be gated on it; it is the measured half of O2.
 
 7. **The browser, which has no number at all.** A copy of
    `js/popnei/bench/time_pca.mjs` calling `calcKinship`, run with `node
@@ -504,42 +541,63 @@ it is, with its number after it.
 
 ### For the owner
 
-**O1. Reaching 0.23 s means computing the product from the packed
-genotypes, which is a change to the calculation and not a tuning of it.**
-`crates/popnei/src/kinship.rs:450`. The numbers are in section 2. What is
-being decided: whether popnei ever takes plink2's route, computing the
-cross product of the standardized dosages from genotypes held two bits
-each, without materializing the matrix of f64 that Accelerate multiplies
-today.
+**O1. What separates popnei from plink2 is how a genotype is stored, and
+that is one decision covering two of popnei's costs.**
+`crates/popnei/src/io/vars.rs` and `crates/popnei/src/variant.rs`. The
+numbers are in section 2. What is being decided: whether popnei's own
+file format holds a genotype in 2 bits, as a `.pgen` does, instead of one
+byte per allele compressed with lz4.
+
+It is one decision and not two because the format pays twice. Reading a
+78 MB compressed file is 0.110 s of decompression where reading a 24 MB
+packed one is 0.3 per 100 of plink2's run; and a 2-bit code is already the
+thing the row pass spends its time producing, so plink2's whole
+standardizing is one indexed table lookup at 7.3 per 100 where popnei's
+row pass is 14.2. Together that is 0.169 s of popnei's 0.399 s, and it is
+the whole of the gap.
 
 The options.
 
-- **Take it.** Section 2.2 of `docs/rust_core.md` measured the packed path
-  in numpy and found it lost to floating point by 4 to 20 times there,
-  because numpy cannot fuse the unpacking, the popcount and the
-  accumulation into one pass, and it ends "in compiled code the packed
-  path is the fast one, which is the first thing a Rust core gets to
-  revisit". Nothing has measured it in compiled code. What it costs is a
-  second way of computing the kinship, with its own tests against the
-  first, and it would not help a browser as much as it helps here, since
-  faer is 9 times Accelerate on the same product and the packed path would
-  be popnei's own code on both.
-- **Leave it, and record the target as unreachable.** "Speed" of
-  `docs/specs/kinship.md` then says that the product alone is 0.225 s, 97
-  per 100 of plink2's whole 0.232 s on this machine, so what the spec sets
-  popnei against is not 0.23 s but something above 0.225 s plus whatever
-  reading the file costs.
-- **Take the smaller things instead**, H1, H2 and H3, which come to about
-  0.31 s on the panel with genotypes missing and about 0.12 s on the other,
-  and leave the fully-called panel at about 0.28 s against 0.232 s.
+- **Hold a genotype in 2 bits in the vars file.** The gain is bounded
+  above by 0.169 s on this panel and would bring popnei to about 0.25 s
+  against plink2's 0.230 s. What it costs is a change to popnei's own
+  format, which means a version of the file, a writer, a reader, and
+  either a migration or a decision that old files are read by the old
+  path; and it constrains what a vars file can hold, since 2 bits is a
+  diploid biallelic genotype and `docs/objectives.md` does not cap ploidy
+  at 2. **It is also not the kinship's alone**: every calculation that
+  reads genotypes gains the same, which is why it is a decision about the
+  format and not about this module.
+- **Leave the format and take H2 instead**, which overlaps the 0.110 s of
+  reading with the product rather than making it cheap. That is worth up
+  to 0.110 s of the 0.169 s, costs a thread and a channel in `block.rs`
+  rather than a file format, and helps every calculation too. The two are
+  alternatives for the same time and not additions.
+- **Leave both**, and record in "Speed" of `docs/specs/kinship.md` that
+  popnei's product is within a tenth of plink2's and that the difference
+  is the format, so the next reader does not look for the gap in the
+  arithmetic.
 
-Recommended: leave it and record the target, and take H1 and H3 now. The
-packed path is a plan of its own, it belongs with the association study
-that will read the same genotypes, and a review is not where a second
-implementation of the kinship should be decided. What makes this urgent
-rather than idle is that `docs/specs/kinship.md` states a target the code
-cannot reach, and a spec that states an unreachable number will be read as
-a defect by whoever comes next.
+Recommended: leave the format for now, take H2 when there is appetite for
+a thread in `block.rs`, and record the last option's sentence in the spec
+whichever way the rest goes. A format version is a plan of its own and it
+belongs with the association study, which will read the same genotypes a
+million times and gains far more from it than one pass of the kinship
+does. **What is urgent is only the sentence**: `docs/specs/kinship.md`
+states a target beside a prior — that the 0.65 s winnable against pyNei is
+all in the row pass — which this review has measured to be wrong, and a
+spec whose reasoning has been overtaken will send the next person to the
+wrong place.
+
+**This review's own first answer here was wrong and is worth recording so
+that it is not repeated.** It concluded from popnei's profile alone that
+plink2 must not be building a matrix of `f64`, since popnei's product
+alone was 97 per 100 of plink2's whole run. A profile of plink2 showed it
+builds the same matrix and calls the same library, and that the product is
+within a tenth of the same in both. The inference was from one program's
+profile about another program's mechanism, which is the kind of claim that
+needs its own measurement; taking it cost one round of the review's
+verdict.
 
 **O2. No test asserts that a result does not depend on the number of
 threads, though the rule is stated in three places.**
@@ -557,12 +615,23 @@ partial sum is an exact integer, and `dsyrk` was measured bit-identical at
 every pool size on both backends by
 `docs/reports/perf-linalg-2026-09-23.md` — but **no test would fail if a
 change broke it, and neither would any test fail if a change made the
-matrix depend on the size of a block.** What it costs to fix: one test
-that computes a kinship at two thread counts and compares the matrices as
-equal, and one that computes it at two block sizes and compares them at
-the spec's tolerance. This is a matter for a code review, which a
-performance review happened to find; it is here because every experiment
-below is gated on it.
+matrix depend on the size of a block.** The options.
+
+- **Add both tests**: one that computes a kinship at two thread counts and
+  compares the matrices as equal, and one that computes it at two block
+  sizes and compares them at the spec's tolerance. Costs two tests and a
+  few seconds of every run of the suite; the thread one has to build a
+  rayon pool inside itself, since the pool is process-wide.
+- **Add the thread one only**, which is the rule stated in three places,
+  and leave the block size to whoever changes it, since L5 says the
+  reference panels are one block at any setting and so cannot detect it
+  at all.
+- **Leave both**, and rely on the property holding by construction.
+
+Recommended: add the thread one now and leave the block size to L5. It is
+the rule popnei states about itself, it is cheap, and every experiment of
+section 4 is gated on it. This is a matter for a code review, which a
+performance review happened to find.
 
 **O3. On faer, how many components a kinship gives can change with the
 number of threads.** `crates/popnei/src/kinship.rs:319-326`. faer is the
@@ -638,7 +707,19 @@ nothing. From numbers already in the repository the kinship should take
 about 3.7 s in a tab on the fully-called panel and about 7.5 s on the
 other, with the product 85 to 90 per 100 of the run against 54 natively —
 which makes H1 worth far more in a browser than it is here. Nothing has
-measured it; item 7 of section 4 is the smallest measurement that would.
+measured it.
+
+The options: **measure it and state a target**, which costs the benchmark
+of item 7 of section 4, about the size of `js/popnei/bench/time_pca.mjs`;
+**measure it and record the number without stating a target**, which costs
+the same benchmark and commits to nothing; or **leave it**, and the
+kinship stays the one calculation of popnei whose behaviour in a browser
+nobody knows. Recommended: measure it and record the number, and set a
+target only once H1's gain there is known — the product is 85 to 90 per
+100 of a browser run, and H1 removes one of the two products on the panel
+with genotypes missing, so a target set today would be set against a
+number about to move.
+
 Memory may bind before time does: at 10000 individuals the pass holds an
 800 MB accumulator and, when a genotype is missing, an 800 MB matrix of
 denominators at the same time. That is 1.6 GB before the three matrices
@@ -824,8 +905,9 @@ matrix to compare against, and neither exists.
 **L6. A partial eigendecomposition is worth 22 to 33 per 100 and matters
 at 5000 individuals and above.** `crates/popnei/src/kinship.rs:311`.
 Confidence medium. Evidence: `docs/specs/linalg.md` measured the routine
-that computes a chosen range at 0.025, 0.18 and 4.9 s against 0.035, 0.27
-and 6.3 s for the whole decomposition. The kinship needs the largest
+that computes a chosen range of the eigenvalues, at 1000, 2000 and 5000
+individuals, at 0.025, 0.18 and 4.9 s, against 0.035, 0.27 and 6.3 s for
+the whole decomposition at the same three sizes. The kinship needs the largest
 eigenvalue and the ones asked for, and nothing in the result needs the
 rest. Effect on the numbers: the two routines differ in the last bits, so
 the spec's eigenvalue test must be re-run and reported. Cost: a fifteenth
@@ -957,6 +1039,13 @@ load average 1.61 to 1.79 throughout, with the baseline side rebuilt from
 | 3 in 100 genotypes missing | 0.695 and 0.696 s | **0.562 and 0.562 s** |
 | every genotype called | 0.394 and 0.395 s | 0.390 and 0.392 s |
 
+These four are a pair of their own and not the 0.399 s and 0.713 s of
+section 3. They were taken later, in one sitting, with the unchanged side
+rebuilt from `b89ea41` so that both sides ran within minutes of each
+other. What decides an experiment is the difference between two numbers
+taken together, and the same command drifts by about 2 per 100 from one
+sitting to another, so section 3's figures are not reused here.
+
 **The panel with genotypes missing falls by 0.133 s, 19 per 100**, against
 a threshold of 0.10 s, and the fully-called panel does not rise. **popnei
 now takes 0.562 s there against plink2's 0.805 s, 1.43 times faster.**
@@ -998,16 +1087,24 @@ JavaScript.
 **The crossover, and what it cost to find.** A trial binary ran both
 routes over one block of 5 million genotypes at twelve rates of missing
 genotypes, checking at each rate that the two give the same matrix. The
-product costs 5.1 picoseconds a multiply-add at every shape tried; one
-increment of the counted route costs 0.64 nanoseconds at 1000
-individuals, 0.98 at 3000 and 1.33 at 6000, because the matrix it walks
-is 8, 72 and 288 MB. So the two cross at a sum of the squares of 1 part in
-139 of the variants used times the individuals squared at 1000
-individuals, 1 in 289 at 3000 and 1 in 524 at 6000. The constant is the
-largest of the three, so the counted route is never the slower one up to
-6000 individuals; what that costs is that between about 4 and about 7 in
-100 genotypes missing at 1000 individuals a block takes the product where
-the counts would have been up to twice as fast.
+product does a fixed amount of work whatever the data, the variants used
+times the individuals squared multiply-adds, at 5.1 picoseconds each at
+every shape tried. The counted route does one increment for each pair of
+individuals that a variant is missing in both of, so its work is the sum,
+over the variants used, of the square of how many individuals each is
+missing in; an increment costs 0.64 nanoseconds at 1000 individuals, 0.98
+at 3000 and 1.33 at 6000, rising because the matrix it walks is 8, 72 and
+288 MB.
+
+Setting the two equal gives the point where they cross: the counted route
+wins while its sum of squares is below 1 part in 139 of the product's work
+at 1000 individuals, 1 in 289 at 3000 and 1 in 524 at 6000. One constant
+has to serve all three and it is the most cautious of them, 1 in 512.
+**That makes the counted route never the slower choice up to 6000
+individuals, and what it costs is that the route is sometimes not taken
+when it would have won**: at 1000 individuals a block between about 4 and
+about 7 in 100 genotypes missing goes to the product, where the counts
+would have been up to twice as fast.
 
 **What it added.** A struct of three buffers where the pass carried one;
 three private functions; one constant measured on this machine, which is
