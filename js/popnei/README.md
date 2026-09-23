@@ -4,20 +4,43 @@ The TypeScript package of popnei, a population genetics library whose
 calculations are written in Rust: the core crate compiled to WebAssembly,
 the code that a browser or node calls it through, and the functions and
 the result objects an application uses. What the package exports today is
-`init`, which loads the WebAssembly, `version`, the version of the core
-crate, `openVcf`, which reads the header of a VCF held as bytes and
-gives a `Variants`, the handle whose `iterBlocks` gives the genotypes block
-by block, `writeVars`, which gives back the bytes of a vars file with every
-variant of a `Variants`, `openVars`, which opens such bytes as another
-`Variants`, and `calcPairwiseKosmanDists`, which gives the Kosman distance
-of every pair of individuals of a `Variants` in a `Distances`.
-A vars file is one arrow IPC file, also called feather v2,
-which pandas, R and polars open as a table with no popnei installed: it is
-where a user keeps their variants once the VCF has been read. Each of the
-three consumers, `iterBlocks`, `writeVars` and `calcPairwiseKosmanDists`,
-gives back the counts of the
-pass it made over the source, in a `passStats`: how many variants it took,
-and how many each filter of the `Variants` was given and kept. A filter is
+`init`, which loads the WebAssembly and is awaited before anything else is
+called, and `version`, the version of the core crate; `openVcf`, which
+reads the header of a VCF held as bytes and gives a `Variants`, the handle
+whose `iterBlocks` gives the genotypes block by block; `writeVars`, which
+gives back the bytes of a vars file with every variant of a `Variants`, and
+`openVars`, which opens such bytes as another `Variants`. A vars file is
+one arrow IPC file, also called feather v2, which pandas, R and polars open
+as a table with no popnei installed: it is where a user keeps their
+variants once the VCF has been read.
+
+Three calculations read the variants of a `Variants`.
+`calcPairwiseKosmanDists` gives, in a `Distances`, the Kosman distance of
+every pair of individuals, how many alleles the two do not share at a
+variant averaged over the variants at which both were called, which runs
+from 0 for two individuals with the same genotype everywhere to 1 for two
+that share no allele anywhere, and which is what a tree or a principal
+coordinate analysis of individuals is built from.
+`calcRogersHuffR2Matrix` gives, in an `R2Matrix` with the chromosome and
+the position of each variant, r² for every pair of variants, the square of
+the correlation between their dosages over the individuals called at both,
+where the dosage of a genotype is how many of its alleles are not the major
+allele of its variant: it is 1 when the dosage at one variant fixes the
+dosage at the other and 0 when knowing one says nothing about the other.
+`doPcaFromVariants` gives, in a `VariantsPcaResult`, the principal
+components of the individuals over those same dosages, where each of them
+is a direction along which the individuals differ most: the projection of
+every individual on the first ones, how much of the variance each holds and
+the weight every variant has in them. `doPca` gives the components of a
+table of individuals and traits handed to it as numbers, which is the same
+analysis over values an application holds and not over a source of
+variants.
+
+Each of the five consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`calcPairwiseKosmanDists`, `calcRogersHuffR2Matrix` and
+`doPcaFromVariants`, gives back the counts of the pass it made over the
+source, in a `passStats`: how many variants it took, and how many each
+filter of the `Variants` was given and kept. A filter is
 a step, a method of the `Variants` that `steps` then lists, and there are
 four of them: `filterByMissingData`, which keeps the variants whose missing
 genotypes divided by all the individuals are at most the threshold it is
@@ -27,11 +50,13 @@ genotypes divided by its called ones, and `filterByLd`, which keeps the
 variants whose r² against every variant kept within a window behind them on
 their chromosome is at most the threshold, so that what is left does not
 repeat what a variant near it already said.
+
 Section 11 of `docs/architecture.md` has the design, `crates/popnei-js` is
 the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
 `docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
-`docs/specs/filters.md` and `docs/specs/dists.md` say what they give.
+`docs/specs/filters.md`, `docs/specs/dists.md`, `docs/specs/pca.md` and
+`docs/specs/ld.md` say what they give.
 
 ## Building it
 
