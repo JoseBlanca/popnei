@@ -659,6 +659,33 @@ impl PopDistMeasure {
             .unwrap_or("")
     }
 
+    /// The measures a pass gives a value for today, Hudson's F_ST and f_2,
+    /// which work package 1 of `docs/plans/dists-pops.md` calculates.
+    ///
+    /// Its work packages 2 and 3 add the other five, and both packages
+    /// refuse a measure that is not here, so that nobody reads a vector of
+    /// NaN as a distance. It is in the core, as [`NAMES`](PopDistMeasure::NAMES)
+    /// is, so that a measure is added to the two packages by adding the
+    /// formula of [`value_of`] and this array, both of which are in this
+    /// file.
+    pub const THAT_HAVE_A_VALUE: [PopDistMeasure; 2] = [PopDistMeasure::Fst, PopDistMeasure::F2];
+
+    /// Whether a pass gives this measure a value today.
+    #[must_use]
+    pub fn has_a_value(self) -> bool {
+        PopDistMeasure::THAT_HAVE_A_VALUE.contains(&self)
+    }
+
+    /// The names of the measures that have a value today, which the two
+    /// packages refuse the other five by and name in the refusal.
+    #[must_use]
+    pub fn names_that_have_a_value() -> Vec<&'static str> {
+        PopDistMeasure::THAT_HAVE_A_VALUE
+            .iter()
+            .map(|measure| measure.name())
+            .collect()
+    }
+
     /// The measure a user named.
     ///
     /// # Errors
@@ -786,7 +813,9 @@ impl PairSums {
 /// way: the binding crates write a NaN for a `None` as well.
 ///
 /// The five measures below them are the work packages 2 and 3 of
-/// `docs/plans/dists-pops.md` and have no value until those are written.
+/// `docs/plans/dists-pops.md` and have no value until those are written,
+/// which is what [`PopDistMeasure::THAT_HAVE_A_VALUE`] names and what both
+/// packages refuse them by.
 fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
     if sums.num_vars == 0 {
         return None;
@@ -2946,6 +2975,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The measures of [`PopDistMeasure::THAT_HAVE_A_VALUE`] are the ones a
+    /// pass gives a number for, and the other five give none. Both packages
+    /// refuse a measure by that array, so a measure written into
+    /// [`value_of`] and not into it is refused although popnei calculates
+    /// it, and one written into the array and not into `value_of` gives a
+    /// user a vector of NaN read as a distance.
+    #[test]
+    fn the_measures_that_have_a_value_are_the_ones_a_pass_gives_a_number_for() {
+        let sums = sums_of_the_worked_example(JackknifeGroups::None);
+
+        for measure in [
+            PopDistMeasure::Fst,
+            PopDistMeasure::F2,
+            PopDistMeasure::Chord,
+            PopDistMeasure::Da,
+            PopDistMeasure::Dest,
+            PopDistMeasure::Gst,
+            PopDistMeasure::GstStandardized,
+        ] {
+            assert_eq!(
+                sums.measure(measure, 0, 1).is_some(),
+                measure.has_a_value(),
+                "the measure {}",
+                measure.name()
+            );
+        }
+        assert_eq!(PopDistMeasure::names_that_have_a_value(), ["fst", "f2"]);
     }
 
     /// The six sums of one pair within one group are 48 bytes, the five f64

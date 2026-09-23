@@ -16,7 +16,10 @@
  * verified against and the numbers the tests assert.
  */
 
-import { default_min_num_individuals as defaultMinNumIndividuals } from "../wasm/popnei.js";
+import {
+  default_min_num_individuals as defaultMinNumIndividuals,
+  pop_dist_measures_that_have_a_value as measuresThatHaveAValue,
+} from "../wasm/popnei.js";
 
 import {
   namesOf,
@@ -56,17 +59,6 @@ const THE_MEASURES = [
  * reach with the diversity the two hold.
  */
 export type PopDistMeasure = (typeof THE_MEASURES)[number];
-
-/**
- * The measures that have a value today, Hudson's F_ST and f_2, which work
- * package 1 of `docs/plans/dists-pops.md` calculates.
- *
- * Its work packages 2 and 3 add the other five, and asking for one of those
- * is refused until they do, so that nobody reads a vector of NaN as a
- * distance. Removing the refusal is this array alone: `theMeasures` below
- * reads it and nothing else does.
- */
-const MEASURES_THAT_HAVE_A_VALUE: readonly PopDistMeasure[] = ["fst", "f2"];
 
 /** One resampling group: its chromosome and the positions it holds. */
 export interface PopDistGroup {
@@ -419,9 +411,10 @@ function theGroups(
  * they named them, and the seven of them when they named none.
  *
  * Which names there are is the binding crate's rule, as the names of the
- * statistics are: what is refused here is what is no array of names, an
- * array of none, which would make a pass over the whole source for nothing,
- * and a measure that has no value yet.
+ * statistics are, and which of them have a value today is the core's: what
+ * is refused here is what is no array of names, an array of none, which
+ * would make a pass over the whole source for nothing, and a measure that
+ * has no value yet.
  *
  * @throws {Error} When `measures` is not an array of names, when it names
  * none, and when it names one of the five that are not calculated yet.
@@ -443,19 +436,22 @@ function theMeasures(
     );
   }
   const askedFor = [...new Set(asked)];
+  // Which of the seven have a value today is the core's, so that the
+  // measures the work packages 2 and 3 of `docs/plans/dists-pops.md` add are
+  // added there and not here as well.
+  const haveAValue = measuresThatHaveAValue() as PopDistMeasure[];
   // A name that is of none of the seven goes on to the binding crate, which
-  // refuses it with the seven: which names there are is the core's rule.
+  // refuses it with the seven: which names there are is the core's rule too.
   const notWrittenYet = askedFor.filter(
     (measure) =>
-      THE_MEASURES.includes(measure) &&
-      !MEASURES_THAT_HAVE_A_VALUE.includes(measure),
+      THE_MEASURES.includes(measure) && !haveAValue.includes(measure),
   );
   if (notWrittenYet.length > 0) {
     throw new Error(
       `popnei: ${named(notWrittenYet)} ` +
         `${notWrittenYet.length === 1 ? "is" : "are"} not calculated yet, ` +
         `and what popnei calculates today is ` +
-        `${named(MEASURES_THAT_HAVE_A_VALUE)}: ask for those`,
+        `${named(haveAValue)}: ask for those`,
     );
   }
   return askedFor;

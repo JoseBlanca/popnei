@@ -178,6 +178,21 @@ impl PopDistsOfAPass {
     }
 }
 
+/// The names of the measures of how far apart two populations are that
+/// popnei calculates today, Hudson's F_ST and f_2.
+///
+/// The package refuses the other five by this list and names these in the
+/// refusal, so that the measures the work packages 2 and 3 of
+/// `docs/plans/dists-pops.md` add are added in the core alone.
+#[wasm_bindgen]
+#[must_use]
+pub fn pop_dist_measures_that_have_a_value() -> Vec<String> {
+    PopDistMeasure::names_that_have_a_value()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Every measure of `asked.measures` for every pair of the populations of
 /// `asked`, over one pass of `source` through the steps of `steps`.
 ///

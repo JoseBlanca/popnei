@@ -70,12 +70,14 @@ class PopDistMeasure(StrEnum):
     the two populations hold, so that it reaches 1."""
 
 
-# The measures that have a value today. Hudson's F_ST and f_2 are what work
-# package 1 of `docs/plans/dists-pops.md` calculates; its work packages 2 and
-# 3 add the other five, and asking for one of those is refused here until
-# they do, so that nobody reads a vector of NaN as a distance. Removing the
-# refusal is this tuple and the `if` in `_the_measures` that reads it.
-_MEASURES_THAT_HAVE_A_VALUE = (PopDistMeasure.FST, PopDistMeasure.F2)
+# The measures that have a value today, which the core crate holds: Hudson's
+# F_ST and f_2 are what work package 1 of `docs/plans/dists-pops.md`
+# calculates, its work packages 2 and 3 add the other five, and asking for
+# one of those is refused here until they do, so that nobody reads a vector
+# of NaN as a distance. It is read from the core and not written here so that
+# a measure is added in one place and not in this package, in the TypeScript
+# one and in the core.
+_MEASURES_THAT_HAVE_A_VALUE = tuple(_core.pop_dist_measures_that_have_a_value())
 
 
 @dataclass(frozen=True, eq=False, repr=False)

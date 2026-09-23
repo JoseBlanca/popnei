@@ -377,6 +377,17 @@ fn the_table_of_the_groups<'py>(
     read_only(table.into_pyarray(py))
 }
 
+/// The names of the measures of how far apart two populations are that
+/// popnei calculates today, Hudson's F_ST and f_2.
+///
+/// The Python package refuses the other five by this list and names these
+/// in the refusal, so that the measures the work packages 2 and 3 of
+/// `docs/plans/dists-pops.md` add are added in the core alone.
+#[pyfunction]
+pub fn pop_dist_measures_that_have_a_value() -> Vec<&'static str> {
+    PopDistMeasure::names_that_have_a_value()
+}
+
 /// The measures a user asked for, out of the names the Python package gives
 /// them, which are the core's.
 ///
