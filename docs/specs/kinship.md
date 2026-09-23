@@ -357,15 +357,16 @@ this spec has not drifted.
 
 The two forms are for two different readers. The table of literals below is
 read from the text, by a person checking this spec by eye. The tests compare
-against the bits, within 1e-12 relative. The text alone is not a check of
-the arithmetic: six significant digits round an entry near 1 by up to 5e-6,
-so a comparison with it within 1e-5 absolute passes an error of up to 5e-6
-and has no room left to find one in. That rounding is also relative while
-such a bound is absolute, so the bound holds only while the entries stay
-near 1: on a panel of 60 individuals and 600 variants where most alleles are
-private, whose diagonal reaches 19.66, popnei is 1.14e-13 from plink2's bits
-and 1.83e-05 from the text of the same matrix, which a bound of 1e-5 would
-have called a failure of a right answer.
+against the bits, entry by entry, each one within 1e-13 of the largest
+absolute entry of the matrix, which the paragraph below settles. The text
+alone is not a check of the arithmetic: six significant digits round an entry
+near 1 by up to 5e-6, so a comparison with it within 1e-5 absolute passes an
+error of up to 5e-6 and has no room left to find one in. That rounding is
+also relative while such a bound is absolute, so it holds only while the
+entries stay near 1: on a panel of 60 individuals and 600 variants where
+most alleles are private, whose diagonal reaches 19.66, popnei is 1.14e-13
+from plink2's bits and 1.83e-05 from the text of the same matrix, which a
+bound of 1e-5 would have called a failure of a right answer.
 
 The two datasets are the same 200 individuals, `s000` to `s199`, and 1200
 biallelic diploid variants twice:
@@ -384,17 +385,39 @@ Against pyNei's `calc_kinship` on the same two panels, the largest absolute
 difference from the text plink2 prints is 4.95e-06 and 4.93e-06 over the
 40000 entries, and `num_vars` is 1200 in both. Those two numbers are the
 rounding of the six digits and not a difference of the arithmetic: against
-the bits, popnei is 4.44e-16 from plink2 on the panel with every genotype
-called and 5.55e-16 on the one with genotypes missing. As a ratio, every
-entry of both is within 4e-13 of plink2 and one is not within 3e-13, an
-entry of 4.88e-05 that is 1.59e-17 away: the largest ratios are all at the
-smallest entries, where the two add the same products in a different order.
-The 1e-12 the tests hold them to is between two and three times that.
+the bits, the largest difference is 4.44e-16 on the panel with every
+genotype called and 5.55e-16 on the one with genotypes missing, both with
+the linear algebra on Accelerate.
+
+**The bound is a share of the matrix and not of the entry, and it has to
+hold on both backends of the linear algebra.** An entry of this matrix is a
+sum of products that cancel, so it can be as near 0 as the data makes it,
+and the rounding of that sum does not shrink with it: the difference from
+plink2 is about 1e-16 of the largest entry wherever it falls, and dividing
+it by an entry of 1.3e-05 gives a ratio of 1.5e-12 that says nothing about
+the arithmetic. So each entry is compared within a share of the largest
+absolute entry of plink2's matrix, 1.23 on both panels. Measured over the
+40000 entries of each panel on 24 September 2026, the largest difference as
+a share of that entry is
+
+| backend | panel_called | panel |
+|---|---|---|
+| BLAS and LAPACK, Accelerate on an Apple M5 Pro | 3.6e-16 | 4.5e-16 |
+| faer, which is what `--no-default-features` and both wasm targets build | 3.3e-15 | 2.3e-15 |
+
+faer is about seven times further from plink2 than Accelerate on the same
+data, which is a different order and blocking of the same sums: the worst
+error a sum of 1200 products can carry is 1200 times the epsilon of an
+`f64`, 2.7e-13 of the scale, and both are far below it. The bound is 1e-13,
+thirty times the worst of the four. It replaces a bound of 1e-12 relative to
+the entry, which held on Accelerate and failed on faer at one entry of the
+panel with genotypes missing, and which allowed 1.2e-12 at the largest entry
+where this allows 1.2e-13.
 
 The cargo tests read the two VCFs with the VCF reader, call `calc_kinship`
 of "The Rust interface", and compare the whole of each matrix, all 40000
-entries, with `tests/reference/kinship/<name>.plink2.rel.bin.gz` within
-1e-12 relative. Beside that, one test for each entry of the table below
+entries, with `tests/reference/kinship/<name>.plink2.rel.bin.gz` by that
+rule. Beside that, one test for each entry of the table below
 asserts the digits plink2 printed for it, within 1e-5 absolute, which is
 what six significant digits of an entry near 1 allow and is the bound the
 table and no other test is held to.
