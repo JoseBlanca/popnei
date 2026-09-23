@@ -262,6 +262,18 @@ nothing rounded away. Those two are what would catch a wrong digit that the
 printed references could not. No work package rests on a printed reference
 alone.
 
+Those two numbers are where to start and not where to stop. 1e-9 and 1e-12
+were chosen here for being small, which is not evidence of anything: a
+tolerance says something only once somebody knows how far it is from the
+difference it is allowing. So each of them is lowered until it fails and
+then set two or three times above where it broke, and the implementation
+plan records both numbers. The kinship found on 23 September 2026 what
+happens without that: its matrix matches plink2's binary output to 4.44e-16
+absolute, which reads as a wide margin, while the worst entry as a **ratio**
+is 3.31e-13, so a 1e-12 relative bound has two to three times the worst case
+and not the thousandfold the absolute figure suggests. An absolute agreement
+is not a relative one, and the smallest entries are where they part.
+
 Each model item says what it is checked against and how closely. Three
 checks are common to all four:
 
