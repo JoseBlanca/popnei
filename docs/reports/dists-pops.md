@@ -396,3 +396,50 @@ checked against no program.
 mean corrected H_S, and on the five variant example that mean is 0.357143,
 so the division stays far from zero there. A case near it is still
 unwritten, and work package 2's deliverable 2 asks for one.
+
+### The fixes, second round: the errors and the messages
+
+Seven commits, `73f6b6a` to `887ec0d`, 242 986 tokens. `cargo test
+--workspace` gives `568 passed; 0 failed; 2 ignored` and `uv run pytest`
+`340 passed`, against 566 and 336 after the first round.
+
+**A Ctrl-C during a calculation now raises a keyboard interrupt.** It did
+not, and this is the one finding of the review that was a defect of code
+older than this work package. Between releasing the interpreter and
+building the numpy array, the Kosman distances asked numpy for its array
+interface without first answering the signal, and a Ctrl-C there came out
+as an exception that derives from `BaseException` and ends the user's
+session. The helper that answers it existed, in the principal coordinate
+analysis, and the new population distances had a copy of it written out by
+hand. It is now one helper in one place, called by all three, and
+`tests/test_interrupt.py`, whose three tests all interrupted the reading
+of blocks and none a calculation, interrupts both calculations.
+
+**An empty `pops` is refused with what the caller must do.** It reached
+the shared refusal of the statistics, whose message ends "leave `pops` out
+for one population of every individual" — advice a caller of this function
+cannot follow, since `pops` has no default here. Both packages now refuse
+it before the core with the rule this function has, two populations at
+least, and the statistics keep their own message.
+
+**Three places where a defect of popnei would have become a number.** A
+variant added into sums of the wrong size returned without a word, and now
+raises; a pair the core has no count for became a count of 0, which is
+also the legitimate count of a pair with no variant, and now raises in
+both binding crates. Neither is reachable today, which is why they were
+findings rather than failures: the owner's rule is that a silent wrong
+result is fixed whatever its odds.
+
+**Two messages named the wrong cause.** A machine that cannot hold the
+sums was told to cut the variants into longer groups even when no variant
+had been read and the populations alone were the cause, and a ploidy
+popnei cannot read was reported as the ploidy of a statistic of one
+variant. Each now names what the user gave. The spec's error list gained
+the three cases it did not have.
+
+**One finding not taken, with the reason.** An overflow of the counter of
+groups in `standard_error` becomes no standard error rather than an error.
+The subagent answered that the counter is bounded by the groups, which the
+memory already bounds, so it cannot overflow, and that raising there would
+change the `Option<f64>` the spec fixes for that method. The orchestrator
+weighed that as it weighs a reviewer and took it: the bound holds.
