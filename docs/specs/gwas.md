@@ -230,7 +230,24 @@ between 0 and 1.
 ### How it runs
 
 One pass over the blocks. The null model is fitted before the pass, from the
-trait, the design and the kinship alone, and no block is read for it. Then
+trait, the design and the kinship alone, and no block is read for it.
+
+Before its rows are read, every block is checked against the reader that
+gave it: a block with no variants, and one whose individuals or ploidy
+disagree with the reader's, are the two reader defects `docs/specs/block.md`
+names, and this pass refuses both with the errors that spec gives them. The
+check is not a formality. The drive over the rows pairs the genotypes cut
+into one chunk per variant with the output buffer cut into one row per
+individual, and a buffer sized from a ploidy that is not the block's comes
+out with fewer rows than there are variants; the pairing then truncates to
+the shorter of the two, so the variants past that point are not read at all
+and the pass returns as though the block had held only the ones it managed.
+Read on 23 September 2026 in `the_standardized_rows` of
+`crates/popnei/src/variant.rs`: one variant of five individuals at a block
+ploidy of 2, with a caller passing a ploidy of 5, gives 1 chunk of genotypes
+against 0 rows of buffer, so no row runs, no error is raised, and the
+variant is gone. A study that lost variants that way would report a count
+the user could mistake for variants that had no variance. Then
 each block is turned into its dosages, with rayon across the rows, and the
 variants that vary are tested together as a matrix, because every test but
 the logistic Wald one is a product of the block with something the null
@@ -307,6 +324,20 @@ most of the genome. So `beta` and `se` are compared within a tolerance times
 times `beta`; `p_value` is compared in `log10`, which is already a scale;
 and a check over a vector of numbers is against the largest of them and not
 each one.
+
+Where the right shape comes from, so that the next quantity does not have to
+be got wrong first. A bound is on the rounding of the sum that produced the
+number, and the rounding of a sum of `m` products is about `m` times the
+distance from 1 to the next `f64`, 2.2e-16, times the largest term of the
+sum. So the bound goes against whatever bounds the terms, and the terms are
+what the quantity is built from and not the quantity itself, which is why a
+value that cancelled to near 0 is no guide to its own error. For the kinship
+that scale is the largest entry of the matrix, since the sum of the absolute
+products of a pair is at most `m` times the square root of the two diagonal
+entries and so at most `m` times the largest entry; the bound is then loose
+by the ratio of the largest entry to that square root, measured at 1.4 times
+on both panels. For an effect size it is `se`, which is what the study's own
+arithmetic says the effect is uncertain by.
 
 The kinship met this on 23 September 2026 and it is why the rule is here.
 Its first bound was 1e-12 relative to each entry of the matrix, which looked
@@ -397,14 +428,34 @@ not a normal one.
 Against plink2 `--glm hide-covar` on the panel with every genotype called,
 with `cov1` and `cov2` as covariates, which writes
 `tests/reference/gwas/plink2.panel_called.glm.linear.tsv`, 1200 rows with no
-`NA`. plink2 tests the minor allele and popnei the non major one, which here
-are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
+`NA`. plink2 tests the minor allele and popnei the non major one. **On this
+panel they are the same**, so `allele_freq` is plink2's `A1_FREQ` and the
+signs agree; every genotype of it is called, and that is what makes the two
+conventions coincide.
+
+They are not the same in general, and `allele_freq` can pass a half. The
+major allele is the most frequent among the called **alleles**, which counts
+the called half of a half called genotype, while the mean that becomes
+`allele_freq` is over the whole called **genotypes**, which a half called
+one is not. So the allele the dosages are counted from is not always the one
+whose frequency is below a half. Run on 23 September 2026 on one variant of
+five individuals, `0/. 0/. 0/. 0/. 1/1`: the major allele is 0, on four
+called halves against two, while the only whole genotype is `1/1`, so the
+mean dosage is 2 and `allele_freq` is 1.0. popnei and pyNei agree on this,
+so it is a divergence from plink2 and not from the oracle, and neither
+reference panel shows it: one has every genotype called and the other has
+them missing whole.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
 frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
 `se` of that variant, for the reason above, which on this panel is between
-1.2e-6 and 3.2e-6 absolute and is comparable with the 5e-6 that six
-significant digits round `beta` by; and `p_value` within 1e-5 relative.
+1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
+
+Six significant digits round `beta` and `se` by up to 5e-7 absolute here, so
+the printing takes up to 41 per cent of that tolerance and leaves the
+arithmetic the rest. A tolerance is a budget shared between the rounding of
+the number it is compared against and the difference it is meant to catch,
+and the first share is worth computing rather than assumed to be small.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
@@ -1081,6 +1132,13 @@ pub struct GwasInput<'a> {
     pub transform_to_biallelic: bool,
 }
 ```
+
+`kinship`, when it is given, is checked before any model is fitted: that it
+holds `individuals.len()` times `individuals.len()` values, and that every
+one of them is finite. Neither is a thing a fit would notice. A matrix of
+the wrong length is read as another shape and gives numbers, and a NaN in
+one comes back much later as the linear algebra crate's refusal of a value
+that is not finite, naming a matrix at whichever routine met it first.
 
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
