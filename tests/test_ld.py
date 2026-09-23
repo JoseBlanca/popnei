@@ -301,23 +301,28 @@ def test_a_max_num_vars_below_the_variants_of_the_pass_is_refused() -> None:
     machine being asked for the memory. The message carries the variants the
     pass had given when it was stopped, the cap, and the bytes the matrix of
     those variants would have held, so that a user who raises the cap knows
-    what they are asking for. The cap is what the user wrote, which is wrong
-    whatever file is read, so the message names no file.
+    what they are asking for. It names the file the pass was reading, as the
+    dataset a principal component analysis is too large for does: the cap
+    and the variants that file holds decide together whether the cap is
+    passed, so a user who runs over a directory of VCFs is told which one
+    went over it. The cap that no matrix could be held under, the test
+    below, names no file, because that one is wrong before any file is
+    opened.
     """
     with pytest.raises(ValueError) as refusal:
         calc_rogers_huff_r2_matrix(_the_ld_dataset(), max_num_vars=100)
 
     message = str(refusal.value)
+    assert message.startswith(f"{REFERENCE_LD_DIR / 'ld.vcf.gz'}: "), message
     # The pass is stopped at the block that passes the cap, so the variants
     # it names are the first count above it, which is the whole file when the
     # reader gives it in one block, and the memory is the square of that
     # count, 8 bytes a pair.
-    said = re.match(r"the pass gave (\d+) variants and `max_num_vars` is 100", message)
+    said = re.search(r"the pass gave (\d+) variants and `max_num_vars` is 100", message)
     assert said is not None, message
     stopped_at = int(said.group(1))
     assert stopped_at > 100
     assert str(stopped_at * stopped_at * 8) in message
-    assert not message.startswith(str(REFERENCE_LD_DIR))
 
 
 def test_a_max_num_vars_whose_matrix_is_not_counted_is_refused() -> None:

@@ -553,14 +553,11 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdIndividualAskedForTwice { .. }
         | popnei::Error::LdDosagesTooLarge { .. }
         | popnei::Error::LdTooManyAllelesInAVariant { .. }
-        // The two of the `max_num_vars` of the matrix of every pair, which
-        // is the one number a user writes at that call: a pass that gave
-        // more variants than it, and a cap of more variants than this
-        // machine counts the pairs of. Both are found while a file is being
-        // read, and neither is about the file: what a user does about the
-        // first is raise the cap or filter the variants, whichever file
-        // they read.
-        | popnei::Error::LdTooManyVars { .. }
+        // The `max_num_vars` of the matrix of every pair that is more
+        // variants than this machine counts the pairs of, which is the one
+        // number a user writes at that call and nothing of any file: it is
+        // looked at before the pass, so the same number is refused whatever
+        // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
         // The matrix of the r², or one of the matrices it is worked out
         // through, that this machine did not give the memory of, which is
@@ -587,7 +584,17 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaNoVariantWithVariance
         | popnei::Error::PcaVariantWithMoreThanTwoAlleles { .. }
         | popnei::Error::PcaNoIndividual
-        | popnei::Error::PcaVariantsTooLarge { .. } => {
+        | popnei::Error::PcaVariantsTooLarge { .. }
+        // The pass that gave more variants than `max_num_vars`, which is
+        // of that same kind, a dataset larger than the calculation takes:
+        // the cap a user wrote and the variants the file holds decide it
+        // together, so a user who runs over a directory of files needs to
+        // know which of them the cap was too low for, and the message says
+        // both numbers and the memory the matrix of those variants would
+        // have needed. The cap that no matrix could be held under, above,
+        // names no file, because that one is wrong before any file is
+        // opened.
+        | popnei::Error::LdTooManyVars { .. } => {
             PyValueError::new_err(of_the_file(message, path))
         }
         // Everything else is a wrong input of a function, which a file

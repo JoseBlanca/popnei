@@ -119,7 +119,9 @@ def calc_rogers_huff_r2_matrix(
     square of its input, so a pass of more variants is a ``ValueError``,
     whose message says how many variants the pass had given, what the cap
     was and how much memory their matrix would have needed, and not a
-    machine asked for memory it has not. A user who wants the matrix of more
+    machine asked for memory it has not. That message names the file the
+    pass was reading, since the cap and the variants that file holds decide
+    together whether it is passed. A user who wants the matrix of more
     variants and has the memory raises it; one who has not puts a filter on
     the ``Variants`` first.
 
