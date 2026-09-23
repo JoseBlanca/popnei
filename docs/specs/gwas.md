@@ -534,7 +534,19 @@ chi square with one degree of freedom of `(beta / se)²`.
 A variant whose Wald fit runs away gets NaN for all three. Three things mark
 it, and popnei reproduces all three: a step that is not finite, which
 includes the system the factorization refuses as singular; a coefficient
-whose absolute value passes 30; and a fit still moving after 50 steps. The
+whose absolute value passes 30; and a fit still moving after 50 steps.
+
+The first of the three is tested as **not finite** and not as an infinity,
+which is what keeps the two backends of `docs/specs/linalg.md` giving the
+same answer. That crate lets through a diagonal entry that is neither 0 nor
+below it but whose reciprocal overflows, and there LAPACK gives an infinity
+where faer gives a NaN, each reporting success; measured by that spec on the
+2 x 2 with 4e-309 and 1 on its diagonal. Both fail a test for a value that
+is not finite, so the variant gets its three NaNs either way, and Python
+natively, Python under pyodide and TypeScript mark the same variants. If the
+owner ever has the crate refuse that entry instead, this module gets a
+`Singular` where it now gets an infinity, and that is already one of the
+three marks. The
 threshold of 30 is inherited from pyNei and nobody has measured it. A
 variant that separates the cases from the controls perfectly has no finite
 effect and is what these catch: the panel has exactly one, `var0006`.
@@ -966,8 +978,10 @@ combinations.
 Three things about that crate the fits have to know. It refuses what it is
 given and not what it produced, so a solve or an inverse off a covariance
 that is positive definite and nearly not can come back `Ok` holding an
-infinity; noticing a fit that has run away is this module's job, which is
-what the three marks of the logistic Wald test do. The rank uses numpy's
+infinity, or a NaN on the other backend; noticing a fit that has run away is
+this module's job, which is what the three marks of the logistic Wald test
+do, and testing them for a value that is not finite rather than for an
+infinity is what makes the two backends agree. The rank uses numpy's
 tolerance, which is what makes a design popnei refuses a design pyNei
 refuses. And the two backends agree on the rank between about 1e-300 and
 1e154; a design of dosages and covariates is nowhere near either end, since
