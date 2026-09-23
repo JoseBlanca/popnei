@@ -317,6 +317,60 @@ fn the_values_of_a_request(request: StackReq) -> usize {
     request.size_bytes().div_ceil(size_of::<f64>())
 }
 
+/// The thin QR of `a`, of exactly `rows` x `cols` values row after row
+/// with `rows` at least `cols` and `cols` 1 at least: `q` of exactly
+/// `rows` x `cols` values and the upper triangular `r` of exactly `cols`
+/// x `cols`, both written row after row and the lower half of `r` set
+/// to 0.
+///
+/// faer is given the buffer as it lies and copies nothing of it, where
+/// the BLAS backend writes the transpose of `a` into a buffer of its own
+/// because its two routines are much slower on the wide matrix that the
+/// buffer is in their view. faer builds the two matrices of its own,
+/// `compute_thin_Q` the `q` and `thin_R` the `r`, and what it leaves
+/// below the diagonal of that `r` is its own, so a 0 is written there.
+///
+/// Both run on the threads faer's own default takes, the global pool of
+/// rayon natively and one thread in WebAssembly, as the
+/// eigendecomposition below does: neither takes an argument for them.
+///
+/// # Errors
+///
+/// None: faer refuses nothing that the checks of `lib.rs` let through.
+/// The signature is the one of the BLAS backend, which fails when a
+/// dimension, or a workspace its routines ask for, is larger than the
+/// `i32` they take.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the two backends have the same signature, and the BLAS one fails when a dimension is larger than the i32 its routines take"
+)]
+pub(crate) fn thin_qr(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    q: &mut [f64],
+    r: &mut [f64],
+) -> Result<()> {
+    let factorization = MatRef::from_row_major_slice(a, rows, cols).qr();
+    let orthogonal = factorization.compute_thin_Q();
+    let triangular = factorization.thin_R();
+    for (row, entries) in q.chunks_exact_mut(cols).enumerate() {
+        for (column, entry) in entries.iter_mut().enumerate() {
+            *entry = orthogonal[(row, column)];
+        }
+    }
+    for (row, entries) in r.chunks_exact_mut(cols).enumerate() {
+        for (column, entry) in entries.iter_mut().enumerate() {
+            *entry = if column < row {
+                0.0
+            } else {
+                triangular[(row, column)]
+            };
+        }
+    }
+    Ok(())
+}
+
 /// The eigendecomposition of the symmetric `g`, of exactly `n` x `n`
 /// values row after row with its lower half filled and `n` 1 at least.
 ///

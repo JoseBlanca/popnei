@@ -1,6 +1,7 @@
 //! The BLAS and LAPACK backend: the routines of the library of the
 //! system, `dsyrk`, `dgemm`, which the four products of this module call,
-//! `dsyevd`, `dpotrf`, `dpotrs` and `dpotri`, the ones numpy calls.
+//! `dsyevd`, `dpotrf`, `dpotrs`, `dpotri`, `dgeqrf` and `dorgqr`, the ones
+//! numpy calls.
 //!
 //! Every matrix reaches this module row after row, and these routines read
 //! a matrix column after column. The buffer of an r x c matrix read that
@@ -15,6 +16,11 @@
 //! `c' = b' a`, which turns the routine's second operand instead, so it
 //! has `transa` `N` and `transb` `T`; and `c = a' b'` is `c' = b a`,
 //! whose two flags are both `T`. None of the four copies a buffer.
+//!
+//! The thin QR is the one function here that does copy: `dgeqrf` and
+//! `dorgqr` are much slower on the wide matrix that the buffer of a design
+//! is in their view than on the tall one it is, so it writes the transpose
+//! of that buffer into one of its own and calls them on that.
 //!
 //! The functions here are given slices whose lengths the caller has
 //! already cut to the dimensions, and they check nothing else: the checks
@@ -525,6 +531,284 @@ pub(crate) fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> 
             info,
         }),
     }
+}
+
+/// The thin QR of `a`, of exactly `rows` x `cols` values row after row
+/// with `rows` at least `cols` and `cols` 1 at least: `q` of exactly
+/// `rows` x `cols` values and the upper triangular `r` of exactly `cols`
+/// x `cols`, both written row after row and the lower half of `r` set
+/// to 0.
+///
+/// The buffer of `a` read column after column is the `cols` x `rows`
+/// matrix, the wide one, and the two routines are much slower on it than
+/// on the tall one: a design of 10000 x 5 took 2.98 ms that way and 0.165
+/// ms through the copy below, measured on 23 September 2026 and written
+/// in "What the seven of the GWAS cost" of `docs/specs/linalg.md`. So
+/// this backend writes the transpose of `a` into a buffer of its own,
+/// `rows` x `cols` values and 400 KB at that size, which is `a` held
+/// column after column, and calls them on that.
+///
+/// `dgeqrf` leaves the factorization in that buffer: its upper triangle
+/// is the `r`, and below the diagonal are the vectors that `dorgqr`
+/// builds the `q` from, which it writes over the whole of the buffer. So
+/// `r` is read out between the two calls.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when a dimension, or the workspace a routine
+/// asks for, is larger than the `i32` the routines take.
+/// [`Error::NoConvergence`] when a routine refused an argument it was
+/// given, which is a defect of popnei: neither has another reason to give
+/// an `info` other than 0.
+pub(crate) fn thin_qr(
+    a: &[f64],
+    rows: usize,
+    cols: usize,
+    q: &mut [f64],
+    r: &mut [f64],
+) -> Result<()> {
+    let m = the_i32_of(rows, "rows")?;
+    let n = the_i32_of(cols, "cols")?;
+    let mut column_major = the_column_major_copy_of(a, rows, cols);
+    // One coefficient for each column, which is what the factorization
+    // keeps beside the vectors it leaves in the matrix.
+    let mut coefficients = vec![0.0_f64; cols];
+    let mut info = 0_i32;
+
+    // Each routine says how much it wants to work in when it is called
+    // with the length of its workspace at -1, which is how LAPACK is
+    // asked, and writes that number into the first entry of the workspace
+    // it was given. It is what `eigh_lower` above asks `dsyevd`.
+    let mut asked = [0.0_f64; 1];
+    // SAFETY: with `lwork` at -1 the routine writes the first entry of
+    // `work` and reads nothing else of it, and `asked` holds one value;
+    // it reads and writes nothing of `a`, of `tau` or of `info` other
+    // than to store that size, and `column_major` holds rows * cols
+    // values, `coefficients` holds cols and `info` is one integer.
+    // Neither dimension is 0 and both fit in the `i32` the routine takes,
+    // which `the_i32_of` has just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dgeqrf(
+            m,
+            n,
+            &mut column_major,
+            m,
+            &mut coefficients,
+            &mut asked,
+            -1,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dgeqrf",
+            info,
+        });
+    }
+    let mut work =
+        vec![0.0_f64; the_workspace_of_the_thin_qr(cols, asked.first().copied().unwrap_or(0.0))];
+    let lwork = the_length_of_the_workspace_of_the_thin_qr(work.len())?;
+    // SAFETY: with `m` = rows, `n` = cols and `lda` = rows the routine
+    // reads and overwrites `a` as a column major matrix of rows x cols,
+    // which is the rows * cols values `column_major` holds; it writes one
+    // coefficient for each of the min(rows, cols) columns into `tau`,
+    // which is cols of them since rows is at least cols, and
+    // `coefficients` holds cols; and it works in the first `lwork` values
+    // of `work`, which holds exactly that many. It writes nothing else,
+    // and `info` is one integer. Neither dimension is 0 and all three
+    // lengths fit in the `i32` the routine takes, which `the_i32_of` and
+    // `the_length_of_the_workspace_of_the_thin_qr` have just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dgeqrf(
+            m,
+            n,
+            &mut column_major,
+            m,
+            &mut coefficients,
+            &mut work,
+            lwork,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dgeqrf",
+            info,
+        });
+    }
+
+    // The leading cols x cols corner of the factorization, before
+    // `dorgqr` writes the `q` over it. What is below its diagonal is the
+    // vectors of that `q` and no part of `r`, so that half is set to 0,
+    // which is what the interface of the crate gives.
+    write_the_rows_of(&column_major, rows, cols, r);
+    for (row, entries) in r.chunks_exact_mut(cols).enumerate() {
+        for entry in entries.iter_mut().take(row) {
+            *entry = 0.0;
+        }
+    }
+
+    let mut asked = [0.0_f64; 1];
+    // SAFETY: with `lwork` at -1 the routine writes the first entry of
+    // `work` and reads nothing else of it, and `asked` holds one value;
+    // it reads and writes nothing of `a`, of `tau` or of `info` other
+    // than to store that size, and the three slices hold what the call
+    // below says they hold. No dimension is 0 and all three fit in the
+    // `i32` the routine takes, which `the_i32_of` has already checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dorgqr(
+            m,
+            n,
+            n,
+            &mut column_major,
+            m,
+            &coefficients,
+            &mut asked,
+            -1,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dorgqr",
+            info,
+        });
+    }
+    let mut work =
+        vec![0.0_f64; the_workspace_of_the_thin_qr(cols, asked.first().copied().unwrap_or(0.0))];
+    let lwork = the_length_of_the_workspace_of_the_thin_qr(work.len())?;
+    // SAFETY: with `m` = rows, `n` = cols, `k` = cols and `lda` = rows
+    // the routine reads the vectors that `dgeqrf` left in `a` as a column
+    // major matrix of rows x cols and overwrites it with the first cols
+    // columns of the `q`, which is the rows * cols values `column_major`
+    // holds; it reads one coefficient for each of the k = cols vectors
+    // from `tau`, which holds cols; and it works in the first `lwork`
+    // values of `work`, which holds exactly that many. It writes nothing
+    // else, and `info` is one integer. No dimension is 0, `k` is at most
+    // `n` and `n` at most `m` since rows is at least cols, and all three
+    // lengths fit in the `i32` the routine takes, which `the_i32_of` and
+    // `the_length_of_the_workspace_of_the_thin_qr` have just checked.
+    #[expect(
+        unsafe_code,
+        reason = "the routines of LAPACK are declared as unsafe functions over slices whose lengths nothing checks against the dimensions, which is why they are called here and nowhere else in popnei"
+    )]
+    unsafe {
+        ::lapack::dorgqr(
+            m,
+            n,
+            n,
+            &mut column_major,
+            m,
+            &coefficients,
+            &mut work,
+            lwork,
+            &mut info,
+        );
+    }
+    if info != 0 {
+        return Err(Error::NoConvergence {
+            routine: "dorgqr",
+            info,
+        });
+    }
+    write_the_rows_of(&column_major, rows, cols, q);
+    Ok(())
+}
+
+/// The `rows` x `cols` matrix that the buffer holds row after row, held
+/// column after column instead, which is its transpose written out and
+/// what the routines of the thin QR are fast on. The buffer holds exactly
+/// `rows` x `cols` values and `rows` and `cols` are 1 at least.
+///
+/// The column `j` of a matrix held row after row is one value in every
+/// `cols` from the value `j`, and those are the values of the column `j`
+/// of the copy, one after another.
+fn the_column_major_copy_of(a: &[f64], rows: usize, cols: usize) -> Vec<f64> {
+    let mut column_major = vec![0.0_f64; a.len()];
+    for (column, into) in column_major.chunks_exact_mut(rows).enumerate() {
+        for (into, from) in into.iter_mut().zip(a.iter().skip(column).step_by(cols)) {
+            *into = *from;
+        }
+    }
+    column_major
+}
+
+/// Writes into `into`, row after row and `cols` to a row, as many first
+/// rows of the matrix that `column_major` holds column after column with
+/// `rows` rows as `into` has room for: the whole of it for a `q` of
+/// `rows` x `cols`, and the leading `cols` x `cols` corner for an `r`.
+///
+/// The row `i` of a matrix held column after column with `rows` rows is
+/// one value in every `rows` from the value `i`, which is what each row
+/// of `into` takes `cols` of.
+fn write_the_rows_of(column_major: &[f64], rows: usize, cols: usize, into: &mut [f64]) {
+    for (row, entries) in into.chunks_exact_mut(cols).enumerate() {
+        for (entry, from) in entries
+            .iter_mut()
+            .zip(column_major.iter().skip(row).step_by(rows))
+        {
+            *entry = *from;
+        }
+    }
+}
+
+/// How many floats `dgeqrf` and `dorgqr` work in for a matrix of `cols`
+/// columns: the larger of what the query asked for and `cols`, the
+/// minimum both routines document.
+///
+/// The query writes its number as an `f64`. An infinity, a NaN, a
+/// negative number and one above the `i32` the length is passed as are
+/// left out, and the minimum stands; a value that is a count is taken by
+/// its whole part, the fraction that the routine cannot have meant being
+/// dropped. It is what `the_workspace_of` below does with the query of
+/// `dsyevd`.
+fn the_workspace_of_the_thin_qr(cols: usize, asked: f64) -> usize {
+    let the_most_a_length_holds = f64::from(i32::MAX);
+    let asked = if asked.is_finite() && asked >= 0.0 && asked <= the_most_a_length_holds {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the line above has checked that the value is finite, is not negative and is at most i32::MAX, so it is a count this machine holds; what the cast drops is the fraction, which the routine cannot have meant, and the minimum below stands when what is left is smaller than it"
+        )]
+        let asked = asked as usize;
+        asked
+    } else {
+        0
+    };
+    asked.max(cols)
+}
+
+/// The length of a workspace of the thin QR as the `i32` the two routines
+/// take it as.
+///
+/// [`the_workspace_of_the_thin_qr`] gives no number above that `i32`, and
+/// `cols` is at most 46340 since `lib.rs` refuses a matrix of more than
+/// 2147483647 values, so this refuses nothing that reaches it: it is how
+/// the conversion is made without an `as` that could truncate in silence.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when the workspace is larger than that.
+fn the_length_of_the_workspace_of_the_thin_qr(values: usize) -> Result<i32> {
+    i32::try_from(values).map_err(|_| Error::Dimension {
+        argument: "cols",
+        expected: format!(
+            "small enough that the workspace dgeqrf and dorgqr ask for, {values} values here, is at most the {largest} their lengths are passed as",
+            largest = i32::MAX
+        ),
+    })
 }
 
 /// How many floats and how many integers `dsyevd` works in for a matrix of

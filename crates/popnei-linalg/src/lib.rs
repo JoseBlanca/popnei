@@ -3,13 +3,14 @@
 //! A calculation that reads a block of variants as a matrix, the principal
 //! component analysis, the kinship, the genome wide association study,
 //! needs a few operations of linear algebra, and this crate is the one
-//! place that has them. It holds ten: the product of a matrix with
+//! place that has them. It holds eleven: the product of a matrix with
 //! itself, [`add_self_product_lower`]; the eigendecomposition of a
 //! symmetric matrix, [`eigh_lower`]; the Cholesky factorization of a
 //! symmetric positive definite one, [`cholesky_lower`], the solve of a
 //! system with the matrix it factored, [`solve_with_cholesky`], the log of
 //! that matrix's determinant, [`log_determinant_with_cholesky`], and its
-//! inverse, [`invert_with_cholesky`];
+//! inverse, [`invert_with_cholesky`]; the thin QR factorization of a
+//! design, [`thin_qr`];
 //! and the product of two matrices, [`product`], which is the other four,
 //! because [`TheFirstOperand`] and [`TheSecondOperand`] each say how one
 //! matrix's buffer is laid out and the two together choose among `a b`,
@@ -704,6 +705,75 @@ pub fn invert_with_cholesky(l: &[f64], n: usize, inverse: &mut [f64]) -> Result<
     backend::invert_with_cholesky(l, n, inverse)
 }
 
+/// The thin QR factorization of a matrix with at least as many rows as
+/// columns, which [`thin_qr`] gives: the two matrices whose product is
+/// the matrix it was given.
+#[derive(Debug, Clone)]
+pub struct ThinQr {
+    /// `rows` x `cols`, row after row: the columns are of length 1 and at
+    /// right angles to each other. The sign of a column is the backend's.
+    pub q: Vec<f64>,
+    /// `cols` x `cols`, row after row: upper triangular, its lower half
+    /// 0, with `a = q r`.
+    pub r: Vec<f64>,
+}
+
+/// The thin QR factorization of `a` of `rows` x `cols`, row after row,
+/// with `rows` at least `cols` and `cols` 1 at least.
+///
+/// The `q` of `rows` x `cols` has columns of length 1 that are at right
+/// angles to each other, the `r` of `cols` x `cols` is upper triangular
+/// with its lower half 0, and `a` is `q r`. Fitting a linear model to
+/// more individuals than coefficients is this factorization of the design
+/// and then a solve against its `r`, which is the "least squares" that
+/// the `linalg` row of section 9 of `docs/architecture.md` names.
+///
+/// The sign of a column of `q`, and of the row of `r` that goes with it,
+/// is whatever the backend gave, as the sign of an eigenvector of
+/// [`eigh_lower`] is. Turning both round together leaves `q r` the matrix
+/// it was, so a caller that fits a model sees nothing of it, and one that
+/// reads a column of `q` by itself fixes the sign it wants.
+///
+/// `a` may hold more values than `rows` times `cols`, and then its first
+/// `rows` times `cols` are the matrix. The whole of it is read, both
+/// halves, a design being no more triangular than any other matrix.
+///
+/// # Errors
+///
+/// [`Error::Dimension`] when `cols` is 0, when `rows` is below `cols`,
+/// when `a` holds fewer than `rows` times `cols` values, or when `rows`
+/// times `cols` is more than 2147483647, which is what the routines of
+/// BLAS and LAPACK count in. [`Error::NotFinite`] when `a` holds a value
+/// that is not finite. [`Error::NoConvergence`] when a routine refused an
+/// argument it was given, which is a defect of popnei.
+pub fn thin_qr(a: &[f64], rows: usize, cols: usize) -> Result<ThinQr> {
+    if cols == 0 {
+        return Err(Error::Dimension {
+            argument: "cols",
+            expected: "1 at least, since r is the cols x cols matrix of the factorization"
+                .to_owned(),
+        });
+    }
+    if rows < cols {
+        return Err(Error::Dimension {
+            argument: "rows",
+            expected: format!(
+                "{cols} at least, the columns of a, since the thin QR is of a matrix with at least as many rows as columns, and it is {rows}"
+            ),
+        });
+    }
+    let a = the_matrix_of(a, rows, cols, "a")?;
+    refuse_a_value_that_is_not_finite(a, "a")?;
+    let mut q = vec![0.0_f64; a.len()];
+    // `cols` times `cols` is at most the `rows` times `cols` that
+    // `the_matrix_of` has just counted, so this refuses nothing that
+    // reaches it: it is how the count is made without an arithmetic that
+    // could overflow in silence.
+    let mut r = vec![0.0_f64; the_values_of(cols, cols, "cols")?];
+    backend::thin_qr(a, rows, cols, &mut q, &mut r)?;
+    Ok(ThinQr { q, r })
+}
+
 /// How many values a matrix of `rows` x `cols` holds.
 ///
 /// # Errors
@@ -915,9 +985,9 @@ fn the_diagonal_of(values: &[f64], n: usize) -> impl Iterator<Item = f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Eigen, Error, TheFirstOperand, TheSecondOperand, add_self_product_lower, cholesky_lower,
-        eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product, reverse_the_rows,
-        solve_with_cholesky,
+        Eigen, Error, TheFirstOperand, TheSecondOperand, ThinQr, add_self_product_lower,
+        cholesky_lower, eigh_lower, invert_with_cholesky, log_determinant_with_cholesky, product,
+        reverse_the_rows, solve_with_cholesky, thin_qr,
     };
 
     /// The A of 2 x 3 of "How it is verified" of `docs/specs/linalg.md`,
@@ -3241,6 +3311,255 @@ mod tests {
             let error = invert_with_cholesky(&l, 3, &mut inverse).unwrap_err();
             assert!(
                 matches!(error, Error::NotFinite { argument: "l" }),
+                "the error for the entry {entry} is {error}"
+            );
+        }
+    }
+
+    /// The design of "How the seven are verified" of
+    /// `docs/specs/linalg.md`, the 4 x 2 of an intercept and one
+    /// covariate, rows (1, 1), (1, 2), (1, 3) and (1, 4), row after row.
+    const THE_DESIGN_OF_4_BY_2: [f64; 8] = [
+        1.0, 1.0, //
+        1.0, 2.0, //
+        1.0, 3.0, //
+        1.0, 4.0,
+    ];
+
+    /// The `r` of that design, rows (2, 5) and (0, 2.23606797749979),
+    /// whose second diagonal entry is the square root of 5, with the sign
+    /// of each column taken so that the diagonal is positive.
+    const THE_R_OF_THE_DESIGN: [f64; 4] = [
+        2.0,
+        5.0, //
+        0.0,
+        2.23606797749979,
+    ];
+
+    /// The `q` of that design with the same sign taken, row after row: its
+    /// first column is (0.5, 0.5, 0.5, 0.5) and its second
+    /// (-0.6708203932499368, -0.22360679774997894, 0.223606797749979,
+    /// 0.6708203932499369), which is the covariate less its mean divided
+    /// by the length of that.
+    const THE_Q_OF_THE_DESIGN: [f64; 8] = [
+        0.5,
+        -0.6708203932499368, //
+        0.5,
+        -0.22360679774997894, //
+        0.5,
+        0.223606797749979, //
+        0.5,
+        0.6708203932499369,
+    ];
+
+    /// How far a factorization of that design may be from the two matrices
+    /// above: Accelerate gave -2.0 for the first entry of `r` and faer
+    /// -1.9999999999999998, which is one unit in the last place.
+    const THE_TOLERANCE_OF_THE_THIN_QR: f64 = 1e-14;
+
+    /// The factorization with the sign of each column of `q`, and of the
+    /// row of `r` that goes with it, taken so that the diagonal entry of
+    /// `r` in that row is positive. `cols` is the columns of both.
+    ///
+    /// The sign a backend gives is its own, and turning a column of `q`
+    /// and the row of `r` round together leaves their product as it was,
+    /// so this is what the spec compares after. On 23 September 2026
+    /// LAPACK, faer and numpy 2.5.3 all gave the negative diagonal for the
+    /// design above, and a backend that chose the other sign meets the
+    /// same assertions through this.
+    fn with_the_diagonal_of_r_positive(factorization: &ThinQr, cols: usize) -> ThinQr {
+        let signs: Vec<f64> = factorization
+            .r
+            .chunks_exact(cols)
+            .enumerate()
+            .map(|(row, entries)| match entries.get(row) {
+                Some(diagonal) if *diagonal < 0.0 => -1.0,
+                _ => 1.0,
+            })
+            .collect();
+        ThinQr {
+            q: factorization
+                .q
+                .chunks_exact(cols)
+                .flat_map(|row| row.iter().zip(&signs).map(|(entry, sign)| entry * sign))
+                .collect(),
+            r: factorization
+                .r
+                .chunks_exact(cols)
+                .zip(&signs)
+                .flat_map(|(row, sign)| row.iter().map(move |entry| entry * sign))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_thin_qr_of_the_design_of_4_by_2_gives_the_r_and_the_q_of_the_spec() {
+        let factorization = thin_qr(&THE_DESIGN_OF_4_BY_2, 4, 2).unwrap();
+        let factorization = with_the_diagonal_of_r_positive(&factorization, 2);
+        assert!(
+            !differ(
+                &factorization.r,
+                &THE_R_OF_THE_DESIGN,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the r is {r:?}",
+            r = factorization.r
+        );
+        assert!(
+            !differ(
+                &factorization.q,
+                &THE_Q_OF_THE_DESIGN,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the q is {q:?}",
+            q = factorization.q
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_writes_the_lower_half_of_r_as_zero() {
+        // What the routines of LAPACK leave below the diagonal there is
+        // the vectors the factorization is built from, and what faer
+        // leaves is its own, so the crate writes that half itself. It is
+        // read before the sign is fixed, which multiplies by 1 or -1 and
+        // would leave a 0 where it found one.
+        let factorization = thin_qr(&THE_DESIGN_OF_4_BY_2, 4, 2).unwrap();
+        let the_lower_half: Vec<f64> = factorization
+            .r
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .enumerate()
+            .flat_map(|(row, entries)| entries.iter().take(row).copied())
+            .collect();
+        assert_eq!(
+            the_lower_half,
+            vec![0.0],
+            "the r is {r:?}",
+            r = factorization.r
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_of_the_design_multiplies_back_to_the_design() {
+        // `a = q r` is what the factorization is for, and it holds
+        // whichever sign the backend chose, so this is asserted on what
+        // the backend gave. The two matrices have different dimensions, 4
+        // x 2 and 2 x 2, so a backend that wrote one where the other goes
+        // fails here as well as above.
+        let factorization = thin_qr(&THE_DESIGN_OF_4_BY_2, 4, 2).unwrap();
+        let mut design = vec![0.0_f64; 8];
+        product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: &factorization.q,
+                rows: 4,
+            },
+            2,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &factorization.r,
+                cols: 2,
+            },
+            &mut design,
+        )
+        .unwrap();
+        assert!(
+            !differ(&design, &THE_DESIGN_OF_4_BY_2, THE_TOLERANCE_OF_THE_THIN_QR),
+            "q r is {design:?}"
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_reads_the_first_values_of_an_a_that_holds_more() {
+        let mut a = THE_DESIGN_OF_4_BY_2.to_vec();
+        a.push(7.0);
+        let factorization = thin_qr(&a, 4, 2).unwrap();
+        let factorization = with_the_diagonal_of_r_positive(&factorization, 2);
+        assert!(
+            !differ(
+                &factorization.r,
+                &THE_R_OF_THE_DESIGN,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the r is {r:?}",
+            r = factorization.r
+        );
+        assert!(
+            !differ(
+                &factorization.q,
+                &THE_Q_OF_THE_DESIGN,
+                THE_TOLERANCE_OF_THE_THIN_QR
+            ),
+            "the q is {q:?}",
+            q = factorization.q
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_refuses_a_cols_of_zero() {
+        let error = thin_qr(&[], 4, 0).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "cols",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_refuses_an_a_of_fewer_rows_than_columns() {
+        // The 2 x 4 written where the 4 x 2 goes, which holds the eight
+        // values either way and which no other check would catch.
+        let error = thin_qr(&THE_DESIGN_OF_4_BY_2, 2, 4).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Dimension {
+                    argument: "rows",
+                    ..
+                }
+            ),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_refuses_an_a_shorter_than_rows_times_cols() {
+        let a = [0.0; 7];
+        let error = thin_qr(&a, 4, 2).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_refuses_a_dimension_above_what_the_routines_count_in() {
+        // 2^31 rows of one column, one value more than the largest an i32
+        // holds. The check comes before the one of the length of the
+        // buffer, so an empty slice reaches it, and it is made whichever
+        // backend would run.
+        let error = thin_qr(&[], 1 << 31, 1).unwrap_err();
+        assert!(
+            matches!(error, Error::Dimension { argument: "a", .. }),
+            "the error is {error}"
+        );
+    }
+
+    #[test]
+    fn the_thin_qr_refuses_a_value_that_is_not_finite_anywhere_in_a() {
+        // The whole of a design is read, both halves, so the entry of the
+        // first row and second column, which a check of the lower half
+        // alone would walk past, is refused as the last entry is.
+        for entry in [1_usize, 7] {
+            let mut a = THE_DESIGN_OF_4_BY_2;
+            a[entry] = f64::NAN;
+            let error = thin_qr(&a, 4, 2).unwrap_err();
+            assert!(
+                matches!(error, Error::NotFinite { argument: "a" }),
                 "the error for the entry {entry} is {error}"
             );
         }
