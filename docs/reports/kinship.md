@@ -8,7 +8,62 @@ from the panel share, from `docs/specs/kinship.md`. The work is on the
 branch `plan/kinship` in the worktree `.claude/worktrees/kinship`, and
 nothing of it is on `main`.
 
-State: under way, work package 1 of 3.
+State: done. Every task is ticked, every deliverable checked, and the branch
+is `plan/kinship`, waiting on the owner to merge it.
+
+## What exists now that did not
+
+`calc_kinship(variants, individuals=None, transform_to_biallelic=False)` in
+Python and `calcKinship` in TypeScript give the genomic relationship matrix
+of a set of variants, with its per pair denominators, how many variants it
+used and how many the pass gave, the pass stats, and `filter_individuals` on
+the result. `Kinship.principal_components(num_pcs)` and
+`principalComponents(numPcs)` give the directions along which the panel
+varies most, ready to pass to `calc_gwas` as covariates. A `Kinship` can
+also be built by hand from a matrix a user brings from plink2 or a pedigree.
+
+Every entry of both reference panels is plink2's within 1e-13 of the largest
+entry of the matrix, on both linear algebra backends, and is pyNei's. The
+first components are pyNei's, and the first one separates the three
+subpopulations of the panel.
+
+One piece of code that existed changed: the row pass that turns a variant
+into its standardized dosages, and the pass over a block that drives it,
+left `crates/popnei/src/pca.rs` for `crates/popnei/src/variant.rs`, where
+the principal components of the variants and the kinship share them with
+their own divisors. The 47 tests of `pca.rs` assert the same things in the
+same words as on the plan's first commit, which is what says that no number
+of the principal components changed.
+
+## What is asked of the owner
+
+**The merge.** Nothing of this is on `main` and nothing has been pushed.
+`docs/plans/gwas-linear.md` is being carried out on a branch taken from this
+one, so it takes whatever is merged.
+
+**Two things to decide after the merge, not now.** Both came from this plan
+and from the reviewers of `docs/plans/gwas-linear.md` at once, so they are
+put once here rather than twice:
+
+- **The row pass is duplicated across about 120 lines in three near verbatim
+  blocks**, one of them character for character with `variant.rs`. A shared
+  row with the scale made optional is what both sides propose.
+  `gwas-logistic` would be the third caller, so the session carrying
+  `gwas-linear` has asked the owner to decide it before that plan starts
+  rather than after.
+- **The account of the block check belongs in `docs/specs/block.md` once**,
+  with the module specs pointing at it. It is written out in full in
+  `docs/specs/kinship.md` and in `docs/specs/gwas.md` today, in the same
+  words. `block.md` is on `main` and neither plan owns it, so moving it from
+  a plan branch would put a third session's file into a merge already
+  carrying two specs.
+
+**And one piece of work this plan found and did not do.** Ctrl-C does not
+interrupt a pass. The owner decided on 23 September 2026 that it should, and
+the scope is in "The five the owner decided" below: five calculations in two
+binding crates, one new error case, and a claim about rayon and the
+interpreter that has to be checked rather than assumed. It is recommended as
+a plan of its own.
 
 ## The starting commit
 
@@ -545,3 +600,158 @@ calculations in two binding crates, one new error case in the core, and
 tests that send a real signal in the middle of a pass. It is recommended as
 a plan of its own after this one merges, and it wants a sentence in a spec
 about what a user sees when they stop a pass.
+
+## Work package 3: the principal components
+
+Done. `Kinship.principal_components(num_pcs)` in Python and
+`principalComponents(numPcs)` in TypeScript give the directions along which
+a panel varies most, taken from the kinship and ready to be passed to
+`calc_gwas` as covariates.
+
+### The deliverables
+
+| deliverable | command | result |
+| --- | --- | --- |
+| 1, the components are pyNei's up to sign | `uv run pytest tests/test_kinship.py` | 55 passed; every component of both panels within 1e-11 of the largest projection, and a cargo test asserts the sign rule holds in every one |
+| 2, the eigenvalues are right | `cargo test -p popnei --lib kinship::components` | 15 tests; the sums of the squares of the first three components' projections on `panel_called` are 17.2691411554575, 12.4473152358509 and 3.35871257714136 |
+| 3, a component below the tolerance is not given | `cargo test -p popnei --lib kinship::components` | 199 components of 200 asked, on both panels |
+| 4, the first component separates the subpopulations | `uv run pytest tests/test_kinship.py` | the standard deviation of the mean of `PC0` over the three subpopulations is 0.336 against 0.295 for the standard deviation of `PC0` |
+| 5, `principalComponents` under node | `npm run build && npm test` in `js/popnei` | 272 pass, 0 fail |
+
+### The whole plan's final check
+
+`cargo wasm-check` clean, which covers both wasm targets with the warnings
+denied, and `npm run build && npm test` in `js/popnei` 272 pass, 0 fail, so
+the kinship and its components reach a browser and not only a native build.
+
+On the last commit: `cargo fmt --all --check` and both clippy runs clean;
+`cargo test --workspace` 661 passed with 2 ignored in the core crate and 149
+in the linear algebra crate; **`cargo test -p popnei --no-default-features`
+661 passed**, which is the same crate on faer; `cargo test -p popnei-linalg
+--no-default-features` 136; `uv run pytest` 402 passed on both backends;
+`uv run ruff format --check` and `ruff check` clean.
+
+### What the review found
+
+Five reviewers, with `api` paired with `errors` and `binding` with
+`architecture`, since the work package is smaller than the second.
+Seventeen findings held, an eighteenth arrived from another session's
+reviewer, and all eighteen were fixed in one round, `fdc16d0` to `38dfb89`.
+
+**A wrong number nothing caught.** Two whole components past the tenth can
+be swapped and every suite stays green: 656 cargo, 400 pytest, 272 node. A
+user asking for 60 components gets two of them in the wrong order. The same
+swap at components 1 and 2 reddens three cargo tests and at 5 and 6 reddens
+both pyNei comparisons, so nothing simply looks past the tenth component.
+The comparison with pyNei now runs over all 199 and the swap reddens it.
+
+**A suite red on the backend a browser uses.** `uv run maturin develop
+--no-default-features && uv run pytest` gave two failures before this round.
+The bound against plink2 had been reshaped in the Rust tests and not in
+`tests/test_kinship.py`, which still held each entry to a share of itself
+and failed on faer at entry 73, where plink2 has 1.293615e-05 and the
+difference is 1.88e-17, a ratio of 1.4553e-12 against a bound of 1e-12. It
+is the same entry and the same shape of failure the Rust fix was made for.
+
+**The tests of the core crate could not tell which individual a row belongs
+to.** Swapping the first two rows of the eigenvectors left all 656 cargo
+tests green, because the two panel tests read a sum over the rows and the
+sign of the largest, both unchanged by permuting individuals. Python caught
+it, so nothing escaped the whole suite, but it escaped the core crate, which
+is meant to stand on its own. A test now asserts where two named
+individuals sit on `PC0`.
+
+**The eigenvalue literals spent their own budget.** The three were written
+to nine significant digits and asserted within 1e-9 relative, in three
+suites. popnei matches numpy to 3.967e-16 and the nine-digit literal is
+8.511e-10 from popnei, which is 85% of the bound: the test's whole margin
+went on the rounding of the number written down, not on anything popnei
+does. A change that is right but moves an eigenvalue by 1.5e-10 would have
+reddened all three. They are 15 digits now.
+
+**The matrix was copied twice and both bindings built a `Kinship` by
+hand.** Each binding filled `num_vars: 0, num_vars_given: 0`, counts the
+caller never had, and the core then cloned the matrix for a caller that does
+not keep it. Measured at 5000 individuals with a matrix of 190.73 MB, the
+peak grew 765.73 MB before and 574.81 MB after, a drop of 190.92 MB, one
+whole copy. A core entry now takes the matrix by value and neither binding
+builds a `Kinship`.
+
+The two zeroed counts are the part worth keeping. They are hidden defaults
+standing in for numbers nobody had, and if the components ever read
+`num_vars` both bindings would have given a silent zero. That is the shape
+the paragraph added to `.claude/skills/coding/SKILL.md` earlier the same day
+is about, arriving again in the same plan from the other direction.
+
+**A wrong matrix arrived as a defect of popnei.** A `Kinship` is frozen but
+its pandas frame is not, so the checks of `__post_init__` hold only at
+construction. A `NaN` written afterwards gave `RuntimeError: the
+eigendecomposition of the kinship could not be done: the matrix g holds a
+value that is not finite`: a `RuntimeError` for a wrong input, naming `g`,
+an internal name of the linear algebra crate. The check now runs before the
+decomposition and gives the `ValueError` that names the row and the column.
+
+**A sixth disagreement between the packages**, found by three reviewers.
+Python built a kinship of no individual and only the components complained;
+TypeScript refused it at the constructor. The spec says the two packages
+refuse the same matrices, and the review of work package 2 had closed five
+such gaps.
+
+**A block could lose all its variants in silence.** Found by a reviewer of
+`docs/plans/gwas-linear.md` and passed across. `the_standardized_block`
+sized its buffer from the ploidy its caller gave and never compared it with
+the block's; because the pairing of the genotypes with the buffer truncates
+to the shorter of the two, a mismatch produced no rows at all and returned
+`Ok([])`. Reproduced here: five individuals at a ploidy of 2 read as five at
+a ploidy of 5 gave `Ok([])` for its one variant. The loss looks exactly like
+a variant dropped for having no variance, so nothing downstream could tell
+them apart.
+
+No caller reaches it today: all three put `reblock` in front and `Reblock`
+already refuses such a block with the same error. The guard is for the
+caller that one day does not, and it is cheap because
+`Error::BlocksDoNotFitTogether` already exists for it. `docs/specs/gwas.md`
+and `docs/specs/kinship.md` carry the same account in the same words.
+
+**Smaller.** Three files claimed the two-individual kinship is where the
+sign rule's tolerance is read; both backends give those two coordinates with
+identical bits, so a bare comparison decides and the tolerance is never
+consulted, and a unit test now exercises it where it does decide. The
+spec explained 199 components of 200 by the panel average taking one
+direction out, which is exact only when no genotype is missing: with per
+pair denominators the matrix is `(Z'Z) ./ D` and the centring is lost. In
+3715 random panels with genotypes missing, 36 had that direction left in,
+while 0 of 42261 gave a component for every individual. The conclusion holds
+and the proof did not, and the spec now says which is which.
+
+### What was not taken
+
+- **The six tests of the moved row pass stay in `pca.rs`**, for the third
+  work package running: moving them drops the count below 47 and removes the
+  evidence that no number of the principal components changed.
+- **`PcaNoVariantWithVariance` and the JavaScript naming were the owner's**,
+  and both were decided and done on 23 September 2026.
+
+### What the owner should know
+
+- Comparing the projections with pyNei needed 1e-11 of the largest
+  projection rather than 1e-12, because faer sits 1.7e-12 from Accelerate
+  over the 199 components against 1.3e-13 on Accelerate alone. The two
+  backends part furthest at the late components, where the eigenvalue gaps
+  are smallest, 1.3e-5 and 6.2e-6 relative at components 80 and 89.
+- The reason the reshaped bound is the right shape, which a reviewer derived
+  rather than measured: the rounding of a sum of `m` products is at most
+  `m * eps * (the largest term)`, and for a kinship
+  `sum|z_i z_j| <= m * sqrt(G_ii G_jj) <= m * (largest entry)`. So a bound
+  belongs against whatever bounds the terms, not against the value, and a
+  value that cancelled to near 0 is no guide to its own error. It is loose
+  by at most 1.4x on these panels.
+
+### How the work went
+
+Two subagents built it, about 307000 tokens, and five reviewers took 732000
+between them. The fix round took another 130000.
+
+The `numbers` reviewer was the most useful of the five and the slowest, at
+seventeen minutes: it proved the bound rather than checking it, and it was
+the only one to test the spec's *reasoning* rather than its numbers.
