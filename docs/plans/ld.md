@@ -154,6 +154,16 @@ this plan.
       dosages of `many.vcf` against the ones pyNei gave, which this task
       adds to `make_reference.py` and stores. Serves deliverables 4, 5
       and 6. Needs 1.1 and 1.4.
+- [ ] 1.6 The product with a transposed operand, added to the plan on 23
+      September 2026 by the owner's decision after the review of this
+      work package: `product_by_transpose` in `crates/popnei-linalg`, on
+      both of its backends, with the item and the three checks that
+      `docs/specs/linalg.md` now has for it, and `r2_between` calling it
+      so that `crates/popnei/src/ld.rs` holds no matrix operation of its
+      own, which the `coding` skill does not allow. The r² of every pair
+      of `ld.vcf.gz` has to stay equal to plink2's to the bit, on both
+      backends, which deliverable 4 is what checks. Serves deliverables
+      3, 4 and 6. Needs 1.4.
 
 ### What could go wrong
 

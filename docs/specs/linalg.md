@@ -117,7 +117,7 @@ the one popnei's own loops run on, which `RAYON_NUM_THREADS` sizes, and
 one thread in wasm. The product of the block above takes Accelerate 10.5
 ms with the variable at 1 and 7.4 ms without it.
 
-## The three operations
+## The four operations
 
 ### What they give
 
@@ -146,6 +146,22 @@ fixed sign fixes it, as the PCA does.
 r x c. `dgemm` in BLAS and `matmul` of faer. The PCA uses it for the
 weights of the variants and for the projections of a table with more
 rows than columns.
+
+**The product of a matrix with the transpose of another.** For A of r x
+k and B of c x k, both with one row for each of the r and the c things
+and one column for each of the k things they are described by, `C = AB'`,
+r x c, whose entry i, j is the sum over the k columns of row i of A times
+row j of B. It is the same `dgemm` and the same `matmul`, told that the
+second operand is to be read the other way round, which both libraries do
+inside the routine and neither pays a copy for. Without it a caller whose
+two matrices are both laid out with one row for each thing has to write
+the transpose of one of them into a buffer of its own, which is a matrix
+operation in a crate that is not this one and a copy of the whole matrix:
+0.422 ms for 512 x 1000 on the machine of "Speed", measured on 22
+September 2026. The r² of `docs/specs/ld.md` is the caller: its three
+matrices hold one row for each variant and one column for each
+individual, and the product of one set of variants with another sums over
+the individuals.
 
 ### Layout, half and the backends
 
@@ -247,6 +263,19 @@ nor the self product of the A above. C holds values other than 0 before
 each call, which an operation that added to C instead of overwriting it
 would leave in the result.
 
+At `product_by_transpose`, the same A of 2 x 3 and three cases, exactly.
+Times the transpose of B of 2 x 3 with rows (1, 1, 0) and (0, 2, 1) it
+is the 2 x 2 matrix with rows (3, 4) and (1, 5), which is not symmetric,
+so a backend that wrote the transpose of C would fail it. Times the
+transpose of B of 1 x 3 with the row (2, 0, 1) it is the 2 x 1 matrix
+with rows (2) and (3), where the three dimensions differ. And with A
+given for both operands it is A A', the 2 x 2 matrix with rows (5, 2)
+and (2, 10), which is the same matrix as the first case of `product`
+above, since the B of 3 x 2 there, with rows (1, 0), (2, 1) and (0, 3),
+is this A written the other way round: the two functions are asserted to
+give it alike, which is what catches one of them reading an operand the
+way the other does.
+
 At `eigh_lower`: the 3 x 3 matrix with rows (4, 1, 0), (1, 3, 0) and
 (0, 0, 1). Its eigenvalues are (7 + √5)/2 = 4.618033988749895,
 (7 - √5)/2 = 2.381966011250105 and 1, and the eigenvectors, each with
@@ -311,6 +340,19 @@ of no rows here too. `inner` and `cols` are 1 at least.
 
 ```rust
 pub fn product(a: &[f64], rows: usize, inner: usize, b: &[f64], cols: usize, c: &mut [f64]) -> Result<()>;
+```
+
+`c = a b'`; `a` is `rows` x `inner`, `b` is `cols` x `inner`, and `c`,
+which is overwritten, `rows` x `cols`. The two operands hold their
+`inner` values the same way round, one row for each of the `rows` and
+the `cols` things, which is what a caller has when both matrices are
+laid out by the thing they describe. `rows` may be 0 as above, and
+`inner` and `cols` are 1 at least. Giving the same slice for `a` and for
+`b` with `rows` equal to `cols` is the product of a matrix with its own
+transpose, which is what a set of variants against itself asks for.
+
+```rust
+pub fn product_by_transpose(a: &[f64], rows: usize, inner: usize, b: &[f64], cols: usize, c: &mut [f64]) -> Result<()>;
 ```
 
 The eigendecomposition of the symmetric `g` of `n` x `n`, whose lower
