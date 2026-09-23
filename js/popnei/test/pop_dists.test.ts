@@ -31,9 +31,8 @@
  * two, at 100 000 and at 250 000, are cargo tests of
  * `crates/popnei/src/pop_dists.rs`.
  *
- * Two of the seven measures, the chord distance and Nei's D_A, are not
- * calculated yet: work package 3 of `docs/plans/dists-pops.md` adds them,
- * and asking for one of them is an `Error` until then.
+ * All seven measures are calculated, so the refusal of one that popnei has
+ * no value for has nothing left to refuse.
  */
 
 import assert from "node:assert/strict";
@@ -214,18 +213,17 @@ const MICRO_MMOD = {
  */
 const MMOD_TOLERANCE = 5e-4;
 
-/** The five measures the work packages 1 and 2 of `docs/plans/dists-pops.md`
- * give. */
-const MEASURES_THAT_ARE_WRITTEN = [
+/** The seven measures, in the order `PopDistMeasure` has them, all of which
+ * popnei calculates. */
+const EVERY_MEASURE = [
   "fst",
   "f2",
+  "chord",
+  "da",
   "dest",
   "gst",
   "gst_standardized",
 ];
-
-/** The two its work package 3 adds. */
-const MEASURES_THAT_ARE_NOT_WRITTEN_YET = ["chord", "da"];
 
 /**
  * The distances between the populations of `pops` over the variants of the
@@ -831,33 +829,27 @@ test("a measure that was not asked for is null in the result", () => {
   );
 });
 
-test("a measure that is not written yet is refused with the ones that are", () => {
-  // The two measures work package 3 of `docs/plans/dists-pops.md` adds have
-  // no value today, and a vector of NaN says nothing about itself. No
-  // `measures` asks for all seven and is refused for the same reason until
-  // that work package is done.
-  for (const measure of MEASURES_THAT_ARE_NOT_WRITTEN_YET) {
-    let said = "";
-    assert.throws(
-      () =>
-        popDistsOf(PANEL_VCF, PANEL_POPS, {
-          jackknifeGroup: null,
-          measures: [measure as PopDistMeasure],
-        }),
-      (refusal: Error) => {
-        said = refusal.message;
-        return true;
-      },
-    );
-    assert.ok(said.includes(measure), said);
-    for (const written of MEASURES_THAT_ARE_WRITTEN) {
-      assert.ok(said.includes(written), said);
-    }
-  }
+test("no measure of the seven is refused", () => {
+  // Every measure has a value, so no `measures`, which asks for all seven,
+  // is taken and the refusal of one popnei has no value for has nothing
+  // left to refuse. The list of the ones that have a value is the core's,
+  // and a measure added to it without a formula beside it would be refused
+  // here rather than handed to a user as a vector of NaN.
+  const dists = popDistsOf(PANEL_VCF, PANEL_POPS, { jackknifeGroup: null });
+  const ofEveryMeasure = [
+    dists.fst,
+    dists.f2,
+    dists.chord,
+    dists.da,
+    dists.dest,
+    dists.gst,
+    dists.gstStandardized,
+  ];
 
-  assert.throws(() =>
-    popDistsOf(PANEL_VCF, PANEL_POPS, { jackknifeGroup: null }),
-  );
+  assert.equal(ofEveryMeasure.length, EVERY_MEASURE.length);
+  ofEveryMeasure.forEach((values, measure) => {
+    assert.ok(values !== null, `the ${EVERY_MEASURE[measure]} of the panel`);
+  });
 });
 
 test("a measure that is of none of the seven is refused with the seven", () => {

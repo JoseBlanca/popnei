@@ -677,34 +677,35 @@ impl PopDistMeasure {
             .unwrap_or("")
     }
 
-    /// The measures a pass gives a value for today: Hudson's F_ST and f_2,
-    /// which work package 1 of `docs/plans/dists-pops.md` calculates, and
-    /// Jost's D, Nei's G_ST and the standardized G''_ST, which its work
-    /// package 2 adds.
+    /// The measures a pass gives a value for, which is all seven of them
+    /// since work package 3 of `docs/plans/dists-pops.md` added the chord
+    /// distance and Nei's D_A to the five the work packages 1 and 2 wrote.
     ///
-    /// Its work package 3 adds the chord distance and Nei's D_A, and both
-    /// packages refuse a measure that is not here, so that nobody reads a
-    /// vector of NaN as a distance. It is in the core, as
+    /// Both packages refuse a measure that is not here, so that nobody
+    /// reads a vector of NaN as a distance, and there is nothing left for
+    /// them to refuse. It is in the core, as
     /// [`NAMES`](PopDistMeasure::NAMES) is, so that a measure is added to
     /// the two packages by adding the formula of [`value_of`] and this
     /// array, both of which are in this file. They are in the order of
     /// `NAMES`, which is the order a package names them in.
-    pub const THAT_HAVE_A_VALUE: [PopDistMeasure; 5] = [
+    pub const THAT_HAVE_A_VALUE: [PopDistMeasure; 7] = [
         PopDistMeasure::Fst,
         PopDistMeasure::F2,
+        PopDistMeasure::Chord,
+        PopDistMeasure::Da,
         PopDistMeasure::Dest,
         PopDistMeasure::Gst,
         PopDistMeasure::GstStandardized,
     ];
 
-    /// Whether a pass gives this measure a value today.
+    /// Whether a pass gives this measure a value.
     #[must_use]
     pub fn has_a_value(self) -> bool {
         PopDistMeasure::THAT_HAVE_A_VALUE.contains(&self)
     }
 
-    /// The names of the measures that have a value today, which the two
-    /// packages refuse the other five by and name in the refusal.
+    /// The names of the measures that have a value, which the two packages
+    /// name in the refusal of one that has none.
     #[must_use]
     pub fn names_that_have_a_value() -> Vec<&'static str> {
         PopDistMeasure::THAT_HAVE_A_VALUE
@@ -857,10 +858,21 @@ impl PairSums {
 /// that "The Rust interface" of the spec gives to D alone; G''_ST divides
 /// by that same 1 - H_S' and comes out infinite there.
 ///
-/// The chord distance and Nei's D_A are work package 3 of
-/// `docs/plans/dists-pops.md` and have no value until it is written, which
-/// is what [`PopDistMeasure::THAT_HAVE_A_VALUE`] names and what both
-/// packages refuse them by.
+/// The chord distance and Nei's D_A come out of the third sum, the square
+/// roots of the products of the frequencies added over the alleles of each
+/// variant. With S that sum over the n variants that counted,
+///
+/// ```text
+/// D_A   = 1 - S / n
+/// chord = sqrt(D_A)
+/// ```
+///
+/// which is the form `adegenet::dist.genpop(method = 2)` gives, the chord
+/// of the sphere of radius 1 divided by the square root of 2. S is at most
+/// n, so D_A is 0 at the least; where the rounding takes S above n, which
+/// two populations with the same allele frequencies at every variant do,
+/// both are 0 and not a D_A of -2.2e-16 and a chord that is NaN, as "What
+/// it gives" of the chord item of the spec has it.
 fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
     if sums.num_vars == 0 {
         return None;
@@ -873,6 +885,10 @@ fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
     let mean_h_t = sums.corrected_h_t / num_vars;
     let between_the_pops = mean_h_t - mean_h_s;
     let one_minus_mean_h_s = 1.0 - mean_h_s;
+    // The sum of the square roots is at most the variants that counted, so
+    // what the rounding leaves above them is 0 and not a chord distance of
+    // NaN.
+    let nei_d_a = (1.0 - sums.sqrt_of_the_products / num_vars).max(0.0);
     match measure {
         PopDistMeasure::Fst => Some(between_minus_within / sums.h_b),
         PopDistMeasure::F2 => Some(between_minus_within / num_vars),
@@ -885,7 +901,8 @@ fn value_of(measure: PopDistMeasure, sums: &PairSums) -> Option<f64> {
             NUM_POPS_OF_A_PAIR * between_the_pops
                 / ((NUM_POPS_OF_A_PAIR * mean_h_t - mean_h_s) * one_minus_mean_h_s),
         ),
-        PopDistMeasure::Chord | PopDistMeasure::Da => None,
+        PopDistMeasure::Chord => Some(nei_d_a.sqrt()),
+        PopDistMeasure::Da => Some(nei_d_a),
     }
 }
 
@@ -2576,6 +2593,50 @@ mod tests {
         .expect("the sums of the two populations of two")
     }
 
+    /// The genotypes of one variant of 10 diploid individuals, the two
+    /// alleles of each after those of the one before, where each of the two
+    /// populations of five holds the alleles 0, 1, 2 and 3 at the counts 2,
+    /// 4, 3 and 1 out of its 10 called alleles.
+    ///
+    /// Both populations have the same four frequencies, so each square root
+    /// of a product is one of them and their sum is 0.2 + 0.4 + 0.3 + 0.1,
+    /// which a f64 adds to 1 + 2.2e-16 over the one variant that counted.
+    const THE_SAME_FOUR_FREQUENCIES: [i8; 20] =
+        [0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3];
+
+    /// The sums of the one pair of two populations of five individuals over
+    /// the one variant `of_the_var`, at a `min_num_individuals` of 1 and
+    /// with no resampling groups.
+    fn sums_of_the_pair_of_five_over(of_the_var: &[i8; 20]) -> PopDistSums {
+        let individuals: Vec<String> = (0..10).map(|number| format!("i{number}")).collect();
+        let named = [
+            ("pop1".to_owned(), individuals[..5].to_vec()),
+            ("pop2".to_owned(), individuals[5..].to_vec()),
+        ];
+        let pops = Pops::from_names(&named, &individuals).expect("the two populations of five");
+        let block = Block {
+            num_vars: 1,
+            num_individuals: 10,
+            ploidy: 2,
+            gts: of_the_var.to_vec(),
+            chrom: None,
+            pos: None,
+            id: None,
+            alleles: None,
+            qual: None,
+        };
+        let mut reader = GivenBlocks::of(individuals, vec![block], false);
+        calc_pop_dist_sums(
+            &mut reader,
+            &pops,
+            &PopDistOptions {
+                min_num_individuals: 1,
+                groups: JackknifeGroups::None,
+            },
+        )
+        .expect("the sums of the two populations of five")
+    }
+
     /// A reader of the tests that gives the blocks it was built with, and
     /// then the error of a bgzipped file with no mark of its end when it
     /// was built to fail, which is how an error of a reader reaches the
@@ -2776,6 +2837,29 @@ mod tests {
             0.598618,
             1e-6,
             "the G''_ST of the worked example",
+        );
+    }
+
+    /// The chord distance and Nei's D_A of the worked example of "How it is
+    /// verified" of `docs/specs/dists.md`, the two measures that come out
+    /// of the sum of the square roots of the products of the frequencies:
+    /// over its five variants that sum is 3.707290, so D_A is
+    /// 1 - 3.707290 / 5 and the chord distance is the square root of it.
+    #[test]
+    fn the_worked_example_has_the_chord_and_the_da_of_the_spec() {
+        let sums = sums_of_the_worked_example(JackknifeGroups::PerVariant);
+
+        assert_it_is_within(
+            sums.measure(PopDistMeasure::Da, 0, 1),
+            0.258542,
+            1e-6,
+            "the Nei's D_A of the worked example",
+        );
+        assert_it_is_within(
+            sums.measure(PopDistMeasure::Chord, 0, 1),
+            0.508470,
+            1e-6,
+            "the chord distance of the worked example",
         );
     }
 
@@ -3029,6 +3113,89 @@ mod tests {
         }
     }
 
+    /// The chord distance of the three pairs of both panels against
+    /// `dist.genpop(method = 2)` of adegenet 2.1.11 under R 4.6.1, which
+    /// `tests/reference/pop_dists/panel.chord.tsv` and `micro.chord.tsv`
+    /// hold. It is the form adegenet gives, the chord of the sphere of
+    /// radius 1 divided by the square root of 2, which "What it gives" of
+    /// the chord item of `docs/specs/dists.md` says popnei computes: the
+    /// chord of that sphere itself is 1.414 times each of these six
+    /// numbers.
+    ///
+    /// adegenet computes the same estimator, so the comparison is within
+    /// 1e-12 relative and not the 5e-4 of the measures mmod checks. Each of
+    /// the biallelic panel's three comes out as the same double adegenet
+    /// prints, and the multiallelic panel's within 6.7e-16, which is the
+    /// last bits of one. D_A is in no program and is checked as the square
+    /// of what adegenet gives, which "How it is verified" of the item asks
+    /// for; it is 3.9e-15 from that square at the furthest, since squaring
+    /// doubles how far from adegenet the chord distance is.
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "the numbers as tests/reference/pop_dists/panel.chord.tsv and micro.chord.tsv print them, which is one digit more than a f64 keeps"
+    )]
+    fn the_chord_and_the_da_of_both_panels_are_adegenets() {
+        let panels = [
+            (
+                "dists/panel.vcf.gz",
+                "stats/panel_pops.txt",
+                [
+                    0.18026704497001397,
+                    0.17586558860911838,
+                    0.17977447554045811,
+                ],
+            ),
+            (
+                "pop_dists/micro.vcf.gz",
+                "pop_dists/micro_pops.txt",
+                [
+                    0.33853588707322202,
+                    0.33760692274322368,
+                    0.34958215447311330,
+                ],
+            ),
+        ];
+        for (panel, pops_file, of_adegenet) in panels {
+            let sums = sums_of_the_panel(panel, pops_file, JackknifeGroups::None, 20, None);
+            for (pair, (i, j)) in [(0, 1), (0, 2), (1, 2)].into_iter().enumerate() {
+                assert_it_is_the_same_number(
+                    sums.measure(PopDistMeasure::Chord, i, j),
+                    of_adegenet[pair],
+                    &format!("the chord distance of the pair {i} {j} of {panel}"),
+                );
+                assert_it_is_the_same_number(
+                    sums.measure(PopDistMeasure::Da, i, j),
+                    of_adegenet[pair] * of_adegenet[pair],
+                    &format!("the Nei's D_A of the pair {i} {j} of {panel}"),
+                );
+            }
+        }
+    }
+
+    /// Two populations with the same allele frequencies at every variant
+    /// have a chord distance of 0, which is the rule "What it gives" of the
+    /// chord item of `docs/specs/dists.md` gives for a sum of the square
+    /// roots that the rounding takes above the variants that counted. The
+    /// four frequencies of the fixture add to 1 + 2.2e-16, so without that
+    /// rule D_A would be -2.2e-16 and the chord distance, its square root,
+    /// a NaN.
+    #[test]
+    fn two_pops_with_the_same_frequencies_have_a_chord_of_zero_and_not_a_nan() {
+        let sums = sums_of_the_pair_of_five_over(&THE_SAME_FOUR_FREQUENCIES);
+        let of_the_pair = sums.total_of(0).expect("the sums of the one pair");
+
+        assert_eq!(sums.num_vars_of(0, 1), Some(1));
+        assert!(
+            of_the_pair.sqrt_of_the_products > of_the_pair.num_vars as f64,
+            "the sum of the square roots is {} over {} variants, and the fixture is here because the rounding takes it above the count",
+            of_the_pair.sqrt_of_the_products,
+            of_the_pair.num_vars
+        );
+        assert_eq!(sums.measure(PopDistMeasure::Da, 0, 1), Some(0.0));
+        assert_eq!(sums.measure(PopDistMeasure::Chord, 0, 1), Some(0.0));
+    }
+
     /// f_2 and its jackknife standard error for the three pairs of the
     /// biallelic panel against ADMIXTOOLS 2.0.10, which computes f_2 with
     /// the same delete-m jackknife over the same groups, cut the same way.
@@ -3172,32 +3339,27 @@ mod tests {
         }
     }
 
-    /// The pairs and the measures a caller asks for by number: two
-    /// populations that are one, or one that is not a population, have no
-    /// measure and no count of variants, and the two measures that work
-    /// package 3 of `docs/plans/dists-pops.md` adds have none yet.
-    /// `measures` gives the pairs in the order of the distance vector,
-    /// which for three populations is p0-p1, p0-p2 and p1-p2.
+    /// The pairs a caller asks for by number: two populations that are one,
+    /// and one that is not a population of the pass, have no measure and no
+    /// count of variants, whichever of the seven is asked for, while the
+    /// one pair the worked example holds has every one of them. `measures`
+    /// gives the pairs in the order of the distance vector, which for three
+    /// populations is p0-p1, p0-p2 and p1-p2.
     #[test]
-    fn a_pair_that_is_not_one_and_a_measure_not_written_yet_have_no_value() {
+    fn a_pair_that_is_not_one_has_no_measure_and_no_count() {
         let sums = sums_of_the_worked_example(JackknifeGroups::PerVariant);
 
         assert_eq!(sums.num_pops(), 2);
-        assert_eq!(sums.measure(PopDistMeasure::Fst, 0, 0), None);
-        assert_eq!(sums.measure(PopDistMeasure::Fst, 0, 2), None);
         assert_eq!(sums.num_vars_of(0, 0), None);
         assert_eq!(sums.standard_error(PopDistMeasure::F2, 0, 0), None);
-        for measure in [PopDistMeasure::Chord, PopDistMeasure::Da] {
-            assert_eq!(sums.measure(measure, 0, 1), None);
-            assert_eq!(sums.standard_error(measure, 0, 1), None);
-        }
-        for measure in [
-            PopDistMeasure::Dest,
-            PopDistMeasure::Gst,
-            PopDistMeasure::GstStandardized,
-        ] {
-            assert_eq!(sums.measure(measure, 0, 0), None);
-            assert_eq!(sums.measure(measure, 0, 2), None);
+        for measure in PopDistMeasure::THAT_HAVE_A_VALUE {
+            let named = measure.name();
+            assert!(
+                sums.measure(measure, 0, 1).is_some(),
+                "the {named} of the one pair"
+            );
+            assert_eq!(sums.measure(measure, 0, 0), None, "the {named} of 0 and 0");
+            assert_eq!(sums.measure(measure, 0, 2), None, "the {named} of 0 and 2");
         }
         let of_three = sums_of_the_first_variant_of_the_panel();
         let in_order: Vec<Option<f64>> = of_three.measures(PopDistMeasure::Fst).collect();
@@ -3256,11 +3418,12 @@ mod tests {
     }
 
     /// The measures of [`PopDistMeasure::THAT_HAVE_A_VALUE`] are the ones a
-    /// pass gives a number for, and the other five give none. Both packages
-    /// refuse a measure by that array, so a measure written into
-    /// [`value_of`] and not into it is refused although popnei calculates
-    /// it, and one written into the array and not into `value_of` gives a
-    /// user a vector of NaN read as a distance.
+    /// pass gives a number for, which since work package 3 of
+    /// `docs/plans/dists-pops.md` is all seven. Both packages refuse a
+    /// measure by that array, so a measure written into [`value_of`] and
+    /// not into it is refused although popnei calculates it, and one
+    /// written into the array and not into `value_of` gives a user a vector
+    /// of NaN read as a distance.
     #[test]
     fn the_measures_that_have_a_value_are_the_ones_a_pass_gives_a_number_for() {
         let sums = sums_of_the_worked_example(JackknifeGroups::None);
@@ -3283,7 +3446,15 @@ mod tests {
         }
         assert_eq!(
             PopDistMeasure::names_that_have_a_value(),
-            ["fst", "f2", "dest", "gst", "gst_standardized"]
+            [
+                "fst",
+                "f2",
+                "chord",
+                "da",
+                "dest",
+                "gst",
+                "gst_standardized"
+            ]
         );
     }
 

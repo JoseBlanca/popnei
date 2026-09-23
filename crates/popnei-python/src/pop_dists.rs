@@ -378,13 +378,13 @@ fn the_table_of_the_groups<'py>(
 }
 
 /// The names of the measures of how far apart two populations are that
-/// popnei calculates today: Hudson's F_ST, f_2, Jost's D, Nei's G_ST and
-/// the standardized G''_ST.
+/// popnei calculates, which is all seven of them: Hudson's F_ST, f_2, the
+/// chord distance, Nei's D_A, Jost's D, Nei's G_ST and the standardized
+/// G''_ST.
 ///
-/// The Python package refuses the other two, the chord distance and Nei's
-/// D_A, by this list and names these in the refusal, so that the measures
-/// work package 3 of `docs/plans/dists-pops.md` adds are added in the core
-/// alone.
+/// The Python package refuses a measure that is not in this list and names
+/// the ones that are in the refusal, so that a measure written into the
+/// core is reachable from Python by that one change.
 #[pyfunction]
 pub fn pop_dist_measures_that_have_a_value() -> Vec<&'static str> {
     PopDistMeasure::names_that_have_a_value()

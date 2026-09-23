@@ -8,10 +8,9 @@ pass over the variants, for every pair of the populations they name, and
 gives them in a :class:`PopDists`: one :class:`popnei.Distances` for each
 measure, with the standard error of each pair beside its value.
 
-The seven are members of :class:`PopDistMeasure`. Five of them are
-calculated today, Hudson's F_ST, f_2, Jost's D, Nei's G_ST and the
-standardized G''_ST; the chord distance and Nei's D_A raise, and work
-package 3 of `docs/plans/dists-pops.md` adds them.
+The seven are members of :class:`PopDistMeasure`, and all seven are
+calculated: Hudson's F_ST, f_2, the chord distance, Nei's D_A, Jost's D,
+Nei's G_ST and the standardized G''_ST.
 
 `docs/specs/dists.md` has each measure, what it answers, the program it is
 verified against and the numbers the tests assert.
@@ -81,13 +80,13 @@ class PopDistMeasure(StrEnum):
     ``gst * (1 + H_S) / (1 - H_S)``."""
 
 
-# The measures that have a value today, which the core crate holds: the work
-# packages 1 and 2 of `docs/plans/dists-pops.md` calculate five of the seven,
-# its work package 3 adds the chord distance and Nei's D_A, and asking for one
-# of those two is refused here until it does, so that nobody reads a vector
-# of NaN as a distance. It is read from the core and not written here so that
-# a measure is added in one place and not in this package, in the TypeScript
-# one and in the core.
+# The measures that have a value, which the core crate holds and which is all
+# seven of them since work package 3 of `docs/plans/dists-pops.md` added the
+# chord distance and Nei's D_A. Asking for one that has none is refused, so
+# that nobody reads a vector of NaN as a distance, and there is nothing left
+# to refuse. It is read from the core and not written here so that a measure
+# is added in one place and not in this package, in the TypeScript one and in
+# the core.
 _MEASURES_THAT_HAVE_A_VALUE = tuple(_core.pop_dist_measures_that_have_a_value())
 
 
@@ -265,11 +264,9 @@ def calc_pop_dists(
 
     `measures` says which of the seven of :class:`PopDistMeasure` to
     calculate, and ``None`` is all of them, since the pass is what costs and
-    each measure is a division at the end of it. Two of the seven, the chord
-    distance and Nei's D_A, are not calculated yet, so asking for one of
-    them, and asking for all of them with ``None``, is a ``ValueError`` that
-    names the five that are: work package 3 of `docs/plans/dists-pops.md`
-    adds the other two.
+    each measure is a division at the end of it. All seven are calculated,
+    so ``None`` gives seven :class:`popnei.Distances` and no measure is
+    refused.
 
     `min_num_individuals` is how many called genotypes a population needs at
     a variant for that variant to count for a pair, 20 by default. The test

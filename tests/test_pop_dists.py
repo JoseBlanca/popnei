@@ -22,10 +22,9 @@ the three runs only the one at 55 000 base pairs, which cuts the panel into
 22 groups, can be asked for through this package; the other two, at 100 000
 and at 250 000, are cargo tests of `crates/popnei/src/pop_dists.rs`.
 
-Two of the seven measures, the chord distance and Nei's D_A, are not
-calculated yet: work package 3 of `docs/plans/dists-pops.md` adds them, and
-asking for one of them is a `ValueError` until then, which
-`test_a_measure_that_is_not_written_yet_is_refused` holds to.
+All seven measures are calculated, so the refusal of one that popnei has no
+value for has nothing left to refuse, which
+`test_no_measure_of_the_seven_is_refused` holds to.
 """
 
 import math
@@ -42,7 +41,7 @@ from popnei import (
     calc_pop_dists,
     open_vcf,
 )
-from popnei.pop_dists import _the_measures
+from popnei.pop_dists import _MEASURES_THAT_HAVE_A_VALUE, _the_measures
 from pynei import vars_from_vcf
 from pynei.dists import calc_jost_dest_pop_dists
 
@@ -172,11 +171,17 @@ MMOD_TOLERANCE = 5e-4
 # and p2, of 68 and 84, have every variant of the panel at it.
 NO_VARIANT_MIN_NUM_INDIVIDUALS = 50
 
-# The five measures that the work packages 1 and 2 of
-# `docs/plans/dists-pops.md` calculate, and the two that its work package 3
-# adds.
-MEASURES_THAT_ARE_WRITTEN = ("fst", "f2", "dest", "gst", "gst_standardized")
-MEASURES_THAT_ARE_NOT_WRITTEN_YET = ("chord", "da")
+# The seven measures, in the order `PopDistMeasure` has them, all of which
+# popnei calculates.
+EVERY_MEASURE = (
+    "fst",
+    "f2",
+    "chord",
+    "da",
+    "dest",
+    "gst",
+    "gst_standardized",
+)
 
 
 def _pops_of(path: Path) -> dict[str, list[str]]:
@@ -758,12 +763,12 @@ def test_a_pair_with_no_variant_is_nan_and_the_pass_is_not_an_error() -> None:
         open_vcf(PANEL),
         PANEL_POPS,
         jackknife_group=PANEL_JACKKNIFE_GROUP,
-        measures=MEASURES_THAT_ARE_WRITTEN,
+        measures=EVERY_MEASURE,
         min_num_individuals=NO_VARIANT_MIN_NUM_INDIVIDUALS,
     )
 
     assert tuple(dists.num_vars) == (0, 0, PANEL_NUM_VARS)
-    for measure in MEASURES_THAT_ARE_WRITTEN:
+    for measure in EVERY_MEASURE:
         values = getattr(dists, measure)
         assert math.isnan(values.dist_vector[0]), measure
         assert math.isnan(values.dist_vector[1]), measure
@@ -888,8 +893,9 @@ def test_a_measure_that_was_not_asked_for_is_none_in_the_result() -> None:
     assert isinstance(of_one.f2, Distances)
     assert isinstance(of_both.fst, Distances)
     assert numpy.array_equal(of_one.f2.dist_vector, of_both.f2.dist_vector)
-    for measure in MEASURES_THAT_ARE_NOT_WRITTEN_YET:
-        assert getattr(of_both, measure) is None
+    for measure in EVERY_MEASURE:
+        if measure not in ("fst", "f2"):
+            assert getattr(of_both, measure) is None, measure
 
 
 def test_one_measure_as_a_bare_string_and_a_repeated_one_are_taken_once() -> None:
@@ -930,30 +936,17 @@ def test_one_measure_as_a_bare_string_and_a_repeated_one_are_taken_once() -> Non
     assert _the_measures("fst") == ["fst"]
 
 
-def test_a_measure_that_is_not_written_yet_is_refused() -> None:
-    """The two measures work package 3 of `docs/plans/dists-pops.md` adds,
-    which have no value today.
+def test_no_measure_of_the_seven_is_refused() -> None:
+    """Every member of `PopDistMeasure` has a value, so `measures=None`,
+    which asks for all seven, is taken and the refusal of a measure popnei
+    has no value for has nothing left to refuse.
 
-    A user who asks for one gets a `ValueError` that names it and the five
-    that are calculated, and not a vector of NaN that says nothing about
-    itself. `measures=None`, which asks for all seven, is refused for the
-    same reason until that work package is done.
+    The list of the measures that have one is the core's, and a measure
+    added to `PopDistMeasure` without a formula beside it would be refused
+    here rather than handed to a user as a vector of NaN.
     """
-    for measure in MEASURES_THAT_ARE_NOT_WRITTEN_YET:
-        with pytest.raises(ValueError) as refusal:
-            calc_pop_dists(
-                open_vcf(PANEL),
-                PANEL_POPS,
-                jackknife_group=None,
-                measures=(measure,),
-            )
-        said = str(refusal.value)
-        assert measure in said
-        for written in MEASURES_THAT_ARE_WRITTEN:
-            assert written in said
-
-    with pytest.raises(ValueError):
-        calc_pop_dists(open_vcf(PANEL), PANEL_POPS, jackknife_group=None)
+    assert _MEASURES_THAT_HAVE_A_VALUE == EVERY_MEASURE
+    assert _the_measures(None) == list(EVERY_MEASURE)
 
 
 def test_a_measure_that_is_of_none_of_the_seven_is_refused() -> None:

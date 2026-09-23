@@ -8,10 +8,9 @@
  * the populations they name, and gives them in a `PopDists`: one `Distances`
  * for each measure, with the standard error of each pair beside its value.
  *
- * The seven are the names of `PopDistMeasure`. Five of them are calculated
- * today, Hudson's F_ST, f_2, Jost's D, Nei's G_ST and the standardized
- * G''_ST; the chord distance and Nei's D_A are refused, and work package 3
- * of `docs/plans/dists-pops.md` adds them.
+ * The seven are the names of `PopDistMeasure`, and all seven are
+ * calculated: Hudson's F_ST, f_2, the chord distance, Nei's D_A, Jost's D,
+ * Nei's G_ST and the standardized G''_ST.
  *
  * `docs/specs/dists.md` has each measure, what it answers, the program it is
  * verified against and the numbers the tests assert.
@@ -123,9 +122,8 @@ export interface CalcPopDistsOptions {
    * given, since the pass is what costs and each measure is a division at
    * the end of it. A result holds `null` for one nobody asked for.
    *
-   * Two of the seven, the chord distance and Nei's D_A, are not calculated
-   * yet, so asking for one of them, and asking for all of them by leaving
-   * this out, is an `Error` that names the five that are.
+   * All seven are calculated, so leaving this out gives seven `Distances`
+   * and no measure is refused.
    */
   measures?: readonly PopDistMeasure[];
 
@@ -466,20 +464,20 @@ function theMeasures(
     );
   }
   const askedFor = [...new Set(asked)];
-  // Which of the seven have a value today is the core's, so that the
-  // measures work package 3 of `docs/plans/dists-pops.md` adds are added
-  // there and not here as well.
+  // Which of the seven have a value is the core's, so that a measure is
+  // written there and not here as well. All seven have one, so nothing is
+  // refused below.
   const haveAValue = measuresThatHaveAValue() as PopDistMeasure[];
   // A name that is of none of the seven goes on to the binding crate, which
   // refuses it with the seven: which names there are is the core's rule too.
-  const notWrittenYet = askedFor.filter(
+  const withNoValue = askedFor.filter(
     (measure) =>
       THE_MEASURES.includes(measure) && !haveAValue.includes(measure),
   );
-  if (notWrittenYet.length > 0) {
+  if (withNoValue.length > 0) {
     throw new Error(
-      `popnei: ${named(notWrittenYet)} ` +
-        `${notWrittenYet.length === 1 ? "is" : "are"} not calculated yet, ` +
+      `popnei: ${named(withNoValue)} ` +
+        `${withNoValue.length === 1 ? "is" : "are"} not calculated yet, ` +
         `and what popnei calculates today is ` +
         `${named(haveAValue)}: ask for those`,
     );
