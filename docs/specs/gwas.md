@@ -158,7 +158,12 @@ and one column for each covariate. The covariates are a frame indexed by
 individual, which must cover every tested individual and hold no missing
 value and no value that is not a number; each of the three raises a
 `ValueError`, and the one for a value that is not a number says to code a
-categorical covariate, with `pandas.get_dummies` for instance.
+categorical covariate, with `pandas.get_dummies` for instance. A covariate
+named `intercept` is a `ValueError` too: the effects of the null model come
+back under the names of the columns of the design, and the column of ones is
+`intercept` among them, so a covariate of that name would be the same entry
+of `covariate_effects` and a user would read one of the two without knowing
+which.
 
 Two refusals protect the fits. A design whose columns are not independent, a
 covariate that is constant or a copy of another, is a `ValueError` saying
@@ -459,14 +464,26 @@ them missing whole.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
 frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
-`se` of that variant, for the reason above, which on this panel is between
-1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
+`se` of that variant, for the reason above, **plus half a unit in the last
+digit plink2 printed for the value being compared**; and `p_value` within
+1e-5 relative.
 
-Six significant digits round `beta` and `se` by up to 5e-7 absolute here, so
-the printing takes up to 41 per cent of that tolerance and leaves the
-arithmetic the rest. A tolerance is a budget shared between the rounding of
-the number it is compared against and the difference it is meant to catch,
-and the first share is worth computing rather than assumed to be small.
+That second term is the rounding of the number popnei is held against, and
+on this panel it is the larger half of the budget for some variants. Six
+significant digits round a value below 1 by up to 5e-7 absolute, which at
+the smallest `se` of the panel is 41 per cent of the first term; they round
+a value above 1 by up to 5e-6, ten times as much. Two of the 1200 variants
+have a `beta` above 1, and at the further of them, `var0482`, whose `beta`
+is 1.03892 and whose `se` is 0.190445, the printing alone can move `beta` by
+5e-6 where 1e-5 of the `se` is 1.9e-6. So the first term on its own is a
+bound that no right implementation passes, which is what the run of 24
+September 2026 found: the worst difference over the 1200 is 1.94e-5 of an
+`se` and it is at that variant. With both terms the same run gives 3.69e-6
+at `var0482` against a budget of 6.90e-6, 53 per cent of it, and a worst
+`se` of 4.90e-7 at `var0680` against 1.65e-6, 30 per cent, the same on both
+backends. A tolerance is a budget shared between the rounding of the number
+it is compared against and the difference it is meant to catch, and the
+first share is worth computing rather than assumed to be small.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
