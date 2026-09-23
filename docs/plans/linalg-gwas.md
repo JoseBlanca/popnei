@@ -1,6 +1,7 @@
 # Plan: the linear algebra the association study needs
 
-23 September 2026. State: draft, waiting for the owner's approval. It
+23 September 2026. State: under way, approved by the owner on 23
+September 2026. It
 builds from `docs/specs/linalg.md`, which went through its first reader
 and its review and whose four open points the owner decided on 23
 September 2026. Three parts of that spec are what is built: "The seven
