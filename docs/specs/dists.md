@@ -1310,14 +1310,24 @@ which is this chord distance. The genotypes reach R as the csv that
 writes, with a population column added.
 
 On the biallelic panel adegenet gives 0.18026704497001397,
-0.17586558860911838 and 0.17977447554045811, and popnei's arithmetic gives
-each of the three as the same double; on the multiallelic panel it gives
-0.33853588707322202, 0.33760692274322368 and 0.3495821544731133 within
-6.7e-16 of adegenet's, the furthest being the pair p0-p2. That is the last
-bits of a double, so the tests compare within 1e-12 relative. D_A is not in
-adegenet and is checked as the square of what is, within the same 1e-12
-relative, which popnei's D_A is 3.9e-15 of at the furthest, the same pair:
-squaring the chord distance doubles how far from adegenet it is.
+0.17586558860911838 and 0.17977447554045811, and popnei's arithmetic
+gives each of the three as the same double when the 1200 variants are
+read in one block and no resampling groups were asked for. The
+boundaries of the blocks and of the groups move the order the sums are
+added in, and with it the last bits: in blocks of 100 variants the first
+and the third pairs come out 0.18026704497001458 and 0.1797744755404572,
+and in one block cut into groups of 55000 base pairs, which are 22,
+0.18026704497001458 and 0.1797744755404575. On the multiallelic panel
+adegenet gives 0.33853588707322202, 0.33760692274322368 and
+0.3495821544731133, from which popnei is 6.7e-16 away in absolute terms
+at the furthest and 2.0e-15 relative, both at the pair p0-p2. Every one
+of these gaps is the last bits of a double, so the tests compare within
+1e-12 relative. D_A is not in adegenet and is checked as the square of
+what is, within that same 1e-12 relative: popnei's D_A is 4.4e-16 from
+that square in absolute terms at the furthest and 3.9e-15 relative, at
+p0-p2 again. Squaring doubles the relative gap, from 2.0e-15 to 3.9e-15,
+and leaves a smaller absolute one, 4.4e-16 against 6.7e-16, because
+these chord distances are below 1.
 
 Two of adegenet's other four distances were run and are not taken.
 Rogers' distance, `method=4`, is the mean over the variants of the
