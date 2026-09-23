@@ -1507,10 +1507,45 @@ pub enum Error {
     /// written; the linear mixed model is being written and the two
     /// logistic ones come after it. In Python it is a `ValueError`, since
     /// it is the study the user asked for that popnei cannot run.
-    #[error("popnei cannot run this study yet: {what}")]
+    #[error(
+        "popnei cannot run this study yet: {what}, which is being written",
+        what = model.what_it_is_of()
+    )]
     GwasModelNotBuilt {
-        /// Which model the study needs and what it is of, in words.
-        what: &'static str,
+        /// Which of the four models the study needs, which the message
+        /// names with the trait and the kinship that chose it.
+        model: crate::gwas::GwasModel,
+    },
+
+    /// A user asked for a trait under a name that is of neither of the
+    /// two. The names are `crate::gwas::TraitType::NAMES`, which the
+    /// message lists, and both binding crates read them from there. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`trait` is `{continuous}`, a measurement of each individual, or `{binomial}`, 0 for an individual that has not a condition and 1 for one that has, and `{name}` was given",
+        continuous = crate::gwas::TraitType::Continuous.name(),
+        binomial = crate::gwas::TraitType::Binomial.name()
+    )]
+    GwasTraitOfAnUnknownName {
+        /// The name that was given.
+        name: String,
+    },
+
+    /// A user asked for a test under a name that is of neither of the two
+    /// popnei makes. The names are `crate::gwas::TestType::NAMES`, which
+    /// the message lists. A name that is of a test popnei makes and that
+    /// the model of the study has not is another error,
+    /// [`Error::GwasScoreTestOfALinearModel`] or
+    /// [`Error::GwasWaldTestOfALogisticMixedModel`]. In Python it is a
+    /// `ValueError`.
+    #[error(
+        "`test` is `{wald}`, which fits the model again with the variant in it, or `{score}`, which measures at the null model how steeply the fit would improve if the variant's effect were let off 0, and `{name}` was given",
+        wald = crate::gwas::TestType::Wald.name(),
+        score = crate::gwas::TestType::Score.name()
+    )]
+    GwasTestOfAnUnknownName {
+        /// The name that was given.
+        name: String,
     },
 
     /// A user asked for a measure of how far apart two populations are

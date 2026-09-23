@@ -258,6 +258,45 @@ pub enum TraitType {
     Binomial,
 }
 
+impl TraitType {
+    /// The name a user writes for each of the two traits, in the order of
+    /// the variants.
+    ///
+    /// They are here and not in a binding crate so that both of them read
+    /// one list: a trait renamed in the core is renamed in Python and in
+    /// TypeScript with it, and a third trait would reach the two packages
+    /// together. It is what `PopDistMeasure::NAMES` of
+    /// [`crate::pop_dists`] does for the measures a user asks for by name.
+    pub const NAMES: [&'static str; 2] = ["continuous", "binomial"];
+
+    /// The name a user writes for this trait.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        let of_the_two = match self {
+            TraitType::Continuous => 0,
+            TraitType::Binomial => 1,
+        };
+        // The two names are there, one for each variant of the enum.
+        TraitType::NAMES.get(of_the_two).copied().unwrap_or("")
+    }
+
+    /// The trait a user named.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasTraitOfAnUnknownName`] when the name is of neither
+    /// trait, with both of them in the message.
+    pub fn of_name(name: &str) -> Result<TraitType> {
+        match TraitType::NAMES.iter().position(|known| *known == name) {
+            Some(0) => Ok(TraitType::Continuous),
+            Some(1) => Ok(TraitType::Binomial),
+            Some(_) | None => Err(Error::GwasTraitOfAnUnknownName {
+                name: name.to_owned(),
+            }),
+        }
+    }
+}
+
 /// Which of the two tests a study makes of every variant.
 ///
 /// Both ask whether the effect of the variant on the trait is 0, and under
@@ -274,6 +313,44 @@ pub enum TestType {
     /// off 0, measured at the null model and against how uncertain that
     /// slope is. It costs no fit per variant.
     Score,
+}
+
+impl TestType {
+    /// The name a user writes for each of the two tests, in the order of
+    /// the variants, which is also the `test` they read in the result.
+    ///
+    /// They are here for the reason [`TraitType::NAMES`] is.
+    pub const NAMES: [&'static str; 2] = ["wald", "score"];
+
+    /// The name a user writes for this test.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        let of_the_two = match self {
+            TestType::Wald => 0,
+            TestType::Score => 1,
+        };
+        // The two names are there, one for each variant of the enum.
+        TestType::NAMES.get(of_the_two).copied().unwrap_or("")
+    }
+
+    /// The test a user named.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasTestOfAnUnknownName`] when the name is of neither
+    /// test, with both of them in the message. Which tests a model has is
+    /// another question, and [`the_model_and_the_test`] is what answers
+    /// it: a name that is of a test popnei makes and that this model has
+    /// not is refused there and not here.
+    pub fn of_name(name: &str) -> Result<TestType> {
+        match TestType::NAMES.iter().position(|known| *known == name) {
+            Some(0) => Ok(TestType::Wald),
+            Some(1) => Ok(TestType::Score),
+            Some(_) | None => Err(Error::GwasTestOfAnUnknownName {
+                name: name.to_owned(),
+            }),
+        }
+    }
 }
 
 /// What a study is given: the trait of the individuals it tests, the design
@@ -660,6 +737,41 @@ pub enum GwasModel {
     /// A logistic mixed model: a binomial trait with the kinship as the
     /// covariance of a random effect.
     Glmm,
+}
+
+impl GwasModel {
+    /// The name of each of the four models, in the order of the variants,
+    /// which is the `model` of the null model a user reads.
+    ///
+    /// They are here for the reason [`TraitType::NAMES`] is. No user
+    /// writes one: the trait and the kinship are what choose the model.
+    pub const NAMES: [&'static str; 4] = ["lm", "lmm", "glm", "glmm"];
+
+    /// The name of this model.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        let of_the_four = match self {
+            GwasModel::Lm => 0,
+            GwasModel::Lmm => 1,
+            GwasModel::Glm => 2,
+            GwasModel::Glmm => 3,
+        };
+        // The four names are there, one for each variant of the enum.
+        GwasModel::NAMES.get(of_the_four).copied().unwrap_or("")
+    }
+
+    /// What a study of this model is of, as the message of
+    /// [`Error::GwasModelNotBuilt`] names it: the trait, the kinship and
+    /// the name the literature gives the model of the two.
+    #[must_use]
+    pub(crate) fn what_it_is_of(self) -> &'static str {
+        match self {
+            GwasModel::Lm => "a continuous trait with no kinship is a linear model",
+            GwasModel::Lmm => "a continuous trait with a kinship is a linear mixed model",
+            GwasModel::Glm => "a binomial trait with no kinship is a logistic regression",
+            GwasModel::Glmm => "a binomial trait with a kinship is a logistic mixed model",
+        }
+    }
 }
 
 /// Which model a study fits and which test it makes of every variant: the
@@ -1089,16 +1201,6 @@ pub(crate) struct GwasDosages {
     has_variance: Vec<bool>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the study calls `of_a_study`, `read_the_block`, `num_with_variance` \
-                  and `dosages`, and the four methods that say what the block held are \
-                  for the models that report them; until then the tests of this module \
-                  are what read them"
-    )
-)]
 impl GwasDosages {
     /// The buffers of a study that has read no block yet.
     #[must_use]
@@ -1285,6 +1387,16 @@ impl GwasDosages {
     /// result it gives: the ones that have no answer are among them. It is
     /// 0 before a block has been read.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "what the block held, which the models that report it will read; \
+                      the study itself calls `of_a_study`, `read_the_block`, \
+                      `num_with_variance` and `dosages`, and until then the tests of \
+                      this module are what read this"
+        )
+    )]
     pub(crate) fn num_vars(&self) -> usize {
         self.num_vars
     }
@@ -1294,6 +1406,16 @@ impl GwasDosages {
     /// read, since it is the block that says which of its individuals were
     /// kept.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "what the block held, which the models that report it will read; \
+                      the study itself calls `of_a_study`, `read_the_block`, \
+                      `num_with_variance` and `dosages`, and until then the tests of \
+                      this module are what read this"
+        )
+    )]
     pub(crate) fn num_individuals(&self) -> usize {
         self.num_individuals
     }
@@ -1333,6 +1455,16 @@ impl GwasDosages {
     /// dosage of the variant over the ploidy, and 0 for a variant with no
     /// called genotype among those individuals.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "what the block held, which the models that report it will read; \
+                      the study itself calls `of_a_study`, `read_the_block`, \
+                      `num_with_variance` and `dosages`, and until then the tests of \
+                      this module are what read this"
+        )
+    )]
     pub(crate) fn allele_freq(&self) -> &[f64] {
         &self.allele_freq
     }
@@ -1342,6 +1474,16 @@ impl GwasDosages {
     /// no answer, as "The variants that have no answer" of
     /// `docs/specs/gwas.md` says.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "what the block held, which the models that report it will read; \
+                      the study itself calls `of_a_study`, `read_the_block`, \
+                      `num_with_variance` and `dosages`, and until then the tests of \
+                      this module are what read this"
+        )
+    )]
     pub(crate) fn has_variance(&self) -> &[bool] {
         &self.has_variance
     }
@@ -1696,11 +1838,23 @@ impl LinearModel {
             operation: "solve of the design's r against the trait",
             source,
         })?;
-        // The study tests the columns of the design plus two individuals
-        // at least, which `Design::of_the_study` refuses anything below,
-        // so neither of these subtractions reaches 0 and neither wraps.
-        let degrees_of_freedom_of_the_null = num_individuals.saturating_sub(num_coefs);
-        let degrees_of_freedom = degrees_of_freedom_of_the_null.saturating_sub(1);
+        // The two are written with the plain operator and not with
+        // `saturating_sub`: saturating is not the meaning wanted here, and
+        // a caller that reached this with fewer individuals would get 0
+        // degrees of freedom and an infinite standard error where it
+        // should get the error that `Design::of_the_study` raises.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "`Design::of_the_study` refuses a study of no more individuals than \
+                      the columns of its design plus one, and a `Design` is the only way \
+                      to reach this, so `num_individuals` is `num_coefs` plus 2 at least"
+        )]
+        let degrees_of_freedom_of_the_null = num_individuals - num_coefs;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the line above is 2 at least, by the same refusal"
+        )]
+        let degrees_of_freedom = degrees_of_freedom_of_the_null - 1;
         Ok(LinearModel {
             q,
             coefs,
@@ -1763,11 +1917,17 @@ impl LinearModel {
     /// is the plain slope of the trait's residuals on the variant's: `beta`
     /// is `num / xx`, with `num` the variant's residuals times the trait's
     /// and `xx` the squared length of the variant's. What the variant
-    /// leaves unexplained is the null model's sum of squares less
-    /// `beta * num`, so each variant gets its own estimate of the residual
-    /// variance, which is what makes this a t test and not a normal one,
-    /// and `se` is the square root of that over the degrees of freedom and
-    /// over `xx`. The p-value is [`t_sf_two_sided`] of `beta / se`.
+    /// leaves unexplained is the squared length of the trait's residuals
+    /// less `beta` times the variant's, so each variant gets its own
+    /// estimate of the residual variance, which is what makes this a t
+    /// test and not a normal one, and `se` is the square root of that over
+    /// the degrees of freedom and over `xx`. The p-value is
+    /// [`t_sf_two_sided`] of `beta / se`.
+    ///
+    /// A variant of which the design leaves at most the tested individuals
+    /// times 2.2e-16 of its squared length has no answer, and gets the
+    /// three NaNs a variant with no variance gets: it is a combination of
+    /// the columns of the design, so what is left of it is rounding.
     ///
     /// # Errors
     ///
@@ -1849,14 +2009,49 @@ impl LinearModel {
             source,
         })?;
         let degrees_of_freedom = self.degrees_of_freedom as f64;
-        for (row, num) in self
+        // The share of its own squared length that a variant has to keep
+        // once the design is taken out of it to be worth testing, which is
+        // the threshold of **Open 2** of `docs/specs/gwas.md`.
+        let share_that_is_nothing = self.num_individuals as f64 * f64::EPSILON;
+        for ((row, num), dosages) in self
             .residualized
             .chunks_exact(self.num_individuals)
             .zip(&self.num)
+            .zip(dosages.dosages().chunks_exact(self.num_individuals))
         {
             let xx = row.iter().map(|value| value * value).sum::<f64>();
+            let of_the_dosages = dosages.iter().map(|value| value * value).sum::<f64>();
+            // A variant that is a combination of the columns of the design
+            // has nothing left once they are taken out, and what `xx` holds
+            // is the rounding of that cancellation: `beta` would be a
+            // number divided by noise, large and of whichever sign the
+            // rounding chose, and the two backends do not choose the same
+            // one. Such a variant has no answer, as one with no variance
+            // has.
+            if xx <= share_that_is_nothing * of_the_dosages {
+                self.beta.push(f64::NAN);
+                self.se.push(f64::NAN);
+                self.p_value.push(f64::NAN);
+                continue;
+            }
             let beta = num / xx;
-            let rss = self.rss - beta * num;
+            // What the variant leaves unexplained, formed from its own
+            // residuals and not taken from the null model's sum of squares
+            // by subtracting `beta * num`: those two quantities agree to
+            // their last bits once a variant explains most of what the
+            // null left, and the subtraction then gives the rounding of a
+            // cancelled sum, which is 0 or negative as often as not. "The
+            // linear model" of `docs/specs/gwas.md` measures what that
+            // gave: an `se` of 0 at one variant and NaN at another, and
+            // the two backends disagreeing about which.
+            let rss = row
+                .iter()
+                .zip(&self.residuals)
+                .map(|(value, residual)| {
+                    let left = residual - beta * value;
+                    left * left
+                })
+                .sum::<f64>();
             let se = (rss / degrees_of_freedom / xx).sqrt();
             self.beta.push(beta);
             self.se.push(se);
@@ -1923,29 +2118,26 @@ impl LinearModel {
 /// [`GwasDosages::read_the_block`] refuses of a block and of its variants,
 /// [`Error::GwasVariantsTooLarge`] when the variants of the study are more
 /// than a `usize` counts, and whatever the reader fails with.
+#[expect(
+    unused_variables,
+    reason = "`gamma_pass` keeps the name `docs/specs/gwas.md` gives it, since rustdoc \
+              prints the names of the arguments; nothing reads it until a mixed model \
+              makes the approximation, and the doc comment above says why"
+)]
 pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     reader: &mut R1,
-    _gamma_pass: Option<&mut R2>,
+    gamma_pass: Option<&mut R2>,
     input: &GwasInput<'_>,
 ) -> Result<Gwas> {
     let (model, test) = the_model_and_the_test(input)?;
     if input.use_grammar_gamma_approx && input.kinship.is_none() {
         return Err(Error::GwasGrammarGammaWithoutAKinship);
     }
-    let not_built = match model {
-        GwasModel::Lm => None,
-        GwasModel::Lmm => Some(
-            "a continuous trait with a kinship is a linear mixed model, which is being written",
-        ),
-        GwasModel::Glm => Some(
-            "a binomial trait with no kinship is a logistic regression, which is being written",
-        ),
-        GwasModel::Glmm => Some(
-            "a binomial trait with a kinship is a logistic mixed model, which is being written",
-        ),
-    };
-    if let Some(what) = not_built {
-        return Err(Error::GwasModelNotBuilt { what });
+    match model {
+        GwasModel::Lm => {}
+        GwasModel::Lmm | GwasModel::Glm | GwasModel::Glmm => {
+            return Err(Error::GwasModelNotBuilt { model });
+        }
     }
     let ploidy = reader.ploidy();
     let design = Design::of_the_study(input, reader.individuals().len())?;
@@ -4488,6 +4680,13 @@ mod lm {
     /// the model and of the dosages being reused, the rows of the second
     /// block being added after the first's and not over them, and the
     /// three columns of the variants growing across the blocks.
+    ///
+    /// The second block is on another chromosome than the first, so that
+    /// the column of chromosomes is asserted where it is built: the
+    /// numbers a block holds are read through the table of the reader, and
+    /// a study that kept the first block's name for every variant after it
+    /// would answer every question this test asks about the ids and the
+    /// positions and still be wrong about where a variant is.
     #[test]
     fn a_study_of_more_variants_than_one_block_answers_the_same_in_every_block() {
         let patterns = [
@@ -4499,7 +4698,13 @@ mod lm {
         let mut vcf = String::from(THE_HEADER);
         for var in 0..num_vars {
             let pos = var.saturating_add(1).saturating_mul(10);
-            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            // The variants of the second block are on the second
+            // chromosome, and the first block fills a whole block.
+            let chrom = match var < VARS_OF_ONE_BLOCK {
+                true => 1,
+                false => 2,
+            };
+            vcf.push_str(&format!("{chrom}\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
             for genotype in patterns[var % patterns.len()] {
                 vcf.push('\t');
                 vcf.push_str(genotype);
@@ -4519,14 +4724,26 @@ mod lm {
         );
         let ids = result.ids.as_deref().expect("the ids of the variants");
         let poss = result.poss.as_deref().expect("the positions");
+        let chroms = result.chroms.as_deref().expect("the chromosomes");
         assert_eq!(ids.len(), num_vars, "one id for each variant");
         assert_eq!(poss.len(), num_vars, "one position for each variant");
+        assert_eq!(chroms.len(), num_vars, "one chromosome for each variant");
         for var in [0, VARS_OF_ONE_BLOCK, num_vars.saturating_sub(1)] {
             assert_eq!(ids[var], format!("v{var}"), "the id of the variant {var}");
             assert_eq!(
                 poss[var],
                 var.saturating_add(1).saturating_mul(10) as u64,
                 "the position of the variant {var}"
+            );
+            let name = result.chrom_table.name(chroms[var]);
+            let expected = match var < VARS_OF_ONE_BLOCK {
+                true => "1",
+                false => "2",
+            };
+            assert_eq!(
+                name,
+                Some(expected),
+                "the chromosome of the variant {var}, which the table of the pass names"
             );
         }
         for (var, (allele_freq, beta, se, p_value)) in (0..num_vars)
@@ -4772,12 +4989,24 @@ mod lm {
                 individuals: &THE_INDIVIDUALS,
                 transform_to_biallelic: false,
             };
+            let wanted = match (trait_type, with_a_kinship) {
+                (TraitType::Continuous, _) => GwasModel::Lmm,
+                (TraitType::Binomial, false) => GwasModel::Glm,
+                (TraitType::Binomial, true) => GwasModel::Glmm,
+            };
             let mut reader = reader_over(&vcf);
             match the_study_of(&mut reader, &study) {
-                Err(Error::GwasModelNotBuilt { what }) => assert!(
-                    what.contains("being written"),
-                    "{trait_type:?} with a kinship of {with_a_kinship} was refused with {what}"
-                ),
+                Err(Error::GwasModelNotBuilt { model }) => {
+                    assert_eq!(
+                        model, wanted,
+                        "{trait_type:?} with a kinship of {with_a_kinship}"
+                    );
+                    let said = Error::GwasModelNotBuilt { model }.to_string();
+                    assert!(
+                        said.contains("being written"),
+                        "the study was refused with {said}"
+                    );
+                }
                 Err(error) => panic!("{trait_type:?}, kinship {with_a_kinship}: {error}"),
                 Ok(_) => panic!("{trait_type:?} with a kinship of {with_a_kinship} was run"),
             }
@@ -4800,6 +5029,224 @@ mod lm {
             Err(error) => panic!("the study was refused with {error}"),
             Ok(_) => panic!("the approximation was made without a kinship"),
         }
+    }
+
+    /// The trait of the six individuals for a variant that explains all
+    /// but `delta` of what the null model left, as literals.
+    ///
+    /// The trait is `1 + 2 * cov + 3 * dosage + delta * u` over the
+    /// covariate `0 1 0 1 0 1` and the dosages `0 1 2 0 1 2` of `v0`, with
+    /// `u` the direction `1 0 -1 -1 0 1`, which is at right angles to the
+    /// column of ones, to the covariate and to the dosages: `u` sums to 0,
+    /// its values at the three individuals of `cov = 1` sum to 0, and its
+    /// product with the dosages is `-2 + 2`. So the effect of the variant
+    /// is 3 whatever `delta` is, and what the variant leaves unexplained
+    /// is `delta² * 4`, `4` being the squared length of `u`.
+    ///
+    /// The values are written out and not computed, so that the test reads
+    /// the same numbers numpy was given: `repr` of a float prints the
+    /// shortest text that reads back as the same number, and this is what
+    /// numpy 2.5.3 printed for `1 + 2 * cov + 3 * x + delta * u`.
+    const THE_TRAIT_A_VARIANT_EXPLAINS: [(f64, [f64; 6], f64); 4] = [
+        (
+            1e-5,
+            [1.00001, 6.0, 6.99999, 2.99999, 4.0, 9.00001],
+            5.773_502_691_645_637e-6,
+        ),
+        (
+            1e-7,
+            [1.0000001, 6.0, 6.9999999, 2.9999999, 4.0, 9.0000001],
+            5.773_502_679_242_529e-8,
+        ),
+        (
+            1e-8,
+            [1.00000001, 6.0, 6.99999999, 2.99999999, 4.0, 9.00000001],
+            5.773_502_897_178_33e-9,
+        ),
+        (0.0, [1.0, 6.0, 7.0, 3.0, 4.0, 9.0], 0.0),
+    ];
+
+    /// How far the `se` of such a variant may be from the one numpy gives
+    /// the same trait: 1e-5 of it.
+    ///
+    /// It is not tighter because numpy's own number is not. The trait it
+    /// was given is the one above, whose values are rounded to the nearest
+    /// `f64` and so carry a perturbation of about 1e-16 that is not along
+    /// `u`; at a `delta` of 1e-8 that perturbation is 1e-8 of the signal,
+    /// so numpy's `se` and the closed form `delta / sqrt(3)` part in their
+    /// eighth digit, 5.7735028971e-9 against 5.7735026918e-9. What is
+    /// asserted is that popnei answers the rounded trait it was given as
+    /// numpy answers it.
+    const OF_NUMPYS_STANDARD_ERROR: f64 = 1e-5;
+
+    /// A variant that explains almost all of what the null model left has
+    /// a standard error, and the two backends agree on it.
+    ///
+    /// What a variant leaves unexplained is formed from its residuals and
+    /// not by subtracting `beta * num` from the null's sum of squares,
+    /// which "The linear model" of `docs/specs/gwas.md` asks for and
+    /// measures: the two quantities agree to their last bits once the
+    /// variant explains most of the residual, so the subtraction leaves
+    /// the rounding of a cancelled sum, of either sign. At a `delta` of
+    /// 1e-7 it gave exactly 0, and so an `se` of 0, which is not a
+    /// standard error; at 1e-8 it gave -7.1e-15, and so an `se` of NaN,
+    /// which is not one either; and which of the two a variant got
+    /// differed between Accelerate and faer, so the native build and the
+    /// build a browser runs disagreed about whether a variant could be
+    /// tested at all.
+    ///
+    /// The effect is 3 at every `delta` by the construction of the trait,
+    /// and the `se` is numpy 2.5.3's, from its own least squares fit of
+    /// the trait on the intercept, the covariate and the dosages, with the
+    /// standard error taken from the inverse of `d' d`. At a `delta` of 0
+    /// the variant explains the trait exactly and there is no number to
+    /// assert: what is checked is that the `se` is a finite number at the
+    /// size of the rounding and not a NaN, and numpy gives 1.2e-15 there.
+    #[test]
+    fn a_variant_that_explains_almost_everything_has_a_standard_error() {
+        let vcf = the_worked_example_vcf();
+        for (delta, phenotype, se_of_numpy) in THE_TRAIT_A_VARIANT_EXPLAINS {
+            let study = GwasInput {
+                phenotype: &phenotype,
+                ..the_worked_example_study()
+            };
+            let mut reader = reader_over(&vcf);
+            let result = match the_study_of(&mut reader, &study) {
+                Ok(result) => result,
+                Err(error) => panic!("the study at a delta of {delta}: {error}"),
+            };
+            assert_within(
+                result.beta[0],
+                3.0,
+                1e-12,
+                &format!("the effect at a delta of {delta}"),
+            );
+            let se = result.se[0];
+            assert!(
+                se.is_finite() && se >= 0.0,
+                "the standard error at a delta of {delta} is {se}, and what a variant \
+                 leaves unexplained is a squared length, which is 0 or above"
+            );
+            let p_value = result.p_value[0];
+            assert!(
+                p_value.is_finite(),
+                "the p-value at a delta of {delta} is {p_value}"
+            );
+            if delta == 0.0 {
+                assert!(
+                    se < 1e-13,
+                    "the variant explains the trait exactly at a delta of 0, and its \
+                     standard error is {se}, which is more than the rounding of the sum"
+                );
+                continue;
+            }
+            assert_within(
+                se,
+                se_of_numpy,
+                OF_NUMPYS_STANDARD_ERROR,
+                &format!("the standard error at a delta of {delta}"),
+            );
+        }
+    }
+
+    /// The header of a VCF of eight diploid individuals and no variant.
+    const THE_HEADER_OF_EIGHT: &str = "##fileformat=VCFv4.2\n\
+        ##contig=<ID=1>\n\
+        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\ti6\ti7\n";
+
+    /// The design of the fixture of **Open 2** of `docs/specs/gwas.md`:
+    /// eight individuals and a covariate that marks two subpopulations of
+    /// four, beside the intercept.
+    const THE_DESIGN_OF_TWO_SUBPOPULATIONS: [f64; 16] = [
+        1.0, 0.0, //
+        1.0, 0.0, //
+        1.0, 0.0, //
+        1.0, 0.0, //
+        1.0, 1.0, //
+        1.0, 1.0, //
+        1.0, 1.0, //
+        1.0, 1.0,
+    ];
+
+    /// The trait of those eight individuals.
+    const THE_TRAIT_OF_TWO_SUBPOPULATIONS: [f64; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+    /// All eight of them are tested.
+    const THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+    /// What numpy 2.5.3 answers for the ordinary variant of that fixture,
+    /// the dosages `1 0 2 0 1 2 0 1`, by the same least squares fit as
+    /// above: the threshold that refuses the variant beside it leaves this
+    /// one alone.
+    const OF_THE_ORDINARY_VARIANT: (f64, f64) = (-0.315_789_473_684_210_9, 0.633_330_903_431_213_6);
+
+    /// A variant that the design leaves nothing of has no answer, which is
+    /// the meanwhile of **Open 2** of `docs/specs/gwas.md`.
+    ///
+    /// The variant is twice the covariate, so the design explains all of
+    /// it and what is left is rounding: `beta` is a number divided by
+    /// noise, and what the study gave before this was 5.9e13 on Accelerate
+    /// and -3.0e13 on faer, opposite signs with a p-value that reads as a
+    /// variant that was tested and showed nothing. plink2 answers `NA` for
+    /// such a variant with `ERRCODE CORR_TOO_HIGH`.
+    ///
+    /// The threshold is the spec's: the variant is refused when what the
+    /// design leaves of its squared length is at most the tested
+    /// individuals times 2.2e-16 of what there was. Measured with numpy
+    /// 2.5.3 on this fixture, the collinear variant leaves 6.47e-32 of its
+    /// squared length against a threshold of 1.78e-15, and the ordinary
+    /// variant beside it leaves 0.432, thirteen orders of magnitude apart.
+    #[test]
+    fn a_variant_the_design_leaves_nothing_of_has_no_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        for (var, genotypes) in [
+            ["0/0", "0/0", "0/0", "0/0", "1/1", "1/1", "1/1", "1/1"],
+            ["0/1", "0/0", "1/1", "0/0", "0/1", "1/1", "0/0", "0/1"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let pos = var.saturating_add(1).saturating_mul(1000);
+            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in genotypes {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        let study = GwasInput {
+            phenotype: &THE_TRAIT_OF_TWO_SUBPOPULATIONS,
+            trait_type: TraitType::Continuous,
+            design: &THE_DESIGN_OF_TWO_SUBPOPULATIONS,
+            num_coefs: 2,
+            kinship: None,
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of two subpopulations: {error}"),
+        };
+
+        assert_eq!(result.num_vars, 2);
+        // The variant is in the result with its frequency, as every
+        // variant that has no answer is.
+        assert_within(result.allele_freq[0], 0.5, 1e-12, "the frequency of v0");
+        assert!(
+            result.beta[0].is_nan() && result.se[0].is_nan() && result.p_value[0].is_nan(),
+            "the variant the design leaves nothing of was answered with a beta of {beta}, \
+             an se of {se} and a p-value of {p_value}",
+            beta = result.beta[0],
+            se = result.se[0],
+            p_value = result.p_value[0]
+        );
+        let (beta, se) = OF_THE_ORDINARY_VARIANT;
+        assert_within(result.beta[1], beta, 1e-12, "the effect of v1");
+        assert_within(result.se[1], se, 1e-12, "the standard error of v1");
     }
 
     /// A study whose reader gives no variant is refused, which is what
