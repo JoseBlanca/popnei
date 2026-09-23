@@ -613,11 +613,29 @@ pub enum PopDistMeasure {
     Chord,
     /// Nei's D_A, the square of the chord distance.
     Da,
-    /// Jost's D, the differentiation of the alleles the two hold.
+    /// Jost's D, how much of the allelic variety of the two is not
+    /// shared. It is the D_est of Jost (2008) under the correction of Nei
+    /// and Chesser (1983) for the individuals it was estimated from, which
+    /// is the estimator pyNei computes and the one GenAlEx prints. mmod's
+    /// `pairwise_D` in R computes another estimator of the same quantity,
+    /// leaving the observed heterozygosity out of the correction and
+    /// dividing by 2n - 1 where this one divides by n - 1: the two are
+    /// 7.3e-5 apart at the furthest on the biallelic panel of the tests,
+    /// 1200 variants of three populations of 48 to 84 individuals, and
+    /// 3.5e-4 on the multiallelic one, 120 microsatellite loci of six
+    /// alleles in three populations of 30.
     Dest,
-    /// Nei's G_ST.
+    /// Nei's G_ST, the share of the diversity of the two that lies between
+    /// them. It comes from the same two corrected means as
+    /// [`PopDistMeasure::Dest`], so mmod's `pairwise_Gst_Nei` carries the
+    /// same difference of estimator, 7.2e-5 at the furthest on the
+    /// biallelic panel and 9.0e-5 on the multiallelic one.
     Gst,
-    /// G_ST rescaled to reach 1, the standardized G''_ST.
+    /// G_ST rescaled to reach 1, the standardized G''_ST of Meirmans and
+    /// Hedrick (2011) and not Hedrick's earlier G'_ST. mmod's
+    /// `pairwise_Gst_Hedrick` computes this one whatever its name
+    /// suggests, and is 1.9e-4 from it at the furthest on the biallelic
+    /// panel and 4.7e-4 on the multiallelic one.
     GstStandardized,
 }
 

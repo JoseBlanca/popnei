@@ -9,11 +9,20 @@
  * `docs/objectives.md` asks for: the two packages give a user the same
  * numbers.
  *
- * Two programs are compared with. plink2 v2.0.0-a.7.7 gives Hudson's F_ST of
- * both panels, which it prints to six digits, so the comparison is within
+ * Three programs are compared with. plink2 v2.0.0-a.7.7 gives Hudson's F_ST
+ * of both panels, which it prints to six digits, so the comparison is within
  * 1e-6 absolute. ADMIXTOOLS 2.0.10 gives f_2 and its jackknife standard
  * error of the biallelic panel, which it writes to seventeen digits, so that
- * comparison is within 1e-12 relative.
+ * comparison is within 1e-12 relative. mmod 1.3.3 under R 4.6.1 gives Jost's
+ * D, Nei's G_ST and the standardized G''_ST of both panels with another
+ * estimator of each, so those three are an agreement within 5e-4 and not an
+ * equality.
+ *
+ * pyNei is the fourth, and it is a Python library that cannot be installed
+ * here: it is the one program that computes the estimator of Jost's D that
+ * popnei computes, `tests/test_pop_dists.py` runs it and matches it within
+ * 1e-12 relative, and what this file asserts are the ten digits of the spec
+ * that that run gave.
  *
  * ADMIXTOOLS was run on the biallelic panel at three lengths of the
  * resampling groups and `calcPopDists` refuses a pass of fewer than 20 of
@@ -140,6 +149,70 @@ const F2_TOLERANCE = 1e-12;
  */
 const PARTING_MIN_NUM_INDIVIDUALS = 47;
 const PANEL_NUM_VARS_OF_EACH_PAIR = [688, 688, 1200];
+
+/**
+ * Jost's D of the three pairs of each panel at the default threshold of 20
+ * called genotypes, which pyNei's `calc_jost_dest_pop_dists` gives and which
+ * the Jost's D item of the spec prints to ten digits. pyNei is the one
+ * program that computes the estimator popnei computes; it is not installable
+ * here, so what this package checks is that it gives the numbers
+ * `tests/test_pop_dists.py` got out of a live pyNei.
+ */
+const PANEL_DEST = [0.063543463, 0.0612981314, 0.0656705213];
+const MICRO_DEST = [0.1661307946, 0.1822136338, 0.1819999162];
+
+/**
+ * The same three of the biallelic panel at the 47 where its pairs part. The
+ * D of p1-p2 is the one above, since that pair keeps all 1200 variants.
+ */
+const PANEL_DEST_AT_THE_PARTING = [0.0595097904, 0.0612873957, 0.0656705213];
+
+/**
+ * Nei's G_ST and the standardized G''_ST of the three pairs of each panel at
+ * that same default, which the G_ST item of the spec prints to ten digits as
+ * popnei's own numbers: no program outside popnei computes this estimator of
+ * either, so what they are checked against is mmod below.
+ */
+const PANEL_GST = [0.0554614481, 0.0542279036, 0.0580557529];
+const PANEL_GST_STANDARDIZED = [0.161959631, 0.1578689665, 0.1682042511];
+const MICRO_GST = [0.0331595308, 0.0360169279, 0.0363566716];
+const MICRO_GST_STANDARDIZED = [0.2196573038, 0.2390740032, 0.2393928219];
+
+/**
+ * The six sets of literals above are the spec's ten digits, so half a unit
+ * of the tenth is how far a value may be from the one written there.
+ */
+const TEN_DIGITS_TOLERANCE = 5e-11;
+
+/**
+ * Jost's D, Nei's G_ST and the standardized G''_ST of the three pairs of each
+ * panel as `pairwise_D`, `pairwise_Gst_Nei` and `pairwise_Gst_Hedrick` of
+ * mmod 1.3.3 under R 4.6.1 give them, which
+ * `tests/reference/pop_dists/panel.mmod.tsv` and `micro.mmod.tsv` hold.
+ * `pairwise_Gst_Hedrick` computes the standardized G''_ST of Meirmans and
+ * Hedrick (2011) and not the G'_ST its name suggests, which "How it is
+ * verified" of the G_ST item of the spec shows from its source.
+ */
+const PANEL_MMOD = {
+  dest: [0.0634704859, 0.0612312792, 0.0656071139],
+  gst: [0.055389669, 0.0541614926, 0.0579922831],
+  gst_standardized: [0.1617736271, 0.1576967932, 0.1680418436],
+};
+const MICRO_MMOD = {
+  dest: [0.1662094246, 0.1819580763, 0.1816462134],
+  gst: [0.0331789783, 0.0359529575, 0.0362672006],
+  gst_standardized: [0.219761268, 0.238738698, 0.2389275805],
+};
+
+/**
+ * mmod computes another estimator of the same three quantities: it leaves the
+ * observed heterozygosity term out of both corrections and uses 2n/(2n - 1)
+ * where popnei, which is pyNei and Nei and Chesser (1983), uses n/(n - 1) and
+ * subtracts H_obs/(2n). So the check is an agreement and not an equality, and
+ * 5e-4 is the tolerance the two items of the spec give: the furthest of these
+ * eighteen numbers, a G''_ST of the multiallelic panel, is 4.7e-4 away.
+ */
+const MMOD_TOLERANCE = 5e-4;
 
 /** The five measures the work packages 1 and 2 of `docs/plans/dists-pops.md`
  * give. */
@@ -276,6 +349,129 @@ test("the f_2 of the panel and its standard error are the ones ADMIXTOOLS gives"
   const ofTheFst = dists.fst?.standardErrors;
   assert.ok(ofTheFst !== null && ofTheFst !== undefined);
   assert.ok([...ofTheFst].every((error) => error > 0 && error < 0.01));
+});
+
+test("the dest of both panels is the one pyNei gives", () => {
+  // pyNei is the one program that computes the estimator popnei computes,
+  // the Nei and Chesser correction that GenAlEx prints, and
+  // `tests/test_pop_dists.py` runs it against these same numbers within
+  // 1e-12 relative. mmod's D, which the test below compares with, is another
+  // estimator of the same quantity and is 7.3e-5 away on the biallelic panel
+  // and 3.5e-4 on the multiallelic one.
+  //
+  // Both panels are read at the default of 20 called genotypes, where every
+  // variant counts for every pair of both of them. The multiallelic one is
+  // the one that says that the arithmetic does not assume two alleles: its
+  // 120 loci have six alleles each.
+  for (const { vcf, pops, expected, group, name } of [
+    {
+      vcf: PANEL_VCF,
+      pops: PANEL_POPS,
+      expected: PANEL_DEST,
+      group: PANEL_JACKKNIFE_GROUP,
+      name: "panel.vcf.gz",
+    },
+    {
+      vcf: MICRO_VCF,
+      pops: MICRO_POPS,
+      expected: MICRO_DEST,
+      group: "variant" as const,
+      name: "micro.vcf.gz",
+    },
+  ]) {
+    const dists = popDistsOf(vcf, pops, {
+      jackknifeGroup: group,
+      measures: ["dest"],
+    });
+
+    assertWithin(
+      dists.dest?.distVector,
+      expected,
+      TEN_DIGITS_TOLERANCE,
+      false,
+      `Jost's D of ${name}`,
+    );
+  }
+});
+
+test("the dest where the pairs part is over each pair's own variants", () => {
+  // At 47 called genotypes the two pairs of p0 lose the variants at which
+  // p0, of 48 individuals, has fewer than 47 called. Each pair is a mean over
+  // its own variants: 688 for p0-p1 and p0-p2 and all 1200 for p1-p2, whose D
+  // is therefore the one at the default of 20 and does not move.
+  const dists = popDistsOf(PANEL_VCF, PANEL_POPS, {
+    jackknifeGroup: null,
+    measures: ["dest"],
+    minNumIndividuals: PARTING_MIN_NUM_INDIVIDUALS,
+  });
+
+  assertWithin(
+    dists.dest?.distVector,
+    PANEL_DEST_AT_THE_PARTING,
+    TEN_DIGITS_TOLERANCE,
+    false,
+    "Jost's D of the panel at 47 called genotypes",
+  );
+  assert.deepEqual([...dists.numVars], PANEL_NUM_VARS_OF_EACH_PAIR);
+});
+
+test("the dest, the gst and the gst_standardized of both panels agree with mmod", () => {
+  // mmod computes another estimator of each of the three, so this is an
+  // agreement within 5e-4 and not an equality, and it says that popnei
+  // computes these three quantities and not other statistics. What pins the
+  // estimator is the comparison with pyNei above, which
+  // `tests/test_pop_dists.py` makes exact to 1e-12 relative. Tightening this
+  // tolerance, or moving the arithmetic towards mmod, breaks that one.
+  //
+  // The same call also gives the ten digits the spec prints for popnei's own
+  // G_ST and G''_ST, which no program outside popnei computes and which are
+  // here so that a change to the arithmetic that stays inside 5e-4 of mmod is
+  // still caught.
+  for (const { vcf, pops, ofMmod, ofPopnei, name } of [
+    {
+      vcf: PANEL_VCF,
+      pops: PANEL_POPS,
+      ofMmod: PANEL_MMOD,
+      ofPopnei: { gst: PANEL_GST, gst_standardized: PANEL_GST_STANDARDIZED },
+      name: "panel.vcf.gz",
+    },
+    {
+      vcf: MICRO_VCF,
+      pops: MICRO_POPS,
+      ofMmod: MICRO_MMOD,
+      ofPopnei: { gst: MICRO_GST, gst_standardized: MICRO_GST_STANDARDIZED },
+      name: "micro.vcf.gz",
+    },
+  ]) {
+    const dists = popDistsOf(vcf, pops, {
+      jackknifeGroup: null,
+      measures: ["dest", "gst", "gst_standardized"],
+    });
+    const ofTheResult = {
+      dest: dists.dest,
+      gst: dists.gst,
+      gst_standardized: dists.gstStandardized,
+    };
+
+    for (const [measure, expected] of Object.entries(ofMmod)) {
+      assertWithin(
+        ofTheResult[measure as keyof typeof ofTheResult]?.distVector,
+        expected,
+        MMOD_TOLERANCE,
+        false,
+        `the ${measure} of ${name} against mmod`,
+      );
+    }
+    for (const [measure, expected] of Object.entries(ofPopnei)) {
+      assertWithin(
+        ofTheResult[measure as keyof typeof ofTheResult]?.distVector,
+        expected,
+        TEN_DIGITS_TOLERANCE,
+        false,
+        `the ${measure} of ${name}`,
+      );
+    }
+  }
 });
 
 test("the groups the variants fell into carry their chromosome and positions", () => {

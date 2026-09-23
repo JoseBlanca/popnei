@@ -8,9 +8,10 @@
  * the populations they name, and gives them in a `PopDists`: one `Distances`
  * for each measure, with the standard error of each pair beside its value.
  *
- * The seven are the names of `PopDistMeasure`. Two of them are calculated
- * today, Hudson's F_ST and f_2; the other five are refused, and the work
- * packages 2 and 3 of `docs/plans/dists-pops.md` add them.
+ * The seven are the names of `PopDistMeasure`. Five of them are calculated
+ * today, Hudson's F_ST, f_2, Jost's D, Nei's G_ST and the standardized
+ * G''_ST; the chord distance and Nei's D_A are refused, and work package 3
+ * of `docs/plans/dists-pops.md` adds them.
  *
  * `docs/specs/dists.md` has each measure, what it answers, the program it is
  * verified against and the numbers the tests assert.
@@ -53,10 +54,11 @@ const THE_MEASURES = [
  * they have drifted apart by, in the units it was measured in, which is what
  * makes it add up along a tree; the chord distance of Cavalli-Sforza and
  * Edwards and Nei's D_A, its square, the two that are Euclidean and that a
- * tree or a principal coordinate analysis is built from; Jost's D, how
- * different the alleles the two hold are; and Nei's G_ST with the
- * standardized G''_ST, which is G_ST divided by the largest value it could
- * reach with the diversity the two hold.
+ * tree or a principal coordinate analysis is built from; Jost's D, how much
+ * of the allelic variety of the two is not shared; Nei's G_ST, the share of
+ * the diversity of the two that lies between them; and the standardized
+ * G''_ST, which is G_ST rescaled so that it reaches 1 when the two share no
+ * allele whatever their diversity.
  */
 export type PopDistMeasure = (typeof THE_MEASURES)[number];
 
@@ -121,9 +123,9 @@ export interface CalcPopDistsOptions {
    * given, since the pass is what costs and each measure is a division at
    * the end of it. A result holds `null` for one nobody asked for.
    *
-   * Five of the seven are not calculated yet, so asking for one of them, and
-   * asking for all of them by leaving this out, is an `Error` that names the
-   * two that are.
+   * Two of the seven, the chord distance and Nei's D_A, are not calculated
+   * yet, so asking for one of them, and asking for all of them by leaving
+   * this out, is an `Error` that names the five that are.
    */
   measures?: readonly PopDistMeasure[];
 
@@ -163,15 +165,43 @@ export interface PopDists {
   /** Nei's D_A of every pair, and `null` when it was not asked for. */
   readonly da: Distances | null;
 
-  /** Jost's D of every pair, and `null` when it was not asked for. */
+  /**
+   * Jost's D of every pair, and `null` when it was not asked for.
+   *
+   * It is the D_est of Jost (2008) under the correction of Nei and Chesser
+   * (1983) for the individuals it was estimated from, which is the estimator
+   * pyNei computes and the one GenAlEx prints. mmod's `pairwise_D` in R
+   * computes another estimator of the same quantity, leaving the observed
+   * heterozygosity out of the correction and dividing by 2n - 1 where this
+   * one divides by n - 1, so it gives another number: on the biallelic panel
+   * of the tests, 1200 variants of three populations of 48 to 84
+   * individuals, the two are 7.3e-5 apart at the furthest, and on the
+   * multiallelic one, 120 microsatellite loci of six alleles in three
+   * populations of 30, 3.5e-4. A user who finds a third number in some
+   * program is holding a third estimator, which is what the Jost's D item of
+   * `docs/specs/dists.md` writes both formulas out for.
+   */
   readonly dest: Distances | null;
 
-  /** Nei's G_ST of every pair, and `null` when it was not asked for. */
+  /**
+   * Nei's G_ST of every pair, and `null` when it was not asked for. It comes
+   * from the same two corrected means as `dest`, so mmod's
+   * `pairwise_Gst_Nei` carries the same difference of estimator, 7.2e-5 at
+   * the furthest on the biallelic panel and 9.0e-5 on the multiallelic one.
+   */
   readonly gst: Distances | null;
 
   /**
    * The standardized G''_ST of every pair, and `null` when it was not asked
    * for.
+   *
+   * It is Meirmans and Hedrick's (2011) and not Hedrick's earlier G'_ST: for
+   * the first two populations of the biallelic panel of the tests this one
+   * is 0.1620 and G'_ST is 0.1155, and a user who wants G'_ST gets it from
+   * `gst` with one division, `gst * (1 + H_S) / (1 - H_S)`. mmod's
+   * `pairwise_Gst_Hedrick` computes this one whatever its name suggests, and
+   * is 1.9e-4 from it at the furthest on the biallelic panel and 4.7e-4 on
+   * the multiallelic one.
    */
   readonly gstStandardized: Distances | null;
 

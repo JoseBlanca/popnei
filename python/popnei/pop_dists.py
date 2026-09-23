@@ -8,9 +8,10 @@ pass over the variants, for every pair of the populations they name, and
 gives them in a :class:`PopDists`: one :class:`popnei.Distances` for each
 measure, with the standard error of each pair beside its value.
 
-The seven are members of :class:`PopDistMeasure`. Two of them are
-calculated today, Hudson's F_ST and f_2; the other five raise, and the work
-packages 2 and 3 of `docs/plans/dists-pops.md` add them.
+The seven are members of :class:`PopDistMeasure`. Five of them are
+calculated today, Hudson's F_ST, f_2, Jost's D, Nei's G_ST and the
+standardized G''_ST; the chord distance and Nei's D_A raise, and work
+package 3 of `docs/plans/dists-pops.md` adds them.
 
 `docs/specs/dists.md` has each measure, what it answers, the program it is
 verified against and the numbers the tests assert.
@@ -57,17 +58,27 @@ class PopDistMeasure(StrEnum):
     """Nei's D_A, the square of the chord distance."""
 
     DEST = "dest"
-    """Jost's D, how different the alleles the two populations hold are,
-    which is the one measure of the seven that pyNei has."""
+    """Jost's D, how much of the allelic variety of the two populations is
+    not shared, from 0 when they hold the same alleles at the same
+    frequencies to 1 when they share none. It is the one measure of the
+    seven that pyNei has, and it is the one to read on microsatellites,
+    where G_ST below cannot reach 1."""
 
     GST = "gst"
     """Nei's G_ST, the share of the diversity of the two populations that
     lies between them, corrected for the individuals they were estimated
-    from."""
+    from. With two populations it cannot pass (1 - H_S)/(1 + H_S), so two
+    internally diverse populations that share no allele still give a small
+    number."""
 
     GST_STANDARDIZED = "gst_standardized"
-    """G_ST divided by the largest value it could reach with the diversity
-    the two populations hold, so that it reaches 1."""
+    """The G''_ST of Meirmans and Hedrick (2011), G_ST rescaled so that it
+    reaches 1 when the two populations share no allele whatever their
+    diversity. It is not Hedrick's earlier G'_ST, which divides G_ST by the
+    largest value it could take: for the first two populations of the
+    biallelic panel of the tests this one is 0.1620 and G'_ST is 0.1155.
+    A user who wants G'_ST gets it from :attr:`gst` with one division,
+    ``gst * (1 + H_S) / (1 - H_S)``."""
 
 
 # The measures that have a value today, which the core crate holds: the work
@@ -129,14 +140,36 @@ class PopDists:
     """Nei's D_A of every pair, and ``None`` when it was not asked for."""
 
     dest: Distances | None = None
-    """Jost's D of every pair, and ``None`` when it was not asked for."""
+    """Jost's D of every pair, and ``None`` when it was not asked for.
+
+    It is the D_est of Jost (2008) under the correction of Nei and Chesser
+    (1983) for the individuals it was estimated from, which is the estimator
+    pyNei computes and the one GenAlEx prints. mmod's ``pairwise_D`` in R
+    computes another estimator of the same quantity, leaving the observed
+    heterozygosity out of the correction and dividing by 2n - 1 where this
+    one divides by n - 1, so it gives another number: on the biallelic panel
+    of the tests, 1200 variants of three populations of 48 to 84
+    individuals, the two are 7.3e-5 apart at the furthest, and on the
+    multiallelic one, 120 microsatellite loci of six alleles in three
+    populations of 30, 3.5e-4. A user who finds a third number in some
+    program is holding a third estimator, which is what the Jost's D item of
+    `docs/specs/dists.md` writes both formulas out for.
+    """
 
     gst: Distances | None = None
-    """Nei's G_ST of every pair, and ``None`` when it was not asked for."""
+    """Nei's G_ST of every pair, and ``None`` when it was not asked for. It
+    comes from the same two corrected means as :attr:`dest`, so mmod's
+    ``pairwise_Gst_Nei`` carries the same difference of estimator, 7.2e-5 at
+    the furthest on the biallelic panel and 9.0e-5 on the multiallelic
+    one."""
 
     gst_standardized: Distances | None = None
     """The standardized G''_ST of every pair, and ``None`` when it was not
-    asked for."""
+    asked for. It is Meirmans and Hedrick's (2011) and not Hedrick's earlier
+    G'_ST, and mmod's ``pairwise_Gst_Hedrick``, which computes this one
+    whatever its name suggests, is 1.9e-4 from it at the furthest on the
+    biallelic panel and 4.7e-4 on the multiallelic one, by the same
+    difference of estimator as :attr:`dest`."""
 
     f2_groups: numpy.ndarray | None = None
     """f_2 within each resampling group, a read only float64 array of groups
@@ -232,10 +265,11 @@ def calc_pop_dists(
 
     `measures` says which of the seven of :class:`PopDistMeasure` to
     calculate, and ``None`` is all of them, since the pass is what costs and
-    each measure is a division at the end of it. Five of the seven are not
-    calculated yet, so asking for one of them, and asking for all of them
-    with ``None``, is a ``ValueError`` that names the two that are: the work
-    packages 2 and 3 of `docs/plans/dists-pops.md` add the rest.
+    each measure is a division at the end of it. Two of the seven, the chord
+    distance and Nei's D_A, are not calculated yet, so asking for one of
+    them, and asking for all of them with ``None``, is a ``ValueError`` that
+    names the five that are: work package 3 of `docs/plans/dists-pops.md`
+    adds the other two.
 
     `min_num_individuals` is how many called genotypes a population needs at
     a variant for that variant to count for a pair, 20 by default. The test
