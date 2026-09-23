@@ -224,7 +224,7 @@ Work package 1.
 
 ### Its tasks
 
-- [ ] 2.1 `calc_r2_matrix` and `R2Matrix` in `crates/popnei/src/ld.rs`,
+- [x] 2.1 `calc_r2_matrix` and `R2Matrix` in `crates/popnei/src/ld.rs`,
       from "The Rust interface" and "How it runs" of `docs/specs/ld.md`,
       with the tiling that keeps the six intermediate matrices small and
       the lower half computed once. Serves deliverable 1. Needs 1.4.

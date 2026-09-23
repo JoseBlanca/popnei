@@ -516,3 +516,39 @@ from 8.25 ms to 7.40 ms. The decision never rested on the figure. The
 lesson for the next plan is the one already in this report: a number that
 arrives in a hand-back and is not recomputed gets into a document, and
 from there into a spec.
+
+## Work package 2: the matrix of every pair
+
+Task 2.1, `calc_r2_matrix` and `R2Matrix`, commit 0cae3ae. The core works
+out the r² of every pair of the variants of a pass and gives it with the
+chromosome and the position of each variant beside it. `cargo test -p
+popnei --lib ld::` goes from 36 tests to 47, and with the tolerance of
+the r² tests set to exactly 0.0 by hand the whole of `ld::` passes on the
+system BLAS and on faer alike, which the orchestrator ran itself: the
+250000 cells of the matrix of `ld.vcf.gz` are plink2's to the bit, and
+not merely within the tolerance.
+
+Three decisions the task took that the plan left open.
+
+The tiles are cut at 256 variants and not 512, which the "Speed" section
+of `docs/specs/ld.md` supports: one tile pair of 1000 individuals takes
+1.9 ms at 256 variants and 5.7 ms at 512, and a pass over 100000 variants
+1.5 s against 2.2 s. That table was measured for the curve of r² against
+distance, the item this plan does not build, so it is guidance and not a
+measurement of this function; work package 4 measures this one. At 256 a
+tile also covers the 500 variants of the reference dataset in two tiles
+and a short one, so the tests cross a tile boundary.
+
+A tile is its own set of dosages, built from the genotypes of its
+variants gathered out of the blocks, because a pass arrives as many
+blocks while the tiles are cut at fixed multiples of 256 from the first
+variant of the pass. So no tile copies a matrix of floats, `r2_between`
+did not change, and a tile on the diagonal passes one reference twice,
+which is what gives it the four products instead of six.
+
+The memory of the matrix is asked for with `try_reserve_exact` after the
+pass and not before it, since how many variants a pass gives is not known
+until it ends. What is refused before the source is read is a
+`max_num_vars` whose square is not a number this machine counts.
+
+Nothing of this task uses rayon.
