@@ -1522,12 +1522,25 @@ pub enum Error {
     )]
     GwasGrammarGammaWithoutAKinship,
 
+    /// The GRAMMAR-Gamma approximation was asked for by a study that has a
+    /// kinship, which is the pair it is for, and popnei has not written it
+    /// yet. It is refused and not ignored: a study that made the exact test
+    /// of every variant and reported that it had approximated nothing would
+    /// give the user no way to tell that what they asked for did not
+    /// happen. Until it is written the user asks for no approximation and
+    /// gets the exact test, which is what every number of
+    /// `docs/specs/gwas.md` is. In Python it is a `ValueError`.
+    #[error(
+        "the GRAMMAR-Gamma approximation is being written; ask for no approximation and every variant gets the exact denominator of its test, which is what it stands in for"
+    )]
+    GwasGrammarGammaNotBuilt,
+
     /// The trait and the kinship of a study ask for one of the models
-    /// popnei has not written yet, which the message names. The linear
-    /// model, a continuous trait with no kinship, is the one that is
-    /// written; the linear mixed model is being written and the two
-    /// logistic ones come after it. In Python it is a `ValueError`, since
-    /// it is the study the user asked for that popnei cannot run.
+    /// popnei has not written yet, which the message names. The two models
+    /// of a continuous trait are written, the linear one without a kinship
+    /// and the linear mixed one with it; the two logistic ones are being
+    /// written. In Python it is a `ValueError`, since it is the study the
+    /// user asked for that popnei cannot run.
     #[error(
         "popnei cannot run this study yet: {what}, which is being written",
         what = model.what_it_is_of()

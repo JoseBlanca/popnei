@@ -8,8 +8,9 @@
 //! [`calc_gwas`] is the study itself: it fits the null model once, over
 //! the individuals that are tested and the design they were given, and
 //! then reads the variants in one pass, giving one row for each of them.
-//! Of the four models only the linear one is written, a continuous trait
-//! with no kinship, and the other three are refused until they are.
+//! Of the four models two are written, the linear one and the linear mixed
+//! one, which are a continuous trait without and with a kinship, and the
+//! two logistic ones are refused until they are.
 //!
 //! What is here besides is the two functions that turn the statistic of a
 //! test into a p-value, which every model of the module ends in, and the
@@ -36,13 +37,13 @@
 //! whether it has any variance there. [`Gwas`] is what a study gives back,
 //! one row per variant, which [`Gwas::add_the_block`] fills block by block
 //! with the answers of the variants that have variance and the three NaNs
-//! of the ones that have none. [`LinearModel`] is the one model that gives
-//! those answers today: the thin QR of the design, the residuals of the
+//! of the ones that have none. [`LinearModel`] is the first model that
+//! gives those answers: the thin QR of the design, the residuals of the
 //! trait and the t test of every variant against them.
-//! [`LinearMixedModel`] is fitted and gives no answers yet: the
-//! eigendecomposition of the kinship, the search of [`RemlSearch`] for the
-//! two variances, the effects of the intercept and the covariates, and the
-//! projection matrix the two tests of that model will be taken through.
+//! [`LinearMixedModel`] is the second: the eigendecomposition of the
+//! kinship, the search of [`RemlSearch`] for the two variances, the
+//! effects of the intercept and the covariates, and the projection matrix
+//! every variant is taken through, by the Wald test or by the score test.
 //! The two logistic models are being written.
 
 use std::fmt;
@@ -2486,16 +2487,17 @@ impl<'a> RemlSearch<'a> {
 /// individuals by individuals, with `d` the design: it takes the
 /// covariates out of anything it is applied to and weights it by the
 /// covariance. [`LinearMixedModel::ypy`] is the trait through it, which is
-/// what says the fit reached its optimum.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "`calc_gwas` refuses a continuous trait with a kinship until the two \
-                  tests of this model are written, which is task 4.2 of \
-                  `docs/plans/gwas-linear.md`; the cargo tests of this module fit it"
-    )
-)]
+/// what says the fit reached its optimum, and
+/// [`LinearMixedModel::test_the_block`] is where every variant goes
+/// through it.
+///
+/// The projection matrix and the trait through it are kept because every
+/// variant is tested against them, and so are the buffers of a block, so
+/// that a pass over a million variants asks the machine for them once and
+/// allocates nothing for a variant. The matrix is individuals by
+/// individuals, which at the 10000 individuals of `docs/objectives.md` is
+/// 800 MB, where everything a linear model keeps grows with the columns of
+/// the design.
 pub(crate) struct LinearMixedModel {
     /// The effect of the intercept and of each covariate, one per column
     /// of the design.
@@ -2508,21 +2510,42 @@ pub(crate) struct LinearMixedModel {
     /// The genetic variance over the sum of the two, which is the share of
     /// the trait's variance that the kinship explains.
     heritability: f64,
+    /// The projection matrix `p`, `num_individuals` x `num_individuals`,
+    /// row after row, which every variant is tested through.
+    projection: Vec<f64>,
+    /// The trait through it, `p y`, one value per tested individual, which
+    /// every variant's numerator is taken against.
+    projected_trait: Vec<f64>,
+    /// The largest value of the diagonal of that matrix, which is what a
+    /// variant's own squared length is weighted by to say how much of the
+    /// variant the projection has left. The projection matrix is 0 or
+    /// above as a quadratic form, so no value of its diagonal is below 0
+    /// and the largest of them is at most its largest eigenvalue, which is
+    /// what bounds `x' p x` over `x' x`.
+    largest_of_the_projection: f64,
     /// The trait through the projection matrix, `y' p y`.
     ypy: f64,
     /// How many individuals the study tests.
     num_individuals: usize,
+    /// The individuals less the columns of the design and one more for the
+    /// variant, which is the degrees of freedom of the Wald test. It is 1
+    /// at least, since [`Design::of_the_study`] refuses a study of no more
+    /// individuals than the columns of its design plus one.
+    degrees_of_freedom: f64,
+    /// The dosages of a block through the projection matrix, `x p`, the
+    /// variants that have variance x `num_individuals`.
+    projected: Vec<f64>,
+    /// Each variant times the trait through the projection, `x' p y`, one
+    /// per variant that has variance.
+    num: Vec<f64>,
+    /// The effect of each variant that has variance.
+    beta: Vec<f64>,
+    /// The standard error of each of those effects.
+    se: Vec<f64>,
+    /// The p-value of each of those tests.
+    p_value: Vec<f64>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the same as the struct: nothing outside the cargo tests of this module \
-                  fits this model until task 4.2 of `docs/plans/gwas-linear.md` gives it \
-                  its two tests"
-    )
-)]
 impl LinearMixedModel {
     /// The linear mixed model of `phenotype` over `design` with `kinship`
     /// as the covariance of its random effect, fitted without any variant
@@ -2643,7 +2666,11 @@ impl LinearMixedModel {
         let heritability = genetic_variance / (genetic_variance + residual_variance);
         let coefs = std::mem::take(&mut search.coefs);
         drop(search);
-        let ypy = the_trait_through_the_projection(
+        let TheProjection {
+            matrix: projection,
+            of_the_trait: projected_trait,
+            ypy,
+        } = the_trait_through_the_projection(
             phenotype,
             design,
             &eigenvalues,
@@ -2651,13 +2678,32 @@ impl LinearMixedModel {
             genetic_variance,
             residual_variance,
         )?;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the individuals less the columns of the design are 2 at least, by \
+                      the same refusal, so this is 1 at least"
+        )]
+        let degrees_of_freedom = num_individuals - num_coefs - 1;
         Ok(LinearMixedModel {
             coefs,
             genetic_variance,
             residual_variance,
             heritability,
+            largest_of_the_projection: projection
+                .chunks_exact(num_individuals.max(1))
+                .zip(0..)
+                .filter_map(|(row, at)| row.get(at).copied())
+                .fold(0.0_f64, f64::max),
+            projection,
+            projected_trait,
             ypy,
             num_individuals,
+            degrees_of_freedom: degrees_of_freedom as f64,
+            projected: Vec::new(),
+            num: Vec::new(),
+            beta: Vec::new(),
+            se: Vec::new(),
+            p_value: Vec::new(),
         })
     }
 
@@ -2687,13 +2733,195 @@ impl LinearMixedModel {
     /// "The linear mixed model" of `docs/specs/gwas.md` has the cargo test
     /// of it made here for that reason.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "`y' p y` is in no result and the test of the fit is the one thing \
+                      that reads it, which is why the spec has that test made here"
+        )
+    )]
     pub(crate) fn ypy(&self) -> f64 {
         self.ypy
     }
+
+    /// The Wald test or the score test of every variant of a block that
+    /// has variance among the tested individuals, in the order of the
+    /// block.
+    ///
+    /// Every variant goes through the projection matrix of the null, which
+    /// takes the covariates out of it and weights it by the covariance of
+    /// the trait, so that what two related individuals share counts once
+    /// and not twice. With `x` the dosages of a variant, `num` is `x' p y`
+    /// and `den` is `x' p x`, and the effect of the variant is `num / den`
+    /// in both tests. The two differ in how uncertain that effect is and in
+    /// the distribution the effect is read against:
+    ///
+    /// - The **Wald test** divides the effect by its standard error and
+    ///   asks how far a Student t goes beyond that, in both tails, with the
+    ///   individuals less the columns of the design and one more for the
+    ///   variant. It holds the ratio of the two variances at the null and
+    ///   estimates their scale again with the variant in the model, which
+    ///   is what `se = sqrt((y' p y - num² / den) / (df * den))` is: what
+    ///   the variant leaves of `y' p y`, over the degrees of freedom and
+    ///   over `den`. It is what rrBLUP's `GWAS` does with `P3D`.
+    /// - The **score test** asks instead how steeply the likelihood rises
+    ///   at an effect of 0, so it holds both variances at the null and
+    ///   needs no fit with the variant in. The effect is uncertain by `1 /
+    ///   sqrt(den)`, and `num² / den` is read against a chi square with one
+    ///   degree of freedom. It is what GMMAT's `glmm.score` does.
+    ///
+    /// The two products are the whole cost of a block: the dosages through
+    /// the projection matrix, which is individuals by individuals, and the
+    /// dosages against the trait through it. What the GRAMMAR-Gamma
+    /// approximation of `docs/specs/gwas.md` replaces is the first of them.
+    ///
+    /// A variant of which the projection leaves at most the tested
+    /// individuals times 2.2e-16 of what there was has no answer, and gets
+    /// the three NaNs a variant with no variance gets. What there was is
+    /// the variant's own squared length times the largest value of the
+    /// diagonal of the projection matrix, which is what bounds `x' p x`
+    /// over `x' x`. `den` is 0 or above in exact arithmetic, and a variant
+    /// that the covariates and the kinship leave almost nothing of gets the
+    /// rounding of that, which can fall below 0: `beta` would be a number
+    /// divided by noise, large and of whichever sign the rounding chose,
+    /// and the two backends do not choose the same one. It is **Open 2** of
+    /// `docs/specs/gwas.md`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasVariantsTooLarge`] when the values of the block are
+    /// more than a `usize` counts, and [`Error::GwasLinalg`] when one of
+    /// the two products could not be done, which is where a block of other
+    /// individuals than the null model was fitted over is refused.
+    pub(crate) fn test_the_block(
+        &mut self,
+        dosages: &GwasDosages,
+        test: TestType,
+    ) -> Result<Answers<'_>> {
+        let num_vars = dosages.num_with_variance();
+        self.beta.clear();
+        self.se.clear();
+        self.p_value.clear();
+        if num_vars == 0 {
+            // No variant to test, and the products below take a matrix of
+            // one column at least. The block still has its rows in the
+            // result, with the three NaNs of a variant that has no answer.
+            return Ok(self.answers());
+        }
+        let values = num_vars
+            .checked_mul(self.num_individuals)
+            .ok_or(Error::GwasVariantsTooLarge)?;
+        self.projected.resize(values, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: dosages.dosages(),
+                rows: num_vars,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.projection,
+                cols: self.num_individuals,
+            },
+            &mut self.projected,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of a block of variants with the projection matrix",
+            source,
+        })?;
+        self.num.resize(num_vars, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: dosages.dosages(),
+                rows: num_vars,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.projected_trait,
+                cols: 1,
+            },
+            &mut self.num,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of a block of variants with the projected trait",
+            source,
+        })?;
+        let degrees_of_freedom = self.degrees_of_freedom;
+        let ypy = self.ypy;
+        // The share of what the variant was that the projection has to
+        // leave of it for it to be worth testing, which is the threshold of
+        // **Open 2** of `docs/specs/gwas.md`.
+        let share_that_is_nothing = self.num_individuals as f64 * f64::EPSILON;
+        let largest_of_the_projection = self.largest_of_the_projection;
+        for ((row, num), of_the_variant) in self
+            .projected
+            .chunks_exact(self.num_individuals.max(1))
+            .zip(&self.num)
+            .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
+        {
+            let den = row
+                .iter()
+                .zip(of_the_variant)
+                .map(|(projected, dosage)| projected * dosage)
+                .sum::<f64>();
+            let of_the_dosages = of_the_variant
+                .iter()
+                .map(|dosage| dosage * dosage)
+                .sum::<f64>();
+            if den <= share_that_is_nothing * largest_of_the_projection * of_the_dosages {
+                self.beta.push(f64::NAN);
+                self.se.push(f64::NAN);
+                self.p_value.push(f64::NAN);
+                continue;
+            }
+            let beta = num / den;
+            let statistic = num * num / den;
+            let (se, p_value) = match test {
+                TestType::Wald => {
+                    let se = ((ypy - statistic) / (degrees_of_freedom * den)).sqrt();
+                    (se, t_sf_two_sided(beta / se, degrees_of_freedom))
+                }
+                TestType::Score => (1.0 / den.sqrt(), chi2_sf_1df(statistic)),
+            };
+            self.beta.push(beta);
+            self.se.push(se);
+            self.p_value.push(p_value);
+        }
+        Ok(self.answers())
+    }
+
+    /// The three columns of what the block last tested answered.
+    #[must_use]
+    fn answers(&self) -> Answers<'_> {
+        Answers {
+            beta: &self.beta,
+            se: &self.se,
+            p_value: &self.p_value,
+        }
+    }
 }
 
-/// The trait through the projection matrix of a fitted linear mixed model,
-/// `y' p y`.
+/// The projection matrix of a fitted linear mixed model, with the trait
+/// taken through it.
+///
+/// The three come out of the same products, and a model keeps the first
+/// two because every variant is tested against both: `num` is the variant
+/// times [`TheProjection::of_the_trait`] and `den` the variant times itself
+/// through [`TheProjection::matrix`].
+struct TheProjection {
+    /// `p`, the projection matrix, `num_individuals` x `num_individuals`,
+    /// row after row. It is symmetric, so a product with it gives the same
+    /// matrix whichever side a variant is on.
+    matrix: Vec<f64>,
+    /// `p y`, the trait through it, one value per tested individual.
+    of_the_trait: Vec<f64>,
+    /// `y' p y`, the trait times that, which the restricted maximum
+    /// likelihood makes the individuals less the columns of the design.
+    ypy: f64,
+}
+
+/// The projection matrix of a fitted linear mixed model and the trait
+/// through it.
 ///
 /// The covariance of the trait under the null is the kinship times the
 /// genetic variance plus the identity times the residual one, `v =
@@ -2707,7 +2935,9 @@ impl LinearMixedModel {
 /// `eigenvectors` is `num_individuals` x `num_individuals`, row after row,
 /// row `j` being the eigenvector of `eigenvalues[j]`. Three matrices of
 /// that size are held at once here, which at the 10000 individuals of
-/// `docs/objectives.md` is 2.4 GB; pyNei holds the same three.
+/// `docs/objectives.md` is 2.4 GB, and one of them is what comes back, for
+/// the model to test its variants through; pyNei holds the same three and
+/// keeps the same one.
 ///
 /// # Errors
 ///
@@ -2721,7 +2951,7 @@ fn the_trait_through_the_projection(
     eigenvectors: &[f64],
     genetic_variance: f64,
     residual_variance: f64,
-) -> Result<f64> {
+) -> Result<TheProjection> {
     let num_individuals = design.num_individuals();
     let num_coefs = design.num_coefs();
     let mut scaled = vec![0.0_f64; eigenvectors.len()];
@@ -2845,11 +3075,62 @@ fn the_trait_through_the_projection(
         operation: "product of the projection matrix with the trait",
         source,
     })?;
-    Ok(phenotype
+    let ypy = phenotype
         .iter()
         .zip(&through)
         .map(|(measured, projected)| measured * projected)
-        .sum::<f64>())
+        .sum::<f64>();
+    Ok(TheProjection {
+        matrix: projection,
+        of_the_trait: through,
+        ypy,
+    })
+}
+
+/// The null model a study has fitted, which every variant is then tested
+/// against.
+///
+/// The two models that are written keep different things, the thin QR of
+/// the design and the residuals of the trait for one and the projection
+/// matrix of the covariance for the other, and the pass over the blocks is
+/// the same for both: one call for each block, one answer for each variant
+/// of it that has variance. The two logistic models are two more variants
+/// here when they are written.
+enum TheFittedModel {
+    /// The linear model, a continuous trait with no kinship.
+    Linear(LinearModel),
+    /// The linear mixed model, a continuous trait with a kinship.
+    Mixed(LinearMixedModel),
+}
+
+impl TheFittedModel {
+    /// The null model of the result, which carries what the fit gives
+    /// besides the rows of the variants.
+    #[must_use]
+    fn null_model(&self, test: TestType) -> NullModel {
+        match self {
+            TheFittedModel::Linear(fitted) => fitted.null_model(test),
+            TheFittedModel::Mixed(fitted) => fitted.null_model(test),
+        }
+    }
+
+    /// The test of every variant of a block that has variance among the
+    /// tested individuals, in the order of the block.
+    ///
+    /// A linear model makes the one test it has, the t test of the variant
+    /// against what the design left of the trait, and a linear mixed model
+    /// makes whichever of the Wald test and the score test the study asked
+    /// for.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the model's own test of a block fails with.
+    fn test_the_block(&mut self, dosages: &GwasDosages, test: TestType) -> Result<Answers<'_>> {
+        match self {
+            TheFittedModel::Linear(fitted) => fitted.test_the_block(dosages),
+            TheFittedModel::Mixed(fitted) => fitted.test_the_block(dosages, test),
+        }
+    }
 }
 
 /// The association study of the variants of a reader against a trait of
@@ -2861,13 +3142,14 @@ fn the_trait_through_the_projection(
 /// `input` says which individuals are tested, with their trait and the
 /// design the model is fitted on, and "The Rust interface" of
 /// `docs/specs/gwas.md` lays out what each of its fields holds. The trait
-/// and the kinship choose the model, and of the four only the linear
-/// model, a continuous trait with no kinship, is written: the other three
-/// are refused with [`Error::GwasModelNotBuilt`] until they are.
+/// and the kinship choose the model, and of the four the two of a
+/// continuous trait are written, the linear model without a kinship and
+/// the linear mixed model with one: the two logistic models are refused
+/// with [`Error::GwasModelNotBuilt`] until they are.
 ///
-/// The null model is fitted before the first block is read, from the trait
-/// and the design alone, and then one pass over the blocks tests every
-/// variant against what it left unexplained. The pass borrows the reader
+/// The null model is fitted before the first block is read, from the
+/// trait, the design and the kinship alone, and then one pass over the
+/// blocks tests every variant against it. The pass borrows the reader
 /// and does not take it, so that whoever built the chain of filters reads
 /// their counts when it returns; it asks for the genotypes and for the
 /// chromosome, the position and the id of each variant, and puts
@@ -2877,16 +3159,19 @@ fn the_trait_through_the_projection(
 /// `gamma_pass` is the second pass over the same variants that the
 /// GRAMMAR-Gamma approximation reads its first block of. Nothing reads it
 /// yet: the approximation stands in for the denominator of a mixed model's
-/// test, so a study without a kinship is refused for asking for it and a
-/// study with one is refused for its model, and no study that reaches the
-/// pass has an approximation to make.
+/// test, "The GRAMMAR-Gamma approximation" of `docs/specs/gwas.md` is not
+/// written, and a study that asks for it is refused, without a kinship
+/// because there is no such denominator to approximate and with one
+/// because popnei cannot approximate it yet.
 ///
 /// # Errors
 ///
-/// [`Error::GwasModelNotBuilt`] when the study needs one of the three
-/// models that are not written, and
+/// [`Error::GwasModelNotBuilt`] when the study needs one of the two
+/// logistic models, which are not written,
 /// [`Error::GwasGrammarGammaWithoutAKinship`] when the approximation was
-/// asked for by a study with no kinship.
+/// asked for by a study with no kinship and
+/// [`Error::GwasGrammarGammaNotBuilt`] when it was asked for by one with a
+/// kinship.
 /// [`Error::GwasInputOfAnotherSize`] when a kinship does not hold one row
 /// and one column for each tested individual, and
 /// [`Error::GwasKinshipValueNotFinite`] when one of its values is not a
@@ -2914,21 +3199,44 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     input: &GwasInput<'_>,
 ) -> Result<Gwas> {
     let (model, test) = the_model_and_the_test(input)?;
-    if input.use_grammar_gamma_approx && input.kinship.is_none() {
-        return Err(Error::GwasGrammarGammaWithoutAKinship);
+    if input.use_grammar_gamma_approx {
+        // The study is refused whether or not it brought a kinship, and
+        // the two refusals say different things: without one there is no
+        // denominator to approximate, and with one there is and popnei has
+        // not written the approximation of it.
+        return match input.kinship {
+            None => Err(Error::GwasGrammarGammaWithoutAKinship),
+            Some(_) => Err(Error::GwasGrammarGammaNotBuilt),
+        };
     }
     if let Some(kinship) = input.kinship {
         refuse_a_kinship_that_is_not_of_the_individuals(kinship, input.individuals.len())?;
     }
     match model {
-        GwasModel::Lm => {}
-        GwasModel::Lmm | GwasModel::Glm | GwasModel::Glmm => {
+        GwasModel::Lm | GwasModel::Lmm => {}
+        GwasModel::Glm | GwasModel::Glmm => {
             return Err(Error::GwasModelNotBuilt { model });
         }
     }
     let ploidy = reader.ploidy();
     let design = Design::of_the_study(input, reader.individuals().len())?;
-    let mut fitted = LinearModel::of_the_study(input.phenotype, &design)?;
+    let mut fitted = match model {
+        GwasModel::Lm => {
+            TheFittedModel::Linear(LinearModel::of_the_study(input.phenotype, &design)?)
+        }
+        GwasModel::Lmm => match input.kinship {
+            Some(kinship) => TheFittedModel::Mixed(LinearMixedModel::of_the_study(
+                input.phenotype,
+                &design,
+                kinship,
+            )?),
+            // `the_model_and_the_test` chooses the linear mixed model only
+            // for a study that brought a kinship, so a study with none is
+            // a linear model and never arrives here.
+            None => return Err(Error::GwasModelNotBuilt { model }),
+        },
+        GwasModel::Glm | GwasModel::Glmm => return Err(Error::GwasModelNotBuilt { model }),
+    };
     let mut result = Gwas::of_the_null_model(
         fitted.null_model(test),
         GrammarGammaApprox::NotUsed,
@@ -2943,7 +3251,7 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     let mut first_var = 0_usize;
     while let Some(mut block) = blocks.next_block()? {
         dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })?;
-        let answers = fitted.test_the_block(&dosages)?;
+        let answers = fitted.test_the_block(&dosages, test)?;
         result.add_the_block(&dosages, answers)?;
         the_columns_of_the_block(&mut result, &block, first_var)?;
         first_var = first_var
@@ -5212,7 +5520,10 @@ mod lm {
 
     /// The study of the variants of `reader`, with no second pass for the
     /// GRAMMAR-Gamma approximation, which a linear model does not make.
-    fn the_study_of<R: BlockReader>(reader: &mut R, input: &GwasInput<'_>) -> Result<Gwas> {
+    pub(super) fn the_study_of<R: BlockReader>(
+        reader: &mut R,
+        input: &GwasInput<'_>,
+    ) -> Result<Gwas> {
         calc_gwas(reader, None::<&mut R>, input)
     }
 
@@ -5267,7 +5578,7 @@ mod lm {
     const THE_INDIVIDUALS: [usize; 6] = [0, 1, 2, 3, 4, 5];
 
     /// A reader over the bytes of a VCF of diploid individuals.
-    fn reader_over(vcf: &[u8]) -> VcfReader<Cursor<Vec<u8>>> {
+    pub(super) fn reader_over(vcf: &[u8]) -> VcfReader<Cursor<Vec<u8>>> {
         match VcfReader::new(Cursor::new(vcf.to_vec()), VcfOptions::default()) {
             Ok(reader) => reader,
             Err(error) => panic!("the reader was not built: {error}"),
@@ -5750,24 +6061,21 @@ mod lm {
         }
     }
 
-    /// The three models that are not written are refused, each naming the
-    /// study that asked for it.
+    /// The two logistic models, which are not written, are refused, each
+    /// naming the study that asked for it.
+    ///
+    /// A continuous trait is not here with the two: it is the linear model
+    /// without a kinship and the linear mixed model with one, and both are
+    /// written.
     #[test]
     fn a_model_that_is_not_written_yet_is_refused() {
         let vcf = the_worked_example_vcf();
         let kinship = [0.0_f64; 36];
-        for (trait_type, with_a_kinship) in [
-            (TraitType::Continuous, true),
-            (TraitType::Binomial, false),
-            (TraitType::Binomial, true),
-        ] {
-            let phenotype: Vec<f64> = match trait_type {
-                TraitType::Continuous => THE_TRAIT.to_vec(),
-                TraitType::Binomial => vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
-            };
+        let phenotype = [0.0_f64, 1.0, 0.0, 1.0, 0.0, 1.0];
+        for with_a_kinship in [false, true] {
             let study = GwasInput {
                 phenotype: &phenotype,
-                trait_type,
+                trait_type: TraitType::Binomial,
                 design: &THE_DESIGN,
                 num_coefs: 2,
                 kinship: match with_a_kinship {
@@ -5779,17 +6087,16 @@ mod lm {
                 individuals: &THE_INDIVIDUALS,
                 transform_to_biallelic: false,
             };
-            let wanted = match (trait_type, with_a_kinship) {
-                (TraitType::Continuous, _) => GwasModel::Lmm,
-                (TraitType::Binomial, false) => GwasModel::Glm,
-                (TraitType::Binomial, true) => GwasModel::Glmm,
+            let wanted = match with_a_kinship {
+                false => GwasModel::Glm,
+                true => GwasModel::Glmm,
             };
             let mut reader = reader_over(&vcf);
             match the_study_of(&mut reader, &study) {
                 Err(Error::GwasModelNotBuilt { model }) => {
                     assert_eq!(
                         model, wanted,
-                        "{trait_type:?} with a kinship of {with_a_kinship}"
+                        "a binomial trait with a kinship of {with_a_kinship}"
                     );
                     let said = Error::GwasModelNotBuilt { model }.to_string();
                     assert!(
@@ -5797,8 +6104,8 @@ mod lm {
                         "the study was refused with {said}"
                     );
                 }
-                Err(error) => panic!("{trait_type:?}, kinship {with_a_kinship}: {error}"),
-                Ok(_) => panic!("{trait_type:?} with a kinship of {with_a_kinship} was run"),
+                Err(error) => panic!("a binomial trait, kinship {with_a_kinship}: {error}"),
+                Ok(_) => panic!("a binomial trait with a kinship of {with_a_kinship} was run"),
             }
         }
     }
@@ -5940,7 +6247,7 @@ mod lm {
     }
 
     /// The header of a VCF of eight diploid individuals and no variant.
-    const THE_HEADER_OF_EIGHT: &str = "##fileformat=VCFv4.2\n\
+    pub(super) const THE_HEADER_OF_EIGHT: &str = "##fileformat=VCFv4.2\n\
         ##contig=<ID=1>\n\
         ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
         #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\ti6\ti7\n";
@@ -5948,7 +6255,7 @@ mod lm {
     /// The design of the fixture of **Open 2** of `docs/specs/gwas.md`:
     /// eight individuals and a covariate that marks two subpopulations of
     /// four, beside the intercept.
-    const THE_DESIGN_OF_TWO_SUBPOPULATIONS: [f64; 16] = [
+    pub(super) const THE_DESIGN_OF_TWO_SUBPOPULATIONS: [f64; 16] = [
         1.0, 0.0, //
         1.0, 0.0, //
         1.0, 0.0, //
@@ -5960,10 +6267,11 @@ mod lm {
     ];
 
     /// The trait of those eight individuals.
-    const THE_TRAIT_OF_TWO_SUBPOPULATIONS: [f64; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    pub(super) const THE_TRAIT_OF_TWO_SUBPOPULATIONS: [f64; 8] =
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 
     /// All eight of them are tested.
-    const THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+    pub(super) const THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 
     /// What numpy 2.5.3 answers for the ordinary variant of that fixture,
     /// the dosages `1 0 2 0 1 2 0 1`, by the same least squares fit as
@@ -6137,8 +6445,16 @@ mod lmm {
     use std::io::Read;
     use std::path::{Path, PathBuf};
 
-    use super::lm::the_trait_and_the_design_of_the_panel;
-    use super::{Design, GwasInput, GwasModel, LinearMixedModel, TestType, TraitType};
+    use super::lm::{
+        THE_DESIGN_OF_TWO_SUBPOPULATIONS, THE_HEADER_OF_EIGHT,
+        THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS, THE_TRAIT_OF_TWO_SUBPOPULATIONS, reader_over,
+        the_study_of, the_trait_and_the_design_of_the_panel,
+    };
+    use super::{
+        BlockReader, Design, Gwas, GwasInput, GwasModel, LinearMixedModel, TestType, TraitType,
+    };
+    use crate::error::Error;
+    use crate::io::vcf::{VcfOptions, VcfReader};
 
     /// How far each of the five numbers of the null model may be from
     /// GMMAT's: 1e-5 absolute.
@@ -6380,6 +6696,469 @@ mod lmm {
                 difference <= OF_THE_REML_IDENTITY,
                 "y' p y of {name} is {found} and the fit at its optimum makes it 197, \
                  {difference} away, against the {OF_THE_REML_IDENTITY} allowed"
+            );
+        }
+    }
+    /// The VCF of the panel `name`: the one with every genotype called sits
+    /// beside the kinships and the one with 3 in 100 genotypes missing
+    /// whole beside the distances, and both hold the same 200 individuals
+    /// and the same 1200 variants.
+    fn the_vcf_of_the_panel(name: &str) -> PathBuf {
+        let of_the_module = match name {
+            "panel_called" => "kinship",
+            _ => "dists",
+        };
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference")
+            .join(of_the_module)
+            .join(format!("{name}.vcf.gz"))
+    }
+
+    /// The study of the variants of one panel against its continuous
+    /// trait, with the kinship plink2 wrote for the panel with every
+    /// genotype called and the test `test`.
+    ///
+    /// `with_cov1` says whether the continuous covariate goes into the
+    /// design beside the intercept and the binary one: rrBLUP takes every
+    /// fixed effect as a factor, so it was given `cov2` alone and popnei is
+    /// run with the same one covariate for that comparison, while GMMAT was
+    /// given both.
+    ///
+    /// The kinship is `panel_called`'s for both panels, because that is
+    /// what `tests/reference/gwas/make_reference.py` gave GMMAT: it fits
+    /// one null model with it and then scores the variants of each panel
+    /// against that fit.
+    fn the_study_of_the_panel(name: &str, test: TestType, with_cov1: bool) -> Gwas {
+        let path = the_vcf_of_the_panel(name);
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let individuals = reader.individuals().to_vec();
+        assert_eq!(
+            individuals,
+            the_individuals_of_the_kinship("panel_called"),
+            "the individuals of {name} against the ones of the kinship"
+        );
+        let kinship = the_kinship_of("panel_called");
+        let (phenotype, both) = the_trait_and_the_design_of_the_panel(&individuals);
+        let design: Vec<f64> = match with_cov1 {
+            true => both,
+            false => both
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .flat_map(|row| [row[0], row[2]])
+                .collect(),
+        };
+        let num_coefs = match with_cov1 {
+            true => 3,
+            false => 2,
+        };
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Continuous,
+            design: &design,
+            num_coefs,
+            kinship: Some(&kinship),
+            test: Some(test),
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of {name}: {error}"),
+        }
+    }
+
+    /// Where the variant `id` is among the rows of a study of a panel.
+    fn the_row_of(result: &Gwas, id: &str) -> usize {
+        let ids = result.ids.as_deref().expect("the ids of the variants");
+        match ids.iter().position(|held| held == id) {
+            Some(var) => var,
+            None => panic!("{id} is not a variant of the panel"),
+        }
+    }
+
+    /// How far a `-log10(p_value)` of the Wald test may be from rrBLUP's:
+    /// 1e-4 absolute.
+    ///
+    /// It is the bound of "How it is verified" of "The linear mixed model"
+    /// of `docs/specs/gwas.md`, which asks the same of the whole column in
+    /// Python. `tests/reference/gwas/rrblup.panel_called.lmm.tsv` is one of
+    /// the three references the script writes at full precision, 15 digits
+    /// of each number, so nothing of this bound is spent on rounding: it is
+    /// the distance between two fits, and 1e-4 in `-log10(p)` is 2.3e-4 of
+    /// the p-value itself.
+    ///
+    /// Measured over the six variants on 24 September 2026: the worst is
+    /// `var0052`, 8.874e-6 away on Accelerate and 8.864e-6 on faer, which
+    /// is 9 per cent of what is allowed. Over all 1200 variants of the
+    /// panel the worst is 1.997e-5 and 1.996e-5, 20 per cent of it, which
+    /// is what the comparison over the whole column in Python has to hold.
+    /// The bound is the spec's and is not lowered to two or three times
+    /// that, as the bounds this module sets on popnei's own arithmetic are:
+    /// what it measures is how far popnei's restricted maximum likelihood
+    /// search and rrBLUP's land apart, and the spec fixes it.
+    const OF_RRBLUP: f64 = 1e-4;
+
+    /// What rrBLUP 4.6.3's `GWAS` with `P3D = TRUE` gave for six variants
+    /// of the panel with every genotype called, in
+    /// `tests/reference/gwas/rrblup.panel_called.lmm.tsv`: the id and
+    /// `-log10(p_value)`, which is all it reports.
+    ///
+    /// It was given the kinship and `cov2` as its one fixed effect, so the
+    /// study here is run with the same one covariate. Five of the six are
+    /// the causal variants of `causal_vars.csv` and `var0000` is not
+    /// causal.
+    const OF_RRBLUP_SIX: [(&str, f64); 6] = [
+        ("var0000", 0.215_210_110_260_573),
+        ("var0052", 3.618_698_839_162_37),
+        ("var0629", 4.339_896_431_706_14),
+        ("var0751", 2.065_324_779_038_01),
+        ("var1137", 1.319_283_317_997_48),
+        ("var1188", 2.367_278_649_793_38),
+    ];
+
+    /// The six variants of the panel are rrBLUP's under the Wald test,
+    /// which is deliverable 3 of work package 4 of
+    /// `docs/plans/gwas-linear.md`.
+    ///
+    /// The Wald test divides the effect of the variant by its standard
+    /// error and asks how far a Student t with 197 degrees of freedom goes
+    /// beyond that. What is compared is `-log10(p_value)`, because it is
+    /// all rrBLUP reports, and the run is with `cov2` alone: rrBLUP takes
+    /// every fixed effect as a factor, so it was given that covariate and
+    /// no other, and a run that gave it both would get numbers that are
+    /// close and not equal.
+    #[test]
+    fn the_six_variants_of_the_panel_are_rrblups_p_value_of_the_wald_test() {
+        let result = the_study_of_the_panel("panel_called", TestType::Wald, false);
+        assert_eq!(result.num_vars, 1200, "the variants of the panel");
+        assert_eq!(
+            result.null_model.test,
+            TestType::Wald,
+            "the test the result says it made"
+        );
+        for (id, expected) in OF_RRBLUP_SIX {
+            let var = the_row_of(&result, id);
+            let found = -result.p_value[var].log10();
+            let difference = (found - expected).abs();
+            assert!(
+                difference <= OF_RRBLUP,
+                "-log10(p) of {id} is {found} and rrBLUP gives {expected}, {difference} \
+                 away, against the {OF_RRBLUP} allowed"
+            );
+        }
+    }
+
+    /// How far `1 / se²` of the score test may be from GMMAT's `VAR`, as a
+    /// share of it: 1e-5.
+    ///
+    /// `VAR` is the variance of the score, which is `x' p x`, the
+    /// denominator both tests are built on. The spec asks the same of the
+    /// whole column in Python.
+    /// `tests/reference/gwas/gmmat.panel_called.lmm.score.tsv` and the file
+    /// of the other panel are printed to six significant digits, which
+    /// rounds a value by up to 5e-6 of itself, so half of this bound can go
+    /// on GMMAT's printing alone and the comparison has twofold headroom at
+    /// best.
+    ///
+    /// Measured over the six variants of both panels on 24 September 2026:
+    /// the worst is `var0052` of the panel with every genotype called,
+    /// 1.842e-6 of `VAR` on Accelerate and 1.843e-6 on faer, which is 18
+    /// per cent of what is allowed and is smaller than the 5e-6 GMMAT's own
+    /// printing can account for. So the denominator both tests are built on
+    /// is GMMAT's to every digit GMMAT printed, and nothing of popnei's
+    /// arithmetic can be seen here.
+    const OF_GMMAT_VARIANCE: f64 = 1e-5;
+
+    /// How far a p-value of the score test may be from GMMAT's, in
+    /// `log10`: 1e-4.
+    ///
+    /// The p-values of a study span 23 orders of magnitude and what a user
+    /// reads is the exponent, so they are compared in `log10`, as the spec
+    /// asks of the whole column in Python. `log10` shrinks a relative
+    /// difference, so this bound has more headroom over GMMAT's six printed
+    /// digits than [`OF_GMMAT_VARIANCE`] has.
+    ///
+    /// Measured over the six variants of both panels on 24 September 2026:
+    /// the worst is `var0629` of the panel with every genotype called,
+    /// 4.164e-5 on both backends, which is 42 per cent of what is allowed.
+    /// That one is not the printing: 4.164e-5 in `log10` is 9.6e-5 of the
+    /// p-value, against the 5e-6 six digits round it by. It is the two
+    /// fits, which land 1.2e-6 apart in the genetic variance, at a p-value
+    /// of 4.8e-5, where the tail of the chi square turns a small move of
+    /// the statistic into a larger one of the p-value.
+    const OF_GMMAT_P_VALUE: f64 = 1e-4;
+
+    /// What GMMAT 1.5.0's `glmm.score` gave for six variants of each
+    /// panel, from `tests/reference/gwas/gmmat.panel_called.lmm.score.tsv`
+    /// and `gmmat.panel.lmm.score.tsv`: the id, then `VAR` and `PVAL` with
+    /// every genotype called and the two of the panel with 3 in 100
+    /// genotypes missing whole.
+    ///
+    /// `VAR` is the variance of the score, `x' p x`, which is `1 / se²`.
+    /// GMMAT was given both covariates and, for both panels, the kinship of
+    /// the panel with every genotype called. A missing genotype takes the
+    /// mean dosage of its variant, which GMMAT calls `impute2mean` and
+    /// which is popnei's rule too, so the two agree on the second panel.
+    const OF_GMMAT_SIX: [(&str, f64, f64, f64, f64); 6] = [
+        ("var0000", 29.8774, 0.360_526, 29.9961, 0.495_719),
+        ("var0052", 43.8076, 0.001_189_85, 46.0763, 0.001_058_95),
+        ("var0629", 31.7241, 4.810_05e-5, 31.9307, 7.378_88e-5),
+        ("var0751", 44.5825, 0.004_392_26, 44.422, 0.006_756_44),
+        ("var1137", 43.3724, 0.013_926, 42.1841, 0.012_532_1),
+        ("var1188", 47.3766, 0.001_073_4, 47.9106, 0.001_505_77),
+    ];
+
+    /// The six variants of both panels are GMMAT's under the score test,
+    /// which is deliverable 4 of work package 4 of
+    /// `docs/plans/gwas-linear.md`.
+    ///
+    /// The score test asks how steeply the likelihood rises at an effect of
+    /// 0, so it holds both variances at the null and needs no fit with the
+    /// variant in. What is compared is `1 / se²` against the variance of
+    /// the score GMMAT reports, which is the denominator of both tests, and
+    /// the p-value in `log10`.
+    ///
+    /// The second panel is what says that a missing genotype takes the mean
+    /// dosage of its variant as GMMAT's `impute2mean` does: 3 in 100 of its
+    /// genotypes are missing whole, and every one of the six numbers moves
+    /// between the panels.
+    #[test]
+    fn the_six_variants_of_both_panels_are_gmmats_variance_of_the_score_and_p_value() {
+        for (name, of_the_panel) in [("panel_called", 0_usize), ("panel", 1)] {
+            let result = the_study_of_the_panel(name, TestType::Score, true);
+            assert_eq!(result.num_vars, 1200, "the variants of {name}");
+            assert_eq!(
+                result.null_model.test,
+                TestType::Score,
+                "the test the result of {name} says it made"
+            );
+            for (id, called_variance, called_p, missing_variance, missing_p) in OF_GMMAT_SIX {
+                let (variance, p_value) = match of_the_panel {
+                    0 => (called_variance, called_p),
+                    _ => (missing_variance, missing_p),
+                };
+                let var = the_row_of(&result, id);
+                let se = result.se[var];
+                let found = 1.0 / (se * se);
+                let difference = (found - variance).abs();
+                assert!(
+                    difference <= OF_GMMAT_VARIANCE * variance,
+                    "1 / se² of {id} of {name} is {found} and GMMAT gives {variance}, \
+                     {difference} away, which is {share} of it against the \
+                     {OF_GMMAT_VARIANCE} allowed",
+                    share = difference / variance
+                );
+                let found = result.p_value[var];
+                let difference = (found / p_value).log10().abs();
+                assert!(
+                    difference <= OF_GMMAT_P_VALUE,
+                    "the p-value of {id} of {name} is {found} and GMMAT gives {p_value}, \
+                     {difference} apart in log10 against the {OF_GMMAT_P_VALUE} allowed"
+                );
+            }
+        }
+    }
+
+    /// The Wald test and the score test give the same effect for every
+    /// variant, to the bit, and a different standard error for every one of
+    /// them.
+    ///
+    /// `num` is the variant times the trait through the projection matrix
+    /// and `den` the variant times itself through it, and the effect is
+    /// `num / den` in both tests. What they differ in is how uncertain that
+    /// effect is and which distribution it is read against, so a study that
+    /// answered two different effects would have its defect in the
+    /// projection matrix and not in either test.
+    #[test]
+    fn the_two_tests_of_a_variant_differ_in_the_error_and_not_in_the_effect() {
+        let of_the_wald = the_study_of_the_panel("panel_called", TestType::Wald, true);
+        let of_the_score = the_study_of_the_panel("panel_called", TestType::Score, true);
+        assert_eq!(of_the_wald.num_vars, 1200, "the variants of the panel");
+        for (var, (wald, score)) in of_the_wald.beta.iter().zip(&of_the_score.beta).enumerate() {
+            assert_eq!(
+                wald.total_cmp(score),
+                std::cmp::Ordering::Equal,
+                "the effect of the variant {var} is {wald} under the Wald test and {score} \
+                 under the score test"
+            );
+        }
+        let differ = of_the_wald
+            .se
+            .iter()
+            .zip(&of_the_score.se)
+            .filter(|(wald, score)| wald.total_cmp(score) != std::cmp::Ordering::Equal)
+            .count();
+        assert_eq!(
+            differ, 1200,
+            "how many of the 1200 variants the two tests gave a different standard error"
+        );
+    }
+
+    /// The GRAMMAR-Gamma approximation is refused for a study that has a
+    /// kinship, which is the pair it is for, because popnei has not written
+    /// it yet.
+    ///
+    /// A study with no kinship is refused for asking for it at all, which
+    /// the test of the linear model covers. The two refusals say different
+    /// things, and neither study runs: one that made the exact test of
+    /// every variant and reported that it had approximated nothing would
+    /// give the user no way to tell that what they asked for did not
+    /// happen.
+    #[test]
+    fn the_grammar_gamma_approximation_with_a_kinship_is_refused() {
+        let individuals = the_individuals_of_the_kinship("panel_called");
+        let kinship = the_kinship_of("panel_called");
+        let (phenotype, design) = the_trait_and_the_design_of_the_panel(&individuals);
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Continuous,
+            design: &design,
+            num_coefs: 3,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: true,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let path = the_vcf_of_the_panel("panel_called");
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        match the_study_of(&mut reader, &study) {
+            Err(Error::GwasGrammarGammaNotBuilt) => {}
+            Err(error) => panic!("the study was refused with {error}"),
+            Ok(_) => panic!("the approximation was made"),
+        }
+    }
+    /// The kinship of the eight individuals of **Open 2** of
+    /// `docs/specs/gwas.md`, row after row: 1 for an individual with
+    /// itself, 0.2 for two of the same subpopulation and 0 across the two.
+    ///
+    /// Its eigenvalues are 1.6 and 0.8, both above 0, so it is a
+    /// covariance and the fit of the mixed model over it is an ordinary
+    /// one. The structure is the covariate's, which is the point of the
+    /// fixture: the variant that is refused is a combination of the
+    /// columns of the design.
+    const THE_KINSHIP_OF_TWO_SUBPOPULATIONS: [f64; 64] = [
+        1.0, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 1.0, 0.2, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 0.2, 1.0, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 0.2, 0.2, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.2, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 1.0, 0.2, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 1.0, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 1.0,
+    ];
+
+    /// A variant that the projection leaves nothing of has no answer under
+    /// either test, which is the meanwhile of **Open 2** of
+    /// `docs/specs/gwas.md`.
+    ///
+    /// The variant is twice the covariate, so the design explains all of
+    /// it, and the projection matrix takes the design out of whatever it
+    /// is applied to: `x' p x` is 0 in exact arithmetic and what is left is
+    /// rounding, of whichever sign it fell on. `beta` would be a number
+    /// divided by noise, as it is in the linear model, and the p-value
+    /// would read as a variant that was tested and showed nothing.
+    ///
+    /// The threshold is the tested individuals times 2.2e-16 of the
+    /// variant's own squared length times the largest value of the diagonal
+    /// of the projection matrix, which is 1.78e-15 of that scale for these
+    /// eight individuals. Measured on this fixture on 24 September 2026,
+    /// the collinear variant keeps -6.2e-17 of it on Accelerate and 2.3e-16
+    /// on faer, and the ordinary variant beside it keeps 0.576 on both. So
+    /// the threshold sits 8 times above the largest rounding the two
+    /// backends left and 15 orders of magnitude below a variant that has
+    /// something to test.
+    ///
+    /// What the study gave before the threshold was there, measured the
+    /// same day: on Accelerate `x' p x` came to -4.4e-16 and the Wald test
+    /// answered a `beta` of 3 with an `se` of NaN, and on faer it came to
+    /// 1.7e-15 and the answer was a `beta` of 2.13 with an `se` of 2.7e7
+    /// and a p-value of 0.99999994, which reads as a variant that was
+    /// tested and showed nothing.
+    ///
+    /// The ordinary variant is asserted to have an answer and not to any
+    /// number: its effect is popnei's own, since no reference program was
+    /// run on this fixture, and the six literals of the panel are what says
+    /// the numbers are right.
+    #[test]
+    fn a_variant_the_projection_leaves_nothing_of_has_no_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        for (var, genotypes) in [
+            ["0/0", "0/0", "0/0", "0/0", "1/1", "1/1", "1/1", "1/1"],
+            ["0/1", "0/0", "1/1", "0/0", "0/1", "1/1", "0/0", "0/1"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let pos = var.saturating_add(1).saturating_mul(1000);
+            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in genotypes {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        for test in [TestType::Wald, TestType::Score] {
+            let study = GwasInput {
+                phenotype: &THE_TRAIT_OF_TWO_SUBPOPULATIONS,
+                trait_type: TraitType::Continuous,
+                design: &THE_DESIGN_OF_TWO_SUBPOPULATIONS,
+                num_coefs: 2,
+                kinship: Some(&THE_KINSHIP_OF_TWO_SUBPOPULATIONS),
+                test: Some(test),
+                use_grammar_gamma_approx: false,
+                individuals: &THE_INDIVIDUALS_OF_TWO_SUBPOPULATIONS,
+                transform_to_biallelic: false,
+            };
+            let mut reader = reader_over(vcf.as_bytes());
+            let result = match the_study_of(&mut reader, &study) {
+                Ok(result) => result,
+                Err(error) => panic!("the study of two subpopulations: {error}"),
+            };
+            assert_eq!(result.num_vars, 2, "the variants of the fixture");
+            // The variant is in the result with its frequency, as every
+            // variant that has no answer is.
+            let found = result.allele_freq[0];
+            assert!(
+                (found - 0.5).abs() <= 1e-12,
+                "the frequency of v0 is {found} and its dosages are half the alleles"
+            );
+            assert!(
+                result.beta[0].is_nan() && result.se[0].is_nan() && result.p_value[0].is_nan(),
+                "the variant the projection leaves nothing of was answered under the \
+                 {test:?} test with a beta of {beta}, an se of {se} and a p-value of \
+                 {p_value}",
+                beta = result.beta[0],
+                se = result.se[0],
+                p_value = result.p_value[0]
+            );
+            assert!(
+                result.beta[1].is_finite()
+                    && result.se[1] > 0.0
+                    && (0.0..=1.0).contains(&result.p_value[1]),
+                "the ordinary variant beside it was answered under the {test:?} test with \
+                 a beta of {beta}, an se of {se} and a p-value of {p_value}",
+                beta = result.beta[1],
+                se = result.se[1],
+                p_value = result.p_value[1]
             );
         }
     }
