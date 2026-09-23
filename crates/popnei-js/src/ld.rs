@@ -28,6 +28,7 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
+use popnei::filters::FilteringStats;
 use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, R2Matrix as R2MatrixOfTheCore, calc_r2_matrix};
 
 use crate::errors::JsPopneiError;
@@ -106,6 +107,26 @@ pub fn default_max_num_vars() -> usize {
     MAX_NUM_VARS_OF_THE_MATRIX
 }
 
+/// The largest cap a user of this build can put on the variants of the
+/// matrix, which is 65535 in a browser.
+///
+/// The matrix holds one r² for each pair, which is the variants squared,
+/// and that number is counted in a `usize`, 32 bits in WebAssembly: the
+/// matrix of 65535 variants holds 4294836225 values, and that of 65536
+/// holds more than the 4294967295 a browser counts to, which the core
+/// refuses before it reads anything. The package reads this number and
+/// refuses a larger cap at the call, in `js/popnei/src/arguments.ts`, so
+/// that the number a user is given is the one their machine has: a Python
+/// user of the same package on a 64 bit build has 4294967295.
+///
+/// The memory of the tab stops a user well before it. The matrix of 23170
+/// variants is 4 GB, which is everything a page holds at a time.
+#[wasm_bindgen]
+#[must_use]
+pub fn largest_max_num_vars() -> usize {
+    usize::MAX.isqrt()
+}
+
 /// The r² of every pair of the variants of `source` that the steps of
 /// `steps` keep, with the chromosome and the position of each of them and
 /// the counts of the pass.
@@ -121,12 +142,15 @@ pub fn default_max_num_vars() -> usize {
 /// # Errors
 ///
 /// When the pass gives more than `max_num_vars` variants, with both numbers
-/// and the memory the matrix would have needed; when the matrix of
-/// `max_num_vars` variants holds more values than wasm counts; when the
-/// pass gives no variant, which says whether the source had none or the
-/// steps kept none; when the memory of the tab does not take the matrix;
-/// and when the source cannot be read, a wrong line of a VCF among the
-/// causes.
+/// and the memory the matrix would have needed, under the `maxNumVars` a
+/// TypeScript user wrote; when the pass gives no variant, which says
+/// whether the source had none or the steps kept none; when the memory of
+/// the tab does not take the matrix; and when the source cannot be read, a
+/// wrong line of a VCF among the causes.
+///
+/// A `max_num_vars` the machine does not count the pairs of is the core's
+/// error and reaches no user of the package, which refuses a cap above
+/// [`largest_max_num_vars`] at the call.
 pub(crate) fn r2_matrix_of(
     source: &dyn OpenSource,
     max_num_vars: usize,
@@ -137,7 +161,7 @@ pub(crate) fn r2_matrix_of(
     let calculated = calc_r2_matrix(&mut chain, max_num_vars);
     let matrix = match calculated {
         Ok(matrix) => matrix,
-        Err(error) => return Err(of_the_pass(error, &chain.filtering_stats())),
+        Err(error) => return Err(of_this_pass(error, &chain.filtering_stats())),
     };
     let num_vars = matrix.num_vars();
     let counted = u64::try_from(num_vars).map_err(|_| {
@@ -161,6 +185,34 @@ pub(crate) fn r2_matrix_of(
         poss: Some(poss),
         counts,
     })
+}
+
+/// What a pass of this calculation failed with, on its way to a TypeScript
+/// user: the cap on its variants under the name that user wrote it in, and
+/// everything else as `of_the_pass` of `source.rs` gives it, which is the
+/// pass with no variant said with the counts of its filters.
+///
+/// The core names the cap `max_num_vars`, which is the argument of the
+/// Python package, and the call a TypeScript user has to look at is
+/// `calcRogersHuffR2Matrix(variants, { maxNumVars })`. It is what
+/// `under_the_argument` of `steps.rs` does for the threshold of a filter.
+fn of_this_pass(
+    error: popnei::Error,
+    filtering: &[(&'static str, FilteringStats)],
+) -> JsPopneiError {
+    if let popnei::Error::LdTooManyVars {
+        num_vars,
+        max_num_vars,
+        bytes,
+    } = error
+    {
+        return JsPopneiError::TooManyVars {
+            num_vars,
+            max_num_vars,
+            bytes,
+        };
+    }
+    of_the_pass(error, filtering)
 }
 
 /// The name of the chromosome of each variant of `matrix`, read through the

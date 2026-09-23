@@ -14,7 +14,7 @@
 
 import { default_max_num_vars as defaultMaxNumVars } from "../wasm/popnei.js";
 
-import { wholeNumberOfOneOrMore } from "./arguments.js";
+import { varsOfTheMatrixOfEveryPair } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 import type { PassStats, Variants } from "./variant.js";
 import { passStatsOf, sourceOfTheVariants } from "./variant.js";
@@ -23,18 +23,25 @@ import { passStatsOf, sourceOfTheVariants } from "./variant.js";
 export interface CalcRogersHuffR2MatrixOptions {
   /**
    * How many variants the calculation takes before it refuses, a whole
-   * number of 1 or more. 5000 when it is not given, which is the default of
-   * the core crate and 200 MB of matrix.
+   * number from 1 to 65535. 5000 when it is not given, which is the default
+   * of the core crate and 200 MB of matrix.
    *
    * The matrix holds one r² for each pair of the variants of the pass, 8
    * bytes each, so it grows with the square of them: 5000 variants are 200
-   * MB and 100000 are 80 GB. It is the one calculation of popnei whose
-   * result grows with the square of its input, and a page holds 4 GB of
-   * everything that is open in it at a time, so a pass of more variants
+   * MB, 10000 are 800 MB and 23170 are the 4 GB a page holds of everything
+   * that is open in it at a time. It is the one calculation of popnei whose
+   * result grows with the square of its input, so a pass of more variants
    * than this is an `Error` and not a matrix the tab is asked for the
    * memory of. A user who wants the matrix of more variants, and has the
    * memory, raises it; a user who has more variants than memory puts a
    * filter on the `Variants` first.
+   *
+   * 65535 is where it stops in a browser, and a cap above it is an `Error`
+   * at the call: the values of the matrix are counted in a whole number of
+   * 32 bits there, and 65536 variants hold more of them than it counts. The
+   * memory of the tab is reached at 23170, so the number a user can write
+   * here is not one a browser runs. Python, whose whole numbers are 64
+   * bits wide, takes a `max_num_vars` of up to 4294967295.
    */
   maxNumVars?: number;
 }
@@ -107,9 +114,9 @@ export interface R2Matrix {
  * calculation.
  *
  * @throws {Error} When `variants` is not a `Variants` or was freed, when
- * `maxNumVars` is not a whole number of 1 or more, when the pass gives more
- * variants than `maxNumVars`, whose message has both numbers and the memory
- * the matrix would have needed, when the pass gives no variant, whose
+ * `maxNumVars` is not a whole number from 1 to 65535, when the pass gives
+ * more variants than `maxNumVars`, whose message has both numbers and the
+ * memory the matrix would have needed, when the pass gives no variant, whose
  * message says whether the source held none or the steps kept none and how
  * many variants each filter was given and kept, when the source cannot be
  * read, a wrong line of a VCF among the causes, when a position of the
@@ -129,7 +136,7 @@ export function calcRogersHuffR2Matrix(
   const maxNumVars =
     options.maxNumVars === undefined
       ? defaultMaxNumVars()
-      : wholeNumberOfOneOrMore("maxNumVars", options.maxNumVars);
+      : varsOfTheMatrixOfEveryPair("maxNumVars", options.maxNumVars);
   // The steps of the pass are a copy of the list, made after the arguments
   // were checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.

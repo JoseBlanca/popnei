@@ -235,15 +235,23 @@ test("the counts of the pass are those of the steps of the variants", async () =
 test("a pass of more variants than maxNumVars is refused", async () => {
   const variants = await theLdDataset();
   try {
+    // The message names the argument of the call a user wrote, which is
+    // `maxNumVars` and not the `max_num_vars` the core and the Python
+    // package have: what they are told to raise has to be a name of their
+    // own language.
     assert.throws(
       () => calcRogersHuffR2Matrix(variants, { maxNumVars: 100 }),
       (error: Error) => {
         assert.ok(
-          error.message.includes("`max_num_vars` is 100"),
+          error.message.includes("`maxNumVars` is 100"),
           `the message is ${error.message}`,
         );
         assert.ok(
-          error.message.includes("raise `max_num_vars` or filter the variants"),
+          error.message.includes("raise `maxNumVars` or filter the variants"),
+          `the message is ${error.message}`,
+        );
+        assert.ok(
+          !error.message.includes("max_num_vars"),
           `the message is ${error.message}`,
         );
         return true;
@@ -270,6 +278,46 @@ test("a maxNumVars that is not a whole number of one or more is refused", async 
         `a maxNumVars of ${String(maxNumVars)}`,
       );
     }
+  } finally {
+    variants.free();
+  }
+});
+
+test("a maxNumVars of more variants than the pairs of a browser are counted in is refused", async () => {
+  const variants = await theLdDataset();
+  try {
+    // The matrix holds one value for each pair, the variants squared, and a
+    // whole number of the core is 32 bits wide in a browser: 65535 variants
+    // are 4294836225 values and 65536 are 4294967296, which is one more
+    // than it counts to. A cap of 100000 was what the package invited
+    // before this, with a message that said it took 4294967295.
+    for (const maxNumVars of [65536, 100000, 4294967295]) {
+      assert.throws(
+        () => calcRogersHuffR2Matrix(variants, { maxNumVars }),
+        (error: Error) => {
+          assert.ok(
+            error.message.includes(
+              "`maxNumVars` is a whole number of 1 or more and at most 65535",
+            ),
+            `the message is ${error.message}`,
+          );
+          assert.ok(
+            error.message.includes(
+              "the matrix of 65536 variants holds more of them than it counts",
+            ),
+            `the message is ${error.message}`,
+          );
+          return true;
+        },
+        `a maxNumVars of ${maxNumVars}`,
+      );
+    }
+    // 65535 is taken: the pass of this file gives its 500 variants, and a
+    // cap above the variants of the source changes nothing.
+    assert.equal(
+      calcRogersHuffR2Matrix(variants, { maxNumVars: 65535 }).numVars,
+      NUM_VARS,
+    );
   } finally {
     variants.free();
   }

@@ -17,7 +17,10 @@
  * refuses them here, before the call, and says what was given.
  */
 
-import { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
+import {
+  largest_max_num_vars as largestMaxNumVars,
+  room_for_bytes as roomForBytes,
+} from "../wasm/popnei.js";
 
 /**
  * The largest number the package hands to a whole number of the core that
@@ -89,6 +92,45 @@ export function wholeNumberOfZeroOrMore(
     throw new Error(
       `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
         `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a number of variants the matrix of every pair can be
+ * taken of, and an `Error` that names `argument`, the largest such number
+ * and what was given otherwise.
+ *
+ * The `maxNumVars` of `calcRogersHuffR2Matrix` comes through here. The
+ * matrix holds one r² for each pair, which is the variants squared, and a
+ * whole number of the core is 32 bits wide in a browser: the 4294967296
+ * values of 65536 variants are more than it counts, so 65535 variants are
+ * the most a cap can ask for. `largest_max_num_vars` of the binding crate
+ * is where that number comes from, so a build whose whole numbers are
+ * wider says its own. A Python user of the same calculation has
+ * 4294967295, and neither of the two reaches the memory of their machine:
+ * the matrix of 23170 variants is already the 4 GB a page holds.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function varsOfTheMatrixOfEveryPair(
+  argument: string,
+  value: unknown,
+): number {
+  const largest = largestMaxNumVars();
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > largest
+  ) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of 1 or more and at most ` +
+        `${largest}, and ${whatWasGiven(value)} was given: the matrix holds ` +
+        `one r² for each pair of the variants, which is the variants squared, ` +
+        `and a browser counts those values in 32 bits, so the matrix of ` +
+        `${largest + 1} variants holds more of them than it counts`,
     );
   }
   return value;

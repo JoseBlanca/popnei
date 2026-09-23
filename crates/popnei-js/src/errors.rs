@@ -43,6 +43,22 @@ pub enum JsPopneiError {
         /// What was given for it, which is NaN, below 0 or above 1.
         threshold: f64,
     },
+    /// A pass that gave the matrix of every pair more variants than it was
+    /// allowed to take, under the name of the argument a user wrote that
+    /// number in: the core refuses it and names `max_num_vars`, which is
+    /// the argument of the Python package, and what a TypeScript user has
+    /// to look at is the `maxNumVars` of the call they wrote.
+    TooManyVars {
+        /// How many variants the pass had given when it was stopped, which
+        /// is the first count above the cap.
+        num_vars: usize,
+        /// How many variants the calculation was allowed to take, the
+        /// `maxNumVars` of the call.
+        max_num_vars: usize,
+        /// How many bytes the matrix of those variants holds, 8 for each
+        /// pair.
+        bytes: u64,
+    },
     /// A pass that gave no variant, and a calculation cannot run over none:
     /// the source holds no variant, or the filters of the pass kept none.
     /// The core says that its reader gave no variant, and which of the two
@@ -72,7 +88,7 @@ impl From<JsPopneiError> for JsValue {
     /// in Rust.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the six cases are one `Error`, where Python tells a `ValueError`
+    /// the seven cases are one `Error`, where Python tells a `ValueError`
     /// from an `OSError`.
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
@@ -86,6 +102,21 @@ impl From<JsPopneiError> for JsValue {
                  included: the number of the variant it is compared with is one count of \
                  the variant divided by another",
                 value = as_javascript_writes_it(threshold)
+            ),
+            // The cap on the variants of the matrix of every pair, which is
+            // the core's message with the name of the argument a TypeScript
+            // user wrote: the core says `max_num_vars`, which is what a
+            // Python user reads and what no call of TypeScript has.
+            JsPopneiError::TooManyVars {
+                num_vars,
+                max_num_vars,
+                bytes,
+            } => format!(
+                "the pass gave {num_vars} variants and `maxNumVars` is {max_num_vars}: \
+                 the matrix of {num_vars} variants holds one r² for each pair of them, \
+                 {bytes} bytes of 8 each, and the pass was stopped as soon as it passed \
+                 that number, so its source may hold more variants; raise `maxNumVars` \
+                 or filter the variants"
             ),
             JsPopneiError::NotInJavaScript(message)
             | JsPopneiError::NoVariant(message)
