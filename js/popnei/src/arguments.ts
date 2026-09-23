@@ -20,13 +20,22 @@
 import { room_for_bytes as roomForBytes } from "../wasm/popnei.js";
 
 /**
- * The largest number the package hands to the core, 2^32 - 1.
+ * The largest number the package hands to a whole number of the core that
+ * is 32 bits wide, 2^32 - 1.
  *
  * A whole number of Rust is 32 bits wide in wasm, and what the generated
  * code does with a larger one is to keep it modulo 2^32: 2^32 + 2 would
  * arrive as a ploidy of 2, and 2^32 + 1 as blocks of one variant.
  */
 const LARGEST_WHOLE_NUMBER = 4294967295;
+
+/**
+ * The largest whole number a number of JavaScript holds exactly, 2^53 - 1.
+ *
+ * A float64 counts in twos above it, so 2^53 + 1 is read as 2^53 and a
+ * number written above this one is not the number the user wrote.
+ */
+const LARGEST_EXACT_WHOLE_NUMBER = 9007199254740991;
 
 /**
  * `value` when it is a whole number of 1 or more that the core holds, and
@@ -80,6 +89,33 @@ export function wholeNumberOfZeroOrMore(
     throw new Error(
       `popnei: \`${argument}\` is a whole number of 0 or more and at most ` +
         `${LARGEST_WHOLE_NUMBER}, and ${whatWasGiven(value)} was given`,
+    );
+  }
+  return value;
+}
+
+/**
+ * `value` when it is a whole number of base pairs of 1 or more that a
+ * number of JavaScript holds exactly, and an `Error` that names `argument`
+ * and what was given otherwise.
+ *
+ * The window of `filterByLd` comes through here, how many base pairs behind
+ * a variant the variants it is compared with reach. The core takes it as a
+ * 64 bit whole number, which a Python user can fill to 1.8e19, and
+ * JavaScript is what cuts it at 2^53 - 1: a whole number above that one is
+ * not held exactly, so it would reach the core as another window than the
+ * one that was written. No genome comes near either number, the longest
+ * chromosome that has been assembled being 2.5e8 base pairs.
+ *
+ * @throws {Error} When `value` is not such a number.
+ */
+export function distanceInBasePairs(argument: string, value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error(
+      `popnei: \`${argument}\` is a whole number of base pairs of 1 or more ` +
+        `and at most ${LARGEST_EXACT_WHOLE_NUMBER}, the largest whole number ` +
+        `a number of JavaScript holds exactly, and ${whatWasGiven(value)} ` +
+        `was given`,
     );
   }
   return value;

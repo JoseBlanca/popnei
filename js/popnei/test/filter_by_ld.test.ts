@@ -84,6 +84,13 @@ const THE_TABLE: {
 const THE_ROW_OF_133 = THE_TABLE[1] as (typeof THE_TABLE)[number];
 
 /**
+ * The row of the table whose window, 250000 bp, is the whole of each of the
+ * two chromosomes of the file, so that every variant kept on a chromosome
+ * is in the window of every variant after it.
+ */
+const THE_ROW_OF_A_WHOLE_CHROMOSOME = THE_TABLE[3] as (typeof THE_TABLE)[number];
+
+/**
  * The position of the first variant kept on chr2, which is the first
  * variant of that chromosome at every setting of the table: a window ends
  * at the chromosome of the variant it is of, so nothing kept on chr1 is
@@ -126,6 +133,18 @@ const WINDOWS_REFUSED: [unknown, string][] = [
   [1500.5, "the number 1500.5"],
   [undefined, "undefined"],
 ];
+
+/**
+ * The largest window a user can ask for, 2^53 - 1 base pairs, and the first
+ * one above it.
+ *
+ * The core takes a window of up to 2^64 - 1, which is what a user of popnei
+ * in Python writes. A number of JavaScript counts in twos above 2^53 - 1,
+ * so 9007199254740992 written here would not be the window that arrived,
+ * and it is refused instead.
+ */
+const LARGEST_WINDOW = 9007199254740991;
+const FIRST_WINDOW_REFUSED = 9007199254740992;
 
 /** The 500 variants of `ld.vcf.gz`, every one of them given. */
 function theDataset(): Variants {
@@ -303,6 +322,56 @@ for (const [maxDist, written] of WINDOWS_REFUSED) {
     variants.free();
   });
 }
+
+test("the largest window a number of JavaScript holds exactly is taken", () => {
+  // The core takes the window as a 64 bit whole number of base pairs, and
+  // what JavaScript hands it has to be the number the user wrote: at
+  // 9007199254740991 it still is. A window longer than a chromosome is the
+  // window of the whole chromosome, so this keeps what the row of 250000 bp
+  // of the table keeps, and a window that arrived as 0 or as a number cut
+  // short would keep another set.
+  const variants = theDataset();
+  variants.filterByLd(
+    THE_ROW_OF_A_WHOLE_CHROMOSOME.maxAllowedR2,
+    LARGEST_WINDOW,
+  );
+
+  assert.deepEqual(variants.steps, [
+    {
+      kind: "ld",
+      args: {
+        maxAllowedR2: THE_ROW_OF_A_WHOLE_CHROMOSOME.maxAllowedR2,
+        maxDist: LARGEST_WINDOW,
+      },
+    },
+  ]);
+  const { positions } = keptBy(variants);
+  assert.equal(positions.length, THE_ROW_OF_A_WHOLE_CHROMOSOME.kept);
+  assert.deepEqual(
+    positions.slice(0, 5),
+    THE_ROW_OF_A_WHOLE_CHROMOSOME.firstFive,
+  );
+  variants.free();
+});
+
+test("a window above the whole numbers a float64 holds is refused", () => {
+  // 9007199254740992 is 2^53, where a number of JavaScript starts counting
+  // in twos: the core would be given a window the user cannot write and
+  // cannot read back, so the package refuses it and says why.
+  const variants = theDataset();
+
+  assert.throws(
+    () => variants.filterByLd(0.3, FIRST_WINDOW_REFUSED),
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes("maxDist") &&
+      error.message.includes(`${FIRST_WINDOW_REFUSED}`) &&
+      error.message.includes("holds exactly"),
+  );
+
+  assert.deepEqual(variants.steps, []);
+  variants.free();
+});
 
 test("a second filter by linkage disequilibrium is refused with the one that is set", () => {
   // Two of them on one `Variants` keep what the stricter of the two keeps

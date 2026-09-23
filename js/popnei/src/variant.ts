@@ -19,6 +19,7 @@ import { Steps } from "../wasm/popnei.js";
 
 import {
   aNumber,
+  distanceInBasePairs,
   namesOfFields,
   whatWasGiven,
   wholeNumberOfOneOrMore,
@@ -406,10 +407,19 @@ export class Variants {
    * wants them read over one population puts the filter of individuals
    * before this one. Neither argument has a default.
    *
+   * The largest window is 9007199254740991 base pairs, 2^53 - 1, which is
+   * the largest whole number a number of JavaScript holds exactly: the core
+   * takes a window of up to 2^64 - 1, which is what a user of popnei in
+   * Python can write, and above 2^53 - 1 a number of JavaScript counts in
+   * twos, so a larger window would reach the core as another number than
+   * the one written. The longest chromosome that has been assembled is
+   * 2.5e8 base pairs.
+   *
    * The call adds a step and gives nothing back.
    *
    * @throws {Error} When `maxAllowedR2` is not a number from 0 to 1 or is
-   * not given, when `maxDist` is not a whole number of 1 or more, and when
+   * not given, when `maxDist` is not a whole number of base pairs from 1 to
+   * 9007199254740991, and when
    * a filter of this kind is set already. It also throws when the variants
    * were freed and when `init` has not been awaited. The variants of each
    * chromosome have to come together and in order of position, which is
@@ -422,7 +432,7 @@ export class Variants {
     theWasmHasToBeLoaded();
     this.#stepsThatWereNotFreed().filter_by_ld(
       aNumber("maxAllowedR2", maxAllowedR2),
-      wholeNumberOfOneOrMore("maxDist", maxDist),
+      distanceInBasePairs("maxDist", maxDist),
     );
   }
 

@@ -64,9 +64,10 @@ impl Step {
             Step::Filter(criterion) => {
                 let mut args = vec![(argument_of(criterion), criterion.threshold())];
                 if let Some(max_dist) = criterion.max_dist() {
-                    // The window was written by a user as a number of
-                    // JavaScript and crossed as a `u32`, so it is far below
-                    // the 2^53 a float64 holds exactly.
+                    // The window is the number of base pairs the user
+                    // wrote, which crossed as a float64 and is at most the
+                    // 2^53 - 1 a float64 holds exactly, so it goes back as
+                    // the number they wrote.
                     args.push((THE_WINDOW_OF_THE_LD_FILTER, max_dist as f64));
                 }
                 args
@@ -79,6 +80,47 @@ impl Step {
 /// disequilibrium under, how many base pairs behind a variant the variants
 /// it is compared with reach.
 const THE_WINDOW_OF_THE_LD_FILTER: &str = "maxDist";
+
+/// The largest window that crosses, 2^53 - 1 base pairs, which is the
+/// largest whole number a number of JavaScript holds exactly.
+///
+/// The core takes a window of up to 2^64 - 1 base pairs, which is what a
+/// Python user can write; above this one a number of JavaScript counts in
+/// twos, so a window written there is not the window that would arrive.
+const LARGEST_WINDOW: f64 = 9_007_199_254_740_991.0;
+
+/// `max_dist` as the number of base pairs the core takes.
+///
+/// # Errors
+///
+/// When `max_dist` is not a whole number from 0 to 2^53 - 1, which is a
+/// defect of the package: `js/popnei/src/arguments.ts` refuses a window
+/// that is not a whole number of 1 or more before the call, and 0 is left
+/// to the core, whose message says what a window of 0 base pairs reaches.
+/// It is checked and not cast as it comes because a NaN would arrive as a
+/// window of 0 and take out every variant that has another at its own
+/// position, saying nothing.
+fn base_pairs_of(max_dist: f64) -> Result<u64, JsPopneiError> {
+    let whole = max_dist.trunc();
+    #[expect(
+        clippy::float_cmp,
+        reason = "a float64 is or is not the whole number it was truncated to"
+    )]
+    let is_whole = whole == max_dist;
+    if !max_dist.is_finite() || !is_whole || max_dist < 0.0 || max_dist > LARGEST_WINDOW {
+        return Err(JsPopneiError::Broken(format!(
+            "the window of the filter by linkage disequilibrium arrived as {max_dist}, \
+             and it is a whole number of base pairs from 0 to {LARGEST_WINDOW}"
+        )));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked above to be a whole number between 0 and 2^53 - 1"
+    )]
+    let base_pairs = max_dist as u64;
+    Ok(base_pairs)
+}
 
 /// The name a TypeScript user writes the threshold of `criterion` under,
 /// which is the argument of the method that adds the filter.
@@ -207,23 +249,27 @@ impl Steps {
     /// `max_dist` base pairs behind them on their chromosome is at most
     /// `max_allowed_r2` are kept.
     ///
-    /// `max_dist` crosses as a `u32`, which the package is what refuses a
-    /// window of 0 or one that is not a whole number for: 4294967295 base
-    /// pairs are 17 times the longest chromosome that has been assembled.
+    /// `max_dist` is a number of base pairs, which crosses as a float64 and
+    /// reaches the core as the 64 bit whole number it takes, so that a
+    /// TypeScript user asks for the windows a Python user asks for as far
+    /// as a number of JavaScript holds one exactly, 2^53 - 1. What is not
+    /// such a number is refused by the package before the call, in
+    /// `js/popnei/src/arguments.ts`.
     ///
     /// # Errors
     ///
-    /// The two of [`Steps::filter_by_missing_data`], and a `max_dist` of 0,
+    /// The two of [`Steps::filter_by_missing_data`], a `max_dist` of 0,
     /// which reaches no variant but the ones at the very position of the
-    /// variant its window is of.
+    /// variant its window is of, and a `max_dist` that is not a whole
+    /// number of base pairs the core holds.
     pub fn filter_by_ld(
         &mut self,
         max_allowed_r2: f64,
-        max_dist: u32,
+        max_dist: f64,
     ) -> Result<(), JsPopneiError> {
         self.add(VarFilteringCriterion::MaxLdR2 {
             max_allowed_r2,
-            max_dist: u64::from(max_dist),
+            max_dist: base_pairs_of(max_dist)?,
         })
     }
 
