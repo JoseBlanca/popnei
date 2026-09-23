@@ -72,6 +72,9 @@ export interface R2Matrix {
   /**
    * The name of the chromosome of each variant, in the order the pass gave
    * them, which is the order of the rows and of the columns of the matrix.
+   *
+   * The array is frozen, as the names of a `Distances` are: writing into
+   * it throws, and a user who wants one of their own copies it.
    */
   readonly chroms: readonly string[];
   /**
@@ -153,7 +156,11 @@ export function calcRogersHuffR2Matrix(
     return {
       numVars: calculated.num_vars(),
       r2: thePartOfTheMatrix(calculated.r2(), "r2"),
-      chroms: thePartOfTheMatrix(calculated.chroms(), "chroms"),
+      // The names are frozen, as the names of a `Distances` and the
+      // individuals of a `Variants` are: what Python gives here is a tuple,
+      // and a user who wrote into the array would be writing into the
+      // result of a pass that is over.
+      chroms: Object.freeze(thePartOfTheMatrix(calculated.chroms(), "chroms")),
       poss: thePartOfTheMatrix(calculated.poss(), "poss"),
       passStats: passStatsOf(calculated.pass_stats()),
     };

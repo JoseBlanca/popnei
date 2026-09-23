@@ -323,6 +323,24 @@ test("a maxNumVars of more variants than the pairs of a browser are counted in i
   }
 });
 
+test("the names of the chromosomes cannot be written into", async () => {
+  const variants = await theLdDataset();
+  try {
+    const matrix = calcRogersHuffR2Matrix(variants);
+    // Python gives a tuple here and read only arrays for the numbers, and
+    // the names of a `Distances` and the individuals of a `Variants` are
+    // frozen in this package: one package answers the question one way.
+    // The module is a module, so it is strict and the assignment throws.
+    assert.ok(Object.isFrozen(matrix.chroms));
+    assert.throws(() => {
+      (matrix.chroms as string[])[0] = "chr99";
+    }, TypeError);
+    assert.equal(matrix.chroms[0], "chr1");
+  } finally {
+    variants.free();
+  }
+});
+
 test("something that is not a Variants is refused", () => {
   assert.throws(
     () => calcRogersHuffR2Matrix({} as unknown as Variants),
