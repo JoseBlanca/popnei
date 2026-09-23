@@ -1,16 +1,16 @@
 # Work report: the linear algebra the association study needs
 
 23 September 2026. This is the work report of the plan
-`docs/plans/linalg-gwas.md`, carried out on the branch `plan/linalg-gwas`
-in the worktree `.claude/worktrees/linalg-gwas`, which built the linear
-algebra that a genome wide association study needs into
-`crates/popnei-linalg` from the spec `docs/specs/linalg.md`. It was
-written while the work went, so the sections below are in the order the
-work happened, each work package with the commands that checked it, what
-its review found and what was done about that. The section that follows
-this paragraph is what the owner reads first, and the last two are the
-decisions that are theirs and what the work taught about running the next
-plan.
+`docs/plans/linalg-gwas.md`, carried out on the branch
+`plan/linalg-gwas` in the worktree `.claude/worktrees/linalg-gwas`,
+which built the linear algebra that a genome wide association study
+needs into `crates/popnei-linalg` from the spec `docs/specs/linalg.md`.
+It was written while the work went, so the sections below are in the
+order the work happened, each work package with the commands that
+checked it, what its review found and what was done about that. What the
+owner reads first is the section below; the decisions that are theirs
+are under "What is waiting on the owner"; what the work taught about
+running the next plan is the last section.
 
 ## What the owner reads first
 
@@ -66,7 +66,7 @@ in the worktree on 23 September 2026:
 | the workspace is clean | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` | both clean |
 | the workspace passes | `cargo test --workspace` | `472 passed` in the core crate, `42 passed` in the linalg crate, 2 ignored |
 | both backends pass | `cargo test -p popnei-linalg` and the same `--no-default-features` | `42 passed` and `37 passed` |
-| both wasm targets build | `cargo wasm-check` | clean |
+| both wasm targets build | `cargo wasm-check`, an alias of `.cargo/config.toml` that compiles the core crate and the linear algebra crate for both of popnei's WebAssembly targets with the warnings denied | clean |
 | the Python layer passes | `uv run ruff format --check && uv run ruff check`, `uv run maturin develop && uv run pytest` | clean, `257 passed` |
 | the TypeScript layer passes | `npm run build && npm test` in `js/popnei` | `pass 180` |
 | none of the seven exists yet | `cargo test -p popnei-linalg --lib <filter> -- --list` for `cholesky`, `qr`, `rank`, `triangular`, `determinant`, `singular`, `four_ways`, `first_operand`, `solve_with`, `invert` | `0 tests` for every one of the ten |
@@ -109,11 +109,8 @@ operand is `ByTheValuesSummedOver` have no backend behind them until task
 arms give `Error::Dimension` with a message that says the product is not
 built yet, rather than an `unreachable` that would be a wrong matrix or a
 panic waiting to happen. Task 1.2 replaces the two arm bodies with one
-backend call each. It is the right call for one commit inside a work
-package, and nothing outside the crate can reach it: no caller in popnei
-names that case.
-
-That subagent used 123480 tokens.
+backend call each. Nothing outside the crate could reach it in the
+meantime: no caller in popnei names that case.
 
 ### Task 1.2, the two combinations that turn the first operand
 
@@ -140,8 +137,6 @@ worked out again: A of 2 x 3 with rows (1, 2, 0) and (0, 1, 3), the same
 matrix the other way round, the B with rows (1, 1), (2, 0) and (0, 3),
 and that one the other way round. All four combinations write the 2 x 2
 with rows (5, 1) and (2, 9), asserted exactly.
-
-That subagent used 144252 tokens.
 
 ### The deliverables of work package 1
 
@@ -220,8 +215,6 @@ passed` in the linear algebra crate; `cargo test -p popnei-linalg
 pytest` `257 passed`. The crate went from 42 tests to 47 and from 37 to
 42 over the whole work package, and nothing else moved.
 
-That subagent used 180622 tokens for the fixes.
-
 ## Work package 2: the Cholesky factorization and the three things off it
 
 ### Task 2.1, the factorization and the `Singular` case
@@ -250,7 +243,7 @@ counting from 1 and faer an index from 0. The test's matrix stops at the
 middle row of three, so a backend that counted from 1 or from the other
 end gives another number.
 
-Two things the task did differently, both right. It checked the buffer
+The task did two things differently from the plan. It checked the buffer
 with the helper that names the argument `a` and not with the one the plan
 named, which writes `g` into the message and is for the two operations
 whose argument is called `g`. And it built the 1000 x 1000 of the
@@ -262,8 +255,6 @@ Worth knowing: faer leaves the upper half of the buffer untouched, which
 the spec asserts and nothing had checked until now, and a value that is
 not finite there is let through by both backends and stays where it was,
 since only the lower half is read.
-
-That subagent used 176640 tokens.
 
 ### Task 2.2, the solve and the log of the determinant
 
@@ -295,8 +286,6 @@ solve walks the two triangles in place. So the spec is right to give
 added a test in the faer backend that asserts the scratch is 0, so that a
 later faer which wanted memory fails a test instead of ending the process.
 That test is why the faer build has 70 tests and not 69.
-
-That subagent used 155982 tokens.
 
 ### Task 2.3, the inverse
 
@@ -350,8 +339,6 @@ package. The rest, run by the orchestrator: fmt, clippy with the warnings
 denied, `cargo wasm-check` and ruff clean; `cargo test --workspace` `472
 passed` with 2 ignored in the core crate; `uv run maturin develop && uv
 run pytest` `257 passed`.
-
-Those subagents used 176640, 155982 and 174752 tokens.
 
 ### The review of work package 2
 
@@ -434,8 +421,6 @@ passed` in the linear algebra crate; `cargo test -p popnei-linalg
 pytest` `257 passed`. Over the whole work package the crate went from 47
 tests to 93 and from 42 to 90.
 
-That subagent used 229755 tokens for the fixes.
-
 ## Work package 3: the thin QR, the triangular solve and the rank
 
 ### Task 3.1, the thin QR
@@ -465,8 +450,6 @@ The task made the mutation the orchestrator asked for: with `rows` and
 each, LAPACK refusing an argument of `dorgqr` and faer giving other
 numbers; the other five are the ones the crate refuses before a backend
 runs.
-
-That subagent used 195434 tokens.
 
 ### Tasks 3.2 and 3.3, the triangular solve and the rank
 
@@ -499,8 +482,13 @@ tolerance from a count at it.
 of 20 runs, `rank` takes 0.1881 ms on Accelerate and 0.2124 ms on faer,
 against the 0.145 ms and 0.159 ms the spec measured of the routines alone
 and the 1.54 ms of the route this task did not take. `thin_qr` measured
-again beside it gave 0.1855 ms, so the gap from the spec's numbers is the
-crate's checks and not the route.
+again beside it gave 0.1855 ms, where task 3.1 had measured 0.207 ms and
+a reviewer later 0.1573 ms, all on this machine and the same design:
+three runs of one thing spanning 0.157 to 0.207 ms, which is the spread
+between runs on a machine doing other work. Nothing is drawn from that
+spread, and nothing needs to be: what the deliverable asks is whether
+these are the fast route, and 1.54 ms and 2.98 ms are what the routes the
+spec did not take cost.
 
 The mutations the orchestrator asked for: `n` and `sides` exchanged in the
 triangular solve fails 4 of its 12 tests on each backend, and the two
@@ -525,8 +513,6 @@ package. The rest, run by the orchestrator: fmt, clippy with the warnings
 denied, `cargo wasm-check` and ruff clean; `cargo test --workspace` `472
 passed` with 2 ignored in the core crate; `uv run maturin develop && uv
 run pytest` `257 passed`.
-
-Those subagents used 195434 and 230876 tokens.
 
 ### The review of work package 3
 
@@ -613,8 +599,6 @@ pytest` `257 passed`. Over the whole work package the crate went from 93
 tests to 141 and from 90 to 128; the gap between the two backends is the
 13 tests of `blas.rs`, which test helpers only that backend has.
 
-That subagent used 291256 tokens for the two tasks and the fixes.
-
 ## Work package 4: the solve against a lower triangular matrix
 
 Added by the owner on 23 September 2026, after work packages 1 to 3 were
@@ -648,10 +632,12 @@ points at their report. This plan owns the operation and not the fit.
 ### Task 4.2, the code of both halves, and the review of work package 4
 
 `28925db`, and `5eb4e7b` after the review. `solve_upper_triangular` is
-`solve_triangular(a, n, half, b, sides)` with the public
-`TheHalfThatHoldsTheMatrix`: the half is the `uplo` of `dtrtrs`, turned by
-the layout, and one of faer's two entry points. Twenty tests name
-`triangular` where twelve did, and the twelve assert what they asserted.
+renamed `solve_triangular(a, n, half, b, sides)` and gains the public
+`TheHalfThatHoldsTheMatrix`, whose two cases are the upper half and the
+lower; there is no `solve_upper_triangular` any more: the half is the
+`uplo` of `dtrtrs`, turned by the layout, and one of faer's two entry
+points. Twenty tests name `triangular` where twelve did, and the twelve
+assert what they asserted.
 
 Two reviewers, spec with tests and errors with api and architecture. They
 used 243000 tokens, and fourteen findings held, of which **five were in
@@ -701,8 +687,6 @@ have the same hole. And that the `Singular` message says a factorization
 stopped is true of one of its five producers; it is the spec's message and
 the owner's to reword.
 
-That subagent used 219111 tokens for the task and the fixes.
-
 ## How the whole plan was checked
 
 Run by the orchestrator on the last commit of the branch:
@@ -712,7 +696,7 @@ Run by the orchestrator on the last commit of the branch:
 | the two backends | `cargo test -p popnei-linalg` and the same `--no-default-features` | `149 passed` and `136 passed`, against 42 and 37 when the plan started |
 | the browser target | `cargo check -p popnei-linalg --target wasm32-unknown-unknown --no-default-features` | clean |
 | the pyodide target | the same for `wasm32-unknown-emscripten` | clean |
-| the whole workspace | `cargo test --workspace` | `472 passed`, 2 ignored, in the core crate |
+| the whole workspace | `cargo test --workspace` | `472 passed`, 2 ignored, in the core crate. That is the core crate on this branch; the merged tree below gives 604, because `main` gained 132 tests of other sessions' work while this plan ran |
 | the Python layer | `uv run maturin develop && uv run pytest` | `257 passed` |
 | the TypeScript layer | `npm run build && npm test` in `js/popnei` | `pass 180` |
 | the rest of the coding skill | fmt, clippy with the warnings denied, `cargo wasm-check`, ruff | all clean |
@@ -730,12 +714,13 @@ Accelerate, the framework numpy also computes through, and it takes the
 threads it finds; a number of faer is of faer built natively, which runs
 on the same pool of threads popnei's own loops use.
 
-Two timings quoted here were not measured by this plan. The 1.8 ms against
-5.2 ms of the bit count of the `dists` module, which is why the rustc flag
-below is set at all, is from `docs/specs/pca.md`, where its input and its
-machine are. The fit of the logistic mixed model at 4000 individuals, 5.75
-s against pyNei's 9.959 s, was measured with numpy by the session writing
-`docs/specs/gwas.md` and is in its own report.
+Two timings quoted here were not measured by this plan. The bit count of
+the `dists` module takes 1.8 ms with the rustc flag below and 5.2 ms
+without it, which is why that flag is set at all; both are from
+`docs/specs/pca.md`, where the input and the machine are. The fit of the
+logistic mixed model at 4000 individuals, 5.75 s against pyNei's 9.959
+s, was measured with numpy by the session writing `docs/specs/gwas.md`
+and is in its own report.
 
 ### The merge into `main`, tried and not made
 
@@ -751,11 +736,14 @@ of `product`.
 The merge was made in a throwaway worktree at a detached `main`, built and
 thrown away; `main` itself was not touched and is still `bed9031`. It has
 no conflict, the one call site both sides changed keeps this branch's form,
-and the merged tree passes. Run again on the last commit of the branch, so
-that these are the counts the branch itself gives: `cargo test
---workspace` `604 passed` with 2 ignored in the core crate, which is what
-`main` has grown to from the 472 this plan started against, and `149
-passed` in the linear algebra crate; `cargo test -p popnei-linalg
+and the merged tree passes. Run again on the last commit of the branch,
+so that the linear algebra counts are the branch's own: `cargo test
+--workspace` `604 passed` with 2 ignored in the core crate, and `149
+passed` in the linear algebra crate. The 604 is the merged tree and the
+472 of the table above is this branch alone: `main` gained 132 tests of
+other sessions' work while this plan ran, and the merge brings them in.
+The linear algebra crate is at 149 either way, being this plan's alone;
+`cargo test -p popnei-linalg
 --no-default-features` `136 passed`; `cargo fmt --all --check`, `cargo
 clippy --workspace --all-targets -- -D warnings` and `cargo wasm-check`
 all clean.
@@ -775,7 +763,9 @@ WebAssembly has instructions that work on sixteen bytes at a time, and two
 different switches ask for them: a cargo feature of the library that does
 faer's products, and a flag to the Rust compiler. You decided on 23
 September 2026 that the feature stays on and the flag stays off, because
-on this compiler the flag changed no byte of what popnei builds.
+on this compiler the flag changed no byte of what popnei builds. The
+sentence that records it is in the "Open points" section of
+`docs/specs/linalg.md`.
 
 The flag is on. `.cargo/config.toml` sets it for both WebAssembly targets,
 because the `dists` module counts the bits of a pair of individuals
@@ -801,13 +791,14 @@ you, since it is your decision.
 Recommended: reword it. I have not, because what you decided is yours to
 put in your own words.
 
-### 2. Whether the fourth product replaces a buffer and a loop in the PCA
+### 2. Whether a new product replaces a buffer and a loop in the PCA
 
 A reviewer found that `the_components_of_the_product_of_the_rows` of
-`crates/popnei/src/pca.rs` writes a matrix of the traits by the components
-and then copies it entry by entry into its transpose, and that the fourth
-of the four products this plan added writes that transpose directly. It
-ran both on both backends and got the same numbers.
+`crates/popnei/src/pca.rs` writes a matrix of the traits by the
+components and then copies it entry by entry into its transpose, and
+that one of the two products this plan added, the one that reads both of
+its operands the other way round, writes that transpose directly. It ran
+both on both backends and got the same numbers.
 
 - **Do it**, as a task on a branch of its own. Costs an afternoon with its
   review, and saves an allocation and a copy of the traits times the
@@ -885,7 +876,7 @@ they used, which is what tells the right size of a task for the next plan:
 | task 3.1, the thin QR | 195k |
 | tasks 3.2 and 3.3, the triangular solve and the rank | 231k, and 291k for the fixes |
 | task 4.2, both halves of the triangular solve | 154k, and 219k for the fixes |
-| seventeen reviewers over the four work packages | 92k to 156k each |
+| the reviewers, 17 over the four work packages, covering 21 categories, some of them carrying two or three | 92k to 156k each |
 
 Three things worth carrying into the next plan.
 
