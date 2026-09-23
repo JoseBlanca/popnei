@@ -691,10 +691,18 @@ two say nothing about those variants; the second is what a set that kept
 two linked variants would fail; and the third is what a set that dropped
 a variant it could have kept would fail, since such a variant has two
 dosages and nothing above the threshold kept before it in its window,
-which is the negation of what the third property asks. Removing ten
-variants from the kept set of this dataset by hand made the third
-property name 45 variants that had been dropped for no reason. The counts
-of the table below are a check beside them and not the only one. On
+which is the negation of what the third property asks.
+
+Over the set the reference script itself built, all three are 0 because
+the rule that built it is the rule they state, so the script also works
+each one out over a set that breaks it and stops rather than write a
+result of 0 for any of the three: every variant of the dataset kept,
+which leaves 68 of one dosage; each variant compared with the last kept
+one alone, which is what `_filter_chunk_by_ld` of pyNei does and which
+leaves 707 pairs above the threshold inside a window; and the kept set
+with its first ten variants taken out, which leaves 64 variants dropped
+for no reason. The counts of the table below are a check beside the three
+and not the only one. On
 `tests/reference/ld/ld.vcf.gz` of `docs/specs/ld.md`, 500 variants of 100
 individuals on two chromosomes 250000 bp long with 68 variants of one
 dosage, run on 22 September 2026, all three properties hold at every
