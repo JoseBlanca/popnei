@@ -1711,13 +1711,12 @@ the counts and the f_2 of the groups of one result together; a crate that
 walked its own pairs beside `measures` would put the standard error of
 one pair beside the value of another, and nothing would say so.
 
-Which measures have a value is the core's too. `PopDistMeasure` carries
-the two that are calculated, Hudson's F_ST and f_2, beside the seven
-names, and both packages refuse the other five by asking it for their
-names. Work packages 2 and 3 of `docs/plans/dists-pops.md` then add a
-measure in the core alone: a list kept in each package as well is one
-that can be changed in one and not the other, which gives a user a vector
-of NaN read as a distance.
+Which measures have a value is the core's too. `PopDistMeasure` carries,
+beside the seven names, the measures a pass gives a value for, which is
+all seven, and both packages ask it for them and refuse a name that is
+not among them. A measure written later is then added in the core alone:
+a list kept in each package as well is one that can be changed in one and
+not the other, which gives a user a vector of NaN read as a distance.
 
 ## Speed
 
