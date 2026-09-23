@@ -52,3 +52,12 @@ gemm.workspace = true
 
 [lints]
 workspace = true
+
+# What each operation of this crate costs, called by itself on the shapes
+# popnei calls it at. It is run twice, once for each backend: `cargo bench
+# -p popnei-linalg --bench ops` and the same with `--no-default-features`.
+# `harness = false` because the benchmark has a `main` of its own and no
+# test to run.
+[[bench]]
+name = "ops"
+harness = false
