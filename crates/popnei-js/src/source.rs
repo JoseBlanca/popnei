@@ -49,7 +49,7 @@ use crate::steps::{Steps, chain_of};
 ///
 /// The positions cross as float64, which holds every whole number up to
 /// this one and not the ones above it: 2^53 + 1 would arrive as 2^53.
-const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
+pub(crate) const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
 
 /// A file of variants that was opened, which every pass reads again.
 pub(crate) trait OpenSource {
@@ -538,7 +538,7 @@ impl Blocks {
             ploidy,
             gts: Some(gts),
             chrom: chrom.map(names).transpose()?,
-            pos: pos.map(positions_of).transpose()?,
+            pos: pos.as_deref().map(positions_of).transpose()?,
             id,
             alleles,
             num_alleles_per_var,
@@ -658,9 +658,10 @@ impl BlockColumns {
 /// the two languages would disagree about where a variant is. No genome
 /// comes near that number: the longest chromosome that has been assembled
 /// is 2.5e8 bases.
-fn positions_of(positions: Vec<u64>) -> Result<Vec<f64>, JsPopneiError> {
+pub(crate) fn positions_of(positions: &[u64]) -> Result<Vec<f64>, JsPopneiError> {
     positions
-        .into_iter()
+        .iter()
+        .copied()
         .map(|pos| {
             if pos > LARGEST_POSITION {
                 return Err(JsPopneiError::NotInJavaScript(format!(
@@ -694,4 +695,70 @@ fn alleles_of(column: &AllelesColumn) -> Result<(Vec<String>, Vec<u32>), JsPopne
         })?);
     }
     Ok((texts, counts))
+}
+
+/// `error`, and a pass that gave no variant under what the chain counted:
+/// whether the source held no variant or the filters kept none, and how many
+/// variants each filter was given and kept.
+///
+/// The core says that the reader gave no variant and nothing more, because
+/// it is given a reader and not the chain it is the end of. The counts are
+/// the ones a failed pass would otherwise lose, as "A pass that was not
+/// finished" of `docs/specs/filters.md` says: the calculation read the
+/// source to its end before it found that there was no variant, so every
+/// filter has counted everything it was given.
+///
+/// Every calculation of this crate that makes one pass over a source ends
+/// here when the core refuses it, so that the message of an empty pass is
+/// the same whichever calculation asked for it.
+///
+/// The words are those of the Python function of `docs/specs/dists.md`, so
+/// that a user who reads one message reads the other. Python writes the path
+/// of the file and `: ` before them, which a TypeScript user has not: this
+/// crate is given the bytes of a file and no name for it.
+pub(crate) fn of_the_pass(
+    error: popnei::Error,
+    filtering: &[(&'static str, FilteringStats)],
+) -> JsPopneiError {
+    if !matches!(error, popnei::Error::ReaderGaveNoVariants) {
+        return JsPopneiError::Core(error);
+    }
+    // The chain gives its filters the outermost first, and the one the
+    // source feeds is the last of them: what it was given is what the source
+    // gave. A pass with no filter reads the source itself.
+    let from_the_source = match filtering.last() {
+        Some((_kind, stats)) => stats.vars_processed,
+        None => 0,
+    };
+    // The filters are named in the order of the steps, which is the order a
+    // user wrote them in and the reverse of the chain's. A filter that was
+    // given nothing is named too: what a user is looking for is which of
+    // their steps is the one that emptied the pass, and a filter missing
+    // from the list would read as a step that did not run.
+    let counts: Vec<String> = filtering
+        .iter()
+        .rev()
+        .map(|(kind, stats)| {
+            format!(
+                "the filter `{kind}` was given {vars_processed} variants and kept \
+                 {vars_kept}",
+                vars_processed = stats.vars_processed,
+                vars_kept = stats.vars_kept
+            )
+        })
+        .collect();
+    let counts = counts.join(", ");
+    if from_the_source == 0 {
+        let message = "the source has no variant, and a calculation needs 1 variant \
+                       at least";
+        return JsPopneiError::NoVariant(if counts.is_empty() {
+            message.to_owned()
+        } else {
+            format!("{message}: {counts}")
+        });
+    }
+    JsPopneiError::NoVariant(format!(
+        "the steps kept no variant of the {from_the_source} the source gave, and a \
+         calculation needs 1 variant at least: {counts}"
+    ))
 }

@@ -71,6 +71,12 @@ fn argument_of(criterion: VarFilteringCriterion) -> &'static str {
         VarFilteringCriterion::MaxMissingRate(_) => "maxAllowedMissingRate",
         VarFilteringCriterion::MaxMaf(_) => "maxAllowedMaf",
         VarFilteringCriterion::MaxObsHet(_) => "maxAllowedObsHet",
+        // The filter by linkage disequilibrium, whose step the package does
+        // not add yet: task 3.5 of `docs/plans/ld.md` is the one that gives
+        // a user `filterByLd`, and this is the name its threshold has
+        // there. The arm is here because a criterion the core added has to
+        // be named, and a wildcard would name the next one wrong.
+        VarFilteringCriterion::MaxLdR2 { .. } => "maxAllowedR2",
     }
 }
 

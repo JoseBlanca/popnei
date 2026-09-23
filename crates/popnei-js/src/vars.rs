@@ -24,6 +24,7 @@ use popnei::io::vars::VarsReader;
 
 use crate::dists::{KosmanDistances, kosman_dists_of};
 use crate::errors::JsPopneiError;
+use crate::ld::{R2Matrix, r2_matrix_of};
 use crate::pca::{PcaOfVariants, pca_of_the_variants};
 use crate::source::{Blocks, OpenSource, VarsFile, blocks_of, bytes_of_a_vars_file, cursor_of};
 use crate::steps::Steps;
@@ -133,6 +134,24 @@ impl VarsSource {
         steps: Steps,
     ) -> Result<KosmanDistances, JsPopneiError> {
         kosman_dists_of(self, min_num_vars, steps)
+    }
+
+    /// The r² of every pair of the variants of the file that the steps of
+    /// `steps` keep, with the chromosome and the position of each of them
+    /// and the counts of the pass, over at most `max_num_vars` variants.
+    ///
+    /// # Errors
+    ///
+    /// When the pass gives more than `max_num_vars` variants, when the
+    /// matrix of that many holds more values than wasm counts, when the pass
+    /// gives no variant, when the memory of the tab does not take the
+    /// matrix, and when the file cannot be read.
+    pub fn calc_rogers_huff_r2_matrix(
+        &self,
+        max_num_vars: usize,
+        steps: Steps,
+    ) -> Result<R2Matrix, JsPopneiError> {
+        r2_matrix_of(self, max_num_vars, steps)
     }
 }
 

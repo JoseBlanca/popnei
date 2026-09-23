@@ -1,0 +1,217 @@
+//! What a TypeScript user reaches through `calcRogersHuffR2Matrix`: the r²
+//! of every pair of the variants of a source.
+//!
+//! The calculation is the core's, `popnei::ld::calc_r2_matrix`, and what
+//! this module does is the translation that section 11 of
+//! `docs/architecture.md` leaves to a binding crate. It builds the chain of
+//! readers of the pass from the steps of the `Variants`, keeps that chain
+//! while the calculation runs so that the counts of its filters can be read
+//! when it returns, turns the number of the chromosome of each variant into
+//! the name the reader gave it and its position into the float64 a number
+//! of JavaScript is, and, for a pass that gave no variant, says whether the
+//! source had none or the steps kept none, which only the chain knows.
+//!
+//! [`R2Matrix`] is the result on its way out. It lives in the memory of
+//! wasm, which the garbage collector of JavaScript does not see, so the
+//! package frees it as soon as its three arrays are read, and each of them
+//! leaves it as it is read.
+//!
+//! The matrix is 8 bytes for each pair of the variants of the pass, 200 MB
+//! at the 5000 variants of [`MAX_NUM_VARS_OF_THE_MATRIX`], and this crate
+//! copies it once: the core gives it as a slice it owns and wasm-bindgen
+//! moves a `Vec` out of the result, so the two lie side by side in the
+//! memory of wasm while the copy is made, 400 MB at that cap, and the
+//! core's is dropped as soon as it is made. The copy is asked for with
+//! `try_reserve_exact`, so a tab that has not the room gets an `Error` and
+//! not the trap a failed allocation is in wasm. A `Vec` the core gave up
+//! would save it, which `crates/popnei/src/ld.rs` does not offer today.
+
+use wasm_bindgen::prelude::wasm_bindgen;
+
+use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, R2Matrix as R2MatrixOfTheCore, calc_r2_matrix};
+
+use crate::errors::JsPopneiError;
+use crate::source::{OpenSource, PassCounts, of_the_pass, positions_of};
+use crate::steps::{Steps, chain_of};
+
+/// The r² of every pair of the variants of a pass, with the chromosome and
+/// the position of each of them and the counts of that pass.
+///
+/// The matrix is `num_vars` rows of `num_vars` values, row after row, and a
+/// pair that has no r² is NaN: the core has it so, and NaN is what the
+/// boundary with a language that has no missing value writes. The two cells
+/// of a pair hold the same value and the diagonal of a variant with two
+/// dosages at least is 1.
+///
+/// Each array leaves the memory of wasm the first time it is asked for, and
+/// the call after that gives nothing: the package reads each of them once,
+/// into the object a user holds, and frees this. A copy left behind would
+/// grow the memory of wasm, which never gives memory back, by the whole
+/// matrix a second time.
+#[wasm_bindgen]
+pub struct R2Matrix {
+    num_vars: usize,
+    /// The r² of every pair, and `None` once it was given to JavaScript.
+    r2: Option<Vec<f64>>,
+    /// The name of the chromosome of each variant, and `None` once it was
+    /// given to JavaScript.
+    chroms: Option<Vec<String>>,
+    /// The position of each variant, and `None` once it was given to
+    /// JavaScript.
+    poss: Option<Vec<f64>>,
+    /// The counts of the pass, which the package turns into the `passStats`
+    /// of the result.
+    counts: PassCounts,
+}
+
+#[wasm_bindgen]
+impl R2Matrix {
+    /// How many variants the matrix is of, which is how many the pass gave.
+    #[must_use]
+    pub fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
+    /// The r² of every pair, `num_vars` x `num_vars` row after row, NaN for
+    /// a pair that has none, or `undefined` when they were read already.
+    pub fn r2(&mut self) -> Option<Vec<f64>> {
+        self.r2.take()
+    }
+
+    /// The name of the chromosome of each variant, in the order the pass
+    /// gave them, or `undefined` when they were read already.
+    pub fn chroms(&mut self) -> Option<Vec<String>> {
+        self.chroms.take()
+    }
+
+    /// The position of each variant, 1 based as in a VCF, or `undefined`
+    /// when they were read already.
+    pub fn poss(&mut self) -> Option<Vec<f64>> {
+        self.poss.take()
+    }
+
+    /// How many variants the calculation took, and what each filter of the
+    /// pass was given and kept.
+    #[must_use]
+    pub fn pass_stats(&self) -> PassCounts {
+        self.counts.clone()
+    }
+}
+
+/// How many variants the matrix is taken of before it is refused, when the
+/// caller says nothing.
+#[wasm_bindgen]
+#[must_use]
+pub fn default_max_num_vars() -> usize {
+    MAX_NUM_VARS_OF_THE_MATRIX
+}
+
+/// The r² of every pair of the variants of `source` that the steps of
+/// `steps` keep, with the chromosome and the position of each of them and
+/// the counts of the pass.
+///
+/// The chain of readers of the pass stays here, lent to the core, so that
+/// the counts of its filters can be read when the calculation returns: the
+/// loop over the blocks is the core's, and how many variants it took is
+/// `R2Matrix::num_vars`, since no block of the pass reaches this crate. The
+/// reader is asked for no size of block: the core puts the variants of the
+/// pass into tiles of its own and the matrix is the same, to the bit,
+/// whatever size the blocks had.
+///
+/// # Errors
+///
+/// When the pass gives more than `max_num_vars` variants, with both numbers
+/// and the memory the matrix would have needed; when the matrix of
+/// `max_num_vars` variants holds more values than wasm counts; when the
+/// pass gives no variant, which says whether the source had none or the
+/// steps kept none; when the memory of the tab does not take the matrix;
+/// and when the source cannot be read, a wrong line of a VCF among the
+/// causes.
+pub(crate) fn r2_matrix_of(
+    source: &dyn OpenSource,
+    max_num_vars: usize,
+    steps: Steps,
+) -> Result<R2Matrix, JsPopneiError> {
+    let reader = source.reader(None)?;
+    let mut chain = chain_of(reader, steps.steps())?;
+    let calculated = calc_r2_matrix(&mut chain, max_num_vars);
+    let matrix = match calculated {
+        Ok(matrix) => matrix,
+        Err(error) => return Err(of_the_pass(error, &chain.filtering_stats())),
+    };
+    let num_vars = matrix.num_vars();
+    let counted = u64::try_from(num_vars).map_err(|_| {
+        JsPopneiError::Broken(format!(
+            "the pass gave {num_vars} variants, more than the count of a pass holds"
+        ))
+    })?;
+    let counts = PassCounts::of(counted, &chain.filtering_stats());
+    let chroms = the_names_of_the_chromosomes(&matrix)?;
+    let poss = positions_of(matrix.poss())?;
+    let r2 = the_r2_that_crosses(matrix.r2())?;
+    // The core's matrix is dropped as soon as its values were copied, and
+    // not at the end of the call: what a tab holds while the copy that
+    // crosses is made is the two of them, and what it holds afterwards is
+    // the one this returns.
+    drop(matrix);
+    Ok(R2Matrix {
+        num_vars,
+        r2: Some(r2),
+        chroms: Some(chroms),
+        poss: Some(poss),
+        counts,
+    })
+}
+
+/// The name of the chromosome of each variant of `matrix`, read through the
+/// table of names the core cloned from the reader of the pass.
+///
+/// # Errors
+///
+/// When a number of a variant is not in that table, which cannot happen
+/// unless this crate or the core has a defect.
+fn the_names_of_the_chromosomes(matrix: &R2MatrixOfTheCore) -> Result<Vec<String>, JsPopneiError> {
+    let table = matrix.chrom_table();
+    matrix
+        .chroms()
+        .iter()
+        .map(|number| {
+            table.name(*number).map(str::to_owned).ok_or_else(|| {
+                JsPopneiError::Broken(format!(
+                    "the chromosome number {number} of the matrix of r² is not in the \
+                     table of the reader that gave it"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// The copy of the matrix that crosses into JavaScript.
+///
+/// The core owns its values and lends them, so this is the one copy the
+/// crossing costs on the side of wasm: the code wasm-bindgen generates
+/// copies this `Vec` into a `Float64Array` of the JavaScript heap and frees
+/// it afterwards. It is asked for with `try_reserve_exact` and not taken, as
+/// the matrix itself is in the core, because an allocation that fails in
+/// wasm aborts, which is a trap that leaves the module unusable where
+/// section 11 of `docs/architecture.md` asks for an `Error`.
+///
+/// # Errors
+///
+/// When the memory of the tab does not take the values a second time.
+fn the_r2_that_crosses(values: &[f64]) -> Result<Vec<f64>, JsPopneiError> {
+    let mut crossing: Vec<f64> = Vec::new();
+    crossing.try_reserve_exact(values.len()).map_err(|_| {
+        JsPopneiError::NoMemory(format!(
+            "the memory of this tab does not take the {num_values} values of the \
+             matrix of r², 8 bytes each: a page holds at most 4 GB of everything that \
+             is open in it at a time, and the matrix is held twice while it crosses \
+             into JavaScript. Ask for the matrix of fewer variants, with a filter on \
+             the variants, or calculate it outside the browser, with popnei in Python \
+             among the ways.",
+            num_values = values.len()
+        ))
+    })?;
+    crossing.extend_from_slice(values);
+    Ok(crossing)
+}

@@ -58,6 +58,27 @@ export async function referenceDists(name: string): Promise<Uint8Array> {
   return new Uint8Array(await readFile(new URL(name, REFERENCE_DISTS_DIR)));
 }
 
+const REFERENCE_LD_DIR = new URL(
+  "../../../tests/reference/ld/",
+  import.meta.url,
+);
+
+/**
+ * The bytes of the reference file `name` of the linkage disequilibrium,
+ * `ld.vcf.gz` or `example.vcf`.
+ *
+ * They are the files of "How it is verified" of `docs/specs/ld.md`, in
+ * `tests/reference/ld/`, which `tests/reference/ld/make_reference.py`
+ * writes: two chromosomes of 250 biallelic variants each, 1000 bp apart,
+ * of 100 diploid individuals with 3 in 100 genotypes missing, and the
+ * worked example of 5 variants of 6 individuals. plink2 v2.0.0-a.7.7 was
+ * run on both and its matrices are stored beside them. The Python tests
+ * read the same files.
+ */
+export async function referenceLd(name: string): Promise<Uint8Array> {
+  return new Uint8Array(await readFile(new URL(name, REFERENCE_LD_DIR)));
+}
+
 /**
  * The bytes of a VCF of three diploid individuals with `dataLines` as its
  * data lines, for a case that no reference file has.

@@ -17,6 +17,8 @@ export { version } from "./core.js";
 export { calcPairwiseKosmanDists, Distances } from "./dists.js";
 export type { CalcPairwiseKosmanDistsOptions } from "./dists.js";
 export type { FilteringStats, Step } from "./filters.js";
+export { calcRogersHuffR2Matrix } from "./ld.js";
+export type { CalcRogersHuffR2MatrixOptions, R2Matrix } from "./ld.js";
 export { openVars, writeVars } from "./io_vars.js";
 export type { VarsWritten, WriteVarsOptions } from "./io_vars.js";
 export { openVcf } from "./io_vcf.js";
