@@ -640,3 +640,57 @@ name of a measure that has none refuses nothing: the list in the core, a
 function in each binding crate, and two messages that are now unreachable
 and untested. Task 3.1 kept it rather than drop public API from three
 crates on its own judgement. The options are at the end of this report.
+
+### Task 3.2, the two measures through both packages, and the check of the whole plan
+
+One commit, `bbada67`. 124 630 tokens. Neither layer needed new code, for
+the same reason task 2.2 did not: both packages take from the core the
+list of which measures have a value, so the chord distance and D_A
+appeared in them the moment task 3.1 landed. What the commit adds is the
+tests and three doc comments that still said the two measures were not
+calculated yet.
+
+**The check of the whole plan**, which no single work package covers,
+passes: `measures` left out gives all seven on both panels, asking for one
+measure gives the same double as asking for all seven, and at a
+`min_num_individuals` of 47 on the biallelic panel every one of the seven
+numbers of the two pairs of p0 moves while every one of p1-p2 is
+unchanged, which is what shows the seven are over the same variants and
+the pair has one count of them. It was seen to fail when the single
+measure call was made at another threshold.
+
+D_A is asserted against the square of adegenet's literal and not against
+popnei's own chord distance, and separately the round trip between the two
+is checked, which is 2.2e-16 at the furthest. All four of the new
+assertions were seen to fail: multiplying the chord by the square root of
+two in the core makes them report 0.2549 where 0.18027 is expected, which
+is the mistake the plan warned about.
+
+## Work package 3 is done
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, the core | `cargo test -p popnei --lib pop_dists::` | `56 passed; 0 failed`, against 53 |
+| 2, Python | `uv run pytest tests/test_pop_dists.py` | `36 passed`, against 33 |
+| 2, TypeScript | `npm test` in `js/popnei` | `tests 235, pass 235, fail 0` |
+
+And every check of the `coding` skill on `bbada67`: `cargo fmt --all
+--check` clean, clippy `Finished` with no warning, `cargo test
+--workspace` `577 passed; 0 failed; 2 ignored` and `35 passed`, `cargo
+wasm-check` `Finished`, ruff `27 files already formatted` and `All checks
+passed!`, `uv run pytest` `350 passed`.
+
+## The review of work packages 2 and 3
+
+They are reviewed together, which the `code-review` skill allows when two
+work packages are one piece of code. Five reviewers: `spec`, `tests`,
+`numbers`, `errors`, and one taking `api` with the binding layer, which is
+small here because neither binding crate needed new code.
+
+`architecture` was not sent, and this is the reason: that category applies
+when a change touches the readers, the blocks, the threads, the linear
+algebra, a `cfg` or a dependency, and these two work packages touch none
+of them. They add five ratios inside one function, over sums work package
+1 already accumulates. The `architecture` reviewer of work package 1 went
+over the pass, the accumulator, the two builds and the memory, which is
+where those questions live, and nothing here changes them.

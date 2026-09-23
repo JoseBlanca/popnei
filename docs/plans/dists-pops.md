@@ -298,7 +298,7 @@ adds no count and no sum either.
   `crates/popnei/src/pop_dists.rs`, with the cargo tests of deliverable 1.
   From "What it gives" of the chord item. Serves deliverable 1. Needs work
   package 1.
-- [ ] 3.2 The two measures through both binding crates and both packages,
+- [x] 3.2 The two measures through both binding crates and both packages,
   with the tests of deliverable 2. Serves deliverable 2. Needs 3.1.
 
 ### What could go wrong
