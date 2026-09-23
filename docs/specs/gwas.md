@@ -45,7 +45,7 @@ gives them:
 | **continuous** | `lm`, a linear model | `lmm`, a linear mixed model |
 | **binomial** | `glm`, a logistic regression | `glmm`, a logistic mixed model |
 
-Each is fitted once **without any variant in it**, which is the **null
+Each is fitted once without any variant in it, which is the **null
 model**, and then every variant is tested against what that model left
 unexplained. Fitting the null once and reusing it for every variant is what
 makes a study of a million variants possible; holding the variance
@@ -219,7 +219,7 @@ Four programs, all run on 23 September 2026 by
 VCFs: plink2 v2.0.0-a.7.7, and R 4.6.1 with GMMAT 1.5.0 and rrBLUP 4.6.3.
 pyNei ran the same four on its own vars files of the same genotypes when its
 reference was made, and every number this script produced matches what pyNei
-stored **to the bit**: the largest difference over the nine files, 49
+stored to the bit: the largest difference over the nine files, 49
 numeric columns of 1200 variants each, is 0. So the numbers do not depend on
 which library read the genotypes.
 

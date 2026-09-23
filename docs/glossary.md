@@ -150,6 +150,44 @@ individuals of a pair, which is what that pair's entry of the kinship is
 divided by. With no missing genotype it is the same number for every pair.
 `num_vars_per_pair` in pyNei. `docs/specs/kinship.md`.
 
+**trait.** What a user measured on each individual and wants the variants
+tested against: **continuous**, a measurement, or **binomial**, 0 or 1.
+`trait` in the arguments and `TraitType` in the types. The value itself,
+one number per individual, is the **phenotype**, as in pyNei, which is the
+argument a user passes. `docs/specs/gwas.md`.
+
+**covariate.** A number per individual whose effect on the trait has to be
+taken out but is not what is being tested, such as the sex or the field a
+plant grew in. `covariates` in the arguments, a frame indexed by
+individual. Not used: fixed effect, which is R's word and which in a mixed
+model also covers the variant.
+
+**design.** The matrix of one row per tested individual and one column per
+number a model fits: a column of ones for the intercept and one for each
+covariate. `design` in the core crate, and `d` in the formulas.
+
+**null model.** The model of the trait fitted once with the covariates and
+the kinship in it and no variant, which every variant is then tested
+against. `NullModel` in the results. `docs/specs/gwas.md`.
+
+**mixed model.** A model with the kinship in it as the covariance of a
+random effect, so that related individuals are expected to resemble each
+other before any variant is looked at. The two of popnei are the linear
+mixed model, `lmm`, and the logistic one, `glmm`, two of the four values of
+`GWASModel`.
+
+**Wald test.** The test of a variant that fits the model again with the
+variant in it and asks how many of its own standard errors the effect is
+away from 0. `TestType.WALD`.
+
+**score test.** The test of a variant that never fits the model with the
+variant in it: it asks how steeply the fit would improve if the effect were
+let off 0, measured at the null model. `TestType.SCORE`.
+
+**heritability.** The variance of the kinship effect over the sum of it and
+the residual variance: the share of the trait's variance the kinship
+explains. A field of `NullModel`, and only the linear mixed model has one.
+
 ## How the data moves
 
 **block.** Consecutive variants held as contiguous arrays, the `Block`
