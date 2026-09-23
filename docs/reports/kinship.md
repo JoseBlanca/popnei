@@ -291,16 +291,33 @@ which is ordinary in sequence data of a small panel, the diagonal reaches
 `make_reference.py` now writes `<name>.plink2.rel.bin.gz` as well, and both
 the cargo and the pytest tests compare against those within 1e-12 relative.
 The eleven text literals stay for the spec's table, which is what a reader
-checks by eye. The margin is narrower than the absolute figures suggest: as
-a ratio the worst entry is 3.31e-13 on `panel_called` and 1.89e-13 on
-`panel`, at the smallest entries, so 1e-12 is two to three times the worst
-case.
+checks by eye.
+
+The first bound written was 1e-12 of each entry, and it was the wrong shape,
+not merely the wrong number. An entry of the matrix is a sum of products
+that cancel, so it can come out as near 0 as the data makes it while the
+rounding of its sum stays where it was. Asking each entry to be within a
+share of *itself* therefore asks the smallest entries for an accuracy no
+arithmetic has. It broke on the backend nobody was testing: the faer run
+failed at an entry of 1.29e-05 whose difference from plink2 was 1.9e-17,
+smaller in absolute terms than the differences at entries a hundred times
+larger, which passed. Each entry is now asked to be within 1e-13 of the
+**largest** entry of the matrix. Measured over all 40000 entries of each
+panel, the worst difference as a share of that largest entry, 1.23 on both
+panels, is 3.6e-16 and 4.5e-16 with Accelerate and 3.3e-15 and 2.3e-15 with
+faer, so the bound is thirty times the worst of the four and ten times
+tighter at the largest entry than the rule it replaced.
+
+faer is seven times further from plink2 than Accelerate on the same data.
+A sum of 1200 products can carry 2.7e-13 of the scale, so both are well
+inside what the order and the blocking of the sums allow, and the spec
+records it as a range rather than a defect.
 
 The agreement with pyNei is bit for bit, a largest difference of 0.0 on both
 panels, but that is an artifact of both libraries calling the same `dsyrk`
 on a single chunk of 1200 variants. At 30000 variants they differ by
-1.6e-14. The 1e-12 relative rule is the one to keep; the bit equality is not
-a property to lean on.
+1.6e-14, and on faer they would differ further. The bit equality is not a
+property to lean on.
 
 ### What the review found
 
