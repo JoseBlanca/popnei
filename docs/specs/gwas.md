@@ -118,6 +118,13 @@ It mirrors `calc_gwas` of `pynei/gwas.py`. The differences from pyNei, which
   `docs/glossary.md` gives.
 - `num_threads` is not an argument, as no calculation of popnei has one.
 - `pass_stats` is new, as it is for every consumer of a `Variants`.
+- `pos` of `stats` is unsigned, as `Block.pos` and `R2Matrix.poss` are,
+  where pyNei's is signed. Subtracting from it wraps instead of going
+  negative: on the worked example `stats["pos"] - 2000` gives
+  18446744073709550616 for the first variant where pyNei gives -1000,
+  measured on 23 September 2026. A position is never negative and the
+  unsigned column is popnei's convention, so it stays; a user who takes
+  differences between positions casts first.
 - `chrom`, `pos` and `id` are columns of `stats` whenever the source has
   them. pyNei leaves each out when the chunk has no such column, which its
   own test asserts; popnei asks the reader for them and gives them.
@@ -1286,7 +1293,7 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides these two, and until then the implementer follows the
+The owner decides these three, and until then the implementer follows the
 "meanwhile" of each.
 
 **Open 1: a variant that separates the cases from the controls.** Its
@@ -1328,6 +1335,29 @@ it in the score test of the linear mixed model. Meanwhile the implementer
 refuses at `den <= 0` and gives the three NaNs; if the owner chooses the
 other, the change is one comparison and no literal of this spec moves, since
 no variant of either panel reaches it.
+
+**Open 3: a phenotype or a covariate that is not a number.** Python coerces
+each value with `float`, as pyNei does, so the strings `['2', '3', '5']` and
+the booleans `True` and `False` are accepted; TypeScript requires
+`typeof value === "number"` and refuses them. On the worked example the
+first gives `beta` 1.5 and the second raises. There is no reading where both
+layers are right, and `docs/objectives.md` asks the TypeScript API to carry
+the Python one. The options are to coerce in both, which is pyNei's
+behaviour and which a phenotype read from a CSV arrives needing often
+enough that refusing it would be a divergence users feel; or to refuse in
+both, which is what the Python docstring already says a trait is and which
+makes the layers agree by making Python stricter than its oracle.
+Recommendation: coerce in both, with one condition. The two coercions are
+not symmetric and the condition is what makes them so: `float` raises on
+`"abc"` while JavaScript's `Number` gives NaN, and a NaN phenotype means an
+individual with no phenotype, which is dropped. So a TypeScript that merely
+coerced would turn a mistyped value into a silently missing individual where
+Python raises. TypeScript coerces and then refuses a value that came from a
+non-empty string and arrived as NaN, which is the same refusal Python's
+`float` makes. Meanwhile the implementer leaves Python coercing and
+TypeScript refusing, and writes down in the report which tests would change
+either way; no literal of this spec moves, since every phenotype of the
+reference data is a number already.
 
 ## Not in this spec
 
