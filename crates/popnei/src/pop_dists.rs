@@ -3833,13 +3833,24 @@ mod tests {
     }
 
     /// Every number of the biallelic panel a user sees, in the order they
-    /// are asserted in: the F_ST and the f_2 of the three pairs, the
+    /// are asserted in: each of the seven measures of the three pairs, the
     /// standard error of each, the f_2 of each pair within each group, and
     /// the variants that counted for each pair.
+    ///
+    /// All seven are read and not F_ST and f_2 alone. Those two are built
+    /// from the sums of H_b and of H_w, so the three sums the other five
+    /// read, the square roots of the products and the corrected H_S and
+    /// H_T, went uncompared across the sizes of the blocks and the numbers
+    /// of threads while the loop held the two: adding 1e-7 to each of the
+    /// three at every chunk a block was cut into, which moves the chord
+    /// distance of the first pair from 0.1802670352621946 to
+    /// 0.18026703664902619 between blocks of 10000 variants and blocks of
+    /// 100, left both tests below green then and fails the first of them
+    /// now.
     fn every_number_of(sums: &PopDistSums) -> Vec<f64> {
         let pairs = [(0, 1), (0, 2), (1, 2)];
         let mut numbers = Vec::new();
-        for measure in [PopDistMeasure::Fst, PopDistMeasure::F2] {
+        for measure in PopDistMeasure::THAT_HAVE_A_VALUE {
             numbers.extend(
                 sums.measures(measure)
                     .map(|value| value.unwrap_or(f64::NAN)),
@@ -3930,7 +3941,8 @@ mod tests {
     /// divisions happen once, so blocks of 100 variants and blocks of
     /// 10000, which hold the whole panel in one, agree within 1e-12
     /// relative, which is what "How it is verified" of
-    /// `docs/specs/dists.md` asks of every measure. What differs is the
+    /// `docs/specs/dists.md` asks of every measure, all seven of which are
+    /// compared here with their standard errors. What differs is the
     /// order the rows of a group are added in, which the boundaries of the
     /// blocks move.
     #[test]
@@ -3938,8 +3950,8 @@ mod tests {
         let of_a_hundred = every_number_of_the_panel(100);
         let of_ten_thousand = every_number_of_the_panel(10_000);
 
-        assert_eq!(of_a_hundred.len(), 87);
-        assert_eq!(of_ten_thousand.len(), 87);
+        assert_eq!(of_a_hundred.len(), 117);
+        assert_eq!(of_ten_thousand.len(), 117);
         for (at, (of_a_hundred, of_ten_thousand)) in
             of_a_hundred.iter().zip(&of_ten_thousand).enumerate()
         {
@@ -3986,7 +3998,7 @@ mod tests {
 
         let groups_of_50_000 = JackknifeGroups::OfBasePairs(50_000);
         let on_one = in_a_pool(1, groups_of_50_000, 100, 24);
-        assert_eq!(on_one.len(), 87);
+        assert_eq!(on_one.len(), 117);
         assert_they_are_the_same_bits(
             &on_one,
             &in_a_pool(4, groups_of_50_000, 100, 24),
@@ -3994,7 +4006,7 @@ mod tests {
         );
 
         let on_one = in_a_pool(1, JackknifeGroups::None, 10_000, 0);
-        assert_eq!(on_one.len(), 15);
+        assert_eq!(on_one.len(), 45);
         assert_they_are_the_same_bits(
             &on_one,
             &in_a_pool(4, JackknifeGroups::None, 10_000, 0),
