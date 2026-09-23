@@ -398,15 +398,15 @@ Work package 3, and the plan `kinship` for the matrix.
 
 ### Its tasks
 
-- [ ] 4.1 The REML search and the null fit: the eigendecomposition, the
+- [x] 4.1 The REML search and the null fit: the eigendecomposition, the
       clamp at 0, the 101 points and the 60 golden section steps, the
       criterion and the two variances, with the cargo test of `y' p y`.
       Built from "What it gives" of "The linear mixed model". Serves
       deliverables 1 and 2. Needs 3.1.
-- [ ] 4.2 The projection matrix and the two tests, with the six literals of
+- [x] 4.2 The projection matrix and the two tests, with the six literals of
       each as cargo tests. Built from the same section. Serves deliverables
       3 and 4. Needs 4.1.
-- [ ] 4.3 The `kinship` and `test` arguments through both bindings and both
+- [x] 4.3 The `kinship` and `test` arguments through both bindings and both
       packages, with the pytest tests against rrBLUP, GMMAT and pyNei, the
       causal variants, and the node test. Built from "Its Python function,
       and its TypeScript one" of "What every model shares". Serves
