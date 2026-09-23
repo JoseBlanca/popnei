@@ -332,11 +332,18 @@ explain, so that fitting the covariates does not drag the variances down.
 Only their ratio matters to the search: with `delta` the residual variance
 over the genetic one, the kinship is eigendecomposed once, `k = e diag(l)
 e'`, the trait and the design are turned by `e'`, and then every value of
-`delta` costs one number per individual instead of a matrix. pyNei searches
-`log(delta)` over 101 points evenly spaced from -10 to 10 and then runs 60
-steps of a golden section search in the bracket around the best of them,
-which is `_reml_delta` of `pynei/gwas.py`; popnei reproduces that search
-point for point, because the numbers it gives are GMMAT's.
+`delta` costs one number per individual instead of a matrix. pyNei searches `log(delta)` over 101 points evenly spaced from -10 to 10,
+takes the point with the smallest value and brackets it with its two
+neighbours, and then runs 60 steps of a **golden section search**, which
+shrinks a bracket that holds a minimum by a constant ratio each step and
+costs one evaluation of the function per step. popnei reproduces that search
+step for step, because the numbers it gives are GMMAT's, and reproducing it
+needs all of: 101 points, the two neighbours of the best clamped at the ends
+of the grid, the ratio `(sqrt(5) - 1) / 2`, the two interior points taken as
+`high - ratio * (high - low)` and `low + ratio * (high - low)`, the bracket
+moved to whichever of the two has the smaller value, 60 steps whatever
+happens, and `exp((low + high) / 2)` at the end. It is `_reml_delta` of
+`pynei/gwas.py`.
 
 The eigenvalues of the kinship are clamped at 0 before use. A kinship of
 genotypes with nothing missing has none below 0 but for rounding, -4.8e-15
@@ -514,9 +521,12 @@ trait**, each individual carrying a weight that says how much its 0 or 1
 tells us at the fit so far, and a weighted linear mixed model is fitted to
 that working trait; the working trait and the weights are then made again
 from the new fit, and so on. One pass of that is a **linearization**. `tau`
-then takes one Newton step from the restricted maximum likelihood, using the
-**average information** in place of the second derivative, and the whole
-thing starts again. It is the model GMMAT fits, and on the panel it takes 8
+then takes one Newton step from the restricted maximum likelihood. A Newton
+step needs the second derivative of the likelihood, and the **average
+information** is the average of the observed one and the one expected under
+the model: the terms that cost the most to compute appear in the two with
+opposite signs and cancel, so the average costs less than either, which is
+why mixed model programs use it. The whole thing then starts again. It is the model GMMAT fits, and on the panel it takes 8
 steps on `tau` and 22 linearizations.
 
 Taking the step on `tau` after every single linearization instead makes the
@@ -568,9 +578,10 @@ The owner asked for a cheaper fit on 23 September 2026 before this spec was
 written. The options not taken, all measured in that report: an
 eigendecomposition of the weighted kinship per linearization, which would
 make the search over `tau` cost one number per individual but costs 3.33 s
-at 4000 individuals against an inverse's 0.376; a conjugate gradient solve,
-which wins for a sparse kinship and loses about twofold for popnei's dense
-one; and a stochastic estimate of the trace, which could give no more than a
+at 4000 individuals against an inverse's 0.376; a conjugate gradient solve, which
+solves a system by repeated products of the matrix with vectors and never
+factors it, and which wins for a sparse kinship and loses about twofold for
+popnei's dense one; and a stochastic estimate of the trace, which could give no more than a
 further 1.7 because the 25 Cholesky factorizations are 3.1 s of the 5.3 and
 which would stop the fit being the same calculation twice. What is not known
 is where the ratio settles above 4000 individuals, where nothing was run,
@@ -682,7 +693,9 @@ with no reward.
 
 The regularized incomplete beta is not in `libm` and is written here, as
 pyNei writes it: the continued fraction of Numerical Recipes evaluated by
-Lentz's method, with the front factor in logarithms through `lgamma`, which
+Lentz's method, which builds a continued fraction from its front rather than
+from its far end, so it can stop as soon as a term no longer changes the
+value instead of needing its depth fixed in advance, with the front factor in logarithms through `lgamma`, which
 `libm` does have, and the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used
 whenever `x` is above `(a + 1) / (a + b + 2)`, where the fraction converges
 slowly. `x` at or below 0 gives 0 and at or above 1 gives 1.
