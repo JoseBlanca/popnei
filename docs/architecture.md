@@ -273,7 +273,8 @@ inputs where they overlap.
 | `filters` | readers over readers, which compact the blocks in place: missing data, maf, observed het, individuals; the LD filter | `filter_by_missing_data`, `filter_by_maf`, `filter_by_obs_het`, `filter_samples`, `filter_by_ld_and_maf`, `gather_filtering_stats` |
 | `block` | `Block`, the `BlockReader` trait, `AllelesColumn`, `reblock` | the chunks and `_resize_chunks` |
 | `stats` | allele counts and frequencies per pop, per variant distributions with histograms, per individual stats, expected het, the polymorphism ratio | `calc_per_var_distribs`, `calc_per_sample_stats`, `diversity` |
-| `dists` | Kosman between individuals on blocks, Jost's D between pops | `calc_pairwise_kosman_dists`, `calc_jost_dest_pop_dists` |
+| `dists` | the Kosman distance between individuals on blocks, and `Distances`, which every distance calculation of popnei gives | `calc_pairwise_kosman_dists` |
+| `pop_dists` | the seven measures of how far apart two populations are out of one pass over the variants, Hudson's F_ST, f_2, the chord distance, Nei's D_A, Jost's D, Nei's G_ST and the standardized G''_ST, each with the standard error of the block jackknife over the resampling groups the variants were cut into | `calc_jost_dest_pop_dists` |
 | the linalg crate, which the core calls | matrix product, symmetric eigendecomposition, Cholesky and solve, inverse, least squares; backends: BLAS and LAPACK natively, faer in wasm and natively with the cargo feature `blas` off | numpy.linalg |
 | `pca` | PCA of a table of numbers, individuals by traits; PCA of the 012 matrix, PCoA of a distance matrix | `do_pca`, `do_pca_from_variants`, `do_pcoa_from_variants` |
 | `ld` | Rogers Huff r2 between blocks of variants, by distance | `calc_rogers_huff_r2_matrix`, `iter_rogers_huff_r2`, `calc_ld_and_dist_per_pop` |
@@ -281,9 +282,9 @@ inputs where they overlap.
 | `gwas` | the four null models, the tests, the distributions erfc and betainc | `calc_gwas` |
 
 The order of the work is the order of the rows: `variant`, `io::vcf`,
-`io::vars`, `filters` and `block` are the walking skeleton, `stats` and
-`dists` come next because they are what most users run, then the linalg
-crate and what sits on it.
+`io::vars`, `filters` and `block` are the walking skeleton, `stats`,
+`dists` and `pop_dists` come next because they are what most users run,
+then the linalg crate and what sits on it.
 
 ## 10. The walking skeleton
 
