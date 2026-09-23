@@ -724,6 +724,26 @@ def test_a_distances_is_built_with_standard_errors_of_its_own() -> None:
     assert "standard_errors" in str(refusal.value)
 
 
+def test_standard_errors_that_are_not_one_row_of_numbers_are_refused() -> None:
+    """A column of standard errors beside a vector of distances.
+
+    The values are as many as the pairs and their shape is not the one a
+    result holds, so the message about how many there are, which is the
+    other thing that can be wrong with them, would say that three values
+    were given for three distances and ask for one for each of them.
+    `dist_vector` has a message of its own for the same mistake.
+    """
+    with pytest.raises(ValueError) as refusal:
+        Distances(
+            dist_vector=[0.1, 0.2, 0.3],
+            standard_errors=[[1.0], [2.0], [3.0]],
+        )
+
+    said = str(refusal.value)
+    assert "standard_errors" in said
+    assert "2 dimensions" in said
+
+
 def test_a_variants_is_what_the_calculation_takes() -> None:
     """The path of the VCF in the place of the `Variants` is the mistake that
     is easiest to make, and what it gave was the `AttributeError` of an

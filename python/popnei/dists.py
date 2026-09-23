@@ -374,16 +374,19 @@ def _min_num_vars_of(min_num_snps: int | None) -> int:
     return wanted
 
 
-def _errors_of(standard_errors, num_pairs: int) -> numpy.ndarray | None:
+def _errors_of(
+    standard_errors: numpy.ndarray | Iterable[float] | None, num_pairs: int
+) -> numpy.ndarray | None:
     """The standard errors of a ``Distances`` as a read only array of
     float64, one for each of its `num_pairs` pairs, and ``None`` for the
     result of a calculation that gave none.
 
     # Raises
 
-    ``ValueError`` when they hold what is no number and when they are not
-    one for each pair, which would leave a standard error beside the
-    distance of another pair in the square matrix.
+    ``ValueError`` when they hold what is no number, when they are not one
+    row of numbers, and when they are not one for each pair, which would
+    leave a standard error beside the distance of another pair in the square
+    matrix.
     """
     if standard_errors is None:
         return None
@@ -395,7 +398,13 @@ def _errors_of(standard_errors, num_pairs: int) -> numpy.ndarray | None:
             f"`{type(standard_errors).__name__}` and holds what is no number, "
             f"and the standard error of a distance is one: {problem}"
         ) from None
-    if errors.ndim != 1 or errors.shape[0] != num_pairs:
+    if errors.ndim != 1:
+        raise ValueError(
+            f"`standard_errors` has {errors.ndim} dimensions, and the standard "
+            f"errors of the pairs are one row of numbers: give one for each "
+            f"pair, in the order of the distances of `dist_vector`"
+        )
+    if errors.shape[0] != num_pairs:
         raise ValueError(
             f"`standard_errors` holds {errors.size} values and "
             f"`dist_vector` holds {num_pairs} distances, and the standard "
