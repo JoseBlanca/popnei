@@ -153,9 +153,15 @@ rows than columns.
 k and B of c x k, both with one row for each of the r and the c things
 and one column for each of the k things they are described by, `C = AB'`,
 r x c, whose entry i, j is the sum over the k columns of row i of A times
-row j of B. It is the same `dgemm` and the same `matmul`, told that the
-second operand is to be read the other way round, which both libraries do
-inside the routine and neither pays a copy for. Without it a caller whose
+row j of B. It is not a function of its own: it is the same product as
+above, given a second operand that says it holds one row for each column
+of the result. The routine is the same `dgemm` and the same `matmul`,
+told that the second operand is to be read the other way round, which
+both libraries do inside the routine and neither pays a copy for,
+measured at 1.174 ms against 1.179 ms for 512 x 1000 on Accelerate on
+one thread and within 0.3 % on faer, on 23 September 2026.
+
+Without it a caller whose
 two matrices are both laid out with one row for each thing has to write
 the transpose of one of them into a buffer of its own, which is a matrix
 operation in a crate that is not this one and a copy of the whole
@@ -270,7 +276,8 @@ nor the self product of the A above. C holds values other than 0 before
 each call, which an operation that added to C instead of overwriting it
 would leave in the result.
 
-At `product_by_transpose`, the same A of 2 x 3 and three cases, exactly.
+At `product` with its second operand read by the columns of the result,
+the same A of 2 x 3 and three cases, exactly.
 Times the transpose of B of 2 x 3 with rows (1, 1, 0) and (0, 2, 1) it
 is the 2 x 2 matrix with rows (3, 4) and (1, 5), which is not symmetric,
 so a backend that wrote the transpose of C would fail it. Times the
@@ -338,28 +345,37 @@ x `cols`. `rows` may be 0.
 pub fn add_self_product_lower(a: &[f64], rows: usize, cols: usize, g: &mut [f64]) -> Result<()>;
 ```
 
-`c = a b`; `a` is `rows` x `inner`, `b` is `inner` x `cols`, and `c`,
-which is overwritten, `rows` x `cols`. `rows` may be 0, and then nothing
-is written, as an `a` of no rows adds nothing to `g` above: the second
-pass of the PCA multiplies the block it has standardized by the
-eigenvectors, and a block whose rows all had no variance leaves an `a`
-of no rows here too. `inner` and `cols` are 1 at least.
+The two products are one function, and the second operand says which way
+round it is read. `a` is `rows` x `inner` and `c`, which is overwritten,
+is `rows` x `cols`. `rows` may be 0, and then nothing is written, as an
+`a` of no rows adds nothing to `g` above: the second pass of the PCA
+multiplies the block it has standardized by the eigenvectors, and a
+block whose rows all had no variance leaves an `a` of no rows here too.
+`inner` and `cols` are 1 at least.
+
+The two cases carry the same two values and differ in what the rows of
+the second matrix are, so a caller cannot reach for the wrong one
+without writing the name of the wrong one. They are one function and not
+two because two functions of the same arguments would take each other's
+call and give a different matrix with no error: the check of a length is
+`rows` times `cols` either way.
+
+Giving the same slice for `a` and for the second operand read by the
+columns of the result, with `rows` equal to `cols`, is the product of a
+matrix with its own transpose, which is what a set of variants against
+itself asks for.
 
 ```rust
-pub fn product(a: &[f64], rows: usize, inner: usize, b: &[f64], cols: usize, c: &mut [f64]) -> Result<()>;
-```
+pub enum TheSecondOperand<'a> {
+    /// `inner` x `cols`, one row for each of the values the product
+    /// sums over, which gives `c = a b`.
+    ByTheValuesSummedOver { values: &'a [f64], cols: usize },
+    /// `cols` x `inner`, one row for each column of the result, which
+    /// gives `c = a b'`.
+    ByTheColumnsOfTheResult { values: &'a [f64], cols: usize },
+}
 
-`c = a b'`; `a` is `rows` x `inner`, `b` is `cols` x `inner`, and `c`,
-which is overwritten, `rows` x `cols`. The two operands hold their
-`inner` values the same way round, one row for each of the `rows` and
-the `cols` things, which is what a caller has when both matrices are
-laid out by the thing they describe. `rows` may be 0 as above, and
-`inner` and `cols` are 1 at least. Giving the same slice for `a` and for
-`b` with `rows` equal to `cols` is the product of a matrix with its own
-transpose, which is what a set of variants against itself asks for.
-
-```rust
-pub fn product_by_transpose(a: &[f64], rows: usize, inner: usize, b: &[f64], cols: usize, c: &mut [f64]) -> Result<()>;
+pub fn product(a: &[f64], rows: usize, inner: usize, b: TheSecondOperand<'_>, c: &mut [f64]) -> Result<()>;
 ```
 
 The eigendecomposition of the symmetric `g` of `n` x `n`, whose lower
