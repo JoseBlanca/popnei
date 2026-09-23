@@ -105,8 +105,12 @@ plan, and this plan chooses one helper.
    `the_standardized_rows`, which drives a whole block of variants for the
    PCA on the threads it has, stays in `pca.rs`.
 2. The PCA computes what it computed. The check: `cargo test -p popnei --lib
-   pca -- --list` still prints `47 tests` and `cargo test --workspace`
-   passes with 604 in the core crate, with no assertion of `pca.rs` changed;
+   pca -- --list` still prints `47 tests`, and the names it prints are the
+   ones it printed before, so that a test cannot be dropped and replaced by
+   a new one under the same count; `cargo test --workspace` passes with no
+   fewer than the 604 the core crate had, the ones this work package adds
+   being the difference; no assertion of `pca.rs` is changed, read by
+   sorting the lines of the file that hold one and comparing the two lists;
    and `uv run pytest tests/test_pca.py` passes.
 3. The message a user sees for a variant with more than two alleles is
    unchanged for the PCA and is the same wording for a caller that is not
@@ -121,7 +125,7 @@ Nothing of this plan.
 
 ### Its tasks
 
-- [ ] 1.1 Move the row pass into `crates/popnei/src/variant.rs` with the
+- [x] 1.1 Move the row pass into `crates/popnei/src/variant.rs` with the
       divisor as an argument, leave `pca.rs` calling it with the standard
       deviation of the dosages, and give the error of a variant with more
       than two alleles a form that does not name the PCA while keeping the
@@ -184,6 +188,18 @@ both packages, all of which exist.
 
 ### Its tasks
 
+- [ ] 2.0 Move the three functions that drive a whole block of variants,
+      `the_standardized_rows` with its arm for the threads and its arm for
+      WebAssembly and `the_standardized_rows_one_by_one`, out of `pca.rs`
+      into `crates/popnei/src/variant.rs` as `pub(crate)`, leaving
+      `the_standardized_block` in `pca.rs` calling them. Added on 23
+      September 2026 after the review of work package 1: since task 1.1 they
+      hold nothing that is the PCA's, they take a `DosageOptions` and no
+      `VariantPcaOptions`, and the kinship needs the same drive over a
+      block, so 2.1 would otherwise copy about 150 lines including the pair
+      of arms for the threads and for WebAssembly, which is a second place
+      where the two can drift apart. Needs 1.1. Serves deliverables 2 and 3
+      of this work package by keeping one drive over a block.
 - [ ] 2.1 `Kinship` and `calc_kinship` in a new `crates/popnei/src/kinship.rs`:
       the one pass, the two accumulators, the per pair denominators and the
       refusals, with the cargo tests of the worked example, the plink2
