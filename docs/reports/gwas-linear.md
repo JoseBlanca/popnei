@@ -1,11 +1,72 @@
 # Report: the association study of a continuous trait
 
-Started 23 September 2026. It records how `docs/plans/gwas-linear.md` was
+23 and 24 September 2026. It records how `docs/plans/gwas-linear.md` was
 carried out, on the branch `plan/gwas-linear` in the worktree
-`.claude/worktrees/gwas-linear`. The plan builds the parts of
-`docs/specs/gwas.md` that a continuous trait needs: the two distributions,
-what every model shares, the linear model and the linear mixed model. The
-plan is not finished, and this report grows as each work package does.
+`.claude/worktrees/gwas-linear`.
+
+**The plan is done and the branch is not merged.** Every task is ticked,
+every deliverable of the four work packages was checked by the orchestrator
+running its command, and the plan's own final check passes.
+
+## What exists now that did not
+
+`calc_gwas` in Python and `calcGwas` in TypeScript test every variant of a
+dataset against a continuous trait, giving the effect of each variant on the
+trait, the uncertainty of that effect and its p-value. With covariates and
+no kinship that is the linear model, checked against plink2's `--glm`. With
+a kinship it is the linear mixed model, which accounts for the relatedness
+of the panel so that a variant marking only ancestry does not look
+associated, with either the Wald test, checked against rrBLUP, or the score
+test, checked against GMMAT. Underneath are the two functions that turn a
+statistic into a p-value, which every test of this plan and of
+`gwas-logistic` ends in.
+
+At the commit this branch starts from: 637 tests in the core crate, 369
+pytest, 253 node. Now: 785 in the core crate with 2 ignored, the same 785 on
+the faer backend, 149 in the linear algebra crate, 496 pytest on both
+backends, 323 node. `cargo fmt`, `cargo clippy` with every target and
+warnings denied, `cargo wasm-check` for both wasm targets and ruff are
+clean, and both WebAssembly artifacts build: the npm package through
+`wasm-bindgen` and the pyodide wheel.
+
+## What is asked of the owner
+
+**The merge.** Nothing has been merged into `main` and nothing pushed.
+
+**Four open points of `docs/specs/gwas.md`**, none of which blocks the
+merge: each has a meanwhile and the branch builds the meanwhile. Two of them
+are one question over three quantities, the cancelling subtraction of "Open
+2 and 3" below; the other two are the flat criterion of an unrelated panel
+and the missing magnitude on the clamp. "What is open, and what the owner
+decides" of work package 4 gives each with its numbers.
+
+**One decision that is not in the spec**, because it crosses two plans.
+This plan's dosage row and the row pass of `crates/popnei/src/variant.rs`
+compute the same three rules twice, about 120 duplicated lines, measured by
+the review of work package 2. The two agree today, over 16000 random rows,
+and a test now holds them together. Whether they become one row, with the
+scale made optional so that a study can ask for the dosage itself, is about
+30 lines in `variant.rs` and two call sites in `pca.rs` and `kinship.rs`;
+this plan could not make it, because `variant.rs` belonged to the plan
+`kinship` while this one ran, and `gwas-logistic` would be the third caller
+of whichever shape wins.
+
+**One thing worth doing before the next plan touches this module.**
+`crates/popnei/src/gwas.rs` is about 7200 lines and wants splitting into a
+directory. It was not split because the session that runs `gwas-logistic` is
+held waiting on that file, and two sessions restructuring and extending one
+file at once is what this plan was told to avoid. A reviewer read the seams
+and they are clean: the two distributions, the study and its design, the
+dosages, the result, the linear model, the linear mixed model, and the pass
+over the blocks.
+
+## What this report is
+
+The plan builds the parts of `docs/specs/gwas.md` that a continuous trait
+needs: the two distributions, what every model shares, the linear model and
+the linear mixed model. It is the second of three plans; `kinship` came
+before it and `gwas-logistic` comes after. Each section below is one work
+package, written as it finished.
 
 ## Where the branch starts, and why not where the plan says
 
@@ -606,3 +667,222 @@ care; both were trust standing in for a measurement, and in both cases what
 fixed it was somebody running the thing. Four findings of this work package
 came from a reviewer that ran something where reading it had missed the
 point, and the plan's own sentences were wrong twice for the same reason.
+
+## Work package 4: the linear mixed model
+
+It finished as planned, in three tasks and a round of fixes, and its six
+deliverables hold. What exists now that did not: `calc_gwas(..., kinship=k)`
+with either test, in Python and in TypeScript, which accounts for the
+relatedness of a panel so that a variant marking only ancestry does not look
+associated.
+
+| deliverable | the command | what it gave |
+|---|---|---|
+| 1, the null model is GMMAT's | `uv run pytest tests/test_gwas.py` | `genetic_variance` 1.221e-6 from GMMAT's and `residual_variance` 1.043e-6, against 1e-5 absolute, 12 per cent of the bound |
+| 2, the fit is at its optimum | two cargo tests | the fitted ratio 7.72e-8 from pyNei's on Accelerate and 6.94e-8 on faer, against 2.5e-7; `y' p y` 197 within 1e-6 |
+| 3, the Wald test is rrBLUP's | the same pytest run | over all 1200 variants, worst 1.9973e-5 on Accelerate and 1.9956e-5 on faer at `var0572`, against 1e-4 in `-log10(p)` |
+| 4, the score test is GMMAT's, both panels | the same pytest run | `1/se²` worst 4.4268e-6 and 5.4234e-6 against 1e-5 relative; the p-value 4.6204e-5 and 4.7552e-5 against 1e-4 in `log10` |
+| 5, the study finds what was planted | the same pytest run | 4 of the 5 causal variants among the 10 smallest p-values, on both backends |
+| 6, popnei and pyNei agree, and TypeScript | the same pytest run and `npm test` | the bound 1.5e-7, breaking at 5.173e-8 on Accelerate and 4.648e-8 on faer; 323 node tests |
+
+The checks after the fixes: fmt and clippy clean, 785 tests in the core
+crate with 2 ignored and 149 in the linear algebra crate, the same 785 on
+faer, `cargo wasm-check` clean, ruff clean, 496 pytest passed on both
+backends, 323 node tests passed. The plan's own final check passes and both
+WebAssembly artifacts build, the npm package through `wasm-bindgen` and the
+pyodide wheel.
+
+### The deliverable that could not fail for the reason it named
+
+Deliverable 2 said the fit is at its optimum, checked by `y' p y` coming to
+197 on the panel. That is an algebraic identity: `y' p y` is the individuals
+less the columns of the design for any value of the fitted variance ratio,
+because the genetic variance is that same quadratic form divided by those
+degrees of freedom. The review multiplied the fitted ratio by a million and
+the test still gave 196.99999999999872, 1.3e-12 from 197, while every
+comparison with GMMAT and rrBLUP went red.
+
+What the identity does check is worth keeping, and its doc comment now says
+it: that the clamp at 0 works, since without it the panel with the -0.0321
+eigenvalue fails the Cholesky, and that the projection matrix and the
+quadratic form agree with each other. What pins the search is a second test,
+against pyNei's own fitted ratio.
+
+That second test exists because four of the six things the spec says the
+search must reproduce had code and nothing that would fail. The review
+changed the grid from 101 points to 81, its lowest point from -10 to -10.1,
+and the golden section ratio to a flat 0.61, rebuilt each time, and all 50
+cargo and 50 pytest tests passed on every one. The shifted grid moves the
+genetic variance by 2.85e-8 relative and the wrong ratio by 5.59e-8, both
+inside the comparison with pyNei, so that did not see them either.
+
+The bound on the new test is 2.5e-7 and not the 1e-10 the orchestrator asked
+for, and the subagent refused the number with a measurement: popnei's ratio
+sits 7.72e-8 from pyNei's on Accelerate and 6.94e-8 on faer, so 1e-10 fails
+on code that is right. 2.5e-7 is 1.2 times the shift a wrong grid start or a
+wrong ratio gives. The grid's point count alone moves the ratio by exactly
+0, the minimum being well inside either grid, so that one is pinned another
+way: the grid is asserted against `numpy.linspace` to the bit and the ratio
+against its formula.
+
+### What the review found
+
+Six reviewers ran: spec, tests, numbers, errors, api and binding. Nineteen
+findings held, the most of any work package of this plan, and almost none of
+them was a wrong calculation.
+
+**A variant could come back with an effect and no standard error, and the
+two builds disagreed about which.** The Wald test's denominator is `y' p y`
+minus `num²` over `den`, the same cancelling subtraction the linear model
+had. The spec had recorded a measurement on the panel — 8.53e-13 on
+Accelerate against 3.98e-13 on faer, both positive — and concluded that no
+NaN appeared. A reviewer found one, and the orchestrator reproduced it: six
+individuals, one covariate, an identity kinship and a trait built as
+`2 + 3*cov + 1*dosage` give `beta` 1.00000 with `se` and `p_value` NaN under
+the Wald test, where the score test on the same call with one argument
+changed gives `se` 0.500 and `p` 0.0455. A finite `beta` beside a NaN `se`
+is a fourth kind of NaN that "The variants that have no answer" does not
+describe, so a user filtering on a missing effect keeps the row and reads
+1.0 as an effect that was measured — which is the argument that settled the
+linear model's subtraction one model earlier.
+
+The spec's two open points about cancellation became one, over three
+quantities, with the same remedy: refuse when what is left falls to
+`num_individuals` times 2.2e-16 of what there was. The meanwhile changed
+from leaving the Wald test alone to refusing there too, because a meanwhile
+that returns NaN where the score test returns 0.0455 on the same call is not
+a safe thing to build on. That is what the branch does now.
+
+**A trait the design explains exactly was a defect of popnei.** The REML
+left both variances at 0, so the covariance was 0, the division made
+infinities and the linear algebra refused them: the user got a
+`RuntimeError` naming an operand of a matrix routine and the VCF, neither of
+which was at fault, for what is a wrong input. It is a `ValueError` now,
+saying the design explains the whole trait. Note that the linear model gives
+an `se` of 2.4e-15 on the same input rather than an error, which is the same
+threshold question one model over and was not touched.
+
+**The kinship was copied three times where the binding said once.**
+Measured at 3000 individuals with a 72 MB matrix: 144.4 MB peak, 72.5 MB
+held. Indexing the array once instead of going through pandas gives 72.2 MB
+peak and comes back already in the right memory order, so the copy that
+existed to fix the order is gone, and so is the binding's own copy — it
+lends the array now. At the largest dataset `docs/objectives.md` names,
+10000 individuals, that is 800 MB of transient allocation saved.
+
+**Nothing ran the mixed model over more than one block.** 200 individuals
+give 10000 variants to a block, so the 1200-variant panel is one block in
+every test. Removing the three buffer clears from the mixed model's block
+pass left all 50 cargo and 493 pytest tests passing, where the identical
+mutation in the linear model fails its multi-block test at once. The mixed
+model has that test now.
+
+**The two layers disagreed again, in three more places**, none of them in
+the shared refusals file: an infinite phenotype, where the messages differed;
+a NaN covariate, "is missing, fill the value in" against "is NaN, and a
+study is fitted on numbers"; and a full-width digit, which Python reads as a
+number and TypeScript refused, because the pattern matching digits was the
+ASCII one. That last contradicts the settled rule that a value is refused
+exactly where Python's `float` raises. All three are in the file now.
+
+The rest were smaller: two scalars of the same kind meeting unnamed in one
+signature, where swapping them compiles and gives a wrong inverse; a
+function that bundled what the next plan has to split, now split while it
+has one caller; the kinship trusted as its constructor left it, with the
+symmetry check moved into the core so that both layers and a caller of the
+core are covered; three untested paths through the binding; an error naming
+the VCF path where its twin did not; Python coercing a boolean where
+TypeScript refused one; and half a dozen comments whose numbers were wrong.
+
+Two things the subagent refused with evidence, and both refusals hold. The
+orchestrator's proposed 1e-10 bound on the fitted ratio fails on correct
+code, as above. And a reviewer reported that `Kinship.principal_components`
+re-checks the matrix, so `calc_gwas` should too; it does not, it only makes
+the array contiguous, so the check went into the core instead, which covers
+more.
+
+### What is open, and what the owner decides
+
+Four open points of `docs/specs/gwas.md` reach the owner from this work
+package, and none blocks the merge: each has a meanwhile, and the branch
+builds the meanwhile.
+
+**Open 2 and 3, now one: the cancelling subtraction, in three places.** The
+choice is to refuse such a variant, which is one comparison in each place
+and costs nothing per variant, or to form the residual exactly, which for
+the linear model is a pass over the block's dosages and is already taken,
+and for the mixed model's Wald test is a matrix product for every variant,
+roughly doubling that test — the cost the GRAMMAR-Gamma approximation of the
+next plan exists to avoid. The spec recommends refusing and the branch
+refuses. The exact form buys only the band just above the threshold, which
+needs a variant explaining about 99.9999 per cent of the trait, and that is
+for the performance session to weigh with numbers in front of it.
+
+**The flat criterion.** When the kinship is close to a multiple of the
+identity — a panel of unrelated individuals, or a user passing an identity
+matrix to mean no relatedness — the REML criterion is flat to within one
+unit in the last place across all 101 grid points, so which point wins is
+rounding. A reviewer perturbed such a kinship by 1e-15 and got a
+`heritability` of 6.5e-5, 7.1e-5 and 0.967 over three seeds. A kinship of
+all zeros gives 0.99988 and one of all ones 0.99995. `beta` and `p_value`
+are untouched, because they do not depend on the scale, so what is arbitrary
+is `genetic_variance`, `residual_variance` and `heritability` — which is
+what a user reads a heritability off. The spec's recommendation is to give
+the study and leave those three empty rather than refuse the study, since
+the effects and the p-values are valid and are what the user mostly came
+for.
+
+**The clamp's missing magnitude.** A negative eigenvalue of the kinship is
+clamped at 0 with no test of how negative it is, so a genuinely indefinite
+matrix is treated as a rounding artefact: forcing one eigenvalue of the
+panel's kinship to -5, which is 29 per cent of its largest at 17.27, is
+clamped silently and the fit returns ordinary-looking numbers, and so does
+forcing fifty of them to -2. The two numbers the owner judges the fraction
+on are that -5 and the -3.3 per cent that `docs/specs/kinship.md` measures
+at 50 genotypes missing in 100.
+
+### What the owner should know
+
+**One check of this work package is weaker than it looks, and one is
+stronger than the orchestrator first said.** GMMAT prints its score test to
+six significant digits, so at the worst variant of deliverable 4 at most
+1.35e-7 of the measured 4.4268e-6 is popnei's; the rest is the printing. It
+is not hollow — the bound still fails if popnei's variance is about 5.7e-6
+relative off, forty times above what the comparison can resolve, and 282 of
+the 1200 variants exceed their own printing floor. The p-value half is
+genuinely tight, 21 times above its floor, and rrBLUP's file is full
+precision and carries the arithmetic.
+
+**The refusal threshold is guarded on one backend only, and cannot be
+guarded on both.** With the threshold set to 0, so that only a non-positive
+denominator refuses, Accelerate passes everything and faer fails: the
+collinear fixture's denominator is -4.44e-16 on one and +1.665e-15 on the
+other. What is left is exactly 0 in exact arithmetic, so its sign is
+whatever the rounding chose, and no fixture can make it positive on both.
+faer is the guard and the fixture records it.
+
+**A regime the spec asks for and no fixture reaches.** The best point of the
+grid is 44, 46, 47 or 85 in every test of both suites; the spec lists the
+clamping of the best point's neighbours at the ends of the grid among the
+six things that must reproduce pyNei, and nothing is in that regime. A trait
+that is almost entirely genetic or almost entirely noise would reach it.
+
+### How the work went
+
+Tasks 4.1, 4.2 and 4.3 each went to one subagent in turn, and a fourth
+closed the gap that opened when the spec decided a constant trait is
+refused. The fixes went back to the subagent that wrote 4.3. Tokens: task
+4.1, 239120; task 4.2, 266521; task 4.3, 357304 and 532368 by the end with
+the fixes; the constant trait, 124448. The six reviewers used 209298,
+179770, 135493, 177308, 191305 and 187393.
+
+The measurement that task 4.1 was asked to make and that shaped the rest of
+the work package is worth naming as a method. It was asked to set up the
+cancellation measurement while it had the null fit in hand, and told not to
+act on it. It found that the cancellation is reachable exactly rather than
+approached, because the projection annihilates the design, so any affine
+image of the trait gives equality in exact arithmetic. That sentence is what
+let the next reviewer construct the case that produced the NaN, which is
+what removed the option the spec was resting on. A measurement made two
+tasks before it was needed, by someone told not to act on it, is what
+settled the largest question of the plan.

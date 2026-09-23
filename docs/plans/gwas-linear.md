@@ -1,6 +1,7 @@
 # Plan: the association study of a continuous trait
 
-23 September 2026. State: under way since 23 September 2026. It builds
+23 September 2026. State: done on 24 September 2026, on the branch
+`plan/gwas-linear`, not merged. It builds
 the parts of `docs/specs/gwas.md` that a continuous trait needs: the two
 distributions, everything `calc_gwas` shares whatever the model, the linear
 model and the linear mixed model. It is the second of three plans; `kinship`
@@ -372,9 +373,35 @@ so that a variant that only marks ancestry does not look associated.
    `genetic_variance` 1.221617, `residual_variance` 0.342359 and the three
    covariate effects 4.678021, 0.473361 and 1.110279 within 1e-5 absolute,
    from `tests/reference/gwas/gmmat.null_models.tsv`.
-2. The fit is at its optimum. The check: a cargo test asserts that `y' p y`
-   on the panel is 197 within 1e-6. "How it is verified" says this one is
-   made at the private function that fits this null and pins it.
+2. The fit is at its optimum, and the search is pyNei's step for step. The
+   check, in two cargo tests rather than the one this deliverable named,
+   because the one it named cannot fail for the reason it gave: the fitted
+   ratio of the two variances is within 2.5e-7 of pyNei's 0.2802522656675301
+   on the panel, and `y' p y` on the panel is 197 within 1e-6.
+
+   The second of those is an algebraic identity and not evidence about the
+   search. `y' p y` is the individuals less the columns of the design for
+   any value of the ratio, because the genetic variance is that same
+   quadratic form divided by those degrees of freedom. The review of this
+   work package multiplied the fitted ratio by a million and the test still
+   gave 196.99999999999872, 1.3e-12 from 197, while every comparison with
+   GMMAT and rrBLUP went red. What the identity does check is worth keeping
+   and is what its doc comment now claims: that the clamp at 0 works, since
+   without it the panel with the -0.0321 eigenvalue fails the Cholesky, and
+   that the projection matrix and the quadratic form agree with each other.
+
+   The first is what pins the search. Of the six things the spec says must
+   reproduce pyNei, four had code and no test that would fail: the review
+   changed the grid from 101 points to 81, its lowest point from -10 to
+   -10.1, and the golden section ratio to a flat 0.61, and all 50 cargo and
+   50 pytest tests passed on each. The bound here is 2.5e-7 and not the
+   1e-10 the orchestrator first asked for: popnei's ratio sits 7.72e-8 from
+   pyNei's on Accelerate and 6.94e-8 on faer, so 1e-10 fails on code that is
+   right. 2.5e-7 is 1.2 times the shift a wrong grid start or a wrong ratio
+   gives, 1.635e-7 and 9.22e-8. Changing the grid's point count alone moves
+   the ratio by 0, the minimum being well inside either grid, so that one is
+   pinned another way: the grid is asserted against `numpy.linspace` to the
+   bit, and the ratio is a named constant asserted against its formula.
 3. The Wald test is rrBLUP's. The check: a pytest test with `cov2` alone and
    the kinship gets `-log10(p_value)` within 1e-4 of
    `rrblup.panel_called.lmm.tsv` over all 1200 variants, and a cargo test
