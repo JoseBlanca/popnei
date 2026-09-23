@@ -50,7 +50,7 @@ model**, and then every variant is tested against what that model left
 unexplained. Fitting the null once and reusing it for every variant is what
 makes a study of a million variants possible; holding the variance
 components of a mixed model at their null values for every variant is called
-P3D, and EMMAX, rrBLUP and GMMAT all do it.
+P3D, and rrBLUP, GMMAT and EMMAX, the program that named it, all do it.
 
 There are two tests, and which one is available depends on the model.
 
@@ -245,7 +245,13 @@ checks are common to all four:
 - Every column of `stats` against the reference program of that model over
   all 1200 variants, at the Python `calc_gwas`.
 - The six variants above as literals in the cargo tests, at `calc_gwas` of
-  "The Rust interface".
+  "The Rust interface". What each model's literals are and what they are
+  compared against differs, because the reference programs report different
+  quantities, and each model item says which: for the `lm` and the `glm`'s
+  Wald test, `beta`, `se` and `p_value` directly; for the `lmm`'s Wald test,
+  `-log10(p_value)`, which is all rrBLUP reports; and for both score tests
+  against GMMAT, `1 / se²`, which is the variance of the score, and
+  `p_value`.
 - Against pyNei, both libraries on the same panel with the same arguments,
   at the Python `calc_gwas`: `beta`, `se` and `p_value` within 1e-9
   relative, and the variants that have NaN exactly the same ones.
@@ -302,7 +308,9 @@ Over all 1200 variants: `allele_freq` within 1e-6 absolute, `beta` and `se`
 within 1e-5 absolute, and `p_value` within 1e-5 relative. plink2 writes six
 significant digits, and those are the units of its last digit.
 
-The literals, from plink2 on 23 September 2026:
+The six literals are held to the same tolerances as the whole columns,
+1e-5 absolute on `beta` and `se` and 1e-5 relative on `p`. From plink2 on
+23 September 2026:
 
 | variant | beta | se | p |
 |---|---|---|---|
@@ -386,8 +394,10 @@ popnei is run with the same one covariate for this comparison. It reports
 `-log10(p)`, so that is what is compared, over all 1200 variants within
 1e-4, from `tests/reference/gwas/rrblup.panel_called.lmm.tsv`.
 
-The literals, `-log10(p)`: var0000 0.215210, var0052 3.618699, var0629
-4.339896, var0751 2.065325, var1137 1.319283, var1188 2.367279.
+The six literals, held to 1e-4 absolute as the whole column is, are
+`-log10(p_value)` and nothing else, because `-log10(p)` is all rrBLUP
+reports: var0000 0.215210, var0052 3.618699, var0629 4.339896, var0751
+2.065325, var1137 1.319283, var1188 2.367279.
 
 The score test against GMMAT 1.5.0's `glmm.score`, with both covariates, on
 both panels, from `gmmat.panel_called.lmm.score.tsv` and
@@ -397,8 +407,10 @@ is `den`, and the p-value. Over all 1200 variants: `1 / se²` against GMMAT's
 p-values are compared in `log10` because they span 23 orders of magnitude
 and what a user reads is the exponent.
 
-The literals, the variance of the score and the p-value, with every genotype
-called and then with 3 in 100 missing:
+The six literals are `1 / se²` against `VAR`, within 1e-5 relative, and
+`p_value` within 1e-4 in `log10`, the same as the whole columns. The
+variance of the score and the p-value, with every genotype called and then
+with 3 in 100 missing:
 
 | variant | VAR | p | VAR, missing | p, missing |
 |---|---|---|---|---|
@@ -504,7 +516,8 @@ statistic `(beta / se)²` is within 1e-2 absolute and `|log10(p / p_R)|`
 below 1e-3; the six literals are held to 1e-3 and 1e-3. R's glm converges to
 1e-8 in the deviance, which is what those tolerances are.
 
-The literals, the score statistic and its p-value: var0000 4.938245 and
+The six literals, the score statistic `(beta / se)²` within 1e-3 absolute
+and the p-value within 1e-3 in `log10`: var0000 4.938245 and
 0.026268700, var0052 12.484427 and 0.000410359, var0629 9.165576 and
 0.002466100, var0751 1.480401 and 0.223711736, var1137 2.911424 and
 0.087954199, var1188 10.382961 and 0.001271835.
@@ -526,7 +539,14 @@ step needs the second derivative of the likelihood, and the **average
 information** is the average of the observed one and the one expected under
 the model: the terms that cost the most to compute appear in the two with
 opposite signs and cancel, so the average costs less than either, which is
-why mixed model programs use it. The whole thing then starts again. It is the model GMMAT fits, and on the panel it takes 8
+why mixed model programs use it. With `p` the projection matrix and `w` the
+working trait of the linearization that just finished, and `pw = p w`:
+
+    score = 0.5 * (pw' k pw - trace(p k))
+    ai    = 0.5 * (k pw)' p (k pw)
+    step  = score / ai
+
+and `tau` becomes `tau + step`. The whole thing then starts again. It is the model GMMAT fits, and on the panel it takes 8
 steps on `tau` and 22 linearizations.
 
 Taking the step on `tau` after every single linearization instead makes the
@@ -537,6 +557,18 @@ asks for a smaller one are remembered, the answer lies between them, and a
 Newton step that would leave that interval is replaced by the geometric mean
 of its two ends. `tau` at the boundary, where the kinship explains nothing,
 is 0 and the fit stops there.
+
+The tolerances and the counts, all inherited from pyNei, which calls them
+`GLMM_TOL` and `GLMM_MAX_ITER`, and none of which anybody has measured. A
+linearization stops when the largest change in the linear predictor, over
+its own largest absolute value plus 1, falls below 1e-6. A step on `tau`
+stops the fit when its absolute value falls below `1e-6 * (tau + 1e-6)`.
+Either loop running past 200 rounds is an error, not a warning: the fit did
+not converge. `tau` starts at half the variance of the first working trait,
+which is what `tau` would be if the kinship explained all of it, so that the
+bracket comes down from above rather than up from below. A step that would
+take `tau` to 0 or below, with no bracket yet, quarters it instead; a `tau`
+that falls below 1e-6 is set to 0, and a second one at 0 ends the fit.
 
 At convergence the residual `p y` of the score test is simply the trait
 minus `mu`, and `den` is `x' p x` with the same projection matrix as the
@@ -612,8 +644,9 @@ type: it is a `ValueError` about the data.
 
 Against GMMAT's `glmm.score` on both panels, from
 `gmmat.panel_called.glmm.score.tsv` and `gmmat.panel.glmm.score.tsv`, to the
-same tolerances as the linear mixed model: `1 / se²` against `VAR` within
-1e-5 relative and `|log10(p / p_GMMAT)|` below 1e-4.
+same tolerances as the linear mixed model's score test, for the whole
+columns and for the six literals alike: `1 / se²` against `VAR` within 1e-5
+relative and `|log10(p / p_GMMAT)|` below 1e-4.
 
 | variant | VAR | p | VAR, missing | p, missing |
 |---|---|---|---|---|
@@ -695,10 +728,39 @@ The regularized incomplete beta is not in `libm` and is written here, as
 pyNei writes it: the continued fraction of Numerical Recipes evaluated by
 Lentz's method, which builds a continued fraction from its front rather than
 from its far end, so it can stop as soon as a term no longer changes the
-value instead of needing its depth fixed in advance, with the front factor in logarithms through `lgamma`, which
-`libm` does have, and the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used
-whenever `x` is above `(a + 1) / (a + b + 2)`, where the fraction converges
-slowly. `x` at or below 0 gives 0 and at or above 1 gives 1.
+value instead of needing its depth fixed in advance.
+
+`x` at or below 0 gives 0 and at or above 1 gives 1. Otherwise, with
+
+    front = exp(lgamma(a + b) - lgamma(a) - lgamma(b)
+                + a * ln(x) + b * ln(1 - x))
+
+the answer is `front * cf(a, b, x) / a` while `x` is below
+`(a + 1) / (a + b + 2)`, and `1 - front * cf(b, a, 1 - x) / b` at or above
+it, which is the symmetry `I_x(a, b) = 1 - I_{1-x}(b, a)` used where the
+fraction converges slowly. `cf` is the continued fraction, with `tiny` at
+1e-300, `eps` at 1e-15 and at most 500 rounds:
+
+    qab = a + b;  qap = a + 1;  qam = a - 1
+    c = 1;  d = 1 - qab * x / qap;  if |d| < tiny then d = tiny;  d = 1 / d
+    h = d
+    for m in 1 ..= 500:
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1 + aa * d;  if |d| < tiny then d = tiny
+        c = 1 + aa / c;  if |c| < tiny then c = tiny
+        d = 1 / d;  h = h * d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1 + aa * d;  if |d| < tiny then d = tiny
+        c = 1 + aa / c;  if |c| < tiny then c = tiny
+        d = 1 / d;  delta = d * c;  h = h * delta
+        if |delta - 1| < eps then stop
+    cf = h
+
+`tiny` keeps a denominator that has come out at 0 from dividing, which is
+what Lentz's method needs to carry on past a term that vanishes, and running
+out of rounds is not an error: the four pairs of arguments this module uses
+converge in far fewer, and "How it is verified" is what says so.
 
 ### How it is verified
 
