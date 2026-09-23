@@ -722,11 +722,13 @@ arithmetic they share, which is this.
 
 ### How it is verified
 
-Three reference programs, run on 23 September 2026 on the owner's machine,
-each on both of the two panels below, and pyNei for Jost's D. Which
-program checks which measure is in each item. The two panels are written
-by `tests/reference/pop_dists/make_reference.py` beside the outputs it
-keeps, as the other reference data of `tests/reference/` is.
+Four reference programs, run on 23 September 2026 on the owner's machine,
+and pyNei for Jost's D. Which program checks which measure is in each item.
+`tests/reference/pop_dists/make_reference.py` writes the multiallelic panel
+and runs every program on both panels, keeping each output beside itself, as
+the other reference data of `tests/reference/` is kept. It refuses a version
+of plink2, adegenet, mmod or admixtools other than the ones the numbers
+below were taken with.
 
 The first panel is the biallelic one the Kosman item and
 `docs/specs/stats.md` already use, `tests/reference/dists/panel.vcf.gz`:
@@ -736,14 +738,17 @@ genotypes missing whole, with the three populations of
 68 and p2 with 84.
 
 The second is multiallelic, written for this item, which no panel of
-popnei was: 120 loci of 90 diploid individuals in three populations of
-30, alleles written as repeat lengths so that a record looks like the
-microsatellite it stands for, six alleles to a locus of which 100 loci
-have all six and 20 have four or five, 4 in 100 genotypes missing whole.
-Its allele frequencies are drawn per population from a Dirichlet around a
-per locus ancestral one, so the populations differ by drift and not by a
-pattern chosen by hand. It is the panel that shows the arithmetic does not
-assume two alleles.
+popnei was: `tests/reference/pop_dists/micro.vcf.gz`, with the populations
+of `micro_pops.txt` beside it. It holds 120 loci of 90 diploid individuals
+in three populations of 30, alleles written as repeat lengths so that a
+record looks like the microsatellite it stands for, six alleles to a locus
+of which 100 loci have all six and 20 have four or five, 4 in 100 genotypes
+missing whole. Its allele frequencies are drawn per population from a
+Dirichlet around a per locus ancestral one, so the populations differ by
+drift and not by a pattern chosen by hand; the seed is 7, and the file is
+kept in git because the literals below are of these genotypes and not of
+another draw. It is the panel that shows the arithmetic does not assume two
+alleles.
 
 The numbers of each measure on both panels go into the tests as literals,
 and the items below give them. Two checks are common to all of them.
