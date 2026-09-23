@@ -94,7 +94,32 @@ calc_gwas(
 ```
 
 `phenotype` is a series indexed by individual name; a frame of one column is
-taken as that column. `trait` is `"continuous"` or `"binomial"`, the two
+taken as that column.
+
+**A value that is not a number is coerced, in both layers.** Python coerces
+with `float`, as pyNei does, so the strings `['2', '3', '5']` and the
+booleans `True` and `False` are accepted, and so does TypeScript, where the
+same values used to be refused. The owner decided it on 23 September 2026:
+a phenotype read from a file arrives as strings often enough that refusing
+it would be a divergence users feel, and popnei has no reason to be stricter
+than its oracle here. The option not taken was to refuse in both, which is
+what the Python docstring says a trait is and which would have made the
+layers agree by making Python stricter than pyNei.
+
+The two coercions are not the same coercion, and this is what makes them
+one. `float("abc")` raises, while JavaScript's `Number("abc")` gives NaN,
+and a NaN phenotype means an individual with no phenotype, which is dropped;
+so a TypeScript that merely coerced would turn a user's typo into a silently
+missing individual where Python raises at them. TypeScript therefore coerces
+and then refuses whatever did not arrive as a finite number. Three values
+need saying because `Number` gives each of them something plausible and
+wrong: `null` becomes 0, the empty string becomes 0, and `undefined` becomes
+NaN. All three are refused, naming the individual. A key that is absent from
+the object is an individual with no phenotype, as an absent or NaN entry is
+in Python, and that is the only way to say so.
+
+An infinite phenotype is refused by both, which pyNei accepts: `float("inf")`
+succeeds there and the fit it feeds gives NaN for every variant. `trait` is `"continuous"` or `"binomial"`, the two
 values of `TraitType`. `test` is `"wald"` or `"score"`, the two values of
 `TestType`, and `None` takes the default above.
 
@@ -1293,8 +1318,11 @@ code exists, on the panel and on the 100000 x 1000 dataset of
 
 ## Open points
 
-The owner decides these three, and until then the implementer follows the
-"meanwhile" of each.
+The owner decides these two, and until then the implementer follows the
+"meanwhile" of each. A third, what the two layers do with a phenotype that
+is not a number, was decided on 23 September 2026 and is in "Its Python
+function, and its TypeScript one" of "What every model shares", with the
+option that was not taken.
 
 **Open 1: a variant that separates the cases from the controls.** Its
 logistic effect is infinite and its Wald fit runs away. pyNei gives NaN for
@@ -1335,29 +1363,6 @@ it in the score test of the linear mixed model. Meanwhile the implementer
 refuses at `den <= 0` and gives the three NaNs; if the owner chooses the
 other, the change is one comparison and no literal of this spec moves, since
 no variant of either panel reaches it.
-
-**Open 3: a phenotype or a covariate that is not a number.** Python coerces
-each value with `float`, as pyNei does, so the strings `['2', '3', '5']` and
-the booleans `True` and `False` are accepted; TypeScript requires
-`typeof value === "number"` and refuses them. On the worked example the
-first gives `beta` 1.5 and the second raises. There is no reading where both
-layers are right, and `docs/objectives.md` asks the TypeScript API to carry
-the Python one. The options are to coerce in both, which is pyNei's
-behaviour and which a phenotype read from a CSV arrives needing often
-enough that refusing it would be a divergence users feel; or to refuse in
-both, which is what the Python docstring already says a trait is and which
-makes the layers agree by making Python stricter than its oracle.
-Recommendation: coerce in both, with one condition. The two coercions are
-not symmetric and the condition is what makes them so: `float` raises on
-`"abc"` while JavaScript's `Number` gives NaN, and a NaN phenotype means an
-individual with no phenotype, which is dropped. So a TypeScript that merely
-coerced would turn a mistyped value into a silently missing individual where
-Python raises. TypeScript coerces and then refuses a value that came from a
-non-empty string and arrived as NaN, which is the same refusal Python's
-`float` makes. Meanwhile the implementer leaves Python coercing and
-TypeScript refusing, and writes down in the report which tests would change
-either way; no literal of this spec moves, since every phenotype of the
-reference data is a number already.
 
 ## Not in this spec
 
