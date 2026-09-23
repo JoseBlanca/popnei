@@ -24,8 +24,8 @@ also be built by hand from a matrix a user brings from plink2 or a pedigree.
 
 Every entry of both reference panels is plink2's within 1e-13 of the largest
 entry of the matrix, on both of the linear algebra libraries popnei is built
-against, the system's one natively and faer in a browser, and is pyNei's.
-The
+against, Accelerate natively on this machine and faer in a browser, and is
+pyNei's. The
 first components are pyNei's, and the first one separates the three
 subpopulations of the panel.
 
@@ -68,34 +68,26 @@ something, the check passed, and what the check measured was not what
 anybody thought. Each time the number was defensible and the thing it
 measured was not.
 
-- **The agreement with plink2 was plink2's rounding.** Every entry of both
-  panels was within 4.95e-06 of a 1e-5 bound. The stored reference holds six
-  significant digits of text, and that whole difference was the rounding of
-  the printed number. Against plink2's binary output popnei is 4.44e-16
-  away. The check had no room in it at all, and would have passed an error
-  of up to 5e-6.
-- **The agreement with pyNei was an accident of the panel size.** Bit for
-  bit, a largest difference of 0.0, which looks like the strongest result in
-  the report. It holds because both libraries hand a single chunk of 1200
-  variants to the same routine. At 30000 variants they differ by 1.6e-14.
-- **The eigenvalue tests spent their budget on themselves.** The three
-  literals were written to nine digits and asserted within 1e-9 relative.
-  popnei matches numpy to 3.967e-16; the nine-digit literal is 8.511e-10
-  from popnei. 85% of the tolerance was paid to the rounding of the number
-  written down, and none of it was measuring popnei.
-- **The bound that broke, broke at the smallest entry.** When the per entry
-  bound failed on the other backend it failed at an entry of 1.29e-05 whose
-  error was 1.9e-17, while entries a hundred times larger, with larger
-  errors, passed.
+- **The agreement with plink2 was plink2's rounding**, not popnei's
+  accuracy. "What the tolerance against plink2 really was" has it.
+- **The agreement with pyNei was an accident of the panel size**, and holds
+  only while a panel fits in one chunk. Same section.
+- **The bound that broke, broke at the smallest entry**, where the error was
+  smallest, while larger entries with larger errors passed. Same section.
+- **The eigenvalue tests spent their tolerance on the rounding of their own
+  literals**, leaving none of it measuring popnei. "What the review found"
+  of work package 3 has it.
 
-The last one gives the reason for all four, and it was derived rather than
+The third gives the reason for all four, and it was derived rather than
 measured: **a bound is on the rounding of the sum that produced a value, so
 it belongs against whatever bounds the terms of that sum, not against the
-value.** A value that cancelled to near 0 is no guide to its own error. For
-a kinship entry, which is a sum of `m` products of standardized dosages,
-the rounding is at most `m` times 2.2e-16 times the largest term, and the
-largest entry of the matrix bounds the terms; hence the rule the tests now
-use. For an effect size in an association study the same reasoning makes
+value.** A value that cancelled to near 0 is no guide to its own error.
+
+For a kinship entry, which is a sum of `m` products of standardized
+dosages, the rounding is at most `m` times 2.2e-16, the step between 1 and
+the next number a double holds, times the largest of those products; and
+the largest entry of the matrix bounds them. Hence the rule the tests use
+now. For an effect size in an association study the same reasoning makes
 the scale its standard error, which is what that study's own arithmetic
 says the effect is uncertain by.
 
@@ -476,7 +468,8 @@ contradict it.
 were used, while `pass_stats` means the variants the pass gave, and the core
 computed the second and dropped it. Every other calculation hands it out:
 the principal components of the variants, the statistics of a pass and the
-Kosman distances all carry it on their result. So each binding
+Kosman distances, which say how different each pair of individuals is, all
+carry it on their result. So each binding
 wrapped the reader chain in its own `BlockReader` to count it again, about
 60 lines each, written independently and without sight of each other; they
 were the only two `impl BlockReader` outside the core. `Kinship` now carries
