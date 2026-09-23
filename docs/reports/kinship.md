@@ -105,3 +105,133 @@ with the constant it is about. One test was renamed, from
 so that the check of deliverable 3 finds a test for each of the two callers.
 The 45 test names the two versions of the file hold differ in that one name
 and nothing else.
+
+### What the review found
+
+Seven reviewers read the commit, one per category, each with a fresh
+context. Sixteen findings held and were fixed in seven commits, `d6b00af`
+to `e445cc5`. The checks were run again after them: the core crate passes
+610 tests with 2 ignored, the linear algebra crate 149 and 136 without its
+default features, Python 347, JavaScript 242, and `cargo fmt`, `cargo
+clippy --workspace --all-targets`, `cargo clippy -p popnei --all-targets
+--features bench-internals` and `cargo wasm-check` are clean. The three
+deliverables were checked again and still hold, with the 47 PCA tests
+carrying the same names they carried before task 1.1.
+
+The one that mattered most is the divisor the kinship will use. It was
+tested only on diploid variants whose mean dosage is 1, where `p` is 0.5
+and `p * (1 - p)` and `p * p` are the same number, so two wrong formulas
+passed all 607 tests: `p * p` in place of `p * (1 - p)`, and the ploidy
+read as 2 instead of taken from the variant. Both were run and both left
+`607 passed; 0 failed`. Work package 2 would have built the kinship on a
+divisor that nothing checked. The tests added use a diploid variant of
+`p = 0.125`, a tetraploid and a haploid one, with the values computed by
+hand and checked against pyNei's `_calc_dosages` with
+`sqrt(ploidy * freqs * (1 - freqs))`. Both mutations were applied again
+after the fix and each now fails
+`variant::tests::the_divisor_under_hardy_weinberg_reads_the_ploidy_and_the_frequency`
+and nothing else.
+
+The rest, in the order of what they would have cost:
+
+- The pass refused a ploidy above 254 with an error whose message opens
+  "the principal components of the variants cannot be taken on this
+  dataset", from the pass the kinship is to share. No user could reach it,
+  because `pca_of_variants` refuses the ploidy at its own entry before a
+  block is read, but the kinship will. It now has a case of its own,
+  `Error::VariantPloidyTooLarge`, in the group of the errors of a variant,
+  a `ValueError` in Python like its neighbour. `MAX_PLOIDY_OF_THE_VARIANTS`
+  moved to `variant.rs` with it, so `variant.rs` no longer imports from
+  `pca.rs`: it had been importing from the module above it, which would
+  have pulled `pca` in behind every caller of the row.
+- The two buffers of a row, 255 dosage counters and 256 values, are sized
+  for a ploidy of 254 and nothing said so. Raising the limit to 255 gave a
+  genotype with an allele missing a value of 16.03 where 0.0 is right, with
+  no error and no panic. Three relations are now asserted when the crate
+  compiles; raising the limit stops the build with "the dosages of the
+  largest ploidy, which are the ploidy and one more, each need a counter".
+- `codes.resize` could be deleted with all 607 tests passing, because every
+  fixture built its buffers at the size of its row. A row longer than the
+  buffers would have been left half written.
+- The test of a variant with more than two alleles used a variant of four,
+  so tightening the refusal from more than two to more than three left it
+  green.
+- `DosageOptions` and `DosageScale` were public, so a crate outside the
+  workspace could build one and pass it nowhere; they are the crate's own
+  now. Two helpers had been widened to the crate for no caller.
+- The divisor read the ploidy out of a loop bound, so a caller that passed
+  anything else got a wrong number and no error; it takes the ploidy.
+- Nothing asserted the middle clause of the message deliverable 3 asks to
+  keep unchanged, so it could have been rewritten with nothing going red.
+- The tail of the row pass is copied into the benchmark and nothing
+  compared the two; a test now asserts they give the same row bit for bit.
+- Seven doc comments still said PCA or private, one in the Python binding
+  claimed the row pass is walked by every calculation that turns a variant
+  into dosages, which the r² and the filters disprove by having their own.
+
+### What was not taken
+
+- **The six tests of the moved code stay in `pca.rs`.** Two reviewers asked
+  for them to move to `variant.rs`, where the code they test now lives.
+  Moving them would drop `cargo test -p popnei --lib pca -- --list` below
+  47 and so destroy the check deliverable 2 rests on, which is the only
+  evidence that the move changed no number. It is worth doing once that
+  check has served, which is when work package 2 is reviewed.
+- **The JavaScript message names `transform_to_biallelic` where the
+  TypeScript option is `transformToBiallelic`**, so a user greps for a name
+  that is not in their code. It is older than this plan and it is what a
+  user of the principal components sees today, so it is the owner's and it
+  is asked of them below. The crate already rewrites `maxNumVars` and
+  `maxAllowedMaf` this way, so there is a pattern to follow.
+- **The Python binding maps 29 of the 99 cases of `Error` through a
+  wildcard**, so a case added later becomes a `ValueError` without anyone
+  choosing that. `Error` is `#[non_exhaustive]`, which makes the wildcard
+  compulsory, and every case that falls through it is right today. It is
+  older than this plan and nothing of this plan rests on it.
+
+### What was changed in the plan
+
+- Deliverable 2 asked for 604 tests in the core crate. That was the count
+  before the work package, and deliverable 3 asks for tests that did not
+  exist, so the two could not both be met. The check now reads the list of
+  test names of `pca.rs`, which is what says that no test was dropped, and
+  asks for no fewer than 604 in the crate.
+- Task 2.0 is new. Since task 1.1 the three functions that drive a whole
+  block of variants hold nothing of the principal components and take a
+  `DosageOptions`, and the kinship needs the same drive over a block, so
+  task 2.1 would have copied about 150 lines including the arm for the
+  threads and the arm for WebAssembly, which is a second place where the
+  two can fall out of step.
+- The check of deliverable 1 was replaced before the work started, for the
+  reason above.
+
+### What the owner should know
+
+- The spec said the kinship refuses two datasets "both for reasons the
+  PCA's row pass already refuses them for". Only the ploidy is refused
+  there; the limit of 46340 individuals is checked in `pca_of_variants`,
+  which the kinship will never call. Whoever wrote work package 2 from that
+  sentence would have got the ploidy for free and lost the other in
+  silence. The spec now says which check is where.
+- `DosageScale::OfHardyWeinberg` has no caller in the library until the
+  kinship exists, so it carries an expectation that it is dead code. The
+  commit that builds the kinship has to delete that expectation or the
+  build fails, and the text of the expectation says so.
+- The worked example of "How it is verified" in the spec, and both of its
+  kept variants, have `p = 0.5`. The cargo test work package 2 builds from
+  it inherits the blind spot this review found, so the eleven plink2
+  literals of that section are what will close it there.
+
+### How the work went
+
+Task 1.1 took one subagent 197000 tokens over 112 tool calls and 15
+minutes. The seven reviewers took 756000 tokens between them, from 79000
+for the binding to 122000 for the numbers, and ran in parallel in about 13
+minutes. The fixes took the subagent that wrote the code another 119000
+tokens over 20 minutes; sending them back to it rather than to a fresh one
+cost nothing in re-reading.
+
+Sending all seven categories rather than choosing among them was worth it
+here: the finding that mattered most came from `tests`, which was the
+slowest of the seven and the only one that mutates the code, and three of
+the others found the PCA-named ploidy error from three different sides.
