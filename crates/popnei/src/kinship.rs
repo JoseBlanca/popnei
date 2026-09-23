@@ -866,19 +866,22 @@ mod tests {
     /// where there is room to find an error of the arithmetic.
     const OF_PLINK2: f64 = 1e-5;
 
-    /// What the 40000 entries of each panel are held to against the `f64` of
-    /// plink2, relative to the entry.
+    /// What each of the 40000 entries of a panel is held to against the
+    /// `f64` of plink2, as a share of the largest absolute entry of that
+    /// matrix, which is 1.23 on both panels.
     ///
-    /// Measured over both panels with this bound lowered until it failed:
-    /// every entry is within 4e-13 and one is not within 3e-13, an entry of
-    /// 4.88e-05 that is 1.59e-17 from plink2's. The largest ratios are all
-    /// at the smallest entries, where the two libraries add the same
-    /// products in a different order; the largest difference in absolute
-    /// terms is 4.44e-16 and 5.55e-16. This bound is between two and three
-    /// times the worst of them, so it holds and it would catch an error of
-    /// the arithmetic of 1e-11 relative, where the 1e-5 absolute of the text
-    /// plink2 prints would pass one of 5e-6.
-    const OF_THE_BITS_OF_PLINK2: f64 = 1e-12;
+    /// It is a share of the matrix and not of the entry because an entry is
+    /// a sum of products that cancel: it can be as near 0 as the data makes
+    /// it while the rounding of its sum stays where it was, so a bound
+    /// relative to the entry asks the smallest entries for an accuracy that
+    /// no arithmetic has. Measured over the 40000 entries of each panel on
+    /// 24 September 2026, the largest difference as a share of the largest
+    /// entry is 3.6e-16 and 4.5e-16 with the linear algebra on Accelerate,
+    /// and 3.3e-15 and 2.3e-15 on faer, which `--no-default-features` and
+    /// both wasm targets build. This bound is thirty times the worst of the
+    /// four, and it allows 1.2e-13 at the largest entry where a bound of
+    /// 1e-12 relative to the entry, which failed on faer, allowed 1.2e-12.
+    const OF_THE_BITS_OF_PLINK2: f64 = 1e-13;
 
     /// The worked example is whole numbers, which pyNei gives within
     /// 4.4e-16, so nothing of it is near this.
@@ -1092,11 +1095,19 @@ mod tests {
             kinship.matrix.len(),
             "the entries of {name}"
         );
+        // The largest absolute entry of the matrix, which every entry of it
+        // is held to a share of: the diagonal of a panel is near 1, and the
+        // entries near 0 are differences of sums that cancel and carry the
+        // rounding of those sums and not of themselves.
+        let largest = of_plink2
+            .iter()
+            .fold(0.0_f64, |so_far, value| so_far.max(value.abs()));
+        let allowed = OF_THE_BITS_OF_PLINK2 * largest;
         for (at, (entry, expected)) in kinship.matrix.iter().zip(&of_plink2).enumerate() {
             let apart = (entry - expected).abs();
             assert!(
-                apart <= OF_THE_BITS_OF_PLINK2 * expected.abs(),
-                "the entry {at} of {name} is {entry} and plink2 has {expected}, {apart} apart"
+                apart <= allowed,
+                "the entry {at} of {name} is {entry} and plink2 has {expected}, {apart} apart, where {allowed} is allowed of the largest entry {largest}"
             );
         }
     }
