@@ -402,14 +402,34 @@ not a normal one.
 Against plink2 `--glm hide-covar` on the panel with every genotype called,
 with `cov1` and `cov2` as covariates, which writes
 `tests/reference/gwas/plink2.panel_called.glm.linear.tsv`, 1200 rows with no
-`NA`. plink2 tests the minor allele and popnei the non major one, which here
-are the same, so `allele_freq` is plink2's `A1_FREQ` and the signs agree.
+`NA`. plink2 tests the minor allele and popnei the non major one. **On this
+panel they are the same**, so `allele_freq` is plink2's `A1_FREQ` and the
+signs agree; every genotype of it is called, and that is what makes the two
+conventions coincide.
+
+They are not the same in general, and `allele_freq` can pass a half. The
+major allele is the most frequent among the called **alleles**, which counts
+the called half of a half called genotype, while the mean that becomes
+`allele_freq` is over the whole called **genotypes**, which a half called
+one is not. So the allele the dosages are counted from is not always the one
+whose frequency is below a half. Run on 23 September 2026 on one variant of
+five individuals, `0/. 0/. 0/. 0/. 1/1`: the major allele is 0, on four
+called halves against two, while the only whole genotype is `1/1`, so the
+mean dosage is 2 and `allele_freq` is 1.0. popnei and pyNei agree on this,
+so it is a divergence from plink2 and not from the oracle, and neither
+reference panel shows it: one has every genotype called and the other has
+them missing whole.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
 frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
 `se` of that variant, for the reason above, which on this panel is between
-1.2e-6 and 3.2e-6 absolute and is comparable with the 5e-6 that six
-significant digits round `beta` by; and `p_value` within 1e-5 relative.
+1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
+
+Six significant digits round `beta` and `se` by up to 5e-7 absolute here, so
+the printing takes up to 41 per cent of that tolerance and leaves the
+arithmetic the rest. A tolerance is a budget shared between the rounding of
+the number it is compared against and the difference it is meant to catch,
+and the first share is worth computing rather than assumed to be small.
 
 The six literals are held to the same tolerance as the whole columns, 1e-5
 relative on all three. From plink2 on 23 September 2026:
@@ -1086,6 +1106,13 @@ pub struct GwasInput<'a> {
     pub transform_to_biallelic: bool,
 }
 ```
+
+`kinship`, when it is given, is checked before any model is fitted: that it
+holds `individuals.len()` times `individuals.len()` values, and that every
+one of them is finite. Neither is a thing a fit would notice. A matrix of
+the wrong length is read as another shape and gives numbers, and a NaN in
+one comes back much later as the linear algebra crate's refusal of a value
+that is not finite, naming a matrix at whichever routine met it first.
 
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
