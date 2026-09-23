@@ -33,6 +33,10 @@ export interface CalcPairwiseKosmanDistsOptions {
  * the distances row by row, and NaN for a pair that has no distance.
  * `squareDists` gives that square matrix.
  *
+ * The pairs of the measures of `calcPopDists` are pairs of populations, and
+ * everything here reads the same way with the populations in the place of
+ * the individuals: their names are the `names`.
+ *
  * It is the result of every distance calculation of popnei, as
  * `docs/specs/dists.md` has it, and it is the `Distances` of the Python
  * package with the names of TypeScript: a `Float64Array` where Python has a
@@ -46,7 +50,10 @@ export class Distances {
    */
   readonly distVector: Float64Array;
 
-  /** The names of the individuals, in the order the source has them. */
+  /**
+   * The names of the individuals, in the order the source has them, or of
+   * the populations of `calcPopDists`, in the order they were named in.
+   */
   readonly names: readonly string[];
 
   /**
@@ -56,16 +63,30 @@ export class Distances {
   readonly passStats: PassStats;
 
   /**
-   * The distances of the pairs of `names`, which is what
-   * `calcPairwiseKosmanDists` builds.
+   * How far each distance would move if the variants it was calculated over
+   * were drawn again, one value for each pair in the order of `distVector`,
+   * and `null` when the calculation gave none.
    *
-   * @throws {Error} When `distVector` does not hold one value for each pair
-   * of `names`, which is `names.length * (names.length - 1) / 2` of them.
+   * The Kosman distances between individuals never give one, and
+   * `calcPopDists` gives one for each measure only when it was asked to cut
+   * the variants into resampling groups. A pair that has a distance and no
+   * standard error is NaN.
+   */
+  readonly standardErrors: Float64Array | null;
+
+  /**
+   * The distances of the pairs of `names`, which is what
+   * `calcPairwiseKosmanDists` and `calcPopDists` build.
+   *
+   * @throws {Error} When `distVector`, or `standardErrors` where there are
+   * any, does not hold one value for each pair of `names`, which is
+   * `names.length * (names.length - 1) / 2` of them.
    */
   constructor(
     distVector: Float64Array,
     names: readonly string[],
     passStats: PassStats,
+    standardErrors: Float64Array | null = null,
   ) {
     const numPairs = (names.length * (names.length - 1)) / 2;
     if (distVector.length !== numPairs) {
@@ -74,9 +95,17 @@ export class Distances {
           `${numPairs} pairs, and ${distVector.length} values were given`,
       );
     }
+    if (standardErrors !== null && standardErrors.length !== numPairs) {
+      throw new Error(
+        `popnei: the standard error of each pair goes beside the distance ` +
+          `of that pair, and ${numPairs} distances were given with ` +
+          `${standardErrors.length} standard errors`,
+      );
+    }
     this.distVector = distVector;
     this.names = Object.freeze([...names]);
     this.passStats = passStats;
+    this.standardErrors = standardErrors;
   }
 
   /**
@@ -101,6 +130,34 @@ export class Distances {
         const dist = this.distVector[pair] as number;
         square[first * numIndividuals + second] = dist;
         square[second * numIndividuals + first] = dist;
+      }
+    }
+    return square;
+  }
+
+  /**
+   * The standard errors as the square matrix, N x N values row by row, and
+   * `null` where `standardErrors` is `null`, so that a caller who asked for
+   * none reads the same answer from the method and from the field.
+   *
+   * The standard error of a pair is in both of its cells and the diagonal is
+   * NaN, where `squareDists` has 0: a distance of an individual or a
+   * population with itself is 0 and known, and how far that 0 would move is
+   * nothing the calculation gives. The array is the caller's own: it is
+   * built at every call.
+   */
+  squareStandardErrors(): Float64Array | null {
+    if (this.standardErrors === null) {
+      return null;
+    }
+    const numNames = this.names.length;
+    const square = new Float64Array(numNames * numNames).fill(Number.NaN);
+    let pair = 0;
+    for (let first = 0; first < numNames; first += 1) {
+      for (let second = first + 1; second < numNames; second += 1, pair += 1) {
+        const error = this.standardErrors[pair] as number;
+        square[first * numNames + second] = error;
+        square[second * numNames + first] = error;
       }
     }
     return square;

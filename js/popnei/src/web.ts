@@ -32,6 +32,13 @@ export type {
   PcaResult,
   VariantsPcaResult,
 } from "./pca.js";
+export { calcPopDists } from "./pop_dists.js";
+export type {
+  CalcPopDistsOptions,
+  PopDistGroup,
+  PopDistMeasure,
+  PopDists,
+} from "./pop_dists.js";
 export { calcPerIndividualStats, calcPerVarDistribs } from "./stats.js";
 export type {
   BinType,

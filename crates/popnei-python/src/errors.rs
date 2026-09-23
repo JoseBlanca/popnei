@@ -162,6 +162,26 @@ impl PyPopneiError {
     }
 }
 
+/// Raises the Ctrl-C that arrived while the interpreter was released, which
+/// is still pending: no bytecode ran to raise it.
+///
+/// It is raised before numpy is called, because the first array of a
+/// process imports the C API of numpy, that import fails with the exception
+/// that is pending, and the numpy crate panics when it does: a user who
+/// asked for a Ctrl-C would get a `PanicException`, which no `except` of
+/// theirs catches and which ends the session.
+///
+/// Every call that releases the interpreter for a whole pass over a source
+/// and then builds an array of what it found calls this between the two.
+///
+/// # Errors
+///
+/// The `KeyboardInterrupt` of that Ctrl-C, on its way back as it is.
+pub(crate) fn raise_a_ctrl_c_before_numpy_is_called(py: Python<'_>) -> Result<(), PyPopneiError> {
+    py.check_signals()?;
+    Ok(())
+}
+
 impl From<popnei::Error> for PyPopneiError {
     fn from(error: popnei::Error) -> PyPopneiError {
         PyPopneiError::Core(error)
@@ -408,6 +428,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdDosagesOfOtherIndividuals { .. }
         | popnei::Error::LdR2OfAnotherSize { .. }
         | popnei::Error::LdLinalg { .. }
+        // The one of the distances between populations that no argument of
+        // `calc_pop_dists` gives: the sums of a resampling group that do
+        // not hold one place for each pair of the populations, which every
+        // variant of a block is added into. The places are made from the
+        // populations the pass counts over, so a user who gets it reports
+        // it instead of looking for what they typed wrong.
+        | popnei::Error::PopDistSumsOfAnotherSize { .. }
         // The plain filter of a threshold built for the criterion of the
         // filter by linkage disequilibrium, which it does not answer:
         // whether a variant passes that one turns on the variants kept
@@ -538,7 +565,30 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // have needed. The cap that no matrix could be held under, above,
         // names no file, because that one is wrong before any file is
         // opened.
-        | popnei::Error::LdTooManyVars { .. } => {
+        | popnei::Error::LdTooManyVars { .. }
+        // The nine of the distances between populations, which "The Rust
+        // interface" of `docs/specs/dists.md` lists. Four are of what a
+        // user wrote and name no file, since what is wrong with them is
+        // wrong whatever file is read: a measure under a name that is of
+        // none of the seven, resampling groups of 0 base pairs, fewer than
+        // two populations, and populations that make more pairs than this
+        // machine counts. The other five are of the variants that were
+        // read: fewer resampling groups than a standard error is built
+        // from, a variant whose position goes back and one of a chromosome
+        // that the variants before it had left, the six sums of every pair
+        // and group that the machine has not the memory for, and a source
+        // whose genotypes hold more alleles than popnei reads. Which of the
+        // two a case is, `with_its_file` of `pop_dists.rs` decides: it is
+        // the call that knows whether a file was being read.
+        | popnei::Error::PopDistMeasureOfAnUnknownName { .. }
+        | popnei::Error::JackknifeGroupOfNoBasePairs
+        | popnei::Error::PopDistsOfFewerThanTwoPops { .. }
+        | popnei::Error::PopDistsOfTooManyPops { .. }
+        | popnei::Error::TooFewJackknifeGroups { .. }
+        | popnei::Error::JackknifeGroupsVariantGoesBack { .. }
+        | popnei::Error::JackknifeGroupsChromComesBack { .. }
+        | popnei::Error::PopDistSumsTooLarge { .. }
+        | popnei::Error::PopDistsPloidyOutOfRange { .. } => {
             PyValueError::new_err(of_the_file(message, path))
         }
         // Everything else is a wrong input of a function, which a file

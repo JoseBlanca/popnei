@@ -49,7 +49,9 @@ use crate::steps::{Steps, chain_of};
 /// `docs/specs/block.md` sets.
 ///
 /// The positions cross as float64, which holds every whole number up to
-/// this one and not the ones above it: 2^53 + 1 would arrive as 2^53.
+/// this one and not the ones above it: 2^53 + 1 would arrive as 2^53. It is
+/// also the longest stretch of a chromosome the resampling groups of the
+/// distances between populations are cut into, for the same reason.
 ///
 /// It is one above the largest window a user may write for the filter by
 /// linkage disequilibrium, the 2^53 - 1 of `LARGEST_WINDOW` of `steps.rs`,

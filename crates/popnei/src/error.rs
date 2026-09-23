@@ -1119,6 +1119,176 @@ pub enum Error {
         max_num_vars: usize,
     },
 
+    /// A user asked for a measure of how far apart two populations are
+    /// under a name that is of none of the seven. The names are those of
+    /// the fields of the result, and they are
+    /// `pop_dists::PopDistMeasure::NAMES`, which the message lists. In
+    /// Python it is a `ValueError`.
+    #[error(
+        "`{name}` is not one of the measures of how far apart two populations are, which are {the_seven}",
+        the_seven = the_seven_measures()
+    )]
+    PopDistMeasureOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// The variants were asked to be cut into resampling groups of 0 base
+    /// pairs. A group is a stretch of one chromosome and holds one base
+    /// pair at least. A caller who wants each variant in a group of its own
+    /// asks for that, and one who wants no standard error asks for no
+    /// groups; neither is a length.
+    #[error(
+        "the variants were asked to be cut into resampling groups of 0 base pairs, and a group is a stretch of one chromosome 1 base pair long at least"
+    )]
+    JackknifeGroupOfNoBasePairs,
+
+    /// The distances between populations were asked for fewer than two
+    /// populations. Every one of the seven measures is of a pair, so one
+    /// population makes no pair and there is nothing to give. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the distances between populations are calculated for each pair of populations, and `pops` names {num_pops}: name two populations at least"
+    )]
+    PopDistsOfFewerThanTwoPops {
+        /// How many populations the caller named, which is 1: `Pops`
+        /// refuses a `pops` that names none.
+        num_pops: usize,
+    },
+
+    /// The variants of a pass fell into fewer resampling groups than a
+    /// standard error is built from. Each group is left out in turn and the
+    /// measure calculated again, so a handful of groups gives a number that
+    /// says more about where the cuts fell than about the populations, and
+    /// a user who chose a length too long for their data is told rather
+    /// than handed it. In Python it is a `ValueError`.
+    #[error(
+        "the variants fell into {num_groups} resampling groups, and a standard error is built from {at_least} at least: cut them into shorter groups, or ask for no standard error"
+    )]
+    TooFewJackknifeGroups {
+        /// How many groups the variants of the pass fell into.
+        num_groups: usize,
+        /// How many the standard errors need,
+        /// [`MIN_NUM_JACKKNIFE_GROUPS`](crate::pop_dists::MIN_NUM_JACKKNIFE_GROUPS).
+        at_least: usize,
+    },
+
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant whose position is below the position of the variant
+    /// before it on the same chromosome. The groups are stretches of one
+    /// chromosome, cut by comparing the position of a variant with the
+    /// first position of the group being filled, so a variant that goes
+    /// back joins that group instead of starting one and the groups are
+    /// not the stretches the user asked for. "The standard errors" of
+    /// `docs/specs/dists.md` has what it does to the standard error. In
+    /// Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} comes after the variant at {chrom} {before} of the same chromosome: a group is a stretch of one chromosome, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsVariantGoesBack {
+        /// The chromosome of both variants, as the table of the reader
+        /// names it, and as its number where that table has no name for
+        /// it, which only a reader with a defect gives.
+        chrom: String,
+        /// The position of the variant that goes back.
+        pos: u64,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
+    /// A source whose variants are cut into resampling groups of a length
+    /// gave a variant of a chromosome that an earlier variant had left.
+    /// The variants of a chromosome that comes back are cut into groups of
+    /// their own over the stretch the earlier ones were already cut into,
+    /// so the groups overlap and are not the stretches the user asked for.
+    /// In Python it is a `ValueError`, and it names the file the variants
+    /// were read from.
+    #[error(
+        "the variants are cut into resampling groups by their position, and the variant at {chrom} {pos} is of a chromosome that the variant at {before_chrom} {before} had left: the variants of one chromosome have to come together, so sort the source by chromosome and position, or ask for no standard error"
+    )]
+    JackknifeGroupsChromComesBack {
+        /// The chromosome that comes back, as the table of the reader
+        /// names it.
+        chrom: String,
+        /// The position of the variant that is on it.
+        pos: u64,
+        /// The chromosome of the variant before it.
+        before_chrom: String,
+        /// The position of the variant before it.
+        before: u64,
+    },
+
+    /// The six sums the distances between populations are worked out from
+    /// are more than this machine gave room for: popnei keeps them for each
+    /// pair of populations and each resampling group, 48 bytes each, and
+    /// either the pairs and the groups are more than a `usize` counts or
+    /// the machine did not give their memory. The groups appear while the
+    /// variants are read, so it is raised where the sums grow. In Python it
+    /// is a `ValueError`.
+    #[error(
+        "the six sums popnei keeps for each pair of {num_pops} populations within each of the {num_groups} resampling groups the variants have fallen into, 48 bytes each, are more than this machine gave room for: calculate over fewer populations, or cut the variants into longer groups"
+    )]
+    PopDistSumsTooLarge {
+        /// How many populations the pairs are of.
+        num_pops: usize,
+        /// How many groups the variants read so far have fallen into, and 1
+        /// when no standard errors were asked for, since the sums are then
+        /// one run of the pairs.
+        num_groups: usize,
+    },
+
+    /// The populations the distances were asked for make more pairs than
+    /// this machine counts, which takes about 93000 of them where a
+    /// `usize` is 32 bits, as it is in wasm, and 4294967296 where it is 64.
+    /// It is found before a variant is read, so the resampling groups are
+    /// none yet and have no part in it, which is what tells it from
+    /// [`Error::PopDistSumsTooLarge`]. In Python it is a `ValueError`.
+    #[error(
+        "{num_pops} populations make more pairs than this machine counts, and every measure of how far apart two populations are is of a pair: calculate over fewer populations"
+    )]
+    PopDistsOfTooManyPops {
+        /// How many populations were given.
+        num_pops: usize,
+    },
+
+    /// The reader of a pass over the variants says its genotypes hold 0
+    /// alleles, or more than the largest ploidy a reader of popnei gives.
+    /// The allele frequencies of a population are raised to that ploidy,
+    /// and a ploidy of 0 would turn the `min_num_individuals` test off as
+    /// well, since it asks for 0 called alleles. The VCF reader refuses
+    /// both when it is opened, and the vars file reader refuses a file
+    /// whose genotypes hold no allele, so what is left here is a vars file
+    /// that says its genotypes hold more alleles than popnei reads. In
+    /// Python it is a `ValueError`, and it names the file the variants were
+    /// read from.
+    #[error(
+        "the variants were read at a ploidy of {ploidy}, and the distances between populations are calculated over genotypes of 1 allele at least and {largest} at most: the allele frequencies of a population are raised to the ploidy"
+    )]
+    PopDistsPloidyOutOfRange {
+        /// The ploidy the reader of the pass gives.
+        ploidy: usize,
+        /// The largest one popnei reads, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// The sums of one resampling group do not hold one place for each pair
+    /// of the populations the variants are being counted over. Every
+    /// variant of a block is added into them pair by pair, so the pairs
+    /// after the last place would be counted at no variant while the others
+    /// were counted at every one, and each measure of them would come out
+    /// of sums of different variants. In Python it is a `RuntimeError`:
+    /// nothing a user asks for gives it.
+    #[error(
+        "the sums of one resampling group hold {num_pairs} pairs, and {num_pops} populations make more; a variant is added into the sums of every pair it counts for"
+    )]
+    PopDistSumsOfAnotherSize {
+        /// How many populations the variants are counted over.
+        num_pops: usize,
+        /// How many pairs the sums of one group hold.
+        num_pairs: usize,
+    },
+
     /// A name that was given for a column of a block is not one of the
     /// five. It is a Python or a TypeScript user who writes them, in
     /// `iter_blocks(fields=...)`, so the message lists the names there are.
@@ -1599,17 +1769,28 @@ fn a_pass_that_gave_no_variant(
     )
 }
 
+/// The seven measures of how far apart two populations are under the names
+/// a user writes them, for the message that refuses a name that is of none
+/// of them: "`fst`, `f2`, `chord`, `da`, `dest`, `gst` and
+/// `gst_standardized`".
+fn the_seven_measures() -> String {
+    listed(&crate::pop_dists::PopDistMeasure::NAMES)
+}
+
 /// The five statistics of a variant under the names a user writes them, for
 /// the message that refuses a name that is of none of them: "`obs_het`,
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
 fn the_five_statistics() -> String {
-    let named: Vec<String> = crate::stats::PerVarStat::NAMES
-        .iter()
-        .map(|name| format!("`{name}`"))
-        .collect();
+    listed(&crate::stats::PerVarStat::NAMES)
+}
+
+/// `names` in one sentence, each in backticks, the last one after an "and":
+/// "`maf` and `obs_het`".
+fn listed(names: &[&'static str]) -> String {
+    let named: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
     match named.split_last() {
         Some((last, before)) => format!("{} and {last}", before.join(", ")),
-        // `NAMES` holds five names, so it has a last one.
+        // Every table of names this is called with holds names.
         None => String::new(),
     }
 }
