@@ -1388,6 +1388,23 @@ different: the three compare one number per variant, and this one takes the
 r² of every candidate against every variant of its window, which is matrix
 products over the genotypes.
 
+In a browser, on the wasm package run under node v26.8.2 with
+`js/popnei/bench/time_filter_by_ld.mjs`, on one thread, where the linear
+algebra is faer and not Accelerate, over the same vars file, the median of
+5 runs:
+
+| | a browser | natively | how many times |
+|---|---|---|---|
+| the pass with no filter | 0.114 s | 0.106 s | 1.1 |
+| with the filter, `max_dist` 250000, window 249.2 | 18.402 s | 1.631 s | 11.3 |
+| with the filter, `max_dist` 1, window 0 | 7.483 s | 0.696 s | 10.8 |
+
+Reading the file costs a browser almost nothing more, so the whole of the
+difference is the filter's arithmetic. The share paid before the window
+holds anything is the same on both, two fifths. There is no target for a
+browser. The filter keeps the same variants in both builds, 99919 of 100000
+at a `max_dist` of 250000 and 100000 at a `max_dist` of 1.
+
 What was measured and not changed, from the same review: the window keeps
 the genotypes of its variants, one byte per allele, and expands them into
 the three matrices of `docs/specs/ld.md` for every set of candidates it

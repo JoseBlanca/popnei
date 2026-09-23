@@ -1002,6 +1002,37 @@ promise that the caller has checked, which changes "Errors" of
 the change, which is the same conclusion, on the same scans, that
 `docs/reports/perf-pca-2026-09-22.md` reached on 22 September 2026.
 
+### In a browser
+
+Measured on 23 September 2026 on the same machine, on the wasm package
+built with `npm run build` in `js/popnei` and run under node v26.8.2 with
+`js/popnei/bench/time_r2_matrix.mjs`, on one thread, with the 128-bit
+vector instructions of WebAssembly that `.cargo/config.toml` passes to both
+wasm targets. There the linear algebra is faer and not Accelerate. The
+median of 5 runs, with the file opened outside every timing and the memory
+of the matrix inside it.
+
+| the matrix of 5000 variants of 1000 individuals | best | median | worst |
+|---|---|---|---|
+| the whole call | 5.618 s | 5.623 s | 5.681 s |
+| reading the vars file | 0.006 s | 0.006 s | 0.007 s |
+| the calculation, less the reading | 5.611 s | 5.616 s | 5.675 s |
+
+**A browser takes 14.8 times what the native build takes**, 5.616 s against
+0.380 s of calculation, and reads the file in the same 0.006 s. There is no
+target for a browser and this is the first measurement of one.
+
+The matrix is the same in both: every run printed the 25000000 values
+adding to 224076.635484 with none of them not a number, which is the native
+benchmark's figure to all six decimals.
+
+The module holds 593 MB of WebAssembly memory at the high-water mark of one
+call, which it reaches on the first call and never adds to. The matrix is
+200 MB of that, the copy the binding makes of it on the way to JavaScript
+another 200 MB, the three matrices of the five tiles 120 MB and the six
+sums of a pair of tiles 48 MB. WebAssembly gives no page back to the host,
+so that mark is what a tab keeps for its lifetime.
+
 ### For comparison
 
 pyNei's one product and division over the same dosages, which leaves a
