@@ -38,6 +38,7 @@ from popnei import (
     calc_pop_dists,
     open_vcf,
 )
+from popnei.pop_dists import _the_measures
 
 DISTS_REFERENCE_DIR = Path(__file__).parent / "reference" / "dists"
 STATS_REFERENCE_DIR = Path(__file__).parent / "reference" / "stats"
@@ -104,6 +105,11 @@ F2_TOLERANCE = 1e-12
 # p1-p2. Every variant counts for every pair at the default of 20.
 PARTING_MIN_NUM_INDIVIDUALS = 47
 PANEL_NUM_VARS_OF_EACH_PAIR = (688, 688, 1200)
+
+# The threshold at which the two pairs of p0 count no variant at all: p0 has
+# 48 individuals, so it never has 50 called genotypes at a variant, and p1
+# and p2, of 68 and 84, have every variant of the panel at it.
+NO_VARIANT_MIN_NUM_INDIVIDUALS = 50
 
 # The two measures that work package 1 of `docs/plans/dists-pops.md`
 # calculates, and the five that the work packages 2 and 3 add.
@@ -322,6 +328,36 @@ def test_groups_of_no_base_pairs_are_refused() -> None:
     assert "variant" in said
 
 
+def test_a_jackknife_group_that_is_no_length_and_no_word_is_refused() -> None:
+    """The four values beside 0 that are none of the three kinds the argument
+    takes, a length in base pairs of 1 or more, `"variant"` and `None`.
+
+    A negative length and the word `"variants"` are the wrong value of a kind
+    the argument takes, which is a `ValueError`; 2.5 and `True` are of a kind
+    it does not take, which is a `TypeError`. `True` is a whole number in
+    Python and would otherwise be a group of one base pair, which says
+    nothing about the linkage disequilibrium of the populations being
+    compared.
+    """
+    for given, refused_with in (
+        (-1, ValueError),
+        ("variants", ValueError),
+        (2.5, TypeError),
+        (True, TypeError),
+    ):
+        with pytest.raises(refused_with) as refusal:
+            calc_pop_dists(
+                open_vcf(PANEL),
+                PANEL_POPS,
+                jackknife_group=given,
+                measures=("fst",),
+            )
+
+        said = str(refusal.value)
+        assert "`jackknife_group`" in said, given
+        assert "variant" in said, given
+
+
 def test_fewer_than_twenty_groups_are_refused_with_how_many_there_were() -> None:
     """A length of 100 000 base pairs on the biallelic panel, which cuts it
     into 12 groups.
@@ -509,6 +545,51 @@ def test_the_variants_that_count_are_counted_for_each_pair_on_its_own() -> None:
     assert at_the_default.fst.dist_vector[0] != parted.fst.dist_vector[0]
 
 
+def test_a_pair_with_no_variant_is_nan_and_the_pass_is_not_an_error() -> None:
+    """The biallelic panel at a `min_num_individuals` of 50, which p0 never
+    reaches: it has 48 individuals, so its largest count of called genotypes
+    at a variant is 48.
+
+    The two pairs p0 is in count no variant at all, and the spec asks for no
+    value for any measure there, NaN in the distance vector and in the
+    standard error, and a `num_vars` of 0. The pass is not an error: p1-p2
+    counted every variant and has the f_2 and the standard error that
+    ADMIXTOOLS gives for it, which is what says that the two NaN are the two
+    pairs and not the whole pass.
+    """
+    dists = calc_pop_dists(
+        open_vcf(PANEL),
+        PANEL_POPS,
+        jackknife_group=PANEL_JACKKNIFE_GROUP,
+        measures=("fst", "f2"),
+        min_num_individuals=NO_VARIANT_MIN_NUM_INDIVIDUALS,
+    )
+
+    assert tuple(dists.num_vars) == (0, 0, PANEL_NUM_VARS)
+    for measure in MEASURES_THAT_ARE_WRITTEN:
+        values = getattr(dists, measure)
+        assert math.isnan(values.dist_vector[0]), measure
+        assert math.isnan(values.dist_vector[1]), measure
+        assert math.isnan(values.standard_errors[0]), measure
+        assert math.isnan(values.standard_errors[1]), measure
+        assert not math.isnan(values.dist_vector[2]), measure
+    _assert_within(
+        dists.f2.dist_vector[2:], PANEL_F2[2:], F2_TOLERANCE, True, "the f_2 of p1-p2"
+    )
+    _assert_within(
+        dists.f2.standard_errors[2:],
+        PANEL_F2_STANDARD_ERRORS[2:],
+        F2_TOLERANCE,
+        True,
+        "the standard error of the f_2 of p1-p2",
+    )
+    # The f_2 of the pairs with no variant is NaN within every group too: no
+    # variant of theirs fell in any of them.
+    assert numpy.isnan(dists.f2_groups[:, :2]).all()
+    assert not numpy.isnan(dists.f2_groups[:, 2]).any()
+    assert dists.pass_stats.num_vars == PANEL_NUM_VARS
+
+
 def test_the_pairs_are_in_the_order_the_populations_were_named_in() -> None:
     """The populations stay in the order of the `pops` dict, which is where
     popnei parts from pyNei: pyNei sorts their names.
@@ -612,6 +693,44 @@ def test_a_measure_that_was_not_asked_for_is_none_in_the_result() -> None:
     assert numpy.array_equal(of_one.f2.dist_vector, of_both.f2.dist_vector)
     for measure in MEASURES_THAT_ARE_NOT_WRITTEN_YET:
         assert getattr(of_both, measure) is None
+
+
+def test_one_measure_as_a_bare_string_and_a_repeated_one_are_taken_once() -> None:
+    """A member of a `StrEnum` is a string, so one written on its own is a
+    sequence of its letters and would be read as six measures of one letter
+    each: it is taken as that one measure, as a name written as a string is.
+
+    A name written twice is taken once, so that the result holds one
+    `Distances` for it and the pass calculates it once.
+    """
+    of_a_bare_string = calc_pop_dists(
+        open_vcf(PANEL), PANEL_POPS, jackknife_group=None, measures="fst"
+    )
+    of_a_member = calc_pop_dists(
+        open_vcf(PANEL), PANEL_POPS, jackknife_group=None, measures=PopDistMeasure.FST
+    )
+    of_a_name_twice = calc_pop_dists(
+        open_vcf(PANEL),
+        PANEL_POPS,
+        jackknife_group=None,
+        measures=("fst", "f2", "fst"),
+    )
+
+    assert of_a_bare_string.f2 is None
+    assert of_a_member.f2 is None
+    assert numpy.array_equal(
+        of_a_bare_string.fst.dist_vector, of_a_member.fst.dist_vector
+    )
+    assert numpy.array_equal(
+        of_a_name_twice.fst.dist_vector, of_a_bare_string.fst.dist_vector
+    )
+    assert of_a_name_twice.f2 is not None
+    # A name written twice gives the same result either way, since the second
+    # one would overwrite the field of the first with the same numbers: what
+    # the result cannot show is that the measure was named once for the pass,
+    # so the names it was asked for are read here.
+    assert _the_measures(("fst", "f2", "fst")) == ["fst", "f2"]
+    assert _the_measures("fst") == ["fst"]
 
 
 def test_a_measure_that_is_not_written_yet_is_refused() -> None:
