@@ -1577,11 +1577,14 @@ fn the_genotypes_of(
 /// of the genotype, how many of its alleles are not `major`, with a 0 for a
 /// genotype that has an allele missing; a 1 where the genotype was called
 /// and a 0 where it was not; and the square of the dosage.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and \
-              `LdDosages::of_block` refuses a ploidy above the 255 a u8 holds"
-)]
+///
+/// The ploidies 1 to 4 each get the loop with the length of a genotype
+/// written into it, because with that length a constant the compiler reads
+/// the genotypes of several individuals at once, and with it a number the
+/// dataset carries it reads one allele at a time. Every other ploidy takes
+/// [`the_dosages_of_any_ploidy`], which is the same body with the length
+/// read from the dataset. The arms give the same values: the dosage is a
+/// count of alleles and the missing flag is a boolean.
 fn the_dosages_of_a_variant(
     genotypes: &[i8],
     of_a_genotype: NonZeroUsize,
@@ -1590,13 +1593,50 @@ fn the_dosages_of_a_variant(
     called: &mut [f64],
     squares: &mut [f64],
 ) -> bool {
-    let mut of_the_first_called = None;
-    let mut has_variance = false;
+    match of_a_genotype.get() {
+        1 => the_dosages_of_a_ploidy_of::<1>(genotypes, major, row, called, squares),
+        2 => the_dosages_of_a_ploidy_of::<2>(genotypes, major, row, called, squares),
+        3 => the_dosages_of_a_ploidy_of::<3>(genotypes, major, row, called, squares),
+        4 => the_dosages_of_a_ploidy_of::<4>(genotypes, major, row, called, squares),
+        of_a_genotype => {
+            the_dosages_of_any_ploidy(genotypes, of_a_genotype, major, row, called, squares)
+        }
+    }
+}
+
+/// The three values of each individual at one variant whose genotypes hold
+/// `OF_A_GENOTYPE` alleles, which is the body of
+/// [`the_dosages_of_a_variant`] with the length of a genotype known when
+/// the code is compiled.
+///
+/// Neither the genotype with an allele missing nor the two dosages of the
+/// variant branch: the first is a choice between two values the compiler
+/// takes lane by lane, and the second is the lowest and the highest dosage
+/// of the called genotypes, which differ exactly when two called genotypes
+/// differ. A genotype that was not called leaves both alone, since it
+/// offers [`u8::MAX`] to the lowest and 0 to the highest, and a variant of
+/// no called genotype ends with a lowest of [`u8::MAX`] and a highest of 0,
+/// which is why the answer is the strict comparison and not an inequality.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and \
+              `LdDosages::of_block` refuses a ploidy above the 255 a u8 holds"
+)]
+fn the_dosages_of_a_ploidy_of<const OF_A_GENOTYPE: usize>(
+    genotypes: &[i8],
+    major: i8,
+    row: &mut [f64],
+    called: &mut [f64],
+    squares: &mut [f64],
+) -> bool {
+    let (genotypes, _) = genotypes.as_chunks::<OF_A_GENOTYPE>();
+    let mut lowest = u8::MAX;
+    let mut highest = 0_u8;
     let values = row
         .iter_mut()
         .zip(called.iter_mut())
         .zip(squares.iter_mut())
-        .zip(genotypes.chunks_exact(of_a_genotype.get()));
+        .zip(genotypes);
     for (((dosage_of, called_of), square_of), genotype) in values {
         let mut dosage = 0_u8;
         let mut missing = 0_u8;
@@ -1604,26 +1644,56 @@ fn the_dosages_of_a_variant(
             dosage += u8::from(*allele != major);
             missing |= u8::from(*allele == MISSING_ALLELE);
         }
-        if missing != 0 {
-            // A genotype with an allele missing has no dosage: it is a 0
-            // in the dosages and in their squares, and a 0 in the called
-            // genotypes takes it out of every sum of every pair its
-            // variant is in.
-            *dosage_of = 0.0;
-            *called_of = 0.0;
-            *square_of = 0.0;
-            continue;
-        }
-        let value = f64::from(dosage);
+        // A genotype with an allele missing has no dosage: it is a 0 in the
+        // dosages and in their squares, and a 0 in the called genotypes
+        // takes it out of every sum of every pair its variant is in.
+        let value = if missing == 0 { f64::from(dosage) } else { 0.0 };
         *dosage_of = value;
-        *called_of = 1.0;
+        *called_of = if missing == 0 { 1.0 } else { 0.0 };
         *square_of = value * value;
-        match of_the_first_called {
-            None => of_the_first_called = Some(dosage),
-            Some(first) => has_variance |= first != dosage,
-        }
+        lowest = lowest.min(if missing == 0 { dosage } else { u8::MAX });
+        highest = highest.max(if missing == 0 { dosage } else { 0 });
     }
-    has_variance
+    highest > lowest
+}
+
+/// The three values of each individual at one variant whose genotypes hold
+/// `of_a_genotype` alleles, a length the dataset carries.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the dosage counts the alleles of one genotype, which are the ploidy, and \
+              `LdDosages::of_block` refuses a ploidy above the 255 a u8 holds"
+)]
+fn the_dosages_of_any_ploidy(
+    genotypes: &[i8],
+    of_a_genotype: usize,
+    major: i8,
+    row: &mut [f64],
+    called: &mut [f64],
+    squares: &mut [f64],
+) -> bool {
+    let mut lowest = u8::MAX;
+    let mut highest = 0_u8;
+    let values = row
+        .iter_mut()
+        .zip(called.iter_mut())
+        .zip(squares.iter_mut())
+        .zip(genotypes.chunks_exact(of_a_genotype));
+    for (((dosage_of, called_of), square_of), genotype) in values {
+        let mut dosage = 0_u8;
+        let mut missing = 0_u8;
+        for allele in genotype {
+            dosage += u8::from(*allele != major);
+            missing |= u8::from(*allele == MISSING_ALLELE);
+        }
+        let value = if missing == 0 { f64::from(dosage) } else { 0.0 };
+        *dosage_of = value;
+        *called_of = if missing == 0 { 1.0 } else { 0.0 };
+        *square_of = value * value;
+        lowest = lowest.min(if missing == 0 { dosage } else { u8::MAX });
+        highest = highest.max(if missing == 0 { dosage } else { 0 });
+    }
+    highest > lowest
 }
 
 /// The dosage that an entry of the matrix of the dosages holds.
@@ -1708,7 +1778,8 @@ mod tests {
         LdDosages, MAX_ALLELES_OF_A_VARIANT, MAX_NUM_VARS_OF_THE_MATRIX, MAX_PLOIDY_OF_THE_DOSAGES,
         MAX_VALUES_OF_THE_DOSAGES, R2Matrix, THE_VARS_OF_A_TILE, TheIndividualsThatDiffer,
         TheSumsOfThePairs, TheSumsOfTheSecondSet, a_vector_of, calc_r2_matrix, r2_between,
-        the_genotypes_of, the_memory_for, the_r2_matrix_in_tiles_of, the_values_of,
+        the_dosages_of_a_variant, the_dosages_of_any_ploidy, the_genotypes_of, the_memory_for,
+        the_r2_matrix_in_tiles_of, the_values_of,
     };
     use popnei_linalg::Error as LinalgError;
 
@@ -1863,6 +1934,119 @@ mod tests {
             &[0.0, 0.0, 0.0, 1.0, 0.0, 4.0],
             "the squares of the dosages of v3",
         );
+    }
+
+    /// The alleles repeat with a period of 11, which none of the four
+    /// ploidies divides, so a missing allele falls in every position of a
+    /// genotype, and the run of four major alleles the period opens with
+    /// gives a genotype of the dosage 0 at each of them. The four
+    /// assertions at the end check that the fixture reaches the three cases
+    /// the two loops could disagree on: a genotype with an allele missing,
+    /// a genotype of the major allele only, a variant of two dosages at
+    /// least, and a variant of one called dosage, which is the last one.
+    #[test]
+    fn the_dosages_of_a_fixed_ploidy_are_the_dosages_of_the_loop_that_reads_the_ploidy() {
+        const NUM_INDIVIDUALS: usize = 131;
+        for ploidy in 1..=4_usize {
+            let of_a_genotype = match NonZeroUsize::new(ploidy) {
+                Some(of_a_genotype) => of_a_genotype,
+                None => panic!("a ploidy of 0"),
+            };
+            for (gts, named) in [
+                (
+                    (0..NUM_INDIVIDUALS * ploidy)
+                        .map(|allele| match allele % 11 {
+                            0..=3 | 7 | 8 | 10 => 1,
+                            4 | 9 => 0,
+                            5 => 2,
+                            _ => M,
+                        })
+                        .collect::<Vec<i8>>(),
+                    "the genotypes of every dosage",
+                ),
+                (
+                    (0..NUM_INDIVIDUALS * ploidy)
+                        .map(|allele| if allele % 11 == 5 { M } else { 1 })
+                        .collect::<Vec<i8>>(),
+                    "the genotypes of one called dosage",
+                ),
+            ] {
+                let mut of_the_match = (
+                    vec![9.0; NUM_INDIVIDUALS],
+                    vec![9.0; NUM_INDIVIDUALS],
+                    vec![9.0; NUM_INDIVIDUALS],
+                );
+                let mut of_the_loop = of_the_match.clone();
+                let matched = the_dosages_of_a_variant(
+                    &gts,
+                    of_a_genotype,
+                    1,
+                    &mut of_the_match.0,
+                    &mut of_the_match.1,
+                    &mut of_the_match.2,
+                );
+                let looped = the_dosages_of_any_ploidy(
+                    &gts,
+                    ploidy,
+                    1,
+                    &mut of_the_loop.0,
+                    &mut of_the_loop.1,
+                    &mut of_the_loop.2,
+                );
+                assert_eq!(
+                    of_the_match, of_the_loop,
+                    "{named}: the three values of a ploidy of {ploidy}"
+                );
+                assert_eq!(
+                    matched, looped,
+                    "{named}: the variance of a ploidy of {ploidy}"
+                );
+            }
+            let gts: Vec<i8> = (0..NUM_INDIVIDUALS * ploidy)
+                .map(|allele| match allele % 11 {
+                    0..=3 | 7 | 8 | 10 => 1,
+                    4 | 9 => 0,
+                    5 => 2,
+                    _ => M,
+                })
+                .collect();
+            let mut values = (
+                vec![9.0; NUM_INDIVIDUALS],
+                vec![9.0; NUM_INDIVIDUALS],
+                vec![9.0; NUM_INDIVIDUALS],
+            );
+            let has_variance = the_dosages_of_a_variant(
+                &gts,
+                of_a_genotype,
+                1,
+                &mut values.0,
+                &mut values.1,
+                &mut values.2,
+            );
+            assert!(
+                values.1.contains(&0.0),
+                "a genotype with an allele missing at a ploidy of {ploidy}"
+            );
+            assert!(
+                values.0.contains(&0.0) && values.1.contains(&1.0),
+                "a genotype of the major allele only at a ploidy of {ploidy}"
+            );
+            assert!(has_variance, "two dosages at a ploidy of {ploidy}");
+            let of_one_dosage: Vec<i8> = (0..NUM_INDIVIDUALS * ploidy)
+                .map(|allele| if allele % 11 == 5 { M } else { 1 })
+                .collect();
+            assert!(
+                !the_dosages_of_a_variant(
+                    &of_one_dosage,
+                    of_a_genotype,
+                    1,
+                    &mut values.0,
+                    &mut values.1,
+                    &mut values.2,
+                ),
+                "one called dosage at a ploidy of {ploidy}"
+            );
+        }
     }
 
     #[test]
