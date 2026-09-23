@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyMemoryError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 create_exception!(
@@ -100,6 +100,19 @@ pub(crate) enum PyPopneiError {
     ArrayNotContiguous {
         /// The name of the argument, as a Python user writes it.
         name: &'static str,
+    },
+    /// Memory this crate asked the machine for and was not given, with what
+    /// a user reads of it: what could not be held, how large it is and what
+    /// they do about it.
+    ///
+    /// The one case today is the copy of the matrix of r² that numpy is
+    /// given, which `ld.rs` asks for with `try_reserve_exact`. The core
+    /// refuses the memory of its own matrices the same way, and both are a
+    /// `MemoryError` in Python.
+    NoMemory {
+        /// What a user reads, which the call site writes because it is the
+        /// one that knows what was being held.
+        message: String,
     },
 
     /// A pass that gave a calculation no variant, with the file it read and
@@ -252,6 +265,13 @@ impl From<PyPopneiError> for PyErr {
                 path,
                 problem,
             } => left_behind(PyErr::from(*error), &path, &problem),
+            // Memory the machine did not give is the `MemoryError` of
+            // Python, as the memory the core asked for and was not given
+            // is: the call is right and popnei is not broken, and the same
+            // call on a machine with the memory free gives the result. It
+            // names no file, since what could not be held is the size of
+            // the calculation and not what any file holds.
+            PyPopneiError::NoMemory { message } => PyMemoryError::new_err(message),
             PyPopneiError::Broken { message, path } => {
                 PyRuntimeError::new_err(of_the_file(message, path))
             }
@@ -335,7 +355,11 @@ fn left_behind(raised: PyErr, path: &Path, problem: &str) -> PyErr {
 /// owner gave on 21 September 2026: an `OSError` for a file that cannot be
 /// read, that was cut short or that is corrupted; a `RuntimeError` for a
 /// defect of popnei; and a `ValueError` for a wrong input of a function,
-/// which a file whose content is not what a VCF holds is.
+/// which a file whose content is not what a VCF holds is. A `MemoryError`
+/// is the fourth, for the memory a calculation asked this machine for and
+/// was not given, which is neither of the three: the call is right, popnei
+/// is not broken, and the same call on a machine with the memory free
+/// gives the result.
 ///
 /// `path` is the file the error happened in, for the calls that read one.
 #[expect(
@@ -515,21 +539,19 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::PcaStandardizeWithoutCentering
         | popnei::Error::PcaTableTooSmall { .. }
         | popnei::Error::PcaNoTraitWithVariance
-        // The five of the r² of a set of variants that are wrong whatever
+        // The four of the r² of a set of variants that are wrong whatever
         // file is read: an index that is not an individual of the dataset
         // and one given twice, which are the individuals of a population
-        // as a user writes them; and the three sizes the calculation
-        // cannot be done at, dosages of more values than the linear
-        // algebra counts in, a variant of more alleles than the sums come
-        // out of exactly, and a matrix this machine has not the memory
-        // for. What a user does about each of the last three is calculate
-        // over fewer variants or over fewer individuals, whichever file
-        // they read.
+        // as a user writes them; and the two sizes the calculation cannot
+        // be done at, dosages of more values than the linear algebra
+        // counts in and a variant of more alleles than the sums come out
+        // of exactly. What a user does about those two is calculate over
+        // fewer variants or over fewer individuals, whichever file they
+        // read.
         | popnei::Error::LdIndividualNotInTheDataset { .. }
         | popnei::Error::LdIndividualAskedForTwice { .. }
         | popnei::Error::LdDosagesTooLarge { .. }
         | popnei::Error::LdTooManyAllelesInAVariant { .. }
-        | popnei::Error::LdNoMemory { .. }
         // The two of the `max_num_vars` of the matrix of every pair, which
         // is the one number a user writes at that call: a pass that gave
         // more variants than it, and a cap of more variants than this
@@ -539,6 +561,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // they read.
         | popnei::Error::LdTooManyVars { .. }
         | popnei::Error::LdMaxNumVarsTooLarge { .. } => PyValueError::new_err(message),
+        // The matrix of the r², or one of the matrices it is worked out
+        // through, that this machine did not give the memory of, which is
+        // the `MemoryError` Python has for an allocation that was not
+        // given. It is not a `ValueError`: the call says what the user
+        // meant, and it runs on a machine that has the memory free, so a
+        // caller who catches it takes fewer variants or fewer individuals
+        // instead of looking for what they typed wrong. It names no file,
+        // since what it refuses is the size of the calculation and not
+        // what any file holds.
+        popnei::Error::LdNoMemory { .. } => PyMemoryError::new_err(message),
         // The five of the principal components of the variants that the
         // dataset a user gave is wrong for: no variants, which the steps of
         // a `Variants` can leave; no variant with variance, which one
