@@ -955,17 +955,25 @@ Cholesky above, rows (2, 0, 0), (1, 3, 0) and (0, 2, 1), whose upper half
 holds values that are nothing of the matrix so that a call which read that
 half instead gives something else: the right hand side (8, 40, 27) gives
 (4, 12, 3) and the two right hand sides (8, 40, 27) and (4, 2, 0), one row
-each, give (4, 12, 3) and (2, 0, 0), every entry a small whole number and
-asserted exactly, with `sides` of 2 against an `n` of 3 so that the two
-cannot be exchanged. The same `l` and the same first right hand side read
-as the upper half give (6.333333333333333, -4.666666666666666, 27), which
-the test asserts as well: it is what a caller that named the wrong half
-would get, and asserting both is what says the argument is read. A third
-right hand side, (2, 6, 1), gives (1, 1.6666666666666665,
--2.333333333333333) within 1e-14, which is the one case of the three whose
-entries are not whole numbers. And the `l` with rows (2, 0) and (5, 0) is
-`Singular` at the row 1, as the upper half's own case is. From numpy 2.5.3
-on 23 September 2026.
+each, give (4, 12, 3) and (2, 0, 0), with `sides` of 2 against an `n` of 3
+so that the two cannot be exchanged. The same `l` and the same first right
+hand side read as the upper half give (6.333333333333333,
+-4.666666666666666, 27), which the test asserts as well: it is what a
+caller that named the wrong half would get, and asserting both is what
+says the argument is read. A third right hand side, (2, 6, 1), gives
+(1, 1.6666666666666665, -2.333333333333333). And the `l` with rows (2, 0)
+and (5, 0) is `Singular` at the row 1, as the upper half's own case is.
+
+Every one of those is compared within 1e-14 and none of them to the bit,
+although each entry of the first two is a small whole number. The two
+backends do not give the same bits here: measured on 23 September 2026,
+`dtrtrs` gives exactly 4, 12 and 3 and faer gives 4, 11.999999999999998
+and 3.0000000000000036, because faer multiplies by the reciprocal of a
+diagonal entry where the routine divides by it, and 1/3 is not an `f64`;
+and the contrast above comes out 6.333333333333333 on `dtrtrs` and
+6.333333333333334 on faer. An earlier draft of this section asked for the
+first two exactly, which no run supports. From numpy 2.5.3 for the values
+and from both backends for the tolerance.
 
 At `rank`, six matrices and their ranks, which is all `rank` gives: it
 returns a count, so its singular values cannot be asserted at it, and the
