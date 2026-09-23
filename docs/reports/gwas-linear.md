@@ -253,3 +253,165 @@ Sending the correction cost nothing because the subagent was still running,
 but a plan that carries a spec's number instead of pointing at the spec has
 this failure mode, which is the same one that the tolerance change earlier
 in this report was about.
+
+## Work package 2: what every model shares
+
+It finished as planned, in two tasks and a round of fixes, and its four
+deliverables hold. What exists now that did not: which individuals a study
+tests and the design it is given, with the nine refusals that guard them;
+the dosages of a block over those individuals; the choice of model and test;
+and the shape of the result, with the variants that get no answer. None of
+it is reachable from Python yet, which is work package 3.
+
+| deliverable | the command | what it gave |
+|---|---|---|
+| 1, the tested individuals and the five refusals | `cargo test -p popnei --lib gwas::design -- --list` | 11 tests, where the starting commit printed `0 tests` |
+| 2, a design whose columns are not independent is refused | the two cargo tests of that list | a covariate twice another is refused; a smallest singular value 1e-11 of the largest is kept |
+| 3, the dosages are of the tested individuals | `cargo test -p popnei --lib tested_individuals_and_not_of_the_panel` | 1 passed |
+| 4, the choice of model and test | `cargo test -p popnei --lib gwas::choice -- --list` | 6 tests |
+
+The checks after the fixes: fmt and clippy clean, 668 tests in the core
+crate with 2 ignored and 149 in the linear algebra crate, the same 668 with
+`cargo test -p popnei --no-default-features`, `cargo wasm-check` clean, ruff
+clean, 369 pytest passed.
+
+That last check is new. `cargo test -p popnei --no-default-features` runs
+the core crate on faer, the linear algebra backend the wasm build uses and
+so the one that runs in a browser. It was in no check list until 23
+September 2026, so the crate that holds every calculation of popnei had
+never been run on it. The `kinship` session found that and put it in the
+`coding` skill; it is in this plan's "What has to be in place" now, and
+every check above was run on both backends. No number of this work package
+differs between them, which was worth establishing rather than assuming,
+since `Design` calls the linear algebra crate for its rank.
+
+### What the review found
+
+Six reviewers ran: spec, tests, numbers, errors, api and architecture. About
+twenty findings held.
+
+**A block's variants could vanish with no error.** `of_the_block` sized its
+dosage buffer from the ploidy the caller passed and read the genotype rows
+using the ploidy the block stated, and nothing compared the two. When they
+disagreed the parallel drive zipped a longer sequence against a shorter one,
+both truncated, no row ran at all, the variant count was set to 0 and the
+call returned `Ok(())`. Three reviewers found it independently with three
+different reproductions; the one that reaches it is a haploid block read at
+a ploidy of 2. `stats.rs` already had the guard, in `alleles_per_var_of`,
+and both error cases already existed; work package 2 had simply not called
+it. Every block is now checked against the reader before a row is read, and
+the count of rows that came back is checked against the block's. This is the
+owner's rule that an error never passes silently, and it is the finding of
+this review.
+
+**The dosages took an unchecked input.** `Design::of_the_study` runs the
+refusals, but `of_the_block` took the raw `GwasInput` and asserted in a doc
+comment that the positions had been checked. `Block::retain_individuals`
+keeps whatever order it is asked for — there is a test of block.rs that says
+so — so out-of-order positions would have measured one individual's trait
+against another individual's genotypes, which is exactly what the order
+refusal exists to stop. `Design` now carries the checked individuals and the
+multiallelic choice, and the pass takes the `Design`. The ploidy and the
+position travel in a struct of their own, where they can no longer be
+swapped for each other.
+
+**A bad covariate was reported as a defect of popnei.** A NaN or an infinity
+in the design was not checked, fell through to the rank, and came back as
+the error class reserved for popnei's own defects, so a user would have been
+told to report a bug about their own data. pyNei raises a plain input error
+on the same input. There is now a refusal naming the individual, the column
+and the value, and it is in the spec.
+
+**Two rows now compute the same rules, and a test ties them together.** The
+review measured about 120 duplicated lines between this module's dosage row
+and the row pass of `variant.rs`, one block of them character for character.
+A reviewer ran both over 16000 random rows, at ploidies 1 to 4, with 20 per
+cent of alleles missing and a third allele, in both multiallelic modes, and
+found zero disagreements, so they agree today. Nothing would have failed
+when one of them changed. A test now runs both on one fixture and asserts
+the kept and dropped flag, the refusal with its position and count, and that
+this module's dosage reconstructs the standardized one; the worst difference
+measured is 0 on both backends, and replacing the missing-genotype rule with
+0 makes it fail at -0.756 against -0.816.
+
+The rest were smaller: fifteen items were public that the spec's interface
+does not list, narrowed with the conditional dead-code expectation the
+project already uses in two other modules, which will warn again when work
+package 3 makes each one live; a `bool` parameter became an enum; a getter
+that silently returned a longer slice on a broken invariant now returns an
+empty one; and a doc comment of work package 1's said a refusal was "not
+written yet" which task 2.1 had written an hour later.
+
+One finding did not hold, and the subagent refuted it with evidence rather
+than accepting it. The review asked for a test of the linear algebra error,
+the one case of the fourteen with none. After the non-finite refusal was
+added, that error became unreachable from a test: a design of no rows or no
+columns is refused earlier by two other cases, a non-finite value is now the
+new case, and what is left is a design above 2147483647 values, which is 16
+GB and whose length is checked first, or a failure of the backend itself.
+What it can still be reached by is written in the error's doc comment
+instead.
+
+### What the owner should know
+
+**The deliverable the owner asked for does guard what it was written to
+guard.** A reviewer moved each of the four quantities the owner named — the
+major allele and so the dosages, the mean a missing genotype takes,
+`allele_freq`, and whether a variant varies — to the whole panel, one at a
+time, and each failed between two and four tests. It also recomputed all
+eight frequency literals and every major allele by hand from the genotypes
+and found each right, including that one variant counts from a different
+allele over the tested four than over the whole eight. Separately, the spec
+reviewer confirmed there is no other place in the module that counts
+anything over the panel, which is the part a single test could not have
+shown.
+
+**popnei and pyNei agree on every dosage case the spec names.** Run side by
+side on the same genotypes: half-called genotypes, a variant with nothing
+called, a variant where every individual is heterozygous, a third allele
+under both multiallelic modes, ploidy 1 and ploidy 4 with tied allele
+counts. Identical dosages, frequencies and variance flags in every one,
+including the tie-break that takes the lower-numbered allele.
+
+**A divergence from plink2 that neither reference panel shows.**
+`allele_freq` can exceed one half: the genotypes `0/. 0/. 0/. 0/. 1/1` give
+1.0, in popnei and in pyNei alike. The major allele is the most frequent
+among the called alleles, which counts the called half of a half-called
+genotype, while the mean that becomes `allele_freq` is over whole called
+genotypes, which a half-called one is not. Work package 3's first
+deliverable compares `allele_freq` with plink2's `A1_FREQ`, and the spec
+justified that by the two conventions agreeing. They agree on
+`panel_called.vcf.gz`, where every genotype is called, and the other panel
+is missing whole genotypes rather than halves, so neither panel shows it.
+The spec now says "on this panel" and gives the reason; the deliverable is
+unchanged, because the panel it is checked on is the one where the two
+coincide.
+
+**The duplicated row is a decision for the owner, at the end of the plan.**
+The numerical reason for a separate dosage row stands, and no reviewer
+contested it. The architectural question is whether the two rows should
+become one, with the scale made optional so that a study can ask for the
+dosage itself: about 30 lines in `variant.rs`, plus two call sites in
+`pca.rs` and `kinship.rs` reading a returned mean instead of a bare flag.
+This plan cannot make that change, because `variant.rs` belongs to the plan
+`kinship` while this one runs, and `gwas-logistic` would be the third caller
+of whichever shape wins. The cross-check test above is what holds the two
+together until it is decided.
+
+### How the work went
+
+Task 2.1 and task 2.2 each went to one subagent and each came back right the
+first time; the fixes went back to the subagent that wrote task 2.2. Tokens:
+task 2.1, 182176; task 2.2, 262085, and 389180 by the end including the
+fixes. The six reviewers used 115087, 136959, 158353, 141579, 145226 and
+158028.
+
+Two plan sentences were wrong and have been corrected in it, both found by
+the work rather than by reading. "What it stands on" said the dosages would
+use the row pass of `variant.rs`; they cannot. The replacement then cited
+`ld.rs` as the precedent, which is right for a module having its own dosage
+rule and wrong for the parallel drive, since `ld.rs` reads its rows one
+after another and has no rayon at all. Both are the same failure as work
+package 1's: a plan written before the work asserting how the code would be
+shaped, in a sentence confident enough that a subagent would have followed
+it.
