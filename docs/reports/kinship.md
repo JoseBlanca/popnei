@@ -23,7 +23,9 @@ varies most, ready to pass to `calc_gwas` as covariates. A `Kinship` can
 also be built by hand from a matrix a user brings from plink2 or a pedigree.
 
 Every entry of both reference panels is plink2's within 1e-13 of the largest
-entry of the matrix, on both linear algebra backends, and is pyNei's. The
+entry of the matrix, on both of the linear algebra libraries popnei is built
+against, the system's one natively and faer in a browser, and is pyNei's.
+The
 first components are pyNei's, and the first one separates the three
 subpopulations of the panel.
 
@@ -57,6 +59,49 @@ put once here rather than twice:
   words. `block.md` is on `main` and neither plan owns it, so moving it from
   a plan branch would put a third session's file into a merge already
   carrying two specs.
+
+## One mistake, made four times, in four disguises
+
+This is the thing from the plan most worth carrying to the next one, and it
+is one idea and not four incidents. Four times a number was checked against
+something, the check passed, and what the check measured was not what
+anybody thought. Each time the number was defensible and the thing it
+measured was not.
+
+- **The agreement with plink2 was plink2's rounding.** Every entry of both
+  panels was within 4.95e-06 of a 1e-5 bound. The stored reference holds six
+  significant digits of text, and that whole difference was the rounding of
+  the printed number. Against plink2's binary output popnei is 4.44e-16
+  away. The check had no room in it at all, and would have passed an error
+  of up to 5e-6.
+- **The agreement with pyNei was an accident of the panel size.** Bit for
+  bit, a largest difference of 0.0, which looks like the strongest result in
+  the report. It holds because both libraries hand a single chunk of 1200
+  variants to the same routine. At 30000 variants they differ by 1.6e-14.
+- **The eigenvalue tests spent their budget on themselves.** The three
+  literals were written to nine digits and asserted within 1e-9 relative.
+  popnei matches numpy to 3.967e-16; the nine-digit literal is 8.511e-10
+  from popnei. 85% of the tolerance was paid to the rounding of the number
+  written down, and none of it was measuring popnei.
+- **The bound that broke, broke at the smallest entry.** When the per entry
+  bound failed on the other backend it failed at an entry of 1.29e-05 whose
+  error was 1.9e-17, while entries a hundred times larger, with larger
+  errors, passed.
+
+The last one gives the reason for all four, and it was derived rather than
+measured: **a bound is on the rounding of the sum that produced a value, so
+it belongs against whatever bounds the terms of that sum, not against the
+value.** A value that cancelled to near 0 is no guide to its own error. For
+a kinship entry, which is a sum of `m` products of standardized dosages,
+the rounding is at most `m` times 2.2e-16 times the largest term, and the
+largest entry of the matrix bounds the terms; hence the rule the tests now
+use. For an effect size in an association study the same reasoning makes
+the scale its standard error, which is what that study's own arithmetic
+says the effect is uncertain by.
+
+The session building `docs/specs/gwas.md` put the failure mode in one
+sentence: they had been correcting the number each time instead of asking
+what the number was measuring.
 
 **And one piece of work this plan found and did not do.** Ctrl-C does not
 interrupt a pass. The owner decided on 23 September 2026 that it should, and
@@ -92,7 +137,7 @@ written against.
 
 ## Work package 1: one row pass for the PCA and the kinship
 
-Under way. One change to the plan was made before the task started.
+Done. One change to the plan was made before the task started.
 
 ### What was changed in the plan, and why
 
@@ -330,7 +375,8 @@ a largest difference of 4.95e-06 on `panel_called` and 4.93e-06 on `panel`.
 That looked like agreement with a factor of two to spare. It was not
 agreement at all: those files hold six significant digits of text, and the
 whole difference is plink2's rounding. Every one of the 40000 differences is
-below the half-ulp of six digits.
+below half of the last place six digits can hold, which is the most a
+printed number can differ from the one that was rounded to make it.
 
 Re-run against plink2's binary output, `--make-rel square bin`, popnei is
 4.44e-16 from plink2 on `panel_called` and 5.55e-16 on `panel`, absolute.
@@ -369,8 +415,10 @@ inside what the order and the blocking of the sums allow, and the spec
 records it as a range rather than a defect.
 
 The agreement with pyNei is bit for bit, a largest difference of 0.0 on both
-panels, but that is an artifact of both libraries calling the same `dsyrk`
-on a single chunk of 1200 variants. At 30000 variants they differ by
+panels, but that is an artifact of both libraries handing a single chunk of
+1200 variants to the same routine of the system's linear algebra library,
+`dsyrk`, which adds a matrix multiplied by its own transpose into an
+accumulator. At 30000 variants they differ by
 1.6e-14, and on faer they would differ further. The bit equality is not a
 property to lean on.
 
@@ -427,7 +475,8 @@ contradict it.
 **The count the core threw away.** `Kinship` carried only the variants that
 were used, while `pass_stats` means the variants the pass gave, and the core
 computed the second and dropped it. Every other calculation hands it out:
-`Pca::num_cols`, `Stats.num_vars`, `KosmanSums::num_vars`. So each binding
+the principal components of the variants, the statistics of a pass and the
+Kosman distances all carry it on their result. So each binding
 wrapped the reader chain in its own `BlockReader` to count it again, about
 60 lines each, written independently and without sight of each other; they
 were the only two `impl BlockReader` outside the core. `Kinship` now carries
@@ -612,8 +661,8 @@ a panel varies most, taken from the kinship and ready to be passed to
 
 | deliverable | command | result |
 | --- | --- | --- |
-| 1, the components are pyNei's up to sign | `uv run pytest tests/test_kinship.py` | 55 passed; every component of both panels within 1e-11 of the largest projection, and a cargo test asserts the sign rule holds in every one |
-| 2, the eigenvalues are right | `cargo test -p popnei --lib kinship::components` | 15 tests; the sums of the squares of the first three components' projections on `panel_called` are 17.2691411554575, 12.4473152358509 and 3.35871257714136 |
+| 1, the components are pyNei's up to sign | `uv run pytest tests/test_kinship.py` | 55 passed; every component of both panels within 1e-11 of the largest projection, and a cargo test asserts that every one obeys the rule of `docs/specs/pca.md` that fixes which way round a component points, since a component and its negative describe the same axis |
+| 2, the eigenvalues are right | `cargo test -p popnei --lib kinship::components` | 15 tests; the sums of the squares of the first three components' projections on `panel_called` are within 1e-9 relative of 17.2691411554575, 12.4473152358509 and 3.35871257714136, which are the three largest eigenvalues from numpy, and which the sums equal because each eigenvector has length 1 |
 | 3, a component below the tolerance is not given | `cargo test -p popnei --lib kinship::components` | 199 components of 200 asked, on both panels |
 | 4, the first component separates the subpopulations | `uv run pytest tests/test_kinship.py` | the standard deviation of the mean of `PC0` over the three subpopulations is 0.336 against 0.295 for the standard deviation of `PC0` |
 | 5, `principalComponents` under node | `npm run build && npm test` in `js/popnei` | 272 pass, 0 fail |
@@ -719,7 +768,12 @@ identical bits, so a bare comparison decides and the tolerance is never
 consulted, and a unit test now exercises it where it does decide. The
 spec explained 199 components of 200 by the panel average taking one
 direction out, which is exact only when no genotype is missing: with per
-pair denominators the matrix is `(Z'Z) ./ D` and the centring is lost. In
+pair denominators each entry is divided by how many variants that pair had
+called in both, which differs from pair to pair, and the centring is lost:
+writing `z` for the standardized dosages, one row per variant and one column
+per individual, the matrix is the product of the transpose of `z` with `z`,
+divided entry by entry by the matrix of those counts, and dividing by
+something that changes across the matrix does not leave the row sums at 0. In
 3715 random panels with genotypes missing, 36 had that direction left in,
 while 0 of 42261 gave a component for every individual. The conclusion holds
 and the proof did not, and the spec now says which is which.
@@ -742,7 +796,9 @@ and the proof did not, and the spec now says which is which.
 - The reason the reshaped bound is the right shape, which a reviewer derived
   rather than measured: the rounding of a sum of `m` products is at most
   `m * eps * (the largest term)`, and for a kinship
-  `sum|z_i z_j| <= m * sqrt(G_ii G_jj) <= m * (largest entry)`. So a bound
+  the sum over the variants of `|z_i z_j|` is at most the square root of the
+  product of the pair's two diagonal entries, which is at most the largest
+  entry of the matrix, times the variants counted. So a bound
   belongs against whatever bounds the terms, not against the value, and a
   value that cancelled to near 0 is no guide to its own error. It is loose
   by at most 1.4x on these panels.
