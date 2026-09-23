@@ -564,6 +564,38 @@ normalization, and it was not run. What is checked instead:
   `principal_components`, on the sum of the squares of each component's
   projections: a component is `u_j * sqrt(lambda_j)` and `u_j` has length 1,
   so that sum is `lambda_j` itself.
+- That asking either panel for 200 components, one for each of its
+  individuals, gives 199. A kinship measures a pair against the average pair
+  of the panel, which takes one direction out of it, so the last eigenvalue
+  is 0 or below it: numpy 2.5.3 on 23 September 2026 gives -3.44e-15 on
+  `panel_called` and -0.0321 on `panel`, against a tolerance of 7.67e-13 on
+  both. pyNei gives 200 components there, the last of them the square root
+  of the absolute value of that eigenvalue, 0.179 on `panel`, along a
+  direction in which the panel does not vary.
+- The worked example of "The matrix" above, taken as a kinship of 4
+  individuals: its eigenvalues are 4.16424794, 1.22713444, -3.2e-16 and
+  -0.39138238, from numpy 2.5.3 on 23 September 2026, so asking it for 6
+  components gives 2, where pyNei raises out of pandas. The projections of
+  those two, with the sign of the rule, are
+
+  | individual | PC0 | PC1 |
+  |---|---|---|
+  | i0 | 1.45989777643 | -0.212872996577 |
+  | i1 | 0 | 0 |
+  | i2 | -1.34910400096 | -0.550866821327 |
+  | i3 | -0.461372751067 | 0.937211435408 |
+
+  which the cargo test asserts within 1e-9 absolute. `i1` is 0 in both
+  components, since its standardized dosage is 0 at both variants that were
+  used, and numpy gives it as -6e-17.
+- A kinship of two individuals and one variant, the genotypes `0/0` and
+  `1/1`, whose matrix is 2 on the diagonal and -2 off it: its first
+  component is 1.41421356 and -1.41421356, two projections of one absolute
+  value, and the rule gives the first of the two the positive sign. Its
+  second eigenvalue is 0, so asking it for 2 components gives 1. It is where
+  the tolerance of the sign rule is read: the two projections are the same
+  number with opposite signs, and without that tolerance the last bit of the
+  eigendecomposition would decide the sign of the whole component.
 - That the first component tells the three subpopulations of the panel
   apart, which is `test_kinship_of_some_samples_and_threads` of pyNei: the
   standard deviation of the mean of `PC0` over the three subpopulations is
@@ -653,6 +685,16 @@ pub struct KinshipPcs {
 
 pub fn principal_components(kinship: &Kinship, num_pcs: usize) -> Result<KinshipPcs>;
 ```
+
+A kinship of no individual is refused with the error a source with no
+individual gives, the one `calc_kinship` raises: there is no matrix to
+decompose and no individual to place. A user reaches it from Python with an
+empty frame, which the checks a `Kinship` a user built goes through let
+past, since a matrix of no row is square and names nobody twice. The
+eigendecomposition failing is the error of the linear algebra of a kinship,
+as a product failing is. The matrix is copied before it is decomposed,
+because the eigendecomposition writes the eigenvectors over the matrix it
+was given: 800 MB at 10000 individuals, beside the kinship the caller keeps.
 
 What this module calls in `linalg`: the product of a matrix of `r` rows and
 `c` columns with itself, added to the lower half of a `c` x `c` matrix,
