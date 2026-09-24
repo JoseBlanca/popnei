@@ -525,13 +525,16 @@ gone, and that case is now the one fixture that runs the whole search
 through the division by the variance — the division that is 0 exactly rather
 than nearly, which is the trap the owner named for this work package.
 
-**The stopping rule's denominator is pinned after all.** Task 2.1 left a
-"plus 1" that nothing tested: replacing the divisor with 1 left its round
-counts unchanged. Against the whole fit it does not move the variance either
-— identical to all 18 digits on both backends — and moves the covariate
-effects by 3.1e-13, far under GMMAT's bound. What it does move is the number
-of factorizations, 22 to 23, so the test that counts them for deliverable 3
-is what pins it, and nothing else in this plan would have.
+**The stopping rule's denominator is pinned by nothing, and the report said
+otherwise for an hour.** Task 2.1 left a "plus 1" in `change / (predictor +
+1)` that none of its tests could tell from a 1. Task 2.2 reported that the
+whole fit could: that it left the variance identical but moved the covariate
+effects by 3.1e-13 and the rounds from 22 to 23. The review ran the mutation
+and neither is true. With the `+ 1` dropped the fit is **bit-identical** on
+both backends — the same 22 rounds, the same 8 steps, the same variance to
+all 18 digits and the same three effects — and all 15 tests of the module
+stay green. So nothing in this plan pins it, and the 3.1e-13 was a number
+that no run produced.
 
 **Open 3 does not reach this model.** The meanwhile for a kinship that does
 not identify the two variances was written for the linear mixed model, where
