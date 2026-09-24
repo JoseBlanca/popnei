@@ -968,10 +968,22 @@ fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
     let mut of_the_pairs = ThePairsOfAStep::of(options, vars_per_tile.max(1));
     let mut num_vars = 0_u64;
     while let Some(block) = reader.next_block()? {
-        // Every variant counted here was read from a source, and a u64
-        // counts 1.8e19 of them: a pass that passed this number would have
-        // read more bytes than any storage holds.
-        num_vars = num_vars.saturating_add(the_count_of(block.num_vars));
+        // Every variant counted here came out of a block the reader gave,
+        // and a `u64` counts 1.8e19 of them. A reader that gave that many
+        // would have moved their positions alone through memory, eight
+        // bytes for each variant of a block, which is 147 exabytes and 47
+        // years at 100 GB/s, so the sum does not reach the end of a `u64`.
+        // The test profile keeps the overflow checks on, and they are what
+        // would say so if it ever did; a `saturating_add` here would stop
+        // counting and say nothing, which is what the coding skill refuses
+        // a count with.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "one variant of a block for each eight bytes of position the reader moved, which no pass brings near the 1.8e19 of a u64"
+        )]
+        {
+            num_vars += the_count_of(block.num_vars);
+        }
         of_the_pops.take_the_block(block)?;
         for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
             of_the_pairs.the_pairs_of_the_newest_variants(of_the_pop, bins)?;
