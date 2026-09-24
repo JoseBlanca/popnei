@@ -21,6 +21,102 @@ use super::study::{
     the_model_and_the_test,
 };
 
+/// Which of the three phases of one turn of the loop of [`calc_gwas`] a
+/// clock is of: asking the reader for a block, turning that block into
+/// dosages, and testing its variants against the null model.
+///
+/// A sampling profile cannot tell the first from the second, since the
+/// reader decompresses on the thread that then tests, so what the reader
+/// costs a study could not be read off one. It is what decides whether the
+/// read ahead thread that section 3 of `docs/architecture.md` asks for is
+/// worth its thread, and [`timed`] is where it is measured.
+#[derive(Debug, Clone, Copy)]
+enum Phase {
+    /// Inside [`BlockReader::next_block`] of the chain of readers.
+    NextBlock,
+    /// Inside [`GwasDosages::read_the_block`].
+    Dosages,
+    /// Inside the test of the variants of the block.
+    Test,
+}
+
+/// What `work` gives, with how long it took added to the clock of `phase`.
+///
+/// Without the cargo feature `bench-phases` nothing is timed and this is
+/// `work()` and nothing else. With it, one `Instant::now` and one
+/// `fetch_add` per call, which `phases::taken` reads and zeroes.
+fn timed<T>(phase: Phase, work: impl FnOnce() -> T) -> T {
+    #[cfg(not(feature = "bench-phases"))]
+    {
+        let _ = phase;
+        work()
+    }
+    #[cfg(feature = "bench-phases")]
+    {
+        let started = std::time::Instant::now();
+        let value = work();
+        phases::add(phase, started.elapsed());
+        value
+    }
+}
+
+/// How long each of the three phases of the loop of [`calc_gwas`] took,
+/// for a measurement of where the time of an association study goes.
+///
+/// It is compiled in only behind the cargo feature `bench-phases`, which
+/// `crates/popnei/Cargo.toml` describes and no build popnei ships turns
+/// on, and it is read by `crates/popnei/benches/gwas.rs`.
+#[cfg(feature = "bench-phases")]
+pub mod phases {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    /// The nanoseconds spent in each phase since the clocks were last
+    /// taken. A pass runs on one thread, so these are counters and not a
+    /// point of contention; they are atomics because a static that is
+    /// written needs to be one.
+    static NEXT_BLOCK: AtomicU64 = AtomicU64::new(0);
+    /// The clock of the dosages of a block.
+    static DOSAGES: AtomicU64 = AtomicU64::new(0);
+    /// The clock of the test of the variants of a block.
+    static TEST: AtomicU64 = AtomicU64::new(0);
+
+    /// How long each phase of the pass took.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Phases {
+        /// Inside `next_block` of the chain of readers, which is the read
+        /// of the file and the decompression of a block.
+        pub next_block: Duration,
+        /// Inside the dosages of a block.
+        pub dosages: Duration,
+        /// Inside the test of the variants of a block.
+        pub test: Duration,
+    }
+
+    /// The three clocks since they were last taken, and every one of them
+    /// back to zero, so that the next pass is timed on its own.
+    #[must_use]
+    pub fn taken() -> Phases {
+        Phases {
+            next_block: Duration::from_nanos(NEXT_BLOCK.swap(0, Ordering::Relaxed)),
+            dosages: Duration::from_nanos(DOSAGES.swap(0, Ordering::Relaxed)),
+            test: Duration::from_nanos(TEST.swap(0, Ordering::Relaxed)),
+        }
+    }
+
+    /// `took` added to the clock of `phase`. A time longer than 584 years
+    /// saturates, which no phase of a pass reaches.
+    pub(super) fn add(phase: super::Phase, took: Duration) {
+        let nanos = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
+        let clock = match phase {
+            super::Phase::NextBlock => &NEXT_BLOCK,
+            super::Phase::Dosages => &DOSAGES,
+            super::Phase::Test => &TEST,
+        };
+        clock.fetch_add(nanos, Ordering::Relaxed);
+    }
+}
+
 /// The null model a study has fitted, which every variant is then tested
 /// against.
 ///
@@ -270,9 +366,13 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     reader.set_needs(Needs::GTS | Needs::CHROM_POS | Needs::ID);
     let mut blocks = Reblock::new(reader, None)?;
     let mut first_var = 0_usize;
-    while let Some(mut block) = blocks.next_block()? {
-        dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })?;
-        let answers = fitted.test_the_block(&dosages, test, &design)?;
+    while let Some(mut block) = timed(Phase::NextBlock, || blocks.next_block())? {
+        timed(Phase::Dosages, || {
+            dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })
+        })?;
+        let answers = timed(Phase::Test, || {
+            fitted.test_the_block(&dosages, test, &design)
+        })?;
         result.add_the_block(&dosages, answers)?;
         the_columns_of_the_block(&mut result, &block, first_var)?;
         first_var = first_var

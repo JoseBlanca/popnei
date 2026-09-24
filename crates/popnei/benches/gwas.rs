@@ -393,6 +393,36 @@ struct Run {
     did: String,
 }
 
+/// The three clocks of the phases of the pass, as a piece of the line of a
+/// run: how long it was inside `next_block` of the reader, inside the
+/// dosages of a block and inside the test of its variants. Taking them
+/// zeroes them, so each run prints its own.
+///
+/// It is the cargo feature `bench-phases` of the core crate, and without
+/// it there is nothing to print: the pass then calls no clock at all.
+/// `cargo bench --features bench-phases --bench gwas` is what turns it on.
+///
+/// The second pass of `--grammar-gamma` is not in these numbers: its one
+/// block is read before the loop of the pass, which is what the three
+/// clocks are in.
+#[cfg(feature = "bench-phases")]
+fn the_phases_of_the_pass() -> String {
+    let phases = popnei::gwas::phases::taken();
+    format!(
+        ", next_block {next_block:.4} s, dosages {dosages:.4} s, test {test:.4} s",
+        next_block = phases.next_block.as_secs_f64(),
+        dosages = phases.dosages.as_secs_f64(),
+        test = phases.test.as_secs_f64(),
+    )
+}
+
+/// Nothing, which is what the phases of the pass are when the cargo
+/// feature `bench-phases` is off and the pass holds no clock.
+#[cfg(not(feature = "bench-phases"))]
+fn the_phases_of_the_pass() -> String {
+    String::new()
+}
+
 /// The reader over the file at `path`: a vars file when the path ends in
 /// `.vars`, and a VCF, plain or gzipped, when it does not.
 fn reader_of(path: &Path) -> Result<Box<dyn BlockReader>, popnei::Error> {
@@ -457,9 +487,10 @@ fn one_study(
         .fold(f64::INFINITY, f64::min);
     let did = format!(
         "{num_vars} variants, {answered} of them answered, \
-         {num_individuals} individuals, the smallest p-value is {smallest:.3e}",
+         {num_individuals} individuals, the smallest p-value is {smallest:.3e}{phases}",
         num_vars = gwas.num_vars,
         num_individuals = gwas.null_model.num_individuals,
+        phases = the_phases_of_the_pass(),
     );
     Ok(Run { took, did })
 }

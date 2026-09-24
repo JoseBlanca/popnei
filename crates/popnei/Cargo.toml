@@ -29,6 +29,18 @@ blas = ["popnei-linalg/blas"]
 # turns it on: `cargo bench` does, through the `required-features` of those
 # two benchmarks.
 bench-internals = []
+# The three clocks inside the loop of `calc_gwas`, which say how much of an
+# association study is the reader, how much the dosages of a block and how
+# much the test of its variants. A sampling profile cannot separate the
+# first from the second, because the reader decompresses on the thread that
+# then tests, so the read ahead thread of section 3 of
+# `docs/architecture.md` could not be decided on one: this is what decided
+# it, and the report of docs/reports/perf-gwas-2026-09-24.md has the
+# numbers. It is off by default and no build popnei ships turns it on, as
+# `bench-internals` above is: with it on, the pass calls `Instant::now`
+# three times per block, 60 times over the panel of the benchmark, and adds
+# each time to a static counter that `gwas::phases::taken` reads.
+bench-phases = []
 
 [dependencies]
 arrow-array.workspace = true

@@ -92,6 +92,11 @@ mod study;
 
 pub use distributions::{chi2_sf_1df, t_sf_two_sided};
 pub use pass::calc_gwas;
+// The three clocks inside the loop of the pass, of the cargo feature
+// `bench-phases`, which `crates/popnei/benches/gwas.rs` reads and no build
+// popnei ships compiles.
+#[cfg(feature = "bench-phases")]
+pub use pass::phases;
 pub use result::{DEFAULT_USE_GRAMMAR_GAMMA_APPROX, Gwas, NullModel};
 pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 
