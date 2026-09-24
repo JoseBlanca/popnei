@@ -253,7 +253,7 @@ decision and not a task.
 
 Tasks:
 
-- [ ] 4.1 The measurement and what it sets: the page that times a pass at
+- [x] 4.1 The measurement and what it sets: the page that times a pass at
       the four sizes and over the whole file, the report, the constant with
       its doc comment, and the "Speed" part of the spec, which is a commit
       of its own before the commit of the code. From "Speed". Needs 3.1 and
