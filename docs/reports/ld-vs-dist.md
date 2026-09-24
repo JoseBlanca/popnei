@@ -45,12 +45,16 @@ directory and finds every one the same as the copy stored beside it.
 
 ## What is asked of the owner
 
-**The merge.** Nothing has been merged into `main` and nothing pushed.
+**The merge, which is recommended.** Nothing has been merged into `main`
+and nothing pushed. The branch is green on every check, both work
+packages were reviewed and their findings judged and fixed, and each of
+the four decisions below has a defined behaviour on the branch already,
+so none of them has to be settled before merging.
 
-**Four decisions**, none of which blocks the merge, because the branch
-builds a defined behaviour for each and says here what it is. Three of
-them are one question in three parts, and the fourth reaches beyond this
-module.
+**Four decisions.** The first is about this calculation's own arguments.
+The second and the third are about popnei as a whole and this plan only
+made them visible. The fourth is about a value a user reads, at sample
+sizes no dataset reaches.
 
 **Decision 1: what popnei refuses at the edges of the bin arguments.**
 Three things go wrong at once out there, and one answer settles all three.
@@ -68,9 +72,14 @@ returns a hundred million in 25.6 s, the cost growing with the argument
 and not with the data. The options are to refuse both, each a `ValueError`
 naming the argument and its value, which costs two sentences of the spec
 and two public refusals; to refuse the `max_dist` and write into the spec
-what a bin holding no whole distance reports; or to define both in the
-spec and refuse neither, which needs the distance columns to stay unsigned
-and brings back the wrap that gave 18446744073709550687 for 7815 − 8744.
+what a bin holding no whole distance reports, which costs one refusal and
+a paragraph, and leaves a user able to ask for more bins than there are
+distances: they get a frame whose index repeats a label, and a wait that
+grows with what they asked for rather than with their data; or to define
+both in the spec and refuse neither, which needs the distance columns of
+the pandas frame to stay unsigned, and so brings back a defect the review
+of work package 1 found and fixed: subtracting one bin's count from another's
+gave 18446744073709550687 where the answer was −929.
 Recommendation: refuse both. Neither case is one a real dataset reaches,
 so refusing costs a user nothing they wanted.
 
@@ -88,9 +97,18 @@ never returns the failure the guard is built on. This is not this module's
 alone: `calc_r2_matrix` guards its matrix the same way and
 `docs/specs/linalg.md` asks for it for the eigendecomposition workspace.
 Nothing on this branch touches it, because the answer belongs to popnei as
-a whole. What is asked is whether the guard should be backed by a check
-against the memory the machine reports, or the specs' promise weakened to
-what `try_reserve_exact` can deliver.
+a whole. The options are to back the guard with a check against the memory
+the machine reports before the allocation is asked for, which costs a
+platform-specific reading of that number and is itself approximate,
+because the memory a machine reports is not the memory it will grant; or
+to say in `docs/specs/ld.md`, `docs/specs/linalg.md` and the `coding`
+skill what `try_reserve_exact` does and does not give, which is that it
+catches an allocation the allocator refuses outright and not one the
+system grants and then cannot back. Recommendation: the second, together
+with refusing the arguments of Decision 1, which is what makes the ask
+reachable here in the first place. A guard that is approximate and
+platform-specific would be a second thing to keep true, where a promise
+the code already keeps needs only to be written down correctly.
 
 **Decision 3: a calculation cannot be abandoned.** A `max_dist` of 10¹⁰ on
 a 21-variant file runs for 190 s, and Ctrl-C does not stop it. This is not
@@ -99,7 +117,17 @@ returns, `calc_kosman_sums` and the r² matrix included, because the core
 crate has no in-calculation check and adding one changes the signature of
 every calculation that takes it. It is recorded here because this
 calculation is the first whose running time a user can raise without
-raising the size of their data.
+raising the size of their data: `max_dist` alone does it. The options are
+to leave it, which keeps every calculation of popnei alike and costs a
+user who asks for something absurd a wait they cannot cut short; or to
+give the core a way to be interrupted between steps, which changes the
+signature of `calc_ld_and_dist`, of `calc_kosman_sums` and of every other
+calculation that would take it, and is a plan of its own.
+Recommendation: leave it, and refuse the arguments of Decision 1, which
+closes the only path by which a user of this calculation reaches a wait
+of minutes on a small dataset. What would change that is a user meeting a
+long wait on a dataset that is genuinely large, which no measurement here
+has produced.
 
 **Decision 4: half the curve at one and at two individuals.** At those two
 sample sizes the curve never falls to half of its value at distance 0,
@@ -516,9 +544,10 @@ file. Every one was run by the orchestrator.
 `cargo doc -p popnei` fails on an unresolved link to
 `Error::ReaderGaveNoVariants` at `crates/popnei/src/ld.rs:973`, which was
 already broken before this work package and is not among the checks the
-`coding` skill lists. The chromosome comparison in
-`the_first_row_in_reach` is an optimisation that no test covers: removing
-it breaks nothing. And `js/popnei/README.md` lists five calculations and
+`coding` skill lists. The window, when it looks back for the variants a
+new one can pair with, stops early if it meets another chromosome; that
+early stop is an optimisation no test covers, and removing it breaks
+nothing. And `js/popnei/README.md` lists five calculations and
 leaves out four of them.
 
 ## Work package 2: the fitted curve and the half distance
@@ -556,8 +585,14 @@ untouched. Every one was run by the orchestrator.
 **2.2, the fit and the half distance.** Commits `e5c7625`, a correction
 to the spec, and `c12dc35`, the code. A new module
 `crates/popnei/src/ld/decay.rs` holds `fit_ld_decay` and `LdDecay`: the
-curve, the sum it makes smallest, the grid of 141 values, the golden
-section search and the bisection for the half distance. Thirteen tests
+curve, the sum it makes smallest, and the way that smallest is found.
+There is one number to fit, so no derivatives are taken. The sum is
+evaluated at 141 values of it spread evenly over fourteen decades; the
+two neighbours of the best of those bracket a golden section search,
+which repeatedly drops the worse end of the bracket so that it shrinks by
+a fixed fraction each step until it is narrow enough; and the half
+distance is then found by bisection, halving an interval until the curve
+in it has fallen to half. Thirteen tests
 under `ld::decay`, where the plan started at none.
 
 **The test that makes a silently wrong fit impossible passes exactly.**
@@ -642,10 +677,12 @@ of popnei at 6810.571 base pairs for the first population, against R's
 
 The stored file carries more than the table: what the two optimisers of R
 disagree by, how badly the curve describes this dataset bin by bin, what
-Sved's curve would have given, what fitting the bins instead of the pairs
-would have cost, and what the other answers to the sample size would have
-given. All of it is what the spec already states, written where a later
-session can check it again.
+the other curve the literature fits, Sved's, which must pass through an
+r² of 1 at a distance of 0 where this one has a ceiling that the sample
+size fixes, would have given on the same pairs, what fitting the bins
+instead of the pairs would have cost, and what the other answers to the
+sample size would have given. All of it is what the spec already states,
+written where a later session can check it again.
 
 Both thread pools genuinely ran: `rayon::current_num_threads()` is
 asserted inside the pool, and building the pools with seven threads too
@@ -734,13 +771,19 @@ faer backend, and `cargo fmt --all --check`, `cargo clippy --workspace
 
 ### What the review of work package 2 found
 
-Five reviewers read the work package at `d2aaeaa`, one for each category
-that applied. Twenty-one findings came back. One of them was a wrong
-number that no deliverable of the plan would have caught.
+Five reviewers read the work package at `d2aaeaa`, each with a fresh
+context and each given one thing to look for: whether the code does what
+the spec says; whether its tests can fail; its arithmetic; its errors and
+what a user reads when one is raised; and the two layers that carry
+results out to Python and to TypeScript. Twenty-one findings came back.
+One of them was a wrong number that no deliverable of the plan would have
+caught.
 
 **The fit lost about 1.5 digits to cancellation, and the spec is what
 told it to.** "The curve that is fitted" wrote the quantity to make
-smallest as Σ over the distances of [n·f² − 2·S·f]. That is algebraically
+smallest as a sum over the distances of n·f² − 2·S·f, where n is how many
+pairs a distance holds, S is the sum of their r², and f is the curve at
+that distance. That is algebraically
 right and numerically poor: it is the quantity that matters,
 Σ n·(mean − f)², minus a constant. On the first reference population the
 constant is 475.36, so the number being minimised sits at −452.15 while
@@ -817,6 +860,15 @@ Both are under "What is asked of the owner".
 reviewer said was wrong had already been corrected by the cancellation
 fix, which the fixer checked rather than assumed.
 
+**Where the counts ended.** The three rounds of fixes left the suites at
+865 tests in the core crate with 2 ignored, where work package 2 began at
+857 and the plan at 787; the same 865 on the faer backend; 149 in the
+linear algebra crate; 509 pytest, where the body above last records 508,
+the one added being a test of what the Python result prints; and 334
+node. Under the module itself, 57 tests of the bins and 21 of the curve,
+127 in the whole `ld` module, where the plan began with 49 and none of
+them of the fall-off.
+
 **Two numbers of the spec did not reproduce and were corrected.** The
 curve at one individual is 1.1983471074380165 and not
 1.1983471074380166, one step of an `f64` below. And narrowing the
@@ -839,7 +891,9 @@ speed of this pass is a review of its own.
   block to work out the frequencies and one over the whole window, so a
   pass at blocks of 7 variants with a window of 250 reads the genotypes of
   a variant about 36 times over.
-- `LdDosages::rows` copies the three matrices once per tile pair per step.
+- The dosages of a population are held as three matrices over its
+  variants and its individuals, and taking a slice of rows out of them,
+  which every tile pair of every step does, copies all three.
 - A block that has fallen out of the window is held for one step longer
   than it is needed, which is what makes the counts right at every block
   size.
@@ -848,8 +902,9 @@ speed of this pass is a review of its own.
   with the data: 0.06 s at 10⁶, 17.13 s at 10⁹, 190.85 s at 10¹⁰.
 - `cargo test -p popnei --lib ld::decay` runs in 0.04 s, so nothing this
   plan added costs the suite anything.
-- `LdDosages::of_block` walks the rows of a block serially, where section
-  3 of `docs/architecture.md` puts rayon on per-variant work.
+- Building those three matrices from a block walks its variants one at a
+  time, where section 3 of `docs/architecture.md` puts the thread pool on
+  work that is per variant.
 
 ## How the work went
 
