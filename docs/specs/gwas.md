@@ -1449,15 +1449,24 @@ naming as such: it is what the variant leaves of the trait, where the other
 three are what the design leaves of the variant.
 
 In each, what is left can round to 0 or below and `beta` is then something
-divided by noise. Two of the four have been reached on data and measured,
-on 23 and 24 September 2026; the other two, both score tests, are the same
-arithmetic in another denominator and no dataset here has reached them.
+divided by noise. Three of the four have been reached on data and measured,
+on 23 and 24 September 2026; the fourth, the mixed models' score tests, is
+the same arithmetic in another denominator and no dataset here has reached
+it.
 
 The linear model: eight individuals, a covariate marking two subpopulations
 of four and a variant fixed one way in each. popnei and pyNei agree to the
 bit at `beta` 5.36e13, `se` 6.95e14 and `p` 0.941, which reads as a variant
 that was tested and showed nothing. plink2 gives `NA`, `NA`, `NA` with
 `ERRCODE CORR_TOO_HIGH`.
+
+The logistic model's score test: a covariate that is the first variant's
+dosages in units a tenth of theirs, which is what a user gets by putting a
+genotype in as a covariate. The denominator comes to 4.44e-16 on Accelerate
+and to exactly 0 on faer, against a threshold of 4.19e-15. Unguarded, that
+row is `beta` 0 with `se` 4.75e7 and `p` 1 on one backend and a NaN or an
+infinity on the other, which is the argument about the two builds arriving
+on data rather than in prose.
 
 The linear mixed model's Wald test: six individuals, one covariate, an
 identity kinship and a trait built as `2 + 3*cov + 1*dosage`. It gives
