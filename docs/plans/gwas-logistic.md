@@ -131,7 +131,7 @@ The plans `gwas-linear` and `kinship`, merged.
       literals as cargo tests. Built from "The logistic model" of
       `docs/specs/gwas.md`. Serves deliverable 1. Needs nothing of this
       plan.
-- [ ] 1.2 The per variant Wald fit, its three marks of a runaway and the
+- [x] 1.2 The per variant Wald fit, its three marks of a runaway and the
       NaN they give, with the six plink2 literals as cargo tests. It is its
       own task and its own commit because a variant wrongly marked as
       running away loses its p-value in silence, and deliverable 3 is what

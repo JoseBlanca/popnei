@@ -203,6 +203,69 @@ wildcard arm rather than by name, so the case has to be listed there and in
 `tests/reference/gwas/refusals_of_both_layers.json`, which both test suites
 walk.
 
+### Task 1.2, the Wald fit of each variant
+
+Every variant of a study of a binomial trait with no kinship is now fitted
+with the variant in the design, started at the null fit's coefficients and
+an effect of 0 for it. The standard error is read by solving the
+factorization against the last column of the identity, which is that column
+of the inverse at the cost of the coefficients squared rather than cubed.
+The core has 793 tests where it had 791, three Wald tests in and one refusal
+test out, the same count on both backends.
+
+**Against plink2, on the six literals.** The effect is 2.69e-6 of that
+variant's standard error away at the worst where 1e-5 is allowed, the
+standard error 5.30e-5 of itself where 1e-4 is allowed, and the p-value
+1.88e-4 of itself where 5e-3 is allowed. All three bounds are the spec's and
+were kept rather than lowered: what they measure is that plink2 stops its
+logistic fit earlier than popnei does. The two backends sit 4.4e-16 of a
+standard error from each other, ten orders of magnitude below the bound.
+
+**Against pyNei, which is deliverable 4 and was measurable without the
+bindings.** `beta` within 3.06e-15 of the standard error, `se` 3.22e-15 of
+itself, the p-value 6.0e-14 of itself, and the same one variant with NaN,
+against the 1e-9 the spec asks for.
+
+**Deliverable 3 holds.** The variants popnei gives NaN are `var0006` and no
+other, which is exactly the row plink2 fell back to a Firth penalized
+regression for, and the cargo test reads that set out of plink2's own file
+rather than carrying a copy of it. Nothing anywhere records why a variant is
+NaN, which is the meanwhile of Open 1.
+
+**The whole-column bound on `se` of deliverable 2 cannot be met, and pyNei
+is why.** Over the 1199 variants, popnei's worst `se` is 1.334e-4 of that
+variant's `se` from plink2, at `var0179`, against the 1e-4 the spec and the
+plan ask for. pyNei on the same panel gives 1.334e-4 at `var0179` too, and
+popnei's other two worsts match pyNei's to four digits, 2.103e-5 for `beta`
+and 1.924e-3 for the p-value. So the bound measures the distance between a
+correct fit and plink2's, which stops earlier, and no implementation meets
+it. pyNei's own test passes only because it holds `se` to 1e-4 absolute,
+worst 6.66e-5, which is the form this spec argues against: it holds on a
+panel whose values are small and breaks on data whose values are larger. The
+number is in the spec as well as in the plan, so it has gone to the session
+that owns the spec, with 5e-4 times that variant's `se` as the
+recommendation, 3.7 times the worst measured. **Task 1.3 waits on it**,
+because task 1.3 is what writes the test that reads it.
+
+**Two of the three marks of a runaway are unreachable under popnei's own
+factorization.** The effect passing 30 catches `var0006` at round 29 and the
+fixture's separating variant at round 29; the singular system catches a
+variant that is its own covariate, at round 4 on Accelerate and round 1 on
+faer. A step that is not finite, and a fit still moving after 50 rounds, are
+in the code and in no test: with a Cholesky the effect passes 30 or the
+factorization refuses the system first, and no fixture reached either. numpy
+with an LU, which is how pyNei solves, reaches the third of them on the
+collinear variant and gives the same three NaNs. So all three marks are
+reproduced as the spec asks and two of them are dead code here.
+
+**A shared list was edited, one case of it.** The refusal of a binomial
+trait with no kinship is gone, and both suites walk
+`tests/reference/gwas/refusals_of_both_layers.json` and assert that its
+cases match the calls they have, so leaving that case would have turned both
+red. It now asks for the logistic mixed model, a binomial trait with a
+kinship, which the same message refuses. Two lines of the list and one call
+in each suite; nothing of the bindings or the packages moved.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
@@ -223,6 +286,15 @@ was visible.
 
 **What the tasks cost.** The split of the module cost its subagent 174000
 tokens and 91 tool calls. Task 1.1 cost 292000 tokens and 114 tool calls,
-and the one correction 11000 more over 11 calls. The orchestrator ran the
-nine checks itself after each, which is about four minutes of wall clock a
-time and no context to speak of, since it reads the last line of each.
+and the one correction 11000 more over 11 calls. Task 1.2 cost 266000
+tokens and 116 tool calls and needed nothing sent back. The orchestrator ran
+the nine checks itself after each, which is about four minutes of wall clock
+a time and no context to speak of, since it reads the last line of each.
+
+**A task that reaches into a shared file is cheaper than a task that
+leaves it red.** Task 1.2 was told to leave the packages alone and edited
+one case of the refusals list and one call in each suite, because turning
+the Wald test on falsifies a refusal both suites assert. It said what it had
+done and why and offered to undo it. That is the right shape for a
+boundary that cannot be held: the alternative was to hand back a branch
+whose node suite was knowingly red until task 1.3.
