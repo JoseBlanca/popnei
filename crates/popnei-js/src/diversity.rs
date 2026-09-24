@@ -180,18 +180,13 @@ fn of_every_pop<T>(num_pops: usize, of_the_pop: impl Fn(usize) -> Option<T>) -> 
 /// # Errors
 ///
 /// A name that is of no statistic, which a user reaches by writing one in
-/// JavaScript: in TypeScript the five are a union of string literals.
+/// JavaScript: in TypeScript the five are a union of string literals. The
+/// core refuses it and names the five, so the sentence a user reads is
+/// written once for both languages.
 fn the_stats(names: &[String]) -> Result<DiversityStats, JsPopneiError> {
     let mut asked_for = DiversityStats::empty();
     for name in names {
-        let stat = DiversityStats::of_name(name).ok_or_else(|| {
-            JsPopneiError::Refused(format!(
-                "`{name}` is not one of the statistics of a population, which are \
-                 {the_five}",
-                the_five = DiversityStats::NAMES.join(", ")
-            ))
-        })?;
-        asked_for |= stat;
+        asked_for |= DiversityStats::of_name(name)?;
     }
     Ok(asked_for)
 }

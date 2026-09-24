@@ -25,14 +25,20 @@
 //!
 //! What is built here so far is the pass, those counts of variants, the
 //! alleles each population called, the private ones among them, the
-//! variants that vary in it and F_IS. The statistic left, the folded site
-//! frequency spectrum, is added on top of the same counts.
+//! variants that vary in it and F_IS. Four things are not, and all four
+//! are the draw of a common number of called alleles, which is work
+//! package 3 of `docs/plans/diversity.md`: `num_called_alleles` is taken
+//! and checked and nothing reads it, so no variant is counted as being in
+//! a draw; the three standardized values, the mean alleles, the mean
+//! private alleles and the ratio of variable variants of a draw, have no
+//! value; and neither has the folded site frequency spectrum. They are
+//! built on top of the same counts.
 
 use std::collections::HashSet;
 
 use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
-use crate::stats::{ExpHet, ObsHet, every_individual_in_order, min_called_alleles};
+use crate::stats::{ExpHet, ObsHet, checked_ploidy, every_individual_in_order, min_called_alleles};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_and_gts_of, count_alleles_of,
     count_gts,
@@ -68,45 +74,73 @@ impl DiversityStats {
         .union(DiversityStats::FOLDED_SFS)
         .union(DiversityStats::FIS);
 
-    /// The name of each of the five statistics, in the order of the
-    /// constants above, which is the order of the fields of a result.
+    /// The name of each of the five statistics beside the statistic it
+    /// names, in the order of the constants above, which is the order of
+    /// the fields of a result.
     ///
     /// The names are what a Python and a TypeScript user writes in `stats`,
     /// and each one is the field of the result that holds that statistic.
     /// They are here and not in the binding crates so that a rename is one
-    /// change and not three.
-    pub const NAMES: [&'static str; 5] = [
-        "num_alleles",
-        "private_alleles",
-        "variable_vars_ratio",
-        "folded_sfs",
-        "fis",
+    /// change and not three. Each name stands beside its statistic, and
+    /// [`DiversityStats::of_name`] reads this table and nothing else, so a
+    /// statistic added to it is understood with nothing else written for
+    /// it: a name added to a table of names alone, with the statistics
+    /// matched on elsewhere, would be listed to a user as one they may
+    /// write and then refused when they wrote it.
+    pub const NAMES_AND_STATS: [(&'static str, DiversityStats); 5] = [
+        ("num_alleles", DiversityStats::NUM_ALLELES),
+        ("private_alleles", DiversityStats::PRIVATE_ALLELES),
+        ("variable_vars_ratio", DiversityStats::VARIABLE_VARS_RATIO),
+        ("folded_sfs", DiversityStats::FOLDED_SFS),
+        ("fis", DiversityStats::FIS),
     ];
 
-    /// The one statistic a user named, and `None` for a name that is of
-    /// none of the five.
+    /// The name of each of the five statistics, in the order of
+    /// [`DiversityStats::NAMES_AND_STATS`], which a message that asks a
+    /// user to choose among them lists.
+    pub const NAMES: [&'static str; 5] = DiversityStats::the_names();
+
+    /// The names of [`DiversityStats::NAMES_AND_STATS`] on their own,
+    /// which is what [`DiversityStats::NAMES`] holds.
+    const fn the_names() -> [&'static str; 5] {
+        let [
+            (num_alleles, _),
+            (private_alleles, _),
+            (variable_vars_ratio, _),
+            (folded_sfs, _),
+            (fis, _),
+        ] = DiversityStats::NAMES_AND_STATS;
+        [
+            num_alleles,
+            private_alleles,
+            variable_vars_ratio,
+            folded_sfs,
+            fis,
+        ]
+    }
+
+    /// The one statistic a user named.
     ///
-    /// A binding crate reads the names a user wrote with this and says
-    /// itself what a name of no statistic is told, because that is an
-    /// exception of its own language: the Python and the TypeScript
-    /// packages take the members of an enumeration and nothing else, so a
-    /// name of no statistic arrives only from a caller that went round the
-    /// package.
-    #[must_use]
-    pub fn of_name(name: &str) -> Option<DiversityStats> {
-        // The names are in [`DiversityStats::NAMES`] alone, in the order of
-        // the constants, so a name that is renamed is renamed in one place.
-        match DiversityStats::NAMES
+    /// A binding crate reads the names a user wrote with this and gives the
+    /// error on as it is, as the binding crates of the per variant
+    /// statistics do with `stats::PerVarStat::of_name`: each of them turns
+    /// an error of the core into the exception of its language in one
+    /// place, so neither has to write the sentence a user reads.
+    ///
+    /// # Errors
+    ///
+    /// A name that is of none of the five, with the five names.
+    pub fn of_name(name: &str) -> Result<DiversityStats> {
+        // The table is walked rather than matched on, so that a statistic
+        // added to it needs no arm here and cannot be listed to a user as a
+        // name they may write and then refused when they write it.
+        DiversityStats::NAMES_AND_STATS
             .iter()
-            .position(|known| *known == name)
-        {
-            Some(0) => Some(DiversityStats::NUM_ALLELES),
-            Some(1) => Some(DiversityStats::PRIVATE_ALLELES),
-            Some(2) => Some(DiversityStats::VARIABLE_VARS_RATIO),
-            Some(3) => Some(DiversityStats::FOLDED_SFS),
-            Some(4) => Some(DiversityStats::FIS),
-            Some(_) | None => None,
-        }
+            .find(|(known, _)| *known == name)
+            .map(|(_, stat)| *stat)
+            .ok_or_else(|| Error::DiversityStatOfAnUnknownName {
+                name: name.to_owned(),
+            })
     }
 
     /// No statistic at all, which a caller that builds a set one name at a
@@ -345,12 +379,17 @@ impl PopDiversity {
     /// and not Weir and Cockerham's, which comes out of a decomposition of
     /// the variance across populations.
     ///
-    /// It is NaN when the population has no F_IS: when no variant counted
-    /// for it, which is not an error; when its mean unbiased expected
-    /// heterozygosity is 0, every variant it counted having held one
-    /// allele; and at ploidy 1, where no genotype can be heterozygous, so
-    /// the observed heterozygosity is 0 at every variant and the ratio
-    /// would be 1 wherever the population has any diversity. The draw of
+    /// It is NaN when the population has no F_IS, in four cases. When no
+    /// variant counted for it, which is not an error. When no variant that
+    /// counted for it carries both heterozygosities, which a population
+    /// whose counted variants hold no whole called genotype reaches: two
+    /// individuals whose genotypes are all half called count their
+    /// variants and have no observed heterozygosity at any of them. When
+    /// its mean unbiased expected heterozygosity is 0, every variant it
+    /// counted having held one allele. And at ploidy 1, where no genotype
+    /// can be heterozygous, so the observed heterozygosity is 0 at every
+    /// variant and the ratio would be 1 wherever the population has any
+    /// diversity. The draw of
     /// `num_called_alleles` does not touch it: the observed heterozygosity
     /// is a property of whole genotypes and not of a sample of alleles.
     #[must_use]
@@ -359,6 +398,27 @@ impl PopDiversity {
             return None;
         }
         self.pops.get(pop).map(OfAPop::fis)
+    }
+
+    /// The sum of the observed heterozygosities of one population, the sum
+    /// of its unbiased expected ones and how many variants the two are
+    /// over.
+    ///
+    /// A test that asks whether the parts of a sum of float64 were added in
+    /// the order of the variants compares these bit for bit, and not
+    /// [`PopDiversity::fis`]: the division that makes F_IS out of the two
+    /// sums absorbs a difference of their last bits, so the 200 variants of
+    /// such a test give one F_IS from two sums that differ by one unit of
+    /// the last place.
+    #[cfg(test)]
+    fn the_sums_behind_the_fis(&self, pop: usize) -> Option<(f64, f64, u64)> {
+        self.pops.get(pop).map(|pop| {
+            (
+                pop.sum_obs_het,
+                pop.sum_unbiased_exp_het,
+                pop.num_vars_with_both_hets,
+            )
+        })
     }
 }
 
@@ -590,20 +650,65 @@ impl Totals {
 ///
 /// # Errors
 ///
-/// [`DiversityStats::FOLDED_SFS`] asked for with no `num_called_alleles`, a
-/// `num_called_alleles` below 2, a population with no individual, an index
-/// that is not an individual of the dataset, an individual asked for more
-/// than once, no variant in the reader, a variant of more alleles than a
-/// count of them holds, and those of the reader.
+/// A `stats` that holds no statistic, [`DiversityStats::FOLDED_SFS`] asked
+/// for with no `num_called_alleles`, a `num_called_alleles` below 2, a
+/// population with no individual, an index that is not an individual of the
+/// dataset, an individual asked for more than once, no variant in the
+/// reader, a variant of more alleles than a count of them holds, and those
+/// of the reader, among them a ploidy of 0 or above the 255 a genotype of
+/// popnei holds.
 pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
     options: &DiversityOptions,
 ) -> Result<PopDiversity> {
+    the_pass(reader, pops, options, add_the_block)
+}
+
+/// The same pass with the chunks of every block read one after another,
+/// which is the reduction WebAssembly runs, it having no threads.
+///
+/// A native build reaches [`add_the_chunks_one_by_one`] only where a block
+/// is refused and its rows are read again to find the first that is an
+/// error, so without this no cargo test counts a variant through it. A test
+/// runs it beside [`calc_pop_diversity`] and reads the same numbers.
+///
+/// # Errors
+///
+/// Those of [`calc_pop_diversity`].
+#[cfg(test)]
+fn calc_pop_diversity_one_chunk_at_a_time<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    pops: &[&[usize]],
+    options: &DiversityOptions,
+) -> Result<PopDiversity> {
+    the_pass(reader, pops, options, add_the_chunks_one_by_one)
+}
+
+/// The pass of [`calc_pop_diversity`], with `add_the_block` the way the
+/// chunks of one block are read: on the threads of rayon, or one after
+/// another as WebAssembly reads them.
+///
+/// # Errors
+///
+/// Those of [`calc_pop_diversity`].
+fn the_pass<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    pops: &[&[usize]],
+    options: &DiversityOptions,
+    add_the_block: fn(&Block, usize, &OfThePass, &mut Totals) -> Result<()>,
+) -> Result<PopDiversity> {
+    check_the_statistics(options)?;
     check_the_draw(options)?;
     let num_individuals = reader.individuals().len();
     let of_the_pops = pops_of_the_pass(pops, num_individuals)?;
     let ploidy = reader.ploidy();
+    // The ploidy the reader states, which the threshold of called
+    // genotypes is measured in. A reader that states one of 0, or one above
+    // the 255 a genotype of popnei holds, is refused here: a threshold
+    // built from a ploidy that did not fit would be one no population ever
+    // meets, and every population would silently count no variant.
+    let ploidy_of_the_gts = checked_ploidy("ploidy", ploidy)?;
     // The five statistics follow from the genotypes of a row, so no column
     // of a block is read and the reader is asked to fill none of them.
     reader.set_needs(Needs::GTS);
@@ -612,13 +717,7 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
         counts_the_alleles: CountsTheAlleles::of(options.stats),
         counts_the_private_alleles: CountsThePrivateAlleles::of(options.stats),
         heterozygosities: Heterozygosities::of(options.stats, ploidy)?,
-        min_called_alleles: min_called_alleles(
-            options.min_num_individuals,
-            // Every reader of popnei gives a ploidy of 255 at most, and a
-            // threshold built from a larger one would be one no population
-            // ever meets, which is what such a ploidy asks for.
-            u32::try_from(ploidy).unwrap_or(u32::MAX),
-        ),
+        min_called_alleles: min_called_alleles(options.min_num_individuals, ploidy_of_the_gts),
         ploidy,
     };
     let mut totals = Totals::of(of_the_pops.len());
@@ -627,10 +726,17 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
         let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
         add_the_block(&block, alleles_per_var, &of_the_pass, &mut totals)?;
         // A `usize` is 64 bits on the targets popnei builds natively for and
-        // 32 in wasm, so every one of them is a `u64`; and a pass of more
-        // than 18446744073709551615 variants reads more rows than any
-        // source holds.
-        num_vars = num_vars.saturating_add(u64::try_from(block.num_vars).unwrap_or(u64::MAX));
+        // 32 in wasm, so every one of them is a `u64`; a block that said it
+        // held more is refused rather than counted into a number that
+        // stopped at the largest one, which would leave the pass reporting
+        // fewer variants than it read. A pass of more than
+        // 18446744073709551615 variants reads more rows than any source
+        // holds.
+        let of_the_block =
+            u64::try_from(block.num_vars).map_err(|_| Error::DiversityMoreVarsThanACountHolds {
+                num_vars: block.num_vars,
+            })?;
+        num_vars = num_vars.saturating_add(of_the_block);
     }
     if num_vars == 0 {
         let filters = reader.filtering_stats();
@@ -648,6 +754,23 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
         num_vars_of_the_pass: num_vars,
         stats: options.stats,
     })
+}
+
+/// It refuses a pass that was asked for no statistic at all.
+///
+/// Such a pass reads every variant of the source and computes nothing of
+/// them, so it is refused at the call. The rule is here and not in each
+/// binding crate, which is what the binding section of the `coding` skill
+/// asks: a third language would otherwise have to write it a third time.
+///
+/// # Errors
+///
+/// A `stats` that holds none of the five statistics.
+fn check_the_statistics(options: &DiversityOptions) -> Result<()> {
+    if options.stats == DiversityStats::empty() {
+        return Err(Error::DiversityWithNoStatistic);
+    }
+    Ok(())
 }
 
 /// It refuses a draw that no standardized value can be taken over.
@@ -1187,6 +1310,86 @@ mod fixtures {
             .collect()
     }
 
+    /// Five rows of five diploid individuals that a long source repeats:
+    /// `0/1 0/1 0/1 0/0 0/0`, three heterozygous genotypes of five;
+    /// `0/1 1/2 0/. 2/2 ./.`, three alleles with a half called genotype
+    /// among them; `0/0 0/0 0/1 ./. 1/1`; five missing genotypes, which
+    /// counts for no population; and `0/2 0/1 1/1 0/0 2/.`.
+    ///
+    /// They are five and not four so that the chunks of 64 rows a pass cuts
+    /// a block into do not hold the same rows as one another: with a cycle
+    /// of four every full chunk would hold 16 of each row and have the same
+    /// two sums as the next, and adding the chunks in another order would
+    /// then give the same bits whatever that order was.
+    ///
+    /// The heterozygosities of a population over the five are thirds,
+    /// sixths, sevenths and fifths, so the two sums behind its F_IS are
+    /// float64 whose last bits move when the parts are added in another
+    /// order.
+    pub(super) const THE_FIVE_PATTERNS: [[i8; 10]; 5] = [
+        [0, 1, 0, 1, 0, 1, 0, 0, 0, 0],
+        [0, 1, 1, 2, 0, -1, 2, 2, -1, -1],
+        [0, 0, 0, 0, 0, 1, -1, -1, 1, 1],
+        [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+        [0, 2, 0, 1, 1, 1, 0, 0, 2, -1],
+    ];
+
+    /// A source of `num_vars` variants of the five diploid individuals, the
+    /// five patterns of [`THE_FIVE_PATTERNS`] one after another, in blocks
+    /// of `num_vars_per_block` variants.
+    ///
+    /// A test calls it with more than the 64 rows one chunk of a pass
+    /// holds, which every other fixture of this module is below: with six
+    /// variants the rows of a block are one chunk, the threads have nothing
+    /// to share out and the order the chunks are added in is the order of
+    /// the only one.
+    pub(super) fn a_source_of_many_variants(
+        num_vars: usize,
+        num_vars_per_block: usize,
+    ) -> GivenBlocks {
+        let of_the_source = the_rows_of_many_variants(num_vars);
+        let rows: Vec<&[i8]> = of_the_source.iter().map(|row| &row[..]).collect();
+        GivenBlocks::of(blocks_of(&rows, 5, 2, num_vars_per_block))
+    }
+
+    /// The same source with the allele -2 in its eleventh row and the
+    /// allele -3 in its hundred and fifty first, both below the missing
+    /// one, which a reader of popnei never gives and which the counts of a
+    /// variant refuse.
+    ///
+    /// The two rows are in different chunks of one block, so which of them
+    /// a thread reaches first depends on how the chunks were shared out,
+    /// and the pass has to give the error of the first of the two whatever
+    /// happened.
+    pub(super) fn a_source_with_two_rows_below_the_missing_allele(
+        num_vars: usize,
+        num_vars_per_block: usize,
+    ) -> GivenBlocks {
+        let mut of_the_source = the_rows_of_many_variants(num_vars);
+        for (at, row) in of_the_source.iter_mut().enumerate() {
+            let allele = match at {
+                10 => -2,
+                150 => -3,
+                _ => continue,
+            };
+            if let Some(first) = row.first_mut() {
+                *first = allele;
+            }
+        }
+        let rows: Vec<&[i8]> = of_the_source.iter().map(|row| &row[..]).collect();
+        GivenBlocks::of(blocks_of(&rows, 5, 2, num_vars_per_block))
+    }
+
+    /// The `num_vars` rows of [`THE_FIVE_PATTERNS`], one after another.
+    fn the_rows_of_many_variants(num_vars: usize) -> Vec<[i8; 10]> {
+        THE_FIVE_PATTERNS
+            .iter()
+            .copied()
+            .cycle()
+            .take(num_vars)
+            .collect()
+    }
+
     /// The six variants of the worked example, in blocks of
     /// `num_vars_per_block` variants of the five diploid individuals.
     pub(super) fn the_worked_example(num_vars_per_block: usize) -> GivenBlocks {
@@ -1197,7 +1400,11 @@ mod fixtures {
 
 #[cfg(test)]
 mod the_pass {
-    use super::fixtures::{GivenBlocks, POP1, POP2, blocks_of, the_worked_example};
+    use super::calc_pop_diversity_one_chunk_at_a_time;
+    use super::fixtures::{
+        GivenBlocks, POP1, POP2, a_source_of_many_variants,
+        a_source_with_two_rows_below_the_missing_allele, blocks_of, the_worked_example,
+    };
     use super::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
     use crate::error::Error;
     use crate::variant::Needs;
@@ -1281,6 +1488,73 @@ mod the_pass {
     /// the division of a number near 0.35 leave a few units of the last
     /// place of a float64, about 1e-16.
     const OF_TEN_DECIMALS: f64 = 1e-10;
+
+    /// It checks that two results over the same variants hold the same
+    /// numbers: every count equal, and the F_IS of every population the
+    /// same bits.
+    ///
+    /// The bits and not a tolerance, because what these tests ask is
+    /// whether the parts of a sum of float64 were added in the order of the
+    /// variants: a sum whose parts were joined in another order is right to
+    /// far more digits than any tolerance of the spec and is not the same
+    /// number.
+    fn assert_the_same_numbers(one: &PopDiversity, other: &PopDiversity, what: &str) {
+        assert_eq!(
+            one.num_pops(),
+            other.num_pops(),
+            "the populations of {what}"
+        );
+        assert_eq!(
+            one.num_vars_every_pop(),
+            other.num_vars_every_pop(),
+            "the variants of every population of {what}"
+        );
+        for pop in 0..one.num_pops() {
+            assert_eq!(
+                one.num_vars(pop),
+                other.num_vars(pop),
+                "the variants of the population {pop} of {what}"
+            );
+            assert_eq!(
+                one.num_alleles(pop),
+                other.num_alleles(pop),
+                "the alleles of the population {pop} of {what}"
+            );
+            assert_eq!(
+                one.private_alleles(pop),
+                other.private_alleles(pop),
+                "the private alleles of the population {pop} of {what}"
+            );
+            assert_eq!(
+                one.num_variable_vars(pop),
+                other.num_variable_vars(pop),
+                "the variable variants of the population {pop} of {what}"
+            );
+            let (obs_het, unbiased_exp_het, num_vars) = one
+                .the_sums_behind_the_fis(pop)
+                .expect("the sums behind the F_IS");
+            let (of_the_other, unbiased_of_the_other, num_vars_of_the_other) = other
+                .the_sums_behind_the_fis(pop)
+                .expect("the sums behind the F_IS");
+
+            assert_eq!(
+                num_vars, num_vars_of_the_other,
+                "the variants behind the F_IS of the population {pop} of {what}"
+            );
+            assert_eq!(
+                obs_het.to_bits(),
+                of_the_other.to_bits(),
+                "the bits of the observed heterozygosities of the population {pop} of {what}, \
+                 {obs_het} and {of_the_other}"
+            );
+            assert_eq!(
+                unbiased_exp_het.to_bits(),
+                unbiased_of_the_other.to_bits(),
+                "the bits of the unbiased expected heterozygosities of the population {pop} of \
+                 {what}, {unbiased_exp_het} and {unbiased_of_the_other}"
+            );
+        }
+    }
 
     /// It checks the F_IS of one population: one minus its mean observed
     /// heterozygosity over its mean unbiased expected one, over the
@@ -1572,6 +1846,25 @@ mod the_pass {
         assert!(matches!(error, Error::DiversitySfsWithoutADraw), "{error}");
     }
 
+    /// A pass asked for no statistic is refused: it would read every
+    /// variant of the source and compute nothing of them. The rule is here
+    /// and not in each binding crate, which the `coding` skill asks of a
+    /// refusal that is about the calculation and not about a language.
+    #[test]
+    fn a_pass_asked_for_no_statistic_is_refused() {
+        let mut reader = the_worked_example(6);
+        let options = DiversityOptions {
+            stats: DiversityStats::empty(),
+            num_called_alleles: None,
+            min_num_individuals: 1,
+        };
+
+        let error = calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+            .expect_err("a pass asked for no statistic");
+
+        assert!(matches!(error, Error::DiversityWithNoStatistic), "{error}");
+    }
+
     /// A draw of one allele is refused: it shows one allele whatever the
     /// population holds.
     #[test]
@@ -1629,28 +1922,40 @@ mod the_pass {
 
     /// The alleles a population called are the counts above 0 and not the
     /// alleles up to the largest one it called: a population whose only
-    /// genotype is `0/3` called 2 alleles and not 4. The variant is
-    /// `0/3 0/0 0/0`, counted for the first individual alone and for the
-    /// three of the reader in their order, which is the row read as it is.
+    /// genotype is `0/3` called 2 alleles and not 4, and one whose only
+    /// genotype is `3/3` called 1 and does not vary. The two variants are
+    /// `0/3 0/0 0/0` and `3/3 0/0 0/0`, counted for the first individual
+    /// alone and for the three of the reader in their order, which is the
+    /// row read as it is.
+    ///
+    /// The second variant is what holds the count of the population to the
+    /// alleles it called: the first individual called the allele 3 there
+    /// and nothing below it, so a count that walked the alleles up to the
+    /// largest one would give it 4 alleles and call the variant variable,
+    /// where it called one allele and does not vary.
     #[test]
     fn an_allele_a_population_did_not_call_is_not_counted() {
-        let row: [i8; 6] = [0, 3, 0, 0, 0, 0];
-        let rows: Vec<&[i8]> = vec![&row[..]];
+        let of_the_two: [i8; 6] = [0, 3, 0, 0, 0, 0];
+        let of_the_threes: [i8; 6] = [3, 3, 0, 0, 0, 0];
+        let rows: Vec<&[i8]> = vec![&of_the_two[..], &of_the_threes[..]];
         let of_the_first: [usize; 1] = [0];
         let of_the_three: [usize; 3] = [0, 1, 2];
-        let mut reader = GivenBlocks::of_a_source_of(3, 2, blocks_of(&rows, 3, 2, 1));
+        let mut reader = GivenBlocks::of_a_source_of(3, 2, blocks_of(&rows, 3, 2, 2));
 
         let diversity = calc_pop_diversity(
             &mut reader,
             &[&of_the_first, &of_the_three],
             &options_with_no_draw(1),
         )
-        .expect("the diversity of a variant with a gap in its alleles");
+        .expect("the diversity of two variants with a gap in their alleles");
 
-        assert_eq!(diversity.num_alleles(0), Some(2));
-        assert_eq!(diversity.num_alleles(1), Some(2));
+        // The first individual called the alleles 0 and 3 at the first
+        // variant and the allele 3 alone at the second, 3 in all; the three
+        // of the reader called 0 and 3 at each, 4 in all.
+        assert_eq!(diversity.num_alleles(0), Some(3));
+        assert_eq!(diversity.num_alleles(1), Some(4));
         assert_eq!(diversity.num_variable_vars(0), Some(1));
-        assert_eq!(diversity.num_variable_vars(1), Some(1));
+        assert_eq!(diversity.num_variable_vars(1), Some(2));
     }
 
     /// A statistic that was not asked for is not counted and has no value,
@@ -1816,10 +2121,17 @@ mod the_pass {
         assert_eq!(diversity.fis(2), None);
     }
 
-    /// The two sums of heterozygosities behind F_IS are sums of float64,
-    /// and they are added chunk by chunk and block by block in the order of
-    /// the variants, so neither the size of the blocks nor the threads that
-    /// read a block change them.
+    /// The variants that counted for a population do not depend on how the
+    /// source was cut into blocks, and its F_IS is the same within the
+    /// tolerance of the spec. It is the same to every digit here, where the
+    /// six variants of the worked example fall in one chunk of rows at
+    /// every size tried; the two sums behind F_IS are sums of float64
+    /// grouped by chunk inside each block, so a source of more than
+    /// `ROWS_PER_CHUNK` variants read in blocks of different sizes groups
+    /// them differently and moves the last bits. On the panel of 1200
+    /// variants that move is 5.2e-14 relative, measured on 24 September
+    /// 2026 by reading it whole and in blocks of 7, against the 1e-12 the
+    /// spec allows.
     #[test]
     fn the_size_of_the_blocks_does_not_change_the_fis() {
         for num_vars_per_block in [1, 2, 4, 6] {
@@ -2025,19 +2337,215 @@ mod the_pass {
             "the variants of the pass do not depend on the size of a block"
         );
     }
+    /// A variant that carries one of the two heterozygosities and not the
+    /// other is out of both means, which is what keeps the two sums over
+    /// one set of variants and gives them one divisor. The variants are
+    /// `0/1 0/1` and `0/. 1/.` of two diploid individuals: the second
+    /// counts for the population, which called 2 alleles there, 1
+    /// individual of the ploidy, and has an unbiased expected
+    /// heterozygosity of 1, its two called alleles being different; it has
+    /// no observed heterozygosity, both of its genotypes being half called
+    /// and neither of them called.
+    ///
+    /// So the F_IS is the first variant's alone, 1 - 1 / (2/3), -0.5. A
+    /// pass that read a missing heterozygosity as 0 would add (0, 1) to the
+    /// sums and give 1 - 0.5 / (5/6), 0.4.
+    #[test]
+    fn a_variant_with_only_the_expected_heterozygosity_is_out_of_the_fis() {
+        let of_the_hets: [i8; 4] = [0, 1, 0, 1];
+        let of_the_halves: [i8; 4] = [0, -1, 1, -1];
+        let rows: Vec<&[i8]> = vec![&of_the_hets[..], &of_the_halves[..]];
+        let of_the_two: [usize; 2] = [0, 1];
+        let mut reader = GivenBlocks::of_a_source_of(2, 2, blocks_of(&rows, 2, 2, 2));
+
+        let diversity = calc_pop_diversity(&mut reader, &[&of_the_two], &options_with_no_draw(1))
+            .expect("the diversity of a heterozygous variant and a half called one");
+
+        assert_eq!(diversity.num_vars(0), Some(2));
+        assert_fis(
+            &diversity,
+            0,
+            -0.5,
+            "a population whose second variant has no observed heterozygosity",
+        );
+    }
+
+    /// A population whose every counted variant has one of the two
+    /// heterozygosities and not the other has no F_IS and gets NaN: the
+    /// variant `0/. 1/.` of two diploid individuals counts, the population
+    /// having called 2 alleles at it, and no whole genotype of it was
+    /// called.
+    #[test]
+    fn a_population_with_no_called_genotype_at_any_variant_has_no_fis() {
+        let of_the_halves: [i8; 4] = [0, -1, 1, -1];
+        let rows: Vec<&[i8]> = vec![&of_the_halves[..]];
+        let of_the_two: [usize; 2] = [0, 1];
+        let mut reader = GivenBlocks::of_a_source_of(2, 2, blocks_of(&rows, 2, 2, 1));
+
+        let diversity = calc_pop_diversity(&mut reader, &[&of_the_two], &options_with_no_draw(1))
+            .expect("the diversity of a variant of two half called genotypes");
+
+        assert_eq!(diversity.num_vars(0), Some(1));
+        assert_eq!(diversity.num_alleles(0), Some(2));
+        assert!(
+            diversity
+                .fis(0)
+                .expect("the F_IS of a population of half called genotypes")
+                .is_nan()
+        );
+    }
+
+    /// The exponent of the unbiased expected heterozygosity is the ploidy
+    /// of the variants, so a tetraploid population draws four gene copies
+    /// without replacement and not two. The three variants of two
+    /// tetraploid individuals are `0/0/1/1 0/1/1/1`, `0/0/0/0 0/0/0/0` and
+    /// `0/0/1/2 ./././.`.
+    ///
+    /// At the first both genotypes are heterozygous, so the observed
+    /// heterozygosity is 1; of its 8 called alleles 3 are the allele 0 and
+    /// 5 the allele 1, and four copies drawn from them are all alike only
+    /// if all four are the allele 1, (5/8)(4/7)(3/6)(2/5), a fourteenth, so
+    /// the unbiased expected heterozygosity is 13/14. At the second every
+    /// copy is the allele 0, so the two are 0 and 0. At the third the one
+    /// called genotype is heterozygous, so the observed one is 1, and no
+    /// allele of its 4 called ones was called four times, so the unbiased
+    /// one is 1. The means are 2/3 and 9/14, and the F_IS is 1 - 28/27,
+    /// -0.0370370370.
+    ///
+    /// An exponent of 2 at the same variants would give 15/28, 0 and 5/6,
+    /// a mean of 115/252, and an F_IS of -53/115, -0.4608695652.
+    #[test]
+    fn a_tetraploid_population_draws_four_gene_copies_and_not_two() {
+        let of_the_hets: [i8; 8] = [0, 0, 1, 1, 0, 1, 1, 1];
+        let of_the_zeros: [i8; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+        let of_the_three_alleles: [i8; 8] = [0, 0, 1, 2, -1, -1, -1, -1];
+        let rows: Vec<&[i8]> = vec![
+            &of_the_hets[..],
+            &of_the_zeros[..],
+            &of_the_three_alleles[..],
+        ];
+        let of_the_two: [usize; 2] = [0, 1];
+        let mut reader = GivenBlocks::of_a_source_of(2, 4, blocks_of(&rows, 2, 4, 3));
+
+        let diversity = calc_pop_diversity(&mut reader, &[&of_the_two], &options_with_no_draw(1))
+            .expect("the diversity of a tetraploid population");
+
+        assert_eq!(diversity.num_vars(0), Some(3));
+        // 2 alleles at the first variant, 1 at the second and 3 at the
+        // third.
+        assert_eq!(diversity.num_alleles(0), Some(6));
+        assert_eq!(diversity.num_variable_vars(0), Some(2));
+        assert_fis(&diversity, 0, -0.0370370370, "a tetraploid population");
+    }
+
+    /// The chunks of a block read one after another, which is the reduction
+    /// WebAssembly runs, count what the threads of a native build count.
+    ///
+    /// No pass of a native build reaches that reduction: there the chunks
+    /// are read on the threads of rayon, and the rows are read again one
+    /// chunk at a time only where a block is refused, which gives no
+    /// numbers. So without this test the whole of it is compiled by the
+    /// cargo suites and run by none of them, and only the node suite, which
+    /// runs the wasm build over the panel, would see it wrong.
+    #[test]
+    fn the_chunks_read_one_after_another_count_what_the_threads_count() {
+        let of_the_threads = {
+            let mut reader = a_source_of_many_variants(200, 200);
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_with_no_draw(1))
+                .expect("the diversity read on the threads")
+        };
+        let one_chunk_at_a_time = {
+            let mut reader = a_source_of_many_variants(200, 200);
+            calc_pop_diversity_one_chunk_at_a_time(
+                &mut reader,
+                &[&POP1, &POP2],
+                &options_with_no_draw(1),
+            )
+            .expect("the diversity read one chunk at a time")
+        };
+
+        assert_eq!(of_the_threads.num_vars(0), Some(160));
+        assert_the_same_numbers(
+            &of_the_threads,
+            &one_chunk_at_a_time,
+            "the chunks read one after another",
+        );
+    }
+
+    /// The error of a block is the one of its first bad row, whichever row
+    /// a thread reached first: a user who reports a damaged file has to get
+    /// the same message every time. The block holds 200 rows, four chunks,
+    /// with the allele -2 in the eleventh and the allele -3 in the hundred
+    /// and fifty first, and the pass is run 40 times because which of the
+    /// two a thread reaches first is the scheduling of that run.
+    #[test]
+    fn the_error_of_a_block_is_the_one_of_its_first_bad_row_every_time() {
+        for run in 0..40 {
+            let mut reader = a_source_with_two_rows_below_the_missing_allele(200, 200);
+
+            let error = calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_with_no_draw(1))
+                .expect_err("a block with two rows below the missing allele");
+
+            assert!(
+                matches!(error, Error::AlleleBelowTheMissingOne { allele: -2 }),
+                "the run {run} gave {error}"
+            );
+        }
+    }
+
+    /// The numbers of a pass do not depend on how many threads read the
+    /// rows of a block. The source holds 2000 variants in one block, 32
+    /// chunks of rows, so the threads have chunks to share out; every other
+    /// fixture of this module holds six variants or fewer, which is one
+    /// chunk and nothing to share.
+    ///
+    /// The bits of the two sums behind F_IS are compared and not a
+    /// tolerance: the chunks are added in the order of the block, and
+    /// rayon's own `reduce` over the same chunks joins them in a tree whose
+    /// shape follows the threads of the pool, which gives a number right to
+    /// far more digits than any tolerance of the spec and not the same one.
+    /// With that `reduce` in place of the ordered addition the sums of
+    /// `pop1` differ between 1 thread and 2 here, and they do not at 200
+    /// variants, 4 chunks, where rayon splits the same way whatever the
+    /// pool.
+    ///
+    /// The pools are built here and are not rayon's global one, which has
+    /// one thread per core of the machine. rayon is a dependency of the
+    /// targets that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_numbers() {
+        let in_a_pool = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                let mut reader = a_source_of_many_variants(2000, 2000);
+                calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_with_no_draw(1))
+                    .expect("the diversity of a source of many variants")
+            })
+        };
+
+        let on_one = in_a_pool(1);
+        assert_eq!(on_one.num_vars(0), Some(1600));
+        assert_eq!(on_one.num_vars(1), Some(1600));
+        for threads in [2, 4, 8] {
+            assert_the_same_numbers(&on_one, &in_a_pool(threads), &format!("{threads} threads"));
+        }
+    }
 }
 
 #[cfg(test)]
 mod the_names_of_the_statistics {
     use super::DiversityStats;
+    use crate::error::Error;
 
     /// The name of each statistic is what a user writes in `stats` and the
-    /// field of the result that holds it, and `of_name` gives back the
-    /// statistic of each name. The names live in `NAMES` alone, so a rename
-    /// is one change; the literals here are the names of the fields of
-    /// `PopDiversity` in Python and in TypeScript.
+    /// field of the result that holds it. The literals here are the names
+    /// of the fields of `PopDiversity` in Python and in TypeScript.
     #[test]
-    fn each_name_gives_back_the_statistic_it_names() {
+    fn the_five_names_are_the_fields_of_a_result() {
         assert_eq!(
             DiversityStats::NAMES,
             [
@@ -2048,23 +2556,33 @@ mod the_names_of_the_statistics {
                 "fis",
             ]
         );
-        assert_eq!(
-            DiversityStats::of_name("num_alleles"),
-            Some(DiversityStats::NUM_ALLELES)
-        );
-        assert_eq!(
-            DiversityStats::of_name("private_alleles"),
-            Some(DiversityStats::PRIVATE_ALLELES)
-        );
-        assert_eq!(
-            DiversityStats::of_name("variable_vars_ratio"),
-            Some(DiversityStats::VARIABLE_VARS_RATIO)
-        );
-        assert_eq!(
-            DiversityStats::of_name("folded_sfs"),
-            Some(DiversityStats::FOLDED_SFS)
-        );
-        assert_eq!(DiversityStats::of_name("fis"), Some(DiversityStats::FIS));
+    }
+
+    /// Every name of the table gives back the statistic that stands beside
+    /// it there, so a statistic added to the table is read by `of_name`
+    /// with nothing else written for it, and none of them can be left
+    /// behind as a name that `of_name` refuses.
+    #[test]
+    fn every_name_of_the_table_gives_back_the_statistic_beside_it() {
+        for (name, stat) in DiversityStats::NAMES_AND_STATS {
+            assert_eq!(
+                DiversityStats::of_name(name).expect("a name of the table"),
+                stat,
+                "the statistic of `{name}`"
+            );
+        }
+    }
+
+    /// The names of the table are the names of `NAMES`, in that order, so
+    /// the list a message prints is the list a user chooses from.
+    #[test]
+    fn the_names_of_the_table_are_the_names_of_the_result() {
+        let of_the_table: Vec<&str> = DiversityStats::NAMES_AND_STATS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+
+        assert_eq!(of_the_table, DiversityStats::NAMES);
     }
 
     /// The five names together are every statistic, so a caller that names
@@ -2079,12 +2597,24 @@ mod the_names_of_the_statistics {
         assert_eq!(asked_for, DiversityStats::ALL);
     }
 
-    /// A name of no statistic has no statistic, which is what lets a
-    /// binding crate refuse it in the words of its own language.
+    /// A name of no statistic is refused here and not in each binding
+    /// crate, with the name the user wrote and the five they may write.
     #[test]
-    fn a_name_of_no_statistic_gives_nothing() {
-        assert_eq!(DiversityStats::of_name("poly_vars_ratio"), None);
-        assert_eq!(DiversityStats::of_name("NUM_ALLELES"), None);
-        assert_eq!(DiversityStats::of_name(""), None);
+    fn a_name_of_no_statistic_is_refused_with_the_five_names() {
+        for unknown in ["poly_vars_ratio", "NUM_ALLELES", "allelic_richness", ""] {
+            let error = DiversityStats::of_name(unknown).expect_err("a name of no statistic");
+
+            assert!(
+                matches!(&error, Error::DiversityStatOfAnUnknownName { name } if name == unknown),
+                "{error}"
+            );
+            let message = error.to_string();
+            for known in DiversityStats::NAMES {
+                assert!(
+                    message.contains(known),
+                    "the message of `{unknown}` is {message}, and it names {known}"
+                );
+            }
+        }
     }
 }

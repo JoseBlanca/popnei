@@ -298,18 +298,12 @@ fn of_a_result_each(counts: Vec<u64>) -> Result<Vec<i64>, PyPopneiError> {
 ///
 /// A name that is of no statistic, which a user reaches by calling
 /// `popnei._core` themselves: the package takes the members of its
-/// `PopDiversityStat` and nothing else.
+/// `PopDiversityStat` and nothing else. The core refuses it and names the
+/// five, so the sentence a user reads is written once for both languages.
 fn the_stats(names: &[String]) -> Result<DiversityStats, PyPopneiError> {
     let mut asked_for = DiversityStats::empty();
     for name in names {
-        let stat = DiversityStats::of_name(name).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "`{name}` is not one of the statistics of a population, which are \
-                 {the_five}",
-                the_five = DiversityStats::NAMES.join(", ")
-            ))
-        })?;
-        asked_for |= stat;
+        asked_for |= DiversityStats::of_name(name)?;
     }
     Ok(asked_for)
 }
@@ -362,17 +356,19 @@ fn no_count_of_alleles(value: &Bound<'_, PyAny>) -> String {
 /// What the pass failed with, with the file it was reading where that file
 /// is part of what went wrong.
 ///
-/// The five refusals of "The Rust interface" of `docs/specs/diversity.md`
-/// are of what a user wrote and are wrong whatever file is read, so they
-/// name none, which is what "Errors, and no panics" of
-/// `.claude/skills/coding/SKILL.md` asks of an argument that is refused.
-/// Every other error of the pass is of the variants it read: which file they
-/// came from is what a user needs in order to see whether it is the file or
-/// the steps that left the calculation with nothing.
+/// The refusals of "The Rust interface" of `docs/specs/diversity.md`, and
+/// the `stats` that names no statistic, are of what a user wrote and are
+/// wrong whatever file is read, so they name none, which is what "Errors,
+/// and no panics" of `.claude/skills/coding/SKILL.md` asks of an argument
+/// that is refused. Every other error of the pass is of the variants it
+/// read: which file they came from is what a user needs in order to see
+/// whether it is the file or the steps that left the calculation with
+/// nothing.
 fn with_its_file(error: popnei::Error, path: &Path) -> PyPopneiError {
     if matches!(
         error,
-        popnei::Error::DiversitySfsWithoutADraw
+        popnei::Error::DiversityWithNoStatistic
+            | popnei::Error::DiversitySfsWithoutADraw
             | popnei::Error::DiversityDrawTooSmall { .. }
             | popnei::Error::DiversityPopWithNoIndividual { .. }
             | popnei::Error::DiversityIndividualNotInTheDataset { .. }

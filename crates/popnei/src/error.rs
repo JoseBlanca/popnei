@@ -1817,9 +1817,46 @@ pub enum Error {
     /// called alleles and one of 400 would put their variants in bins that
     /// mean different things. In Python it is a `ValueError`.
     #[error(
-        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: give `num_called_alleles`, or leave the spectrum out of `stats`"
+        "the folded site frequency spectrum was asked for and `num_called_alleles` was not given, and the bins of a spectrum are the counts of the rarer allele in a draw of that many alleles: a call that does not give `stats` asks for all five statistics, {the_five}, so either give `num_called_alleles` or name in `stats` the statistics you want",
+        the_five = the_five_of_a_population()
     )]
     DiversitySfsWithoutADraw,
+
+    /// A user asked for a statistic of a population under a name that is
+    /// of none of the five. The names are those of the fields of the
+    /// result, and they are the table `diversity::DiversityStats::NAMES`,
+    /// which the message lists. In Python it is a `ValueError`.
+    #[error("`{name}` is not one of the statistics of a population, which are {the_five}", the_five = the_five_of_a_population())]
+    DiversityStatOfAnUnknownName {
+        /// The name the user wrote.
+        name: String,
+    },
+
+    /// A pass of the diversity was asked for no statistic at all. Such a
+    /// pass reads every variant of the source and computes nothing of
+    /// them, so it is refused at the call rather than after the dataset
+    /// has been read. In Python it is a `ValueError`.
+    #[error(
+        "`stats` names no statistic and a pass that computes none reads every variant of the source for nothing: name in `stats` the statistics you want, which are {the_five}, or leave `stats` out for the five of them",
+        the_five = the_five_of_a_population()
+    )]
+    DiversityWithNoStatistic,
+
+    /// A block of a pass of the diversity said it held more variants than
+    /// a count of them holds. Every reader of popnei gives blocks of far
+    /// fewer, and a `usize` is 64 bits on the targets popnei builds
+    /// natively for and 32 in WebAssembly, so no block of any of them
+    /// reaches this; a block that did would be counted into a number that
+    /// stopped at the largest one and would leave the pass reporting fewer
+    /// variants than it read. In Python it is a `ValueError`.
+    #[error(
+        "a block of the pass says it holds {num_vars} variants, which is more than the variants of a pass are counted in, {largest}",
+        largest = u64::MAX
+    )]
+    DiversityMoreVarsThanACountHolds {
+        /// How many variants the block said it held.
+        num_vars: usize,
+    },
 
     /// The number of called alleles every population is brought down to is
     /// below 2. A draw of one allele shows one allele whatever the
@@ -2408,6 +2445,15 @@ fn a_pair_with_no_variant_called(
 /// `maf`, `exp_het`, `unbiased_exp_het` and `poly_vars_ratio`".
 fn the_five_statistics() -> String {
     listed(&crate::stats::PerVarStat::NAMES)
+}
+
+/// The five statistics of a population, in the order of the fields of a
+/// result, as a message that asks a user to choose among them lists them.
+///
+/// They are written as a user writes them, with no backticks, because a
+/// user copies one of them into `stats`.
+fn the_five_of_a_population() -> String {
+    crate::diversity::DiversityStats::NAMES.join(", ")
 }
 
 /// `names` in one sentence, each in backticks, the last one after an "and":
