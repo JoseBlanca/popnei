@@ -22,7 +22,12 @@ from popnei.gwas import (
 from popnei.io_vars import VarsWritten, open_vars, write_vars
 from popnei.io_vcf import open_vcf
 from popnei.kinship import Kinship, calc_kinship
-from popnei.ld import R2Matrix, calc_rogers_huff_r2_matrix
+from popnei.ld import (
+    LdAndDistPerPop,
+    R2Matrix,
+    calc_ld_and_dist_per_pop,
+    calc_rogers_huff_r2_matrix,
+)
 from popnei.pca import PCAResult, do_pca, do_pca_from_variants
 from popnei.pop_dists import PopDistMeasure, PopDists, calc_pop_dists
 from popnei.stats import (
@@ -51,6 +56,7 @@ __all__ = [
     "GWASModel",
     "GWASResult",
     "Kinship",
+    "LdAndDistPerPop",
     "NullModel",
     "PCAResult",
     "PassStats",
@@ -70,6 +76,7 @@ __all__ = [
     "__version__",
     "calc_gwas",
     "calc_kinship",
+    "calc_ld_and_dist_per_pop",
     "calc_pairwise_kosman_dists",
     "calc_per_individual_stats",
     "calc_per_var_distribs",

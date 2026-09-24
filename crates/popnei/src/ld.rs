@@ -36,7 +36,10 @@ use crate::variant::{
 
 mod dist;
 
-pub use dist::{LdAndDist, LdAndDistOptions, LdBins, calc_ld_and_dist};
+pub use dist::{
+    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_BINS, LdAndDist,
+    LdAndDistOptions, LdBins, calc_ld_and_dist,
+};
 
 /// The most values one of the matrices of [`LdDosages`] holds, the variants
 /// it was built over times the individuals.

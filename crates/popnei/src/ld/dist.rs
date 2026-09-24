@@ -707,6 +707,52 @@ fn the_count_of(num_vars: usize) -> u64 {
 /// six sums of it 3 MB, beside the window itself.
 const THE_VARS_OF_A_TILE_OF_THE_WINDOW: usize = 256;
 
+/// The smallest distance a pair is counted at when the user names no
+/// number, which is the default of `calc_ld_and_dist_per_pop` in Python and
+/// of `calcLdAndDistPerPop` in TypeScript.
+///
+/// At 1 the only pairs left out are those of two variants at one position,
+/// a SNP and an indel at the same base, whose distance is 0. "Its Python
+/// function" of `docs/specs/ld.md` gives the number and says that pyNei
+/// throws away the pairs at `min_dist` itself, so its default of 1 loses
+/// the variants 1 base pair apart with nothing said.
+pub const DEFAULT_MIN_DIST: u64 = 1;
+
+/// The largest distance a pair is counted at when the user names no number,
+/// which is the default of `calc_ld_and_dist_per_pop` in Python and of
+/// `calcLdAndDistPerPop` in TypeScript.
+///
+/// It is also how far back the window of blocks reaches, so it is what the
+/// memory of the pass grows with. "Its Python function" of
+/// `docs/specs/ld.md` gives the number and where it comes from: it is
+/// plink2's own for `--r2-unphased`, `--ld-window-kb 1000`, where pyNei
+/// puts no bound on the distance at all and so counts every pair of every
+/// chromosome, 5·10⁹ pairs for a chromosome of 100000 variants.
+pub const DEFAULT_MAX_DIST: u64 = 1_000_000;
+
+/// How many bins the distances are cut into when the user names no number,
+/// which is the default of `calc_ld_and_dist_per_pop` in Python and of
+/// `calcLdAndDistPerPop` in TypeScript.
+///
+/// "Its Python function" of `docs/specs/ld.md` gives the number, and pyNei
+/// has none: it bins no pair and hands over a sample of them instead. At
+/// the [`DEFAULT_MAX_DIST`] of a million base pairs each bin is 20000 base
+/// pairs wide.
+pub const DEFAULT_NUM_BINS: usize = 50;
+
+/// The largest major allele frequency a variant has in a population and is
+/// still counted there when the user names no number, which is the default
+/// of `calc_ld_and_dist_per_pop` in Python and of `calcLdAndDistPerPop` in
+/// TypeScript.
+///
+/// "Its Python function" of `docs/specs/ld.md` gives the number, and
+/// "What it gives" of that item the reason for leaving those variants out:
+/// the r² of a variant that hardly varies in a population rests on the one
+/// or two individuals that carry the rare allele, and keeping them raises
+/// the curve everywhere. It is the frequency pyNei's
+/// `calc_rogers_huff_r2_matrix` refuses a whole dataset over.
+pub const DEFAULT_MAX_ALLOWED_MAF: f64 = 0.95;
+
 /// What the fall-off of r² with distance is counted with.
 #[derive(Debug, Clone, Copy)]
 pub struct LdAndDistOptions {

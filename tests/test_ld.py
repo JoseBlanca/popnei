@@ -1,4 +1,5 @@
-"""The matrix of the r² of every pair of variants, from Python.
+"""The matrix of the r² of every pair of variants, and how r² falls off with
+distance, from Python.
 
 r² is the square of the correlation between the dosages of two variants,
 the dosage of an individual being how many of the alleles of its genotype
@@ -6,6 +7,9 @@ are not the major allele of the variant, and it says how much the genotype
 of one variant tells about the genotype of the other.
 :func:`popnei.calc_rogers_huff_r2_matrix` gives it for every pair of the
 variants of one pass, and :class:`popnei.R2Matrix` is what it comes in.
+:func:`popnei.calc_ld_and_dist_per_pop` gives, for each population, the mean
+r² of the pairs of each bin of the distance between their two variants, and
+:class:`popnei.LdAndDistPerPop` is what that comes in.
 
 `docs/specs/ld.md` has the calculation and every literal of this file. The
 reference program is plink2 v2.0.0-a.7.7, whose matrix of
@@ -14,7 +18,10 @@ stored in that directory and is what the cargo tests of the core assert
 against; the five pairs of the table of "How it is verified" are asserted
 here again, through the three layers, within 1e-12 relative.
 
-The comparison the spec asks for at this function is with pyNei at commit
+The ten bins of the fall-off are the first table of that same part, of one
+population of every individual, and their r² comes from plink2 too.
+
+The comparison the spec asks for at the matrix is with pyNei at commit
 ef0ca6e, which `pyproject.toml` names, and it has two halves, because the
 two libraries do not read a missing genotype the same way: popnei leaves
 the individual out of the pair its genotype is missing at, which is what
@@ -28,7 +35,9 @@ genotypes" of the spec, measured on `tests/reference/dists/panel.vcf.gz`,
 at the largest, where popnei's is plink2's to the bit. So the difference
 between popnei and pyNei on that panel is that table, and the test asserts
 it instead of asserting that the two agree: the divergence is pinned, and a
-change on either side of it shows.
+change on either side of it shows. At the fall-off no value is compared with
+pyNei, which gives a sample of pairs drawn with no seed; what is compared is
+the set of variants each population keeps at its own major allele frequency.
 """
 
 import math
@@ -37,7 +46,15 @@ from pathlib import Path
 
 import numpy
 import pytest
-from popnei import R2Matrix, _core, calc_rogers_huff_r2_matrix, open_vcf
+from popnei import (
+    R2Matrix,
+    _core,
+    calc_ld_and_dist_per_pop,
+    calc_rogers_huff_r2_matrix,
+    open_vcf,
+)
+from pynei import filter_by_maf as pynei_filter_by_maf
+from pynei import filter_samples as pynei_filter_samples
 from pynei import vars_from_vcf
 from pynei.ld_calc import _calc_rogers_huff_r2
 from pynei.var_filters import filter_by_missing_data as pynei_filter_by_missing_data
@@ -86,6 +103,91 @@ TOLERANCE = 1e-12
 # the digits the spec gives it in.
 THE_DIVERGENCE_OF_PYNEI = ((0.0037, 1e-4), (0.047, 1e-3), (0.194, 1e-3))
 
+# The bins of the three tables of "How it is verified" of
+# `docs/specs/ld.md`: the distances from 1 to 250000 base pairs cut into ten
+# of 25000, with the smallest and the largest distance of each, both
+# included.
+THE_BOUNDS_OF_THE_TEN_BINS = [
+    (1, 25_000),
+    (25_001, 50_000),
+    (50_001, 75_000),
+    (75_001, 100_000),
+    (100_001, 125_000),
+    (125_001, 150_000),
+    (150_001, 175_000),
+    (175_001, 200_000),
+    (200_001, 225_000),
+    (225_001, 250_000),
+]
+
+# The first table of "How it is verified" of `docs/specs/ld.md`, the one
+# population of every one of the 100 individuals at a `max_allowed_maf` of
+# 0.95: for each of the ten bins, how many pairs it holds, the mean of their
+# r² and its standard deviation. Every value is the one that table prints,
+# which `docs/reports/ld-method/bins.py` worked out from the r² plink2
+# v2.0.0-a.7.7 gives for these individuals and these variants, and which
+# `tests/reference/ld/ld.bins.txt` holds again.
+THE_BINS_OF_EVERY_INDIVIDUAL = [
+    (8744, 0.20767885551844031, 0.20568652974479465),
+    (7815, 0.07890359176062511, 0.08625049214414023),
+    (6846, 0.03508441302751711, 0.0411917416898793),
+    (5962, 0.02056917580626069, 0.026923590343909974),
+    (5140, 0.015026451851395499, 0.02060604430437979),
+    (4168, 0.011542104404978385, 0.015425275975059542),
+    (3308, 0.01145438215819949, 0.015306615529156098),
+    (2447, 0.012095572873545887, 0.016610730726125223),
+    (1481, 0.015365254218410632, 0.020746495170409326),
+    (530, 0.013266303346602112, 0.017768417874071147),
+]
+
+# The two populations of the second and the third table of the same part:
+# `pop_a` the individuals `i000` to `i049` of `ld.vcf.gz` and `pop_b` `i050`
+# to `i099`.
+THE_TWO_POPS = {
+    "pop_a": [f"i{individual:03d}" for individual in range(50)],
+    "pop_b": [f"i{individual:03d}" for individual in range(50, 100)],
+}
+
+# How many pairs each of the ten bins holds for each of the two populations
+# and the mean of their r², from the second and the third table, which are
+# of a `max_allowed_maf` of 0.8. Those two tables leave the standard
+# deviations out to stay readable, and `tests/reference/ld/ld.bins.txt`
+# holds them; the cargo tests of the core assert them.
+THE_PAIRS_AND_MEANS_OF_THE_TWO_POPS = {
+    "pop_a": [
+        (7394, 0.22226316432228382),
+        (6564, 0.09426862122352),
+        (5648, 0.04565040582359873),
+        (4918, 0.030489796800475328),
+        (4304, 0.024750005446480792),
+        (3540, 0.02220350204444288),
+        (2872, 0.01770136991605654),
+        (2137, 0.02022495044871507),
+        (1240, 0.01792337843122636),
+        (438, 0.020745833685396994),
+    ],
+    "pop_b": [
+        (7625, 0.21935192592998345),
+        (6779, 0.08778756463719926),
+        (5968, 0.0442939962514918),
+        (5189, 0.0321335996857634),
+        (4473, 0.02676089802517462),
+        (3567, 0.02136589829323258),
+        (2823, 0.02578147369672746),
+        (2086, 0.02294629377272581),
+        (1275, 0.022448095913909734),
+        (415, 0.016086351215632733),
+    ],
+}
+
+# How many of the 500 variants of `ld.vcf.gz` each of the three tables
+# keeps, from the same part: 432 at the `max_allowed_maf` of 0.95 of the
+# first table, and 396 and 402 at the 0.8 of `pop_a` and of `pop_b`, worked
+# out over the individuals of each population alone.
+VARS_AT_THE_MAF_OF_THE_FIRST_TABLE = 432
+VARS_OF_POP_A = 396
+VARS_OF_POP_B = 402
+
 
 def _the_ld_dataset():
     """The `Variants` of `tests/reference/ld/ld.vcf.gz`, read as plink2 read
@@ -121,6 +223,21 @@ def _pynei_r2_of(path: Path, no_missing_genotype: bool = False) -> numpy.ndarray
         [chunk.gts.to_012() for chunk in variants.iter_vars_chunks()], axis=0
     )
     return _calc_rogers_huff_r2(dosages, dosages, check_no_mafs_above=None) ** 2
+
+
+def _pynei_vars_at_a_maf_of(individuals: list[str], max_allowed_maf: float) -> int:
+    """How many variants of `ld.vcf.gz` pyNei keeps for `individuals` at
+    that major allele frequency.
+
+    pyNei has no `calc_ld_and_dist_per_pop` that counts them: it makes one
+    pass per population, by putting `filter_samples` and `filter_by_maf`
+    around the `Variants` it was given, so that is what is asked here.
+    """
+    variants = pynei_filter_samples(
+        vars_from_vcf(REFERENCE_LD_DIR / "ld.vcf.gz"), individuals
+    )
+    kept = pynei_filter_by_maf(variants, max_allowed_maf)
+    return sum(chunk.gts.gt_values.shape[0] for chunk in kept.iter_vars_chunks())
 
 
 def _off_the_diagonal(matrix: numpy.ndarray) -> numpy.ndarray:
@@ -481,3 +598,180 @@ def test_the_default_cap_is_the_one_of_the_core() -> None:
     core holds and the package puts in its signature: nothing writes 5000
     twice."""
     assert _core.DEFAULT_MAX_NUM_VARS == 5000
+
+
+def test_ld_and_dist_gives_the_ten_bins_of_the_spec_that_plink2_gives() -> None:
+    """The fall-off of r² with distance over `ld.vcf.gz`, through the three
+    layers.
+
+    The ten rows are the first table of "How it is verified" of
+    `docs/specs/ld.md`: one population of every one of the 100 individuals
+    at a `max_allowed_maf` of 0.95, which 432 of the 500 variants pass, with
+    the distances from 1 to 250000 base pairs cut into ten bins of 25000.
+    Every r² of every bin is plink2's, and the binning is the arithmetic the
+    spec defines; `tests/reference/ld/ld.bins.txt` holds the same numbers
+    with the standard deviations.
+
+    The counts of pairs are compared exactly and the means and the standard
+    deviations within 1e-12 relative, since both sides add the same r² and
+    only the order of the sum can differ.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.95,
+    )
+
+    # With no `pops` there is one population of every individual, named as
+    # pyNei names it.
+    assert list(of_the_pass.per_pop) == ["pop"]
+    assert of_the_pass.num_vars_per_pop == {"pop": VARS_AT_THE_MAF_OF_THE_FIRST_TABLE}
+    # The pass counted every variant of the file: the major allele frequency
+    # takes variants out of a population and not out of the pass.
+    assert of_the_pass.pass_stats.num_vars == NUM_VARS_OF_THE_LD_DATASET
+
+    frame = of_the_pass.per_pop["pop"]
+    assert list(frame.index) == [smallest for smallest, _ in THE_BOUNDS_OF_THE_TEN_BINS]
+    assert frame.index.name == "smallest_dist"
+    assert list(frame["largest_dist"]) == [
+        largest for _, largest in THE_BOUNDS_OF_THE_TEN_BINS
+    ]
+    assert list(frame["num_pairs"]) == [
+        num_pairs for num_pairs, _, _ in THE_BINS_OF_EVERY_INDIVIDUAL
+    ]
+    for row, (_, mean_r2, sd_r2) in enumerate(THE_BINS_OF_EVERY_INDIVIDUAL):
+        assert frame["mean_r2"].iloc[row] == pytest.approx(mean_r2, rel=TOLERANCE)
+        assert frame["sd_r2"].iloc[row] == pytest.approx(sd_r2, rel=TOLERANCE)
+
+
+def test_ld_and_dist_keeps_in_each_pop_the_variants_pynei_keeps_there() -> None:
+    """The variants `pop_a` and `pop_b` keep at a major allele frequency of
+    0.8, counted by both libraries.
+
+    "How it is verified" of `docs/specs/ld.md` compares no value with pyNei
+    here, since pyNei gives a sample of pairs drawn with no seed, of r and
+    not r², with a missing genotype left in. What is compared is the set of
+    variants each population keeps: popnei counts them in one pass, in
+    `num_vars_per_pop`, and pyNei is asked for them with `filter_samples`
+    around the individuals of the population and `filter_by_maf` over what
+    is left. Both have to give the 396 of `pop_a` and the 402 of `pop_b` of
+    the spec.
+
+    At 0.95 the two populations pass the same 432 variants, so 0.8 is the
+    threshold that fails when the major allele frequency is worked out over
+    all the individuals instead of over those of the population.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        pops=THE_TWO_POPS,
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.8,
+    )
+
+    # The populations come back in the order of the `pops` dict.
+    assert list(of_the_pass.per_pop) == ["pop_a", "pop_b"]
+    assert of_the_pass.num_vars_per_pop == {
+        "pop_a": VARS_OF_POP_A,
+        "pop_b": VARS_OF_POP_B,
+    }
+    assert of_the_pass.num_vars_per_pop == {
+        pop: _pynei_vars_at_a_maf_of(individuals, 0.8)
+        for pop, individuals in THE_TWO_POPS.items()
+    }
+    # The two populations count their own pairs, which the counts of the
+    # first bin show: the variants they keep are not the same variants.
+    assert list(of_the_pass.per_pop["pop_a"]["num_pairs"]) == [
+        num_pairs for num_pairs, _ in THE_PAIRS_AND_MEANS_OF_THE_TWO_POPS["pop_a"]
+    ]
+    assert list(of_the_pass.per_pop["pop_b"]["num_pairs"]) == [
+        num_pairs for num_pairs, _ in THE_PAIRS_AND_MEANS_OF_THE_TWO_POPS["pop_b"]
+    ]
+    for pop, rows in THE_PAIRS_AND_MEANS_OF_THE_TWO_POPS.items():
+        means = of_the_pass.per_pop[pop]["mean_r2"]
+        for row, (_, mean_r2) in enumerate(rows):
+            assert means.iloc[row] == pytest.approx(mean_r2, rel=TOLERANCE)
+
+
+def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(
+    write_vcf,
+) -> None:
+    """A dataset of one chromosome whose variants span less than `min_dist`,
+    which "The cases" of `docs/specs/ld.md` says is no error.
+
+    Every bin holds 0 pairs and NaN for its mean and its standard deviation,
+    and the three variants still passed the major allele frequency, so
+    `num_vars_per_pop` counts them.
+    """
+    path = write_vcf(
+        [
+            "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+            "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+            "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\t0/1\t0/0",
+        ]
+    )
+
+    of_the_pass = calc_ld_and_dist_per_pop(
+        open_vcf(path), min_dist=1000, max_dist=5000, num_bins=4
+    )
+
+    frame = of_the_pass.per_pop["pop"]
+    assert of_the_pass.num_vars_per_pop == {"pop": 3}
+    assert list(frame.index) == [1000, 2001, 3001, 4001]
+    assert list(frame["largest_dist"]) == [2000, 3000, 4000, 5000]
+    assert list(frame["num_pairs"]) == [0, 0, 0, 0]
+    assert frame["mean_r2"].isna().all()
+    assert frame["sd_r2"].isna().all()
+
+
+def test_ld_and_dist_refuses_what_is_no_variants_no_distance_and_no_bins(
+    write_vcf,
+) -> None:
+    """The six arguments of the function, each given what it cannot be.
+
+    The path of the VCF in the place of the `Variants` is the mistake that
+    is easiest to make. A distance that is negative cannot reach the core,
+    whose distances are unsigned, so the binding is what refuses it, and it
+    is refused under the name the user wrote it in; so is one that is no
+    whole number at all, 2.5 and `True`, which Python would pass on as the
+    number 1. The other four are the core's: a `min_dist` above `max_dist`,
+    a `num_bins` of 0, a `max_allowed_maf` outside 0 to 1, and a population
+    that names an individual the dataset has not.
+    """
+    path = write_vcf(["chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1"])
+
+    with pytest.raises(TypeError, match="variants"):
+        calc_ld_and_dist_per_pop(path)
+    with pytest.raises(ValueError, match=r"`min_dist` is -1"):
+        calc_ld_and_dist_per_pop(open_vcf(path), min_dist=-1)
+    with pytest.raises(ValueError, match=r"`max_dist` is -250"):
+        calc_ld_and_dist_per_pop(open_vcf(path), max_dist=-250)
+    with pytest.raises(ValueError, match=r"`num_bins` is -3"):
+        calc_ld_and_dist_per_pop(open_vcf(path), num_bins=-3)
+    with pytest.raises(TypeError, match="min_dist"):
+        calc_ld_and_dist_per_pop(open_vcf(path), min_dist=2.5)
+    with pytest.raises(TypeError, match="max_dist"):
+        calc_ld_and_dist_per_pop(open_vcf(path), max_dist=True)
+    with pytest.raises(TypeError, match="max_allowed_maf"):
+        calc_ld_and_dist_per_pop(open_vcf(path), max_allowed_maf="a half")
+    with pytest.raises(ValueError, match="min_dist"):
+        calc_ld_and_dist_per_pop(open_vcf(path), min_dist=5000, max_dist=4000)
+    with pytest.raises(ValueError, match="num_bins"):
+        calc_ld_and_dist_per_pop(open_vcf(path), num_bins=0)
+    with pytest.raises(ValueError, match="max_allowed_maf"):
+        calc_ld_and_dist_per_pop(open_vcf(path), max_allowed_maf=1.5)
+    with pytest.raises(ValueError, match="ind9"):
+        calc_ld_and_dist_per_pop(open_vcf(path), pops={"pop1": ["ind1", "ind9"]})
+
+
+def test_the_defaults_of_ld_and_dist_are_the_ones_of_the_core() -> None:
+    """The four numbers a user gets when they name none, which the core
+    holds and the package puts in its signature: nothing writes 1000000
+    twice."""
+    assert _core.DEFAULT_MIN_DIST == 1
+    assert _core.DEFAULT_MAX_DIST == 1_000_000
+    assert _core.DEFAULT_NUM_DIST_BINS == 50
+    assert _core.DEFAULT_MAX_ALLOWED_MAF == 0.95
