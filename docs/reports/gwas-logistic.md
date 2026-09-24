@@ -405,6 +405,85 @@ cost is the 1e-13 class of error, which is the only class this bound can
 catch at all, the larger ones being caught by plink2 and R. It is 3e-14 in
 the spec, in deliverable 4 and in the test.
 
+### What the review changed above the core
+
+The node suite had no reference number for the logistic score test at all,
+which is the worst instance of a test that cannot fail that this plan has
+met: a reviewer multiplied that test's effect by 1.5 in the core, rebuilt
+the WebAssembly and watched all 328 node tests pass. It now asserts R's six
+score statistics and p-values, and the subagent that added them proved the
+gap the same way, making the mutation itself and checking its new test was
+the single failure of 329 before reverting it. The suites are 507 pytest and
+329 node, where they were 506 and 328.
+
+Three other things a user reads were wrong. Both packages said a row of
+three NaNs is a variant that separates the cases from the controls; it is
+that only under the Wald test, the score test gives a number there, and a
+variant that repeats a covariate and separates nobody gets the same three
+NaNs. `covariate_effects` are log odds ratios for this model and trait units
+for the other two, which no layer said, though the sibling field `beta`
+carries exactly that sentence. And the Ctrl-C test did not run `calc_gwas`,
+so nothing would have failed if the binding had stopped raising it.
+
+Nine dates in the file were in the future, 25 or 26 September 2026. Seven
+are measurements of this module and were remeasured and hold to the digits
+given; three are statements about earlier edits of this branch and had the
+date alone corrected.
+
+### The four deliverables, after the fixes
+
+Rerun by the orchestrator on the last commit of the work package, all nine
+checks green at 799 core tests with 2 ignored on both backends, 149 and 136
+in the linear algebra crate, 507 pytest and 329 node:
+
+| what | worst | allowed |
+|---|---|---|
+| 1, the score test is R's | statistic 1.589e-3, p 3.749e-4 in `log10` | 1e-2, 1e-3 |
+| 2, the Wald test is plink2's | `beta` 2.103e-5 of the `se`, `se` 1.334e-4 of it, p 1.924e-3 relative | 1e-4, 5e-4, 5e-3 |
+| 3, the runaway variant is plink2's | both sets are `var0006` | equal |
+| 4, popnei and pyNei agree | p-value 4.524e-14, `beta` 1.151e-14 of the `se`, `se` 3.368e-15 | 1e-13 |
+
+Not one of those numbers moved when the denominator was formed and the
+pivot rule went in, which is what says those two changes are invisible to
+every check this plan has.
+
+### What was found and not fixed here
+
+Each of these is real, none belongs to this work package, and all of them
+are the owner's to place.
+
+- **The faer backend allocates about 39 times per variant in the Wald test**,
+  where the BLAS one allocates nothing: 87463 allocations against 9447 over
+  one pass of 2000 variants. The cause is the scratch buffer that
+  `cholesky_lower` and `solve_with_cholesky` take on every call in
+  `crates/popnei-linalg/src/faer.rs`, so the fix is in the linear algebra
+  crate. It is about 39 million calls to the allocator for the million
+  variants of `docs/objectives.md`, on the target with the least to spare.
+  The claim in the core that said a pass allocates nothing per variant has
+  been corrected rather than left standing.
+- **Four calculations are missing from the Ctrl-C test** beside `calc_gwas`,
+  which was added: `pca_of_variants`, `calc_rogers_huff_r2_matrix`,
+  `calc_per_var_distribs` and `calc_per_individual_stats`. The last three
+  have no call to the helper in their binding at all, so a Ctrl-C during
+  them raises no `KeyboardInterrupt`.
+- **`tests/test_io_vars.py` fails under a release build.** Its Ctrl-C test
+  depends on a write taking 0.313 s in the debug build, which its own
+  comment states.
+- **`solve_with_cholesky` cannot check that the factor it is given factors
+  the matrix the caller means**, by its own doc. The logistic module is safe
+  because both come from the same call, but a later edit that reused a
+  buffer would get a wrong answer with no error.
+- **The TypeScript `stats` hands out `chrom` and `id` unfrozen**, where the
+  same kind of column is frozen elsewhere in that package.
+
+One finding was evaluated and left as it is. One case of
+`tests/reference/gwas/refusals_of_both_layers.json`, the study with fewer
+individuals than the design has columns plus two, carries the VCF path in
+its message although it is refused before any variant is read. The count it
+reports is of the dataset, so the file is part of what the message is about,
+which is the same reason the refusal beside it deliberately carries a path.
+The new assertion covers the other 24 cases and skips that one by name.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
@@ -422,6 +501,17 @@ chosen to cover a p-value that now has a bound of its own and was 45 times
 the worst measured. Both halves of the spec's rule were being broken by one
 constant, the form and the two-or-three-times-the-break, and only the form
 was visible.
+
+**What a review of this size costs.** The seven reviewers cost 1.16 million
+tokens between them, from 156000 to 183000 each, and 648 tool calls. The two
+subagents that fixed what they found cost 294000 and 218000 over 340 calls.
+So the review and its fixes cost about 1.7 million tokens against the
+830000 the three tasks of the work package cost to write, which is twice the
+writing. What it bought: one wrong value a user can reach, four tests that
+could not fail, a refusal naming the wrong cause, and an arithmetic form
+whose error at the threshold was larger than the quantity being tested.
+Three of those were found by mutation rather than by reading, which is the
+part of the `code-review` skill that earned its cost here.
 
 **What the tasks cost.** The split of the module cost its subagent 174000
 tokens and 91 tool calls. Task 1.1 cost 292000 tokens and 114 tool calls,

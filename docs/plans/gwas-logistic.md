@@ -117,12 +117,14 @@ on request.
    the rows with `FIRTH?` equal to `Y`, which is `var0006` and no other.
 4. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
    a pytest test runs both on the panel with each test and gets `beta`
-   within 3e-14 of the `se` of that variant, `se` and `p_value` within 3e-14
+   within 1e-13 of the `se` of that variant, `se` and `p_value` within 1e-13
    relative, and the same NaN variants; and `npm test` asserts the six Wald
    literals and the six score ones. The bound against pyNei is per model
    since 24 September 2026, with 1e-9 its ceiling and not its value, and
-   3e-14 is 2.7 times where this model breaks, 1.105e-14 over both panels
-   and both tests.
+   1e-13 is 2.2 times where this model breaks. What it has to clear is the
+   p-value of `var1004` of `panel_called` under the Wald test on Accelerate,
+   4.524e-14, and not the effect, whose worst is 1.151e-14 at `var0197` of
+   `panel_called` under the score test on faer.
 
 ### What it stands on
 
