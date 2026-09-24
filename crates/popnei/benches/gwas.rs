@@ -69,6 +69,8 @@
     )
 )]
 
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -145,6 +147,7 @@ struct Arguments {
     seed: u64,
     grammar_gamma: bool,
     runs: usize,
+    write_answers: Option<PathBuf>,
 }
 
 /// What the benchmark does and what its command line takes, which is what
@@ -152,6 +155,7 @@ struct Arguments {
 const USAGE: &str = "\
 gwas <path to a VCF or a vars file> [--model lm|lmm|glm|glmm] [--test wald|score]
      [--covariates n] [--seed n] [--grammar-gamma] [--runs n]
+     [--write-answers path]
 
 It times the association study of the variants of that file against a trait
 this benchmark draws, from building the reader to the result: the null
@@ -168,6 +172,12 @@ model, the dosages of every block and the test of every variant.
   --grammar-gamma  the GRAMMAR-Gamma approximation, which the two mixed
                  models have. It opens a second pass over the file
   --runs n       how many times it makes the study, 5 by default
+  --write-answers path
+                 writes `beta`, `se` and `p_value` of every variant to that
+                 file, one variant a line and each value with all of its
+                 digits, from the run that is not timed. It is what says
+                 that a change which was made for speed alone moved no
+                 number: the file of two runs is compared byte for byte
   --help         this
 
 A path that ends in `.vars` is read as a vars file and anything else as a
@@ -192,6 +202,7 @@ fn arguments() -> Result<Arguments, String> {
     let mut seed = DEFAULT_SEED;
     let mut grammar_gamma = false;
     let mut runs = DEFAULT_RUNS;
+    let mut write_answers: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -231,6 +242,11 @@ fn arguments() -> Result<Arguments, String> {
                     .parse::<u64>()
                     .map_err(|_| "--seed takes a number of 0 or more".to_owned())?;
             }
+            "--write-answers" => {
+                write_answers = Some(PathBuf::from(args.next().ok_or_else(|| {
+                    "--write-answers takes a path and none came after it".to_owned()
+                })?));
+            }
             "--grammar-gamma" => grammar_gamma = true,
             // `cargo bench` adds this to the command line of every bench,
             // to tell a harness that has tests too to run its benchmarks.
@@ -256,7 +272,9 @@ fn arguments() -> Result<Arguments, String> {
         return Err("--runs is 1 or more".to_owned());
     }
     if grammar_gamma && !model.takes_a_kinship() {
-        return Err("--grammar-gamma is of the two models that take a kinship, lmm and glmm".to_owned());
+        return Err(
+            "--grammar-gamma is of the two models that take a kinship, lmm and glmm".to_owned(),
+        );
     }
     Ok(Arguments {
         path,
@@ -266,6 +284,7 @@ fn arguments() -> Result<Arguments, String> {
         seed,
         grammar_gamma,
         runs,
+        write_answers,
     })
 }
 
@@ -348,6 +367,12 @@ fn the_study_of(
     }
     let num_coefs = covariates.saturating_add(1);
     let mut design = Vec::with_capacity(num_individuals.saturating_mul(num_coefs));
+    #[expect(
+        clippy::same_item_push,
+        reason = "the intercept of every individual is the same 1.0, and what the lint \
+                  reads as one value pushed in a loop is the first column of a row whose \
+                  other values are drawn"
+    )]
     for _ in 0..num_individuals {
         design.push(1.0);
         for _ in 0..covariates {
@@ -387,6 +412,11 @@ fn reader_of(path: &Path) -> Result<Box<dyn BlockReader>, popnei::Error> {
 /// The line it gives names how many variants were answered and the
 /// smallest p-value, which is what says the tests were made: a result
 /// whose columns were never filled would have neither.
+///
+/// `write_answers` is where the three columns of the result go, and `None`
+/// is what a run that is only timed is given. The clock is stopped before
+/// the file is written, so a run that writes one is timed as the others
+/// are.
 fn one_study(
     path: &Path,
     study: &TheStudy,
@@ -394,6 +424,7 @@ fn one_study(
     test: Option<TestType>,
     kinship: Option<&[f64]>,
     grammar_gamma: bool,
+    write_answers: Option<&Path>,
 ) -> Result<Run, popnei::Error> {
     let started = Instant::now();
     let mut reader = reader_of(path)?;
@@ -414,6 +445,9 @@ fn one_study(
     };
     let gwas = calc_gwas(&mut reader, gamma_pass.as_mut(), &input)?;
     let took = started.elapsed();
+    if let Some(answers) = write_answers {
+        the_answers_of(&gwas, answers)?;
+    }
     let answered = gwas.p_value.iter().filter(|p| p.is_finite()).count();
     let smallest = gwas
         .p_value
@@ -428,6 +462,28 @@ fn one_study(
         num_individuals = gwas.null_model.num_individuals,
     );
     Ok(Run { took, did })
+}
+
+/// The three columns of a study written to `path`, one variant a line and
+/// the effect, its standard error and its p-value of that variant on it,
+/// each with the seventeen decimals that tell two `f64` apart.
+///
+/// It is the oracle of a change made for speed alone: the file of the
+/// changed code and the file of the code before it are the same bytes, or
+/// the change moved a number and is not the same calculation. A variant
+/// with no answer writes `NaN` three times, which is a difference the
+/// comparison catches like any other.
+///
+/// # Errors
+///
+/// [`popnei::Error::Io`] when the file cannot be made or written.
+fn the_answers_of(gwas: &popnei::gwas::Gwas, path: &Path) -> Result<(), popnei::Error> {
+    let mut file = BufWriter::new(File::create(path)?);
+    for ((beta, se), p_value) in gwas.beta.iter().zip(&gwas.se).zip(&gwas.p_value) {
+        writeln!(file, "{beta:.17e}\t{se:.17e}\t{p_value:.17e}")?;
+    }
+    file.flush()?;
+    Ok(())
 }
 
 /// The time at the place `part` of the times sorted from the shortest to
@@ -524,7 +580,9 @@ fn main() -> ExitCode {
         }
     };
     let kinship = kinship.as_deref();
-    // The run that is not timed.
+    // The run that is not timed, which is also the one that writes the
+    // answers when they were asked for: writing them inside a timed run
+    // would time the file as well.
     if let Err(problem) = one_study(
         &arguments.path,
         &study,
@@ -532,6 +590,7 @@ fn main() -> ExitCode {
         arguments.test,
         kinship,
         arguments.grammar_gamma,
+        arguments.write_answers.as_deref(),
     ) {
         eprintln!("the study could not be made: {problem}");
         return ExitCode::FAILURE;
@@ -545,6 +604,7 @@ fn main() -> ExitCode {
             arguments.test,
             kinship,
             arguments.grammar_gamma,
+            None,
         ) {
             Ok(Run { took, did }) => {
                 println!("run {run}: {took}, {did}", took = seconds(took));

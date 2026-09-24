@@ -491,11 +491,22 @@ impl LogisticModel {
     /// variant. A variant whose fit runs away gets the three NaNs of one
     /// that has no answer and the pass goes on.
     ///
+    /// The fits are made on the threads of rayon, which
+    /// [`the_fits_of_the_rows`] does, and one after another under
+    /// WebAssembly, which has none. No fit reads another: what every one
+    /// of them is given is the dosages of its own variant and the effects
+    /// the null model settled at, and each writes only its own buffers, so
+    /// the three columns are the same whatever the threads do. They are
+    /// read back in the order of the block, and a variant is pushed where
+    /// the serial pass would have pushed it.
+    ///
     /// # Errors
     ///
     /// Whatever [`TheFitOfOneVariant::fit_and_test`] fails with, which is
     /// [`Error::GwasLinalg`] when a product, the factorization or a solve
-    /// of one variant's fit could not be done.
+    /// of one variant's fit could not be done. It is the error of the
+    /// first variant of the block that has one, wherever the threads found
+    /// it.
     fn wald_test_the_block(&mut self, dosages: &GwasDosages) -> Result<Answers<'_>> {
         self.beta.clear();
         self.se.clear();
@@ -503,9 +514,14 @@ impl LogisticModel {
         // The buffers are there, [`LogisticModel::test_the_block`] having
         // read that they are to come here at all.
         if let Some(of_a_variant) = self.of_a_variant.as_mut() {
-            for of_the_variant in dosages.dosages().chunks_exact(self.num_individuals) {
-                of_a_variant.with_the_dosages_of(of_the_variant);
-                let (beta, se, p_value) = match of_a_variant.fit_and_test(&self.coefs)? {
+            let answers = the_fits_of_the_rows(
+                of_a_variant,
+                &self.coefs,
+                dosages.dosages(),
+                self.num_individuals,
+            )?;
+            for answer in answers {
+                let (beta, se, p_value) = match answer {
                     TheAnswerOfAVariant::Answered { beta, se, p_value } => (beta, se, p_value),
                     TheAnswerOfAVariant::RanAway => (f64::NAN, f64::NAN, f64::NAN),
                 };
@@ -786,6 +802,105 @@ pub(super) fn the_system_that_is_left(
     }
 }
 
+/// The Wald fit of every row of a block, made on the threads of rayon, in
+/// the order of the block.
+///
+/// The rows are fitted on those threads as section 3 of
+/// `docs/architecture.md` asks, and for the same reason the dosages of a
+/// block are: no row reads another. Every fit is given the dosages of its
+/// own variant and `of_the_null`, the effects the null model settled at,
+/// which nothing writes, and it writes only the buffers of its own worker,
+/// so neither the effects nor their errors nor the p-values depend on how
+/// many threads there are. The threads are those of the pool the caller is
+/// running in, and rayon's global pool only when the caller is in none.
+///
+/// `of_a_variant` is the buffers the study made, which are the prototype
+/// here and not what a fit is made in: each worker clones them once and
+/// keeps its clone for every row it is given, so the machine is asked for
+/// one set of buffers per worker per block and for none per variant. The
+/// products inside a fit are the individuals by the coefficients and the
+/// coefficients squared, 1000 x 4 and 4 x 4 on the panel of
+/// `docs/reports/perf-gwas-2026-09-24.md`, so calling the linear algebra
+/// crate from a worker does not put a large product inside a small one,
+/// which section 3 forbids: `VECLIB_MAXIMUM_THREADS=1` moved that pass by
+/// 0.055 s of 5.020 s, so Accelerate is not threading them.
+///
+/// `dosages` holds the dosages of the rows of the block, `num_individuals`
+/// of them for each row, over the tested individuals alone.
+///
+/// The error is the one of the first row of the block that has one,
+/// wherever the threads found it: each row gives its own result and they
+/// are read in the order of the block, so a user who reports a file gets
+/// the same message every time.
+///
+/// # Errors
+///
+/// Whatever [`TheFitOfOneVariant::fit_and_test`] fails with.
+#[cfg(not(target_family = "wasm"))]
+fn the_fits_of_the_rows(
+    of_a_variant: &mut TheFitOfOneVariant,
+    of_the_null: &[f64],
+    dosages: &[f64],
+    num_individuals: usize,
+) -> Result<Vec<TheAnswerOfAVariant>> {
+    use rayon::iter::ParallelIterator;
+    use rayon::slice::ParallelSlice;
+
+    let prototype: &TheFitOfOneVariant = of_a_variant;
+    let answers: Vec<Result<TheAnswerOfAVariant>> = dosages
+        .par_chunks_exact(num_individuals)
+        .map_init(
+            || prototype.clone(),
+            |of_the_worker, of_the_variant| {
+                of_the_worker.with_the_dosages_of(of_the_variant);
+                of_the_worker.fit_and_test(of_the_null)
+            },
+        )
+        .collect();
+    answers.into_iter().collect()
+}
+
+/// The same rows, fitted one after another, which is what WebAssembly
+/// does: it has no threads.
+///
+/// # Errors
+///
+/// The same as the rows fitted on threads.
+#[cfg(target_family = "wasm")]
+fn the_fits_of_the_rows(
+    of_a_variant: &mut TheFitOfOneVariant,
+    of_the_null: &[f64],
+    dosages: &[f64],
+    num_individuals: usize,
+) -> Result<Vec<TheAnswerOfAVariant>> {
+    the_fits_of_the_rows_one_by_one(of_a_variant, of_the_null, dosages, num_individuals)
+}
+
+/// The rows fitted one after another in the buffers the study made: what
+/// WebAssembly does, and what the test that compares the two ways of
+/// fitting a block calls.
+///
+/// Nothing is cloned here, so this is the one path that asks the machine
+/// for nothing at all, per variant or per block.
+///
+/// # Errors
+///
+/// The same as the rows fitted on threads.
+#[cfg(any(target_family = "wasm", test))]
+fn the_fits_of_the_rows_one_by_one(
+    of_a_variant: &mut TheFitOfOneVariant,
+    of_the_null: &[f64],
+    dosages: &[f64],
+    num_individuals: usize,
+) -> Result<Vec<TheAnswerOfAVariant>> {
+    let mut answers = Vec::new();
+    for of_the_variant in dosages.chunks_exact(num_individuals) {
+        of_a_variant.with_the_dosages_of(of_the_variant);
+        answers.push(of_a_variant.fit_and_test(of_the_null)?);
+    }
+    Ok(answers)
+}
+
 /// The buffers one variant is fitted and tested in by the Wald test, made
 /// once for the study and written over for every variant of every block.
 ///
@@ -799,6 +914,14 @@ pub(super) fn the_system_that_is_left(
 /// study, so it gets the three NaNs that "The variants that have no
 /// answer" of `docs/specs/gwas.md` gives every variant with no answer, and
 /// the pass goes on to the next variant.
+///
+/// It is [`Clone`] because [`the_fits_of_the_rows`] gives each worker of
+/// rayon a set of these buffers of its own, cloned from the study's: the
+/// buffers are what a fit writes, so two fits cannot share one. At 1000
+/// individuals and four coefficients a clone is 94 KB, of which the design
+/// with the variant and the design weighted by the weights are 32 KB each,
+/// and one is made per worker per block and none per variant.
+#[derive(Clone)]
 struct TheFitOfOneVariant {
     /// The trait of each tested individual, 0.0 or 1.0. The null fit is
     /// given it and does not keep it, and a Wald fit needs it at every
@@ -2437,6 +2560,142 @@ mod glm {
                     ),
                 }
             }
+        }
+    }
+
+    /// The Wald fits of a block are the same three numbers, to the bit,
+    /// made on the threads of rayon and made one after another, and on one
+    /// thread and on four.
+    ///
+    /// Each fit is given the dosages of its own variant and the effects of
+    /// the null, which nothing writes, and writes only the buffers of its
+    /// own worker, so no answer can depend on how many threads there are.
+    /// This is the test that fails the day something is shared between
+    /// them, and the one that says the answers come back in the order of
+    /// the block and not in the order the threads finished in.
+    ///
+    /// The block is 500 variants of 40 individuals, which is more than one
+    /// split of rayon at both thread counts. Every third variant of it has
+    /// the same dosage in every individual, so the design with it is not of
+    /// full rank and its fit runs away: 167 of the 500 are the three NaNs
+    /// of a variant with no answer, which puts that path on the threads as
+    /// well, and the other 333 are answered. The phenotype is 1 for two
+    /// individuals of every five and the covariate is the individual's
+    /// place modulo 7, so no dosage tells the trait of an individual and no
+    /// fit of the 333 separates the two classes.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_wald_fits_of_a_block_are_the_same_on_threads_and_one_after_another() {
+        use super::{
+            Design, TheAnswerOfAVariant, the_fits_of_the_rows, the_fits_of_the_rows_one_by_one,
+        };
+
+        /// How many individuals the block holds.
+        const INDIVIDUALS: usize = 40;
+        /// How many variants it holds.
+        const VARS: usize = 500;
+
+        let tested: Vec<usize> = (0..INDIVIDUALS).collect();
+        let phenotype: Vec<f64> = (0..INDIVIDUALS)
+            .map(|individual| match individual % 5 < 2 {
+                true => 1.0,
+                false => 0.0,
+            })
+            .collect();
+        let covariates: Vec<f64> = (0..INDIVIDUALS)
+            .flat_map(|individual| [1.0, (individual % 7) as f64])
+            .collect();
+        let input = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &covariates,
+            num_coefs: 2,
+            kinship: None,
+            test: Some(TestType::Wald),
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = Design::of_the_study(&input, INDIVIDUALS).expect("the design of the study");
+        // The fits start where a study's start, at the effects the null
+        // model settled at, and a zero for each of them is a starting
+        // point like any other: what this test reads is that the two ways
+        // of walking the same rows from the same place end in the same
+        // place.
+        let of_the_null = vec![0.0_f64; design.num_coefs()];
+        let dosages: Vec<f64> = (0..VARS)
+            .flat_map(|variant| {
+                (0..INDIVIDUALS).map(move |individual| match variant % 3 {
+                    0 => 1.0,
+                    _ => {
+                        (individual
+                            .saturating_mul(7)
+                            .saturating_add(variant)
+                            .rem_euclid(3)) as f64
+                    }
+                })
+            })
+            .collect();
+
+        let fitted_on = |threads| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            let mut of_a_variant = TheFitOfOneVariant::of_the_study(&phenotype, &design);
+            pool.install(|| {
+                the_fits_of_the_rows(&mut of_a_variant, &of_the_null, &dosages, INDIVIDUALS)
+            })
+            .expect("the fits on the threads")
+        };
+        let on_one = fitted_on(1);
+        let on_four = fitted_on(4);
+        let mut of_a_variant = TheFitOfOneVariant::of_the_study(&phenotype, &design);
+        let one_after_another =
+            the_fits_of_the_rows_one_by_one(&mut of_a_variant, &of_the_null, &dosages, INDIVIDUALS)
+                .expect("the fits one after another");
+
+        /// The three numbers of an answer as the bits that hold them, and
+        /// `None` for a fit that ran away, which is the variant with no
+        /// answer: a triple of bits would be three values a fit could also
+        /// have settled at.
+        fn the_bits(answer: &TheAnswerOfAVariant) -> Option<(u64, u64, u64)> {
+            match *answer {
+                TheAnswerOfAVariant::Answered { beta, se, p_value } => {
+                    Some((beta.to_bits(), se.to_bits(), p_value.to_bits()))
+                }
+                TheAnswerOfAVariant::RanAway => None,
+            }
+        }
+
+        for (answers, how) in [
+            (&on_one, "on one thread"),
+            (&on_four, "on four threads"),
+            (&one_after_another, "one after another"),
+        ] {
+            assert_eq!(answers.len(), VARS, "the answers {how}");
+            let ran_away = answers
+                .iter()
+                .filter(|answer| the_bits(answer).is_none())
+                .count();
+            assert_eq!(
+                ran_away,
+                VARS.div_euclid(3).saturating_add(1),
+                "the variants whose fit ran away {how}, which are the ones of one dosage"
+            );
+        }
+        for variant in 0..VARS {
+            let of_one = the_bits(&on_one[variant]);
+            assert_eq!(
+                of_one,
+                the_bits(&on_four[variant]),
+                "the variant {variant} on one thread and on four"
+            );
+            assert_eq!(
+                of_one,
+                the_bits(&one_after_another[variant]),
+                "the variant {variant} on one thread and fitted one after another"
+            );
         }
     }
 
