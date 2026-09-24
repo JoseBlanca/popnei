@@ -377,7 +377,7 @@ module is what the spec describes.
   frequency spectrum", whose range for the count of the rarer allele is
   the part to read twice. Needs 3.1. Serves deliverables 4 and 6. Its own
   commit: a wrong bin moves a number and fails nothing else.
-- [ ] 3.4b A draw larger than the dataset holds is refused, from the
+- [x] 3.4b A draw larger than the dataset holds is refused, from the
   paragraph "Its Python function" gained for it. Needs 3.4, which found
   that nothing bounded `num_called_alleles` above 2 and that the spectrum
   of a draw at the top of a `u32` is 51 GB over three populations. Added
