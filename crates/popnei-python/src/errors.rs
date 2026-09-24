@@ -100,6 +100,27 @@ pub(crate) enum PyPopneiError {
         /// fit in one of Rust.
         value: String,
     },
+    /// An argument that is a distance along a chromosome in base pairs, the
+    /// window of `filter_by_ld` or the `min_dist` and the `max_dist` of the
+    /// fall-off of r² with distance, and holds a number that is no
+    /// distance: a negative one, or one above what 64 bits hold. The core
+    /// takes a distance as a `u64` and not as a `usize`, so what a user may
+    /// write for it is the same number in WebAssembly as it is natively,
+    /// which is why this is not [`PyPopneiError::Count`].
+    Distance {
+        /// The name of the argument, as a Python user writes it.
+        name: &'static str,
+        /// The smallest distance the argument takes: 1 for the window of
+        /// `filter_by_ld`, which is no stretch of a chromosome at 0, and 0
+        /// for the two distances of the fall-off of r² with distance, where
+        /// a `min_dist` of 0 counts the pairs of two variants at one
+        /// position.
+        smallest: u64,
+        /// What was given for it, as Python prints it: an integer of Python
+        /// is of any size, so the number that was refused does not always
+        /// fit in one of Rust.
+        value: String,
+    },
     /// A threshold of a filter that is not a number from 0 to 1, under the
     /// name of the argument a user wrote it in: the core refuses it and
     /// names the filter by its kind, `maf`, and what a user has to look at
@@ -247,6 +268,17 @@ impl From<PyPopneiError> for PyErr {
             } => PyValueError::new_err(format!(
                 "`{name}` is {value}, and it says how many of something there are: a \
                  whole number of {smallest} or more that this machine can count"
+            )),
+            // A distance is held in 64 bits wherever popnei runs, so what
+            // the message states as the largest is that and not what this
+            // machine counts, which in WebAssembly is 4295 million.
+            PyPopneiError::Distance {
+                name,
+                smallest,
+                value,
+            } => PyValueError::new_err(format!(
+                "`{name}` is {value}, and it says a distance along a chromosome in base \
+                 pairs: a whole number of {smallest} or more that 64 bits hold"
             )),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and

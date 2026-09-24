@@ -771,10 +771,17 @@ def test_ld_and_dist_refuses_what_is_no_variants_no_distance_and_no_bins(
 
     with pytest.raises(TypeError, match="variants"):
         calc_ld_and_dist_per_pop(path)
-    with pytest.raises(ValueError, match=r"`min_dist` is -1"):
+    with pytest.raises(ValueError) as of_the_smallest_dist:
         calc_ld_and_dist_per_pop(open_vcf(path), min_dist=-1)
-    with pytest.raises(ValueError, match=r"`max_dist` is -250"):
+    # The smallest the two distances take is 0, which counts the pairs of
+    # two variants at one position, and not the 1 of the window of
+    # `filter_by_ld`: the refusal states the limit the argument has.
+    assert "`min_dist` is -1" in str(of_the_smallest_dist.value)
+    assert "0 or more" in str(of_the_smallest_dist.value)
+    with pytest.raises(ValueError) as of_the_largest_dist:
         calc_ld_and_dist_per_pop(open_vcf(path), max_dist=-250)
+    assert "`max_dist` is -250" in str(of_the_largest_dist.value)
+    assert "0 or more" in str(of_the_largest_dist.value)
     with pytest.raises(ValueError, match=r"`num_bins` is -3"):
         calc_ld_and_dist_per_pop(open_vcf(path), num_bins=-3)
     with pytest.raises(TypeError, match="min_dist"):

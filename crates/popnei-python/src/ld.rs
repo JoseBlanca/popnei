@@ -283,8 +283,8 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
     // `distance_of` is what refuses it, under the name a user wrote and with
     // the number they wrote there.
     let options = LdAndDistOptions {
-        min_dist: distance_of("min_dist", min_dist)?,
-        max_dist: distance_of("max_dist", max_dist)?,
+        min_dist: distance_of("min_dist", 0, min_dist)?,
+        max_dist: distance_of("max_dist", 0, max_dist)?,
         num_bins: count_of("num_bins", num_bins)?,
         max_allowed_maf: threshold_of("max_allowed_maf", max_allowed_maf)?,
     };

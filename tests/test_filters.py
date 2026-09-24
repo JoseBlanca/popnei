@@ -662,6 +662,11 @@ def test_a_max_dist_below_1_is_refused_at_the_call(max_dist: int) -> None:
 
     assert "max_dist" in str(refusal.value)
     assert str(max_dist) in str(refusal.value)
+    # A window of 0 base pairs is no window, so the refusal of a negative
+    # one states 1 as the smallest, where the two distances of the fall-off
+    # of r² with distance take 0.
+    if max_dist < 0:
+        assert "1 or more" in str(refusal.value)
     assert variants.steps == ()
 
 
