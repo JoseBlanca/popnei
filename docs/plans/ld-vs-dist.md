@@ -178,7 +178,7 @@ are.
   recomputed here; what this task runs is `bins.py`, to store what it
   prints. Needs 1.3, and it can run beside 1.5 and 1.6: the three touch
   different files.
-- [ ] 1.5 The Python layer, from "Its Python function": the pyo3
+- [x] 1.5 The Python layer, from "Its Python function": the pyo3
   function in `crates/popnei-python/`, which keeps the reader of the
   chain as `calc_kosman_sums` does so that the result carries the pass
   stats, and `calc_ld_and_dist_per_pop` with `LdAndDistPerPop` in

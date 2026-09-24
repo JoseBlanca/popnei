@@ -195,3 +195,36 @@ and fmt, clippy, wasm-check and ruff clean. The three-table test takes
   counts: `cargo test -p popnei --lib ld::dist -- --list` prints 44 tests
   where it printed 0 at the start of the plan, and `cargo test
   --workspace` runs them at 831 passed.
+
+**1.5, the Python layer of the bins.** Commit `1b414c3`. It put
+`calc_ld_and_dist_per_pop` and `LdAndDistPerPop` in `python/popnei/ld.py`
+and the pyo3 function in `crates/popnei-python/src/ld.rs`, which lends
+the reader chain to the core and takes the variants of the pass from the
+core's own count rather than counting them again, and added five pytest
+tests.
+
+The Python layer refuses the arguments that cannot reach the core: a
+`min_dist` or a `max_dist` below 0 and a `num_bins` below 0 are each a
+`ValueError` naming the argument and its value, and a fractional or
+boolean value for any of them is a `TypeError`. That is the eighth error
+of the work package, the one the core's `u64` cannot see. The seven the
+core already raises are not raised twice.
+
+The four defaults became `pub const` of the core, `DEFAULT_MIN_DIST`,
+`DEFAULT_MAX_DIST`, `DEFAULT_NUM_DIST_BINS` and
+`DEFAULT_MAX_ALLOWED_MAF`, which is how every other Python default of
+popnei is fed. The bins' constant is `DEFAULT_NUM_DIST_BINS` and not
+`DEFAULT_NUM_BINS`, which the histogram already has.
+
+The test that compares with pyNei does ask pyNei: it asserts that
+`num_vars_per_pop` equals both the 396 and 402 of the spec and what
+pyNei gives when `filter_samples` is put around the individuals of each
+population and `filter_by_maf` over what is left. The ten rows of the
+first table are asserted within 1e-12 relative, and the widest gap
+measured against the spec is 9.2e-16 relative.
+
+`uv run pytest tests/test_ld.py -k ld_and_dist` gives `5 passed, 16
+deselected`, where it exited 5 with nothing matched at the start of the
+plan, which is deliverable 5's check. The whole pytest suite is 504 where
+it was 499; the core crate stays at 831 with 2 ignored, the same on faer,
+149 linear algebra, and fmt, clippy, wasm-check and ruff clean.
