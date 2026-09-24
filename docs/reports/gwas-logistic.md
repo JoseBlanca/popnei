@@ -614,13 +614,30 @@ state.
 It is not new: at 24dc716, which is `main` with none of this work package's
 score test on it, the same filter failed 2 of 10.
 
-What is not settled, and is worth saying rather than guessing: whether
-Accelerate's inversion is genuinely non-deterministic across concurrent
-calls, or whether this matrix is ill-conditioned enough that a different
-summation order lands 1.08e-4 away. 1.08e-4 is far too large for the
-summation order of a well-conditioned inverse, which is why I doubt the
-second, but the conditioning has not been measured. Either way the
-observable is one input and two answers, depending on what else is running.
+**It is settled, and it is not conditioning.** The covariance of the working
+trait has a condition number of 4.160 at a variance of 0 and 15.38 at
+GMMAT's, so a different summation order would move the inverse by about
+15 times 2.2e-16, which is 3e-15 relative and eleven orders below the
+1.08e-4 observed. The matrix the wrong answer comes from is well conditioned
+by every measure: on one run of 200 individuals its eigenvalues span 4.368
+to 11.04, a condition number of 2.53, and the wrong inverse fails
+`sigma · inv = I` at 4.985e-4 where the right one fails at 3.109e-15. So it
+is `dpotri` itself under concurrency and nothing about this problem.
+
+It is wider than two studies. One thread inverting beside seven threads
+doing nothing but matrix products gives 288 wrong inversions out of 2000.
+The triangular solve and the products are clean under the same test, so
+`dpotri` alone is the unsafe call. Under `VECLIB_MAXIMUM_THREADS=1`, or with
+one caller thread, the difference is exactly 0; with two caller threads it
+is already 4.736e-5.
+
+**There is a measured fix and it is not in this plan.** Building the inverse
+from the two stable operations the crate already has — solving the
+triangular factor against the identity, then multiplying that by its own
+transpose — agrees with the present route to 1.041e-17 and gives 0 wrong out
+of 2000 under the same concurrency. It belongs in the BLAS backend of
+`popnei_linalg::invert_with_cholesky`, which is the linear algebra crate and
+not the gwas module, so it is the owner's to place.
 
 Who it reaches: popnei forms this inverse once per study, so one study in
 one process is safe. A user running two studies in threads in one process
