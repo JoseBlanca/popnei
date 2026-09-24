@@ -1169,7 +1169,12 @@ pub struct LdAndDistOptions {
 /// pairs counted at every distance of every population, which is asked
 /// with `try_reserve_exact` before the pass and not taken, the memory of
 /// the window, which "How it runs" says is refused the same way, and
-/// those of the reader.
+/// those of the reader. One more is a defect of popnei and not a wrong
+/// input, a `RuntimeError` in Python where the rest are a `ValueError`:
+/// a population the pass built no dosages for, which nothing reaches,
+/// since a pass that gave no variant is refused before any curve is
+/// fitted and a pass that gave one has taken a block into every
+/// population.
 pub fn calc_ld_and_dist<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
