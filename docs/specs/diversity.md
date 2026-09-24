@@ -320,6 +320,22 @@ threshold of 1. `pop1` counts 2, 2, 4 and 1 different alleles at variants
 its variants and gets 2.25, and `pop2` keeps three of them, since at
 variant 2 it called only 3 copies in all, and gets 2.3111111111.
 
+At a draw of 2 the same example gives the per variant values that the
+draw arithmetic is tested on its own with, run through `vegan::rarefy` on
+24 September 2026 on the allele counts of each variant:
+
+| variant | pop1 counts | pop1 | pop2 counts | pop2 |
+|---|---|---|---|---|
+| 1 | 3, 1 | 1.5 | 5 | 1 |
+| 2 | 3, 1 | 1.5 | 3 | 1 |
+| 3 | 1, 1, 1, 1 | 2 | 1, 1, 1, 1 | 2 |
+| 5 | 4 | 1 | 4, 2 | 1.5333333333 |
+
+whose means are 1.5 for `pop1` and 1.3833333333 for `pop2`. Variant 5 of
+`pop2` is the one of the eight a reader cannot do in their head: 4 copies
+of allele 0 and 2 of allele 1, and a draw of 2 of the 6 shows both alleles
+with chance 8/15, so the alleles expected are 1 + 8/15.
+
 ## The private alleles
 
 ### What it gives
