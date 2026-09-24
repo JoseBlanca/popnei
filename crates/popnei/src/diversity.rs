@@ -1667,16 +1667,17 @@ fn add_the_block(
 /// the next is read. Two for each thread and not one, so that a thread that
 /// finishes a chunk early has another to take; and a group of the threads and
 /// not a fixed number, because what has to be read at once to keep the
-/// threads busy is what the pool has. The first case above is then 2.3 MB and
-/// the second 15.9 MB, measured the same day on 18 threads, so a group of 36
-/// chunks of the 157 and the 79 those blocks hold.
+/// threads busy is what the pool has. The first case above is then 2.007 MB
+/// and the second 15.479 MB, measured the same day on 18 threads, so a group
+/// of 36 chunks of the 157 and the 79 those blocks hold.
 ///
 /// A block of fewer chunks than a group is read as it was, every chunk at
 /// once: 500 rows of 10000 individuals are 8 chunks, and at 50 populations and
-/// a draw of every gene copy they hold 40 MB beside a block of 10 MB, which is
-/// 4 MB of bins for each chunk and 4 MB more for the pass itself. Reading
-/// fewer chunks than the pool has threads would leave threads idle, and what
-/// that is worth against the memory has not been measured.
+/// a draw of every gene copy they hold 36.343 MB beside a block of 10 MB,
+/// which is 4 MB of bins for each chunk, 4 MB more for the pass itself and
+/// 0.3 MB of what each population keeps for the chunk it is counted in.
+/// Reading fewer chunks than the pool has threads would leave threads idle,
+/// and what that is worth against the memory has not been measured.
 #[cfg(not(target_family = "wasm"))]
 fn chunks_of_a_group() -> usize {
     rayon::current_num_threads()
