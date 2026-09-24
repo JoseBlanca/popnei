@@ -36,6 +36,14 @@ use crate::error::{Error, Result};
 /// Below 10⁻¹² the curve is flat across 10⁶ base pairs, which is the
 /// largest `max_dist` a user would give, so nothing below it is a fall-off
 /// that pairs of one dataset could pin down.
+///
+/// This and [`THE_STEP_OF_THE_GRID`] and [`THE_POINTS_OF_THE_GRID`] give
+/// the range 10⁻¹² to 10², which three texts write out as numbers a user
+/// reads and nothing here keeps in step with: "The curve that is fitted"
+/// of `docs/specs/ld.md`, the docstring of `LdDecay` in
+/// `python/popnei/ld.py` and the doc comment of `LdDecay` in
+/// `js/popnei/src/ld.ts`. A change to any of the three constants is a
+/// change to those three texts.
 const THE_SMALLEST_EXPONENT_OF_THE_GRID: f64 = -12.0;
 
 /// How far apart the exponents of two neighbouring values of the grid are,
@@ -75,7 +83,11 @@ const THE_TOLERANCE_OF_THE_HALF: f64 = 1e-12;
 /// The three values are NaN together when no curve was fitted, which "The
 /// cases" of `docs/specs/ld.md` says happens to a population whose pairs
 /// fall at fewer than two distances and to one whose smallest sum falls at
-/// either end of the searched range of the ρ per base pair.
+/// either end of the searched range of the ρ per base pair. So a caller
+/// that asks whether a curve was fitted asks [`LdDecay::rho_per_bp`] or
+/// [`LdDecay::r2_at_zero`]: [`LdDecay::half_dist`] is NaN on its own as
+/// well, at 1 and at 2 individuals, where the two others hold the curve
+/// the pairs gave.
 #[derive(Debug, Clone, Copy)]
 pub struct LdDecay {
     /// The fitted 4Nr, by how much ρ grows per base pair.
@@ -91,6 +103,7 @@ impl LdDecay {
     /// base pair. NaN when no curve was fitted, which "The cases" of
     /// `docs/specs/ld.md` says when, and then the other two are NaN as
     /// well.
+    #[must_use]
     pub fn rho_per_bp(&self) -> f64 {
         self.rho_per_bp
     }
@@ -99,6 +112,7 @@ impl LdDecay {
     /// population fix on their own: it is the curve's own ceiling,
     /// 0.46198347107438015 at 100 individuals, and no pair of the dataset
     /// moves it.
+    #[must_use]
     pub fn r2_at_zero(&self) -> f64 {
         self.r2_at_zero
     }
@@ -106,11 +120,20 @@ impl LdDecay {
     /// The distance in base pairs at which the fitted curve has fallen to
     /// half of [`LdDecay::r2_at_zero`].
     ///
+    /// It is read off the curve and not off the pairs, so it can fall
+    /// beyond every distance the fit was given, and a caller that shows it
+    /// beside the bins shows a distance those bins may not reach. The
+    /// three individuals `i000`, `i001` and `i002` of
+    /// `tests/reference/ld/ld.vcf.gz`, taken as one population at the
+    /// defaults, give a half distance of 1868334.8 base pairs where
+    /// `max_dist` is 1000000 and their furthest pair is under 260000.
+    ///
     /// NaN when the other two are, and NaN on its own at 1 and at 2
     /// individuals, the only counts of individuals whose curve never falls
     /// to half: what it falls towards as ρ grows is 1 divided by the
     /// individuals, and half of the value at 0 is above that from 3
     /// individuals upwards.
+    #[must_use]
     pub fn half_dist(&self) -> f64 {
         self.half_dist
     }

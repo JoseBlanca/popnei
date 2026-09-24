@@ -1324,19 +1324,19 @@ impl LdBins {
     /// that hold a pair and not the whole range, and the pass has ended
     /// before any of them is there. They are the first of the three
     /// slices [`fit_ld_decay`] takes.
-    pub(crate) fn the_dists_that_hold_a_pair(&self) -> &[u64] {
+    fn the_dists_that_hold_a_pair(&self) -> &[u64] {
         self.at_each_dist.dists()
     }
 
     /// How many pairs each of [`LdBins::the_dists_that_hold_a_pair`]
     /// holds, in the same order.
-    pub(crate) fn the_pairs_at_each_dist(&self) -> &[u64] {
+    fn the_pairs_at_each_dist(&self) -> &[u64] {
         self.at_each_dist.num_pairs()
     }
 
     /// The sum of the r² of the pairs of each of
     /// [`LdBins::the_dists_that_hold_a_pair`], in the same order.
-    pub(crate) fn the_sum_of_r2_at_each_dist(&self) -> &[f64] {
+    fn the_sum_of_r2_at_each_dist(&self) -> &[f64] {
         self.at_each_dist.sum_r2()
     }
 
