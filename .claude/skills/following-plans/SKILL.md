@@ -57,6 +57,17 @@ subagent knows nothing of the session:
   `docs/glossary.md`, which it reads itself;
 - the skills to follow: `coding`, and `writing` for its doc comments and
   its commit message;
+- today's date, and that every date it writes is that one unless it is
+  somebody else's earlier measurement. A subagent has no clock and works
+  the date out from the dates already in the files, so a file that is a
+  day ahead makes the next writer a day ahead. On 24 September 2026 two
+  sessions carrying out two plans wrote 28 dates that were a day in the
+  future, every one of them ahead and none behind, and 14 of those came
+  from one subagent working through one list of fixes: it worked the date
+  out once and was wrong 14 times. Nine of the 28 dated a measurement,
+  where the cost is worst, because a reader checking whether a bound still
+  holds meets a date that has not happened and doubts the number rather
+  than the date;
 - what is already there from earlier tasks that it builds on;
 - what the orchestrator knows and the code does not show: an open point
   the owner answered, a decision taken two tasks ago;
