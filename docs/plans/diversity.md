@@ -360,7 +360,7 @@ module is what the spec describes.
 
 **Tasks.**
 
-- [ ] 3.1 The chance that a draw of `g` of `c` misses an allele called
+- [x] 3.1 The chance that a draw of `g` of `c` misses an allele called
   `n` times, computed as the product of `g` factors as "The Rust
   interface" says, with its tests, in
   `crates/popnei/src/diversity.rs`. From "The Rust interface" and the
