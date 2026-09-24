@@ -1148,10 +1148,13 @@ pub enum Error {
         ploidy: usize,
     },
 
-    /// One of the matrices the r² of a set of variants is worked out
-    /// through, and that this machine did not give the memory for: one of
-    /// the three matrices of the dosages, or one of the six sums of the
-    /// pairs of two sets. The memory is asked for
+    /// Something the r² of a set of variants is worked out with, and that
+    /// this machine did not give the memory for: one of the three matrices
+    /// of the dosages, one of the six sums of the pairs of two sets, the r²
+    /// of a pair of tiles, and, in the pass of the fall-off of r² with
+    /// distance, the populations it counts, the bins of each of them, the
+    /// genotypes of the variants of the window of a population and where
+    /// each of those variants lies. The memory is asked for
     /// with `try_reserve_exact`, which gives it back as this error where
     /// `vec![0.0; n]` would end the process, and which also refuses a
     /// matrix whose bytes a `usize` does not count, as one of more than
@@ -1159,13 +1162,20 @@ pub enum Error {
     /// Python it is a `ValueError` that names no file, since what it
     /// refuses is the size of the calculation and not what any file holds:
     /// calculate over fewer variants or over fewer individuals.
-    #[error("this machine has not the memory for {what} of the r², {values} values of 8 bytes")]
+    #[error(
+        "this machine has not the memory for {what}, {values} values of {bytes_per_value} bytes"
+    )]
     LdNoMemory {
-        /// Which matrix could not be allocated, as "How it runs" of
+        /// What could not be allocated, as "How it runs" of
         /// `docs/specs/ld.md` names them.
         what: &'static str,
         /// How many values it holds.
         values: usize,
+        /// How many bytes one of those values holds, which is 8 for the
+        /// matrices and not for everything the pass of the fall-off keeps:
+        /// a genotype is one byte, and a variant of the window is a
+        /// chromosome and a position.
+        bytes_per_value: usize,
     },
 
     /// An individual was asked for more than once when a set of dosages

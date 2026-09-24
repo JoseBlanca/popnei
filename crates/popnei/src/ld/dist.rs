@@ -316,7 +316,10 @@ impl TheDosagesOfThePops {
         let mut of_them: Vec<ThePopOverTheWindow> = Vec::new();
         let no_memory = || Error::LdNoMemory {
             what: "the populations of the fall-off of r² with distance",
-            values: pops.len(),
+            // The populations of the pass, which are the one of every
+            // individual when the caller gave none.
+            values: pops.len().max(1),
+            bytes_per_value: size_of::<ThePopOverTheWindow>(),
         };
         match pops.is_empty() {
             // The one population of every individual, which is the empty
@@ -517,7 +520,11 @@ impl ThePopOverTheWindow {
         Ok(ThePopOverTheWindow {
             individuals: the_copy_of(
                 individuals,
-                &the_memory_for("the individuals of a population", individuals.len()),
+                &the_memory_for(
+                    "the individuals of a population",
+                    individuals.len(),
+                    size_of::<usize>(),
+                ),
             )?,
             gts: Vec::new(),
             variants: Vec::new(),
@@ -570,13 +577,17 @@ impl ThePopOverTheWindow {
                 .map_err(|_| Error::LdNoMemory {
                     what: "the genotypes of the variants of the window",
                     values: gts.len(),
+                    bytes_per_value: size_of::<i8>(),
                 })?;
             self.gts.extend_from_slice(gts);
             self.variants
                 .try_reserve(1)
                 .map_err(|_| Error::LdNoMemory {
                     what: "where each variant of the window lies",
-                    values: self.variants.len(),
+                    // The one this variant asks for beside the ones held,
+                    // and not the ones held, which the machine has given.
+                    values: self.variants.len().saturating_add(1),
+                    bytes_per_value: size_of::<TheVariantOfTheWindow>(),
                 })?;
             self.variants.push(variant);
             // At most the variants of the block, which this machine
@@ -587,7 +598,9 @@ impl ThePopOverTheWindow {
             .try_reserve(1)
             .map_err(|_| Error::LdNoMemory {
                 what: "the variants each block of the window gave",
-                values: self.kept_of_each_block.len(),
+                // The one this block asks for beside the blocks held.
+                values: self.kept_of_each_block.len().saturating_add(1),
+                bytes_per_value: size_of::<usize>(),
             })?;
         self.kept_of_each_block.push_back(kept);
         // Every variant counted here was read from a source, and a u64
@@ -858,6 +871,7 @@ fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
         .map_err(|_| Error::LdNoMemory {
             what: "the bins of each population",
             values: of_the_pops.num_pops(),
+            bytes_per_value: size_of::<LdBins>(),
         })?;
     for _ in 0..of_the_pops.num_pops() {
         of_each_pop.push(LdBins::of(options)?);
@@ -971,17 +985,27 @@ impl LdBins {
     /// the three counts of each bin.
     fn of(options: &LdAndDistOptions) -> Result<LdBins> {
         let num_bins = options.num_bins;
-        let of_a_bin = |what: &'static str| the_memory_for(what, num_bins);
+        let of_a_bin = |what: &'static str, bytes_per_value: usize| {
+            the_memory_for(what, num_bins, bytes_per_value)
+        };
         Ok(LdBins {
             min_dist: options.min_dist,
             max_dist: options.max_dist,
             num_vars: 0,
-            num_pairs: a_vector_of(0, num_bins, &of_a_bin("the pairs of each bin"))?,
-            sum_r2: a_vector_of(0.0, num_bins, &of_a_bin("the sum of r² of each bin"))?,
+            num_pairs: a_vector_of(
+                0,
+                num_bins,
+                &of_a_bin("the pairs of each bin", size_of::<u64>()),
+            )?,
+            sum_r2: a_vector_of(
+                0.0,
+                num_bins,
+                &of_a_bin("the sum of r² of each bin", size_of::<f64>()),
+            )?,
             sum_of_squares: a_vector_of(
                 0.0,
                 num_bins,
-                &of_a_bin("the sum of the squares of r² of each bin"),
+                &of_a_bin("the sum of the squares of r² of each bin", size_of::<f64>()),
             )?,
         })
     }
@@ -1264,7 +1288,7 @@ impl ThePairsOfAStep {
         the_buffer_of(
             of_a_tile_of_columns,
             values,
-            &the_memory_for("the r² of a tile of columns", values),
+            &the_memory_for("the r² of a tile of columns", values, size_of::<f64>()),
         )?;
         let of_the_columns = dosages.rows(col, num_cols)?;
         let mut row = row_start;
@@ -1281,7 +1305,7 @@ impl ThePairsOfAStep {
             the_buffer_of(
                 of_a_tile_pair,
                 values,
-                &the_memory_for("the r² of a pair of tiles", values),
+                &the_memory_for("the r² of a pair of tiles", values, size_of::<f64>()),
             )?;
             match row == col && row_end == col_end {
                 // The tile of the rows is the tile of the columns, and the
