@@ -647,6 +647,17 @@ It mirrors `calc_ld_and_dist_per_pop` of `pynei/ld.py`. The differences:
 - **It gives r² and not r** (under the item above).
 - **A missing genotype takes its individual out of that pair** (under the
   item above).
+- **`min_dist` comes before `max_dist`.** pyNei's signature is
+  `calc_ld_and_dist_per_pop(variants, pops, max_dist, min_dist,
+  max_allowed_maf, method, max_num_measures_to_keep)`, the largest
+  distance first, and here the smallest comes first, which is the order
+  the bins run in. So a call written for pyNei that gives the distances by
+  position asks for something else here.
+  `calc_ld_and_dist_per_pop(variants, pops, 500000)` is a `max_dist` of
+  500000 in pyNei and a `min_dist` of 500000 here, which on a dataset
+  whose variants are all closer than that counts no pair and gives every
+  bin empty with nothing said; with both distances by position `min_dist`
+  lands above `max_dist` and it is a `ValueError`. Decided here.
 - **`min_dist` counts the pair at that distance.** pyNei keeps the pairs
   whose distance is strictly above it, so with its default of 1 a pair of
   variants 1 bp apart is thrown away and nothing says so. Here
