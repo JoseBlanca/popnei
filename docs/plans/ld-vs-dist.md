@@ -172,7 +172,7 @@ are.
   "How it runs" is the only place that says how; read that paragraph
   before writing the loop. It serves deliverables 2 and 4, and the worked
   example is its first test. Needs 1.2.
-- [ ] 1.4 The three tables of "How it is verified" as cargo tests, and
+- [x] 1.4 The three tables of "How it is verified" as cargo tests, and
   `ld.bins.txt` stored and compared by `run_plink2.sh`. It serves
   deliverables 1 and 3. The numbers are in the spec and are not
   recomputed here; what this task runs is `bins.py`, to store what it

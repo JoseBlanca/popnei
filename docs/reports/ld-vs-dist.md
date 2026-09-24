@@ -157,3 +157,41 @@ variants of six individuals in two populations at blocks of 1, 2, 3, 7,
 compares the counts of pairs exactly and every mean and standard
 deviation by its bits. It first asserts that every bin holds a pair, so
 that it is a test that can fail.
+
+**1.4, the three tables of bins against plink2.** Commit `b870a9b`. It
+stored `tests/reference/ld/ld.bins.txt`, 36 lines of what
+`docs/reports/ld-method/bins.py` prints for the three populations, made
+`tests/reference/ld/run_plink2.sh` write it again and compare it, and put
+two cargo tests in `crates/popnei/src/ld/dist.rs` that assert the three
+tables at blocks of 7, 64 and 500 variants and at rayon with 1 thread and
+with 4.
+
+The counts of pairs and the means of all three tables, and the standard
+deviations of the first, are the literals of the spec's own tables. The
+standard deviations of `pop_a` and `pop_b`, which the spec leaves out of
+its table to keep it readable, come from `ld.bins.txt`. Every number the
+spec prints was checked digit for digit against that file and they agree,
+so nothing had to be reported as a disagreement.
+
+The thread test builds a rayon pool of the size it wants and asserts
+`rayon::current_num_threads()` inside it before the passes, so both pools
+really had 1 and 4. The threads reach the work: the VCF reader parses the
+lines of a batch on the pool the caller is in, and with the `blas` feature
+off the products go through faer on rayon.
+
+`cargo test -p popnei --lib ld::dist -- --list` prints `44 tests`, where
+it printed 42. `cargo test --workspace` gives 831 passed with 2 ignored,
+and `--no-default-features` the same 831; 149 linear algebra, 499 pytest,
+and fmt, clippy, wasm-check and ruff clean. The three-table test takes
+0.04 s and the thread test 0.01 s of the core crate's 1.31 s.
+
+### Deliverables 1 and 3 of work package 1, checked by the orchestrator
+
+- **Deliverable 1**, `ld.bins.txt` written again and compared:
+  `tests/reference/ld/run_plink2.sh` into an empty directory exits 0 and
+  prints nothing of its own, and `cmp` finds the stored file identical to
+  the one the script wrote from plink2's matrix.
+- **Deliverable 3**, the three tables at three block sizes and two thread
+  counts: `cargo test -p popnei --lib ld::dist -- --list` prints 44 tests
+  where it printed 0 at the start of the plan, and `cargo test
+  --workspace` runs them at 831 passed.
