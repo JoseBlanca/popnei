@@ -1,6 +1,7 @@
 # Plan: how much variety each population holds
 
-24 September 2026. Draft. It builds the `diversity` module of
+24 September 2026. Approved by the owner on 24 September 2026. It builds
+the `diversity` module of
 `docs/specs/diversity.md`: one pass over the variants that gives, for each
 population, the alleles it called and the private ones among them, the
 variants that vary in it, those three also taken down to a common number of
