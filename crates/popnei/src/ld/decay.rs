@@ -528,6 +528,41 @@ mod tests {
         (num_pairs, sum_r2)
     }
 
+    /// A table over `dists` in which the `which`th distance holds
+    /// `which` + 1 pairs, and the mean of their r² is the curve at
+    /// `rho_per_bp` at an even `which` and the curve at `other_rho_per_bp`
+    /// at an odd one.
+    ///
+    /// No ρ per base pair puts the curve through both halves of such a
+    /// table, so the sum the fit makes smallest is above 0 wherever it is
+    /// evaluated and where it is smallest depends on how many pairs each
+    /// distance holds. A table whose r² is the curve itself cannot say
+    /// that: its sum is 0 at the ρ per base pair it was made with whatever
+    /// weight each distance carries, so every weighting of it, and none at
+    /// all, gives that ρ back.
+    fn the_table_of_two_curves(
+        dists: &[u64],
+        rho_per_bp: f64,
+        other_rho_per_bp: f64,
+        num_individuals: u64,
+    ) -> (Vec<u64>, Vec<f64>) {
+        let num_pairs: Vec<u64> = (1_u64..).take(dists.len()).collect();
+        let sum_r2 = dists
+            .iter()
+            .zip(&num_pairs)
+            .enumerate()
+            .map(|(which, (dist, pairs))| {
+                let of_this_dist = if which.is_multiple_of(2) {
+                    rho_per_bp
+                } else {
+                    other_rho_per_bp
+                };
+                *pairs as f64 * the_curve_at(*dist as f64 * of_this_dist, num_individuals as f64)
+            })
+            .collect();
+        (num_pairs, sum_r2)
+    }
+
     /// The distances `step`, 2·`step` and so on up to `last`.
     #[expect(
         clippy::arithmetic_side_effects,
@@ -549,6 +584,70 @@ mod tests {
         let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
         assert_close(decay.rho_per_bp(), 0.0001, "the fitted rho per base pair");
         assert_close(decay.half_dist(), 21608.135872529165, "the half distance");
+        assert_close(
+            decay.r2_at_zero(),
+            0.46198347107438015,
+            "the r² at a distance of 0",
+        );
+    }
+
+    /// A table no curve passes through, whose distances hold different
+    /// numbers of pairs, fitted where R 4.6.1 fits it.
+    ///
+    /// It is the 250 distances of the test above, the `which`th of them
+    /// holding `which` + 1 pairs, and the mean of their r² taken from the
+    /// curve at a ρ per base pair of 0.0001 at an even `which` and of
+    /// 0.0003 at an odd one, at 100 individuals. What it adds to the table
+    /// of one curve above is the two things that table cannot tell apart:
+    ///
+    /// - The pairs of a distance weigh the square of its residual in the
+    ///   sum the fit makes smallest, and here they differ from distance to
+    ///   distance. Fitting the same table with every distance weighing the
+    ///   same lands at 0.00016248339608068103, 3.7 per 100 away, and
+    ///   fitting it with the sum of the r² of a distance in place of their
+    ///   mean lands at the bottom of the searched range, 10⁻¹², which is
+    ///   the three NaN.
+    /// - The ρ per base pair fitted is 10^-3.8048457936419067, which is
+    ///   not one of the 141 values of the grid, those being at a whole
+    ///   number of tenths from −12. So the golden section search, its
+    ///   ratio and the width it stops at are what puts the last digits
+    ///   there, where a table made at 0.0001 is returned to the bit by the
+    ///   grid alone.
+    ///
+    /// The two numbers are what R 4.6.1's `optimize` gives for that table
+    /// on 24 September 2026, run on the sum of
+    /// `docs/reports/ld-method/decay.R` with those weights and those
+    /// means: a ρ per base pair of 0.00015673074802977441, whose last
+    /// digit is past what an `f64` holds, and, through the ρ at which the
+    /// curve of 100 individuals is half of its value at 0, a half distance
+    /// of 13786.787943119005. They are compared within the 10⁻⁶ of "How it
+    /// is verified" of the spec, as the fitted values of the three
+    /// populations below are.
+    #[test]
+    fn the_fit_weighs_each_distance_by_the_pairs_it_holds() {
+        let dists = the_dists_from(1000, 250_000);
+        let (num_pairs, sum_r2) = the_table_of_two_curves(&dists, 0.0001, 0.0003, 100);
+        assert_eq!(
+            num_pairs.first(),
+            Some(&1),
+            "the pairs of the first distance"
+        );
+        assert_eq!(
+            num_pairs.last(),
+            Some(&250),
+            "the pairs of the last distance"
+        );
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
+        assert_close(
+            decay.rho_per_bp(),
+            0.000_156_730_748_029_774_4,
+            "the fitted rho per base pair",
+        );
+        assert_close(
+            decay.half_dist(),
+            13_786.787_943_119_005,
+            "the half distance",
+        );
         assert_close(
             decay.r2_at_zero(),
             0.46198347107438015,
