@@ -30,9 +30,11 @@
     "build": "npm install --no-fund --no-audit && npm run build:wasm && npm run build:ts",
     "build:wasm": "cargo build --package popnei-js --release --target wasm32-unknown-unknown && wasm-bindgen --target web --remove-name-section --out-dir wasm --out-name popnei ../../target/wasm32-unknown-unknown/release/popnei_js.wasm",
     "build:ts": "tsc --project tsconfig.json && tsc --project tsconfig.test.json",
-    "test": "npm run build:ts && node --test test/"
+    "test": "npm run build:ts && node --test test/",
+    "test:browser": "npm run build:ts && playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3"
   }
