@@ -24,8 +24,8 @@ spec stands beside; `docs/specs/block.md` has `iterBlocks`.
 Three words of `docs/glossary.md` are used throughout. A **pass** is one
 reading of a source of variants from its start to its end. A **consumer** is
 what takes a `Variants`, makes the passes it needs and gives a result: a
-calculation, the writer `writeVars`, or `iterBlocks`; the package has ten of
-them. A **run** is one call of one consumer, with the passes it makes.
+calculation, the writer `writeVars`, or `iterBlocks`; the package has eleven
+of them. A **run** is one call of one consumer, with the passes it makes.
 
 What the user of an application pays today, with the file taken whole:
 
@@ -437,8 +437,10 @@ from it, with ranges of the size popnei chose:
   consumer throws its value, which is what says that the failed read is not
   swallowed by the decompressor or turned into the error of a file that was
   cut short.
-- For each of the ten consumers, the largest `pass` of the calls of one run
-  equals `numPassesOf` of it with the same options.
+- For each of the eleven consumers, the largest `pass` of the calls of one
+  run equals `numPassesOf` of it with the same options. The association
+  study is run twice here, once with the GRAMMAR-Gamma approximation and
+  once without it, which are its two numbers of passes.
 
 ## How many passes a consumer makes
 
@@ -446,10 +448,18 @@ from it, with ranges of the size popnei chose:
 
 `numPassesOf` says how many times a consumer will read the file, before it
 is started, so that a page can draw one bar for a whole run instead of one
-per pass. Every consumer of popnei reads the file once, except the PCA of
-the variants, which reads it twice when it is asked for the weights of the
-variants: the weights need the eigenvectors, which are known when the first
-pass ends. `doPcaFromVariants` with `numPrinComps` 0 reads it once.
+per pass. Every consumer of popnei reads the file once, except two.
+
+The PCA of the variants reads it twice when it is asked for the weights of
+the variants: the weights need the eigenvectors, which are known when the
+first pass ends. `doPcaFromVariants` with `numPrinComps` 0 reads it once.
+
+The association study reads it twice when it is asked for the GRAMMAR-Gamma
+approximation, which stands in for the denominator of the test of a mixed
+model: the factor of that approximation is estimated from the first block of
+a second pass over the same variants, as `docs/specs/gwas.md` has it.
+`calcGwas` with `useGrammarGammaApprox` false, which is the default, reads
+the file once.
 
 ```ts
 numPassesOf(consumer: ConsumerName, options?: object): number
@@ -458,14 +468,16 @@ numPassesOf(consumer: ConsumerName, options?: object): number
 `ConsumerName` is the name of the function of this package that makes the
 passes: `"calcPerVarDistribs"`, `"calcPerIndividualStats"`,
 `"calcPairwiseKosmanDists"`, `"calcPopDists"`,
-`"calcRogersHuffR2Matrix"`, `"calcKinship"`, `"doPcaFromVariants"`,
-`"calcGwas"`, `"writeVars"` and `"iterBlocks"`. `options` is the options
-object that function takes, and only `numPrinComps` of `doPcaFromVariants`
-changes the answer; it is checked as that function checks it, so a
-`numPrinComps` that is not a whole number of 0 or more is an `Error` here
-too. A name that is of no consumer of the package is an `Error`. Like every
-other function of the package it reads the default of `numPrinComps` from
-the core, so it throws until `init` has been awaited.
+`"calcRogersHuffR2Matrix"`, `"calcLdAndDistPerPop"`, `"calcKinship"`,
+`"doPcaFromVariants"`, `"calcGwas"`, `"writeVars"` and `"iterBlocks"`.
+`options` is the options object that function takes, and only
+`numPrinComps` of `doPcaFromVariants` and `useGrammarGammaApprox` of
+`calcGwas` change the answer; each is checked as that function checks it, so
+a `numPrinComps` that is not a whole number of 0 or more and a
+`useGrammarGammaApprox` that is not a boolean are an `Error` here too. A
+name that is of no consumer of the package is an `Error`. Like every other
+function of the package it reads the defaults of those two from the core, so
+it throws until `init` has been awaited.
 
 The number the `Progress` of each call carries is this same number, from the
 same function of the binding crate: the consumer asks it what its run makes
@@ -479,11 +491,14 @@ the reader of its pass, as section 1 of the architecture says.
 
 Under node: `numPassesOf("doPcaFromVariants", { numPrinComps: 10 })` is 2,
 with `numPrinComps` 0 it is 1, and with no options it is 2, which is the
-default of 10 components; each of the other nine names gives 1; a name that
-is of no consumer throws, and so does a `numPrinComps` of -1. The test of
-the item above runs each of the ten and compares the passes the calls showed
-with the number this function gives, which is what would catch a consumer
-that grew a pass and did not say so.
+default of 10 components; `numPassesOf("calcGwas", { useGrammarGammaApprox:
+true })` is 2, with it false it is 1, and with no options it is 1, which is
+the default of the exact denominator; each of the other ten names gives 1; a
+name that is of no consumer throws, and so does a `numPrinComps` of -1 and a
+`useGrammarGammaApprox` that is not a boolean. The test of the item above
+runs each of the eleven and compares the passes the calls showed with the
+number this function gives, which is what would catch a consumer that grew a
+pass and did not say so.
 
 ## The Rust interface
 
@@ -583,8 +598,8 @@ thread_local! {
 /// passes depends on it.
 pub(crate) enum Consumer {
     PerVarDistribs, PerIndividualStats, KosmanDists, PopDists, R2Matrix,
-    Kinship, PcaOfVariants { num_prin_comps: usize }, Gwas, WriteVars,
-    IterBlocks,
+    LdAndDist, Kinship, PcaOfVariants { num_prin_comps: usize },
+    Gwas { use_grammar_gamma_approx: bool }, WriteVars, IterBlocks,
 }
 
 impl Consumer {
@@ -691,7 +706,8 @@ another over one source and tags each with a key of its own, since the
 function can carry that key, and it leaves the options of every consumer as
 the ones of the Python API, which goal 3 of `docs/objectives.md` asks the
 TypeScript API to mirror. An argument of every consumer is the same power
-with ten places to add it to and ten more lines of documentation.
+with eleven places to add it to and eleven more lines of
+documentation.
 Recommendation: the method of `Variants`. Meanwhile the implementer writes
 that.
 

@@ -167,9 +167,10 @@ Task 1.3, the stop, is done at bc46752. `node --test test/stop.test.ts` runs
 7 tests where deliverable 3 asks for 4, five of which fail on the commit
 before it. The error type of the binding crate gained a case that carries
 the value the application threw through untouched, the read that a throw
-ends fails with `std::io::Error::other`, and nine of the ten functions that
-read a source open their run in one function of the crate, so the swap of
-the error cannot be forgotten. The tenth is the iteration a user writes,
+ends fails with `std::io::Error::other`, and ten of the eleven functions
+that read a source open their run in one function of the crate, so the swap
+of the error cannot be forgotten. The eleventh is the iteration a user
+writes,
 `iterBlocks`, which reads between one call and the next, so its run lives
 longer than any one call and is opened where the iteration starts.
 
