@@ -1470,10 +1470,16 @@ per individual statistics; and the bin type of equal widths is spelt
   `docs/specs/dists.md`, which takes its `pops` from here.
 - The linkage disequilibrium per population, which takes one pass per
   population: the `ld` spec, which is not written.
-- Fis, Fst and the other diversity summaries, and the per variant values
-  themselves, as a frame: pyNei does not have them and popnei does not
-  add them. A user who wants the values takes the genotypes with
-  `iter_blocks`.
+- F_IS, the alleles a population called and the private ones among them,
+  their rarefaction and the folded site frequency spectrum:
+  `docs/specs/diversity.md`, which builds them from the same allele counts
+  per population in a pass of its own. This spec said until 24 September
+  2026 that popnei does not add them, because pyNei has none of them; the
+  owner reversed that on that date, after a web application built on the
+  TypeScript package asked for all five. F_ST and the other measures
+  between two populations are `docs/specs/dists.md`.
+- The per variant values themselves, as a frame: a user who wants them
+  takes the genotypes with `iter_blocks`.
 - The three threshold filters over the individuals of one population:
   pyNei does not have it, and `docs/specs/filters.md` says so.
 - The read ahead thread of section 3 of the architecture: a reader over a
