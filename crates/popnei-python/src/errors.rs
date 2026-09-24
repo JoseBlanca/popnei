@@ -624,7 +624,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The fifteen of the association study that are of what a user
+        // The sixteen of the association study that are of what a user
         // wrote and are wrong whatever file is read: a phenotype or a
         // covariate that is not a finite number, which the package lets
         // through as a value that came out of the user's own arithmetic as
@@ -642,8 +642,13 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // things; a null model that walked towards an infinite coefficient
         // instead of settling, which is a covariate that separates the
         // individuals that have the condition from the ones that have not
-        // and which the user takes out; and a study whose trait and kinship
-        // ask for the one model that is not written. "The Rust interface"
+        // and which the user takes out; a kinship that the covariance of
+        // the working trait of a logistic mixed model cannot be factored
+        // from, which is the matrix the user's missing genotypes made and
+        // which they rebuild from variants with fewer of them; and a study
+        // whose trait and kinship ask for a model that is not written,
+        // which all four now are and which the pass keeps for the two arms
+        // no study reaches. "The Rust interface"
         // of `docs/specs/gwas.md` has them, each as the `ValueError` it is
         // here. What the arm at the end of this function would give them
         // instead is the same exception with the path of the file in front
@@ -667,6 +672,7 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasGrammarGammaWithoutAKinship
         | popnei::Error::GwasGrammarGammaNotBuilt
         | popnei::Error::GwasFitDidNotSettle { .. }
+        | popnei::Error::GwasKinshipNotACovariance { .. }
         | popnei::Error::GwasModelNotBuilt { .. }
         // The name of a trait and the name of a test that are of neither
         // of the two, which a user writes in `trait` and in `test`.

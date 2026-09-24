@@ -39,9 +39,14 @@ variant that separates the individuals that have the condition from those
 that have not has no finite effect, and its Wald test gives NaN for all
 three numbers.
 
-The logistic mixed model, a trait that is 0 and 1 with a kinship, is being
-written, and so is the GRAMMAR-Gamma approximation that a mixed model can
-take instead of the exact denominator of its test; asking for either is a
+A trait that is 0 and 1 with a kinship is the logistic mixed model, which is
+what GMMAT's ``glmm.score`` computes: the same logistic curve with a random
+effect of the kinship in it, fitted by penalized quasi-likelihood. Its only
+test is the score test, since a Wald test would fit one mixed model for every
+variant, and asking for the Wald test is a ``ValueError`` that says so.
+
+The GRAMMAR-Gamma approximation, which a mixed model can take instead of the
+exact denominator of its test, is being written; asking for it is a
 ``ValueError`` that says so.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
@@ -278,12 +283,17 @@ def calc_gwas(
     that individual, and so is one where every tested individual has the
     same value, which leaves one of the two groups empty. Without a kinship
     a binomial trait is a logistic regression and ``beta`` is a log odds
-    ratio; with one it is the logistic mixed model, which is being written,
-    and asking for it is a ``ValueError`` that says so. A null model whose
+    ratio; with one it is the logistic mixed model, whose only test is the
+    score test. A null model whose
     fit walks towards an infinite coefficient instead of settling is a
     ``ValueError`` too: what takes it there is a covariate that separates
     the individuals that have the condition from those that have not, and
-    the user takes that covariate out.
+    the user takes that covariate out. A kinship that the covariance of the
+    working trait of a logistic mixed model cannot be factored from is a
+    ``ValueError`` as well, naming the row it stopped at: missing genotypes
+    leave every pair of individuals counted over its own variants, which can
+    give the matrix an eigenvalue below 0, and the user builds it from
+    variants with fewer genotypes missing.
 
     `covariates` is a frame indexed by individual with one column for each
     covariate, and the design of the study is a column of ones for the
@@ -302,7 +312,8 @@ def calc_gwas(
 
     `kinship` is the relatedness of every pair, what :func:`popnei.calc_kinship`
     gives or a :class:`popnei.Kinship` built from a matrix another program
-    wrote, and it makes the study a linear mixed model: the trait carries a
+    wrote, and it makes the study a mixed model, linear for a continuous
+    trait and logistic for a binomial one: the trait carries a
     random effect of that covariance, so that a variant which only marks the
     ancestry of a panel does not look associated. It has to hold every
     individual that is tested, and a tested individual it has not is a
@@ -316,13 +327,17 @@ def calc_gwas(
     model of a strongly subdivided panel.
 
     `test` is ``"wald"`` or ``"score"``, the two values of
-    :class:`TestType`, and ``None`` takes the default of the model, which is
-    the Wald test for the three models that are built. The linear model's
+    :class:`TestType`, and ``None`` takes the default of the model: the Wald
+    test wherever a fit per variant is cheap, a continuous trait or a
+    binomial one without a kinship, and the score test for a binomial trait
+    with a kinship. The linear model's
     only test is the t test of the effect it fitted, which is the Wald test,
     so ``"score"`` is a ``ValueError`` that says so; the linear mixed model
     takes either, the Wald test being rrBLUP's and the score test GMMAT's,
     and so does the logistic regression, whose Wald test fits one logistic
-    regression per variant and whose score test fits none.
+    regression per variant and whose score test fits none. The logistic
+    mixed model has the score test alone, since a Wald test would fit one
+    mixed model for every variant, so ``"wald"`` is a ``ValueError`` there.
 
     `use_grammar_gamma_approx` stands in for the denominator of a mixed
     model's test, which costs a product with the covariance of the random

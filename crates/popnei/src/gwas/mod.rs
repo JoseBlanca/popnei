@@ -8,11 +8,10 @@
 //! [`calc_gwas`], of `pass`, is the study itself: it fits the null model
 //! once, over the individuals that are tested and the design they were
 //! given, and then reads the variants in one pass, giving one row for each
-//! of them. Of the four models three are written: the linear one and the
-//! linear mixed one, which are a continuous trait without and with a
-//! kinship, and the logistic one, which is a binomial
-//! trait without one. The logistic mixed model is refused until it is
-//! written.
+//! of them. All four models are written: the linear one and the linear
+//! mixed one, which are a continuous trait without and with a kinship, and
+//! the logistic one and the logistic mixed one, which are a binomial trait
+//! without and with one.
 //!
 //! `distributions` holds the two functions that turn the statistic of a
 //! test into a p-value, which every model of the module ends in, and
@@ -60,37 +59,23 @@
 //! one logistic regression per variant with the variant in the design.
 //!
 //! [`LogisticMixedModel`](logistic_mixed::LogisticMixedModel), of
-//! `logistic_mixed`, is the fourth model being written: it starts from the
-//! logistic null of `logistic` and searches for the variance of the
-//! kinship effect, running a linearization of the logistic mixed model at
-//! each value of it and then taking one Newton step on that variance
-//! inside a bracket. A linearization is the working trait and its weights,
-//! the covariance of that trait factored with a Cholesky and applied by
-//! solving, and the working trait through the projection matrix; nothing
-//! of an individuals by individuals size is inverted until the search has
-//! settled, and then once, for the projection matrix. The score test of a
-//! block and the model reaching `pass` are being written beside it.
-//! `the_share_that_is_nothing` is here and not in a model because every
-//! model reads it.
+//! `logistic_mixed`, is the fourth: it starts from the logistic null of
+//! `logistic` and searches for the variance of the kinship effect, running
+//! a linearization of the logistic mixed model at each value of it and then
+//! taking one Newton step on that variance inside a bracket. A
+//! linearization is the working trait and its weights, the covariance of
+//! that trait factored with a Cholesky and applied by solving, and the
+//! working trait through the projection matrix; nothing of an individuals
+//! by individuals size is inverted until the search has settled, and then
+//! once, for the projection matrix, which is what its score test takes
+//! every variant through. `the_share_that_is_nothing` is here and not in a
+//! model because every model reads it.
 
 mod distributions;
 mod dosages;
 mod linear;
 mod linear_mixed;
 mod logistic;
-// Nothing outside the tests reaches this module yet: `calc_gwas` refuses
-// the logistic mixed model until its score test is written, so every item
-// here is dead in a build without it. It is committed on its own because a
-// fit that is wrong in its last digits moves the variance of the kinship
-// effect and crashes nothing.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the study refuses the logistic mixed model until its score test is \
-                  written"
-    )
-)]
 mod logistic_mixed;
 mod pass;
 mod result;

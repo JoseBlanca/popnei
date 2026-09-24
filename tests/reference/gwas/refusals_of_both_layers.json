@@ -78,8 +78,12 @@
       "match": "`continuous`.*`binomial`.*`quantitative`"
     },
     {
-      "case": "a binomial trait with a kinship",
-      "match": "logistic mixed model, which is being written"
+      "case": "the wald test of a binomial trait with a kinship",
+      "match": "one mixed model for every variant"
+    },
+    {
+      "case": "a kinship the logistic mixed model cannot factor",
+      "match": "so the kinship is not a covariance"
     },
     {
       "case": "a binomial trait that is neither 0 nor 1",

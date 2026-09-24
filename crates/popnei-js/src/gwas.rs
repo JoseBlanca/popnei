@@ -230,12 +230,15 @@ impl GwasOfVariants {
 /// # Errors
 ///
 /// When the name of the trait is of neither of the two and when the name of
-/// the test is of neither; when the study needs the logistic mixed model,
-/// which is not written; when the GRAMMAR-Gamma approximation is asked for,
-/// which is not written either; when the score test is asked of a linear
-/// model, whose only test is the t test of the effect it fitted;
+/// the test is of neither; when the GRAMMAR-Gamma approximation is asked
+/// for, which is not written; when the score test is asked of a linear
+/// model, whose only test is the t test of the effect it fitted, and when
+/// the Wald test is asked of a logistic mixed model, which has only the
+/// score test;
 /// when a binomial phenotype holds a value that is neither 0 nor 1, or its
 /// null model walks towards an infinite coefficient instead of settling;
+/// when the covariance of the working trait of a logistic mixed model
+/// cannot be factored, which is a kinship that is not a covariance;
 /// when the individuals to test are not in the order the source has them,
 /// one of them is there twice, one of them is not in the source, or they are
 /// fewer than the columns of the design plus two; when a value of the

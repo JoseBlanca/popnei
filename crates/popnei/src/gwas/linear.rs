@@ -1027,45 +1027,6 @@ pub(crate) mod lm {
         }
     }
 
-    /// The one study of the four that popnei cannot run is refused, naming
-    /// the model it asked for: the logistic mixed model, a binomial trait
-    /// with a kinship.
-    ///
-    /// The other three are written. A continuous trait is the linear model
-    /// without a kinship and the linear mixed model with one, and a
-    /// binomial trait without a kinship is the logistic model, whose two
-    /// tests the `logistic` module runs on the panel.
-    #[test]
-    fn a_model_that_is_not_written_yet_is_refused() {
-        let vcf = the_worked_example_vcf();
-        let kinship = [0.0_f64; 36];
-        let phenotype = [0.0_f64, 1.0, 0.0, 1.0, 0.0, 1.0];
-        let study = GwasInput {
-            phenotype: &phenotype,
-            trait_type: TraitType::Binomial,
-            design: &THE_DESIGN,
-            num_coefs: 2,
-            kinship: Some(kinship.as_slice()),
-            test: None,
-            use_grammar_gamma_approx: false,
-            individuals: &THE_INDIVIDUALS,
-            transform_to_biallelic: false,
-        };
-        let mut reader = reader_over(&vcf);
-        match the_study_of(&mut reader, &study) {
-            Err(Error::GwasModelNotBuilt { model }) => {
-                assert_eq!(model, GwasModel::Glmm, "a binomial trait with a kinship");
-                let said = Error::GwasModelNotBuilt { model }.to_string();
-                assert!(
-                    said.contains("being written"),
-                    "the study was refused with {said}"
-                );
-            }
-            Err(error) => panic!("a binomial trait with a kinship: {error}"),
-            Ok(_) => panic!("a binomial trait with a kinship was run"),
-        }
-    }
-
     /// The GRAMMAR-Gamma approximation stands in for the denominator of a
     /// mixed model's test, so a study with no kinship is refused for
     /// asking for it, which is pyNei's refusal of the same pair.

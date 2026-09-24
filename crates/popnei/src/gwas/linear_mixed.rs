@@ -1406,7 +1406,7 @@ pub(crate) mod lmm {
     /// beside the kinships and the one with 3 in 100 genotypes missing
     /// whole beside the distances, and both hold the same 200 individuals
     /// and the same 1200 variants.
-    fn the_vcf_of_the_panel(name: &str) -> PathBuf {
+    pub(crate) fn the_vcf_of_the_panel(name: &str) -> PathBuf {
         let of_the_module = match name {
             "panel_called" => "kinship",
             _ => "dists",
@@ -1482,7 +1482,7 @@ pub(crate) mod lmm {
     }
 
     /// Where the variant `id` is among the rows of a study of a panel.
-    fn the_row_of(result: &Gwas, id: &str) -> usize {
+    pub(crate) fn the_row_of(result: &Gwas, id: &str) -> usize {
         let ids = result.ids.as_deref().expect("the ids of the variants");
         match ids.iter().position(|held| held == id) {
             Some(var) => var,

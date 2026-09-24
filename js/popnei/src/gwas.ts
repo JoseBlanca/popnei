@@ -37,9 +37,13 @@
  * individuals that have the condition from those that have not has no finite
  * effect, and its Wald test gives NaN for all three numbers.
  *
- * The logistic mixed model, a trait that is 0 and 1 with a kinship, is being
- * written, and so is the GRAMMAR-Gamma approximation a mixed model can take
- * instead of the exact denominator of its test; asking for either is an
+ * A trait that is 0 and 1 with a kinship is the logistic mixed model, which
+ * is GMMAT's `glmm.score`: the same logistic curve with a random effect of
+ * the kinship in it. Its only test is the score test, since a Wald test
+ * would fit one mixed model for every variant.
+ *
+ * The GRAMMAR-Gamma approximation a mixed model can take instead of the
+ * exact denominator of its test is being written; asking for it is an
  * `Error` that says so. `docs/specs/gwas.md` has the four models.
  */
 
@@ -247,8 +251,8 @@ export interface CalcGwasOptions {
    * is an `Error` naming the place of that individual, and so is one where
    * every tested individual has the same value, which leaves one of the two
    * groups empty. Without a kinship it is a logistic regression and `beta`
-   * is a log odds ratio; with one it is the logistic mixed model, which is
-   * being written.
+   * is a log odds ratio; with one it is the logistic mixed model, whose only
+   * test is the score test.
    */
   trait: TraitType;
   /**
@@ -273,14 +277,18 @@ export interface CalcGwasOptions {
   >;
   /**
    * Which test is made of every variant, and the default of the model when
-   * it is not given, which for the three models that are built is `wald`.
+   * it is not given: `wald` wherever a fit per variant is cheap, a
+   * measurement or a 0 and 1 trait without a kinship, and `score` for a 0
+   * and 1 trait with one.
    *
    * The linear model, a measurement with no kinship, has the Wald test
    * alone, which for it is the t test of the effect it fitted, so `score` is
    * an `Error` that says so; the linear mixed model takes either, the Wald
    * test being rrBLUP's and the score test GMMAT's, and so does the logistic
    * regression, whose Wald test fits one logistic regression per variant and
-   * whose score test fits none.
+   * whose score test fits none. The logistic mixed model has the score test
+   * alone, since a Wald test would fit one mixed model for every variant, so
+   * `wald` is an `Error` there.
    */
   test?: TestType;
   /**
@@ -354,9 +362,11 @@ export interface CalcGwasOptions {
  * is not a finite number once it is read as one; when the trait is the same
  * in every tested individual, which leaves nothing for a variant to be
  * associated with; when the columns of the design are not independent; when
- * a binomial trait holds a value that is neither 0 nor 1; when the trait is
- * binomial and a kinship is given, which is the logistic mixed model and is
- * being written; when the null model of a binomial trait walks towards an
+ * a binomial trait holds a value that is neither 0 nor 1; when the Wald test
+ * is asked of a binomial trait with a kinship, which is the logistic mixed
+ * model and has only the score test; when the covariance of the working
+ * trait of that model cannot be factored, which is a kinship that is not a
+ * covariance; when the null model of a binomial trait walks towards an
  * infinite coefficient instead of settling; when the source cannot be read,
  * a wrong line of a VCF among the causes; when a variant has more than two
  * alleles among its called genotypes and `transformToBiallelic` is false;

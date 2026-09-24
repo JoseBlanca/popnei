@@ -260,7 +260,9 @@ pub(crate) fn calc_gwas<'py>(
 /// # Errors
 ///
 /// When the source cannot be opened or read, when the pass gives no variant,
-/// and when the core refuses the study: a model that is not written yet, a
+/// and when the core refuses the study: a null model that did not settle, a
+/// kinship that the covariance of the working trait of a logistic mixed
+/// model cannot be factored from, a
 /// test the model has not, individuals that are not in the order the source
 /// has them, a phenotype or a value of the design that is not a finite
 /// number, a design whose columns are not independent or that leaves nothing

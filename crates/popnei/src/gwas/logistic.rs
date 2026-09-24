@@ -417,15 +417,6 @@ impl LogisticModel {
     /// started elsewhere walks a different path through the bracket of the
     /// variance of the kinship effect and can stop at another value of it.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the logistic mixed model is what reads this, and the study refuses \
-                      that model until its step on the variance of the kinship effect and \
-                      its score test are written"
-        )
-    )]
     pub(super) fn coefs(&self) -> &[f64] {
         &self.coefs
     }
@@ -433,15 +424,6 @@ impl LogisticModel {
     /// The design times those effects, one value per tested individual,
     /// which the fitted chance of the individual is the logistic curve of.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the logistic mixed model is what reads this, and the study refuses \
-                      that model until its step on the variance of the kinship effect and \
-                      its score test are written"
-        )
-    )]
     pub(super) fn linear_predictor(&self) -> &[f64] {
         &self.linear_predictor
     }

@@ -16,11 +16,14 @@ use popnei_linalg::{TheFirstOperand, TheSecondOperand};
 
 use crate::error::{Error, Result};
 
+use super::distributions::chi2_sf_1df;
+use super::dosages::GwasDosages;
 use super::logistic::{
     LogisticModel, TheSystemOfTheFit, the_chance_of, the_system_of, the_system_that_is_left,
 };
-use super::result::NullModel;
+use super::result::{Answers, NullModel};
 use super::study::{Design, GwasInputShape, GwasModel, TestType};
+use super::the_share_that_is_nothing;
 
 /// How many rounds a linearization runs before a linear predictor that is
 /// still moving is refused: 200, which is `GLMM_MAX_ITER` of
@@ -728,17 +731,77 @@ pub(crate) struct LogisticMixedModel {
     /// which is the fit's own optimality condition and is the cheapest
     /// evidence there is that the search reached its optimum.
     projected_trait: Vec<f64>,
+    /// The largest value of the diagonal of that matrix, which is what a
+    /// variant's own squared length is weighted by to say how much of the
+    /// variant the projection has left.
+    ///
+    /// It is the scale of the third place of the meanwhile of **Open 2** of
+    /// `docs/specs/gwas.md`, and it is the one the linear mixed model's
+    /// score test already takes, so that the two mixed models answer alike
+    /// rather than each picking its own. The doc comment of the field of
+    /// the same name in `linear_mixed` measures how far under the largest
+    /// eigenvalue of the projection, which is what really bounds
+    /// `x' p x / x' x`, that diagonal sits: 1.7 times on both panels of
+    /// that model, so the threshold is tighter than it was meant to be and
+    /// not looser.
+    largest_of_the_projection: f64,
     /// How many individuals the study tests.
     num_individuals: usize,
     /// How many rounds the fit ran in all, which is how many times it
     /// factored the covariance of the working trait: 22 on the panel.
+    ///
+    /// The three counters are in no result and the cargo test of
+    /// deliverable 3 of `docs/plans/gwas-logistic.md` is the one thing that
+    /// reads them, which is why they are taken at the calls themselves: a
+    /// count taken anywhere else could say the fit factors and inverts as
+    /// "How popnei fits it, and why not pyNei's way" of
+    /// `docs/specs/gwas.md` describes while the code did otherwise, and a
+    /// fit that inverted where it should solve would give the same numbers
+    /// and nothing else would notice.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the three counters are in no result and the cargo test that counts \
+                      the factorizations and the inverses is what reads them"
+        )
+    )]
     linearizations: usize,
     /// How many steps it took on the variance of the kinship effect: 8 on
     /// the panel.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the three counters are in no result and the cargo test that counts \
+                      the factorizations and the inverses is what reads them"
+        )
+    )]
     steps_on_the_variance: usize,
     /// How many times it formed the inverse of a factorized matrix of that
     /// size: 1, at the end, for the projection matrix.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the three counters are in no result and the cargo test that counts \
+                      the factorizations and the inverses is what reads them"
+        )
+    )]
     inverses: usize,
+    /// The dosages of a block through the projection matrix, `x p`, the
+    /// variants that have variance x `num_individuals`.
+    projected: Vec<f64>,
+    /// Each variant times the residual the null left, `x' r`, one per
+    /// variant that has variance, which is the `x' p y` of the score test
+    /// with the residual this model has in place of `p y`.
+    num: Vec<f64>,
+    /// The effect of each variant that has variance.
+    beta: Vec<f64>,
+    /// The standard error of each of those effects.
+    se: Vec<f64>,
+    /// The p-value of each of those tests.
+    p_value: Vec<f64>,
 }
 
 impl LogisticMixedModel {
@@ -845,12 +908,22 @@ impl LogisticMixedModel {
         Ok(LogisticMixedModel {
             coefs: std::mem::take(&mut fitted.coefs),
             genetic_variance,
+            largest_of_the_projection: projection
+                .chunks_exact(num_individuals.max(1))
+                .zip(0..)
+                .filter_map(|(row, at)| row.get(at).copied())
+                .fold(0.0_f64, f64::max),
             projection,
             projected_trait,
             num_individuals,
             linearizations: fitted.factorizations,
             steps_on_the_variance,
             inverses: 1,
+            projected: Vec::new(),
+            num: Vec::new(),
+            beta: Vec::new(),
+            se: Vec::new(),
+            p_value: Vec::new(),
         })
     }
 
@@ -875,19 +948,136 @@ impl LogisticMixedModel {
         }
     }
 
-    /// The projection matrix of the fit, `num_individuals` x
-    /// `num_individuals`, row after row, which every variant is tested
-    /// through.
-    #[must_use]
-    pub(crate) fn projection(&self) -> &[f64] {
-        &self.projection
+    /// The score test of every variant of a block that has variance among
+    /// the tested individuals, in the order of the block.
+    ///
+    /// The score test is the only test this model has: a Wald test would
+    /// fit one mixed model per variant, and
+    /// [`the_model_and_the_test`](super::study::the_model_and_the_test)
+    /// refuses a study that asks for one. It asks how steeply the
+    /// likelihood would rise if the variant's effect were let off 0,
+    /// measured at the null, so it holds the variance of the kinship effect
+    /// and the fitted chances where the null left them and needs no fit per
+    /// variant. It is what GMMAT's `glmm.score` makes.
+    ///
+    /// Every variant goes through the projection matrix of the null, which
+    /// takes the covariates out of it and weights it by the covariance of
+    /// the working trait. With `x` the dosages of a variant, `num` is
+    /// `x' r` and `den` is `x' p x`, and then `beta` is `num / den`, `se`
+    /// is `1 / sqrt(den)` and `num² / den` is read against a chi square
+    /// with one degree of freedom. `r`, the residual the numerator is taken
+    /// against, is the trait less the fitted chance and not the trait
+    /// through the projection matrix, which is what a logistic mixed model
+    /// has in place of the linear one's `p y` and which
+    /// [`LogisticMixedModel::of_the_study`] left in `projected_trait`.
+    ///
+    /// The two products are the whole cost of a block, and the first of
+    /// them, the dosages through the projection matrix, is what the
+    /// GRAMMAR-Gamma approximation of `docs/specs/gwas.md` stands in for.
+    ///
+    /// A variant of which the projection leaves at most the tested
+    /// individuals times 2.2e-16 of what there was has no answer, and gets
+    /// the three NaNs a variant with no variance gets. What there was is
+    /// the variant's own squared length times the largest value of the
+    /// diagonal of the projection matrix, which is the scale the linear
+    /// mixed model's score test takes, so that the two mixed models answer
+    /// a variant there is nothing left to test alike rather than each
+    /// picking its own. It is **Open 2** of `docs/specs/gwas.md`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasVariantsTooLarge`] when the values of the block are
+    /// more than a `usize` counts, and [`Error::GwasLinalg`] when one of
+    /// the two products could not be done, which is where a block of other
+    /// individuals than the null model was fitted over is refused.
+    pub(crate) fn test_the_block(&mut self, dosages: &GwasDosages) -> Result<Answers<'_>> {
+        let num_vars = dosages.num_with_variance();
+        self.beta.clear();
+        self.se.clear();
+        self.p_value.clear();
+        if num_vars == 0 {
+            // No variant to test, and the products below take a matrix of
+            // one column at least. The block still has its rows in the
+            // result, with the three NaNs of a variant that has no answer.
+            return Ok(self.answers());
+        }
+        let values = num_vars
+            .checked_mul(self.num_individuals)
+            .ok_or(Error::GwasVariantsTooLarge)?;
+        self.projected.resize(values, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: dosages.dosages(),
+                rows: num_vars,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.projection,
+                cols: self.num_individuals,
+            },
+            &mut self.projected,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of a block of variants with the projection matrix",
+            source,
+        })?;
+        self.num.resize(num_vars, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: dosages.dosages(),
+                rows: num_vars,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.projected_trait,
+                cols: 1,
+            },
+            &mut self.num,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of a block of variants with the residuals of the null model",
+            source,
+        })?;
+        // The share of what the variant was that the projection has to
+        // leave of it for the variant to be worth testing.
+        let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
+        let largest_of_the_projection = self.largest_of_the_projection;
+        for ((row, num), of_the_variant) in self
+            .projected
+            .chunks_exact(self.num_individuals.max(1))
+            .zip(&self.num)
+            .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
+        {
+            let den = row
+                .iter()
+                .zip(of_the_variant)
+                .map(|(projected, dosage)| projected * dosage)
+                .sum::<f64>();
+            let of_the_dosages = of_the_variant
+                .iter()
+                .map(|dosage| dosage * dosage)
+                .sum::<f64>();
+            if den <= share_that_is_nothing * largest_of_the_projection * of_the_dosages {
+                self.beta.push(f64::NAN);
+                self.se.push(f64::NAN);
+                self.p_value.push(f64::NAN);
+                continue;
+            }
+            self.beta.push(num / den);
+            self.se.push(1.0 / den.sqrt());
+            self.p_value.push(chi2_sf_1df(num * num / den));
+        }
+        Ok(self.answers())
     }
 
-    /// The residual every variant's numerator is taken against, one value
-    /// per tested individual: the trait less the fitted chance.
+    /// The three columns of what the block last tested answered.
     #[must_use]
-    pub(crate) fn projected_trait(&self) -> &[f64] {
-        &self.projected_trait
+    fn answers(&self) -> Answers<'_> {
+        Answers {
+            beta: &self.beta,
+            se: &self.se,
+            p_value: &self.p_value,
+        }
     }
 }
 
@@ -1298,11 +1488,18 @@ mod glmm {
     use std::cmp::Ordering;
 
     use super::{LogisticMixedModel, TheLinearization, TheStepOnTheVariance, the_projection_of};
+    use crate::block::BlockReader;
     use crate::error::Error;
-    use crate::gwas::linear::lm::the_trait_and_the_design_of_the_panel;
-    use crate::gwas::linear_mixed::lmm::{the_individuals_of_the_kinship, the_kinship_of};
+    use crate::gwas::linear::lm::{
+        THE_HEADER_OF_EIGHT, reader_over, the_study_of, the_trait_and_the_design_of_the_panel,
+    };
+    use crate::gwas::linear_mixed::lmm::{
+        the_individuals_of_the_kinship, the_kinship_of, the_row_of, the_vcf_of_the_panel,
+    };
     use crate::gwas::logistic::LogisticModel;
+    use crate::gwas::result::Gwas;
     use crate::gwas::study::{Design, GwasInput, GwasModel, TestType, TraitType};
+    use crate::io::vcf::{VcfOptions, VcfReader};
 
     /// The variance of the random effect of the kinship that GMMAT 1.5.0's
     /// `glmmkin` fitted for the panel with every genotype called, from
@@ -1454,9 +1651,9 @@ mod glmm {
         (phenotype, design, kinship)
     }
 
-    /// The study of one of the two panels: its design, checked, and the
-    /// plain logistic null the mixed fit starts from.
-    fn the_study_of<'a>(
+    /// The design of one of the two panels, checked, and the plain logistic
+    /// null the mixed fit starts from.
+    fn the_design_and_the_null_of<'a>(
         phenotype: &'a [f64],
         values: &'a [f64],
         kinship: &'a [f64],
@@ -1506,7 +1703,7 @@ mod glmm {
     fn the_linearization_at_no_kinship_variance_is_the_plain_logistic_fit() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let of_the_null = null.coefs().to_vec();
         let mut fitted =
             match TheLinearization::of_the_logistic_null(&phenotype, &design, &kinship, &null) {
@@ -1542,7 +1739,7 @@ mod glmm {
     fn the_linearization_at_gmmats_variance_is_gmmats_three_covariate_effects() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let mut fitted =
             match TheLinearization::of_the_logistic_null(&phenotype, &design, &kinship, &null) {
                 Ok(fitted) => fitted,
@@ -1582,7 +1779,7 @@ mod glmm {
         for name in ["panel_called", "panel"] {
             let (phenotype, values, kinship) = the_panel(name);
             let tested: Vec<usize> = (0..phenotype.len()).collect();
-            let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+            let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
             let mut fitted = match TheLinearization::of_the_logistic_null(
                 &phenotype, &design, &kinship, &null,
             ) {
@@ -1667,7 +1864,7 @@ mod glmm {
     fn a_linearization_whose_weights_have_collapsed_is_refused() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let mut fitted =
             match TheLinearization::of_the_logistic_null(&phenotype, &design, &kinship, &null) {
                 Ok(fitted) => fitted,
@@ -1696,7 +1893,7 @@ mod glmm {
     fn a_covariance_that_is_not_positive_definite_names_the_kinship() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let mut fitted =
             match TheLinearization::of_the_logistic_null(&phenotype, &design, &kinship, &null) {
                 Ok(fitted) => fitted,
@@ -1726,7 +1923,7 @@ mod glmm {
     fn the_fit_of_the_panel_is_gmmats_variance_and_three_covariate_effects() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, _) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
             Ok(model) => model,
             Err(error) => panic!("the fit of the panel: {error}"),
@@ -1795,7 +1992,7 @@ mod glmm {
     fn the_fit_forms_one_inverse_and_factors_the_covariance_once_a_round() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, _) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
             Ok(model) => model,
             Err(error) => panic!("the fit of the panel: {error}"),
@@ -1840,7 +2037,7 @@ mod glmm {
             let (phenotype, values, kinship) = the_panel(name);
             let tested: Vec<usize> = (0..phenotype.len()).collect();
             let num_individuals = phenotype.len();
-            let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+            let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
             for variance in [0.0, OF_GMMAT_VARIANCE] {
                 let mut fitted = match TheLinearization::of_the_logistic_null(
                     &phenotype, &design, &kinship, &null,
@@ -1916,7 +2113,7 @@ mod glmm {
         for name in ["panel_called", "panel"] {
             let (phenotype, values, kinship) = the_panel(name);
             let tested: Vec<usize> = (0..phenotype.len()).collect();
-            let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+            let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
             let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
                 Ok(model) => model,
                 Err(error) => panic!("the fit of {name}: {error}"),
@@ -1938,7 +2135,7 @@ mod glmm {
             for (at, (projected, residual)) in fitted
                 .projected_working
                 .iter()
-                .zip(model.projected_trait())
+                .zip(&model.projected_trait)
                 .enumerate()
             {
                 let difference = (projected - residual).abs();
@@ -1971,7 +2168,7 @@ mod glmm {
             let (phenotype, values, kinship) = the_panel(name);
             let tested: Vec<usize> = (0..phenotype.len()).collect();
             let num_individuals = phenotype.len();
-            let (design, _) = the_study_of(&phenotype, &values, &kinship, &tested);
+            let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
             let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
                 Ok(model) => model,
                 Err(error) => panic!("the fit of {name}: {error}"),
@@ -1983,7 +2180,7 @@ mod glmm {
                     let mut scale = 0.0_f64;
                     for (row, of_the_individual) in values
                         .chunks_exact(num_coefs)
-                        .zip(model.projection().chunks_exact(num_individuals))
+                        .zip(model.projection.chunks_exact(num_individuals))
                     {
                         let value = row[column] * of_the_individual[of_the_projection];
                         against += value;
@@ -2023,7 +2220,7 @@ mod glmm {
         let (phenotype, values, _) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
         let kinship = vec![0.0_f64; phenotype.len() * phenotype.len()];
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
             Ok(model) => model,
             Err(error) => panic!("the fit over a kinship of all zeros: {error}"),
@@ -2073,7 +2270,7 @@ mod glmm {
         for (at, row) in kinship.chunks_exact_mut(num_individuals).enumerate() {
             row[at] = 1.0;
         }
-        let (design, _) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, _) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let model = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
             Ok(model) => model,
             Err(error) => panic!("the fit over an identity kinship: {error}"),
@@ -2096,12 +2293,333 @@ mod glmm {
     fn a_kinship_that_is_not_of_the_tested_individuals_is_refused() {
         let (phenotype, values, kinship) = the_panel("panel_called");
         let tested: Vec<usize> = (0..phenotype.len()).collect();
-        let (design, null) = the_study_of(&phenotype, &values, &kinship, &tested);
+        let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
         let shorter = &kinship[..kinship.len() - 200];
         match TheLinearization::of_the_logistic_null(&phenotype, &design, shorter, &null) {
             Err(Error::GwasInputOfAnotherSize { .. }) => {}
             Ok(_) => panic!("a kinship of 39800 values was accepted"),
             Err(error) => panic!("a kinship of 39800 values gave {error}"),
         }
+    }
+
+    /// How far `1 / se²` of the score test may be from GMMAT's `VAR`, as a
+    /// share of it: 1e-5.
+    ///
+    /// `VAR` is the variance of the score, which is `x' p x`, the
+    /// denominator of the test. It is the bound "How it is verified" of
+    /// "The logistic mixed model" of `docs/specs/gwas.md` sets, on the six
+    /// literals and on the whole column in Python alike.
+    /// `tests/reference/gwas/gmmat.panel_called.glmm.score.tsv` and the file
+    /// of the other panel are printed to six significant digits, which
+    /// rounds a value by up to 5e-6 of itself, so half of this bound can go
+    /// on GMMAT's printing alone and the comparison has twofold headroom at
+    /// best.
+    ///
+    /// Measured over the six variants of both panels on 24 September 2026:
+    /// the worst is `var0751` of the panel with every genotype called,
+    /// 2.6832488e-6 of `VAR` on Accelerate and 2.6832488e-6 on faer, which
+    /// is 27 per cent of what is allowed. The whole of that can be GMMAT's
+    /// printing: it writes that `VAR` as 10.563, so half of its last digit
+    /// is 4.73e-6 of the value. The bound is the spec's and is not lowered
+    /// to two or three times what was measured, as the bounds this module
+    /// sets on popnei's own arithmetic are: what it measures is how far
+    /// popnei's fit and GMMAT's land apart. What popnei's own arithmetic is
+    /// worth here is the distance between the two backends, 2.2e-15 of
+    /// `VAR` at that same variant, nine orders below the distance from
+    /// GMMAT.
+    const OF_GMMAT_SCORE_VARIANCE: f64 = 1e-5;
+
+    /// How far a p-value of the score test may be from GMMAT's, in `log10`:
+    /// 1e-4, from the same item of the same spec.
+    ///
+    /// The p-values of a study span orders of magnitude and what a user
+    /// reads is the exponent, so they are compared in `log10`, which is
+    /// already a scale. `log10` shrinks a relative difference, so this bound
+    /// has more headroom over GMMAT's six printed digits than
+    /// [`OF_GMMAT_SCORE_VARIANCE`] has.
+    ///
+    /// Measured over the six variants of both panels on 24 September 2026:
+    /// the worst is `var0052` of the panel with every genotype called,
+    /// 5.2446e-6 in `log10` on both backends, which is 5 per cent of what
+    /// is allowed. That one is not the printing alone: 5.2446e-6 in `log10`
+    /// is 1.21e-5 of the p-value, against the 5e-6 six digits round it by.
+    const OF_GMMAT_SCORE_P_VALUE: f64 = 1e-4;
+
+    /// What GMMAT 1.5.0's `glmm.score` gave for six variants of each panel,
+    /// from `tests/reference/gwas/gmmat.panel_called.glmm.score.tsv` and
+    /// `gmmat.panel.glmm.score.tsv`: the id, then `VAR` and `PVAL` with
+    /// every genotype called and the two of the panel with 3 in 100
+    /// genotypes missing whole.
+    ///
+    /// `VAR` is the variance of the score, `x' p x`, which is `1 / se²`.
+    /// GMMAT was given both covariates and, for both panels, the kinship of
+    /// the panel with every genotype called. A missing genotype takes the
+    /// mean dosage of its variant, which GMMAT calls `impute2mean` and which
+    /// is popnei's rule too, so the two agree on the second panel. Five of
+    /// the six are the causal variants of `causal_vars.csv` and `var0000` is
+    /// not causal.
+    const OF_GMMAT_SIX: [(&str, f64, f64, f64, f64); 6] = [
+        ("var0000", 6.486_64, 0.702_659, 6.430_05, 0.685_719),
+        ("var0052", 8.988_34, 0.030_670_3, 8.737_18, 0.029_175_9),
+        ("var0629", 6.499_56, 0.089_510_4, 6.193_48, 0.123_19),
+        ("var0751", 10.563, 0.014_233_1, 10.153_2, 0.026_766),
+        ("var1137", 9.098, 0.093_808, 8.923_84, 0.108_032),
+        ("var1188", 9.050_95, 0.026_273_7, 8.706_3, 0.019_680_6),
+    ];
+
+    /// The study of the variants of one panel against its binomial trait
+    /// `binom`, with both covariates and the kinship plink2 wrote for the
+    /// panel with every genotype called.
+    ///
+    /// The kinship is `panel_called`'s for both panels, because that is what
+    /// `tests/reference/gwas/make_reference.py` gave GMMAT: it fits one null
+    /// model with it and then scores the variants of each panel against that
+    /// fit.
+    fn the_study_of_the_panel(name: &str) -> Gwas {
+        let path = the_vcf_of_the_panel(name);
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let individuals = reader.individuals().to_vec();
+        assert_eq!(
+            individuals,
+            the_individuals_of_the_kinship("panel_called"),
+            "the individuals of {name} against the ones of the kinship"
+        );
+        let kinship = the_kinship_of("panel_called");
+        let (phenotype, design) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Binomial);
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &design,
+            num_coefs: 3,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of {name}: {error}"),
+        }
+    }
+
+    /// The six variants of both panels are GMMAT's under the score test,
+    /// which is deliverable 2 of work package 2 of
+    /// `docs/plans/gwas-logistic.md`.
+    ///
+    /// The score test asks how steeply the likelihood rises at an effect of
+    /// 0, so it holds the variance of the kinship effect and the fitted
+    /// chances at the null and needs no fit with the variant in, which is
+    /// the only test this model has. What is compared is `1 / se²` against
+    /// the variance of the score GMMAT reports, which is the denominator the
+    /// test is built on, and the p-value in `log10`.
+    ///
+    /// The test the study made is asserted with them, and no test was asked
+    /// for: the default of a binomial trait with a kinship is the score
+    /// test, since a Wald one would fit one mixed model per variant.
+    ///
+    /// The second panel is what says that a missing genotype takes the mean
+    /// dosage of its variant as GMMAT's `impute2mean` does: 3 in 100 of its
+    /// genotypes are missing whole, and every one of the six numbers moves
+    /// between the panels.
+    #[test]
+    fn the_six_variants_of_both_panels_are_gmmats_variance_of_the_score_and_p_value() {
+        for (name, of_the_panel) in [("panel_called", 0_usize), ("panel", 1)] {
+            let result = the_study_of_the_panel(name);
+            assert_eq!(result.num_vars, 1200, "the variants of {name}");
+            assert_eq!(
+                result.null_model.model,
+                GwasModel::Glmm,
+                "the model the result of {name} says it fitted"
+            );
+            assert_eq!(
+                result.null_model.test,
+                TestType::Score,
+                "the test the result of {name} says it made"
+            );
+            for (id, called_variance, called_p, missing_variance, missing_p) in OF_GMMAT_SIX {
+                let (variance, p_value) = match of_the_panel {
+                    0 => (called_variance, called_p),
+                    _ => (missing_variance, missing_p),
+                };
+                let var = the_row_of(&result, id);
+                let se = result.se[var];
+                let found = 1.0 / (se * se);
+                let difference = (found - variance).abs();
+                assert!(
+                    difference <= OF_GMMAT_SCORE_VARIANCE * variance,
+                    "1 / se² of {id} of {name} is {found} and GMMAT gives {variance}, \
+                     {difference} away, which is {share} of it against the \
+                     {OF_GMMAT_SCORE_VARIANCE} allowed",
+                    share = difference / variance
+                );
+                let found = result.p_value[var];
+                let difference = (found / p_value).log10().abs();
+                assert!(
+                    difference <= OF_GMMAT_SCORE_P_VALUE,
+                    "the p-value of {id} of {name} is {found} and GMMAT gives {p_value}, \
+                     {difference} apart in log10 against the {OF_GMMAT_SCORE_P_VALUE} \
+                     allowed"
+                );
+            }
+        }
+    }
+
+    /// The kinship of the fixture of **Open 2** below: eight individuals in
+    /// two families of four, who are related within a family and not
+    /// between them.
+    ///
+    /// It is the matrix the linear mixed model's own fixture of that rule
+    /// takes, so the two score tests are read over the same relatedness.
+    const THE_KINSHIP_OF_TWO_FAMILIES: [f64; 64] = [
+        1.0, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 1.0, 0.2, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 0.2, 1.0, 0.2, 0.0, 0.0, 0.0, 0.0, //
+        0.2, 0.2, 0.2, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.2, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 1.0, 0.2, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 1.0, 0.2, //
+        0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 1.0,
+    ];
+
+    /// The design of that fixture: the intercept and one covariate, which is
+    /// the dosages of the first variant of the fixture, `1 0 2 0 1 2 0 1`,
+    /// in units a tenth of theirs, row after row.
+    ///
+    /// It is the design the plain logistic model's fixture of the same rule
+    /// takes, which is what a user gets by putting a genotype in as a
+    /// covariate: the covariate carries the same information as the variant
+    /// whatever it is multiplied by, so the projection matrix takes the
+    /// whole of that variant out and what is left of `x' p x` is rounding.
+    const THE_DESIGN_OF_THE_FIRST_VARIANT: [f64; 16] = [
+        1.0, 0.1, //
+        1.0, 0.0, //
+        1.0, 0.2, //
+        1.0, 0.0, //
+        1.0, 0.1, //
+        1.0, 0.2, //
+        1.0, 0.0, //
+        1.0, 0.1,
+    ];
+
+    /// The binomial trait of those eight individuals: five have the
+    /// condition and three have not, and neither the intercept alone nor the
+    /// covariate separates the two groups, so the fit settles.
+    const THE_TRAIT_OF_EIGHT: [f64; 8] = [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0];
+
+    /// All eight of them are tested.
+    const THE_INDIVIDUALS_OF_EIGHT: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+    /// A variant that the projection leaves nothing of has no answer under
+    /// this model's score test either, which is the meanwhile of **Open 2**
+    /// of `docs/specs/gwas.md` reaching the last of its four places.
+    ///
+    /// The covariate is the first variant's dosages in units a tenth of
+    /// theirs, and the projection matrix takes the design out of whatever it
+    /// is applied to, so `x' p x` is 0 in exact arithmetic and what is left
+    /// is rounding, of whichever sign it fell on. `beta` would be a number
+    /// divided by noise and the row would read as a variant that was tested
+    /// and showed nothing.
+    ///
+    /// The threshold is the tested individuals times 2.2e-16 of the
+    /// variant's own squared length times the largest value of the diagonal
+    /// of the projection matrix, which is the scale `docs/plans/gwas-linear.md`
+    /// chose for the linear mixed model's score test and which this model
+    /// takes so that the two answer alike. Measured on this fixture on 24
+    /// September 2026, which is the first time either mixed model's score
+    /// test has reached that rule at all: the collinear variant keeps
+    /// 2.776e-17 of `x' p x` on Accelerate and 1.284e-16 on faer, against a
+    /// threshold of 2.780e-15, which is the eight tested individuals times
+    /// 2.2e-16 of the variant's squared length of 11 times the 0.14228 the
+    /// largest diagonal entry of the projection matrix is. The ordinary
+    /// variant beside it keeps 0.82216, against a threshold of 4.044e-15.
+    /// So the threshold sits 22 times above the largest rounding the two
+    /// backends left and fourteen orders of magnitude below a variant that
+    /// has something to test.
+    ///
+    /// What the study gave with the threshold taken out, measured the same
+    /// day: a `beta` of -7136 with an `se` of 1.898e8 and a p-value of
+    /// 0.999970 on Accelerate, and a `beta` of -1543 with an `se` of
+    /// 8.826e7 and a p-value of 0.999986 on faer. Neither is a NaN, so
+    /// nothing marks the row: a user reads a variant that was tested and
+    /// showed nothing, and the two builds differ by a factor of 4.6 in the
+    /// effect they report for it.
+    ///
+    /// The ordinary variant beside it is asserted to have an answer and not
+    /// to any number: no reference program was run on this fixture, and the
+    /// six literals of both panels are what say the numbers are right.
+    #[test]
+    fn a_variant_the_projection_leaves_nothing_of_has_no_answer() {
+        let mut vcf = String::from(THE_HEADER_OF_EIGHT);
+        for (var, genotypes) in [
+            // the dosages of the covariate, allele by allele
+            ["0/1", "0/0", "1/1", "0/0", "0/1", "1/1", "0/0", "0/1"],
+            ["0/0", "0/0", "0/0", "0/0", "1/1", "1/1", "1/1", "1/1"],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let pos = var.saturating_add(1).saturating_mul(1000);
+            vcf.push_str(&format!("1\t{pos}\tv{var}\tA\tT\t.\t.\t.\tGT"));
+            for genotype in genotypes {
+                vcf.push('\t');
+                vcf.push_str(genotype);
+            }
+            vcf.push('\n');
+        }
+        let study = GwasInput {
+            phenotype: &THE_TRAIT_OF_EIGHT,
+            trait_type: TraitType::Binomial,
+            design: &THE_DESIGN_OF_THE_FIRST_VARIANT,
+            num_coefs: 2,
+            kinship: Some(&THE_KINSHIP_OF_TWO_FAMILIES),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS_OF_EIGHT,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(vcf.as_bytes());
+        let result = match the_study_of(&mut reader, &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the study of a variant that is a covariate: {error}"),
+        };
+
+        assert_eq!(result.num_vars, 2, "the variants of the fixture");
+        // The variant is in the result with its frequency, as every variant
+        // that has no answer is: seven of its sixteen alleles are the one
+        // that is not the major one.
+        let found = result.allele_freq[0];
+        assert!(
+            (found - 0.4375).abs() <= 1e-12,
+            "the frequency of v0 is {found} and seven of its sixteen alleles are the one \
+             that is not the major one"
+        );
+        assert!(
+            result.beta[0].is_nan() && result.se[0].is_nan() && result.p_value[0].is_nan(),
+            "the variant the projection leaves nothing of was answered with a beta of \
+             {beta}, an se of {se} and a p-value of {p_value}",
+            beta = result.beta[0],
+            se = result.se[0],
+            p_value = result.p_value[0]
+        );
+        assert!(
+            result.beta[1].is_finite()
+                && result.se[1] > 0.0
+                && (0.0..=1.0).contains(&result.p_value[1]),
+            "the ordinary variant beside it was answered with a beta of {beta}, an se of \
+             {se} and a p-value of {p_value}",
+            beta = result.beta[1],
+            se = result.se[1],
+            p_value = result.p_value[1]
+        );
     }
 }

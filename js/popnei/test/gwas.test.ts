@@ -1,7 +1,8 @@
 /**
  * The association study from TypeScript: `calcGwas` and the result it gives.
  *
- * "The linear model", "The linear mixed model", "The logistic model" and
+ * "The linear model", "The linear mixed model", "The logistic model", "The
+ * logistic mixed model" and
  * "The worked example" of `docs/specs/gwas.md` have the numbers. The worked
  * example is 3 variants of
  * 6 diploid individuals with one covariate, written as a VCF here, and pyNei
@@ -12,8 +13,9 @@
  * the covariates `cov1` and `cov2` of `tests/reference/gwas/phenotypes.csv`.
  * The six variants asserted for the linear model are what plink2
  * v2.0.0-a.7.7 wrote for it, the six of the logistic model are what plink2
- * wrote for the binomial trait `binom` of the same file, and the six of the
- * mixed model are what GMMAT 1.5.0 wrote, over the kinship that
+ * wrote for the binomial trait `binom` of the same file, and the six of each
+ * mixed model are what GMMAT 1.5.0 wrote, for `cont` and for `binom`, over
+ * the kinship that
  * `plink2 --make-rel` wrote and that
  * neither popnei nor pyNei calculated.
  *
@@ -374,24 +376,33 @@ const OF_R_LOGISTIC_STATISTIC = 1e-3;
 const OF_R_LOGISTIC_P_VALUE_IN_LOG10 = 1e-3;
 
 /**
- * How far `1 / se**2` of the score test may be from GMMAT's `VAR`, as a
- * share of it, and how far a p-value may be from GMMAT's in `log10`: 1e-5
- * and 1e-4, which is what "How it is verified" of "The linear mixed model"
- * of the spec asks of every variant and what the cargo tests hold the same
- * six literals to.
+ * How far `1 / se**2` of a mixed model's score test may be from GMMAT's
+ * `VAR`, as a share of it, and how far a p-value may be from GMMAT's in
+ * `log10`: 1e-5 and 1e-4, which is what "How it is verified" of "The linear
+ * mixed model" and of "The logistic mixed model" of the spec ask of every
+ * variant and what the cargo tests hold the same six literals of each model
+ * to. Both models take them, since both are scored against `glmm.score`.
  *
- * `gmmat.panel_called.lmm.score.tsv` is printed to six significant digits,
- * which rounds a value by up to 5e-6 of itself, so half of the first bound
- * can go on GMMAT's printing alone. Measured under node on 24 September
- * 2026, the worst of the six is 1.837e-6 of `VAR`, at `var0052`, and the
- * worst p-value is 4.165e-5 in `log10`, at `var0629`; the cargo test of the
- * core measures 1.843e-6 and 4.164e-5 on faer natively and 1.842e-6 and
- * 4.164e-5 on Accelerate, so nothing of the distance from GMMAT is
- * WebAssembly's own rounding. That p-value is not the printing either:
- * 4.16e-5 in `log10` is 9.6e-5 of the p-value, where six digits round it by
- * 5e-6, and it is the two fits landing 1.2e-6 apart in the genetic variance
- * at a p-value of 4.8e-5, where the tail of the chi square turns a small
- * move of the statistic into a larger one of the p-value.
+ * `gmmat.panel_called.lmm.score.tsv` and its `glmm` counterpart are printed
+ * to six significant digits, which rounds a value by up to 5e-6 of itself,
+ * so half of the first bound can go on GMMAT's printing alone.
+ *
+ * Measured under node on 24 September 2026 for the linear mixed model, the
+ * worst of the six is 1.837e-6 of `VAR`, at `var0052`, and the worst p-value
+ * is 4.165e-5 in `log10`, at `var0629`; the cargo test of the core measures
+ * 1.843e-6 and 4.164e-5 on faer natively and 1.842e-6 and 4.164e-5 on
+ * Accelerate, so nothing of the distance from GMMAT is WebAssembly's own
+ * rounding. That p-value is not the printing either: 4.16e-5 in `log10` is
+ * 9.6e-5 of the p-value, where six digits round it by 5e-6, and it is the
+ * two fits landing 1.2e-6 apart in the genetic variance at a p-value of
+ * 4.8e-5, where the tail of the chi square turns a small move of the
+ * statistic into a larger one of the p-value.
+ *
+ * For the logistic mixed model, measured the same day: the worst of its six
+ * is 2.6832488e-6 of `VAR`, at `var0751`, and the worst p-value is 5.2446e-6
+ * in `log10`, at `var0052`, where the cargo test measures 2.6832488e-6 and
+ * 5.2446e-6 on both backends natively. So WebAssembly agrees with the native
+ * builds to eight digits there as well.
  */
 const OF_GMMAT_VARIANCE = 1e-5;
 const OF_GMMAT_P_VALUE = 1e-4;
@@ -428,6 +439,39 @@ const OF_GMMAT_SIX: { id: string; variance: number; pValue: number }[] = [
   { id: "var1137", variance: 43.3724, pValue: 0.013_926 },
   { id: "var1188", variance: 47.3766, pValue: 0.001_073_4 },
 ];
+
+/**
+ * What GMMAT 1.5.0's `glmm.score` gave for six variants of the panel with
+ * every genotype called under the logistic mixed model, from
+ * `tests/reference/gwas/gmmat.panel_called.glmm.score.tsv`: the variance of
+ * the score, which is `x' p x` and which popnei gives as `1 / se**2`, and
+ * the p-value.
+ *
+ * They are the literals of "How it is verified" of "The logistic mixed
+ * model" of the spec, and they are not the linear mixed model's above: the
+ * trait is `binom` and not `cont`, so every one of the twelve numbers
+ * differs. GMMAT was given both covariates and the kinship plink2 wrote for
+ * this panel, which is what this suite gives popnei.
+ */
+const OF_GMMAT_GLMM_SIX: { id: string; variance: number; pValue: number }[] = [
+  { id: "var0000", variance: 6.486_64, pValue: 0.702_659 },
+  { id: "var0052", variance: 8.988_34, pValue: 0.030_670_3 },
+  { id: "var0629", variance: 6.499_56, pValue: 0.089_510_4 },
+  { id: "var0751", variance: 10.563, pValue: 0.014_233_1 },
+  { id: "var1137", variance: 9.098, pValue: 0.093_808 },
+  { id: "var1188", variance: 9.050_95, pValue: 0.026_273_7 },
+];
+
+/**
+ * The variance of the random effect of the kinship that GMMAT's `glmmkin`
+ * fitted for the logistic mixed model of the panel, from the `glmm` row of
+ * `tests/reference/gwas/gmmat.null_models.tsv`, at full precision.
+ *
+ * Its `sigma2` is 1 and is not read: a logistic model has no free residual
+ * variance, so popnei gives `undefined` for it and for the heritability
+ * built from the two, which this suite asserts instead.
+ */
+const OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP = 1.508_056_730_382_11;
 
 /**
  * The two variances GMMAT's `glmmkin` fitted for the panel, from
@@ -617,6 +661,71 @@ function theMixedStudyOfThePanel(): GwasResult {
     kinship: PANEL_KINSHIP,
     test: "score",
   });
+}
+
+/**
+ * The study of the panel with the binomial trait, both covariates and the
+ * kinship, which is what GMMAT was given for its logistic mixed model.
+ *
+ * No test is asked for: the logistic mixed model has the score test alone,
+ * and that is what the default takes, where the other three default to the
+ * Wald test.
+ */
+function theLogisticMixedStudyOfThePanel(): GwasResult {
+  return gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.binom as Record<string, number>,
+    trait: "binomial",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+    kinship: PANEL_KINSHIP,
+  });
+}
+
+/**
+ * A binomial trait of the six individuals of the worked example that its
+ * covariate, 0, 1, 0, 1, 0, 1, does not separate.
+ *
+ * The two calls that have to reach a logistic mixed model take this one: the
+ * trait 0, 1, 0, 1, 0, 1 is the covariate itself, so every fit of it walks
+ * towards an infinite effect and is refused before the mixed model is
+ * reached at all.
+ */
+const A_BINOMIAL_TRAIT_THE_COVARIATE_DOES_NOT_SEPARATE = {
+  i0: 0,
+  i1: 0,
+  i2: 1,
+  i3: 1,
+  i4: 0,
+  i5: 1,
+};
+
+/**
+ * A kinship of the six individuals of the worked example with `i0` and `i1`
+ * given a relatedness of 100, which no covariance has.
+ *
+ * The 2 by 2 block of that pair has an eigenvalue of -99, and a weight of
+ * the logistic mixed model is at most 0.25, so the reciprocals put 4 at
+ * least on every diagonal entry of the covariance of the working trait: a
+ * variance of the kinship effect above about 0.04 takes that covariance
+ * below 0 and the Cholesky factorization refuses it. The fit starts at half
+ * the variance of the first working trait, which is far above that, so the
+ * first linearization is where it stops.
+ *
+ * What a user reaches it with is a kinship built from variants with many
+ * genotypes missing, where every pair is counted over its own variants; this
+ * is that matrix pushed far enough to fail on six individuals.
+ */
+function aKinshipThatIsNotACovariance(): Kinship {
+  const names = ["i0", "i1", "i2", "i3", "i4", "i5"];
+  const matrix = new Float64Array(names.length * names.length);
+  for (let row = 0; row < names.length; row += 1) {
+    matrix[row * names.length + row] = 1;
+  }
+  matrix[1] = 100;
+  matrix[names.length] = 100;
+  return new Kinship(matrix, names, 3);
 }
 
 /**
@@ -948,16 +1057,17 @@ test("an individual with no phenotype is not tested and the frequencies are of t
   );
 });
 
-test("a binomial trait with a kinship is refused with the model being written", () => {
+test("the wald test of a binomial trait with a kinship is refused", () => {
   assert.throws(
     () =>
       gwasOf(WORKED_EXAMPLE, {
-        phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
+        phenotype: A_BINOMIAL_TRAIT_THE_COVARIATE_DOES_NOT_SEPARATE,
         trait: "binomial",
         covariates: THE_COVARIATE,
         kinship: theKinshipOfTheWorkedExample(),
+        test: "wald",
       }),
-    { message: /logistic mixed model, which is being written/ },
+    { message: /one mixed model for every variant/ },
   );
 });
 
@@ -1042,6 +1152,43 @@ test("the six variants of the panel are gmmat's score test under a kinship", () 
       `variances of GMMAT give ${heritability}`,
   );
   for (const { id, variance, pValue } of OF_GMMAT_SIX) {
+    const at = rowOf(result, id);
+    const se = result.stats.se[at] as number;
+    assertWithin(1 / (se * se), variance, OF_GMMAT_VARIANCE, `1 / se² of ${id}`);
+    const found = result.stats.pValue[at] as number;
+    const apart = Math.abs(Math.log10(found / pValue));
+    assert.ok(
+      apart <= OF_GMMAT_P_VALUE,
+      `the p-value of ${id} is ${found} and GMMAT gives ${pValue}, ${apart} ` +
+        `apart in log10 against the ${OF_GMMAT_P_VALUE} allowed`,
+    );
+  }
+});
+
+test("the six variants of the panel are gmmat's logistic mixed score test", () => {
+  const result = theLogisticMixedStudyOfThePanel();
+
+  assert.equal(result.nullModel.model, "glmm");
+  assert.equal(result.trait, "binomial");
+  // The score test is the default of this model and the only test it has,
+  // where the other three default to the Wald test.
+  assert.equal(result.test, "score");
+  assert.equal(result.nullModel.numIndividuals, PANEL_NUM_INDIVIDUALS);
+  assert.equal(result.stats.beta.length, PANEL_NUM_VARS);
+  assert.ok(
+    Math.abs(
+      (result.nullModel.geneticVariance as number) -
+        OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP,
+    ) <= OF_GMMAT_NULL_MODEL,
+    `the variance of the kinship effect is ${result.nullModel.geneticVariance}` +
+      ` and GMMAT gives ${OF_GMMAT_GLMM_VARIANCE_OF_THE_KINSHIP}`,
+  );
+  // A logistic model has no free residual variance, its trait's variance
+  // being decided by its mean, so neither it nor the heritability built from
+  // the two is there.
+  assert.equal(result.nullModel.residualVariance, undefined);
+  assert.equal(result.nullModel.heritability, undefined);
+  for (const { id, variance, pValue } of OF_GMMAT_GLMM_SIX) {
     const at = rowOf(result, id);
     const se = result.stats.se[at] as number;
     assertWithin(1 / (se * se), variance, OF_GMMAT_VARIANCE, `1 / se² of ${id}`);
@@ -1298,10 +1445,16 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
     "the score test": theStudyWith({ test: "score" }),
     "a test of another name": theStudyWith({ test: "rao" }),
     "a trait of another name": theStudyWith({ trait: "quantitative" }),
-    "a binomial trait with a kinship": theStudyWith({
-      phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
+    "the wald test of a binomial trait with a kinship": theStudyWith({
+      phenotype: A_BINOMIAL_TRAIT_THE_COVARIATE_DOES_NOT_SEPARATE,
       trait: "binomial",
       kinship: theKinshipOfTheWorkedExample(),
+      test: "wald",
+    }),
+    "a kinship the logistic mixed model cannot factor": theStudyWith({
+      phenotype: A_BINOMIAL_TRAIT_THE_COVARIATE_DOES_NOT_SEPARATE,
+      trait: "binomial",
+      kinship: aKinshipThatIsNotACovariance(),
     }),
     // The trait of the worked example is 2, 3, 5, 4, 4, 7, so the first
     // tested individual is the one the message names.
