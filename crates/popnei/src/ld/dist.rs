@@ -2580,6 +2580,40 @@ mod tests {
     }
 
     #[test]
+    fn a_min_dist_of_zero_counts_the_pair_of_two_variants_at_one_position_and_of_one_leaves_it_out()
+    {
+        // "Its Python function" of `docs/specs/ld.md`: a `min_dist` of 1
+        // leaves out only the pairs of two variants at one position, a
+        // SNP and an indel at the same base, whose distance is 0. Here a
+        // SNP and an indel share the base 100 and a third variant is at
+        // 200, so the three pairs are the two variants at 100, at a
+        // distance of 0, and each of them against the variant at 200, at
+        // a distance of 100. A `min_dist` of 0 counts all three and a
+        // `min_dist` of 1 the last two.
+        let vcf = vcf_of_four_individuals(&[
+            ("chr1", 100, ["0/0", "0/0", "0/1", "1/1"]),
+            ("chr1", 100, ["0/0", "0/1", "0/1", "1/1"]),
+            ("chr1", 200, ["0/1", "1/1", "0/0", "0/1"]),
+        ]);
+        let of_min_dist = |min_dist: u64| LdAndDistOptions {
+            min_dist,
+            max_dist: 200,
+            num_bins: 1,
+            max_allowed_maf: 1.0,
+        };
+
+        let at_zero = the_bins_of_a_pass(&vcf, &[], 3, &of_min_dist(0), 256);
+        let bins = bins_of(&at_zero, 0);
+        assert_eq!(the_bounds_of(bins), vec![(0, 200)]);
+        assert_eq!(the_pairs_of(bins), vec![3]);
+
+        let at_one = the_bins_of_a_pass(&vcf, &[], 3, &of_min_dist(1), 256);
+        let bins = bins_of(&at_one, 0);
+        assert_eq!(the_bounds_of(bins), vec![(1, 200)]);
+        assert_eq!(the_pairs_of(bins), vec![2]);
+    }
+
+    #[test]
     fn a_bin_of_one_pair_has_that_r2_as_its_mean_and_a_standard_deviation_of_zero() {
         let options = LdAndDistOptions {
             min_dist: 4000,
