@@ -106,9 +106,9 @@ on request.
    `(beta / se)**2` within 1e-2 absolute and `|log10(p / p_R)|` below 1e-3
    of `r.panel_called.glm.score.tsv` over all 1200 variants, and a cargo
    test asserts the six literals within 1e-3 and 1e-3.
-2. The Wald test is plink2's. The check: a pytest test gets `beta` and `se`
-   within 1e-4 times the `se` of that variant and `p_value` within 5e-3
-   relative of
+2. The Wald test is plink2's. The check: a pytest test gets `beta` within
+   1e-4 times the `se` of that variant, `se` within 5e-4 times it, and
+   `p_value` within 5e-3 relative of
    `plink2.panel_called.glm.logistic.hybrid.tsv` over the 1199 variants
    plink2 did not fall back to Firth for, and a cargo test asserts the six
    literals within 1e-5, 1e-4 and 5e-3.
@@ -116,9 +116,12 @@ on request.
    pytest test asserts that the variants whose `p_value` is NaN are exactly
    the rows with `FIRTH?` equal to `Y`, which is `var0006` and no other.
 4. popnei and pyNei agree, and TypeScript gives the same numbers. The check:
-   a pytest test runs both on the panel with each test and gets agreement
-   within 1e-9 relative with the same NaN variants, and `npm test` asserts
-   the six Wald literals.
+   a pytest test runs both on the panel with each test and gets `beta`
+   within 1e-12 of the `se` of that variant, `se` and `p_value` within 1e-12
+   relative, and the same NaN variants; and `npm test` asserts the six Wald
+   literals. The bound against pyNei is per model since 24 September 2026,
+   with 1e-9 its ceiling and not its value, and 1e-12 is where this model
+   measures: 3.06e-15, 3.22e-15 and 6.0e-14.
 
 ### What it stands on
 

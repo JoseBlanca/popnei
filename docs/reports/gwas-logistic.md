@@ -242,10 +242,25 @@ correct fit and plink2's, which stops earlier, and no implementation meets
 it. pyNei's own test passes only because it holds `se` to 1e-4 absolute,
 worst 6.66e-5, which is the form this spec argues against: it holds on a
 panel whose values are small and breaks on data whose values are larger. The
-number is in the spec as well as in the plan, so it has gone to the session
-that owns the spec, with 5e-4 times that variant's `se` as the
-recommendation, 3.7 times the worst measured. **Task 1.3 waits on it**,
-because task 1.3 is what writes the test that reads it.
+number was in the spec as well as in the plan, and the session that owns the
+spec set it at **5e-4 times that variant's `se`**, 3.7 times the worst
+measured, with both numbers written into the spec so that the next person
+does not tighten it back. Deliverable 2 of this plan now says the same. The
+1e-4 on `beta` stands, worst 2.103e-5, and so do the six literals.
+
+That is the third bound of this spec that a measurement has moved: one
+absolute where the printing was relative, one tighter than the rounding of
+the file it compared against, and this one that no fit meets. All three had
+the same cause, a number written without running the panel it applies to,
+and all three were found by someone building against the spec rather than by
+re-reading it.
+
+**The comparison with pyNei is now per model.** 1e-9 is its ceiling and not
+its value, and each model's bound is set where it breaks. The logistic
+model's three measurements above, 3.06e-15, 3.22e-15 and 6.0e-14, put it
+near 1e-12, and deliverable 4 of this work package now asks for 1e-12. The
+linear mixed model is the opposite case, where 1e-9 sits at the noise of its
+own search, and is why the rule is per model at all.
 
 **Two of the three marks of a runaway are unreachable under popnei's own
 factorization.** The effect passing 30 catches `var0006` at round 29 and the
@@ -256,7 +271,11 @@ in the code and in no test: with a Cholesky the effect passes 30 or the
 factorization refuses the system first, and no fixture reached either. numpy
 with an LU, which is how pyNei solves, reaches the third of them on the
 collinear variant and gives the same three NaNs. So all three marks are
-reproduced as the spec asks and two of them are dead code here.
+reproduced as the spec asks and two of them are dead code here. The spec now
+carries that with the measurements, including that numpy with an LU reaches
+the third and gives the same three NaNs, because dead code with no
+explanation reads as a mistake: they are what pyNei marks, and an
+implementation that factored another way would need them.
 
 **A shared list was edited, one case of it.** The refusal of a binomial
 trait with no kinship is gone, and both suites walk
