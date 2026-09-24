@@ -30,6 +30,10 @@ use super::study::{
 /// one call for each block, one answer for each variant of it that has
 /// variance. The logistic mixed model is one more variant here when it is
 /// written.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the logistic model carries the buffers its Wald test fits one variant in,               which make it about 300 bytes larger than the other two; one of these is               made for a study and lives until its pass is over, so that is 300 bytes               once, where boxing it would put an allocation and a dereference between               every block and the model it is tested against"
+)]
 enum TheFittedModel {
     /// The linear model, a continuous trait with no kinship.
     Linear(LinearModel),
@@ -55,10 +59,9 @@ impl TheFittedModel {
     /// tested individuals, in the order of the block.
     ///
     /// A linear model makes the one test it has, the t test of the variant
-    /// against what the design left of the trait; a linear mixed model
-    /// makes whichever of the Wald test and the score test the study asked
-    /// for; and a logistic model makes its score test, its Wald test being
-    /// the one this pass refuses before it fits anything.
+    /// against what the design left of the trait, and a linear mixed model
+    /// and a logistic model make whichever of the Wald test and the score
+    /// test the study asked for.
     ///
     /// # Errors
     ///
@@ -83,11 +86,10 @@ impl TheFittedModel {
 /// `docs/specs/gwas.md` lays out what each of its fields holds. The trait
 /// and the kinship choose the model, and of the four three are written:
 /// the linear model, a continuous trait without a kinship, the linear
-/// mixed model, a continuous trait with one, and the score test of the
-/// logistic model, a binomial trait without one. The Wald test of the
-/// logistic model, which fits one logistic regression per variant, and the
-/// logistic mixed model are refused with [`Error::GwasModelNotBuilt`]
-/// until they are written.
+/// mixed model, a continuous trait with one, and the logistic model, a
+/// binomial trait without one, with both of its tests. The logistic mixed
+/// model, a binomial trait with a kinship, is refused with
+/// [`Error::GwasModelNotBuilt`] until it is written.
 ///
 /// The null model is fitted before the first block is read, from the
 /// trait, the design and the kinship alone, and then one pass over the
@@ -108,10 +110,10 @@ impl TheFittedModel {
 ///
 /// # Errors
 ///
-/// [`Error::GwasModelNotBuilt`] when the study asks for the Wald test of a
-/// logistic model or for the logistic mixed model, neither of which is
-/// written, [`Error::GwasFitDidNotSettle`] when the null model of a
-/// logistic one was still moving after the rounds it is given,
+/// [`Error::GwasModelNotBuilt`] when the study asks for the logistic mixed
+/// model, which is not written, [`Error::GwasFitDidNotSettle`] when the
+/// null model of a logistic one was still moving after the rounds it is
+/// given,
 /// [`Error::GwasGrammarGammaWithoutAKinship`] when the approximation was
 /// asked for by a study with no kinship and
 /// [`Error::GwasGrammarGammaNotBuilt`] when it was asked for by one with a
@@ -156,16 +158,13 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     if let Some(kinship) = input.kinship {
         refuse_a_kinship_that_is_not_of_the_individuals(kinship, input.individuals.len())?;
     }
-    match (model, test) {
-        (GwasModel::Lm | GwasModel::Lmm, _) | (GwasModel::Glm, TestType::Score) => {}
-        // The score test of the logistic model is written and its Wald
-        // test, which fits one logistic regression per variant, is not, so
-        // a binomial trait with no kinship is run when it asks for the
-        // score test and refused when it asks for the Wald one, which is
-        // the test that model takes when a user asks for none.
-        (GwasModel::Glm, TestType::Wald) | (GwasModel::Glmm, _) => {
-            return Err(Error::GwasModelNotBuilt { model });
-        }
+    match model {
+        GwasModel::Lm | GwasModel::Lmm | GwasModel::Glm => {}
+        // The logistic mixed model is the one of the four that is not
+        // written, and a binomial trait with a kinship is what asks for
+        // it. It is refused here and not at the fit below so that a study
+        // popnei cannot run is refused before its design is read.
+        GwasModel::Glmm => return Err(Error::GwasModelNotBuilt { model }),
     }
     let ploidy = reader.ploidy();
     let design = Design::of_the_study(input, reader.individuals().len())?;

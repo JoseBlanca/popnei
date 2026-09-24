@@ -1626,11 +1626,12 @@ pub enum Error {
     GwasGrammarGammaNotBuilt,
 
     /// The trait and the kinship of a study ask for one of the models
-    /// popnei has not written yet, which the message names. The two models
-    /// of a continuous trait are written, the linear one without a kinship
-    /// and the linear mixed one with it; the two logistic ones are being
-    /// written. In Python it is a `ValueError`, since it is the study the
-    /// user asked for that popnei cannot run.
+    /// popnei has not written yet, which the message names. Three of the
+    /// four are written, the linear model and the linear mixed one of a
+    /// continuous trait and the logistic one of a binomial trait with no
+    /// kinship; the logistic mixed model is being written. In Python it is
+    /// a `ValueError`, since it is the study the user asked for that
+    /// popnei cannot run.
     #[error(
         "popnei cannot run this study yet: {what}, which is being written",
         what = model.what_it_is_of()

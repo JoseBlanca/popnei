@@ -670,15 +670,16 @@ test("an individual with no phenotype is not tested and the frequencies are of t
   );
 });
 
-test("a binomial trait is refused with the model that is being written", () => {
+test("a binomial trait with a kinship is refused with the model being written", () => {
   assert.throws(
     () =>
       gwasOf(WORKED_EXAMPLE, {
         phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
         trait: "binomial",
         covariates: THE_COVARIATE,
+        kinship: theKinshipOfTheWorkedExample(),
       }),
-    { message: /logistic regression, which is being written/ },
+    { message: /logistic mixed model, which is being written/ },
   );
 });
 
@@ -1019,9 +1020,10 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
     "the score test": theStudyWith({ test: "score" }),
     "a test of another name": theStudyWith({ test: "rao" }),
     "a trait of another name": theStudyWith({ trait: "quantitative" }),
-    "a binomial trait": theStudyWith({
+    "a binomial trait with a kinship": theStudyWith({
       phenotype: { i0: 0, i1: 1, i2: 0, i3: 1, i4: 0, i5: 1 },
       trait: "binomial",
+      kinship: theKinshipOfTheWorkedExample(),
     }),
     "a covariate named intercept": theStudyWith({
       covariates: { intercept: cov },

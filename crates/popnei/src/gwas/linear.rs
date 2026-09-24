@@ -464,7 +464,7 @@ pub(crate) mod lm {
 
     /// The path of one of the files of `tests/reference/gwas/`, where the
     /// trait, the covariates and plink2's answers are.
-    fn the_reference_path(name: &str) -> PathBuf {
+    pub(crate) fn the_reference_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/reference/gwas")
             .join(name)
@@ -1027,57 +1027,42 @@ pub(crate) mod lm {
         }
     }
 
-    /// The two studies of a binomial trait that popnei cannot run are
-    /// refused, each naming the model that was asked for: the Wald test of
-    /// the logistic model, which is the test that model takes when a user
-    /// asks for none, and the logistic mixed model, whose kinship is what
-    /// tells the two apart here.
+    /// The one study of the four that popnei cannot run is refused, naming
+    /// the model it asked for: the logistic mixed model, a binomial trait
+    /// with a kinship.
     ///
-    /// A continuous trait is not here with the two: it is the linear model
-    /// without a kinship and the linear mixed model with one, and both are
-    /// written. The score test of the logistic model is written too, and
-    /// `a_variant_the_design_leaves_nothing_of_has_no_answer` of the
-    /// `logistic` module is one of the tests that run it.
+    /// The other three are written. A continuous trait is the linear model
+    /// without a kinship and the linear mixed model with one, and a
+    /// binomial trait without a kinship is the logistic model, whose two
+    /// tests the `logistic` module runs on the panel.
     #[test]
     fn a_model_that_is_not_written_yet_is_refused() {
         let vcf = the_worked_example_vcf();
         let kinship = [0.0_f64; 36];
         let phenotype = [0.0_f64, 1.0, 0.0, 1.0, 0.0, 1.0];
-        for with_a_kinship in [false, true] {
-            let study = GwasInput {
-                phenotype: &phenotype,
-                trait_type: TraitType::Binomial,
-                design: &THE_DESIGN,
-                num_coefs: 2,
-                kinship: match with_a_kinship {
-                    true => Some(kinship.as_slice()),
-                    false => None,
-                },
-                test: None,
-                use_grammar_gamma_approx: false,
-                individuals: &THE_INDIVIDUALS,
-                transform_to_biallelic: false,
-            };
-            let wanted = match with_a_kinship {
-                false => GwasModel::Glm,
-                true => GwasModel::Glmm,
-            };
-            let mut reader = reader_over(&vcf);
-            match the_study_of(&mut reader, &study) {
-                Err(Error::GwasModelNotBuilt { model }) => {
-                    assert_eq!(
-                        model, wanted,
-                        "a binomial trait with a kinship of {with_a_kinship}"
-                    );
-                    let said = Error::GwasModelNotBuilt { model }.to_string();
-                    assert!(
-                        said.contains("being written"),
-                        "the study was refused with {said}"
-                    );
-                }
-                Err(error) => panic!("a binomial trait, kinship {with_a_kinship}: {error}"),
-                Ok(_) => panic!("a binomial trait with a kinship of {with_a_kinship} was run"),
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &THE_DESIGN,
+            num_coefs: 2,
+            kinship: Some(kinship.as_slice()),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &THE_INDIVIDUALS,
+            transform_to_biallelic: false,
+        };
+        let mut reader = reader_over(&vcf);
+        match the_study_of(&mut reader, &study) {
+            Err(Error::GwasModelNotBuilt { model }) => {
+                assert_eq!(model, GwasModel::Glmm, "a binomial trait with a kinship");
+                let said = Error::GwasModelNotBuilt { model }.to_string();
+                assert!(
+                    said.contains("being written"),
+                    "the study was refused with {said}"
+                );
             }
+            Err(error) => panic!("a binomial trait with a kinship: {error}"),
+            Ok(_) => panic!("a binomial trait with a kinship was run"),
         }
     }
 

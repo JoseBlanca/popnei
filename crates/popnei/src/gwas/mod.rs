@@ -10,8 +10,8 @@
 //! given, and then reads the variants in one pass, giving one row for each
 //! of them. Of the four models three are written: the linear one and the
 //! linear mixed one, which are a continuous trait without and with a
-//! kinship, and the score test of the logistic one, which is a binomial
-//! trait without one. The Wald test of the logistic model and the logistic
+//! kinship, and the logistic one, which is a binomial
+//! trait without one. The logistic
 //! mixed model are refused until they are written.
 //!
 //! `distributions` holds the two functions that turn the statistic of a
@@ -55,9 +55,9 @@
 //!
 //! [`LogisticModel`](logistic::LogisticModel), of `logistic`, is the
 //! third: the null model of a binomial trait fitted by iteratively
-//! reweighted least squares, and the score test of every variant against
-//! the weights and the residuals that fit left. Its Wald test, which fits
-//! one logistic regression per variant, is being written.
+//! reweighted least squares, the score test of every variant against the
+//! weights and the residuals that fit left, and the Wald test, which fits
+//! one logistic regression per variant with the variant in the design.
 //!
 //! The logistic mixed model is being written too, and it is a module of
 //! its own beside these three: it takes its design from `study`, its

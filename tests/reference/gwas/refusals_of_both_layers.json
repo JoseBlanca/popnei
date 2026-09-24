@@ -78,8 +78,8 @@
       "match": "`continuous`.*`binomial`.*`quantitative`"
     },
     {
-      "case": "a binomial trait",
-      "match": "logistic regression, which is being written"
+      "case": "a binomial trait with a kinship",
+      "match": "logistic mixed model, which is being written"
     },
     {
       "case": "a covariate named intercept",

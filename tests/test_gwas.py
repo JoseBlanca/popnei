@@ -600,17 +600,28 @@ def test_a_phenotype_of_a_frame_of_one_column_is_that_column(
         )
 
 
-def test_a_binomial_trait_is_refused_with_the_model_that_is_being_written(
+def test_a_binomial_trait_with_a_kinship_is_refused_with_the_model_being_written(
     worked_example: pathlib.Path,
 ) -> None:
-    """The logistic regression is not written, and the study that needs it
-    says so."""
+    """The logistic mixed model is the one of the four that is not written,
+    and the study that needs it, a binomial trait with a kinship, says so.
+
+    Without a kinship a binomial trait is a logistic regression, which is
+    written and which the tests of the panel run.
+    """
     binomial = pandas.Series(
         [0.0, 1.0, 0.0, 1.0, 0.0, 1.0], index=list(WORKED_EXAMPLE_INDIVIDUALS)
     )
 
-    with pytest.raises(ValueError, match="logistic regression, which is being written"):
-        _the_worked_example(worked_example, phenotype=binomial, trait="binomial")
+    with pytest.raises(
+        ValueError, match="logistic mixed model, which is being written"
+    ):
+        _the_worked_example(
+            worked_example,
+            phenotype=binomial,
+            trait="binomial",
+            kinship=_the_kinship_of_the_worked_example(),
+        )
 
 
 def test_a_trait_of_another_name_is_refused_with_the_two_names(
@@ -1741,8 +1752,11 @@ def _the_calls_that_are_refused(
         "a trait of another name": lambda: _the_worked_example(
             worked_example, trait="quantitative"
         ),
-        "a binomial trait": lambda: _the_worked_example(
-            worked_example, phenotype=binomial, trait="binomial"
+        "a binomial trait with a kinship": lambda: _the_worked_example(
+            worked_example,
+            phenotype=binomial,
+            trait="binomial",
+            kinship=_the_kinship_of_the_worked_example(),
         ),
         "a covariate named intercept": lambda: _the_worked_example(
             worked_example, covariates=covariates.rename(columns={"cov": "intercept"})
