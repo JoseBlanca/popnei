@@ -11,9 +11,8 @@ hw <- function(d, C, n) { p <- C * d
 plain <- function(d, C, n) { p <- C * d; (10 + p) / ((2 + p) * (11 + p)) }
 sved <- function(d, C, n) 1 / (1 + C * d)
 
-# The sum popnei minimises, less the sum of the fourth powers of r2, which
-# no C changes: the pairs at a distance enter through their number and the
-# sum of their r2 alone.
+# The sum popnei minimises: the pairs at a distance enter through their
+# number and the mean of their r2 alone.
 ss_of <- function(d, w, y, f, n) function(C) sum(w * (y - f(d, C, n))^2)
 brent <- function(d, w, y, f, n, lo = -12, hi = 2) {
   o <- optimize(function(l) ss_of(d, w, y, f, n)(10^l), c(lo, hi), tol = 1e-14)

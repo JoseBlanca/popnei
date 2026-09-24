@@ -533,12 +533,36 @@ lost. The sum over them of the square of r² minus the curve is the spread
 of those pairs around their own mean, which no ρ changes, plus the number
 of them times the square of their mean minus the curve. So the fit needs,
 for each distance that holds a pair, how many pairs it holds, n_d, and
-the sum of their r², S_d, and it makes smallest
+the sum of their r², S_d, and with m_d for the mean of those r², S_d
+divided by n_d, it makes smallest
 
-    Σ over the distances of [ n_d · f(d)² − 2 · S_d · f(d) ]
+    Σ over the distances of [ n_d · (m_d − f(d))² ]
 
 where f(d) is the curve at that distance. What that leaves out, the
-square of the r² of every pair, is the same at every ρ.
+spread of the pairs of each distance around m_d, is the same at every ρ.
+
+Multiplying the square out gives Σ [ n_d · f(d)² − 2 · S_d · f(d) ],
+which is the same number less Σ n_d · m_d². No ρ changes what the two
+forms differ by, so they have the same smallest, and the one written
+above is the one popnei computes. That difference is 475.36 on the first
+population of "How it is verified" below, where the sum above is 23.21 at
+the ρ per base pair fitted to its pairs: the terms that depend on ρ are
+the same in both forms, and the multiplied-out one adds them inside a
+total of −452.15, 19.5 times the 23.21. An `f64` holds about sixteen
+digits whatever the size of the number, so the smallest step it can take
+from −452.15 is 5.68·10⁻¹⁴ where the smallest step it can take from 23.21
+is 3.55·10⁻¹⁵, and the fit tells two ρ apart through a step sixteen times
+as coarse. What that costs was measured on 24 September 2026 by fitting
+both forms to the same pairs. R 4.6.1, the language "How it is verified"
+below checks these curves against, fits the three populations of that
+part; the multiplied-out form lands 3.5·10⁻⁸, 5.3·10⁻⁸ and 5.5·10⁻⁹ of
+the ρ per base pair away from what R gives for them, where the form above
+lands 1.0·10⁻⁹, 9.3·10⁻⁹ and 2.2·10⁻⁹ away. On the table of r² read off
+the curve itself that the same part gives the second cargo test of the
+fit, whose pairs reach the default `max_dist` of 1000000, the
+multiplied-out form lands 1.5·10⁻⁶ from the ρ per base pair the table was
+made with, past the 10⁻⁶ these values are compared within, where the form
+above lands 3.5·10⁻¹⁰ from it.
 
 Fitting the mean of each bin instead, placed at the middle of the bin,
 moves the answer. For the first population of "How it is verified", the
@@ -952,10 +976,9 @@ same pairs. `docs/reports/ld-method/decay.py` writes, for each of them,
 the pairs of plink2's matrix grouped by their exact distance, which for
 the first population is 46441 pairs at 249 distances, and
 `docs/reports/ld-method/decay.R` fits the curve to them twice: with R's
-`optimize`, Brent's method on the sum popnei makes smallest, less a
-number that no ρ changes and so with the same smallest, and
-with R's `nls` under its `port` algorithm, which is Gauss and Newton's
-method on the residuals and uses the derivatives popnei does not take.
+`optimize`, Brent's method on the sum popnei makes smallest, and with
+R's `nls` under its `port` algorithm, which is Gauss and Newton's method
+on the residuals and uses the derivatives popnei does not take.
 The two agree to 2.1·10⁻⁹ of each other at the furthest of the three
 populations, so the literals below are what `optimize` gives, and they
 are compared within 10⁻⁶ relative, 480 times the disagreement of two
@@ -989,6 +1012,19 @@ same test asserts the three NaN of a population left with pairs at one
 distance, and of one whose smallest falls at an end of the searched
 range.
 
+A second cargo test at `fit_ld_decay` takes a table of the same kind at a
+ρ per base pair of 4.17·10⁻⁸ and n of 100, one pair at each of the
+distances 1000, 2000 and so on to 1000000, the default `max_dist`, and
+asks for 4.17·10⁻⁸ back and for the half distance 2.1608135872529166
+divided by it, 5.1818·10⁷ bp, both within the same 10⁻⁶. That curve
+falls to half fifty-two times further out than the furthest pair of the
+table, so across the whole of it the r² drops from 0.46198 at a distance
+of 0 to 0.45294 at 1000000 bp, 2 per 100 of itself, and what tells the
+fit where the smallest lies is what is left of its sum after that
+shallow a fall-off. It is the case the multiplied-out form of "The curve
+that is fitted" gets 1.5·10⁻⁶ wrong, where the form fitted is 3.5·10⁻¹⁰
+from the number the table was made with.
+
 A pytest test at `calc_ld_and_dist_per_pop` asserts the three numbers of
 the first row of the table above and that a population left with pairs at
 one distance has NaN in all three of them, so that the dict and the
@@ -999,9 +1035,9 @@ Sved's curve, which "The curve that is fitted" gives the reasons for not
 using, comes out of these pairs too: it leaves 95.73 where Hill and
 Weir's leaves 23.21, both of them the pairs of each distance times the
 square of their mean r² minus the curve there, which is the sum the fit
-makes smallest less a number no ρ changes. It puts the half distance at
-1872.81 bp against 6810.57, the reference dataset agreeing with the
-simulation on a dataset the model is not of.
+makes smallest. It puts the half distance at 1872.81 bp against 6810.57,
+the reference dataset agreeing with the simulation on a dataset the model
+is not of.
 
 The TypeScript test, under node, asserts the ten counts of pairs and the
 ten means of the one population of the first table, and the three numbers
