@@ -60,8 +60,8 @@ use std::io::{BufRead, Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use js_sys::{Array, Function, Uint8Array};
-use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Blob, FileReaderSync};
 
 use popnei::block::{AllelesColumn, Block, BlockReader, Reblock, needs_of_the_fields};
@@ -581,13 +581,23 @@ impl RangesOfAFile {
 }
 
 /// What JavaScript threw, for the message of a range of a file that could not
-/// be read: the text of the value when it is one, and what `Debug` writes of
-/// it otherwise, which for an `Error` of JavaScript is its message.
+/// be read: the text of the value when it is one, the `message` of an
+/// `Error` when it is one, and what `Debug` writes of it for anything else.
+///
+/// A browser that refuses a range throws a `DOMException`, whose prototype
+/// chain holds `Error`, so what a `NotReadableError` gives here is the
+/// sentence it carries and not the `JsValue(...)` of the `Debug`.
 ///
 /// It is the browser's sentence and not popnei's, and the message that
 /// carries it says so.
 fn what_javascript_said(thrown: &JsValue) -> String {
-    thrown.as_string().unwrap_or_else(|| format!("{thrown:?}"))
+    if let Some(text) = thrown.as_string() {
+        return text;
+    }
+    if let Some(error) = thrown.dyn_ref::<js_sys::Error>() {
+        return String::from(error.message());
+    }
+    format!("{thrown:?}")
 }
 
 /// Where the file of a source is, which every pass over it reads again from
