@@ -103,3 +103,57 @@ blocks of 7 variants with a window of 250 variants reads the genotypes of
 a variant about 36 times over. It was left alone on purpose: the owner
 decided on 24 September 2026 that the speed of this pass is a review of
 its own.
+
+**1.3, the pairs of the window in tiles and the bins.** Commits `71e69bd`
+and `7077666`, the first of them a correction to the spec that the second
+builds. It put `LdAndDistOptions`, `calc_ld_and_dist`, `LdAndDist` and
+`LdBins` in `crates/popnei/src/ld/dist.rs`, and added the last two errors
+the work package asks for, a `min_dist` above `max_dist` and a `num_bins`
+of 0. `LdBins::decay()` was deliberately left out; it is work package
+2's.
+
+`cargo test -p popnei --lib ld::dist -- --list` prints `42 tests`, where
+it printed 25. `cargo test --workspace` gives 829 passed with 2 ignored,
+and `--no-default-features` the same 829 on faer; 149 linear algebra, 499
+pytest, and fmt, clippy, wasm-check and ruff clean. All seven errors that
+a `u64` can reach have a test, and so have the two cases that are empty
+and not errors. The eighth error the work package lists, a negative
+`min_dist`, cannot be a `u64` and is refused in the Python layer, which
+is task 1.5.
+
+### Two sentences of the spec that the work corrected
+
+The spec's "How it runs" promises that the bins are the same to the bit
+whatever the size of the blocks. Two of its own rules broke that promise,
+and deliverable 3 is what found them. Both were rewritten in `71e69bd`,
+before the code that follows them. Neither changes a value a user sees
+beyond the last bits, neither touches the public API, and neither
+answers an open point, so the orchestrator took them; the owner is told
+here because the spec now reads differently.
+
+**The bins are added up in the order of the variants, not in the order of
+the tile pairs.** The spec had each tile pair give the count and the two
+sums of every bin it touched. A block of the reader can end inside a tile
+of the newest variants, and that tile then reaches a bin in two goes
+where one block sends it in one; a sum of floats moves in its last bits
+when the order of its terms moves. Counting one newest variant at a time,
+with the variants that pair with it in the order of the pass, is cut by
+neither a block nor a tile, so the result no longer moves with the tile
+size either.
+
+**A block that has fallen out of the window is dropped one block later.**
+The window reaches back from the newest variant read, which is the last
+variant of the block just taken. A variant within `max_dist` of the
+*first* variant of that block can be further than `max_dist` from its
+last, so dropping it at that step leaves real pairs uncounted, and how
+many depends on the size of the blocks: the task measured 272 pairs in
+the last bin at blocks of 3 where blocks of 500 give 328. What the
+deferral costs is holding the blocks that fell out for one more step.
+
+The test that holds both is
+`the_bins_do_not_move_with_the_blocks_nor_with_the_tiles`, which runs 300
+variants of six individuals in two populations at blocks of 1, 2, 3, 7,
+64 and 500 and tiles of 1, 2, 7 and 256, twenty-four combinations, and
+compares the counts of pairs exactly and every mean and standard
+deviation by its bits. It first asserts that every bin holds a pair, so
+that it is a test that can fail.

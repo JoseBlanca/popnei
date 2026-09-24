@@ -163,7 +163,7 @@ are.
   `docs/specs/filters.md` defines for `filter_by_maf`. It serves
   deliverables 3 and 5: the 396 and 402 of deliverable 5 are the count
   this task produces. Needs 1.1.
-- [ ] 1.3 The pairs of the window in tiles and the bins, from "How it
+- [x] 1.3 The pairs of the window in tiles and the bins, from "How it
   runs" for the tiles and "What it gives" for the arithmetic of the bins,
   and from "The cases" and "Its Python function" for what each argument
   refuses: the bin a distance falls in, the count and the two sums per
