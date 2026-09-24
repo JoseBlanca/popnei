@@ -38,7 +38,7 @@ use popnei::pop_dists::{
 use popnei::stats::Pops;
 
 use crate::errors::JsPopneiError;
-use crate::source::{LARGEST_POSITION, OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, LARGEST_POSITION, OpenSource, PassCounts, positions_of, the_run_of};
 use crate::stats::pops_of_the_arrays;
 use crate::steps::{Steps, chain_of};
 
@@ -243,72 +243,74 @@ pub(crate) fn pop_dists_of(
         &asked.pop_individuals,
         &asked.num_individuals_per_pop,
     )?;
-    let reader = source.reader(None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    let pops = Pops::from_names(&named, chain.individuals())?;
-    let pop_names = (0..pops.len())
-        .map(|pop| pops.name(pop).to_owned())
-        .collect();
-    let sums = calc_pop_dist_sums(&mut *chain, &pops, &options)?;
-    let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
-    // Every array below is one of the core's iterators over the pairs, in
-    // the order of the distance vector, (0, 1), (0, 2), ..., (1, 2), ...:
-    // the order of the pairs is the core's alone, so the values of a
-    // result and their standard errors cannot fall into two orders.
-    let num_pairs = sums.num_pairs();
-    let groups_were_asked_for = options.groups != JackknifeGroups::None;
-    let mut values = Vec::with_capacity(measures.len().saturating_mul(num_pairs));
-    let mut standard_errors = Vec::new();
-    for measure in &measures {
-        values.extend(
-            sums.measures(*measure)
-                .map(|value| value.unwrap_or(f64::NAN)),
-        );
-        if groups_were_asked_for {
-            standard_errors.extend(
-                sums.standard_errors(*measure)
-                    .map(|error| error.unwrap_or(f64::NAN)),
+    the_run_of(source, &Consumer::PopDists, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        let pops = Pops::from_names(&named, chain.individuals())?;
+        let pop_names = (0..pops.len())
+            .map(|pop| pops.name(pop).to_owned())
+            .collect();
+        let sums = calc_pop_dist_sums(&mut *chain, &pops, &options)?;
+        let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
+        // Every array below is one of the core's iterators over the pairs, in
+        // the order of the distance vector, (0, 1), (0, 2), ..., (1, 2), ...:
+        // the order of the pairs is the core's alone, so the values of a
+        // result and their standard errors cannot fall into two orders.
+        let num_pairs = sums.num_pairs();
+        let groups_were_asked_for = options.groups != JackknifeGroups::None;
+        let mut values = Vec::with_capacity(measures.len().saturating_mul(num_pairs));
+        let mut standard_errors = Vec::new();
+        for measure in &measures {
+            values.extend(
+                sums.measures(*measure)
+                    .map(|value| value.unwrap_or(f64::NAN)),
             );
+            if groups_were_asked_for {
+                standard_errors.extend(
+                    sums.standard_errors(*measure)
+                        .map(|error| error.unwrap_or(f64::NAN)),
+                );
+            }
         }
-    }
-    // A pair with no count is not a pair that counted no variant, which is
-    // a 0 the core gives: it is a pair the core does not have, and the
-    // count of a pair of the distance vector is a count of another pair
-    // from there on.
-    let num_vars = sums
-        .num_vars_of_each_pair()
-        .enumerate()
-        .map(|(pair, counted)| {
-            let counted = counted.ok_or_else(|| {
-                JsPopneiError::Broken(format!(
-                    "the pass counted the variants of no pair at the place {pair} of \
-                     the distance vector"
-                ))
-            })?;
-            for_javascript(counted)
+        // A pair with no count is not a pair that counted no variant, which is
+        // a 0 the core gives: it is a pair the core does not have, and the
+        // count of a pair of the distance vector is a count of another pair
+        // from there on.
+        let num_vars = sums
+            .num_vars_of_each_pair()
+            .enumerate()
+            .map(|(pair, counted)| {
+                let counted = counted.ok_or_else(|| {
+                    JsPopneiError::Broken(format!(
+                        "the pass counted the variants of no pair at the place {pair} of \
+                         the distance vector"
+                    ))
+                })?;
+                for_javascript(counted)
+            })
+            .collect::<Result<Vec<i32>, JsPopneiError>>()?;
+        // The core gives no group at all when no standard errors were asked
+        // for, so this is 0 there and the three arrays below are empty.
+        let num_groups = sums.groups().len();
+        let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums));
+        let group_chroms = named_chroms(chain.chroms(), &sums)?;
+        let starts: Vec<u64> = sums.groups().iter().map(|group| group.start).collect();
+        let group_starts = positions_of(&starts)?;
+        let ends: Vec<u64> = sums.groups().iter().map(|group| group.end).collect();
+        let group_ends = positions_of(&ends)?;
+        Ok(PopDistsOfAPass {
+            pop_names: Some(pop_names),
+            num_pairs,
+            values: Some(values),
+            standard_errors: groups_were_asked_for.then_some(standard_errors),
+            num_vars: Some(num_vars),
+            num_groups,
+            f2_groups,
+            group_chroms: Some(group_chroms),
+            group_starts: Some(group_starts),
+            group_ends: Some(group_ends),
+            counts,
         })
-        .collect::<Result<Vec<i32>, JsPopneiError>>()?;
-    // The core gives no group at all when no standard errors were asked
-    // for, so this is 0 there and the three arrays below are empty.
-    let num_groups = sums.groups().len();
-    let f2_groups = groups_were_asked_for.then(|| f2_of_every_group(&sums));
-    let group_chroms = named_chroms(chain.chroms(), &sums)?;
-    let starts: Vec<u64> = sums.groups().iter().map(|group| group.start).collect();
-    let group_starts = positions_of(&starts)?;
-    let ends: Vec<u64> = sums.groups().iter().map(|group| group.end).collect();
-    let group_ends = positions_of(&ends)?;
-    Ok(PopDistsOfAPass {
-        pop_names: Some(pop_names),
-        num_pairs,
-        values: Some(values),
-        standard_errors: groups_were_asked_for.then_some(standard_errors),
-        num_vars: Some(num_vars),
-        num_groups,
-        f2_groups,
-        group_chroms: Some(group_chroms),
-        group_starts: Some(group_starts),
-        group_ends: Some(group_ends),
-        counts,
     })
 }
 

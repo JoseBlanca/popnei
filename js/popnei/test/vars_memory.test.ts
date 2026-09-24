@@ -24,6 +24,7 @@ import { test } from "node:test";
 import { init, openVars, openVcf, writeVars } from "popnei";
 
 import loadTheWasm from "../wasm/popnei.js";
+import { vcfOfDrawnGenotypes } from "./reference.ts";
 
 await init();
 
@@ -37,46 +38,6 @@ function memoryOfWasm(): number {
 
 /** How many passes are open at once while the memory is read. */
 const NUM_PASSES = 12;
-
-/**
- * The bytes of a VCF of `numIndividuals` diploid individuals and `numVars`
- * variants, whose vars file is some megabytes.
- *
- * The genotypes are drawn with a generator of its own, so that the file
- * does not compress to nothing: a column of one repeated genotype would be
- * a few kilobytes of lz4 whatever its number of variants.
- */
-function vcfOfDrawnGenotypes(
-  numVars: number,
-  numIndividuals: number,
-): Uint8Array {
-  const names = Array.from(
-    { length: numIndividuals },
-    (_unused, individual) => `ind${individual + 1}`,
-  );
-  const lines = [
-    "##fileformat=VCFv4.4",
-    `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
-  ];
-  // A linear congruential generator, the one of numerical recipes: the
-  // numbers are the same at every run, so the size of the file is too.
-  let drawn = 1;
-  const nextAllele = (): number => {
-    drawn = (Math.imul(drawn, 1664525) + 1013904223) >>> 0;
-    return drawn >>> 30;
-  };
-  for (let variant = 0; variant < numVars; variant += 1) {
-    const genotypes = Array.from({ length: numIndividuals }, () => {
-      const first = nextAllele();
-      const second = nextAllele();
-      return `${first > 2 ? "." : first}/${second > 2 ? "." : second}`;
-    });
-    lines.push(
-      `chr1\t${variant + 1}\t.\tA\tC,G\t.\tPASS\t.\tGT\t${genotypes.join("\t")}`,
-    );
-  }
-  return new TextEncoder().encode([...lines, ""].join("\n"));
-}
 
 /** The bytes of the vars file, which the first test writes for both. */
 let bytes: Uint8Array = new Uint8Array();

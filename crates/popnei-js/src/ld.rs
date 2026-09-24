@@ -45,7 +45,7 @@ use popnei::ld::{
 use popnei::stats::Pops;
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of, the_run_of};
 use crate::stats::{PopsGiven, pops_of_the_arrays};
 use crate::steps::{Steps, chain_of};
 
@@ -177,29 +177,31 @@ pub(crate) fn r2_matrix_of(
     max_num_vars: usize,
     steps: Steps,
 ) -> Result<R2Matrix, JsPopneiError> {
-    let reader = source.reader(None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
-    let num_vars = matrix.num_vars();
-    let counted = u64::try_from(num_vars).map_err(|_| {
-        JsPopneiError::Broken(format!(
-            "the pass gave {num_vars} variants, more than the count of a pass holds"
-        ))
-    })?;
-    let counts = PassCounts::of(counted, &chain.filtering_stats());
-    // The matrix is taken out of the core's result and not read from it, so
-    // that what crosses into JavaScript is the allocation the core filled.
-    // `given_away` consumes that result, so the chromosomes and the
-    // positions are read from what it gave and not from it.
-    let matrix = matrix.given_away();
-    let chroms = the_names_of_the_chromosomes(&matrix)?;
-    let poss = positions_of(&matrix.poss)?;
-    Ok(R2Matrix {
-        num_vars,
-        r2: Some(matrix.r2),
-        chroms: Some(chroms),
-        poss: Some(poss),
-        counts,
+    the_run_of(source, &Consumer::R2Matrix, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
+        let num_vars = matrix.num_vars();
+        let counted = u64::try_from(num_vars).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "the pass gave {num_vars} variants, more than the count of a pass holds"
+            ))
+        })?;
+        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        // The matrix is taken out of the core's result and not read from it,
+        // so that what crosses into JavaScript is the allocation the core
+        // filled. `given_away` consumes that result, so the chromosomes and
+        // the positions are read from what it gave and not from it.
+        let matrix = matrix.given_away();
+        let chroms = the_names_of_the_chromosomes(&matrix)?;
+        let poss = positions_of(&matrix.poss)?;
+        Ok(R2Matrix {
+            num_vars,
+            r2: Some(matrix.r2),
+            chroms: Some(chroms),
+            poss: Some(poss),
+            counts,
+        })
     })
 }
 
@@ -476,97 +478,99 @@ pub(crate) fn ld_and_dist_of(
         max_allowed_maf: asked.max_allowed_maf,
     };
     let named = the_pops_given(asked)?;
-    let reader = source.reader(None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    // The names a user wrote are looked up among the individuals the pass
-    // gives, which are those of the source after a filter of individuals
-    // when the `Variants` carries one, and only the pass knows them. It is
-    // the lookup the statistics per population make, so a name that is not
-    // an individual of the pass is refused in the same words by both.
-    let pops = match named {
-        Some(named) => Pops::from_names(&named, chain.individuals())?,
-        None => Pops::all(chain.individuals().len()),
-    };
-    let pop_names: Vec<String> = (0..pops.len())
-        .map(|pop| pops.name(pop).to_owned())
-        .collect();
-    let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
-    let of_the_pass = calc_ld_and_dist(&mut *chain, &of_each_pop, &options)?;
-    // The variants the pass gave are the core's count and are not worked
-    // out again here: the calculation was given them and counted them with
-    // the arithmetic that says what happens on overflow.
-    let counts = PassCounts::of(of_the_pass.num_vars(), &chain.filtering_stats());
-    let num_pops = of_the_pass.num_pops();
-    let num_bins = options.num_bins;
-    let of_every_bin = num_pops.saturating_mul(num_bins);
-    let mut smallest_dist = Vec::with_capacity(of_every_bin);
-    let mut largest_dist = Vec::with_capacity(of_every_bin);
-    let mut num_pairs = Vec::with_capacity(of_every_bin);
-    let mut mean_r2 = Vec::with_capacity(of_every_bin);
-    let mut sd_r2 = Vec::with_capacity(of_every_bin);
-    let mut num_vars_per_pop = Vec::with_capacity(num_pops);
-    let mut rho_per_bp = Vec::with_capacity(num_pops);
-    let mut r2_at_zero = Vec::with_capacity(num_pops);
-    let mut half_dist = Vec::with_capacity(num_pops);
-    for pop in 0..num_pops {
-        let bins = of_the_pass.bins_of_pop(pop).ok_or_else(|| {
-            JsPopneiError::Broken(format!(
-                "the pass counted {num_pops} populations and has no bins for the \
-                 population {pop}"
-            ))
-        })?;
-        // The package cuts every array below by `num_bins`, so a population
-        // whose bins were not that many would give its user the bins of the
-        // next one.
-        if bins.num_bins() != num_bins {
-            return Err(JsPopneiError::Broken(format!(
-                "the pass was asked for {num_bins} bins of distance and the population \
-                 {pop} has {its_bins} of them, which is a defect of popnei; please \
-                 report it",
-                its_bins = bins.num_bins()
-            )));
+    the_run_of(source, &Consumer::LdAndDist, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        // The names a user wrote are looked up among the individuals the pass
+        // gives, which are those of the source after a filter of individuals
+        // when the `Variants` carries one, and only the pass knows them. It is
+        // the lookup the statistics per population make, so a name that is not
+        // an individual of the pass is refused in the same words by both.
+        let pops = match named {
+            Some(named) => Pops::from_names(&named, chain.individuals())?,
+            None => Pops::all(chain.individuals().len()),
+        };
+        let pop_names: Vec<String> = (0..pops.len())
+            .map(|pop| pops.name(pop).to_owned())
+            .collect();
+        let of_each_pop: Vec<&[usize]> = (0..pops.len()).map(|pop| pops.individuals(pop)).collect();
+        let of_the_pass = calc_ld_and_dist(&mut *chain, &of_each_pop, &options)?;
+        // The variants the pass gave are the core's count and are not worked
+        // out again here: the calculation was given them and counted them with
+        // the arithmetic that says what happens on overflow.
+        let counts = PassCounts::of(of_the_pass.num_vars(), &chain.filtering_stats());
+        let num_pops = of_the_pass.num_pops();
+        let num_bins = options.num_bins;
+        let of_every_bin = num_pops.saturating_mul(num_bins);
+        let mut smallest_dist = Vec::with_capacity(of_every_bin);
+        let mut largest_dist = Vec::with_capacity(of_every_bin);
+        let mut num_pairs = Vec::with_capacity(of_every_bin);
+        let mut mean_r2 = Vec::with_capacity(of_every_bin);
+        let mut sd_r2 = Vec::with_capacity(of_every_bin);
+        let mut num_vars_per_pop = Vec::with_capacity(num_pops);
+        let mut rho_per_bp = Vec::with_capacity(num_pops);
+        let mut r2_at_zero = Vec::with_capacity(num_pops);
+        let mut half_dist = Vec::with_capacity(num_pops);
+        for pop in 0..num_pops {
+            let bins = of_the_pass.bins_of_pop(pop).ok_or_else(|| {
+                JsPopneiError::Broken(format!(
+                    "the pass counted {num_pops} populations and has no bins for the \
+                     population {pop}"
+                ))
+            })?;
+            // The package cuts every array below by `num_bins`, so a population
+            // whose bins were not that many would give its user the bins of the
+            // next one.
+            if bins.num_bins() != num_bins {
+                return Err(JsPopneiError::Broken(format!(
+                    "the pass was asked for {num_bins} bins of distance and the population \
+                     {pop} has {its_bins} of them, which is a defect of popnei; please \
+                     report it",
+                    its_bins = bins.num_bins()
+                )));
+            }
+            for bin in 0..num_bins {
+                let (smallest, largest) = bins
+                    .bounds(bin)
+                    .ok_or_else(|| not_a_bin("the distances", bin, bins))?;
+                let pairs = bins
+                    .num_pairs(bin)
+                    .ok_or_else(|| not_a_bin("the pairs", bin, bins))?;
+                smallest_dist.push(as_a_number(smallest, "the smallest distance of a bin")?);
+                largest_dist.push(as_a_number(largest, "the largest distance of a bin")?);
+                num_pairs.push(as_a_number(pairs, "the pairs of a bin")?);
+                // A bin with no pair has no mean and no standard deviation in
+                // the core, and NaN is what the boundary with a language that
+                // has no missing number writes.
+                mean_r2.push(bins.mean_r2(bin).unwrap_or(f64::NAN));
+                sd_r2.push(bins.sd_r2(bin).unwrap_or(f64::NAN));
+            }
+            num_vars_per_pop.push(as_a_number(
+                bins.num_vars(),
+                "the variants a population kept",
+            )?);
+            // The three values of the curve are the core's as they are, the
+            // NaN of a population no curve was fitted to included: nothing of
+            // the fit is worked out here.
+            let curve = bins.decay();
+            rho_per_bp.push(curve.rho_per_bp());
+            r2_at_zero.push(curve.r2_at_zero());
+            half_dist.push(curve.half_dist());
         }
-        for bin in 0..num_bins {
-            let (smallest, largest) = bins
-                .bounds(bin)
-                .ok_or_else(|| not_a_bin("the distances", bin, bins))?;
-            let pairs = bins
-                .num_pairs(bin)
-                .ok_or_else(|| not_a_bin("the pairs", bin, bins))?;
-            smallest_dist.push(as_a_number(smallest, "the smallest distance of a bin")?);
-            largest_dist.push(as_a_number(largest, "the largest distance of a bin")?);
-            num_pairs.push(as_a_number(pairs, "the pairs of a bin")?);
-            // A bin with no pair has no mean and no standard deviation in
-            // the core, and NaN is what the boundary with a language that
-            // has no missing number writes.
-            mean_r2.push(bins.mean_r2(bin).unwrap_or(f64::NAN));
-            sd_r2.push(bins.sd_r2(bin).unwrap_or(f64::NAN));
-        }
-        num_vars_per_pop.push(as_a_number(
-            bins.num_vars(),
-            "the variants a population kept",
-        )?);
-        // The three values of the curve are the core's as they are, the
-        // NaN of a population no curve was fitted to included: nothing of
-        // the fit is worked out here.
-        let curve = bins.decay();
-        rho_per_bp.push(curve.rho_per_bp());
-        r2_at_zero.push(curve.r2_at_zero());
-        half_dist.push(curve.half_dist());
-    }
-    Ok(LdAndDistOfAPass {
-        pop_names: Some(pop_names),
-        num_bins,
-        smallest_dist: Some(smallest_dist),
-        largest_dist: Some(largest_dist),
-        num_pairs: Some(num_pairs),
-        mean_r2: Some(mean_r2),
-        sd_r2: Some(sd_r2),
-        num_vars_per_pop: Some(num_vars_per_pop),
-        rho_per_bp: Some(rho_per_bp),
-        r2_at_zero: Some(r2_at_zero),
-        half_dist: Some(half_dist),
-        counts,
+        Ok(LdAndDistOfAPass {
+            pop_names: Some(pop_names),
+            num_bins,
+            smallest_dist: Some(smallest_dist),
+            largest_dist: Some(largest_dist),
+            num_pairs: Some(num_pairs),
+            mean_r2: Some(mean_r2),
+            sd_r2: Some(sd_r2),
+            num_vars_per_pop: Some(num_vars_per_pop),
+            rho_per_bp: Some(rho_per_bp),
+            r2_at_zero: Some(r2_at_zero),
+            half_dist: Some(half_dist),
+            counts,
+        })
     })
 }
 

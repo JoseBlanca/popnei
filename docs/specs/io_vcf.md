@@ -926,5 +926,5 @@ not taken when there was one.
 - The reader of the vars file, popnei's own file of variants:
   `docs/specs/io_vars.md`.
 - A web worker and the reading of a `File` by ranges in TypeScript:
-  section 11 of the architecture, and the plan that builds the
-  TypeScript side.
+  `docs/specs/js_sources.md`, which says what `openVcf` takes in the wasm
+  package and what the source tells the page while it reads.

@@ -162,6 +162,47 @@ export function manyVariantsVcf(numVars: number): Uint8Array {
   return vcfOf(lines);
 }
 
+/**
+ * The bytes of a VCF of `numIndividuals` diploid individuals and `numVars`
+ * variants, for a test that needs a vars file of some megabytes.
+ *
+ * The genotypes are drawn with a generator of its own, so that the file
+ * does not compress to nothing: a column of one repeated genotype would be
+ * a few kilobytes of lz4 whatever its number of variants. The generator is
+ * a linear congruential one, the one of numerical recipes, and it starts
+ * from the same seed at every run, so the file and its size are the same
+ * too.
+ */
+export function vcfOfDrawnGenotypes(
+  numVars: number,
+  numIndividuals: number,
+): Uint8Array {
+  const names = Array.from(
+    { length: numIndividuals },
+    (_unused, individual) => `ind${individual + 1}`,
+  );
+  const lines = [
+    "##fileformat=VCFv4.4",
+    `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${names.join("\t")}`,
+  ];
+  let drawn = 1;
+  const nextAllele = (): number => {
+    drawn = (Math.imul(drawn, 1664525) + 1013904223) >>> 0;
+    return drawn >>> 30;
+  };
+  for (let variant = 0; variant < numVars; variant += 1) {
+    const genotypes = Array.from({ length: numIndividuals }, () => {
+      const first = nextAllele();
+      const second = nextAllele();
+      return `${first > 2 ? "." : first}/${second > 2 ? "." : second}`;
+    });
+    lines.push(
+      `chr1\t${variant + 1}\t.\tA\tC,G\t.\tPASS\t.\tGT\t${genotypes.join("\t")}`,
+    );
+  }
+  return new TextEncoder().encode([...lines, ""].join("\n"));
+}
+
 export function vcfOf(dataLines: readonly string[]): Uint8Array {
   const header = [
     "##fileformat=VCFv4.4",

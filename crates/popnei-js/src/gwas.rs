@@ -32,11 +32,10 @@
 
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use popnei::block::BlockReader;
 use popnei::gwas::{Gwas, GwasInput, TestType, TraitType, calc_gwas};
 
 use crate::errors::JsPopneiError;
-use crate::source::{OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// What a study is asked for, as the package checked it: the individuals to
@@ -305,42 +304,51 @@ pub(crate) fn gwas_of_the_variants(
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
     };
-    let mut chain = chain_of(source.reader(None)?, steps.steps())?;
-    // The factor of the approximation comes from the first block of a second
-    // pass over the same variants, which is opened only for a study that
-    // asked for it: every other study reads the source once, as `pca.rs`
-    // opens its second reader only when the weights are asked for.
-    let mut gamma_pass = match study.use_grammar_gamma_approx {
-        false => None,
-        true => Some(chain_of(source.reader(None)?, steps.steps())?),
+    // The factor of the GRAMMAR-Gamma approximation comes from the first
+    // block of a second pass over the same variants, and whether there is
+    // one is asked of the consumer, which is what `numPassesOf` answers
+    // with and what every call that tells the page how far a pass has got
+    // carries: the number the page is told and the readers that are opened
+    // cannot disagree.
+    let consumer = Consumer::Gwas {
+        use_grammar_gamma_approx: study.use_grammar_gamma_approx,
     };
-    let result = calc_gwas(&mut chain, gamma_pass.as_mut(), &input)?;
-    let counted = u64::try_from(result.num_vars).map_err(|_| {
-        JsPopneiError::Broken(format!(
-            "the study read {num_vars} variants, more than the count of a pass holds",
-            num_vars = result.num_vars
-        ))
-    })?;
-    let counts = PassCounts::of(counted, &chain.filtering_stats());
-    let chroms = the_names_of_the_chromosomes(&result)?;
-    let poss = result.poss.as_deref().map(positions_of).transpose()?;
-    Ok(GwasOfVariants {
-        model: result.null_model.model.name().to_owned(),
-        test: result.null_model.test.name().to_owned(),
-        covariate_effects: Some(result.null_model.covariate_effects),
-        residual_variance: result.null_model.residual_variance,
-        genetic_variance: result.null_model.genetic_variance,
-        heritability: result.null_model.heritability,
-        num_individuals: result.null_model.num_individuals,
-        allele_freq: Some(result.allele_freq),
-        beta: Some(result.beta),
-        se: Some(result.se),
-        p_value: Some(result.p_value),
-        used_grammar_gamma_approx: result.used_grammar_gamma_approx,
-        chroms,
-        poss,
-        ids: result.ids,
-        counts,
+    let reads_the_source_twice = consumer.num_passes() > 1;
+    the_run_of(source, &consumer, |run| {
+        let mut chain = chain_of(source.reader(run, None)?, steps.steps())?;
+        let mut gamma_pass = if reads_the_source_twice {
+            Some(chain_of(source.reader(run, None)?, steps.steps())?)
+        } else {
+            None
+        };
+        let result = calc_gwas(&mut chain, gamma_pass.as_mut(), &input)?;
+        let counted = u64::try_from(result.num_vars).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "the study read {num_vars} variants, more than the count of a pass holds",
+                num_vars = result.num_vars
+            ))
+        })?;
+        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        let chroms = the_names_of_the_chromosomes(&result)?;
+        let poss = result.poss.as_deref().map(positions_of).transpose()?;
+        Ok(GwasOfVariants {
+            model: result.null_model.model.name().to_owned(),
+            test: result.null_model.test.name().to_owned(),
+            covariate_effects: Some(result.null_model.covariate_effects),
+            residual_variance: result.null_model.residual_variance,
+            genetic_variance: result.null_model.genetic_variance,
+            heritability: result.null_model.heritability,
+            num_individuals: result.null_model.num_individuals,
+            allele_freq: Some(result.allele_freq),
+            beta: Some(result.beta),
+            se: Some(result.se),
+            p_value: Some(result.p_value),
+            used_grammar_gamma_approx: result.used_grammar_gamma_approx,
+            chroms,
+            poss,
+            ids: result.ids,
+            counts,
+        })
     })
 }
 

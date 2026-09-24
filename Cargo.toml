@@ -218,6 +218,34 @@ numpy = "0.29"
 # one is pinned to the command line installed on the machine that builds,
 # 0.2.128. Both move together: a new command line needs this line changed.
 wasm-bindgen = "=0.2.128"
+# The types of JavaScript itself that the binding crate names: the function
+# an application is told the progress of a pass with, which the crate holds
+# and calls, and the array of its arguments. It is written by the authors of
+# wasm-bindgen, it moves with it, and it carries the `unsafe` of a call into
+# JavaScript, which the lints of the workspace deny in the crates of popnei.
+js-sys = "0.3"
+# The two types of the browser the binding crate names, which js-sys does
+# not have: the `Blob` a page gets when the user picks a file, of which a
+# `File` is one, and which gives any range of its bytes; and the
+# `FileReaderSync` that reads such a range and returns when it has the
+# bytes, which is what Rust's `Read` and `Seek` need and which a browser
+# has only inside a web worker. It is written by the authors of
+# wasm-bindgen and moves with js-sys and wasm-bindgen. Every type of the
+# browser is behind a feature of its own and nothing of a feature that is
+# off is compiled, so these two lines are the whole of what the crate
+# brings in.
+#
+# What it costs the download of an application has not been measured on its
+# own. The commit that brought it in also took the read of `openVcf` and
+# `openVars` that opens a file through the same pass every other read goes
+# through, which left one reader of a VCF and one of a vars file in the
+# build where there had been two of each, and the two changes together took
+# the wasm of the package from 2034662 to 2021550 bytes and from 657075 to
+# 650486 gzipped, measured with `npm run build:wasm` and `gzip -9` on the
+# owner's Apple M5 Pro on 24 September 2026. The spike of
+# docs/specs/js_sources.md measured these two crates by themselves at 3020
+# bytes of wasm and 776 gzipped.
+web-sys = { version = "0.3", features = ["Blob", "FileReaderSync"] }
 
 # The table of .claude/skills/coding/lints.toml, with the reasons for each
 # lint in .claude/skills/coding/SKILL.md. Every crate takes it with

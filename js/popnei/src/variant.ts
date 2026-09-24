@@ -45,6 +45,19 @@ export type SourceOfVariants = VcfSource | VarsSource;
 export interface SourceAndSteps {
   source: SourceOfVariants;
   steps: StepsOfTheCore;
+  /**
+   * What `readsTheSource` gives, with the run it makes counted as reading
+   * these variants while it runs.
+   *
+   * Every call that hands the source to the core goes through here, because
+   * that is what `free()` refuses to free under: wasm-bindgen holds the
+   * source for the length of such a call, and the free of a value it holds
+   * throws inside wasm after the generated code has already zeroed the
+   * pointer of the handle and taken it out of the `FinalizationRegistry`.
+   * The source would then be left in the memory of wasm with nothing to
+   * free it.
+   */
+  whileTheRunReads: <T>(readsTheSource: () => T) => T;
 }
 
 /**
@@ -66,6 +79,28 @@ export interface PassStats {
    * in the order of the steps. It is empty for a pass with no filter.
    */
   filtering: Record<string, FilteringStats>;
+}
+
+/**
+ * How far a pass over the source has got, which a page draws a bar from.
+ *
+ * A pass is one reading of the source from its start, and a run is one call
+ * of one consumer, `calcKinship` or the iteration of `iterBlocks`, with the
+ * passes it makes. `Variants.onProgress` is where the function that is told
+ * these four numbers is set, and it says when the calls are made.
+ */
+export interface Progress {
+  /** How many bytes of the file this pass has read, `numBytes` at most. */
+  bytesRead: number;
+
+  /** How many bytes the file holds. */
+  numBytes: number;
+
+  /** Which pass of the run is reading, 1 for the first. */
+  pass: number;
+
+  /** How many passes the run makes, `numPassesOf` of its consumer. */
+  numPasses: number;
 }
 
 /**
@@ -274,21 +309,28 @@ export function numberOfOpenPasses(): number {
  * the dataset is never in memory as a whole. The genotypes come out of it
  * through `iterBlocks` and through nothing else.
  *
- * What is done with it is of two kinds, and what a call gives back says
- * which. A step, a filter of `docs/specs/filters.md`, is a method that adds
- * itself to the list of steps, reads nothing and returns nothing, and
- * `steps` is that list. A consumer, `iterBlocks`, `writeVars` or the
- * function of a calculation, gives something back, and it runs the steps: it
- * makes as many passes over the source as it needs, each one built from the
- * steps the `Variants` has when that pass starts. So a step added between
- * two consumers holds for the second, and one added while a pass runs holds
- * from the next pass.
+ * What is done with it is of three kinds. A step, a filter of
+ * `docs/specs/filters.md`, is a method that adds itself to the list of steps,
+ * reads nothing and returns nothing, and `steps` is that list. A consumer,
+ * `iterBlocks`, `writeVars` or the function of a calculation, gives something
+ * back, and it runs the steps: it makes as many passes over the source as it
+ * needs, each one built from the steps the `Variants` has when that pass
+ * starts. So a step added between two consumers holds for the second, and one
+ * added while a pass runs holds from the next pass. The third kind is
+ * `onProgress`, which sets the function that every pass tells how far it has
+ * got: it returns nothing, as a step does, but it adds no step and changes
+ * nothing of the variants a pass gives.
  *
  * It is pyNei's `Variants` under the word of `docs/glossary.md`: what pyNei
  * calls a sample is here an individual, one organism that was genotyped.
  */
 export class Variants {
-  /** The file in the memory of wasm, and `null` once `free` took it. */
+  /**
+   * The source in the memory of wasm, which holds the bytes of the file when
+   * it was opened over a `Uint8Array` and the number of the entry that holds
+   * the handle of the file when it was opened over a `File` or a `Blob`, and
+   * `null` once `free` took it.
+   */
   #source: SourceOfVariants | null;
   /**
    * The steps in the memory of wasm, which every pass is built from, and
@@ -297,6 +339,15 @@ export class Variants {
   #steps: StepsOfTheCore | null;
   #individuals: readonly string[];
   #ploidy: number;
+  /**
+   * How many calls of a consumer over these variants are on the stack,
+   * which is what `free()` refuses to free under.
+   *
+   * It is more than 1 when the function that is told the progress starts a
+   * consumer of its own, which `docs/specs/js_sources.md` says runs as any
+   * other call does.
+   */
+  #runsReading = 0;
 
   /**
    * The handle over `source`, which `openVcf` and `openVars` build, with no
@@ -609,8 +660,105 @@ export class Variants {
     // crosses by value, so the Rust that refuses the field owns it and drops
     // it. Measured on this build: 20000 calls refused for their field left
     // the memory of wasm at the 1310720 bytes it held before them.
+    // The pass is opened with the run counted, which is where the header of
+    // a VCF or the footer of a vars file is read and the page is told that
+    // the pass has read nothing: a `free()` from inside that call is
+    // refused. The blocks after it are read with no call holding the
+    // source, so a `free()` from inside one of those is taken and the pass
+    // reads on to its end.
     return new BlocksOfOnePass(
-      source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      this.#whileTheRunReads(() =>
+        source.blocks(fields, numVarsPerBlock, steps.of_a_pass()),
+      ),
+    );
+  }
+
+  /**
+   * Sets `told` as the function that is told how far every pass over the
+   * source has got, and takes the one that was set off when it is called
+   * with nothing.
+   *
+   * While a consumer runs, the worker is inside wasm and reads no message,
+   * so this is how a page learns how a run is going. Three things make a
+   * call: the first read of each pass, which says that pass has read
+   * nothing; a read that brings the bytes read since the last call to the
+   * size of a range, 4 MiB of the file; and the end of the run, which makes
+   * one call for each of its passes, in the order of their numbers, with
+   * the bytes that pass read. The last of the three is what says a pass is
+   * over, because no read does: a pass over a vars file stops after its
+   * last batch, and a run that fails stops where it failed. Every call
+   * carries the bytes that pass has read, the bytes the file holds, which
+   * pass of the run is reading and how many passes the run makes.
+   *
+   * The 4 MiB of a range is popnei's own choice and not a number the
+   * package promises: nothing has been measured at that size, and "Speed"
+   * of `docs/specs/js_sources.md` leaves it there until a pass over a VCF of
+   * a few hundred MB is timed in Chromium at 256 KiB, 1 MiB, 4 MiB and
+   * 16 MiB, which will set it. An application that draws a bar reads the
+   * bytes of each call and not the size of a range.
+   *
+   * The bytes are those of the file on disk, so a gzipped VCF is counted in
+   * its compressed bytes: a pass over `many.vcf.gz` ends at the 21904 bytes
+   * of the gzip and not at the 117346 of the text inside it. A pass over a
+   * vars file ends below the size of the file, because it does not read all
+   * of it: it reads the last ten bytes, which say how long the footer is,
+   * then the footer, which says where the batches are, and then each batch,
+   * and never the schema message at the head of the file, since the footer
+   * carries the schema too.
+   *
+   * A page that draws a bar from these numbers sees it fill once per pass
+   * and knows which pass it is on, so a principal component analysis that
+   * reads the file twice does not look broken when the bar goes back to
+   * empty.
+   *
+   * What `told` throws ends the pass where it was reading, and the consumer
+   * throws that same value: an application that cancels a run tells its own
+   * cancel from a file that could not be read with `===` and without reading
+   * a message, and its worker is not ended. Whichever error the read failed
+   * with inside popnei is not the one it gets. The `Variants` is then the
+   * one it was, and the next run over it reads the file from its start.
+   *
+   * The function holds until it is set again, and setting it changes nothing
+   * about the variants a pass gives. The reads of `openVcf` and `openVars`,
+   * the header of a VCF and the schema of a vars file, are told to nobody:
+   * they are made before there is a `Variants` to set a function on.
+   *
+   * What it may call is every function of the package, a consumer of these
+   * same variants among them, which runs there as it runs anywhere else.
+   * The two calls it may not make are the `free()` of the variants the run
+   * is reading and the `passStats` of an iteration of `iterBlocks` that is
+   * reading a block: each of the two is held by the call that is reading,
+   * each throws an `Error` of popnei that says so, and that error, thrown
+   * inside the function, ends the pass as any other value it throws does.
+   * Between two blocks of an iteration nothing is held, so a function
+   * called from there may make both.
+   *
+   * It has no counterpart in the Python API, which `docs/objectives.md` asks
+   * every difference between the two to be written down: what it is for is a
+   * page that draws a bar and a user who presses a button, and Python reads
+   * a file by its path in a program that has neither.
+   *
+   * @throws {Error} When `told` is given and is not a function, when the
+   * variants were freed, and when `init` has not been awaited.
+   */
+  onProgress(told?: (progress: Progress) => void): void {
+    theWasmHasToBeLoaded();
+    const source = this.#sourceThatWasNotFreed();
+    if (told === undefined) {
+      source.on_progress(undefined);
+      return;
+    }
+    if (typeof told !== "function") {
+      throw new Error(
+        "popnei: `told` is the function that is told how far a pass has got, " +
+          `and ${whatWasGiven(told)} was given`,
+      );
+    }
+    // The four numbers cross one by one and the object a user reads is built
+    // here, as every other result of the package is built in TypeScript.
+    source.on_progress(
+      (bytesRead: number, numBytes: number, pass: number, numPasses: number) =>
+        told({ bytesRead, numBytes, pass, numPasses }),
     );
   }
 
@@ -621,12 +769,39 @@ export class Variants {
    * of these variants and every read of `steps`. The names of the
    * individuals and the ploidy still answer: they are in JavaScript. A
    * second call is not an error: it has nothing left to give back.
+   *
+   * It is refused while a consumer of these variants is running, which is
+   * what a `free()` from inside the function of `onProgress` is: that call
+   * holds the source, and freeing it there would leave the source in the
+   * memory of wasm with no handle left to free it. An iteration of
+   * `iterBlocks` holds no such call between two blocks, so a free from
+   * inside the function of a pass that is iterating goes through and that
+   * pass reads on to its end.
+   *
+   * @throws {Error} When a consumer of these variants has not returned.
    */
   free(): void {
-    this.#source?.free();
+    if (this.#runsReading > 0) {
+      throw new Error(
+        "popnei: a run is reading these variants, so they cannot be freed " +
+          "yet: the free of a source a consumer is reading would leave it in " +
+          "the memory of wasm with no handle left to free it. What frees " +
+          "them is a call made after the consumer returns.",
+      );
+    }
+    // The handles are taken out of the `Variants` before they are freed, and
+    // the second is freed whatever the first does: a free that threw in the
+    // middle would otherwise leave a `Variants` that holds a source nobody
+    // can read and steps nobody can free.
+    const source = this.#source;
+    const steps = this.#steps;
     this.#source = null;
-    this.#steps?.free();
     this.#steps = null;
+    try {
+      source?.free();
+    } finally {
+      steps?.free();
+    }
   }
 
   /**
@@ -649,7 +824,27 @@ export class Variants {
     return {
       source: this.#sourceThatWasNotFreed(),
       steps: this.#stepsThatWereNotFreed(),
+      whileTheRunReads: (readsTheSource) =>
+        this.#whileTheRunReads(readsTheSource),
     };
+  }
+
+  /**
+   * What `readsTheSource` gives, with this run counted while it runs, so
+   * that a `free()` from inside the function that is told the progress is
+   * refused instead of breaking the handle.
+   *
+   * The count goes back down whatever the run did, an error of the core and
+   * the value an application threw to stop it among them: a run that failed
+   * is a run that no longer reads.
+   */
+  #whileTheRunReads<T>(readsTheSource: () => T): T {
+    this.#runsReading += 1;
+    try {
+      return readsTheSource();
+    } finally {
+      this.#runsReading -= 1;
+    }
   }
 
   /** The source, or the `Error` of a source that was freed. */
@@ -720,6 +915,11 @@ class BlocksOfOnePass implements Blocks {
    * answers from then on, and `null` while it still answers itself.
    */
   #countsWhenItEnded: PassStats | null = null;
+  /**
+   * Whether the pass is inside the read of a block, which is where a call
+   * of the function of `onProgress` is made from.
+   */
+  #isReadingABlock = false;
   #blocks: Generator<Block, void, undefined>;
 
   constructor(pass: PassOfTheCore) {
@@ -745,6 +945,17 @@ class BlocksOfOnePass implements Blocks {
   }
 
   get passStats(): PassStats {
+    if (this.#isReadingABlock) {
+      throw new Error(
+        "popnei: the counts of this pass cannot be read while it is reading " +
+          "a block, which is what a read of them from inside the function of " +
+          "`onProgress` is: the pass is held by the call that is reading, the " +
+          "counts would fail that hold, and what the failure leaves behind " +
+          "keeps the pass and the bytes it read in the memory of wasm with " +
+          "nothing left to free them. What reads them is a call made between " +
+          "two blocks or once the pass is over.",
+      );
+    }
     if (this.#pass !== null) {
       return passStatsOf(this.#pass.pass_stats());
     }
@@ -772,7 +983,17 @@ class BlocksOfOnePass implements Blocks {
     try {
       for (;;) {
         const pass = this.#passThatIsRunning();
-        const columns = pass.next_block();
+        // The pass is held by this call for as long as it lasts, and the
+        // function of `onProgress` is called from inside it: what says so
+        // to `passStats` is the flag, which is what stops a read of the
+        // counts there from leaving the pass unfreeable.
+        this.#isReadingABlock = true;
+        let columns;
+        try {
+          columns = pass.next_block();
+        } finally {
+          this.#isReadingABlock = false;
+        }
         if (columns === undefined) {
           return;
         }

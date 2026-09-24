@@ -292,7 +292,10 @@ export function calcPerVarDistribs(
   options: PerVarDistribsOptions = {},
 ): PerVarDistribs {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   const stats = theStats(options.stats);
   const pops = thePops(options.pops);
   const minNumIndividuals =
@@ -311,19 +314,21 @@ export function calcPerVarDistribs(
   // The steps of the pass are a copy of the list, made after every argument
   // was checked so that nothing refused here leaves one behind: the call
   // takes it over and frees it.
-  const distribs = source.calc_per_var_distribs(
-    steps.of_a_pass(),
-    stats,
-    pops.names,
-    pops.individuals,
-    pops.numIndividualsPerPop,
-    minNumIndividuals,
-    histogram.start,
-    histogram.end,
-    histogram.numBins,
-    histogram.binType,
-    ploidy,
-    polyThreshold,
+  const distribs = whileTheRunReads(() =>
+    source.calc_per_var_distribs(
+      steps.of_a_pass(),
+      stats,
+      pops.names,
+      pops.individuals,
+      pops.numIndividualsPerPop,
+      minNumIndividuals,
+      histogram.start,
+      histogram.end,
+      histogram.numBins,
+      histogram.binType,
+      ploidy,
+      polyThreshold,
+    ),
   );
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the
@@ -611,10 +616,15 @@ export function calcPerIndividualStats(
   variants: Variants,
 ): PerIndividualStats {
   theWasmHasToBeLoaded();
-  const { source, steps } = sourceOfTheVariants("variants", variants);
+  const { source, steps, whileTheRunReads } = sourceOfTheVariants(
+    "variants",
+    variants,
+  );
   // The steps of the pass are a copy of the list: the call takes it over and
   // frees it.
-  const stats = source.calc_per_individual_stats(steps.of_a_pass());
+  const stats = whileTheRunReads(() =>
+    source.calc_per_individual_stats(steps.of_a_pass()),
+  );
   // Every array is copied out of the memory of wasm as it is read, and the
   // result holds that memory until it is freed, which is here: what the user
   // gets are the copies.

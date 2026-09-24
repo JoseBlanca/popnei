@@ -374,6 +374,11 @@ through the steps that its `Variants` had when it started. A consumer
 makes as many as its algorithm needs, each with readers and filters of its
 own.
 
+**run.** One call of one consumer, with the passes it makes: the first pass
+of a run is its pass 1. The word is needed where several passes over one
+source are alive at once, which is what the progress of the wasm package
+counts inside, `docs/specs/js_sources.md`.
+
 could mean either says which. "The binding crate" alone is used for what
 holds for both.
 
