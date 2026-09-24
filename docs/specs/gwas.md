@@ -1244,26 +1244,64 @@ effect near 0 and a p-value near 1 instead of the three NaNs, which is one
 more place where the approximation gives up accuracy for the individuals by
 individuals product it does not make.
 
-**The fourth row is skipped under the approximation**, which the owner
-decided on 24 September 2026, because left in place it refuses variants the
-exact test answers. The rule was derived from a bound the approximation
-does not give:
-with the exact `x' p x` for `den`, `num² / den` cannot pass `y' p y`, so a
-remainder at or below the threshold can only be a cancellation. The
-approximate `den` is `gamma` times the squared length of the variant's
-centered dosages, and a variant whose own ratio of those two quantities is
-above `gamma` gets a denominator smaller than the exact one. `num² / den`
-then passes `y' p y` honestly, the remainder is below 0 by far more than
-rounding, and the rule refuses a variant the exact test answers. Applying
-it there reads a promise the arithmetic no longer makes.
+**The fourth row falls back to the exact denominator**, which the owner
+decided on 24 September 2026: applied to the approximate denominator the
+rule refuses variants the exact test answers, and skipped it answers them
+by halves. The rule was derived from a bound the approximation does not
+give: with the exact `x' p x` for `den`, `num² / den` cannot pass `y' p y`,
+since `num` is `x' p y` and the projection matrix is 0 or above as a
+quadratic form, so `num²` is at most `x' p x` times `y' p y`. A remainder
+at or below the threshold can then only be a cancellation. The approximate
+`den` is `gamma` times the squared length of the variant's centered
+dosages. Each variant has a ratio of its own, its exact `x' p x` divided by
+that squared length, and `gamma` is the mean of those ratios over the
+variants of the first block. A variant whose own ratio is above `gamma`
+gets a denominator smaller than its exact one, `num² / den` then passes
+`y' p y` honestly, the remainder goes below 0 by far more than rounding,
+and the rule refuses a variant the exact test answers.
 
-What such a variant gets in place of the three NaNs is the effect and not
-the whole row. `se` is the square root of that remainder over the degrees
-of freedom times `den`, so a remainder below 0 leaves `se` and `p_value`
-NaN with a finite `beta` beside them. That is what pyNei gives on the same
-inputs, agreeing with popnei to fifteen digits, with a numpy warning that a
-square root met an invalid value; so pyNei fails here too, and differently,
-in that it is the square root and not a rule that produces the NaN.
+That failure names the variant, which is what makes the fallback possible:
+the remainder cannot go below 0 with the exact denominator, so a study that
+approximates and sees it go there has found a variant its one factor does
+not fit. The projection matrix is on the model for the whole pass, so one
+product of that one variant with it gives its exact `x' p x`. `beta`, the
+remainder and `se` are formed again from that, and the rule is applied to
+them as it is for a study that makes the exact denominator for every
+variant. So is the third row's rule, on that same denominator, and it
+cannot refuse a variant that reached the fallback: a numerator large enough
+for `num² / den` to reach `y' p y` leaves `x' p x` at least `num²` over
+`y' p y`, far above the floor. Every variant of an approximating study then
+comes back with a full row: the approximate answer where the approximation
+works, the exact answer where it does not, and the three NaNs only for a
+variant that has nothing left to test, which is what "The variants that
+have no answer" means.
+
+What triggers the fallback is the rule itself, a remainder at or below the
+tested individuals times 2.2e-16 of `y' p y`, and not a remainder below 0
+alone. The band between the two is 2.2e-16 of `y' p y` for each tested
+individual, and the exact denominator decides the same way anywhere in it;
+taking the rule as the trigger leaves the fourth row one behaviour under the
+approximation instead of two.
+
+What a variant that falls back costs is one product of one variant with the
+projection matrix, individuals by individuals, which is what a study that
+does not approximate pays for every variant of its pass. How often it is
+paid is bounded by how rare the regime is, and it takes both of two things:
+the variant's own ratio above `gamma`, and the variant explaining nearly all
+of what the null model left, which is the very strong hit. On the two panels
+of "How it is verified" below no variant falls back, measured on 24
+September 2026 over the 1200 variants of each under each test. In the worst
+case, every variant of a study falling back, the study costs what the same
+study costs with `use_grammar_gamma_approx` left alone.
+
+**popnei does better than pyNei here.** pyNei gives that variant a finite
+`beta` with `se` and `p_value` NaN, popnei's `beta` agreeing with it to
+fifteen digits, with a numpy warning that a square root met an invalid
+value; there it is the square root of a negative number and not a rule that
+makes the NaN. What settled it against doing the same is that such a row is
+the fourth kind of NaN the recommendation of Open 2 argues against: a user
+who filters on a missing effect keeps the row and reads the effect as
+measured, with nothing to say how uncertain it is.
 
 Reproduced on 24 September 2026, by two reviewers on different fixtures and
 then on this one: twelve individuals, an identity kinship, one covariate
@@ -1271,23 +1309,37 @@ marking two groups of six, three variants, and the trait
 `2 + 3*cov + 5*dosage(v0) + noise * e` with `e` a fixed vector of twelve
 values that sum to 0. `v0` is the variant tested; the other two are there so
 that `gamma`, the mean of the three ratios, comes out 1.00787 below `v0`'s
-own ratio.
+own ratio. The exact answers are what a study of the same fixture that makes
+no approximation gives for `v0`, and "what is left" is the remainder the
+approximate denominator leaves, as a share of `y' p y`.
 
-| `noise` | exact `beta` | exact `p_value` | what is left, of `y' p y` | approximated |
-|---|---|---|---|---|
-| 0.4 | 4.99500 | 1.0518e-14 | -0.0068 | `beta` 5.03433, `se` and `p_value` NaN |
-| 0.8 | 4.99000 | 5.3636e-12 | -0.0036 | `beta` 5.02929, `se` and `p_value` NaN |
-| 1.6 | 4.98000 | 2.6550e-09 | +0.0090 | `beta` 5.01921, `se` 0.15954, `p_value` 1.6250e-10 |
+| `noise` | exact `beta` | exact `se` | exact `p_value` | what is left, of `y' p y` | approximated |
+|---|---|---|---|---|---|
+| 0.4 | 4.99500 | 0.0541688 | 1.0518e-14 | -0.0068 | the exact three, from the fallback |
+| 0.8 | 4.99000 | 0.108338 | 5.3636e-12 | -0.0036 | the exact three, from the fallback |
+| 1.6 | 4.98000 | 0.216675 | 2.6550e-09 | +0.0090 | `beta` 5.01921, `se` 0.15954, `p_value` 1.6250e-10 |
 
-With the rule still applied, the first two rows were three NaNs. The score
-test answers all three, because it forms no such subtraction: `beta`
-5.03433, 5.02929 and 5.01921 with an `se` of about 1.59.
+At the two lower noise levels the fallback's three numbers agree with the
+exact study's to every bit on Accelerate, the two forming the same
+denominator by the same arithmetic and differing only in that one product
+covers the three variants of the block and the other one variant. At a noise
+of 1.6 the approximation answers `v0` itself, with a `beta` 0.0079 of the
+exact one above it, 5.01921 against 4.98000, which is the error of one
+factor standing in for each variant's own ratio.
 
-It takes both of two things, which is why no third fixture of a reviewer
-reached it: the variant's own ratio above `gamma`, and the variant
-explaining nearly all of what the null model left. The two options the owner
-did not take were to leave the rule where it is and write the regime down,
-and to refuse the Wald test whenever the approximation is asked for.
+With the rule applied to the approximate denominator, the first two rows
+were three NaNs. With it skipped, which popnei did between two commits of
+24 September 2026, they were `beta` 5.03433 and 5.02929 with `se` and
+`p_value` NaN, which is pyNei's answer. The score test answers all three
+whatever is done here, because it forms no such subtraction: `beta` 5.03433,
+5.02929 and 5.01921 with an `se` of about 1.59.
+
+The three options the owner did not take were to leave the rule where it was
+and write the regime down, which gives three NaNs for a variant that is
+among the strongest of the study; to skip the rule, which gives the effect
+and no p-value; and to refuse the Wald test whenever the approximation is
+asked for, which takes the approximation from every user of that test for a
+regime neither panel reaches.
 
 On neither panel does a variant reach this, so the three numbers of "How it
 is verified" below are what they were.
@@ -1740,10 +1792,13 @@ variant of either panel comes near.
 
 The fourth place has one exception, which the owner decided on 24 September
 2026 and which "Open 2's threshold under the approximation" of the
-GRAMMAR-Gamma section carries: the comparison is skipped when the study
-approximates the denominator. What it was derived from, that `num² / den`
-cannot pass `y' p y`, is a guarantee the approximate denominator does not
-give, and applying the rule there refuses variants the exact test answers.
+GRAMMAR-Gamma section carries: when the study approximates the denominator
+and the comparison fires, the variant is answered from the exact `x' p x`
+instead of being refused. What the rule was derived from, that
+`num² / den` cannot pass `y' p y`, is a guarantee the approximate
+denominator does not give, so the comparison firing there does not mean
+that there is nothing left to test; it names the one variant whose exact
+denominator is worth the product it costs.
 
 **Open 3: a kinship that does not identify the two variances.** For a
 kinship close to a multiple of the identity, the model is the ordinary
