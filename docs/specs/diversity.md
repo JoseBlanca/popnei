@@ -498,7 +498,9 @@ overlap "The cases" warns about is real. A draw of one allele is below the
 smallest a `calc_pop_diversity` will take, so that pair is asserted on the
 arithmetic of one variant and not through a pass; task 3.3 of
 `docs/plans/diversity.md` found that, and it is why the other 22 are
-asserted as one haploid variant each rather than as calls. The file names, for every pair,
+asserted as one haploid variant each rather than as calls.
+
+The file names, for every pair,
 which of the two things it enumerated over, and it carries the exact
 rational of the closed form and of the enumeration side by side, since on
 that pair they differ.
