@@ -32,6 +32,12 @@
 //! [`r2_between`] gives the r² of every variant of one set of dosages
 //! against every variant of another, which is six products of those
 //! matrices and the formula of the spec over the six sums they give.
+//!
+//! [`fit_ld_decay`] puts the whole fall-off of one population into one
+//! shape, and the distance at which its r² has fallen to half into one
+//! number. It takes the pairs counted at each distance and no genotype, so
+//! the bins a user asked for do not move the curve, and it gives an
+//! [`LdDecay`].
 
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -46,8 +52,10 @@ use crate::variant::{
     the_major_allele_frequency,
 };
 
+mod decay;
 mod dist;
 
+pub use decay::{LdDecay, fit_ld_decay};
 pub use dist::{
     DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_DIST_BINS, LdAndDist,
     LdAndDistOptions, LdBins, calc_ld_and_dist,

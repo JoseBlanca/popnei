@@ -1,0 +1,678 @@
+//! The curve of r² against distance fitted to the pairs a population
+//! counted, and the distance at which that curve has fallen to half, which
+//! is "The curve that is fitted" of the item "LD against distance, per
+//! population" of `docs/specs/ld.md`.
+//!
+//! [`fit_ld_decay`] takes what a pass counted, for each distance that holds
+//! a pair the number of pairs and the sum of their r², and gives an
+//! [`LdDecay`]: the fitted ρ per base pair, the curve at a distance of 0
+//! and the distance at which the curve is half of that. It reads no
+//! genotype and no bin, so the same pairs give the same curve whatever
+//! `num_bins` a user asked the bins to be cut into.
+//!
+//! ρ is the scaled recombination between the two variants of a pair, four
+//! times the effective size of the population times the recombination
+//! fraction between them. The model is the r² two variants of a population
+//! under drift and recombination are expected to be in, Hill and Weir
+//! (1988) with the correction for a finite sample of Weir and Hill (1986),
+//! and its one free number here is the ρ per base pair: a pair d base pairs
+//! apart has a ρ of d times it. The spec gives the reasons for that model
+//! and for n being the individuals of the population and not the
+//! individuals times the ploidy.
+//!
+//! There is one number to fit, so the smallest is found without
+//! derivatives: the sum is evaluated at 141 values of the ρ per base pair,
+//! from 10⁻¹² to 10², spaced by a tenth of a decade, and the two
+//! neighbours of the smallest of them bracket a golden section search. The
+//! grid before the search is what looks at the whole range instead of
+//! sliding downhill from a start value into whichever valley holds it, and
+//! what is kept is the smallest of every ρ per base pair evaluated, the
+//! 141 of the grid included.
+
+use crate::error::{Error, Result};
+
+/// The exponent of 10 of the smallest ρ per base pair the fit looks at.
+///
+/// Below 10⁻¹² the curve is flat across 10⁶ base pairs, which is the
+/// largest `max_dist` a user would give, so nothing below it is a fall-off
+/// that pairs of one dataset could pin down.
+const THE_SMALLEST_EXPONENT_OF_THE_GRID: f64 = -12.0;
+
+/// How far apart the exponents of two neighbouring values of the grid are,
+/// a tenth of a decade.
+const THE_STEP_OF_THE_GRID: f64 = 0.1;
+
+/// How many values of the ρ per base pair the sum is evaluated at before
+/// the search, from 10⁻¹² to 10² by a tenth of a decade, both ends
+/// included.
+const THE_POINTS_OF_THE_GRID: usize = 141;
+
+/// How narrow the bracket of the golden section search is left, in
+/// decades.
+///
+/// A bracket two cells of the grid wide is 0.2 decades, and each step of
+/// the search leaves 0.618 of it, so it takes 40 steps to come under this.
+/// The fit therefore costs 183 evaluations of the sum, 141 for the grid, 2
+/// to open the search and 40 for its steps, each one pass over the
+/// distances that hold a pair.
+const THE_TOLERANCE_OF_THE_SEARCH: f64 = 1e-9;
+
+/// The largest ρ the half distance is looked for below.
+///
+/// The ρ at which the curve is half of its value at ρ of 0 is 2.16 at n of
+/// 100 and 2.26 at n of 50, and it grows as n falls, so 10⁶ is far above
+/// any n a dataset has.
+const THE_LARGEST_RHO_OF_THE_HALF: f64 = 1e6;
+
+/// How narrow the bracket of the bisection of the half distance is left,
+/// as a part of its own middle. It is about 60 halvings from a bracket
+/// that runs from 0 to [`THE_LARGEST_RHO_OF_THE_HALF`].
+const THE_TOLERANCE_OF_THE_HALF: f64 = 1e-12;
+
+/// The curve of r² against distance fitted to the pairs of one population,
+/// and the distance at which it has fallen to half.
+///
+/// The three values are NaN together when no curve was fitted, which "The
+/// cases" of `docs/specs/ld.md` says happens to a population whose pairs
+/// fall at fewer than two distances and to one whose smallest sum falls at
+/// either end of the searched range of the ρ per base pair.
+#[derive(Debug, Clone, Copy)]
+pub struct LdDecay {
+    /// The fitted 4Nr, by how much ρ grows per base pair.
+    rho_per_bp: f64,
+    /// The fitted curve at a distance of 0.
+    r2_at_zero: f64,
+    /// The distance at which the fitted curve is half of `r2_at_zero`.
+    half_dist: f64,
+}
+
+impl LdDecay {
+    /// The fitted 4Nr, by how much the scaled recombination ρ grows per
+    /// base pair. NaN when no curve was fitted, which "The cases" of
+    /// `docs/specs/ld.md` says when, and then the other two are NaN as
+    /// well.
+    pub fn rho_per_bp(&self) -> f64 {
+        self.rho_per_bp
+    }
+
+    /// The fitted curve at a distance of 0, which the individuals of the
+    /// population fix on their own: it is the curve's own ceiling,
+    /// 0.46198347107438015 at 100 individuals, and no pair of the dataset
+    /// moves it.
+    pub fn r2_at_zero(&self) -> f64 {
+        self.r2_at_zero
+    }
+
+    /// The distance in base pairs at which the fitted curve has fallen to
+    /// half of [`LdDecay::r2_at_zero`].
+    ///
+    /// NaN when the other two are, and NaN on its own at 1 and at 2
+    /// individuals, the only counts of individuals whose curve never falls
+    /// to half: what it falls towards as ρ grows is 1 divided by the
+    /// individuals, and half of the value at 0 is above that from 3
+    /// individuals upwards.
+    pub fn half_dist(&self) -> f64 {
+        self.half_dist
+    }
+
+    /// The three NaN of a population no curve was fitted to.
+    fn of_no_curve() -> LdDecay {
+        LdDecay {
+            rho_per_bp: f64::NAN,
+            r2_at_zero: f64::NAN,
+            half_dist: f64::NAN,
+        }
+    }
+}
+
+/// The curve fitted to the pairs counted at each distance.
+///
+/// `dists` are in base pairs and need not be in order, `num_pairs` and
+/// `sum_r2` hold one value for each of them, and `num_individuals` is how
+/// many individuals the population has, the n of the model. Pairs at fewer
+/// than two distances, which includes no pair at all, and a smallest sum
+/// that falls at either end of the searched range of the ρ per base pair
+/// are the [`LdDecay`] of three NaN that "The cases" of `docs/specs/ld.md`
+/// describes and not an error.
+///
+/// # Errors
+///
+/// [`Error::LdDecayArraysOfDifferentLengths`] when the three slices are not
+/// of one length, [`Error::LdDecayNoIndividuals`] when `num_individuals` is
+/// 0, [`Error::LdDecayDistWithNoPair`] when a distance holds no pair, and
+/// [`Error::LdDecaySumOfR2OutOfRange`] when a sum of r² is not finite or is
+/// below 0.
+pub fn fit_ld_decay(
+    dists: &[u64],
+    num_pairs: &[u64],
+    sum_r2: &[f64],
+    num_individuals: u64,
+) -> Result<LdDecay> {
+    the_pairs_of_each_dist_are_checked(dists, num_pairs, sum_r2, num_individuals)?;
+    if dists.len() < 2 {
+        // One distance says nothing about a fall-off, whatever a search
+        // would return for it, and no pair at all is that case.
+        return Ok(LdDecay::of_no_curve());
+    }
+    let individuals = num_individuals as f64;
+    let Some(rho_per_bp) = the_rho_per_bp_of_the_smallest(dists, num_pairs, sum_r2, individuals)
+    else {
+        // The smallest fell at an end of the searched range, so the number
+        // there says where the search stopped and not what the pairs say.
+        return Ok(LdDecay::of_no_curve());
+    };
+    Ok(LdDecay {
+        rho_per_bp,
+        r2_at_zero: the_curve_at(0.0, individuals),
+        half_dist: match the_rho_at_half(individuals) {
+            Some(rho) => rho / rho_per_bp,
+            None => f64::NAN,
+        },
+    })
+}
+
+/// The r² the model expects at the scaled recombination `rho` between the
+/// two variants of a pair, in a population of `num_individuals`
+/// individuals.
+///
+/// It is Hill and Weir (1988) with the correction for a finite sample of
+/// Weir and Hill (1986), which "The curve that is fitted" of
+/// `docs/specs/ld.md` writes as
+///
+/// ```text
+/// E[r²] = (10 + ρ) / ((2 + ρ) · (11 + ρ))
+///         · [1 + ((3 + ρ) · (12 + 12ρ + ρ²)) / (n · (2 + ρ) · (11 + ρ))]
+/// ```
+///
+/// with ρ the scaled recombination and n the individuals. The first factor
+/// falls from 10/22 at ρ of 0 towards 0, and the second is what holds the
+/// curve up at long distances, where the r² of a finite sample does not
+/// fall to 0.
+///
+/// It is written with the four operations alone, which are rounded the
+/// same on every platform where `exp`, `ln` and `powf` are not, as the
+/// `coding` skill says.
+fn the_curve_at(rho: f64, num_individuals: f64) -> f64 {
+    let two_plus_rho = 2.0 + rho;
+    let eleven_plus_rho = 11.0 + rho;
+    let expected = (10.0 + rho) / (two_plus_rho * eleven_plus_rho);
+    let of_the_sample = ((3.0 + rho) * (12.0 + 12.0 * rho + rho * rho))
+        / (num_individuals * two_plus_rho * eleven_plus_rho);
+    expected * (1.0 + of_the_sample)
+}
+
+/// The sum the fit makes smallest at one ρ per base pair,
+///
+/// ```text
+/// Σ over the distances of [ n_d · f(d)² − 2 · S_d · f(d) ]
+/// ```
+///
+/// where n_d is how many pairs the distance d holds, S_d the sum of their
+/// r² and f(d) the curve at that distance.
+///
+/// "The curve that is fitted" of `docs/specs/ld.md` derives it: the sum
+/// over every pair of the square of its r² less the curve at its distance
+/// is the spread of the pairs of a distance around their own mean, which
+/// no ρ changes, plus what this sum holds, plus the square of the r² of
+/// every pair, which is the same at every ρ. So the ρ that makes this
+/// smallest is the ρ that makes the squared residuals of every pair
+/// smallest, and the pairs of one distance are added up before the fit
+/// with nothing lost.
+///
+/// The distances are read in the order they were given, which is the order
+/// a pass compacted them in, so two runs over one dataset add the same
+/// numbers in the same order.
+fn the_sum_to_make_smallest(
+    rho_per_bp: f64,
+    dists: &[u64],
+    num_pairs: &[u64],
+    sum_r2: &[f64],
+    num_individuals: f64,
+) -> f64 {
+    let mut total = 0.0;
+    for ((dist, pairs), sum) in dists.iter().zip(num_pairs).zip(sum_r2) {
+        let curve = the_curve_at(*dist as f64 * rho_per_bp, num_individuals);
+        total += *pairs as f64 * curve * curve - 2.0 * sum * curve;
+    }
+    total
+}
+
+/// The smallest ρ per base pair the fit has evaluated so far, and the sum
+/// there.
+struct TheSmallestSoFar {
+    /// The exponent of 10 of that ρ per base pair, which is what the grid
+    /// and the search both move in.
+    exponent: f64,
+    /// The sum at it.
+    sum: f64,
+}
+
+impl TheSmallestSoFar {
+    /// Keeps the exponent when its sum is below the smallest so far, and
+    /// says whether it kept it.
+    ///
+    /// A sum equal to the smallest does not replace it, so of two
+    /// exponents whose sums are the same bits the one evaluated first
+    /// wins, which is the lower of the grid, the grid being evaluated
+    /// before the search. It is the rule the `coding` skill gives for a
+    /// comparison that decides a result.
+    fn take(&mut self, exponent: f64, sum: f64) -> bool {
+        if sum < self.sum {
+            self.exponent = exponent;
+            self.sum = sum;
+            return true;
+        }
+        false
+    }
+}
+
+/// The ρ per base pair at the smallest of that sum, and `None` when the
+/// smallest of the grid falls at either end of the searched range.
+///
+/// The 141 values of the grid are looked at first, which is what looks at
+/// the whole range instead of sliding downhill from a start value into
+/// whichever valley holds it. The two neighbours of the smallest of them
+/// bracket a golden section search, which holds two points inside the
+/// bracket and drops the end beyond whichever of them has the larger sum,
+/// so the bracket is 0.618 of itself after each step. What is given back
+/// is the smallest of every ρ per base pair evaluated, the 141 of the grid
+/// included, so a sum with more than one valley inside the cell the search
+/// works on gives at worst the best of the grid, a tenth of a decade from
+/// the smallest.
+///
+/// The grid and the search both move in the exponent of 10 of the ρ per
+/// base pair and not in the ρ per base pair itself: the values of the grid
+/// are a tenth of a decade apart, and the search stops when its bracket is
+/// narrower than [`THE_TOLERANCE_OF_THE_SEARCH`] of a decade.
+fn the_rho_per_bp_of_the_smallest(
+    dists: &[u64],
+    num_pairs: &[u64],
+    sum_r2: &[f64],
+    num_individuals: f64,
+) -> Option<f64> {
+    let sum_at = |exponent: f64| {
+        the_sum_to_make_smallest(
+            the_rho_per_bp_of(exponent),
+            dists,
+            num_pairs,
+            sum_r2,
+            num_individuals,
+        )
+    };
+
+    let mut the_smallest_point = 0;
+    let mut smallest = TheSmallestSoFar {
+        exponent: the_exponent_of(0),
+        sum: f64::INFINITY,
+    };
+    for point in 0..THE_POINTS_OF_THE_GRID {
+        let exponent = the_exponent_of(point);
+        if smallest.take(exponent, sum_at(exponent)) {
+            the_smallest_point = point;
+        }
+    }
+
+    // The two neighbours of the smallest of the grid, which do not exist
+    // when it is the first or the last of the 141: a curve that is flat
+    // across `max_dist`, or that has fallen before the second base pair,
+    // is not a fall-off these pairs pin down.
+    let below = the_smallest_point.checked_sub(1)?;
+    let above = the_smallest_point.checked_add(1)?;
+    if above >= THE_POINTS_OF_THE_GRID {
+        return None;
+    }
+
+    let golden = the_golden_section();
+    let mut lower = the_exponent_of(below);
+    let mut upper = the_exponent_of(above);
+    let mut inside_low = upper - golden * (upper - lower);
+    let mut inside_high = lower + golden * (upper - lower);
+    let mut at_low = sum_at(inside_low);
+    let mut at_high = sum_at(inside_high);
+    let _ = smallest.take(inside_low, at_low);
+    let _ = smallest.take(inside_high, at_high);
+    while (upper - lower) > THE_TOLERANCE_OF_THE_SEARCH {
+        if at_low < at_high {
+            upper = inside_high;
+            inside_high = inside_low;
+            at_high = at_low;
+            inside_low = upper - golden * (upper - lower);
+            at_low = sum_at(inside_low);
+            let _ = smallest.take(inside_low, at_low);
+        } else {
+            lower = inside_low;
+            inside_low = inside_high;
+            at_low = at_high;
+            inside_high = lower + golden * (upper - lower);
+            at_high = sum_at(inside_high);
+            let _ = smallest.take(inside_high, at_high);
+        }
+    }
+    Some(the_rho_per_bp_of(smallest.exponent))
+}
+
+/// The exponent of 10 of the value of the grid at `point`, from
+/// [`THE_SMALLEST_EXPONENT_OF_THE_GRID`] by [`THE_STEP_OF_THE_GRID`].
+fn the_exponent_of(point: usize) -> f64 {
+    THE_SMALLEST_EXPONENT_OF_THE_GRID + point as f64 * THE_STEP_OF_THE_GRID
+}
+
+/// The ρ per base pair whose exponent of 10 is `exponent`.
+///
+/// It is the one call of the fit to a function that is not rounded the
+/// same on every platform, 183 of them in a fit, and what it moves is
+/// where the search looks and not what the curve gives there: two
+/// platforms that place a value of the grid a last bit apart still stop
+/// within [`THE_TOLERANCE_OF_THE_SEARCH`] of a decade of one smallest.
+fn the_rho_per_bp_of(exponent: f64) -> f64 {
+    10.0_f64.powf(exponent)
+}
+
+/// (√5 − 1) / 2, the part of a bracket the golden section search leaves
+/// after each step, 0.618.
+///
+/// `sqrt` is exact on every platform, which the `coding` skill says of it
+/// and of the four operations and of nothing else, so the search steps the
+/// same everywhere.
+fn the_golden_section() -> f64 {
+    (5.0_f64.sqrt() - 1.0) / 2.0
+}
+
+/// The ρ at which the curve of a population of `num_individuals`
+/// individuals is half of what it is at ρ of 0, and `None` when the curve
+/// never falls to half.
+///
+/// It is 2.1608135872529166 at 100 individuals and 2.2641731329247312 at
+/// 50, and it is solved for by bisection between ρ of 0 and
+/// [`THE_LARGEST_RHO_OF_THE_HALF`] and not read from a table, so a dataset
+/// of another n needs no new number. The bracket is left when it is
+/// narrower than [`THE_TOLERANCE_OF_THE_HALF`] of its own middle.
+///
+/// The curve falls towards 1 divided by the individuals and not towards 0,
+/// so half of its value at ρ of 0 is below what it ever reaches at 1 and
+/// at 2 individuals, which "The curve that is fitted" of
+/// `docs/specs/ld.md` gives the numbers of, and those two are the `None`.
+fn the_rho_at_half(num_individuals: f64) -> Option<f64> {
+    let half = the_curve_at(0.0, num_individuals) / 2.0;
+    let mut lower = 0.0;
+    let mut upper = THE_LARGEST_RHO_OF_THE_HALF;
+    if the_curve_at(upper, num_individuals) >= half {
+        return None;
+    }
+    while (upper - lower) > THE_TOLERANCE_OF_THE_HALF * ((lower + upper) / 2.0) {
+        let middle = (lower + upper) / 2.0;
+        if the_curve_at(middle, num_individuals) > half {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    Some((lower + upper) / 2.0)
+}
+
+/// What [`fit_ld_decay`] refuses before it fits anything.
+///
+/// # Errors
+///
+/// The four of [`fit_ld_decay`].
+fn the_pairs_of_each_dist_are_checked(
+    dists: &[u64],
+    num_pairs: &[u64],
+    sum_r2: &[f64],
+    num_individuals: u64,
+) -> Result<()> {
+    if dists.len() != num_pairs.len() || dists.len() != sum_r2.len() {
+        return Err(Error::LdDecayArraysOfDifferentLengths {
+            num_dists: dists.len(),
+            num_pairs: num_pairs.len(),
+            num_sums: sum_r2.len(),
+        });
+    }
+    if num_individuals == 0 {
+        return Err(Error::LdDecayNoIndividuals);
+    }
+    for ((dist, pairs), sum) in dists.iter().zip(num_pairs).zip(sum_r2) {
+        if *pairs == 0 {
+            return Err(Error::LdDecayDistWithNoPair { dist: *dist });
+        }
+        if !sum.is_finite() || *sum < 0.0 {
+            return Err(Error::LdDecaySumOfR2OutOfRange {
+                dist: *dist,
+                sum_r2: *sum,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How close two numbers of the fit are asked to be, which is the
+    /// tolerance "How it is verified" of `docs/specs/ld.md` compares the
+    /// fitted values within: 480 times the 2.1·10⁻⁹ that R's `optimize`
+    /// and R's `nls` disagree by on the same pairs.
+    const THE_TOLERANCE: f64 = 1e-6;
+
+    /// Asserts that `found` is within [`THE_TOLERANCE`] of `expected`,
+    /// relative to `expected`.
+    #[track_caller]
+    fn assert_close(found: f64, expected: f64, what: &str) {
+        let apart = (found - expected).abs() / expected.abs();
+        assert!(
+            apart <= THE_TOLERANCE,
+            "{what} is {found} and the spec gives {expected}, {apart} of it apart"
+        );
+    }
+
+    /// The r² the curve itself gives at each distance of `dists`, with the
+    /// ρ per base pair and the individuals given, which is the table "How
+    /// it is verified" of `docs/specs/ld.md` makes the first test of the
+    /// fit on: one pair at each distance, whose r² is the curve there, so
+    /// the answer is known before the fit runs.
+    fn the_table_of_the_curve(
+        dists: &[u64],
+        rho_per_bp: f64,
+        num_individuals: u64,
+    ) -> (Vec<u64>, Vec<f64>) {
+        let num_pairs = vec![1_u64; dists.len()];
+        let sum_r2 = dists
+            .iter()
+            .map(|dist| the_curve_at(*dist as f64 * rho_per_bp, num_individuals as f64))
+            .collect();
+        (num_pairs, sum_r2)
+    }
+
+    /// The distances `step`, 2·`step` and so on up to `last`.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the tests give a step of 500 or 1000 and a last distance of at most \
+                  250000, so no product of the two reaches a quarter of a million"
+    )]
+    fn the_dists_from(step: u64, last: u64) -> Vec<u64> {
+        (1..)
+            .map(|which| which * step)
+            .take_while(|dist| *dist <= last)
+            .collect()
+    }
+
+    #[test]
+    fn the_fit_gives_back_the_rho_per_bp_the_table_of_the_curve_was_made_with() {
+        let dists = the_dists_from(1000, 250_000);
+        assert_eq!(dists.len(), 250, "the distances of the table");
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 0.0001, 100);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
+        assert_close(decay.rho_per_bp(), 0.0001, "the fitted rho per base pair");
+        assert_close(decay.half_dist(), 21608.135872529165, "the half distance");
+        assert_close(
+            decay.r2_at_zero(),
+            0.46198347107438015,
+            "the r² at a distance of 0",
+        );
+    }
+
+    #[test]
+    fn the_fit_finds_a_rho_per_bp_that_is_not_one_of_the_141_of_the_grid() {
+        let dists = the_dists_from(500, 125_000);
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 0.0002, 50);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 50).expect("the fit");
+        assert_close(decay.rho_per_bp(), 0.0002, "the fitted rho per base pair");
+        // The spec writes the ρ that halves the curve at 50 individuals as
+        // 2.2641731329247312, whose last digit is past what an `f64`
+        // holds, and the half distance is it divided by the ρ per base
+        // pair the table was made with.
+        assert_close(
+            decay.half_dist(),
+            2.264_173_132_924_731 / 0.0002,
+            "the half distance",
+        );
+        assert_close(
+            decay.r2_at_zero(),
+            0.46942148760330576,
+            "the r² at a distance of 0",
+        );
+    }
+
+    /// The three values of `decay` are NaN, which is what a population no
+    /// curve was fitted to gives.
+    #[track_caller]
+    fn assert_no_curve(decay: &LdDecay, what: &str) {
+        assert!(
+            decay.rho_per_bp().is_nan()
+                && decay.r2_at_zero().is_nan()
+                && decay.half_dist().is_nan(),
+            "{what} gave a rho per base pair of {rho}, an r² at 0 of {zero} and a half \
+             distance of {half}, where all three are NaN",
+            rho = decay.rho_per_bp(),
+            zero = decay.r2_at_zero(),
+            half = decay.half_dist()
+        );
+    }
+
+    #[test]
+    fn the_last_value_of_the_grid_is_the_top_of_the_searched_range() {
+        assert_close(
+            the_exponent_of(0),
+            THE_SMALLEST_EXPONENT_OF_THE_GRID,
+            "the exponent of the first value of the grid",
+        );
+        let last = THE_POINTS_OF_THE_GRID
+            .checked_sub(1)
+            .expect("the grid has a value");
+        assert_close(
+            the_exponent_of(last),
+            2.0,
+            "the exponent of the last value of the grid",
+        );
+    }
+
+    #[test]
+    fn pairs_at_one_distance_have_no_curve() {
+        let decay = fit_ld_decay(&[1000], &[42], &[7.5], 100).expect("the fit");
+        assert_no_curve(&decay, "pairs at one distance");
+    }
+
+    #[test]
+    fn no_pair_at_all_has_no_curve() {
+        let decay = fit_ld_decay(&[], &[], &[], 100).expect("the fit");
+        assert_no_curve(&decay, "no pair at all");
+    }
+
+    #[test]
+    fn a_smallest_at_the_bottom_end_of_the_range_has_no_curve() {
+        let dists = the_dists_from(1000, 250_000);
+        let num_pairs = vec![1_u64; dists.len()];
+        let sum_r2 = vec![1.0_f64; dists.len()];
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
+        assert_no_curve(&decay, "an r² of 1 at every distance");
+    }
+
+    #[test]
+    fn a_smallest_at_the_top_end_of_the_range_has_no_curve() {
+        let dists = the_dists_from(1000, 250_000);
+        let num_pairs = vec![1_u64; dists.len()];
+        let sum_r2 = vec![0.0_f64; dists.len()];
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
+        assert_no_curve(&decay, "an r² of 0 at every distance");
+    }
+
+    #[test]
+    fn a_population_of_two_individuals_has_no_half_distance_and_keeps_the_other_two() {
+        let dists = the_dists_from(1000, 250_000);
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 0.0001, 2);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 2).expect("the fit");
+        assert_close(decay.rho_per_bp(), 0.0001, "the fitted rho per base pair");
+        assert_close(
+            decay.r2_at_zero(),
+            0.8264462809917356,
+            "the r² at a distance of 0",
+        );
+        assert!(
+            decay.half_dist().is_nan(),
+            "the half distance of two individuals is {half}, where the curve runs from \
+             0.8264462809917356 down to 0.5 and never reaches half of the first",
+            half = decay.half_dist()
+        );
+    }
+
+    #[test]
+    fn arrays_of_different_lengths_are_an_error() {
+        let error = fit_ld_decay(&[1000, 2000], &[1], &[0.5, 0.25], 100).expect_err("the error");
+        assert!(
+            matches!(
+                error,
+                Error::LdDecayArraysOfDifferentLengths {
+                    num_dists: 2,
+                    num_pairs: 1,
+                    num_sums: 2
+                }
+            ),
+            "the error of three arrays that are not of one length is {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_population_of_no_individual_is_an_error() {
+        let error = fit_ld_decay(&[1000, 2000], &[1, 1], &[0.5, 0.25], 0).expect_err("the error");
+        assert!(
+            matches!(error, Error::LdDecayNoIndividuals),
+            "the error of a population of no individual is {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_distance_that_holds_no_pair_is_an_error() {
+        let error = fit_ld_decay(&[1000, 2000], &[1, 0], &[0.5, 0.0], 100).expect_err("the error");
+        assert!(
+            matches!(error, Error::LdDecayDistWithNoPair { dist: 2000 }),
+            "the error of a distance that holds no pair is {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_sum_of_r2_that_is_not_finite_is_an_error() {
+        let error =
+            fit_ld_decay(&[1000, 2000], &[1, 1], &[0.5, f64::NAN], 100).expect_err("the error");
+        assert!(
+            matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 2000, sum_r2 } if sum_r2.is_nan()),
+            "the error of a sum of r² that is NaN is {error:?}"
+        );
+        let error = fit_ld_decay(&[1000, 2000], &[1, 1], &[f64::INFINITY, 0.25], 100)
+            .expect_err("the error");
+        assert!(
+            matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 1000, sum_r2 } if sum_r2.is_infinite()),
+            "the error of a sum of r² that is an infinity is {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_sum_of_r2_below_zero_is_an_error() {
+        let error =
+            fit_ld_decay(&[1000, 2000], &[1, 1], &[0.5, -0.25], 100).expect_err("the error");
+        assert!(
+            matches!(error, Error::LdDecaySumOfR2OutOfRange { dist: 2000, sum_r2 } if sum_r2 < 0.0),
+            "the error of a sum of r² below 0 is {error:?}"
+        );
+    }
+}

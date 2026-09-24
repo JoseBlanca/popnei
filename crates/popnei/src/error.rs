@@ -1340,6 +1340,68 @@ pub enum Error {
     )]
     LdNoBins,
 
+    /// The three arrays the curve of the fall-off is fitted to are not of
+    /// one length. They are the distances that hold a pair, how many pairs
+    /// each of them holds and the sum of the r² of those pairs, and the
+    /// three are read together, one entry at a time, so arrays of
+    /// different lengths would put the pairs of one distance against the
+    /// sum of another. A pass gives the three compacted together and does
+    /// not reach this; a caller of `fit_ld_decay` with a table of its own
+    /// does. In Python it is a `ValueError` that names no file.
+    #[error(
+        "the curve of the fall-off was given {num_dists} distances, {num_pairs} counts of pairs and {num_sums} sums of r², and the three are one value for each distance that holds a pair"
+    )]
+    LdDecayArraysOfDifferentLengths {
+        /// How many distances were given.
+        num_dists: usize,
+        /// How many counts of pairs were given.
+        num_pairs: usize,
+        /// How many sums of r² were given.
+        num_sums: usize,
+    },
+
+    /// The population the curve of the fall-off is fitted for has no
+    /// individual. The curve is the r² a population of n individuals is
+    /// expected to be in, and n divides the correction that holds it up at
+    /// long distances, so a population of none has no curve to fit rather
+    /// than a curve with nothing in it. In Python it is a `ValueError`
+    /// that names no file.
+    #[error(
+        "the curve of the fall-off was asked for a population of no individual, and the r² it expects is that of a sample of n individuals, which divides the correction for the sample being finite"
+    )]
+    LdDecayNoIndividuals,
+
+    /// A distance the curve of the fall-off was given holds no pair. The
+    /// distances given are the ones that hold a pair, and what each of
+    /// them weighs in the sum that is made smallest is how many pairs it
+    /// holds, so a distance of no pair weighs nothing and says that the
+    /// three arrays are not the ones a pass compacted. In Python it is a
+    /// `ValueError` that names no file.
+    #[error(
+        "the distance {dist} was given to the curve of the fall-off with no pair, and the distances it is fitted over are the ones that hold a pair"
+    )]
+    LdDecayDistWithNoPair {
+        /// The distance, in base pairs, that was given with no pair.
+        dist: u64,
+    },
+
+    /// A sum of r² the curve of the fall-off was given is not finite or is
+    /// below 0. It is the sum of the r² of the pairs at one distance, each
+    /// of them a square of a correlation and so a number from 0 to 1, and
+    /// the sum that is made smallest is linear in it, so an infinity or a
+    /// NaN there makes every ρ the same and a negative sum pulls the curve
+    /// up where no pair does. In Python it is a `ValueError` that names no
+    /// file.
+    #[error(
+        "the sum of the r² of the pairs at the distance {dist} is {sum_r2}, and it is a sum of squares of correlations: a finite number, 0 or above"
+    )]
+    LdDecaySumOfR2OutOfRange {
+        /// The distance, in base pairs, whose sum of r² was refused.
+        dist: u64,
+        /// The sum that was given for it.
+        sum_r2: f64,
+    },
+
     /// An individual a study was asked to test is not one the source has.
     /// The individuals of a study are given by their position among those
     /// the reader gives, from 0, and this one is at or beyond their count.

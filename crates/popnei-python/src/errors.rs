@@ -667,6 +667,18 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::LdPopWithNoIndividual { .. }
         | popnei::Error::LdMinDistAboveMaxDist { .. }
         | popnei::Error::LdNoBins
+        // The four of the curve fitted to the fall-off, which are the
+        // arguments of `fit_ld_decay`: three arrays that are not one value
+        // for each distance that holds a pair, a population of no
+        // individual, a distance given with no pair, and a sum of the r² of
+        // a distance that is not a sum of squares of correlations. A pass
+        // of this package reaches none of them, since it hands the fit what
+        // it counted itself; a caller of the core with a table of its own
+        // does.
+        | popnei::Error::LdDecayArraysOfDifferentLengths { .. }
+        | popnei::Error::LdDecayNoIndividuals
+        | popnei::Error::LdDecayDistWithNoPair { .. }
+        | popnei::Error::LdDecaySumOfR2OutOfRange { .. }
         // The fourteen of the association study that are of what a user
         // wrote and are wrong whatever file is read: a phenotype or a
         // covariate that is not a finite number, which the package lets
