@@ -25,13 +25,13 @@
 //!
 //! What is built here so far is the pass, those counts of variants, the
 //! alleles each population called, the private ones among them, the
-//! variants that vary in it and F_IS. Four things are not, and all four
-//! are the draw of a common number of called alleles, which is work
-//! package 3 of `docs/plans/diversity.md`: `num_called_alleles` is taken
-//! and checked and nothing reads it, so no variant is counted as being in
-//! a draw; the three standardized values, the mean alleles, the mean
-//! private alleles and the ratio of variable variants of a draw, have no
-//! value; and neither has the folded site frequency spectrum. They are
+//! variants that vary in it, F_IS, the variants in the draw of
+//! `num_called_alleles` and two of the three standardized values: the
+//! alleles a draw of that many called alleles is expected to show, and the
+//! share of the variants such a draw is expected to vary at. Two things are
+//! not built, and both are of that same draw, which is work package 3 of
+//! `docs/plans/diversity.md`: the standardized private alleles have no
+//! value, and neither has the folded site frequency spectrum. They are
 //! built on top of the same counts.
 
 use std::collections::HashSet;
@@ -241,6 +241,17 @@ struct OfAPop {
     private_alleles: u64,
     /// How many of those variants it called more than one allele at.
     num_variable_vars: u64,
+    /// Of the variants that counted for it, the ones it called at least
+    /// `num_called_alleles` alleles at: the variants in the draw for the
+    /// population, which the two sums below are over and which are their
+    /// divisor. It is 0 for a pass that was given no draw.
+    num_vars_in_draw: u64,
+    /// The alleles a draw of `num_called_alleles` is expected to show, added
+    /// up over those variants.
+    sum_alleles_in_draw: f64,
+    /// The chance that such a draw shows more than one allele, added up over
+    /// the same variants.
+    sum_varies_in_draw: f64,
     /// The observed heterozygosities of the variants behind its F_IS,
     /// added up.
     sum_obs_het: f64,
@@ -261,10 +272,43 @@ impl OfAPop {
             num_alleles: 0,
             private_alleles: 0,
             num_variable_vars: 0,
+            num_vars_in_draw: 0,
+            sum_alleles_in_draw: 0.0,
+            sum_varies_in_draw: 0.0,
             sum_obs_het: 0.0,
             sum_unbiased_exp_het: 0.0,
             num_vars_with_both_hets: 0,
         }
+    }
+
+    /// The alleles a draw of `num_called_alleles` is expected to show,
+    /// averaged over the variants in the draw for the population, and NaN
+    /// when none is.
+    fn num_alleles_in_draw(&self) -> f64 {
+        let Some(num_vars) = self.num_vars_of_the_draw() else {
+            return f64::NAN;
+        };
+        self.sum_alleles_in_draw / num_vars
+    }
+
+    /// The chance that such a draw shows more than one allele, averaged over
+    /// the same variants, and NaN when none is.
+    fn variable_vars_ratio_in_draw(&self) -> f64 {
+        let Some(num_vars) = self.num_vars_of_the_draw() else {
+            return f64::NAN;
+        };
+        self.sum_varies_in_draw / num_vars
+    }
+
+    /// The divisor of the two sums of the draw, and `None` when no variant
+    /// is in the draw for the population and neither sum is over anything.
+    fn num_vars_of_the_draw(&self) -> Option<f64> {
+        if self.num_vars_in_draw == 0 {
+            return None;
+        }
+        // A count below 2^53 is exact in a float64, and a pass of that many
+        // variants reads more rows than any source holds.
+        Some(self.num_vars_in_draw as f64)
     }
 
     /// One minus the mean observed heterozygosity of the population over
@@ -299,6 +343,8 @@ pub struct PopDiversity {
     pops: Vec<OfAPop>,
     /// The variants that counted for every population at once.
     num_vars_every_pop: u64,
+    /// Of those, the ones in the draw for every population at once.
+    num_vars_every_pop_in_draw: u64,
     /// The variants the reader gave, whether any population counted them or
     /// not.
     num_vars_of_the_pass: u64,
@@ -323,6 +369,24 @@ impl PopDiversity {
         self.pops.get(pop).map(|pop| pop.num_vars)
     }
 
+    /// Of the variants that counted for the population, the ones it called
+    /// at least `num_called_alleles` alleles at: the variants in the draw
+    /// for it, which both of its standardized values are over. `None` when
+    /// `pop` is not a population of the call.
+    ///
+    /// A variant is in the draw for the population when it counts for the
+    /// population and the population reached that many called alleles there,
+    /// both and not the second alone, so a variant the population has too
+    /// little called at is out of this count however many copies it called.
+    ///
+    /// It is 0 for a pass that was given no draw and for a draw above every
+    /// called allele of the population, and 0 is what says why a
+    /// standardized value beside it is NaN.
+    #[must_use]
+    pub fn num_vars_in_draw(&self, pop: usize) -> Option<u64> {
+        self.pops.get(pop).map(|pop| pop.num_vars_in_draw)
+    }
+
     /// The variants the reader gave the pass, whether any population counted
     /// them or not.
     ///
@@ -343,6 +407,16 @@ impl PopDiversity {
         self.num_vars_every_pop
     }
 
+    /// Of those, the ones in the draw for every population: the variants
+    /// each population reached `num_called_alleles` called alleles at. It is
+    /// the divisor of the standardized private alleles, as
+    /// [`PopDiversity::num_vars_every_pop`] is of the private alleles
+    /// themselves, and it is 0 for a pass that was given no draw.
+    #[must_use]
+    pub fn num_vars_every_pop_in_draw(&self) -> u64 {
+        self.num_vars_every_pop_in_draw
+    }
+
     /// The alleles the population called, summed over the variants that
     /// counted for it. `None` when `pop` is not a population of the call or
     /// [`DiversityStats::NUM_ALLELES`] was not asked for.
@@ -355,6 +429,28 @@ impl PopDiversity {
             return None;
         }
         self.pops.get(pop).map(|pop| pop.num_alleles)
+    }
+
+    /// The alleles a draw of `num_called_alleles` of the called alleles of
+    /// the population is expected to show at a variant, averaged over the
+    /// variants in the draw for it: the allelic richness of the population
+    /// at a number of called alleles every population of the call is brought
+    /// down to, which is what makes two populations comparable when one
+    /// holds more individuals than the other and finds more alleles for that
+    /// reason alone. `None` when `pop` is not a population of the call or
+    /// [`DiversityStats::NUM_ALLELES`] was not asked for.
+    ///
+    /// It is NaN when no variant is in the draw for the population, which
+    /// happens in three ways: the pass was given no draw, the draw was above
+    /// every called allele of the population, and no variant counted for the
+    /// population at all. [`PopDiversity::num_vars_in_draw`] is 0 in each of
+    /// them and says which question was not answered.
+    #[must_use]
+    pub fn num_alleles_in_draw(&self, pop: usize) -> Option<f64> {
+        if !self.stats.contains(DiversityStats::NUM_ALLELES) {
+            return None;
+        }
+        self.pops.get(pop).map(OfAPop::num_alleles_in_draw)
     }
 
     /// The alleles the population called that no other population of the
@@ -391,6 +487,27 @@ impl PopDiversity {
             return None;
         }
         self.pops.get(pop).map(|pop| pop.num_variable_vars)
+    }
+
+    /// The chance that a draw of `num_called_alleles` of the called alleles
+    /// of the population shows more than one allele, averaged over the
+    /// variants in the draw for it: the ratio of variable variants of the
+    /// population at that common number of called alleles, which is what
+    /// makes it comparable between two populations of different size.
+    /// `None` when `pop` is not a population of the call or
+    /// [`DiversityStats::VARIABLE_VARS_RATIO`] was not asked for.
+    ///
+    /// It is NaN in the three cases of
+    /// [`PopDiversity::num_alleles_in_draw`]. On a dataset whose every
+    /// variant has two alleles it is that value minus 1, a draw there
+    /// showing one allele or two; a variant of more alleles has no such
+    /// identity.
+    #[must_use]
+    pub fn variable_vars_ratio_in_draw(&self, pop: usize) -> Option<f64> {
+        if !self.stats.contains(DiversityStats::VARIABLE_VARS_RATIO) {
+            return None;
+        }
+        self.pops.get(pop).map(OfAPop::variable_vars_ratio_in_draw)
     }
 
     /// How far the genotypes of the population are from the proportions its
@@ -448,6 +565,25 @@ impl PopDiversity {
                 pop.sum_obs_het,
                 pop.sum_unbiased_exp_het,
                 pop.num_vars_with_both_hets,
+            )
+        })
+    }
+
+    /// The alleles a draw is expected to show and the chance that it varies,
+    /// each added up over the variants in the draw for one population, and
+    /// how many those variants are.
+    ///
+    /// A test compares these bit for bit for the reason
+    /// [`PopDiversity::the_sums_behind_the_fis`] gives: the division that
+    /// makes a standardized value out of a sum absorbs a difference of the
+    /// last bits of that sum.
+    #[cfg(test)]
+    fn the_sums_of_the_draw(&self, pop: usize) -> Option<(f64, f64, u64)> {
+        self.pops.get(pop).map(|pop| {
+            (
+                pop.sum_alleles_in_draw,
+                pop.sum_varies_in_draw,
+                pop.num_vars_in_draw,
             )
         })
     }
@@ -589,6 +725,131 @@ impl Heterozygosities {
     }
 }
 
+/// The draw of a common number of called alleles, which a pass given
+/// `num_called_alleles` carries and a pass given none does not.
+///
+/// A variant is in the draw for a population when it counts for that
+/// population and the population called at least `num_called_alleles`
+/// alleles there, both and not the second alone, which "Its Python function"
+/// of `docs/specs/diversity.md` states. Each of the two standardized values
+/// is the mean over the variants in the draw for the population, so what one
+/// population keeps of the draw is one count of variants and one sum for
+/// each value.
+#[derive(Debug, Clone, Copy)]
+struct OfTheDraw {
+    /// The called alleles every population is brought down to, the `g` of
+    /// the formulas of `docs/specs/diversity.md`.
+    num_called_alleles: u32,
+    /// The statistics the pass was asked for, which say which of the two
+    /// sums a variant in the draw adds to. Each of them costs a product of
+    /// `num_called_alleles` factors for every allele the population called,
+    /// so the one that was not asked for is not computed.
+    stats: DiversityStats,
+}
+
+impl OfTheDraw {
+    /// The draw of a pass that was given one, and `None` for a pass that was
+    /// given none, whose counts of the variants of a draw stay 0 and whose
+    /// standardized values are NaN.
+    fn of(options: &DiversityOptions) -> Option<OfTheDraw> {
+        options
+            .num_called_alleles
+            .map(|num_called_alleles| OfTheDraw {
+                num_called_alleles,
+                stats: options.stats,
+            })
+    }
+
+    /// It counts one variant in the draw for a population and adds what a
+    /// draw is expected to show there to the sums the pass was asked for.
+    ///
+    /// `counts` is how often the population called each allele of the
+    /// variant, `one_past_the_largest` the entry of `counts` a walk over them
+    /// stops at, and `called_alleles` their sum, which the caller has found
+    /// to be at least `num_called_alleles`.
+    fn add_the_var(
+        &self,
+        counts: &AlleleCounts,
+        one_past_the_largest: usize,
+        called_alleles: u32,
+        counted: &mut OfAPop,
+    ) {
+        // One variant of the draw, and a pass of more than
+        // 18446744073709551615 variants reads more rows than any source
+        // holds.
+        counted.num_vars_in_draw = counted.num_vars_in_draw.saturating_add(1);
+        if self.stats.contains(DiversityStats::NUM_ALLELES) {
+            counted.sum_alleles_in_draw +=
+                self.alleles_a_draw_shows(counts, one_past_the_largest, called_alleles);
+        }
+        if self.stats.contains(DiversityStats::VARIABLE_VARS_RATIO) {
+            counted.sum_varies_in_draw +=
+                self.chance_a_draw_varies(counts, one_past_the_largest, called_alleles);
+        }
+    }
+
+    /// The alleles a draw of `num_called_alleles` of the `called_alleles`
+    /// copies the population called at one variant is expected to show: the
+    /// chance that the draw holds a copy of an allele, summed over the
+    /// alleles the population called there, which is the `E` of "What it
+    /// gives" of "The number of alleles" of `docs/specs/diversity.md`.
+    ///
+    /// The alleles are summed in the order of their numbers on every call,
+    /// so two populations of one pass add the same terms the same way.
+    fn alleles_a_draw_shows(
+        &self,
+        counts: &AlleleCounts,
+        one_past_the_largest: usize,
+        called_alleles: u32,
+    ) -> f64 {
+        the_alleles_called(counts, one_past_the_largest)
+            .map(|count| {
+                1.0 - chance_a_draw_misses_an_allele(called_alleles, count, self.num_called_alleles)
+            })
+            .sum()
+    }
+
+    /// The chance that such a draw shows more than one allele: one minus the
+    /// chance that every copy it takes is of the same allele, summed over the
+    /// alleles the population called, which is the `P` of "What it gives" of
+    /// "The variable variants" of `docs/specs/diversity.md`. A draw is all of
+    /// one allele or of more than one, so the two are one minus each other.
+    fn chance_a_draw_varies(
+        &self,
+        counts: &AlleleCounts,
+        one_past_the_largest: usize,
+        called_alleles: u32,
+    ) -> f64 {
+        let all_of_one_allele: f64 = the_alleles_called(counts, one_past_the_largest)
+            .map(|count| {
+                chance_a_draw_is_all_of_one_allele(called_alleles, count, self.num_called_alleles)
+            })
+            .sum();
+        1.0 - all_of_one_allele
+    }
+}
+
+/// How often the population called each of the alleles it called at one
+/// variant, in the order of their numbers.
+///
+/// `counts` is what the counts of the variant left for the population and
+/// `one_past_the_largest` the bound they gave on the alleles they wrote. The
+/// alleles the population did not call are left out: each of them would add
+/// a term of 0 to a sum over a draw and cost a product of
+/// `num_called_alleles` factors, and a population counted by reading the row
+/// as it is has no bound on the alleles of the row, so all 128 entries of
+/// its counts are walked.
+fn the_alleles_called(
+    counts: &AlleleCounts,
+    one_past_the_largest: usize,
+) -> impl Iterator<Item = u32> {
+    counts
+        .iter()
+        .take(one_past_the_largest)
+        .copied()
+        .filter(|count| *count > 0)
+}
+
 /// What every row of a pass is read with: the populations and the rule for
 /// which variants count for them.
 #[derive(Debug)]
@@ -604,6 +865,9 @@ struct OfThePass<'a> {
     /// The two heterozygosities F_IS is built from, which a pass that gives
     /// no F_IS does not carry and whose genotypes it does not count.
     heterozygosities: Option<Heterozygosities>,
+    /// The draw of a common number of called alleles, which a pass given no
+    /// `num_called_alleles` does not carry and counts no variant of.
+    of_the_draw: Option<OfTheDraw>,
     /// How many alleles a population has to have called at a variant for
     /// the variant to count for it: `min_num_individuals` genotypes of the
     /// ploidy.
@@ -618,6 +882,7 @@ struct OfThePass<'a> {
 struct Totals {
     pops: Vec<OfAPop>,
     num_vars_every_pop: u64,
+    num_vars_every_pop_in_draw: u64,
 }
 
 impl Totals {
@@ -626,6 +891,7 @@ impl Totals {
         Totals {
             pops: vec![OfAPop::none(); num_pops],
             num_vars_every_pop: 0,
+            num_vars_every_pop_in_draw: 0,
         }
     }
 
@@ -642,11 +908,16 @@ impl Totals {
             of_the_pass.num_variable_vars = of_the_pass
                 .num_variable_vars
                 .saturating_add(of_the_chunk.num_variable_vars);
+            of_the_pass.num_vars_in_draw = of_the_pass
+                .num_vars_in_draw
+                .saturating_add(of_the_chunk.num_vars_in_draw);
             // The chunks of a block are added in the order of the block and
-            // the blocks in the order of the pass, so these two sums of
+            // the blocks in the order of the pass, so these four sums of
             // float64 do not depend on how many threads read the rows.
             of_the_pass.sum_obs_het += of_the_chunk.sum_obs_het;
             of_the_pass.sum_unbiased_exp_het += of_the_chunk.sum_unbiased_exp_het;
+            of_the_pass.sum_alleles_in_draw += of_the_chunk.sum_alleles_in_draw;
+            of_the_pass.sum_varies_in_draw += of_the_chunk.sum_varies_in_draw;
             of_the_pass.num_vars_with_both_hets = of_the_pass
                 .num_vars_with_both_hets
                 .saturating_add(of_the_chunk.num_vars_with_both_hets);
@@ -654,6 +925,9 @@ impl Totals {
         self.num_vars_every_pop = self
             .num_vars_every_pop
             .saturating_add(of_the_chunk.num_vars_every_pop);
+        self.num_vars_every_pop_in_draw = self
+            .num_vars_every_pop_in_draw
+            .saturating_add(of_the_chunk.num_vars_every_pop_in_draw);
     }
 
     /// It empties every count, so that one chunk of rows after another is
@@ -663,6 +937,7 @@ impl Totals {
             *of_the_pop = OfAPop::none();
         }
         self.num_vars_every_pop = 0;
+        self.num_vars_every_pop_in_draw = 0;
     }
 }
 
@@ -748,6 +1023,7 @@ fn the_pass<R: BlockReader + ?Sized>(
         counts_the_alleles: CountsTheAlleles::of(options.stats),
         counts_the_private_alleles: CountsThePrivateAlleles::of(options.stats),
         heterozygosities: Heterozygosities::of(options.stats, ploidy)?,
+        of_the_draw: OfTheDraw::of(options),
         min_called_alleles: min_called_alleles(options.min_num_individuals, ploidy_of_the_gts),
         ploidy,
     };
@@ -782,6 +1058,7 @@ fn the_pass<R: BlockReader + ?Sized>(
     Ok(PopDiversity {
         pops: totals.pops,
         num_vars_every_pop: totals.num_vars_every_pop,
+        num_vars_every_pop_in_draw: totals.num_vars_every_pop_in_draw,
         num_vars_of_the_pass: num_vars,
         stats: options.stats,
     })
@@ -1003,6 +1280,9 @@ fn add_the_rows(
     let mut num_pops_that_called: AlleleCounts = [0; 128];
     for row in gts.chunks_exact(alleles_per_var) {
         let mut every_pop = true;
+        // A pass that was given no draw has no variant in the draw for every
+        // population, so its second count of them stays 0.
+        let mut every_pop_in_draw = of_the_pass.of_the_draw.is_some();
         for ((of_the_pop, counted), at_the_row) in of_the_pass
             .pops
             .iter()
@@ -1062,6 +1342,7 @@ fn add_the_rows(
             // 0 does not put a variant with no data into the totals.
             if called_alleles == 0 || u64::from(called_alleles) < of_the_pass.min_called_alleles {
                 every_pop = false;
+                every_pop_in_draw = false;
                 continue;
             }
             // One variant of the pass, and a pass of more than
@@ -1089,9 +1370,29 @@ fn add_the_rows(
             if let (Some(heterozygosities), Some(gts)) = (of_the_pass.heterozygosities, gts) {
                 heterozygosities.add_the_var(&at_the_row.counts, called_alleles, gts, counted);
             }
+            // The variant is in the draw for the population when it counts
+            // for the population, which the lines above have settled, and
+            // the population called at least `num_called_alleles` alleles
+            // there.
+            if let Some(of_the_draw) = of_the_pass.of_the_draw {
+                if called_alleles < of_the_draw.num_called_alleles {
+                    every_pop_in_draw = false;
+                } else {
+                    of_the_draw.add_the_var(
+                        &at_the_row.counts,
+                        one_past_the_largest,
+                        called_alleles,
+                        counted,
+                    );
+                }
+            }
         }
         if every_pop {
             totals.num_vars_every_pop = totals.num_vars_every_pop.saturating_add(1);
+            if every_pop_in_draw {
+                totals.num_vars_every_pop_in_draw =
+                    totals.num_vars_every_pop_in_draw.saturating_add(1);
+            }
             if of_the_pass.counts_the_private_alleles == CountsThePrivateAlleles::Yes {
                 add_the_private_alleles(&of_each_pop, &mut num_pops_that_called, &mut totals.pops);
             }
@@ -1236,16 +1537,6 @@ fn num_different_alleles(counts: &AlleleCounts, one_past_the_largest: usize) -> 
 /// Division and multiplication are rounded the same way on every platform,
 /// unlike `exp` and `ln`, so a test of this asserts the digits of what it
 /// gives.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the standardized values that call it are tasks 3.2, 3.3 \
-                  and 3.4 of docs/plans/diversity.md, and until they are \
-                  written the tests of this module are its only callers; \
-                  this expect fails the build once one of them calls it"
-    )
-)]
 fn chance_a_draw_misses_an_allele(
     called_alleles: u32,
     count_of_the_allele: u32,
@@ -1266,11 +1557,47 @@ fn chance_a_draw_misses_an_allele(
         })
 }
 
+/// The chance that every one of the `num_called_alleles` copies a draw
+/// takes of the `called_alleles` a population called at one variant is the
+/// allele it called `count_of_the_allele` times: `C(n, g) / C(c, g)`, with
+/// `c` the called alleles, `n` the count of the allele and `g` the draw.
+///
+/// The chance that the draw shows more than one allele is one minus this
+/// summed over the alleles the population called, which "What it gives" of
+/// "The variable variants" of `docs/specs/diversity.md` states.
+///
+/// It is [`chance_a_draw_misses_an_allele`] with the copies of every other
+/// allele in the place of the allele's own, since a draw that is all of one
+/// allele is a draw that missed every other and there are `c - n` copies of
+/// those. The two chances are that one product of `g` factors and not two
+/// copies of one formula, so the standardized ratio of variable variants and
+/// the standardized number of alleles round the same way.
+///
+/// It is 0 where the population called the allele fewer than
+/// `num_called_alleles` times, no draw of that size being all of an allele
+/// with too few copies, and 1 where it called nothing else.
+fn chance_a_draw_is_all_of_one_allele(
+    called_alleles: u32,
+    count_of_the_allele: u32,
+    num_called_alleles: u32,
+) -> f64 {
+    // The copies of every other allele. A count of one allele is one part of
+    // the sum the called alleles are, so it is never the larger of the two
+    // and the subtraction never saturates.
+    let of_the_other_alleles = called_alleles.saturating_sub(count_of_the_allele);
+    chance_a_draw_misses_an_allele(called_alleles, of_the_other_alleles, num_called_alleles)
+}
+
 #[cfg(test)]
 mod fixtures {
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::{Path, PathBuf};
+
     use crate::block::{Block, BlockReader};
     use crate::error::Result;
     use crate::filters::FilteringStats;
+    use crate::io::vcf::{VcfOptions, VcfReader};
     use crate::variant::{ChromTable, Needs};
 
     /// The individuals of `pop1` of the worked example of "How it is
@@ -1481,6 +1808,61 @@ mod fixtures {
             .collect()
     }
 
+    /// The reference files live at the root of the repository, beside the
+    /// Python tests that read the same files, and not inside this crate.
+    fn reference(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/reference")
+            .join(name)
+    }
+
+    /// The reader over the panel of `docs/specs/stats.md`, the 1200
+    /// biallelic diploid variants of 200 individuals with 3 in 100
+    /// genotypes missing that every number of the panel in this module was
+    /// measured on, with every variant given and the blocks of the size
+    /// popnei chose for its individuals.
+    pub(super) fn the_panel() -> VcfReader<BufReader<File>> {
+        let options = VcfOptions {
+            ploidy: 2,
+            only_passed: false,
+            num_vars_per_block: None,
+        };
+        VcfReader::<BufReader<File>>::from_path(&reference("stats/panel.vcf.gz"), options)
+            .unwrap_or_else(|error| panic!("the panel: {error}"))
+    }
+
+    /// The individuals of `p0`, `p1` and `p2` of the panel, in that order,
+    /// as indices among the `individuals` of its reader.
+    ///
+    /// `tests/reference/stats/panel_pops_bcftools.txt` names them, one line
+    /// of an individual and its population, and it names its three
+    /// populations in the order p0, p2, p1, so the populations of a result
+    /// are the ones asked for here and not the ones the file happened to
+    /// name first.
+    pub(super) fn the_pops_of_the_panel(individuals: &[String]) -> Vec<Vec<usize>> {
+        let name = "stats/panel_pops_bcftools.txt";
+        let text = std::fs::read_to_string(reference(name)).expect("the populations of the panel");
+        let mut of_each_pop: Vec<Vec<usize>> = vec![Vec::new(); 3];
+        for line in text.lines() {
+            let mut columns = line.split('\t');
+            let (Some(individual), Some(pop)) = (columns.next(), columns.next()) else {
+                panic!("the line `{line}` of {name} is not an individual and a population");
+            };
+            let at = match pop {
+                "p0" => 0,
+                "p1" => 1,
+                "p2" => 2,
+                other => panic!("the population `{other}` of {name} is not p0, p1 or p2"),
+            };
+            let of_the_individual = individuals
+                .iter()
+                .position(|named| named == individual)
+                .unwrap_or_else(|| panic!("`{individual}` of {name} is not an individual"));
+            of_each_pop[at].push(of_the_individual);
+        }
+        of_each_pop
+    }
+
     /// The six variants of the worked example, in blocks of
     /// `num_vars_per_block` variants of the five diploid individuals.
     pub(super) fn the_worked_example(num_vars_per_block: usize) -> GivenBlocks {
@@ -1494,9 +1876,11 @@ mod the_pass {
     use super::calc_pop_diversity_one_chunk_at_a_time;
     use super::fixtures::{
         GivenBlocks, POP1, POP2, a_source_of_many_variants,
-        a_source_with_two_rows_below_the_missing_allele, blocks_of, the_worked_example,
+        a_source_with_two_rows_below_the_missing_allele, blocks_of, the_panel,
+        the_pops_of_the_panel, the_worked_example,
     };
     use super::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
+    use crate::block::BlockReader;
     use crate::error::Error;
     use crate::variant::Needs;
 
@@ -1521,6 +1905,29 @@ mod the_pass {
             num_called_alleles: None,
             min_num_individuals,
         }
+    }
+
+    /// The same options with a draw of `num_called_alleles` called alleles.
+    /// The folded spectrum is not among them: it is task 3.4 of
+    /// `docs/plans/diversity.md` and has no value yet.
+    fn options_of_a_draw(min_num_individuals: u32, num_called_alleles: u32) -> DiversityOptions {
+        DiversityOptions {
+            num_called_alleles: Some(num_called_alleles),
+            ..options_with_no_draw(min_num_individuals)
+        }
+    }
+
+    /// The diversity of the two populations of the worked example over its
+    /// six variants in one block, at a draw of `num_called_alleles` and a
+    /// threshold of one called genotype.
+    fn of_the_worked_example_at_a_draw(num_called_alleles: u32) -> PopDiversity {
+        let mut reader = the_worked_example(6);
+        calc_pop_diversity(
+            &mut reader,
+            &[&POP1, &POP2],
+            &options_of_a_draw(1, num_called_alleles),
+        )
+        .expect("the diversity of the worked example in a draw")
     }
 
     /// The diversity of the two populations of the worked example over its
@@ -1644,6 +2051,28 @@ mod the_pass {
                 "the bits of the unbiased expected heterozygosities of the population {pop} of \
                  {what}, {unbiased_exp_het} and {unbiased_of_the_other}"
             );
+            let (alleles, varies, num_vars_in_draw) =
+                one.the_sums_of_the_draw(pop).expect("the sums of the draw");
+            let (of_the_other, varies_of_the_other, num_vars_of_the_other) = other
+                .the_sums_of_the_draw(pop)
+                .expect("the sums of the draw");
+
+            assert_eq!(
+                num_vars_in_draw, num_vars_of_the_other,
+                "the variants in the draw for the population {pop} of {what}"
+            );
+            assert_eq!(
+                alleles.to_bits(),
+                of_the_other.to_bits(),
+                "the bits of the alleles a draw shows in the population {pop} of {what}, \
+                 {alleles} and {of_the_other}"
+            );
+            assert_eq!(
+                varies.to_bits(),
+                varies_of_the_other.to_bits(),
+                "the bits of the chances a draw varies in the population {pop} of {what}, \
+                 {varies} and {varies_of_the_other}"
+            );
         }
     }
 
@@ -1656,6 +2085,65 @@ mod the_pass {
         assert!(
             (found - fis).abs() <= OF_TEN_DECIMALS,
             "the F_IS of {what} is {found}, and it is {fis}"
+        );
+    }
+
+    /// What a standardized value of these tests may differ from the number
+    /// of the spec by. The spec prints 2.3111111111 and 0.6444444444 to ten
+    /// decimals, so a literal here is up to 5e-11 from the value it stands
+    /// for, and what the arithmetic adds is far below that: each
+    /// standardized value of the worked example is a few products of at
+    /// most four factors, each rounding by at most 1.2e-16 of the value.
+    const OF_TEN_DECIMALS_OF_A_DRAW: f64 = 5e-11;
+
+    /// It checks the alleles a draw is expected to show in one population,
+    /// averaged over the variants in the draw for it.
+    fn assert_num_alleles_in_draw(diversity: &PopDiversity, pop: usize, mean: f64, what: &str) {
+        let found = diversity
+            .num_alleles_in_draw(pop)
+            .expect("the alleles a draw shows");
+
+        assert!(
+            (found - mean).abs() <= OF_TEN_DECIMALS_OF_A_DRAW,
+            "a draw shows {found} alleles in {what}, and it shows {mean}"
+        );
+    }
+
+    /// It checks the chance that a draw varies in one population, averaged
+    /// over the same variants.
+    fn assert_variable_vars_ratio_in_draw(
+        diversity: &PopDiversity,
+        pop: usize,
+        ratio: f64,
+        what: &str,
+    ) {
+        let found = diversity
+            .variable_vars_ratio_in_draw(pop)
+            .expect("the chance a draw varies");
+
+        assert!(
+            (found - ratio).abs() <= OF_TEN_DECIMALS_OF_A_DRAW,
+            "a draw varies at {found} of the variants of {what}, and it varies at {ratio}"
+        );
+    }
+
+    /// It checks that a standardized value of one population is NaN, which
+    /// is what it is when no variant is in the draw for it.
+    fn assert_no_standardized_value(diversity: &PopDiversity, pop: usize, what: &str) {
+        let alleles = diversity
+            .num_alleles_in_draw(pop)
+            .expect("the alleles a draw shows");
+        let ratio = diversity
+            .variable_vars_ratio_in_draw(pop)
+            .expect("the chance a draw varies");
+
+        assert!(
+            alleles.is_nan(),
+            "a draw shows {alleles} alleles in {what}, and it has no value there"
+        );
+        assert!(
+            ratio.is_nan(),
+            "a draw varies at {ratio} of the variants of {what}, and it has no value there"
         );
     }
 
@@ -2045,6 +2533,283 @@ mod the_pass {
         assert_eq!(diversity.num_variable_vars(2), None);
         assert_variable_vars_ratio(&diversity, 0, 0.75, "pop1");
         assert_variable_vars_ratio(&diversity, 1, 0.5, "pop2");
+    }
+
+    /// A variant is in the draw for a population when it counts for that
+    /// population and the population called at least `num_called_alleles`
+    /// alleles there, both and not the second alone. At a draw of 4 `pop1`
+    /// of the worked example keeps all four of the variants that count for
+    /// it and `pop2` keeps three of its four: at variant 2 it called 3
+    /// copies in all. Variant 6, where `pop1` called one copy and `pop2`
+    /// none, counts for no population at a threshold of one called genotype
+    /// and so is in the draw for none either, although `pop2` called fewer
+    /// than 4 alleles at it as it did at variant 2. "Its Python function"
+    /// of `docs/specs/diversity.md`.
+    #[test]
+    fn a_draw_of_four_keeps_the_four_variants_of_pop1_of_the_worked_example_and_three_of_pop2() {
+        let diversity = of_the_worked_example_at_a_draw(4);
+
+        assert_eq!(diversity.num_vars(0), Some(4));
+        assert_eq!(diversity.num_vars_in_draw(0), Some(4));
+        assert_eq!(diversity.num_vars(1), Some(4));
+        assert_eq!(diversity.num_vars_in_draw(1), Some(3));
+        assert_eq!(diversity.num_vars_in_draw(2), None);
+        // The variants 1, 3 and 5 are in the draw for both populations, and
+        // variant 2 for `pop1` alone, so three of the four that counted for
+        // both are in the draw for both.
+        assert_eq!(diversity.num_vars_every_pop(), 4);
+        assert_eq!(diversity.num_vars_every_pop_in_draw(), 3);
+    }
+
+    /// A draw of 4 called alleles shows 2.25 alleles in `pop1` of the worked
+    /// example and 2.3111111111 in `pop2`: "How it is verified" of "The
+    /// number of alleles" of `docs/specs/diversity.md`. Every draw of 4 of
+    /// the 4 alleles `pop1` called at each of its variants shows what it
+    /// holds, so its standardized value is its mean, 2.25; `pop2` keeps
+    /// three variants, and at variant 5, where it called 4 copies of one
+    /// allele and 2 of another, a draw of 4 misses the rarer allele in one
+    /// of the 15 draws.
+    #[test]
+    fn a_draw_of_four_shows_2_25_alleles_in_pop1_of_the_worked_example_and_2_3111_in_pop2() {
+        let diversity = of_the_worked_example_at_a_draw(4);
+
+        assert_num_alleles_in_draw(&diversity, 0, 2.25, "pop1 at a draw of 4");
+        assert_num_alleles_in_draw(&diversity, 1, 2.3111111111, "pop2 at a draw of 4");
+        assert_eq!(diversity.num_alleles_in_draw(2), None);
+    }
+
+    /// A draw of 4 called alleles varies at 0.75 of the variants of `pop1`
+    /// of the worked example and at 0.6444444444 of those of `pop2`: "How it
+    /// is verified" of "The variable variants" of `docs/specs/diversity.md`.
+    /// `pop1` keeps its four variants and every draw of 4 of 4 shows what it
+    /// holds, so its standardized ratio is its ratio; `pop2` keeps three,
+    /// and its variant 5 varies in a draw of 4 with chance 14/15.
+    ///
+    /// The two are not the two standardized numbers of alleles minus 1 here,
+    /// as they are on a dataset of biallelic variants: variant 3 of the
+    /// worked example has four alleles, and a draw of 4 that varies there
+    /// shows two, three or four of them.
+    #[test]
+    fn a_draw_of_four_varies_at_three_quarters_of_the_variants_of_pop1_and_0_6444_of_pop2() {
+        let diversity = of_the_worked_example_at_a_draw(4);
+
+        assert_variable_vars_ratio_in_draw(&diversity, 0, 0.75, "pop1 at a draw of 4");
+        assert_variable_vars_ratio_in_draw(&diversity, 1, 0.6444444444, "pop2 at a draw of 4");
+        assert_eq!(diversity.variable_vars_ratio_in_draw(2), None);
+    }
+
+    /// A population for which no variant is in the draw has 0 in its count
+    /// of them and NaN in both standardized values, which is the case of "A
+    /// population for which no variant counted" of "The cases" of
+    /// `docs/specs/diversity.md` and not an error: the other populations of
+    /// the call still have their values.
+    ///
+    /// At a threshold of three called genotypes no variant counts for
+    /// `pop1`, which holds two individuals, so none is in the draw for it
+    /// either. Variant 5 counts for `pop2`, whose three individuals called
+    /// 4 copies of one allele and 2 of another there, and a draw of 4 of
+    /// those 6 varies with chance 14/15 and shows 1 + 14/15 alleles, the
+    /// variant having two alleles and a draw showing one of them or both.
+    #[test]
+    fn a_population_no_variant_of_the_draw_counted_for_has_no_standardized_value() {
+        let mut reader = the_worked_example(6);
+
+        let diversity = calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_of_a_draw(3, 4))
+            .expect("the diversity at a threshold of three called genotypes");
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(0));
+        assert_no_standardized_value(&diversity, 0, "pop1 at a threshold of three genotypes");
+        assert_eq!(diversity.num_vars_in_draw(1), Some(1));
+        assert_variable_vars_ratio_in_draw(&diversity, 1, 14.0 / 15.0, "pop2 over variant 5");
+        assert_num_alleles_in_draw(&diversity, 1, 1.0 + 14.0 / 15.0, "pop2 over variant 5");
+        assert_eq!(diversity.num_vars_every_pop_in_draw(), 0);
+    }
+
+    /// A `num_called_alleles` above every population's called alleles leaves
+    /// both counts of the draw at 0 and both standardized values NaN, and
+    /// leaves the totals, the means and F_IS as they are without it, none of
+    /// them reading the draw: "The cases" of `docs/specs/diversity.md`. It is
+    /// not an error, and the counts say why the values are missing.
+    ///
+    /// `pop1` of the worked example called 4 alleles at the most at a
+    /// variant and `pop2` 6, so a draw of 7 reaches no variant of either.
+    #[test]
+    fn a_draw_above_every_populations_called_alleles_leaves_the_totals_as_they_were() {
+        let mut reader = the_worked_example(6);
+        let of_a_draw_of_seven =
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_of_a_draw(1, 7))
+                .expect("the diversity at a draw of seven called alleles");
+        let of_no_draw = of_the_worked_example(1, 6);
+
+        for (pop, what) in [(0, "pop1 at a draw of 7"), (1, "pop2 at a draw of 7")] {
+            assert_eq!(of_a_draw_of_seven.num_vars_in_draw(pop), Some(0));
+            assert_no_standardized_value(&of_a_draw_of_seven, pop, what);
+        }
+        assert_eq!(of_a_draw_of_seven.num_vars_every_pop_in_draw(), 0);
+        assert_the_same_numbers(
+            &of_a_draw_of_seven,
+            &of_no_draw,
+            "a draw above every called allele",
+        );
+    }
+
+    /// A standardized value has no value when its statistic was not asked
+    /// for, and the variants in the draw are counted whatever the pass was
+    /// asked for, since their count is what says why a standardized value is
+    /// missing.
+    #[test]
+    fn a_standardized_value_of_a_statistic_that_was_not_asked_for_has_no_value() {
+        let of_the_alleles = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::NUM_ALLELES,
+                num_called_alleles: Some(4),
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the alleles called alone")
+        };
+        let of_the_fis = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::FIS,
+                num_called_alleles: Some(4),
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the F_IS alone")
+        };
+
+        assert_num_alleles_in_draw(
+            &of_the_alleles,
+            0,
+            2.25,
+            "pop1 of a pass of the alleles alone",
+        );
+        assert_eq!(of_the_alleles.variable_vars_ratio_in_draw(0), None);
+        assert_eq!(of_the_fis.num_alleles_in_draw(0), None);
+        assert_eq!(of_the_fis.variable_vars_ratio_in_draw(0), None);
+        assert_eq!(of_the_fis.num_vars_in_draw(0), Some(4));
+        assert_eq!(of_the_fis.num_vars_in_draw(1), Some(3));
+        assert_eq!(of_the_fis.num_vars_every_pop_in_draw(), 3);
+    }
+
+    /// What a standardized value of the panel may differ from `vegan`'s by:
+    /// 1e-12 of it, which is what "How it is verified" of "The number of
+    /// alleles" of `docs/specs/diversity.md` compares the two within, both
+    /// sides summing the same per variant values in different orders.
+    const OF_THE_PANEL: f64 = 1e-12;
+
+    /// It checks one standardized value of the panel against `vegan`'s.
+    fn assert_of_the_panel(found: f64, of_vegan: f64, what: &str) {
+        assert!(
+            ((found - of_vegan) / of_vegan).abs() <= OF_THE_PANEL,
+            "{what} of the panel is {found}, and vegan gives {of_vegan}"
+        );
+    }
+
+    /// The standardized values of the three populations of the panel at a
+    /// draw of 20 called alleles with `min_num_individuals` 20, which the
+    /// tables of "How it is verified" of "The number of alleles" and of "The
+    /// variable variants" of `docs/specs/diversity.md` give.
+    ///
+    /// `vegan` 2.7.6 measured the alleles a draw of 20 shows, 1.9283948650,
+    /// 1.9219209943 and 1.9197370844, and
+    /// `tests/reference/diversity/panel_num_alleles.tsv` holds them to
+    /// seventeen digits. The standardized ratio of variable variants is each
+    /// of those minus 1, because every variant of the panel has two alleles
+    /// and a draw there shows one of them or both;
+    /// `tests/reference/diversity/panel_variable_vars.tsv` holds it under a
+    /// name that says it is not a second measurement of `vegan`'s, so what
+    /// the three ratios check is popnei's second formula against that one
+    /// measurement and against the identity.
+    ///
+    /// Each literal below is the number of one of those two files as a
+    /// float64 keeps it, which is the same number to fewer digits where the
+    /// file printed more than a float64 holds: the file gives `p1`
+    /// 1.9219209943237829 and the nearest float64 to it is
+    /// 1.921920994323783.
+    ///
+    /// The totals beside them are `adegenet` 2.1.11's 2373, 2377 and 2384
+    /// alleles called and 1173, 1177 and 1184 variable variants, over the
+    /// 1200 variants that counted for every population and that every
+    /// population reached the draw at.
+    #[test]
+    fn the_standardized_values_of_the_panel_are_the_ones_vegan_gave() {
+        let mut reader = the_panel();
+        let of_each_pop = the_pops_of_the_panel(reader.individuals());
+        let pops: Vec<&[usize]> = of_each_pop.iter().map(|pop| &pop[..]).collect();
+
+        let diversity = calc_pop_diversity(&mut reader, &pops, &options_of_a_draw(20, 20))
+            .expect("the diversity of the panel");
+
+        assert_eq!(diversity.num_vars_of_the_pass(), 1200);
+        assert_eq!(diversity.num_vars_every_pop(), 1200);
+        assert_eq!(diversity.num_vars_every_pop_in_draw(), 1200);
+        let of_the_reference = [
+            (
+                0,
+                "p0",
+                2373,
+                1173,
+                1.928_394_865_004_120_5,
+                0.928_394_865_004_120_5,
+            ),
+            (
+                1,
+                "p1",
+                2377,
+                1177,
+                1.921_920_994_323_783,
+                0.921_920_994_323_782_9,
+            ),
+            (
+                2,
+                "p2",
+                2384,
+                1184,
+                1.919_737_084_393_756_2,
+                0.919_737_084_393_756_2,
+            ),
+        ];
+        for (pop, name, num_alleles, num_variable_vars, alleles_of_a_draw, ratio_of_a_draw) in
+            of_the_reference
+        {
+            assert_eq!(
+                diversity.num_vars(pop),
+                Some(1200),
+                "the variants of {name}"
+            );
+            assert_eq!(
+                diversity.num_vars_in_draw(pop),
+                Some(1200),
+                "the variants in the draw for {name}"
+            );
+            assert_eq!(
+                diversity.num_alleles(pop),
+                Some(num_alleles),
+                "the alleles of {name}"
+            );
+            assert_eq!(
+                diversity.num_variable_vars(pop),
+                Some(num_variable_vars),
+                "the variable variants of {name}"
+            );
+            assert_of_the_panel(
+                diversity
+                    .num_alleles_in_draw(pop)
+                    .expect("the alleles a draw shows"),
+                alleles_of_a_draw,
+                &format!("the alleles a draw of 20 shows in {name}"),
+            );
+            assert_of_the_panel(
+                diversity
+                    .variable_vars_ratio_in_draw(pop)
+                    .expect("the chance a draw varies"),
+                ratio_of_a_draw,
+                &format!("the variants a draw of 20 varies at in {name}"),
+            );
+        }
     }
 
     /// The alleles a population called are the counts above 0 and not the
@@ -2578,7 +3343,7 @@ mod the_pass {
     fn the_chunks_read_one_after_another_count_what_the_threads_count() {
         let of_the_threads = {
             let mut reader = a_source_of_many_variants(200, 200);
-            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_with_no_draw(1))
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_of_a_draw(1, 2))
                 .expect("the diversity read on the threads")
         };
         let one_chunk_at_a_time = {
@@ -2586,12 +3351,13 @@ mod the_pass {
             calc_pop_diversity_one_chunk_at_a_time(
                 &mut reader,
                 &[&POP1, &POP2],
-                &options_with_no_draw(1),
+                &options_of_a_draw(1, 2),
             )
             .expect("the diversity read one chunk at a time")
         };
 
         assert_eq!(of_the_threads.num_vars(0), Some(160));
+        assert_eq!(of_the_threads.num_vars_in_draw(0), Some(160));
         assert_the_same_numbers(
             &of_the_threads,
             &one_chunk_at_a_time,
@@ -2626,15 +3392,24 @@ mod the_pass {
     /// fixture of this module holds six variants or fewer, which is one
     /// chunk and nothing to share.
     ///
-    /// The bits of the two sums behind F_IS are compared and not a
-    /// tolerance: the chunks are added in the order of the block, and
-    /// rayon's own `reduce` over the same chunks joins them in a tree whose
-    /// shape follows the threads of the pool, which gives a number right to
-    /// far more digits than any tolerance of the spec and not the same one.
-    /// With that `reduce` in place of the ordered addition the sums of
-    /// `pop1` differ between 1 thread and 2 here, and they do not at 200
-    /// variants, 4 chunks, where rayon splits the same way whatever the
+    /// The bits of the two sums behind F_IS and of the two sums of the draw
+    /// are compared and not a tolerance: the chunks are added in the order of
+    /// the block, and rayon's own `reduce` over the same chunks joins them in
+    /// a tree whose shape follows the threads of the pool, which gives a
+    /// number right to far more digits than any tolerance of the spec and not
+    /// the same one. With that `reduce` in place of the ordered addition the
+    /// sums of `pop1` differ between 1 thread and 2 here, and they do not at
+    /// 200 variants, 4 chunks, where rayon splits the same way whatever the
     /// pool.
+    ///
+    /// The draw is of 2 called alleles, the smallest the spec allows, which
+    /// every variant of the source that counts for a population reaches:
+    /// `pop1` calls 4 alleles at each of its four patterns and `pop2` between
+    /// 3 and 6. A draw of 2 is the size whose two sums of each population
+    /// move when their parts are added in another order, and a draw of 3 is
+    /// one that does not: over these patterns its terms cancel to the bit.
+    /// Measured on 24 September 2026 by adding the chunks of a block in
+    /// reverse and reading which sums changed.
     ///
     /// The pools are built here and are not rayon's global one, which has
     /// one thread per core of the machine. rayon is a dependency of the
@@ -2649,7 +3424,7 @@ mod the_pass {
                 .expect("the pool");
             pool.install(|| {
                 let mut reader = a_source_of_many_variants(2000, 2000);
-                calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_with_no_draw(1))
+                calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options_of_a_draw(1, 2))
                     .expect("the diversity of a source of many variants")
             })
         };
@@ -2657,6 +3432,8 @@ mod the_pass {
         let on_one = in_a_pool(1);
         assert_eq!(on_one.num_vars(0), Some(1600));
         assert_eq!(on_one.num_vars(1), Some(1600));
+        assert_eq!(on_one.num_vars_in_draw(0), Some(1600));
+        assert_eq!(on_one.num_vars_in_draw(1), Some(1600));
         for threads in [2, 4, 8] {
             assert_the_same_numbers(&on_one, &in_a_pool(threads), &format!("{threads} threads"));
         }
