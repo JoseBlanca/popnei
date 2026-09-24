@@ -169,7 +169,11 @@ column per population. `fis` is one value per population. `num_vars` says,
 per population, how many variants had enough called genotypes and how many
 of those also reached `num_called_alleles`; `num_vars_every_pop` and
 `num_vars_every_pop_in_draw` are the two counts of the variants where
-every population did, which are the divisors of the private alleles.
+every population did, which are the divisors of the private alleles. With
+no `num_called_alleles` the two counts of the draw are 0, as they are for
+a draw no variant reached: nothing was drawn either way, and the
+standardized values beside them are NaN in both cases, which says which
+question was not answered.
 `pass_stats` is the counts of the pass, as every consumer of popnei gives
 them.
 
@@ -873,9 +877,30 @@ impl DiversityStats {
     pub const FOLDED_SFS: DiversityStats;
     pub const FIS: DiversityStats;
     pub const ALL: DiversityStats;
+    /// No statistic, which a caller that builds a set one name at a time
+    /// starts from.
+    pub fn empty() -> DiversityStats;
     pub fn contains(self, other: DiversityStats) -> bool;
+    pub fn union(self, other: DiversityStats) -> DiversityStats;
+    /// The name of each statistic, which is the name of the field that
+    /// holds its result and the word a Python or a TypeScript user writes
+    /// in `stats`.
+    pub const NAMES: [&'static str; 5];
+    /// The statistic of a name, for a binding crate reading a user's
+    /// `stats`.
+    ///
+    /// # Errors
+    ///
+    /// A name that is no statistic of this module.
+    pub fn of_name(name: &str) -> Result<DiversityStats>;
 }
 ```
+
+`BitOr` and `BitOrAssign` are implemented too, so a caller writes `a | b`
+and `a |= b`. The names live in the core, and `of_name` with them, so that
+a statistic renamed or added is one change and not three: each binding
+crate reads a user's `stats` through `of_name` and neither carries a table
+of its own.
 
 What the pass is asked for:
 
@@ -926,6 +951,12 @@ impl PopDiversity {
     /// the private alleles.
     pub fn num_vars_every_pop(&self) -> u64;
     pub fn num_vars_every_pop_in_draw(&self) -> u64;
+    /// The variants the reader gave the pass, whatever any population made
+    /// of them, which is what a caller builds `pass_stats` from. It is in
+    /// the result because the core counted it and a binding crate that had
+    /// to count again would wrap the reader chain to do it, which
+    /// `docs/specs/kinship.md` and the `coding` skill record the cost of.
+    pub fn num_vars_of_the_pass(&self) -> u64;
     /// The alleles the population called, summed over its variants. `None`
     /// when `pop` is not a population of the call or the statistic was not
     /// asked for.
@@ -956,9 +987,25 @@ that two populations of one pass round the same way.
 This module adds cases to the error of the crate, and the two binding
 crates divide them as `docs/specs/pca.md` divides its own. All of them are
 the wrong input of a function and a `ValueError` in Python: the spectrum
-asked for without a draw size, a draw size below 2, a population with no
-individual, an individual the dataset has not or named twice, a pass with
-no variant, and a variant of more alleles than a count of them holds.
+asked for without a draw size, a draw size below 2, a `stats` naming no
+statistic at all, a name that is no statistic of this module, a population
+with no individual, an individual the dataset has not or named twice, a
+pass with no variant, and a variant of more alleles than a count of them
+holds.
+
+Three of those a user of the Python or the TypeScript package never meets,
+and a reader of this list should know which. A population with no
+individual, an individual the dataset has not and one named twice are all
+refused by `Pops::from_names` of `docs/specs/stats.md` before this module
+sees them, so a user of either package gets that module's message, which
+names the population and the individual. The cases here are for a caller
+of the core crate, which takes the indices of the individuals and has no
+names to check them against.
+
+`num_called_alleles` is refused before the pass starts in every layer, so
+a value that is not a whole number, or one above what a `u32` holds, is
+refused by the package that was given it, in the words of its own
+language. Only the value below 2 reaches the core.
 
 ## Speed
 
