@@ -715,8 +715,14 @@ function theMixedStudyOfThePanelWith(
  * No test is asked for: the logistic mixed model has the score test alone,
  * and that is what the default takes, where the other three default to the
  * Wald test.
+ *
+ * `useGrammarGammaApprox` asks for the approximate denominator in place of
+ * the exact one, which only the test of the approximation does: the
+ * comparison with GMMAT is against the exact answer.
  */
-function theLogisticMixedStudyOfThePanel(): GwasResult {
+function theLogisticMixedStudyOfThePanel(
+  useGrammarGammaApprox = false,
+): GwasResult {
   return gwasOf(PANEL_VCF, {
     phenotype: PHENOTYPES.binom as Record<string, number>,
     trait: "binomial",
@@ -725,6 +731,7 @@ function theLogisticMixedStudyOfThePanel(): GwasResult {
       cov2: PHENOTYPES.cov2 as Record<string, number>,
     },
     kinship: PANEL_KINSHIP,
+    useGrammarGammaApprox,
   });
 }
 
@@ -1345,9 +1352,9 @@ test("the panel tells the two variances apart and gives all three", () => {
 
 /**
  * How far the GRAMMAR-Gamma approximation may be from the exact answer on the
- * panel with the linear mixed model: the median of `log10(p_approx/p_exact)`
- * within 0.1 of 0, the largest of those within 1.5, and `beta` within 0.5 of
- * itself.
+ * panel, under the linear mixed model and under the logistic one: the median
+ * of `log10(p_approx/p_exact)` within 0.1 of 0, the largest of those within
+ * 1.5, and `beta` within 0.5 of itself.
  *
  * The three are pyNei's own numbers in `test_grammar_gamma_approx`, which
  * "How it is verified" of the approximation in `docs/specs/gwas.md` carries,
@@ -1363,24 +1370,54 @@ test("the panel tells the two variances apart and gives all three", () => {
  * and the worst `beta` 0.48966; natively the same three are -5.1885e-4,
  * 0.51185 and 0.48966 on Accelerate and on faer. So the `beta` bound is 98
  * per cent spent and the other two are nowhere near theirs.
+ *
+ * The same three under the logistic mixed model, on the same panel and the
+ * same day: in WebAssembly the median is -1.0467e-3, the largest 0.52373 and
+ * the worst `beta` 0.39335, and the Python suite measures the same three to
+ * six digits on Accelerate. That model spends less of the `beta` bound than
+ * the linear one and a little more of the other two.
  */
 const OF_THE_APPROXIMATION_MEDIAN = 0.1;
 const OF_THE_APPROXIMATION_LARGEST = 1.5;
 const OF_THE_APPROXIMATION_BETA = 0.5;
 
-test("the approximation of the panel is near the exact answer", () => {
-  const approximated = theMixedStudyOfThePanelWith(true);
-  const exact = theMixedStudyOfThePanelWith(false);
+/**
+ * How far the worst effect of the panel has to move under the approximation
+ * for the approximation to have been made at all: 0.05 of it.
+ *
+ * The three bounds above are ceilings, and a run that made no approximation
+ * would pass every one of them, an exact answer being at no distance from
+ * itself. It is not a hypothesis: a reviewer replaced the approximation with
+ * the exact denominator in the core on 24 September 2026, and this suite and
+ * the Python one stayed green under both mixed models. So the worst effect
+ * is held above a floor as well, which is the assertion a study that had
+ * quietly stopped approximating would fail.
+ *
+ * The floor is 0.05 where the worst effect measured that day is 0.48966
+ * under the linear mixed model and 0.39335 under the logistic one, a factor
+ * of eight of room. The p-values carry no floor: they are where the
+ * approximation moves least, the median being 5.2e-4 and 1.0e-3 in log10,
+ * and a floor near those would go red on a panel the approximation happens
+ * to suit.
+ */
+const THE_APPROXIMATION_MOVES_THE_EFFECT = 0.05;
 
-  assert.equal(approximated.usedGrammarGammaApprox, true);
-  assert.equal(exact.usedGrammarGammaApprox, false);
-  assert.equal(approximated.stats.pValue.length, PANEL_NUM_VARS);
-  // A variant the exact test leaves with no answer is answered under the
-  // approximation, which "Open 2's threshold under the approximation" of the
-  // spec says: the approximate denominator is a positive factor times a sum
-  // of squares and holds no cancellation. The two are compared where both
-  // have an answer, and this panel has no such variant, which the count
-  // below asserts.
+/**
+ * How far the study `approximated` sits from the study `exact` over the
+ * panel: how many variants both answered, the median and the largest of
+ * `log10(p_approx / p_exact)` over those, and the worst `beta` as a share of
+ * itself.
+ *
+ * A variant the exact test leaves with no answer is answered under the
+ * approximation, which "Open 2's threshold under the approximation" of the
+ * spec says: the approximate denominator is a positive factor times a sum of
+ * squares and holds no cancellation. So the two are compared where both have
+ * an answer, and the count of those is returned for the caller to assert.
+ */
+function theDistanceFromTheExactAnswer(
+  approximated: GwasResult,
+  exact: GwasResult,
+): { answered: number; median: number; largest: number; worst: number } {
   const moved: number[] = [];
   const apart: number[] = [];
   for (let at = 0; at < PANEL_NUM_VARS; at += 1) {
@@ -1397,13 +1434,29 @@ test("the approximation of the panel is near the exact answer", () => {
         Math.abs(betaOfTheExact),
     );
   }
-  assert.equal(moved.length, PANEL_NUM_VARS);
   const sorted = [...moved].sort((one, other) => one - other);
   const half = sorted.length / 2;
-  const median =
-    ((sorted[half - 1] as number) + (sorted[half] as number)) / 2;
-  const largest = Math.max(...moved.map((value) => Math.abs(value)));
-  const worst = Math.max(...apart);
+  return {
+    answered: moved.length,
+    median: ((sorted[half - 1] as number) + (sorted[half] as number)) / 2,
+    largest: Math.max(...moved.map((value) => Math.abs(value))),
+    worst: Math.max(...apart),
+  };
+}
+
+test("the approximation of the panel is near the exact answer", () => {
+  const approximated = theMixedStudyOfThePanelWith(true);
+  const exact = theMixedStudyOfThePanelWith(false);
+
+  assert.equal(approximated.usedGrammarGammaApprox, true);
+  assert.equal(exact.usedGrammarGammaApprox, false);
+  assert.equal(approximated.stats.pValue.length, PANEL_NUM_VARS);
+  const { answered, median, largest, worst } = theDistanceFromTheExactAnswer(
+    approximated,
+    exact,
+  );
+  // This panel has no variant that the exact test leaves without an answer.
+  assert.equal(answered, PANEL_NUM_VARS);
   assert.ok(
     Math.abs(median) <= OF_THE_APPROXIMATION_MEDIAN,
     `the median of log10(p_approx / p_exact) over the panel is ${median}`,
@@ -1415,6 +1468,55 @@ test("the approximation of the panel is near the exact answer", () => {
   assert.ok(
     worst <= OF_THE_APPROXIMATION_BETA,
     `the worst \`beta\` of the panel is ${worst} of itself away from the exact one`,
+  );
+  // Every bound above is a ceiling on how far the two runs lie apart, and a
+  // study that had silently stopped approximating would pass all of them,
+  // being the exact answer compared with itself. This is what would fail
+  // there.
+  assert.ok(
+    worst >= THE_APPROXIMATION_MOVES_THE_EFFECT,
+    `the worst \`beta\` of the panel is ${worst} of itself away from the ` +
+      `exact one, and an approximation that was made moves it by ` +
+      `${THE_APPROXIMATION_MOVES_THE_EFFECT} at least`,
+  );
+});
+
+test("the logistic approximation of the panel is near the exact answer", () => {
+  // Both mixed models take the approximation, and until this test the
+  // layers above the core ran it on the continuous trait alone. The study
+  // is the one GMMAT was given, the binomial trait with both covariates and
+  // the kinship plink2 wrote, and what it is checked against is popnei's own
+  // exact answer: GMMAT computes the exact denominator, so no program
+  // outside popnei answers the approximated question.
+  const approximated = theLogisticMixedStudyOfThePanel(true);
+  const exact = theLogisticMixedStudyOfThePanel(false);
+
+  assert.equal(approximated.nullModel.model, "glmm");
+  assert.equal(approximated.usedGrammarGammaApprox, true);
+  assert.equal(exact.usedGrammarGammaApprox, false);
+  assert.equal(approximated.stats.pValue.length, PANEL_NUM_VARS);
+  const { answered, median, largest, worst } = theDistanceFromTheExactAnswer(
+    approximated,
+    exact,
+  );
+  assert.equal(answered, PANEL_NUM_VARS);
+  assert.ok(
+    Math.abs(median) <= OF_THE_APPROXIMATION_MEDIAN,
+    `the median of log10(p_approx / p_exact) over the panel is ${median}`,
+  );
+  assert.ok(
+    largest <= OF_THE_APPROXIMATION_LARGEST,
+    `the largest |log10(p_approx / p_exact)| over the panel is ${largest}`,
+  );
+  assert.ok(
+    worst <= OF_THE_APPROXIMATION_BETA,
+    `the worst \`beta\` of the panel is ${worst} of itself away from the exact one`,
+  );
+  assert.ok(
+    worst >= THE_APPROXIMATION_MOVES_THE_EFFECT,
+    `the worst \`beta\` of the panel is ${worst} of itself away from the ` +
+      `exact one, and an approximation that was made moves it by ` +
+      `${THE_APPROXIMATION_MOVES_THE_EFFECT} at least`,
   );
 });
 

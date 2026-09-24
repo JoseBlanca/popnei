@@ -1789,10 +1789,10 @@ def test_the_two_tests_of_the_mixed_model_differ_in_the_error_alone() -> None:
 
 
 # How far the GRAMMAR-Gamma approximation may be from the exact answer on the
-# panel with the linear mixed model. The three are pyNei's own numbers in
-# `test_grammar_gamma_approx`, which "How it is verified" of the
-# approximation in `docs/specs/gwas.md` carries: the median of
-# `log10(p_approx / p_exact)` within 0.1 of 0, the largest of those within
+# panel, under the linear mixed model and under the logistic one. The three
+# are pyNei's own numbers in `test_grammar_gamma_approx`, which "How it is
+# verified" of the approximation in `docs/specs/gwas.md` carries: the median
+# of `log10(p_approx / p_exact)` within 0.1 of 0, the largest of those within
 # 1.5, and `beta` within 0.5 of itself.
 #
 # They are not bounds measured here and lowered until they broke, which is
@@ -1812,9 +1812,34 @@ def test_the_two_tests_of_the_mixed_model_differ_in_the_error_alone() -> None:
 # agreeing to 1e-11 of each other. So the `beta` bound is 98 per cent spent
 # and the other two are not near theirs. A run that broke the 0.5 would be a
 # question for the spec and not a tolerance to widen.
+#
+# The same three under the logistic mixed model, on the same panel and the
+# same day: on Accelerate the median is -1.0467e-03, the largest 0.52373 and
+# the worst `beta` 0.39335, and the node suite, which runs faer in
+# WebAssembly, measures the same three to six digits. That model spends less
+# of the `beta` bound than the linear one and a little more of the other two.
 OF_THE_APPROXIMATION_MEDIAN = 0.1
 OF_THE_APPROXIMATION_LARGEST = 1.5
 OF_THE_APPROXIMATION_BETA = 0.5
+
+# How far the worst effect of the panel has to move under the approximation
+# for the approximation to have been made at all: 0.05 of it.
+#
+# The three bounds above are ceilings, and a run that made no approximation
+# would pass every one of them, an exact answer being at no distance from
+# itself. It is not a hypothesis: a reviewer replaced the approximation with
+# the exact denominator in the core on 24 September 2026, and this suite and
+# the node one stayed green under both mixed models. So the worst effect is
+# held above a floor as well, which is the assertion that a study which had
+# quietly stopped approximating would fail.
+#
+# The floor is 0.05 where the worst effect measured that day on the panel
+# with every genotype called is 0.489655 under the linear mixed model and
+# 0.393349 under the logistic one, a factor of eight of room. The p-values
+# carry no floor: they are where the approximation moves least, the median
+# being 5.2e-04 and 1.0e-03 in log10, and a floor near those would go red on
+# a panel the approximation happens to suit.
+THE_APPROXIMATION_MOVES_THE_EFFECT = 0.05
 
 
 def test_the_approximation_of_the_panel_is_near_the_exact_answer() -> None:
@@ -1874,6 +1899,15 @@ def test_the_approximation_of_the_panel_is_near_the_exact_answer() -> None:
     worst = float(numpy.max(apart))
     assert worst <= OF_THE_APPROXIMATION_BETA, (
         f"the worst `beta` of the panel is {worst} of itself away from the exact one"
+    )
+    # Every bound above is a ceiling on how far the two runs lie apart, and a
+    # study that had silently stopped approximating would pass all of them,
+    # being the exact answer compared with itself. This is what would fail
+    # there.
+    assert worst >= THE_APPROXIMATION_MOVES_THE_EFFECT, (
+        f"the worst `beta` of the panel is {worst} of itself away from the "
+        f"exact one, and an approximation that was made moves it by "
+        f"{THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
     )
 
 
@@ -2173,13 +2207,21 @@ OF_GMMAT_GLMM_P_VALUE = 1e-4
 OF_PYNEI_LOGISTIC_MIXED = 1.5e-13
 
 
-def _the_logistic_mixed_study_of(panel: pathlib.Path, test: str | None = None):
+def _the_logistic_mixed_study_of(
+    panel: pathlib.Path,
+    test: str | None = None,
+    use_grammar_gamma_approx: bool = False,
+):
     """The study of the binomial trait `binom` of a panel with `cov1`,
     `cov2` and the kinship plink2 wrote, which is what GMMAT was given.
 
     `test` is `None` here where the other three models default to the Wald
     test: the logistic mixed model has the score test alone, and that is what
     `None` takes.
+
+    `use_grammar_gamma_approx` asks for the approximate denominator instead
+    of the exact one, which only the test of the approximation does: every
+    comparison with GMMAT and with pyNei is against the exact answer.
     """
     phenotypes = _phenotypes()
     return calc_gwas(
@@ -2189,6 +2231,7 @@ def _the_logistic_mixed_study_of(panel: pathlib.Path, test: str | None = None):
         covariates=phenotypes[["cov1", "cov2"]],
         kinship=_the_kinship_of_the_panel(),
         test=test,
+        use_grammar_gamma_approx=use_grammar_gamma_approx,
     )
 
 
@@ -2358,6 +2401,66 @@ def test_every_variant_of_a_logistic_panel_with_a_kinship_is_pyneis(
         numpy.log10(theirs_p),
         rtol=0,
         atol=OF_PYNEI_LOGISTIC_MIXED,
+    )
+
+
+def test_the_logistic_approximation_of_the_panel_is_near_the_exact_answer() -> None:
+    """The panel with the logistic mixed model, approximated and exact, over
+    the 1200 variants.
+
+    Both mixed models take the approximation, and until this test the layers
+    above the core ran it on the continuous trait alone: the study here is
+    the one GMMAT was given, the binomial trait `binom` with both covariates
+    and the kinship plink2 wrote, with the approximate denominator asked for.
+
+    What it is checked against is popnei's own exact answer, as the linear
+    mixed model's is: GMMAT computes the exact denominator, so there is no
+    program outside popnei that answers the approximated question. The three
+    bounds are the spec's and are the same for the two models, and the fourth
+    assertion is the floor, without which a study that had stopped
+    approximating would pass.
+    """
+    approximated = _the_logistic_mixed_study_of(PANEL, use_grammar_gamma_approx=True)
+    exact = _the_logistic_mixed_study_of(PANEL)
+
+    assert approximated.null_model.model == GWASModel.GLMM
+    assert approximated.used_grammar_gamma_approx is True
+    assert exact.used_grammar_gamma_approx is False
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    # A variant the exact test leaves with no answer is answered under the
+    # approximation, which "Open 2's threshold under the approximation" of
+    # the spec says, so the two are compared where both have an answer. This
+    # panel has no such variant, which the count asserts.
+    of_the_exact = numpy.asarray(exact.stats["p_value"])
+    of_the_approximation = numpy.asarray(approximated.stats["p_value"])
+    answered = numpy.isfinite(of_the_exact) & numpy.isfinite(of_the_approximation)
+    assert int(answered.sum()) == PANEL_NUM_VARS
+    moved = numpy.log10(of_the_approximation[answered] / of_the_exact[answered])
+    median = float(numpy.median(moved))
+    largest = float(numpy.max(numpy.abs(moved)))
+    assert abs(median) <= OF_THE_APPROXIMATION_MEDIAN, (
+        f"the median of log10(p_approx / p_exact) over the panel is {median}"
+    )
+    assert largest <= OF_THE_APPROXIMATION_LARGEST, (
+        f"the largest |log10(p_approx / p_exact)| over the panel is {largest}"
+    )
+    # `beta` is compared with a share of itself, as it is under the linear
+    # mixed model: what the approximation moves is the denominator both the
+    # effect and its error are divided by, so the effect moves by the share
+    # the variant's own ratio sits from the factor.
+    beta_of_the_exact = numpy.asarray(exact.stats["beta"])[answered]
+    beta_of_the_approximation = numpy.asarray(approximated.stats["beta"])[answered]
+    apart = numpy.abs(beta_of_the_approximation - beta_of_the_exact) / numpy.abs(
+        beta_of_the_exact
+    )
+    worst = float(numpy.max(apart))
+    assert worst <= OF_THE_APPROXIMATION_BETA, (
+        f"the worst `beta` of the panel is {worst} of itself away from the exact one"
+    )
+    assert worst >= THE_APPROXIMATION_MOVES_THE_EFFECT, (
+        f"the worst `beta` of the panel is {worst} of itself away from the "
+        f"exact one, and an approximation that was made moves it by "
+        f"{THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
     )
 
 
