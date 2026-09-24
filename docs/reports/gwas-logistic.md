@@ -1,12 +1,58 @@
 # Report: the association study of a binomial trait
 
-24 September 2026. It records how `docs/plans/gwas-logistic.md` is being
-carried out, on the branch `plan/gwas-logistic` in the worktree
-`.claude/worktrees/gwas-logistic`.
+24 September 2026. It records how `docs/plans/gwas-logistic.md` was carried
+out, on the branch `plan/gwas-logistic`.
 
-**The plan is under way and nothing is asked of the owner yet.** No work
-package is finished. This report is written as the work goes, so what is
-below is what has happened and not what is planned.
+**The plan is done.** Every task is ticked, every deliverable of the three
+work packages was checked by the orchestrator running its command, all three
+work packages were reviewed, and the plan's own final check passes.
+
+## What exists now that did not
+
+`calc_gwas` in Python and `calcGwas` in TypeScript test every variant of a
+dataset against a **binomial** trait, which is the half of
+`docs/specs/gwas.md` that was left. With covariates and no kinship that is
+the logistic model, whose effect is a log odds ratio, with the Wald test by
+default, checked against plink2's `--glm`, or the score test, checked
+against R's `anova(glm, test = "Rao")`. With a kinship it is the logistic
+mixed model, fitted by penalized quasi-likelihood with its covariance
+factored rather than inverted, whose score test is checked against GMMAT.
+And both mixed models can now take the GRAMMAR-Gamma approximation, which
+makes the work per variant linear in the individuals instead of quadratic.
+
+All four models of the spec are built, in every layer, and they run in a
+browser.
+
+At the commit this branch starts from: 787 tests in the core crate, 499
+pytest, 325 node. Now: **842 in the core crate** with 2 ignored, the same
+842 on the faer backend, 150 and 136 in the linear algebra crate, **514
+pytest** and **332 node**. `cargo fmt`, `cargo clippy` with every target and
+warnings denied, `cargo wasm-check` for both wasm targets and ruff are
+clean.
+
+## What is asked of the owner
+
+**The merge**, which they have ordered, and four things that are not this
+plan's to settle.
+
+1. **A wrong value users can reach, fixed here by the owner's order, in a
+   crate this plan does not own.** Accelerate's `dpotri` returns a wrong
+   inverse — 1 in about 1500 inversions on one thread, 1 in 7 when other
+   work runs in the process — which reached both mixed models. The inverse
+   is now built from a triangular solve and a product instead. The crate's
+   other LAPACK calls were tested and are clean. What is not known is
+   whether faer's own inverse has the same fault, and which macOS versions
+   besides this one do.
+2. **A skill was changed**, `.claude/skills/following-plans/SKILL.md`, which
+   now tells a task prompt to carry today's date. It is one commit and one
+   revert. The evidence is in "How the work went".
+3. **Five things `docs/specs/gwas.md` needs**, listed under "What the spec
+   needs and no session owns", including that its stated agreement with
+   pyNei is a numpy prototype's figure and not this code's.
+4. **Five defects found outside this plan's scope**, listed under "What was
+   found and not fixed here", of which the largest is that three
+   calculations never raise a `KeyboardInterrupt` at all.
+
 
 ## Where the branch starts
 
