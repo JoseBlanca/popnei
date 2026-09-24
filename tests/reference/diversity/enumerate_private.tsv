@@ -1,0 +1,19 @@
+case	allele_counts	num_called_alleles	population	closed_form	enumerated	difference	exact
+worked example, variant 1	3,1 | 5,0	4	pop1	1.00000000000000000	1.00000000000000000	0	1
+worked example, variant 1	3,1 | 5,0	4	pop2	0.00000000000000000	0.00000000000000000	0	0
+worked example, variant 3	1,1,1,1 | 1,1,1,1	4	pop1	0.00000000000000000	0.00000000000000000	0	0
+worked example, variant 3	1,1,1,1 | 1,1,1,1	4	pop2	0.00000000000000000	0.00000000000000000	0	0
+worked example, variant 5	4,0 | 4,2	4	pop1	0.00000000000000000	0.00000000000000000	0	0
+worked example, variant 5	4,0 | 4,2	4	pop2	0.93333333333333335	0.93333333333333335	0	14/15
+two populations of two alleles	3,1 | 2,2	2	pop1	0.25000000000000000	0.25000000000000000	0	1/4
+two populations of two alleles	3,1 | 2,2	2	pop2	0.41666666666666669	0.41666666666666669	0	5/12
+two populations of three alleles	2,1,1 | 3,0,1	2	pop1	0.75000000000000000	0.75000000000000000	0	3/4
+two populations of three alleles	2,1,1 | 3,0,1	2	pop2	0.41666666666666669	0.41666666666666669	0	5/12
+three populations of two alleles	2,2 | 3,1 | 1,3	2	pop1	0.00000000000000000	0.00000000000000000	0	0
+three populations of two alleles	2,2 | 3,1 | 1,3	2	pop2	0.08333333333333333	0.08333333333333333	0	1/12
+three populations of two alleles	2,2 | 3,1 | 1,3	2	pop3	0.08333333333333333	0.08333333333333333	0	1/12
+three populations of four alleles	2,1,1,0 | 1,1,0,2 | 2,0,1,1	2	pop1	0.56944444444444442	0.56944444444444442	0	41/72
+three populations of four alleles	2,1,1,0 | 1,1,0,2 | 2,0,1,1	2	pop2	0.68055555555555558	0.68055555555555558	0	49/72
+three populations of four alleles	2,1,1,0 | 1,1,0,2 | 2,0,1,1	2	pop3	0.40277777777777779	0.40277777777777779	0	29/72
+a population holding one allele against one holding two	4,0 | 2,2	3	pop1	0.00000000000000000	0.00000000000000000	0	0
+a population holding one allele against one holding two	4,0 | 2,2	3	pop2	1.00000000000000000	1.00000000000000000	0	1
