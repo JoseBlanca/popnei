@@ -1,10 +1,11 @@
 # Plan: how much variety each population holds
 
 24 September 2026. Approved by the owner on 24 September 2026. State:
-under way since 24 September 2026, on the branch `plan/diversity` in the
+**done on 24 September 2026**, on the branch `plan/diversity` in the
 worktree `.claude/worktrees/diversity`, which branches from
-`spec/diversity` because neither the spec nor this plan is on `main`;
-its report is `docs/reports/diversity.md`. It builds
+`spec/diversity` because neither the spec nor this plan is on `main`, and
+which is not merged: the merge is the owner's. Its report is
+`docs/reports/diversity.md`. It builds
 the `diversity` module of
 `docs/specs/diversity.md`: one pass over the variants that gives, for each
 population, the alleles it called and the private ones among them, the
@@ -407,6 +408,14 @@ and deliverable 4 is what catches that.
 
 ## Work package 4: the measurement and the browser
 
+**Done on 24 September 2026**, reviewed in the categories `spec`, `tests`,
+`numbers`, `errors`, `architecture` and `binding`, with every finding
+fixed. `api` was not sent: this work package adds no type, no signature and
+no public name, and changes no line of the library but one doc comment.
+The review found that the measurement was right and that the documents
+reporting it were not, in fourteen places. `docs/reports/diversity.md` has
+the rest.
+
 **What it gives.** The speed target that "Speed" of the spec leaves open,
 measured and written into the spec, and the module running in a browser
 and under node.
@@ -434,13 +443,13 @@ and under node.
 
 **Tasks.**
 
-- [ ] 4.1 The measurement and the report, and the commit that writes the
+- [x] 4.1 The measurement and the report, and the commit that writes the
   target into the spec. Serves deliverables 1 and 2. It is carried out in
   two parts, split on 24 September 2026: the harnesses and every number,
   which change no code of the library, and then the target written into the
   spec followed by the experiment of deliverable 2, in that order, so that
   the target is set against the code as it was measured.
-- [ ] 4.2 The browser and pyodide checks, and the call added to the smoke
+- [x] 4.2 The browser and pyodide checks, and the call added to the smoke
   test. Serves deliverables 3 and 4. It ran after 4.1 and not beside it,
   decided on 24 September 2026: 4.1 takes wall times and 4.2 runs the
   release build of `crates/popnei-js` and the build of the pyodide wheel,

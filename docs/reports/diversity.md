@@ -5,8 +5,53 @@ out, on the branch `plan/diversity` in the worktree
 `.claude/worktrees/diversity`, which branches from `spec/diversity` and
 not from `main`, because neither the spec nor the plan is on `main` yet.
 
-**The plan is under way.** This page is written while the work goes, so
-what follows grows one work package at a time.
+**The plan is done, and what is asked of the owner is the merge.** Nothing
+was merged into `main` and nothing pushed; the branch is `plan/diversity`,
+whose last commit of the work is `4b21868`, with this page and the plan's
+ticks after it.
+
+**What exists now that did not.** The `diversity` module of
+`docs/specs/diversity.md`. A user calls `calc_pop_diversity(variants,
+pops=...)` in Python or `calcPopDiversity` in TypeScript and gets, for each
+population, the alleles it called and the private ones among them, the
+variants that vary in it and F_IS, each as a total with its mean or its
+ratio. Giving `num_called_alleles` adds the first three as a draw of that
+many called alleles would show them, which is what lets populations of
+different sizes be compared, and the folded site frequency spectrum
+projected to that number, which is the input of the programs that fit a
+demographic model. It runs natively, in a browser tab through the wasm
+package, and under pyodide, the Python of a tab. The numbers are checked
+against `vegan`, `adegenet`, `poppr`, `scikit-allel` and `dadi`, whose
+outputs are stored under `tests/reference/diversity/` with the scripts that
+made them, and against exact rational arithmetic. The suites went from 787
+cargo tests, 499 pytest and 325 node to 868, 530 and 345.
+
+**What the work found that changes what the spec said.** The folded
+spectrum, which "Speed" called the one part that could dominate the pass,
+is 20 to 23 in 100 of it at a draw of 200 called alleles. "Speed" now holds
+a measurement and a speed target where it held a sentence saying no
+measurement had been made.
+
+**What is open, none of it blocking.** Five things, each with its options
+and a recommendation under "What the owner should know" of the work package
+it belongs to: whether `scikit-allel` and `dadi` become development
+dependencies of popnei or stay in the environments the reference script
+builds, in work package 1; `crates/popnei/src/io/vars.rs` giving the ploidy
+its metadata states with no ceiling, `docs/reports/diversity-method/panel.py`
+hardcoding paths into a worktree that no longer exists so that the script
+the spec names for the provenance of two of its numbers cannot be rerun,
+and `calc_per_var_distribs` and `calc_pop_dists` still taking their choice
+of what to compute positionally where `calc_pop_diversity` now takes it by
+name, all three in work package 3; and whether the thirteen Python
+harnesses under `crates/popnei/benches/` come under `ruff`, in work package
+4. One thing is left for a performance review of its own and is worth more
+than anything the plan optimized: three of the statistics compute the same
+products over and over on a variant of two alleles, 0.208 s of a 0.505 s
+pass.
+
+This page was written while the work went, so what follows is one work
+package at a time, and the last section of each is for whoever next
+revises a skill or writes a plan and not for the owner.
 
 ## Before the first task
 
@@ -704,3 +749,323 @@ what to compute positionally, where `calc_pop_diversity` now takes it by
 name. The owner approved the convention for all three on 24 September 2026
 and only this module's function was changed, its having no users yet;
 theirs is a change to two settled specs and two built modules.
+
+## Work package 4: the measurement and the browser
+
+It finished as planned, with one change to how the two tasks were run.
+`docs/specs/diversity.md` now has a speed target where it had a sentence
+saying no measurement had been made, and `calc_pop_diversity` runs under
+pyodide, the Python of a browser tab, with the numbers of the spec's worked
+example. The two tasks are ten commits, four of the work and six of the
+fixes the review asked for.
+
+**The measurement refutes what the spec feared.** "Speed" said the folded
+site frequency spectrum, the one statistic whose work grows with the draw
+rather than with the alleles a population called, was "the one part that
+can dominate". It is 20 to 23 in 100 of the pass at a draw of 200 called
+alleles, and the three standardized values together are 1.9 times it. The
+reason is that the code already does the thing the spec left open: the
+weights of a variant are computed once and shared by the bins of its
+spectrum.
+
+### The deliverables, each with the command the orchestrator ran
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, the measurement | the two harnesses over `big.vars` and the panel, and `docs/reports/perf-diversity-2026-09-24.md` | the report, with the target written into "Speed" in `86c1775`, before the code of task 4.2 |
+| 2, the shared weights | `cargo bench --bench diversity_pass -- --draw 200 --pops 3`, one thread, shared and then unshared | 0.243 s against 11.042 s for the spectrum alone and 0.500 s against 11.447 s for all five; the sharing is kept |
+| 3, the wasm build and node | `cargo wasm-check`, then `npm run build && npm test` in `js/popnei` | exit 0; `tests 345`, `pass 345`, `fail 0`, of which `js/popnei/test/diversity.test.ts` holds 20 |
+| 4, the wheel under pyodide | `bash scripts/build_pyodide_wheel.sh && node tests/pyodide/smoke.mjs` | exit 0, printing the worked example's 9 and 8 alleles, 2 and 1 private, 3 and 2 variable, F_IS 0 and 0.3478260870, and in a draw of 4 the spectra 1, 3, 0 and 1.0666666667, 1.5333333333, 0.4 |
+
+The plan's own final check, all three parts. `Rscript
+tests/reference/diversity/make_reference.R`, `uv run python
+tests/reference/diversity/make_reference.py` and `uv run python
+tests/reference/diversity/enumerate_private.py` each exit 0 and leave `git
+status --short tests/reference/diversity` empty. All fourteen methods of
+the impl block of "The Rust interface" are in
+`crates/popnei/src/diversity.rs` with the signature the spec gives, checked
+by a script that reads the block out of the spec and looks for each one.
+
+The counts across the plan: 787 cargo tests, 499 pytest and 325 node when
+it started, and **868, 530 and 345** now, the 868 the same on the faer
+backend, with 2 ignored.
+
+### The target that is now in the spec
+
+`calc_pop_diversity` is measured against `calc_per_var_distribs` of
+`docs/specs/stats.md` over the same file with the same populations at the
+same thread count, which the plan asked for: that pass makes the same read
+and the same counts of how often each population called each allele, and
+then does far less arithmetic on them. With the four statistics that need
+no draw, and with all five at a draw of 20, at most 1.1 times it; with all
+five at a draw of 200, at most 2 times it. Today it is 0.78 to 1.02 times
+and 1.16 to 1.61 times, so the target has headroom at every thread count.
+
+It is a ratio and not a number of seconds because both sides are timed on
+one machine on one day, and a ratio does not go stale when the machine
+does.
+
+### What was changed in the plan, and why
+
+**The two tasks ran one after the other where the plan said they could run
+side by side.** Task 4.1 takes wall times and task 4.2 runs the release
+build of `crates/popnei-js` and the build of the pyodide wheel. The
+`performance-review` skill takes a wall time with nothing else building on
+the machine, because two builds at once measure each other. 4.1 went first,
+which deliverable 1 asks for anyway: the commit that writes the target into
+the spec comes before the code of any later task.
+
+**Task 4.1 was carried out in two parts**, the harnesses and every number
+first, then the target in the spec followed by the experiment of
+deliverable 2, so that the target was set against the code as it was
+measured.
+
+**No performance reviewers were sent.** The `performance-review` skill
+sends one reviewer per category to look for candidates. Work package 4
+asked for one measurement and one experiment and named them both, and its
+"What could go wrong" says that anything beyond deliverable 2 is a
+performance review of its own. The report says what that leaves out.
+
+### What the review found
+
+Six reviewers over `f9064bc`, in the categories `spec`, `tests`, `numbers`,
+`errors`, `architecture` and `binding`. `api` was not sent: this work
+package adds no type, no signature and no public name, and changes no line
+of the library but one doc comment. They found twenty-six findings that
+held, every one fixed. Not one was in code that runs: the only line of the
+library this work package changed is a doc comment, and what the review
+found is that the measurement was right and the documents reporting it were
+not.
+
+**Fourteen numbers and sentences of "Speed" and of the performance report
+were not what was measured.** The three that mattered:
+
+- **A row of the differencing table is labelled with the wrong four
+  statistics.** `the four that need a draw | 200 | 0.371, 0.393, 0.396 s`
+  is the four that need *no* draw, run at a draw of 200. The orchestrator
+  settled it by running both on one thread: `without_a_draw` gives 0.386 s
+  and the four that genuinely need a draw give 0.456 s, against all five at
+  0.497 s. The conclusion built on the row survives, because all five less
+  the four that need no draw is still the spectrum.
+- **The share of the spectrum was wrong in three ways at once.** Its low
+  end is 0.097 s and not 0.098, by the pairwise subtraction the table
+  supports. Its denominator was the pass over blocks already in memory,
+  whose floor carries one copy of the 10 MB block for every block and reads
+  no file; over the pass a user runs it is 16 to 18 in 100 and not 20 to
+  23. And "8 to 10 in 100 at a draw of 20" rested on nothing: the
+  orchestrator measured it in three alternating rounds, `without_a_draw`
+  0.205, 0.206 and 0.207 s against all five 0.218, 0.218 and 0.218 s, so
+  the spectrum adds 0.011 to 0.013 s to a pass of 0.218, which is 5 to 6 in
+  100. The documents now separate the two quantities everywhere: the
+  spectrum asked for alone costs more than the spectrum added to the other
+  four, because a pass with the spectrum alone still counts the alleles of
+  every population.
+- **The description of the spectrum's arithmetic had its two branches
+  swapped.** The product is of `num_called_alleles` factors where the
+  copies of the major allele *can* fill the draw on their own, not where
+  they cannot. Two reviewers found it separately; the function's own doc
+  comment in the code was right all along.
+
+**A self-check of the new benchmark could be switched off by a legal
+refactor, and a reviewer switched it off.** `a_statistic_with_no_value`
+zipped the public table `DiversityStats::NAMES_AND_STATS` against a
+hand-written array in the same order and compared the two entry by entry.
+Moving `("fis", FIS)` to the front of that table, which `NAMES` and
+`of_name` both follow so nothing else breaks, made the guard never match,
+so the check returned nothing for every statistic and stopped existing: a
+pass that gave no value for F_IS went from exit 1 to exit 0. It now looks
+each statistic up by its own entry, and the fixer broke it the same way
+again to see it fail.
+
+**Three of the four memory shapes are passes in which no variant reaches
+the draw**, and both documents presented them as the memory of the pass.
+The second has 10 individuals a population against the benchmark's
+threshold of 20, so no variant counts at all; the third and the fourth ask
+for draws of 2000 and 20000 that populations of 20 and 200 individuals
+cannot fill. The figures stand, because the bins are allocated whatever the
+data, and a reviewer produced the control: the second shape with 2000
+individuals instead of 500, where the variants do count, gives 2.019 MB
+against 2.007. Both documents now say so.
+
+**The memory figure is not the same on every run above one thread.** The
+counting allocator counts the whole process, and at 18 threads on a busy
+machine a reviewer got 0.029 to 0.048 MB in 27 runs of the shape whose
+figure is 0.053 MB, reaching it in none of them; with the machine quiet the
+same command gave 0.053 MB twelve times out of twelve. At one thread it is
+exact every time. That the extra is rayon's own splitting and stealing is a
+suspicion and is written down as one.
+
+**Three memory figures in a doc comment of the library contradicted the
+spec this work package wrote.** `add_the_block` of
+`crates/popnei/src/diversity.rs` carried 2.3, 15.9 and 40 MB where the
+measurement gives 2.007, 15.479 and 36.343, and its 40 contradicted its own
+next clause, "4 MB of bins for each chunk and 4 MB more for the pass
+itself", which over 8 chunks is 36.
+
+**Two gaps in the pyodide check**, which is the only check popnei has of
+the wheel that runs in a browser tab. The plain call exists to prove that a
+user who names no statistic gets the four that need no draw, and it never
+asserted that: a wheel whose default differed died inside Python with
+`'NoneType' object is not subscriptable`, preceded by node printing 1.2 MB
+of minified pyodide, where the file promises to name each value that
+differs. And the variants of the pass were never read, though the three
+other calculation checks of that file all read them.
+
+**Eleven smaller findings held**, each fixed: a populations file of three
+columns was taken and the population named with a tab inside it, so a run
+timed populations the file did not mean and exited 0; a `runs` of 0 died on
+`min() iterable argument is empty` after a whole untimed pass; four
+messages named neither the argument nor the value; the benchmark's
+`default_vars` was a second copy of the public
+`block::default_num_vars_per_block`; the spec pointed at load averages the
+report does not hold; "the clock resolves 0.001 s" was the harness printing
+three decimals and not the clock, whose resolution is 4.17e-08 s; the floor
+of 0.126 s had no command anywhere, though every "over the floor" figure
+rests on it; the three standardized values were given as 0.198 s in one
+place and 0.199 in another where the pass with the three together is 0.208;
+the growth of the memory with the threads was stated without its ceiling,
+which the fourth shape reaches at 4 threads; the report's account of that
+shape left 0.339 MB unexplained; and a doc comment said a pass whose blocks
+carry no genotype where the run shows the genotypes are there.
+
+**Nothing was set aside.** Every finding of this work package held and
+every one is fixed. One was found by a fixer and not by a reviewer: the
+0.339 MB is not a remainder but the counts each population keeps for the
+chunk in hand, its private-allele pair, and the per-chunk state of the
+pass, which together close all eight figures of the table to within 0.004
+MB.
+
+### What the owner should know
+
+**The experiment of deliverable 2 was run and kept nothing, which is the
+outcome it was for.** The spectrum's weights are already shared by the
+bins. To measure what that sharing is worth, an unshared version was built
+as a probe, one that computes each bin's weight from its own product of up
+to `num_called_alleles` factors. It passed every correctness check before
+any timing was read, so it was a slower version of the same calculation and
+not a wrong one, and it took 11.042 s against 0.243 s on the pass with the
+spectrum alone and 11.447 s against 0.500 s on the pass with all five, 45.4
+and 22.9 times. The probe was reverted and is not committed.
+
+The recurrence would have stayed whatever the timing said, for a reason
+that is not about speed: the review of work package 3 found that computing
+the bins without it underflowed to 0 and lost whole variants at a draw
+above about 560 called alleles in a population. The measurement decides
+what the sharing is worth; rightness decides that it stays.
+
+**One thing is left for a performance review of its own, and it is worth
+more than the spectrum.** Three of the statistics compute the same products
+over and over on a variant of two alleles. Every standardized value rests
+on one chance, that a draw of `g` of the `c` copies a population called
+holds no copy of an allele it called `n` times; on a biallelic variant
+`alleles_a_draw_shows`, `chance_a_draw_varies` and
+`the_chance_each_draw_misses_the_allele` all ask for the same two products,
+with the same arguments in the same order, so six products of `g` factors
+are taken where two would do. The three are 0.208 s of a 0.505 s pass. An
+upper bound on what sharing them could save is 0.14 s of that pass, 28 in
+100, and the real figure is smaller because the sums and the loops are not
+free. It was not implemented: work package 4's "What could go wrong" says
+that anything beyond the shared weights of deliverable 2 is a review of its
+own. `docs/reports/perf-diversity-2026-09-24.md` holds it under "Seen
+outside the scope" with the measurement that would settle it, and with the
+one thing to settle first, that the identity fails on a variant of three
+alleles.
+
+**No memory target was set**, and the report says why. There is nothing
+measured to set one against: no other library's figure for this pass, no
+run in a browser, and no dataset whose memory anybody has found too large.
+A bound invented there would be a standard stricter than the real one,
+which a reader would then hold the code to. The measurement is written down
+instead: at 18 threads the pass holds 0.053 MB beside a block at the
+panel's shape and 36.343 MB at 10000 individuals with 50 populations and a
+draw of 20000, against a block of about 10 MB, and every figure of this
+module is stated with the threads it was taken at, because the reduction
+holds two chunks of partial sums for each thread of the pool.
+
+**Thirteen Python harnesses under `crates/popnei/benches/` are covered by
+no check of the project, and they stay that way for now.** `[tool.ruff]` of
+`pyproject.toml` includes `python/**/*.py` and `tests/*.py` only, which a
+reviewer proved by appending a duplicate import and a bare assignment to a
+harness and watching both `uv run ruff check` and `uv run ruff format
+--check` pass. Adding `crates/popnei/benches/*.py` to `include` was tried
+and reverted: it wants reformatting in `make_big_vcf.py` in four places and
+in `make_pops.py` in one, and `ruff check` raises two real complaints, both
+in `make_big_vcf.py`, a `write` in a loop that should be `writelines` and
+an `encode()` of a literal that should be a bytes literal. Fixing eleven
+harnesses this plan did not write is not this plan's work, so the reason is
+now in the comment beside `include` and the decision is the owner's. The
+two harnesses this work package wrote pass both commands on their own.
+
+**`crates/popnei/benches/stats_pass.rs` has two of the gaps that were fixed
+here**, and was left alone: a numeric argument that is not a number is
+refused without echoing the value, and a run in which no variant counts for
+any population prints a timing and exits 0. Both are one line each. They
+belong to `docs/specs/stats.md`'s module and not to this one.
+
+**The four things that were already waiting are still waiting**, and this
+work package added nothing to them. They are under "What the owner should
+know" of work packages 1, 2 and 3 above: whether `scikit-allel` and `dadi`
+become development dependencies of popnei or stay in the environments
+`tests/reference/diversity/make_reference.py` builds;
+`crates/popnei/src/io/vars.rs` giving the ploidy its metadata states with
+no ceiling, which is what lets a ploidy popnei cannot read reach any pass;
+`docs/reports/diversity-method/panel.py` hardcoding paths into a worktree
+that no longer exists, so the script this spec names as the source of its
+unbiased F_IS and its standardized private alleles cannot be rerun as it
+stands; and `calc_per_var_distribs` and `calc_pop_dists` still taking their
+choice of what to compute positionally where `calc_pop_diversity` now takes
+it by name, a convention the owner approved for all three.
+
+### How the work went
+
+Not for the owner, who can stop here. It is for whoever next revises a
+skill or writes a plan.
+
+**A measurement is a claim like any other, and this work package is the
+case for reviewing one.** Its three tasks took 631000 tokens of subagent
+context to write, its six reviewers 716000 and its two fixers 426000, so
+checking and repairing cost 1.14 million, 1.8 times what the work cost.
+Work package 1, the only other one whose fixes were counted, cost 1.24
+times; work package 2's fixes were not recorded, so its reviewers can be
+compared and its total cannot, and they cost 0.93 times its tasks against
+1.13 here. The 1.8 bought twenty-six findings, of which fourteen were
+numbers or sentences that were not what had been measured, in documents
+whose whole purpose is to carry numbers. A work package that produces prose
+about measurements needs the same review as one that produces code, and the
+categories that found most were `spec` and `numbers`, which are the two
+that recompute.
+
+**Three reviewers found the same mislabelled row from different sides**,
+and the `code-review` skill is right that this is evidence and not
+repetition. What settled it was neither of them: it was the orchestrator
+running the two passes the label disagreed about and reading which range
+the row fell in. A finding about a number is settled by taking the number.
+
+**One reviewer overstated a finding and the orchestrator caught it by
+running the case.** The `tests` reviewer reported that all four shapes of
+the memory table count no variant; the first shape counts every one of
+them, which one run prints. The reviewer's underlying finding held for the
+other three, and the fix would have been wrong had the overstatement been
+taken as given. Every finding whose fix is more than a word gets the
+command run.
+
+**The plan said tasks 4.1 and 4.2 could run side by side, and they could
+not.** Nothing in the plan is wrong about the files they touch; what the
+plan did not hold is that one of them takes wall times and the other runs
+two long builds. A plan that marks two tasks as parallel should say
+whether either of them measures time, because that is a resource of the
+machine that no list of files shows.
+
+**A fix that runs in the same tree as another fix needs its files named in
+the brief, and that worked.** Two fixers ran at once over disjoint sets of
+files, each told to report rather than edit anything belonging to the
+other, and one of them handed a single line back through the orchestrator.
+Nothing was lost and neither commit swallowed the other's paths.
+
+**The benchmark's self-check was the finding worth the whole review.** It
+was written to fail when a statistic has no value, it did fail, and a
+reordering of a public table that breaks nothing else turned it off in
+silence. The rule that a test must be broken to be believed is not enough
+on its own: what found this was asking what else could change and leave the
+test passing. A check that pairs two lists by position, where one of them
+is public and may be reordered, is the shape to look for.
