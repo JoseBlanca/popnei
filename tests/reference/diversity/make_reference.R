@@ -24,7 +24,10 @@
 #                                adegenet, and the alleles a draw of 20 of its
 #                                called alleles is expected to show, from vegan
 #     panel_private_alleles.tsv  the alleles a population called that no other
-#                                population called, from poppr
+#                                population called, from poppr, over the
+#                                variants every population counted, which is
+#                                the divisor the spec gives them and not the
+#                                one the two other files use
 #     panel_variable_vars.tsv    the variants that vary in each population,
 #                                from adegenet, and the chance that such a
 #                                draw of 20 varies, which is vegan's number
@@ -340,27 +343,52 @@ check_values <- function(got, want, what, pops) {
   }
 }
 
-# The literals of the tables of docs/specs/diversity.md, for p0, p1 and p2.
-check <- function(rows) {
-  check_counts(rows$num_vars_with_data, c(1200L, 1200L, 1200L), "the variants that count")
-  check_counts(rows$num_vars_in_draw, c(1200L, 1200L, 1200L), "the variants in the draw")
-  check_counts(rows$alleles_called, c(2373L, 2377L, 2384L), "the alleles called")
-  check_values(rows$alleles_mean, c(1.9775, 1.9808333333, 1.9866666667),
-               "the mean alleles called", rows$pop)
-  check_values(rows$alleles_in_draw, c(1.9283948650, 1.9219209943, 1.9197370844),
-               "the alleles in a draw of 20", rows$pop)
-  check_counts(rows$private_alleles, c(0L, 0L, 1L), "the private alleles")
-  check_values(rows$private_mean, c(0, 0, 0.0008333333),
-               "the mean private alleles", rows$pop)
-  check_counts(rows$variable_vars, c(1173L, 1177L, 1184L), "the variable variants")
-  check_values(rows$variable_ratio, c(0.9775, 0.9808333333, 0.9866666667),
-               "the ratio of variable variants", rows$pop)
-  check_values(rows$variable_in_draw, c(0.9283948650, 0.9219209943, 0.9197370844),
-               "the ratio of variable variants in a draw of 20", rows$pop)
+# The literals of the tables of docs/specs/diversity.md, for p0, p1 and p2,
+# read off the columns as they are about to be written, under the names they
+# are written under.
+check <- function(num_alleles, private, variable) {
+  pops <- num_alleles$pop
+  check_the_divisor_of_the_private_alleles(private)
+  check_counts(num_alleles$num_vars_with_data, c(1200L, 1200L, 1200L),
+               "the variants that count")
+  check_counts(num_alleles$num_vars_in_draw, c(1200L, 1200L, 1200L),
+               "the variants in the draw")
+  check_counts(num_alleles$total_adegenet, c(2373L, 2377L, 2384L), "the alleles called")
+  check_values(num_alleles$mean, c(1.9775, 1.9808333333, 1.9866666667),
+               "the mean alleles called", pops)
+  check_values(num_alleles$in_draw_vegan, c(1.9283948650, 1.9219209943, 1.9197370844),
+               "the alleles in a draw of 20", pops)
+  check_counts(private$num_vars_every_pop, c(1200L, 1200L, 1200L),
+               "the variants every population counted")
+  check_counts(private$total_poppr, c(0L, 0L, 1L), "the private alleles")
+  check_values(private$mean, c(0, 0, 0.0008333333), "the mean private alleles", pops)
+  check_counts(variable$total_adegenet, c(1173L, 1177L, 1184L), "the variable variants")
+  check_values(variable$ratio, c(0.9775, 0.9808333333, 0.9866666667),
+               "the ratio of variable variants", pops)
+  check_values(variable$in_draw_vegan_minus_one,
+               c(0.9283948650, 0.9219209943, 0.9197370844),
+               "the ratio of variable variants in a draw of 20", pops)
 }
 
-write_tsv <- function(path, header, columns) {
-  lines <- header
+# The mean private alleles of the file against its own two other columns, so
+# that a divisor other than num_vars_every_pop cannot be written under that
+# name. On this panel the two counts of variants are both 1200 and nothing
+# here can tell them apart; on a panel where they differ this stops the script.
+check_the_divisor_of_the_private_alleles <- function(private) {
+  wanted <- private$total_poppr / private$num_vars_every_pop
+  if (!identical(private$mean, wanted)) {
+    stop(sprintf(paste("the mean private alleles, %s, are not the %s private",
+                       "alleles over the %s variants every population counted"),
+                 paste(sprintf("%.17g", private$mean), collapse = " "),
+                 paste(private$total_poppr, collapse = " "),
+                 paste(private$num_vars_every_pop, collapse = " ")))
+  }
+}
+
+# The name of each column of `columns` is the name it is written under, so a
+# header cannot say one thing while the column beneath it holds another.
+write_tsv <- function(path, columns) {
+  lines <- paste(names(columns), collapse = "\t")
   for (row in seq_along(columns[[1]])) {
     lines <- c(lines, paste(vapply(columns, function(column) as_field(column[[row]]), ""),
                             collapse = "\t"))
@@ -394,42 +422,52 @@ main <- function() {
                  paste(pop_names, collapse = " ")))
   }
 
-  num_vars_with_data <- rep(nrow(panel$calls), length(pop_names))
-  rows <- list(
+  # A variant counts for a population when that population called at least
+  # min_num_individuals genotypes there and called something, which is the
+  # rule of "Its Python function" of the spec.
+  counts_for <- alleles$called_genotypes >= MIN_NUM_INDIVIDUALS &
+    alleles$called_alleles > 0
+  num_vars_with_data <- colSums(counts_for)
+  num_vars_every_pop <- sum(rowSums(counts_for) == length(pop_names))
+
+  num_alleles <- list(
     pop = pop_names,
     num_vars_with_data = as.integer(num_vars_with_data),
+    total_adegenet = as.integer(from_adegenet$alleles_called),
+    mean = unname(from_adegenet$alleles_called / num_vars_with_data),
     num_vars_in_draw = as.integer(from_vegan$num_vars_in_draw),
-    alleles_called = as.integer(from_adegenet$alleles_called),
-    alleles_mean = from_adegenet$alleles_called / num_vars_with_data,
-    alleles_in_draw = unname(from_vegan$alleles_in_draw),
-    private_alleles = as.integer(from_poppr),
-    private_mean = from_poppr / num_vars_with_data,
-    variable_vars = as.integer(from_adegenet$variable_vars),
-    variable_ratio = from_adegenet$variable_vars / num_vars_with_data,
+    in_draw_vegan = unname(from_vegan$alleles_in_draw)
+  )
+  # The private alleles are divided by the variants every population counted
+  # and not, as the two other statistics are, by the variants the population
+  # itself counted. A population that called nothing at a variant holds none
+  # of its alleles, so every allele of every other population would be private
+  # there and the count would measure the missing data; "What it gives" of the
+  # private alleles of the spec has it, and "Its Python function" names
+  # num_vars_every_pop as the divisor. One variant short in one population
+  # leaves every population's private count, which is why this divisor is one
+  # number for all of them and the other is one per population.
+  private <- list(
+    pop = pop_names,
+    num_vars_every_pop = rep(as.integer(num_vars_every_pop), length(pop_names)),
+    total_poppr = as.integer(from_poppr),
+    mean = unname(from_poppr / num_vars_every_pop)
+  )
+  variable <- list(
+    pop = pop_names,
+    num_vars_with_data = as.integer(num_vars_with_data),
+    total_adegenet = as.integer(from_adegenet$variable_vars),
+    ratio = unname(from_adegenet$variable_vars / num_vars_with_data),
+    num_vars_in_draw = as.integer(from_vegan$num_vars_in_draw),
     # One allele expected in a draw is one allele for certain plus the chance
     # of a second, which on a variant of two alleles is the chance it varies.
-    variable_in_draw = unname(from_vegan$alleles_in_draw) - 1
+    in_draw_vegan_minus_one = unname(from_vegan$alleles_in_draw) - 1
   )
-  check(rows)
+  check(num_alleles, private, variable)
 
-  write_tsv(
-    file.path(here, "panel_num_alleles.tsv"),
-    "pop\tnum_vars_with_data\ttotal_adegenet\tmean\tnum_vars_in_draw\tin_draw_vegan",
-    rows[c("pop", "num_vars_with_data", "alleles_called", "alleles_mean",
-           "num_vars_in_draw", "alleles_in_draw")]
-  )
-  write_tsv(
-    file.path(here, "panel_private_alleles.tsv"),
-    "pop\tnum_vars_every_pop\ttotal_poppr\tmean",
-    rows[c("pop", "num_vars_with_data", "private_alleles", "private_mean")]
-  )
-  write_tsv(
-    file.path(here, "panel_variable_vars.tsv"),
-    paste0("pop\tnum_vars_with_data\ttotal_adegenet\tratio\tnum_vars_in_draw\t",
-           "in_draw_vegan_minus_one"),
-    rows[c("pop", "num_vars_with_data", "variable_vars", "variable_ratio",
-           "num_vars_in_draw", "variable_in_draw")]
-  )
+  write_tsv(file.path(here, "panel_num_alleles.tsv"), num_alleles)
+  write_tsv(file.path(here, "panel_private_alleles.tsv"), private)
+  write_tsv(file.path(here, "panel_variable_vars.tsv"), variable)
   cat(sprintf(paste("the identity of the variable variants holds on %d pairs of",
                     "allele counts and draw, the largest difference %.3g\n"),
               length(identity_differences), max(identity_differences)),
