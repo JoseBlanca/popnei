@@ -7,6 +7,18 @@
 //! of the two variants over the individuals called at both.
 //! `docs/specs/ld.md` is the spec of the module.
 //!
+//! The module gives r² in the two shapes that spec asks for.
+//! [`calc_r2_matrix`] reads a pass to its end and gives the r² of every
+//! pair of its variants as a square matrix, with the chromosome and the
+//! position of each variant. It is what a plot of one region is drawn
+//! from, and how many variants it takes is bounded by the memory of the
+//! matrix, which holds one value for each pair and so grows with the
+//! square of them. [`calc_ld_and_dist`] gives how r² falls off as the two
+//! variants of a pair move apart along a chromosome, for each population
+//! of the dataset on its own, in bins of distance. It holds only the
+//! variants that are still within reach of the newest one read, so it runs
+//! over a dataset whose matrix of every pair no machine would hold.
+//!
 //! The dosage of a genotype is how many of its alleles are not the major
 //! allele of its variant, 0, 1 or 2 in a diploid, and a genotype with an
 //! allele missing has none. [`LdDosages`] reads the genotypes of a block as

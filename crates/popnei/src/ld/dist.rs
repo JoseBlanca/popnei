@@ -1,15 +1,28 @@
-//! The window of blocks that the fall-off of r² with distance is counted
-//! over, from "How it runs" of the item "LD against distance, per
-//! population" of `docs/specs/ld.md`.
+//! How the r² of a pair of variants falls off as the two move apart along
+//! a chromosome, for each population of a dataset on its own, which is the
+//! item "LD against distance, per population" of `docs/specs/ld.md`.
+//!
+//! [`calc_ld_and_dist`] makes one pass over a reader, which serves every
+//! population, and gives an [`LdAndDist`]. In it each population has its
+//! [`LdBins`]: the distances from `min_dist` to `max_dist` cut into
+//! `num_bins` bins of equal width, and for each bin how many pairs of
+//! variants fall in it, the mean of their r² and its standard deviation,
+//! beside how many variants that population kept at its major allele
+//! frequency. A pair is counted in a population when both of its variants
+//! passed the major allele frequency of that population, when the two are
+//! on one chromosome and when their distance is in that range.
+//! [`DEFAULT_MIN_DIST`], [`DEFAULT_MAX_DIST`], [`DEFAULT_NUM_DIST_BINS`]
+//! and [`DEFAULT_MAX_ALLOWED_MAF`] are what a user who names none of them
+//! gets.
 //!
 //! Two variants make a pair only when they are on one chromosome and no
-//! further apart than `max_dist`, so a pass that counts every pair never
-//! needs the whole dataset in memory: it needs the blocks whose variants
-//! are still within `max_dist` of the newest variant it has read and on
-//! that variant's chromosome. [`TheWindowOfTheBlocks`] is that set of
-//! blocks. It takes the blocks of the reader one after another and drops
-//! one as soon as every variant of it is further back than `max_dist` or
-//! on another chromosome.
+//! further apart than `max_dist`, so the pass never needs the whole
+//! dataset in memory: it needs the blocks whose variants are still within
+//! `max_dist` of the newest variant it has read and on that variant's
+//! chromosome. [`TheWindowOfTheBlocks`] is that set of blocks, which "How
+//! it runs" of the item describes. It takes the blocks of the reader one
+//! after another and drops one as soon as every variant of it is further
+//! back than `max_dist` or on another chromosome.
 //!
 //! A block is dropped whole, so the window holds every variant that is
 //! within reach and, beside them, the variants of the same blocks that
