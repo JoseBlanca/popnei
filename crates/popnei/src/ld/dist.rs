@@ -17,24 +17,13 @@
 //! size of the blocks the reader gives; which pairs the pass counts does
 //! not, because the pass takes the distance of each pair from the
 //! positions and not from the window.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "nothing outside the tests reads a window or the dosages over it yet: \
-                  the tiles that count the pairs of a window and `calc_ld_and_dist`, \
-                  which `docs/specs/ld.md` asks for, are written on top of them and are \
-                  not written yet"
-    )
-)]
-
 use std::collections::VecDeque;
 
-use crate::block::Block;
+use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
 use crate::variant::Needs;
 
-use super::{LdDosages, the_copy_of, the_memory_for};
+use super::{LdDosages, a_vector_of, r2_between, the_copy_of, the_memory_for};
 
 /// Where one variant lies: the number of its chromosome in the
 /// [`ChromTable`](crate::variant::ChromTable) of the reader the block came
@@ -114,12 +103,30 @@ impl TheWindowOfTheBlocks {
     }
 
     /// How many blocks the window holds.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     fn num_blocks(&self) -> usize {
         self.held.len()
     }
 
     /// How many variants the blocks it holds have, which is how many
     /// [`TheWindowOfTheBlocks::variants`] gives.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "each block held has one u32 of chromosome and one u64 of position for \
@@ -133,18 +140,45 @@ impl TheWindowOfTheBlocks {
     }
 
     /// The blocks it holds, the oldest first.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     fn blocks(&self) -> impl ExactSizeIterator<Item = &Block> {
         self.held.iter()
     }
 
     /// Where each variant of the blocks it holds lies, the oldest block
     /// first and inside a block in the order of its variants.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     fn variants(&self) -> impl Iterator<Item = TheVariantOfTheWindow> {
         self.held.iter().flat_map(the_variants_of)
     }
 
     /// The newest variant read, which the window reaches back from, and
     /// `None` before a block with a variant has been taken.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     fn the_newest_variant(&self) -> Option<TheVariantOfTheWindow> {
         self.newest
     }
@@ -247,6 +281,9 @@ struct TheDosagesOfThePops {
     /// What the first block taken said the source holds, and `None` before
     /// a block has been taken.
     of_the_source: Option<TheSourceOfThePass>,
+    /// How many blocks fell out of the window when the newest block was
+    /// taken, which the populations drop when the next one is taken.
+    fell_out: usize,
     /// One for each population, in the order they were given.
     pops: Vec<ThePopOverTheWindow>,
 }
@@ -305,14 +342,28 @@ impl TheDosagesOfThePops {
             window: TheWindowOfTheBlocks::of(max_dist),
             max_allowed_maf,
             of_the_source: None,
+            fell_out: 0,
             pops: of_them,
         })
     }
 
     /// Takes the next block of the reader: each population keeps the
     /// variants of it that passed its major allele frequency, the blocks
-    /// that fell out of the window take their variants with them, and the
-    /// dosages of each population are built again over what is left.
+    /// that fell out of the window when the block before it was taken take
+    /// their variants with them, and the dosages of each population are
+    /// built again over what is left.
+    ///
+    /// The blocks that fall out with this block are dropped when the next
+    /// one is taken, and not here, because the pairs of a block are
+    /// counted against the window as it stands when that block arrives.
+    /// The window reaches `max_dist` back from the newest variant read,
+    /// which is the last variant of this block, and a variant within
+    /// `max_dist` of the first variant of the block can be further than
+    /// that from its last: dropping it here would leave a pair of the
+    /// block uncounted, and how many such pairs there are would depend on
+    /// the size of the blocks the reader gives. What the deferral costs is
+    /// the memory of one window more, which the blocks that fell out are
+    /// held for one step of the pass.
     ///
     /// # Errors
     ///
@@ -332,6 +383,12 @@ impl TheDosagesOfThePops {
             return Err(Error::FieldsNotInTheBlock { fields: missing });
         }
         let of_the_source = self.the_source_of(&block)?;
+        // What fell out of the window when the block before this one was
+        // taken, whose pairs have been counted since.
+        let dropped = std::mem::take(&mut self.fell_out);
+        for pop in &mut self.pops {
+            pop.the_oldest_blocks_are_dropped(dropped, of_the_source);
+        }
         // The variants of the block are taken before the window is told of
         // it, so that what each population holds is in the order of the
         // blocks of the window and the blocks that fall out are the oldest
@@ -339,9 +396,8 @@ impl TheDosagesOfThePops {
         for pop in &mut self.pops {
             pop.take_the_block(&block, of_the_source, self.max_allowed_maf)?;
         }
-        let dropped = self.window.take_the_block(block)?;
+        self.fell_out = self.window.take_the_block(block)?;
         for pop in &mut self.pops {
-            pop.the_oldest_blocks_are_dropped(dropped, of_the_source);
             pop.the_dosages_are_built(of_the_source)?;
         }
         Ok(())
@@ -394,8 +450,22 @@ impl TheDosagesOfThePops {
 
     /// The population at that position among the ones given, and `None`
     /// when it is not one of them.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the pass over a window reads the variants of each population and \
+                      the dosages over them, and not the window itself; what this \
+                      answers is read by the tests of the window alone"
+        )
+    )]
     fn pop(&self, pop: usize) -> Option<&ThePopOverTheWindow> {
         self.pops.get(pop)
+    }
+
+    /// Every population of the pass, in the order they were given.
+    fn the_pops(&self) -> &[ThePopOverTheWindow] {
+        &self.pops
     }
 }
 
@@ -600,6 +670,12 @@ impl ThePopOverTheWindow {
     fn first_var(&self) -> u64 {
         self.first_var
     }
+
+    /// How many variants it kept of the block taken last, which are the
+    /// newest variants it holds, and 0 before a block has been taken.
+    fn kept_of_the_newest_block(&self) -> usize {
+        self.kept_of_each_block.back().copied().unwrap_or(0)
+    }
 }
 
 /// A count of variants as a result carries it, which is a `u64` and not a
@@ -609,13 +685,684 @@ fn the_count_of(num_vars: usize) -> u64 {
     u64::try_from(num_vars).unwrap_or(u64::MAX)
 }
 
+/// How many variants one tile of the pairs of the window holds.
+///
+/// The pairs of a population are worked out tile pair by tile pair, as the
+/// matrix of every pair is, and the tiles are cut at fixed multiples of
+/// this number counted from the first variant that population kept in the
+/// pass, so they do not move when the blocks of the reader do.
+///
+/// The bins do not change with it. What a pair adds to a bin is the r² of
+/// [`r2_between`], which is the same to the bit in whichever tile pair it
+/// is worked out, and the bins are added up variant by variant in the
+/// order of the variants of the pass, which neither a tile nor a block
+/// cuts. So this number is a matter of the memory and the time of one
+/// step and of nothing a user reads, which
+/// `the_bins_do_not_move_with_the_blocks_nor_with_the_tiles` says.
+///
+/// Nobody has timed this pass: the owner decided on 24 September 2026 that
+/// its speed goes to a performance review of its own, as the matrix of
+/// every pair did on 23 September 2026, so this number is not a
+/// measurement. At 256 variants a pair of tiles holds 512 KB of r² and the
+/// six sums of it 3 MB, beside the window itself.
+const THE_VARS_OF_A_TILE_OF_THE_WINDOW: usize = 256;
+
+/// What the fall-off of r² with distance is counted with.
+#[derive(Debug, Clone, Copy)]
+pub struct LdAndDistOptions {
+    /// The smallest distance in base pairs at which a pair of variants is
+    /// counted, that distance included. A `min_dist` of 1 leaves out only
+    /// the pairs of two variants at one position.
+    pub min_dist: u64,
+    /// The largest distance in base pairs at which a pair of variants is
+    /// counted, that distance included. It is also how far back the window
+    /// of blocks reaches, so it is what the memory of the pass grows with.
+    pub max_dist: u64,
+    /// How many bins of equal width the distances from `min_dist` to
+    /// `max_dist` are cut into. It is 1 at least.
+    pub num_bins: usize,
+    /// The largest major allele frequency a variant has in a population
+    /// and is still counted there, both ends included. It is worked out
+    /// over the individuals of that population alone, so two populations
+    /// of one pass count different variants.
+    pub max_allowed_maf: f64,
+}
+
+/// How the r² of a pair of variants falls off with the distance between
+/// them, for each population of a dataset, in bins of distance.
+///
+/// It reads the reader to its end in one pass, which serves every
+/// population, and asks it for the genotypes, the chromosome and the
+/// position. The reader is borrowed and not taken, so that whoever built
+/// the chain of filters of the pass reads their counts from it when this
+/// returns, as `docs/specs/filters.md` says; how many variants the
+/// calculation was given is [`LdAndDist::num_vars`].
+///
+/// `pops` is the indices of the individuals of each population among the
+/// individuals of a block, in the order the user gave them, and an empty
+/// `pops` is one population of every individual. An individual may be in
+/// more than one population, and one in none is read by none of them.
+///
+/// A pair of variants is counted in a population when both of its variants
+/// passed the major allele frequency of that population, when the two are
+/// on one chromosome, and when their distance is from `min_dist` to
+/// `max_dist`, both included. A pair with no r², which "What it gives" of
+/// `docs/specs/ld.md` defines, is in no bin.
+///
+/// The bins are the same, to the bit, whatever the size of the blocks the
+/// reader gives: the r² of a pair is worked out over the individuals,
+/// which no block and no tile cuts, and the bins are added up in the order
+/// of the variants of the pass.
+///
+/// # Errors
+///
+/// [`Error::LdMinDistAboveMaxDist`] for a `min_dist` above `max_dist`;
+/// [`Error::LdNoBins`] for a `num_bins` of 0;
+/// [`Error::LdMaxAllowedMafOutOfRange`] for a `max_allowed_maf` that is
+/// NaN or is not from 0 to 1; [`Error::LdPopWithNoIndividual`] for a
+/// population that names no individual;
+/// [`Error::LdIndividualNotInTheDataset`] and
+/// [`Error::LdIndividualAskedForTwice`] for the individuals of a
+/// population; [`Error::PassGaveNoVariant`] when the reader gives no
+/// variant; [`Error::FieldsNotInTheBlock`] when a block holds variants and
+/// no genotypes or no position; [`Error::LdNoMemory`] when this machine
+/// does not give the memory of the bins, of the window or of the r² of a
+/// step, which is asked of it with `try_reserve_exact` and not taken; what
+/// the dosages of a block and the r² of two tiles refuse; and whatever the
+/// reader fails with, which is given on as it is.
+pub fn calc_ld_and_dist<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    pops: &[&[usize]],
+    options: &LdAndDistOptions,
+) -> Result<LdAndDist> {
+    the_ld_and_dist_in_tiles_of(reader, pops, options, THE_VARS_OF_A_TILE_OF_THE_WINDOW)
+}
+
+/// The fall-off of r² with distance, with the pairs of each step taken in
+/// tiles of `vars_per_tile` variants.
+///
+/// [`calc_ld_and_dist`] is this with the tile of the module, and the tests
+/// are what give another: the bins are the same, to the bit, whatever the
+/// tile, because a pair adds the same r² to the same bin in whichever tile
+/// pair it is worked out and the bins are added up in the order of the
+/// variants.
+///
+/// # Errors
+///
+/// Those of [`calc_ld_and_dist`].
+fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
+    reader: &mut R,
+    pops: &[&[usize]],
+    options: &LdAndDistOptions,
+    vars_per_tile: usize,
+) -> Result<LdAndDist> {
+    if options.min_dist > options.max_dist {
+        return Err(Error::LdMinDistAboveMaxDist {
+            min_dist: options.min_dist,
+            max_dist: options.max_dist,
+        });
+    }
+    if options.num_bins == 0 {
+        return Err(Error::LdNoBins);
+    }
+    let mut of_the_pops = TheDosagesOfThePops::of(pops, options.max_dist, options.max_allowed_maf)?;
+    let mut of_each_pop: Vec<LdBins> = Vec::new();
+    of_each_pop
+        .try_reserve_exact(of_the_pops.num_pops())
+        .map_err(|_| Error::LdNoMemory {
+            what: "the bins of each population",
+            values: of_the_pops.num_pops(),
+        })?;
+    for _ in 0..of_the_pops.num_pops() {
+        of_each_pop.push(LdBins::of(options)?);
+    }
+    // The genotypes, the chromosome and the position are what this reads,
+    // so a reader over a file leaves the other columns of a variant
+    // unparsed.
+    reader.set_needs(Needs::GTS | Needs::CHROM_POS);
+    // A tile of no variant would take no variant of the window and the
+    // step would stand still.
+    let mut of_the_pairs = ThePairsOfAStep::of(options, vars_per_tile.max(1));
+    let mut num_vars = 0_u64;
+    while let Some(block) = reader.next_block()? {
+        // Every variant counted here was read from a source, and a u64
+        // counts 1.8e19 of them: a pass that passed this number would have
+        // read more bytes than any storage holds.
+        num_vars = num_vars.saturating_add(the_count_of(block.num_vars));
+        of_the_pops.take_the_block(block)?;
+        for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
+            of_the_pairs.the_pairs_of_the_newest_variants(of_the_pop, bins)?;
+        }
+    }
+    if num_vars == 0 {
+        let filters = reader.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            // The filter nearest the source was given what the source
+            // gave; with no filter the pass gave what the source gave,
+            // which is nothing.
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
+    }
+    for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
+        bins.num_vars = of_the_pop.num_vars();
+    }
+    Ok(LdAndDist {
+        num_vars,
+        of_each_pop,
+    })
+}
+
+/// How the r² of a pair of variants falls off with the distance between
+/// them, for each population of one pass.
+///
+/// It is what [`calc_ld_and_dist`] gives.
+#[derive(Debug)]
+pub struct LdAndDist {
+    /// How many variants the calculation was given, before the major
+    /// allele frequency of any population.
+    num_vars: u64,
+    /// The bins of each population, in the order the populations were
+    /// given.
+    of_each_pop: Vec<LdBins>,
+}
+
+impl LdAndDist {
+    /// The variants the calculation was given, before the major allele
+    /// frequency of any population.
+    #[must_use]
+    pub fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    /// How many populations the pass counted, which is 1 when it was given
+    /// none.
+    #[must_use]
+    pub fn num_pops(&self) -> usize {
+        self.of_each_pop.len()
+    }
+
+    /// The bins of the population at that position among the ones given,
+    /// and `None` when `pop` is not a population of the call.
+    #[must_use]
+    pub fn bins_of_pop(&self, pop: usize) -> Option<&LdBins> {
+        self.of_each_pop.get(pop)
+    }
+}
+
+/// The pairs of one population counted in bins of the distance of their
+/// two variants.
+///
+/// The bins are of equal width across the distances from `min_dist` to
+/// `max_dist`, both included: the width is
+/// (`max_dist` − `min_dist` + 1) / `num_bins` base pairs, and a pair at
+/// the distance d falls in the bin that floor((d − `min_dist`) / width)
+/// gives, the last bin taking anything the rounding would put past it.
+#[derive(Debug)]
+pub struct LdBins {
+    /// The smallest distance a pair is counted at, that distance included.
+    min_dist: u64,
+    /// The largest distance a pair is counted at, that distance included.
+    max_dist: u64,
+    /// The width of one bin in base pairs, which is not a whole number
+    /// when the distances do not divide by the bins.
+    width: f64,
+    /// How many variants this population kept at its major allele
+    /// frequency over the whole pass.
+    num_vars: u64,
+    /// How many pairs each bin holds, one for each bin.
+    num_pairs: Vec<u64>,
+    /// The sum of the r² of the pairs of each bin.
+    sum_r2: Vec<f64>,
+    /// The sum of the squares of the r² of the pairs of each bin, which
+    /// the standard deviation is taken from.
+    sum_of_squares: Vec<f64>,
+}
+
+impl LdBins {
+    /// Empty bins of the distances the options ask for.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the three counts of each bin.
+    fn of(options: &LdAndDistOptions) -> Result<LdBins> {
+        let num_bins = options.num_bins;
+        let of_a_bin = |what: &'static str| the_memory_for(what, num_bins);
+        // The distances counted are max_dist − min_dist + 1 of them, and
+        // the caller has refused a min_dist above max_dist.
+        let of_the_range = options.max_dist.abs_diff(options.min_dist) as f64 + 1.0;
+        Ok(LdBins {
+            min_dist: options.min_dist,
+            max_dist: options.max_dist,
+            width: of_the_range / num_bins as f64,
+            num_vars: 0,
+            num_pairs: a_vector_of(0, num_bins, &of_a_bin("the pairs of each bin"))?,
+            sum_r2: a_vector_of(0.0, num_bins, &of_a_bin("the sum of r² of each bin"))?,
+            sum_of_squares: a_vector_of(
+                0.0,
+                num_bins,
+                &of_a_bin("the sum of the squares of r² of each bin"),
+            )?,
+        })
+    }
+
+    /// How many bins the distances were cut into.
+    #[must_use]
+    pub fn num_bins(&self) -> usize {
+        self.num_pairs.len()
+    }
+
+    /// The variants that passed the major allele frequency of this
+    /// population over the whole pass.
+    #[must_use]
+    pub fn num_vars(&self) -> u64 {
+        self.num_vars
+    }
+
+    /// The smallest and the largest distance of the bin, both included,
+    /// and `None` when `bin` is not a bin.
+    #[must_use]
+    pub fn bounds(&self, bin: usize) -> Option<(u64, u64)> {
+        let last = self.num_bins().checked_sub(1)?;
+        if bin > last {
+            return None;
+        }
+        let smallest = self.the_smallest_dist_of(bin);
+        let largest = match bin == last {
+            true => self.max_dist,
+            false => self
+                .the_smallest_dist_of(bin.saturating_add(1))
+                .saturating_sub(1)
+                .min(self.max_dist),
+        };
+        Some((smallest, largest))
+    }
+
+    /// How many pairs the bin holds, and `None` when `bin` is not a bin.
+    #[must_use]
+    pub fn num_pairs(&self, bin: usize) -> Option<u64> {
+        self.num_pairs.get(bin).copied()
+    }
+
+    /// The mean of the r² of the pairs of the bin, and `None` when `bin`
+    /// is not a bin and when it holds no pair, which the binding crates
+    /// give the user as NaN.
+    #[must_use]
+    pub fn mean_r2(&self, bin: usize) -> Option<f64> {
+        let num_pairs = self.num_pairs.get(bin).copied()?;
+        if num_pairs == 0 {
+            return None;
+        }
+        Some(self.sum_r2.get(bin)? / num_pairs as f64)
+    }
+
+    /// The standard deviation of the r² of the pairs of the bin, with the
+    /// pairs of the bin as the divisor, and `None` when `bin` is not a bin
+    /// and when it holds no pair. A bin of one pair has 0.
+    #[must_use]
+    pub fn sd_r2(&self, bin: usize) -> Option<f64> {
+        let num_pairs = self.num_pairs.get(bin).copied()?;
+        if num_pairs == 0 {
+            return None;
+        }
+        let mean = self.sum_r2.get(bin)? / num_pairs as f64;
+        let of_the_squares = self.sum_of_squares.get(bin)? / num_pairs as f64;
+        // The mean of the squares less the square of the mean is the
+        // variance, and it is 0 to the last bits when every pair of the
+        // bin holds the same r², where the subtraction can leave a value
+        // below 0.
+        Some((of_the_squares - mean * mean).max(0.0).sqrt())
+    }
+
+    /// Counts one pair of the distance `dist`, whose r² is `r2`.
+    ///
+    /// The caller has found the distance to be from `min_dist` to
+    /// `max_dist` and the r² to be a number.
+    fn the_pair_is_counted(&mut self, dist: u64, r2: f64) {
+        let bin = self.the_bin_of(dist);
+        if let Some(num_pairs) = self.num_pairs.get_mut(bin) {
+            // The pairs of a pass are at most its variants times the
+            // variants of one window, and a u64 counts 1.8e19 of them.
+            *num_pairs = num_pairs.saturating_add(1);
+        }
+        if let Some(sum) = self.sum_r2.get_mut(bin) {
+            *sum += r2;
+        }
+        if let Some(sum) = self.sum_of_squares.get_mut(bin) {
+            *sum += r2 * r2;
+        }
+    }
+
+    /// The bin a pair of that distance falls in, which is the last bin for
+    /// a distance the rounding would put past them.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the line above gives the last bin for anything that is not a whole number \
+                  below the bins there are, NaN and the negative among them"
+    )]
+    fn the_bin_of(&self, dist: u64) -> usize {
+        let last = self.num_bins().saturating_sub(1);
+        // The caller counts a pair of a distance from min_dist to
+        // max_dist, so this is the distance from the first bin's own.
+        let from_the_first = dist.abs_diff(self.min_dist) as f64;
+        let bin = (from_the_first / self.width).floor();
+        if !(bin >= 0.0 && bin < last as f64) {
+            return last;
+        }
+        bin as usize
+    }
+
+    /// The smallest distance that falls in the bin, which is the smallest
+    /// whole number at or above `bin` widths from `min_dist`.
+    fn the_smallest_dist_of(&self, bin: usize) -> u64 {
+        if bin == 0 {
+            return self.min_dist;
+        }
+        self.min_dist
+            .saturating_add(the_distance_of((bin as f64 * self.width).ceil()))
+    }
+}
+
+/// The distance in base pairs that a float holds, and 0 for one that is
+/// not a whole number a `u64` counts.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the line above leaves NaN, the negative and anything above what a u64 counts \
+              out of the cast"
+)]
+fn the_distance_of(value: f64) -> u64 {
+    if !(value >= 0.0 && value <= u64::MAX as f64) {
+        return 0;
+    }
+    value as u64
+}
+
+/// The pairs of one step of a pass: the variants a population read with
+/// the newest block against the variants it holds.
+///
+/// It keeps the two buffers of a step with the memory they have, so a pass
+/// allocates them once and grows them to the largest step it meets, and it
+/// holds the distances at which a pair is counted.
+struct ThePairsOfAStep {
+    /// The smallest distance a pair is counted at, that distance included.
+    min_dist: u64,
+    /// The largest distance a pair is counted at, that distance included.
+    max_dist: u64,
+    /// How many variants a tile of the products holds, 1 at least.
+    vars_per_tile: usize,
+    /// The r² of one pair of tiles, one row for each variant of the tile
+    /// of columns.
+    of_a_tile_pair: Vec<f64>,
+    /// The r² of one tile of columns against every variant the population
+    /// holds that can pair with the first of them: one row for each of
+    /// those columns, so that the bins are added up column by column and
+    /// not tile pair by tile pair.
+    of_a_tile_of_columns: Vec<f64>,
+}
+
+impl ThePairsOfAStep {
+    /// The buffers of a pass that counts the pairs of those distances in
+    /// tiles of `vars_per_tile` variants.
+    fn of(options: &LdAndDistOptions, vars_per_tile: usize) -> ThePairsOfAStep {
+        ThePairsOfAStep {
+            min_dist: options.min_dist,
+            max_dist: options.max_dist,
+            vars_per_tile,
+            of_a_tile_pair: Vec::new(),
+            of_a_tile_of_columns: Vec::new(),
+        }
+    }
+
+    /// Counts into `bins` the pairs that hold one of the variants the
+    /// population kept of the newest block.
+    ///
+    /// Every pair of the pass is counted at the step of the newer of its
+    /// two variants, and the variants held at that step are every variant
+    /// within `max_dist` of it: the blocks that fell out of the window
+    /// when the newest block was taken are dropped when the next one is,
+    /// which [`TheDosagesOfThePops::take_the_block`] says why.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdRowsNotInTheDosages`] when the variants of a tile are
+    /// not variants of the dosages the population holds, which is a defect
+    /// of the tiling and not anything a caller of the crate wrote;
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the r² of a step; and what [`r2_between`] refuses.
+    fn the_pairs_of_the_newest_variants(
+        &mut self,
+        pop: &ThePopOverTheWindow,
+        bins: &mut LdBins,
+    ) -> Result<()> {
+        let Some(dosages) = pop.dosages() else {
+            // No block of the pass has been taken yet.
+            return Ok(());
+        };
+        let held = pop.variants();
+        let of_other_variants = || Error::LdRowsNotInTheDosages {
+            first: 0,
+            asked_for: held.len(),
+            num_vars: dosages.num_vars(),
+        };
+        if dosages.num_vars() != held.len() {
+            return Err(of_other_variants());
+        }
+        // The variants the newest block gave this population, which are
+        // the last ones it holds.
+        let Some(first_new) = held.len().checked_sub(pop.kept_of_the_newest_block()) else {
+            return Err(of_other_variants());
+        };
+        let first_var = pop.first_var();
+        let mut col = first_new;
+        while col < held.len() {
+            let end = the_end_of_the_tile(first_var, col, held.len(), self.vars_per_tile);
+            self.the_pairs_of_a_tile_of_columns(dosages, held, first_var, (col, end), bins)?;
+            col = end;
+        }
+        Ok(())
+    }
+
+    /// Counts into `bins` the pairs of the variants `col` to `col_end` of
+    /// the window against the variants of the window before each of them.
+    ///
+    /// The r² of the whole tile of columns against every variant that can
+    /// pair with it is worked out first, tile pair by tile pair, and the
+    /// bins are added up afterwards one column at a time, the variants of
+    /// a column in the order of the pass. That order is the order of the
+    /// variants and not the order of the tile pairs, so it does not move
+    /// when a block ends inside a tile of columns.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`ThePairsOfAStep::the_pairs_of_the_newest_variants`].
+    fn the_pairs_of_a_tile_of_columns(
+        &mut self,
+        dosages: &LdDosages,
+        held: &[TheVariantOfTheWindow],
+        first_var: u64,
+        (col, col_end): (usize, usize),
+        bins: &mut LdBins,
+    ) -> Result<()> {
+        let ThePairsOfAStep {
+            min_dist,
+            max_dist,
+            vars_per_tile,
+            of_a_tile_pair,
+            of_a_tile_of_columns,
+        } = self;
+        let of_other_variants = || Error::LdRowsNotInTheDosages {
+            first: col,
+            asked_for: col_end.saturating_sub(col),
+            num_vars: held.len(),
+        };
+        // The first variant held that is on the chromosome of the first
+        // column of the tile and within `max_dist` of it. Every column of
+        // the tile comes after that one, so no pair of the tile holds a
+        // variant before it.
+        let row_start = the_first_row_in_reach(held, col, *max_dist);
+        let (Some(num_cols), Some(num_rows)) =
+            (col_end.checked_sub(col), col_end.checked_sub(row_start))
+        else {
+            return Err(of_other_variants());
+        };
+        let values = num_cols
+            .checked_mul(num_rows)
+            .ok_or_else(of_other_variants)?;
+        the_buffer_of(
+            of_a_tile_of_columns,
+            values,
+            &the_memory_for("the r² of a tile of columns", values),
+        )?;
+        let of_the_columns = dosages.rows(col, num_cols)?;
+        let mut row = row_start;
+        while row < col_end {
+            let row_end = the_end_of_the_tile(first_var, row, col_end, *vars_per_tile);
+            let (Some(of_the_tile), Some(at)) =
+                (row_end.checked_sub(row), row.checked_sub(row_start))
+            else {
+                return Err(of_other_variants());
+            };
+            let values = num_cols
+                .checked_mul(of_the_tile)
+                .ok_or_else(of_other_variants)?;
+            the_buffer_of(
+                of_a_tile_pair,
+                values,
+                &the_memory_for("the r² of a pair of tiles", values),
+            )?;
+            match row == col && row_end == col_end {
+                // The tile of the rows is the tile of the columns, and the
+                // two arguments are then one reference given twice, which
+                // is what the four products of a set against itself are
+                // taken on.
+                true => r2_between(&of_the_columns, &of_the_columns, of_a_tile_pair)?,
+                false => {
+                    let of_the_rows = dosages.rows(row, of_the_tile)?;
+                    r2_between(&of_the_columns, &of_the_rows, of_a_tile_pair)?;
+                }
+            }
+            // The r² of one column of the tile pair lies row after row,
+            // and the buffer of the columns holds one row for each column
+            // of the tile: each of them is a run of it.
+            for (column, of_the_column) in of_a_tile_pair.chunks_exact(of_the_tile).enumerate() {
+                let Some(from) = column
+                    .checked_mul(num_rows)
+                    .and_then(|from| from.checked_add(at))
+                else {
+                    return Err(of_other_variants());
+                };
+                let Some(to) = from.checked_add(of_the_tile) else {
+                    return Err(of_other_variants());
+                };
+                let Some(into) = of_a_tile_of_columns.get_mut(from..to) else {
+                    return Err(of_other_variants());
+                };
+                into.copy_from_slice(of_the_column);
+            }
+            row = row_end;
+        }
+        let Some(before_the_columns) = held.get(row_start..) else {
+            return Err(of_other_variants());
+        };
+        for (column, of_the_column) in of_a_tile_of_columns.chunks_exact(num_rows).enumerate() {
+            let at_the_column = col.saturating_add(column);
+            let (Some(of_the_column_variant), Some(rows_before)) = (
+                held.get(at_the_column),
+                at_the_column.checked_sub(row_start),
+            ) else {
+                return Err(of_other_variants());
+            };
+            let pairs = of_the_column
+                .iter()
+                .zip(before_the_columns)
+                .take(rows_before);
+            for (r2, variant) in pairs {
+                if variant.chrom != of_the_column_variant.chrom || r2.is_nan() {
+                    continue;
+                }
+                let dist = of_the_column_variant.pos.abs_diff(variant.pos);
+                if dist < *min_dist || dist > *max_dist {
+                    continue;
+                }
+                bins.the_pair_is_counted(dist, *r2);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where the tile that holds the variant `at` of the window ends, as an
+/// index into the variants held, and `num_held` when the tile runs past
+/// them.
+///
+/// The tiles are cut at multiples of `vars_per_tile` counted from the
+/// first variant of the pass, which `first_var` says how many of have
+/// fallen out of the window, so a tile holds the same variants whatever
+/// the blocks the reader gave. It is one variant past `at` at least.
+fn the_end_of_the_tile(first_var: u64, at: usize, num_held: usize, vars_per_tile: usize) -> usize {
+    let of_a_tile = the_count_of(vars_per_tile);
+    // The variants a population keeps are counted in a u64, and a pass
+    // that passed what one holds would have read more bytes than any
+    // storage gives.
+    let of_the_pass = first_var.saturating_add(the_count_of(at));
+    let end = of_the_pass
+        .checked_div(of_a_tile)
+        .and_then(|tile| tile.checked_add(1))
+        .and_then(|tile| tile.checked_mul(of_a_tile))
+        .unwrap_or(u64::MAX)
+        .saturating_sub(first_var);
+    usize::try_from(end).unwrap_or(num_held).min(num_held)
+}
+
+/// The first variant of the window that is on the chromosome of the
+/// variant `col` and within `max_dist` of it, and `col` itself when none
+/// is.
+fn the_first_row_in_reach(held: &[TheVariantOfTheWindow], col: usize, max_dist: u64) -> usize {
+    let (Some(of_the_column), Some(before_it)) = (held.get(col), held.get(..col)) else {
+        return col;
+    };
+    before_it
+        .iter()
+        .position(|variant| {
+            variant.chrom == of_the_column.chrom
+                && of_the_column.pos.abs_diff(variant.pos) <= max_dist
+        })
+        .unwrap_or(col)
+}
+
+/// Makes `buffer` hold `values` values, keeping the memory it has.
+///
+/// The memory it has not is asked of this machine with `try_reserve` and
+/// not taken, so a step this machine cannot hold the r² of is an error and
+/// not a process that ends.
+///
+/// # Errors
+///
+/// What `not_given` gives, when the machine does not give the memory.
+fn the_buffer_of(
+    buffer: &mut Vec<f64>,
+    values: usize,
+    not_given: &impl Fn() -> Error,
+) -> Result<()> {
+    buffer.clear();
+    if let Some(more) = values.checked_sub(buffer.capacity()) {
+        buffer.try_reserve(more).map_err(|_| not_given())?;
+    }
+    buffer.resize(values, 0.0);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::path::Path;
 
     use super::{
-        TheDosagesOfThePops, ThePopOverTheWindow, TheVariantOfTheWindow, TheWindowOfTheBlocks,
-        the_variants_of,
+        LdAndDist, LdAndDistOptions, LdBins, TheDosagesOfThePops, ThePopOverTheWindow,
+        TheVariantOfTheWindow, TheWindowOfTheBlocks, the_ld_and_dist_in_tiles_of, the_variants_of,
     };
 
     use crate::block::{Block, BlockReader};
@@ -1237,20 +1984,24 @@ mod tests {
     fn the_variants_of_a_pop_fall_out_of_it_with_the_blocks_of_the_window() {
         let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
         // Blocks of one variant and a window of 100 bp: the newest variant
-        // read is the one at 500, so only the blocks of the variants at
-        // 400 and at 500 are still held.
+        // read is the one at 500, and the block of the variant at 300 fell
+        // out of the window with it, so it is still held. The blocks that
+        // fall out with a block are dropped when the next one is taken,
+        // which `take_the_block` says why.
         let of_the_pops = the_dosages_of_a_pass(&vcf, &[&POP_A, &POP_B], 1, 100, 1.0);
         let pop_a = pop_of(&of_the_pops, 0);
         assert_eq!(the_positions_of(pop_a), vec![400, 500]);
         assert_eq!(the_size_of(pop_a), (2, 2));
-        // `pop_a` kept four variants over the pass and the two that have
-        // fallen out of it are those at 100 and at 200.
+        // `pop_a` kept four variants over the pass, those at 100, 200, 400
+        // and 500, and the two that have fallen out of it are the first
+        // two: it kept nothing of the block of the variant at 300.
         assert_eq!((pop_a.num_vars(), pop_a.first_var()), (4, 2));
         let pop_b = pop_of(&of_the_pops, 1);
-        assert_eq!(the_positions_of(pop_b), vec![400, 500]);
-        // `pop_b` kept five, the one at 300 among them, so three of its
-        // own have fallen out where two of `pop_a`'s did.
-        assert_eq!((pop_b.num_vars(), pop_b.first_var()), (5, 3));
+        assert_eq!(the_positions_of(pop_b), vec![300, 400, 500]);
+        assert_eq!(the_size_of(pop_b), (3, 2));
+        // `pop_b` kept five, the one at 300 among them, and the two that
+        // have fallen out of it are the same two as `pop_a`'s.
+        assert_eq!((pop_b.num_vars(), pop_b.first_var()), (5, 2));
     }
 
     #[test]
@@ -1345,6 +2096,609 @@ mod tests {
                     found_num_individuals: 3,
                     found_ploidy: 2
                 }
+            ),
+            "{error}"
+        );
+    }
+
+    /// The bins of a pass over the bytes of a VCF read in blocks of
+    /// `num_vars_per_block` variants, with the pairs of each step taken in
+    /// tiles of `vars_per_tile` variants.
+    fn the_bins_of_a_pass(
+        vcf: &[u8],
+        pops: &[&[usize]],
+        num_vars_per_block: usize,
+        options: &LdAndDistOptions,
+        vars_per_tile: usize,
+    ) -> LdAndDist {
+        match the_bins_or_the_error(vcf, pops, num_vars_per_block, options, vars_per_tile) {
+            Ok(of_the_pass) => of_the_pass,
+            Err(error) => panic!("the pass was refused: {error}"),
+        }
+    }
+
+    /// What a pass over the bytes of a VCF gave, or what it was refused
+    /// with.
+    fn the_bins_or_the_error(
+        vcf: &[u8],
+        pops: &[&[usize]],
+        num_vars_per_block: usize,
+        options: &LdAndDistOptions,
+        vars_per_tile: usize,
+    ) -> Result<LdAndDist, Error> {
+        let vcf_options = VcfOptions {
+            num_vars_per_block: Some(num_vars_per_block),
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::new(Cursor::new(vcf.to_vec()), vcf_options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("the reader was not built: {error}"),
+        };
+        the_ld_and_dist_in_tiles_of(&mut reader, pops, options, vars_per_tile)
+    }
+
+    /// The bins of the population at that position among the ones the pass
+    /// was given.
+    fn bins_of(of_the_pass: &LdAndDist, pop: usize) -> &LdBins {
+        match of_the_pass.bins_of_pop(pop) {
+            Some(bins) => bins,
+            None => panic!("the pass has no population {pop}"),
+        }
+    }
+
+    /// How many pairs each bin holds, the first bin first.
+    fn the_pairs_of(bins: &LdBins) -> Vec<u64> {
+        (0..bins.num_bins())
+            .map(|bin| match bins.num_pairs(bin) {
+                Some(num_pairs) => num_pairs,
+                None => panic!("the bins have no bin {bin}"),
+            })
+            .collect()
+    }
+
+    /// The smallest and the largest distance of each bin, the first bin
+    /// first.
+    fn the_bounds_of(bins: &LdBins) -> Vec<(u64, u64)> {
+        (0..bins.num_bins())
+            .map(|bin| match bins.bounds(bin) {
+                Some(bounds) => bounds,
+                None => panic!("the bins have no bin {bin}"),
+            })
+            .collect()
+    }
+
+    /// The mean and the standard deviation of the r² of each bin, in the
+    /// bits they have, and `None` for a bin with no pair.
+    fn the_values_of(bins: &LdBins) -> Vec<Option<(u64, u64)>> {
+        (0..bins.num_bins())
+            .map(|bin| match (bins.mean_r2(bin), bins.sd_r2(bin)) {
+                (Some(mean), Some(sd)) => Some((mean.to_bits(), sd.to_bits())),
+                (None, None) => None,
+                (mean, sd) => panic!("the bin {bin} has a mean of {mean:?} and an sd of {sd:?}"),
+            })
+            .collect()
+    }
+
+    /// Asserts that `found` and `expected` are within 1e-12 of each other,
+    /// relative to `expected`, which is what "How it is verified" of
+    /// `docs/specs/ld.md` compares the bins with.
+    fn assert_the_value_is(found: f64, expected: f64, what: &str) {
+        let apart = (found - expected).abs();
+        let allowed = expected.abs() * 1e-12;
+        assert!(
+            apart <= allowed,
+            "{what} is {found:?} and not {expected:?}, {apart:e} apart"
+        );
+    }
+
+    /// The mean of the r² of the bin, which the caller expects to hold a
+    /// pair.
+    fn the_mean_of(bins: &LdBins, bin: usize) -> f64 {
+        match bins.mean_r2(bin) {
+            Some(mean) => mean,
+            None => panic!("the bin {bin} has no mean"),
+        }
+    }
+
+    /// The standard deviation of the r² of the bin, which the caller
+    /// expects to hold a pair.
+    fn the_sd_of(bins: &LdBins, bin: usize) -> f64 {
+        match bins.sd_r2(bin) {
+            Some(sd) => sd,
+            None => panic!("the bin {bin} has no standard deviation"),
+        }
+    }
+
+    /// `tests/reference/ld/example.vcf`, the five variants of six diploid
+    /// individuals of "How it is verified" of `docs/specs/ld.md`, at 1000,
+    /// 2000, 3000, 4000 and 5000 base pairs of `chr1`.
+    ///
+    /// The reference files live at the root of the repository, beside the
+    /// script that writes them again, and not inside this crate.
+    fn the_example_vcf() -> Vec<u8> {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/ld/example.vcf");
+        match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        }
+    }
+
+    /// The bins the worked example of "How it is verified" of
+    /// `docs/specs/ld.md` is read with: the whole range of the distances
+    /// of the five variants in two bins of 2000 base pairs.
+    fn the_options_of_the_example() -> LdAndDistOptions {
+        LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 4000,
+            num_bins: 2,
+            // The variant v4 is the reference allele in all six
+            // individuals, so its major allele frequency is 1 and a
+            // smaller threshold would leave it out of the pass, where the
+            // worked example has it in and every pair that holds it in no
+            // bin.
+            max_allowed_maf: 1.0,
+        }
+    }
+
+    #[test]
+    fn the_two_bins_of_the_worked_example_are_the_ones_of_the_spec() {
+        let options = the_options_of_the_example();
+        let of_the_pass = the_bins_of_a_pass(&the_example_vcf(), &[], 5, &options, 256);
+        assert_eq!((of_the_pass.num_vars(), of_the_pass.num_pops()), (5, 1));
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(bins.num_vars(), 5);
+        assert_eq!(the_bounds_of(bins), vec![(1, 2000), (2001, 4000)]);
+        // The first bin holds v1-v2, v2-v3 and v3-v4 at 1000 base pairs
+        // and v1-v3, v2-v4 and v3-v5 at 2000, and the second v1-v4 and
+        // v2-v5 at 3000 and v1-v5 at 4000. v4 has no variance, so the four
+        // pairs that hold it have no r² and are in no bin.
+        assert_eq!(the_pairs_of(bins), vec![4, 2]);
+        assert_the_value_is(
+            the_mean_of(bins, 0),
+            0.572_767_857_142_857_2,
+            "the mean r² of the first bin",
+        );
+        assert_the_value_is(
+            the_mean_of(bins, 1),
+            0.031_25,
+            "the mean r² of the second bin",
+        );
+        // The second bin holds v2-v5, whose r² is 0, and v1-v5, whose r²
+        // is 0.0625, so it is half of 0.0625 from their mean either way.
+        assert_the_value_is(
+            the_sd_of(bins, 1),
+            0.031_25,
+            "the standard deviation of the second bin",
+        );
+        assert!(
+            of_the_pass.bins_of_pop(1).is_none(),
+            "the pass of one population answered for a second"
+        );
+    }
+
+    #[test]
+    fn the_bins_of_the_worked_example_do_not_move_with_the_blocks_nor_with_the_tiles() {
+        let vcf = the_example_vcf();
+        let options = the_options_of_the_example();
+        let of_one_block = the_bins_of_a_pass(&vcf, &[], 5, &options, 256);
+        let expected = bins_of(&of_one_block, 0);
+        for num_vars_per_block in [1, 2, 3, 4, 5, 64] {
+            for vars_per_tile in [1, 2, 3, 256] {
+                let of_the_pass =
+                    the_bins_of_a_pass(&vcf, &[], num_vars_per_block, &options, vars_per_tile);
+                let found = bins_of(&of_the_pass, 0);
+                let at = format!(
+                    "at blocks of {num_vars_per_block} variants and tiles of {vars_per_tile}"
+                );
+                assert_eq!(the_pairs_of(found), the_pairs_of(expected), "{at}");
+                assert_eq!(the_values_of(found), the_values_of(expected), "{at}");
+            }
+        }
+    }
+
+    /// A VCF of 300 variants of six diploid individuals: 200 of `chr1` a
+    /// thousand base pairs apart and 100 of `chr2` the same, with a
+    /// genotype of each individual drawn from a generator of its own so
+    /// that the variants differ in their frequencies and in what is
+    /// missing.
+    ///
+    /// It is what says that the bins do not move with the blocks: a window
+    /// of 10000 base pairs holds eleven of these variants, so at blocks of
+    /// 64 variants a block spans six windows and the blocks that fall out
+    /// of the window with it hold the pairs the block before it makes.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "300 positions of at most 300000 and a generator of whole numbers below \
+                  1000, built here"
+    )]
+    fn the_vcf_of_a_long_pass() -> Vec<u8> {
+        let mut vcf = String::from(
+            "##fileformat=VCFv4.2\n\
+             ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\n",
+        );
+        // A linear congruential generator, which gives the same genotypes
+        // on every machine and in every build.
+        let mut state = 12_345_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 40
+        };
+        for var in 0..300_u64 {
+            let (chrom, at) = match var < 200 {
+                true => ("chr1", var + 1),
+                false => ("chr2", var - 199),
+            };
+            let gts: Vec<&str> = (0..6)
+                .map(|_| match next() % 10 {
+                    0 => "./.",
+                    1..=3 => "0/0",
+                    4..=7 => "0/1",
+                    _ => "1/1",
+                })
+                .collect();
+            let gts = gts.join("\t");
+            let pos = at * 1000;
+            vcf.push_str(&format!(
+                "{chrom}\t{pos}\tv{var}\tA\tC\t.\t.\t.\tGT\t{gts}\n"
+            ));
+        }
+        vcf.into_bytes()
+    }
+
+    #[test]
+    fn the_bins_do_not_move_with_the_blocks_nor_with_the_tiles() {
+        let vcf = the_vcf_of_a_long_pass();
+        let pop_a: [usize; 3] = [0, 1, 2];
+        let pop_b: [usize; 3] = [3, 4, 5];
+        let pops: [&[usize]; 2] = [&pop_a, &pop_b];
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 10_000,
+            num_bins: 5,
+            max_allowed_maf: 0.9,
+        };
+        let of_one_block = the_bins_of_a_pass(&vcf, &pops, 500, &options, 256);
+        // The window holds eleven variants of the 10000 base pairs it
+        // reaches back, so the pass counts pairs over more than one block
+        // at every size of block below that.
+        let of_the_first = bins_of(&of_one_block, 0);
+        assert!(
+            the_pairs_of(of_the_first).iter().all(|pairs| *pairs > 0),
+            "a bin of the first population holds no pair: {:?}",
+            the_pairs_of(of_the_first)
+        );
+        for num_vars_per_block in [1, 2, 3, 7, 64, 500] {
+            for vars_per_tile in [1, 2, 7, 256] {
+                let of_the_pass =
+                    the_bins_of_a_pass(&vcf, &pops, num_vars_per_block, &options, vars_per_tile);
+                let at = format!(
+                    "at blocks of {num_vars_per_block} variants and tiles of {vars_per_tile}"
+                );
+                assert_eq!(of_the_pass.num_vars(), of_one_block.num_vars(), "{at}");
+                for pop in 0..2 {
+                    let found = bins_of(&of_the_pass, pop);
+                    let expected = bins_of(&of_one_block, pop);
+                    assert_eq!(
+                        found.num_vars(),
+                        expected.num_vars(),
+                        "{at}, population {pop}"
+                    );
+                    assert_eq!(
+                        the_pairs_of(found),
+                        the_pairs_of(expected),
+                        "{at}, population {pop}"
+                    );
+                    assert_eq!(
+                        the_values_of(found),
+                        the_values_of(expected),
+                        "{at}, population {pop}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn each_pop_counts_the_pairs_of_the_variants_it_kept_of_its_own_frequency() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 500,
+            num_bins: 1,
+            max_allowed_maf: 0.75,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[&POP_A, &POP_B], 5, &options, 256);
+        assert_eq!(of_the_pass.num_vars(), 5);
+        // `pop_a` keeps the variants at 200 and at 400, whose dosages in
+        // its two individuals are 0 and 1 at both, so their one pair has
+        // an r² of 1.
+        let pop_a = bins_of(&of_the_pass, 0);
+        assert_eq!((pop_a.num_vars(), the_pairs_of(pop_a)), (2, vec![1]));
+        assert_the_value_is(the_mean_of(pop_a, 0), 1.0, "the mean r² of `pop_a`");
+        assert_the_value_is(the_sd_of(pop_a, 0), 0.0, "the sd of r² of `pop_a`");
+        // `pop_b` keeps three variants, at 100, 300 and 400, and its two
+        // individuals are `0/1` at each of them, so no variant of it has
+        // variance and none of its three pairs has an r².
+        let pop_b = bins_of(&of_the_pass, 1);
+        assert_eq!((pop_b.num_vars(), the_pairs_of(pop_b)), (3, vec![0]));
+        assert_eq!((pop_b.mean_r2(0), pop_b.sd_r2(0)), (None, None));
+    }
+
+    #[test]
+    fn a_pop_in_which_every_variant_is_left_out_gives_no_variant_and_every_bin_empty() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 500,
+            num_bins: 2,
+            max_allowed_maf: 0.6,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[&POP_A, &POP_B], 2, &options, 256);
+        // The frequencies of `pop_a` are 1, 0.75, none, 0.75 and 1, every
+        // one of them above 0.6 or absent.
+        let pop_a = bins_of(&of_the_pass, 0);
+        assert_eq!((pop_a.num_vars(), the_pairs_of(pop_a)), (0, vec![0, 0]));
+        assert_eq!(the_values_of(pop_a), vec![None, None]);
+        // And the other population is not affected: it keeps the three
+        // variants whose frequency in it is 0.5.
+        assert_eq!(bins_of(&of_the_pass, 1).num_vars(), 3);
+    }
+
+    #[test]
+    fn a_dataset_whose_variants_are_closer_than_min_dist_gives_every_bin_empty() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
+        let options = LdAndDistOptions {
+            min_dist: 1000,
+            max_dist: 5000,
+            num_bins: 3,
+            max_allowed_maf: 1.0,
+        };
+        // The five variants span 400 base pairs, which is less than the
+        // smallest distance a pair is counted at.
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[], 5, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!((bins.num_vars(), the_pairs_of(bins)), (5, vec![0, 0, 0]));
+        assert_eq!(the_values_of(bins), vec![None, None, None]);
+    }
+
+    #[test]
+    fn a_dataset_whose_variants_are_each_on_a_chromosome_of_their_own_gives_every_bin_empty() {
+        let vcf = vcf_of_four_individuals(&[
+            ("chr1", 100, ["0/0", "0/1", "0/1", "1/1"]),
+            ("chr2", 200, ["0/0", "0/1", "1/1", "1/1"]),
+            ("chr3", 300, ["0/0", "0/0", "0/1", "1/1"]),
+        ]);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 5000,
+            num_bins: 2,
+            max_allowed_maf: 1.0,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[], 1, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!((bins.num_vars(), the_pairs_of(bins)), (3, vec![0, 0]));
+    }
+
+    #[test]
+    fn a_bin_of_one_pair_has_that_r2_as_its_mean_and_a_standard_deviation_of_zero() {
+        let options = LdAndDistOptions {
+            min_dist: 4000,
+            max_dist: 4000,
+            num_bins: 1,
+            max_allowed_maf: 1.0,
+        };
+        // The one pair of the worked example at 4000 base pairs is v1-v5,
+        // whose r² "How it is verified" of `docs/specs/ld.md` gives.
+        let of_the_pass = the_bins_of_a_pass(&the_example_vcf(), &[], 5, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(the_pairs_of(bins), vec![1]);
+        assert_eq!(the_bounds_of(bins), vec![(4000, 4000)]);
+        assert_the_value_is(the_mean_of(bins, 0), 0.0625, "the mean r² of the one bin");
+        assert_the_value_is(the_sd_of(bins, 0), 0.0, "the sd of r² of the one bin");
+    }
+
+    #[test]
+    fn the_bins_are_of_equal_width_across_the_distances_asked_for() {
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 250_000,
+            num_bins: 10,
+            max_allowed_maf: 1.0,
+        };
+        // The ten bins of the tables of "How it is verified" of
+        // `docs/specs/ld.md`, 25000 base pairs each.
+        let of_the_pass = the_bins_of_a_pass(&the_example_vcf(), &[], 5, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(
+            the_bounds_of(bins),
+            vec![
+                (1, 25_000),
+                (25_001, 50_000),
+                (50_001, 75_000),
+                (75_001, 100_000),
+                (100_001, 125_000),
+                (125_001, 150_000),
+                (150_001, 175_000),
+                (175_001, 200_000),
+                (200_001, 225_000),
+                (225_001, 250_000),
+            ]
+        );
+        assert!(
+            bins.bounds(10).is_none(),
+            "ten bins answered for an eleventh"
+        );
+    }
+
+    #[test]
+    fn a_pair_falls_in_the_bin_of_its_distance_when_the_bins_do_not_divide_the_distances() {
+        // Ten distances in three bins is a width of 3.3333 base pairs, so
+        // the bins hold the distances 1 to 4, 5 to 7 and 8 to 10.
+        let vcf = vcf_of_four_individuals(&[
+            ("chr1", 1, ["0/0", "0/0", "0/1", "1/1"]),
+            ("chr1", 5, ["0/0", "0/1", "0/1", "1/1"]),
+            ("chr1", 8, ["0/0", "0/0", "0/1", "0/1"]),
+            ("chr1", 11, ["0/1", "1/1", "0/0", "0/1"]),
+        ]);
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 10,
+            num_bins: 3,
+            max_allowed_maf: 1.0,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &[], 4, &options, 256);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(the_bounds_of(bins), vec![(1, 4), (5, 7), (8, 10)]);
+        // The six pairs are at 4, 7 and 10 base pairs from the first
+        // variant, at 3 and 6 from the second and at 3 from the third.
+        assert_eq!(the_pairs_of(bins), vec![3, 2, 1]);
+    }
+
+    /// The bins of a pass that the options or the populations were
+    /// refused, which the caller expects to have been.
+    fn the_error_of_a_pass(pops: &[&[usize]], options: &LdAndDistOptions) -> Error {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
+        match the_bins_or_the_error(&vcf, pops, 2, options, 256) {
+            Ok(of_the_pass) => panic!(
+                "the pass was taken and gave {} variants of {} populations",
+                of_the_pass.num_vars(),
+                of_the_pass.num_pops()
+            ),
+            Err(error) => error,
+        }
+    }
+
+    /// The bins a pass is asked for when nothing of the call is what is
+    /// being refused.
+    fn the_options_of_a_pass() -> LdAndDistOptions {
+        LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 500,
+            num_bins: 2,
+            max_allowed_maf: 0.75,
+        }
+    }
+
+    /// Asserts that each of `said` is in the message of the error.
+    fn assert_the_message_says(error: &Error, said: &[&str]) {
+        let message = error.to_string();
+        for what in said {
+            assert!(message.contains(what), "`{what}` is not in `{message}`");
+        }
+    }
+
+    #[test]
+    fn a_min_dist_above_max_dist_is_refused() {
+        let options = LdAndDistOptions {
+            min_dist: 4001,
+            max_dist: 4000,
+            ..the_options_of_a_pass()
+        };
+        let error = the_error_of_a_pass(&[&POP_A], &options);
+        assert!(
+            matches!(
+                error,
+                Error::LdMinDistAboveMaxDist {
+                    min_dist: 4001,
+                    max_dist: 4000
+                }
+            ),
+            "{error}"
+        );
+        assert_the_message_says(&error, &["min_dist", "4001", "max_dist", "4000"]);
+    }
+
+    #[test]
+    fn a_num_bins_of_zero_is_refused() {
+        let options = LdAndDistOptions {
+            num_bins: 0,
+            ..the_options_of_a_pass()
+        };
+        let error = the_error_of_a_pass(&[&POP_A], &options);
+        assert!(matches!(error, Error::LdNoBins), "{error}");
+        assert_the_message_says(&error, &["num_bins", "0"]);
+    }
+
+    #[test]
+    fn a_max_allowed_maf_that_is_not_a_frequency_is_refused_at_the_call() {
+        for (value, said) in [(-0.1, "-0.1"), (1.1, "1.1"), (f64::NAN, "NaN")] {
+            let options = LdAndDistOptions {
+                max_allowed_maf: value,
+                ..the_options_of_a_pass()
+            };
+            let error = the_error_of_a_pass(&[&POP_A], &options);
+            // The bits and not the value, so that the NaN of the three
+            // matches the one that was given.
+            assert!(
+                matches!(
+                    error,
+                    Error::LdMaxAllowedMafOutOfRange { value: found }
+                        if found.to_bits() == value.to_bits()
+                ),
+                "{error}"
+            );
+            assert_the_message_says(&error, &["max_allowed_maf", said]);
+        }
+    }
+
+    #[test]
+    fn a_population_that_names_no_individual_is_refused_at_the_call() {
+        let error = the_error_of_a_pass(&[&POP_A, &[]], &the_options_of_a_pass());
+        assert!(
+            matches!(error, Error::LdPopWithNoIndividual { pop: 1 }),
+            "{error}"
+        );
+        assert_the_message_says(&error, &["population", "1"]);
+    }
+
+    #[test]
+    fn an_individual_the_dataset_has_not_is_refused() {
+        let error = the_error_of_a_pass(&[&[0, 4]], &the_options_of_a_pass());
+        assert!(
+            matches!(
+                error,
+                Error::LdIndividualNotInTheDataset {
+                    individual: 4,
+                    num_individuals: 4
+                }
+            ),
+            "{error}"
+        );
+        assert_the_message_says(&error, &["individual", "4"]);
+    }
+
+    #[test]
+    fn an_individual_asked_for_twice_is_refused() {
+        let error = the_error_of_a_pass(&[&[0, 1, 0]], &the_options_of_a_pass());
+        assert!(
+            matches!(error, Error::LdIndividualAskedForTwice { individual: 0 }),
+            "{error}"
+        );
+        assert_the_message_says(&error, &["individual", "0"]);
+    }
+
+    #[test]
+    fn a_pass_with_no_variant_is_refused() {
+        let vcf = vcf_of_four_individuals(&[]);
+        let options = the_options_of_a_pass();
+        let error = match the_bins_or_the_error(&vcf, &[&POP_A], 2, &options, 256) {
+            Ok(of_the_pass) => panic!(
+                "a pass of no variant gave {} variants",
+                of_the_pass.num_vars()
+            ),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                Error::PassGaveNoVariant {
+                    num_vars_of_the_source: 0,
+                    ref filters
+                } if filters.is_empty()
             ),
             "{error}"
         );

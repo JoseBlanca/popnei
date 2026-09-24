@@ -1293,6 +1293,35 @@ pub enum Error {
         pop: usize,
     },
 
+    /// The `min_dist` of the fall-off of r² with distance is above its
+    /// `max_dist`. A pair is counted when the distance of its two variants
+    /// is from `min_dist` to `max_dist`, both included, so a `min_dist`
+    /// above `max_dist` names an empty range and counts no pair at all,
+    /// which is a call written wrong and not a dataset with nothing in it.
+    /// In Python it is a `ValueError` that names no file: the two numbers
+    /// are what a user writes at the call.
+    #[error(
+        "`min_dist` is {min_dist} and `max_dist` is {max_dist}: a pair is counted when the distance of its two variants is from `min_dist` to `max_dist`, both included, so a `min_dist` above `max_dist` counts no pair at all"
+    )]
+    LdMinDistAboveMaxDist {
+        /// The smallest distance a pair is counted at, which was given
+        /// above `max_dist`.
+        min_dist: u64,
+        /// The largest distance a pair is counted at.
+        max_dist: u64,
+    },
+
+    /// The `num_bins` of the fall-off of r² with distance is 0. The pairs
+    /// are put into that many bins of equal width across the distances
+    /// from `min_dist` to `max_dist`, and no bin at all is a result with
+    /// no row: a caller that wants the pairs and not the curve of them
+    /// asks for one bin. In Python it is a `ValueError` that names no
+    /// file: it is the number a user writes at the call.
+    #[error(
+        "`num_bins` is 0, and the pairs are put into that many bins of equal width across the distances from `min_dist` to `max_dist`: a result of no bin holds nothing, and one bin holds every pair of that range"
+    )]
+    LdNoBins,
+
     /// An individual a study was asked to test is not one the source has.
     /// The individuals of a study are given by their position among those
     /// the reader gives, from 0, and this one is at or beyond their count.

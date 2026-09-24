@@ -624,12 +624,15 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // looked at before the pass, so the same number is refused whatever
         // the source holds.
         | popnei::Error::LdMaxNumVarsTooLarge { .. }
-        // The two arguments of the fall-off of r² with distance that a
+        // The four arguments of the fall-off of r² with distance that a
         // user writes at the call and that are wrong whatever file is
         // read: a largest major allele frequency that is not a frequency,
-        // and a population that names no individual.
+        // a population that names no individual, a smallest distance above
+        // the largest one, and a count of bins of 0.
         | popnei::Error::LdMaxAllowedMafOutOfRange { .. }
         | popnei::Error::LdPopWithNoIndividual { .. }
+        | popnei::Error::LdMinDistAboveMaxDist { .. }
+        | popnei::Error::LdNoBins
         // The fourteen of the association study that are of what a user
         // wrote and are wrong whatever file is read: a phenotype or a
         // covariate that is not a finite number, which the package lets
