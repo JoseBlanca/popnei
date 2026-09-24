@@ -435,19 +435,32 @@ checks are common to all four:
   ones, and `beta`, `se` and `p_value` within a bound that is **per model**
   and set where it breaks, 1e-9 relative being the ceiling and not the
   value. Two are measured so far, on 24 September 2026. The logistic model
-  is far inside it, over both panels and both of its tests: `beta` within
-  1.090e-14 of the `se` at `var0833` of `panel` under the score test, `se`
-  3.368e-15 of itself at `var1151` of `panel_called` under the Wald test,
-  and `p_value` 4.524e-14 of itself at `var1004` of `panel_called` under the
-  Wald test. One bound governs all three columns, so it has to clear the
-  largest of them, which is the p-value and not `beta`. It is 1e-13, 2.2
-  times that, the same ratio the linear model's own bound uses. At the 1e-12
-  it had before it was 22 times the worst and would have let through an
-  error of the 1e-13 class, while the two real defects a reviewer planted,
-  dropping either of the fit's final reweightings, move the columns by
-  1.1e-9 and 3.0e-9 and are caught at any of these. The linear mixed model
-  is the opposite and is the reason this is per model at all: its own item
-  says why 1e-9 sits at the noise of the search there.
+  is far inside it, and the measurement is below. The linear mixed model is
+  the opposite and is the reason this is per model at all: its own item says
+  why 1e-9 sits at the noise of the search there.
+
+The logistic model's bound is **1e-13**, and what it is 2.2 times is the
+p-value, which is the largest of the four quantities it governs. Measured on
+24 September 2026 over both panels, both of its tests and both linear
+algebra backends:
+
+| quantity | worst, and where | the other backend's worst |
+|---|---|---|
+| `p_value`, as a share of itself | 4.524e-14, `var1004`, every genotype called, Wald, Accelerate | 3.213e-14, `var0833`, genotypes missing, score, faer |
+| `beta`, as a share of its variant's `se` | 1.151e-14, `var0197`, every genotype called, score, faer | 1.090e-14, `var0833`, genotypes missing, score, Accelerate |
+| `se`, as a share of itself | 3.368e-15, `var1151`, every genotype called, Wald, Accelerate | 1.920e-15, `var0122`, genotypes missing, Wald, faer |
+| the null model's effects | 1.970e-16 of pyNei's, 2.220e-16 absolute | the same in all four runs |
+
+No quantity has its worst on the same backend, the same panel and the same
+test as any other, which is why each row carries all four and not a single
+number. A bound governing four quantities, quoted as one figure, is a figure
+that is wrong about three of them, and quoting `beta`'s is how this bound
+was first set to 3e-14, below the p-value it has to clear.
+
+At the 1e-12 this bound had before, it was 22 times the worst and would have
+let through an error of the 1e-13 class; the two real defects a reviewer
+planted, dropping either of the fit's final reweightings, move the columns
+by 1.1e-9 and 3.0e-9 and are caught at any of these.
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
