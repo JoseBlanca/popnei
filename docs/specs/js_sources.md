@@ -144,14 +144,21 @@ A source with several passes open at once holds one range for each of them;
 a test of the package keeps twelve passes over one vars file open together.
 
 The two crates that call `FileReaderSync` and `Blob.slice` are `js-sys` and
-`web-sys`, which the binding crate does not depend on yet. They are pure
-Rust and they compile for `wasm32-unknown-unknown` and for the native target
-that `cargo clippy --workspace --all-targets` builds this crate for; the
-spike above checked both. What they cost the download of an application,
-measured on that spike with `wasm-bindgen --target web
---remove-name-section` and `gzip -9` on the owner's Apple M5 Pro: the wasm
-of the package went from 1979013 to 1982033 bytes, and from 633122 to 633898
-gzipped, 776 bytes more.
+`web-sys`. They are pure Rust and they compile for
+`wasm32-unknown-unknown` and for the native target that `cargo clippy
+--workspace --all-targets` builds this crate for. What they cost the
+download of an application, measured on the spike above with `wasm-bindgen
+--target web --remove-name-section` and `gzip -9` on the owner's Apple M5
+Pro: the wasm of the package went from 1979013 to 1982033 bytes, and from
+633122 to 633898 gzipped, 776 bytes more.
+
+The package built with the ranges is smaller than the one without them, by
+the same measurement: 2021550 bytes against 2034662, and 650486 gzipped
+against 657075, 6589 fewer. The two crates are in it, and what outweighs
+them is that the read which opens a file goes through the same type as
+every other read, where it went through a cursor of its own before: that
+took one build of the VCF reader and one of the vars file reader out of
+the module.
 
 ### How it is verified
 
