@@ -431,8 +431,15 @@ checks are common to all four:
   against GMMAT, `1 / se²`, which is the variance of the score, and
   `p_value`.
 - Against pyNei, both libraries on the same panel with the same arguments,
-  at the Python `calc_gwas`: `beta`, `se` and `p_value` within 1e-9
-  relative, and the variants that have NaN exactly the same ones.
+  at the Python `calc_gwas`: the variants that have NaN exactly the same
+  ones, and `beta`, `se` and `p_value` within a bound that is **per model**
+  and set where it breaks, 1e-9 relative being the ceiling and not the
+  value. Two are measured so far, on 24 September 2026. The logistic model
+  is far inside it: `beta` within 3.06e-15 of the `se`, `se` 3.22e-15 of
+  itself and `p_value` 6.0e-14 of itself, so its bound belongs near 1e-12
+  and not at 1e-9. The linear mixed model is the opposite and is the reason
+  this is per model at all: its own item says why 1e-9 sits at the noise of
+  the search there.
 
 Two more hold for every model. That the block size changes nothing: the same
 panel read in blocks of 77 gives `stats` equal to the default within 1e-12
@@ -856,6 +863,18 @@ threshold of 30 is inherited from pyNei and nobody has measured it. A
 variant that separates the cases from the controls perfectly has no finite
 effect and is what these catch: the panel has exactly one, `var0006`.
 
+Two of the three marks cannot fire under a Cholesky factorization and are
+there because pyNei has them. Measured on 24 September 2026: the effect
+passing 30 catches `var0006` at round 29 and a separating variant at round
+29, and the singular system catches a variant that is its own covariate, at
+round 4 on Accelerate and round 1 on faer. A step that is not finite, and a
+fit still moving after 50 rounds, were reached by no fixture, because the
+effect passes 30 or the factorization refuses the system first. numpy does
+reach the third of them on the collinear variant, since pyNei solves with an
+LU, which answers a matrix a Cholesky refuses, and it gives the same three
+NaNs. Both stay: they cost a comparison each, they are what pyNei marks, and
+an implementation that later factors some other way would need them.
+
 plink2 does not give up on that variant. It falls back to a Firth penalized
 regression, which adds a term that pulls the estimate back from infinity and
 gives a finite answer; its `FIRTH?` column says `Y` for that one variant and
@@ -870,8 +889,19 @@ the odds ratio, so `beta` is compared with its logarithm.
 The one variant plink2 fell back to Firth for is left out of the comparison,
 and instead a test asserts that popnei's NaNs are exactly the variants
 plink2 marked `FIRTH?` `Y`, which is `var0006` and no other. Over the other
-1199: `beta` and `se` within 1e-4 times the `se` of that variant and
-`p_value` within 5e-3 relative. All three are wider than plink2's printing, which rounds by 5e-6,
+1199: `beta` within 1e-4 times the `se` of that variant, `se` within 5e-4
+times it, and `p_value` within 5e-3 relative.
+
+The 5e-4 on `se` is measured and not chosen. What this comparison measures
+is the distance between popnei's logistic fit and plink2's, not the accuracy
+of popnei's arithmetic, and the two fits stop at different places: on
+`panel_called` popnei's worst is 1.334e-4 of that variant's `se` at
+`var0179`, and **pyNei's worst is 1.334e-4 at `var0179` too**, measured on
+24 September 2026 on both backends. So a bound tighter than that is a bound
+on the oracle as much as on popnei. 5e-4 is 3.7 times the worst, which is
+this spec's own procedure. pyNei's own test passes at 1e-4 **absolute**,
+worst 6.66e-5, which this spec rejects for holding on a panel whose values
+are small and breaking on one whose values are larger. All three are wider than plink2's printing, which rounds by 5e-6,
 because plink2 stops its logistic fit earlier than popnei does; the
 difference between the two fits is what these measure, and the printing is
 not what limits them. The six literals below are held to 1e-5 on `beta`,
