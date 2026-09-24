@@ -202,12 +202,7 @@ and one column for each covariate. The covariates are a frame indexed by
 individual, which must cover every tested individual and hold no missing
 value and no value that is not a number; each of the three raises a
 `ValueError`, and the one for a value that is not a number says to code a
-categorical covariate, with `pandas.get_dummies` for instance. A covariate
-named `intercept` is a `ValueError` too: the effects of the null model come
-back under the names of the columns of the design, and the column of ones is
-`intercept` among them, so a covariate of that name would be the same entry
-of `covariate_effects` and a user would read one of the two without knowing
-which.
+categorical covariate, with `pandas.get_dummies` for instance.
 
 A covariate named `intercept` is refused, in Python and in TypeScript alike,
 with a `ValueError` saying that the name is the intercept's. The effects
@@ -240,43 +235,6 @@ Asking for a test the model does not have is a `ValueError`: the score test
 for a continuous trait with no kinship, since the only test of a linear
 model is its t test; and the Wald test for a binomial trait with a kinship,
 since it would fit one mixed model per variant.
-
-The core crate is given the tested individuals as their positions among the
-individuals the source has, with their phenotype and the design already
-built, as "The Rust interface" below has it. So the refusals about a name
-and about a frame are made where those are, in the Python and the TypeScript
-layers: an individual of the phenotype that the `Variants` has not, a
-covariate that does not cover a tested individual, and a covariate value
-that is missing or is not a number. The core makes the rest over the
-positions and the numbers it holds, and four more that only it can see.
-
-The positions rise, and any other order is a `ValueError`. They are the
-order the source has the individuals in, and the phenotype, the rows of the
-design and the dosages of a block are read together row by row, so an order
-that is not the source's measures one individual's trait against another
-individual's genotypes. A position that repeats the one before it is the
-repeated individual above, and one that falls back is refused as an order
-that is not the source's, which is also what a repeat with another
-individual between its two halves gives. A phenotype that is not a finite
-number is a `ValueError` naming where it is: the individuals tested are
-those that have a phenotype, so a NaN is an individual that should not have
-been tested at all, and an infinity would carry through the null model into
-the effect of every variant. A value of the design that is not a finite
-number is a `ValueError` too, naming the individual whose row it is in, the
-column it is in and the value. The Python and the TypeScript layers refuse a
-covariate that is missing or is not a number, so what reaches this is a
-covariate that was a number and came out of the user's own arithmetic as an
-infinity, and a caller of the core crate; left in, it would reach the rank,
-which refuses what it is given and not what it produced, and the user would
-be told of a defect of popnei where they gave a wrong covariate. pyNei
-catches a NaN covariate at the frame, as a missing value, and an infinity
-reaches its rank, where numpy 2.5.3's `matrix_rank` gives 0 and the user is
-told the covariates are collinear; what popnei adds is the value and where
-it is. And the phenotype holds one value
-for each tested individual, the design one row of its columns for each, and
-the design has the column of ones at least; none of the three can be reached
-from Python or from TypeScript, which build the three from the same
-individuals, so each is a `RuntimeError`.
 
 ### The variants that have no answer
 
@@ -619,9 +577,8 @@ them missing whole.
 
 Over all 1200 variants: `allele_freq` within 1e-6 absolute, since it is a
 frequency and lies between 0 and 1; `beta` and `se` within 1e-5 times the
-`se` of that variant, for the reason above, **plus half a unit in the last
-digit plink2 printed for the value being compared**; and `p_value` within
-1e-5 relative.
+`se` of that variant, for the reason above, which on this panel is between
+1.2e-6 and 1.6e-6 absolute; and `p_value` within 1e-5 relative.
 
 **A tolerance against a printed reference is the sum of two terms**, not one
 number with the printing hidden inside it: what popnei's arithmetic is
@@ -1108,12 +1065,13 @@ and a pivot of `d' sigma⁻¹ d` that has fallen to the `n` times 2.2e-16 of
 **Open 5** of the largest is a fit whose weighted design has collapsed,
 which is that rule's second caller. Neither is reached by a fit of either
 panel, and both were reached by holding `tau` where no fit takes it,
-measured on `panel_called` on 25 September 2026 on both backends: at 1e10
+measured on `panel_called` on 24 September 2026 on both backends: at 1e10
 the linearization settles in 26 rounds with a smallest weight of 3.3e-24,
 at 1e12 a weight reaches 0 and the fit is refused at its round 26, and the
 smallest pivot is 0.197 of the largest at GMMAT's `tau` of 1.508057, 0.195
 on the panel with genotypes missing at that same `tau` and 0.0709 at 1e10,
-against a threshold of 4.44e-14. What the refusal is for is the error a user gets: without it
+against a threshold of 4.44e-14. What the refusal is for is the error a user
+gets: without it
 the linear algebra crate refuses a matrix that is not finite, naming a
 matrix the user never saw, which is a `RuntimeError` in Python and so a
 defect of popnei, for the data.
@@ -1202,7 +1160,8 @@ reached at all: on `panel_called`, whose smallest eigenvalue is
 at a `tau` of 1e16, where 4 over that eigenvalue is 1.2e15; on the panel
 with 3 genotypes missing in 100, whose smallest is -0.0321, it stops at the
 row 196 at a `tau` of 1e10, where the same arithmetic gives 124. Measured on
-both backends on 25 September 2026, which give the same row. It is not a defect of popnei and not a wrong
+both backends on 24 September 2026, which give the same row. It is not a
+defect of popnei and not a wrong
 argument, so it is neither a `RuntimeError` nor a plain `ValueError` about a
 type: it is a `ValueError` about the data.
 
@@ -1460,16 +1419,6 @@ one of them is finite. Neither is a thing a fit would notice. A matrix of
 the wrong length is read as another shape and gives numbers, and a NaN in
 one comes back much later as the linear algebra crate's refusal of a value
 that is not finite, naming a matrix at whichever routine met it first.
-
-A matrix of the wrong length is a `RuntimeError` in Python, as a phenotype
-or a design of another size is: both binding crates cut the kinship to the
-tested individuals themselves, so no user gives one of another length. A
-value of it that is not finite is a `ValueError` naming the row, the column
-and the value, since it is the matrix the user brought;
-`Kinship.__post_init__` of "Its Python function, and its TypeScript one" of
-`docs/specs/kinship.md` refuses a matrix that holds a value that is not a
-number, so what reaches this is a caller of the core crate or an infinity
-that came out of the user's own arithmetic.
 
 What a study gives back. `beta`, `se` and `p_value` hold NaN for a variant
 that has no answer.
@@ -1792,7 +1741,8 @@ whether the pivot does fall that far in this case, and that is what the
 meanwhile is for: the implementer builds it and measures it on both
 reference panels, and because it can only take answers away, a rule that
 takes away a variant either panel answers today stops there and is reported
-rather than moving a literal. It has since been built and measured, on 24 September 2026, and its
+rather than moving a literal. It has since been built and measured, on 24
+September 2026, and its
 condition held: on both panels and both backends no variant that was
 answered loses its answer and none gains one, the smallest pivot of an
 answered fit being 2.600e-2 of the largest on `panel_called` and 4.730e-5 on
