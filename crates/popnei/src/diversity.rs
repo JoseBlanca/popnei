@@ -17,8 +17,9 @@
 //! an individual.
 //!
 //! What is built here so far is the pass, those counts of variants, the
-//! alleles each population called and the variants that vary in it. The
-//! three statistics left are added on top of the same counts.
+//! alleles each population called, the private ones among them and the
+//! variants that vary in it. The two statistics left are added on top of
+//! the same counts.
 
 use std::collections::HashSet;
 
@@ -118,6 +119,10 @@ struct OfAPop {
     /// this is a sum of per variant counts and never a count of distinct
     /// things across the dataset.
     num_alleles: u64,
+    /// Of those alleles, the ones no other population of the pass called at
+    /// the variant, added up over the variants that counted for every
+    /// population. Its divisor is `num_vars_every_pop` and not `num_vars`.
+    private_alleles: u64,
     /// How many of those variants it called more than one allele at.
     num_variable_vars: u64,
 }
@@ -128,6 +133,7 @@ impl OfAPop {
         OfAPop {
             num_vars: 0,
             num_alleles: 0,
+            private_alleles: 0,
             num_variable_vars: 0,
         }
     }
@@ -186,6 +192,29 @@ impl PopDiversity {
         self.pops.get(pop).map(|pop| pop.num_alleles)
     }
 
+    /// The alleles the population called that no other population of the
+    /// call called at the same variant, summed over the variants that
+    /// counted for every population. `None` when `pop` is not a population
+    /// of the call or [`DiversityStats::PRIVATE_ALLELES`] was not asked
+    /// for.
+    ///
+    /// Their mean is this over [`PopDiversity::num_vars_every_pop`] and not
+    /// over [`PopDiversity::num_vars`]: a variant where one population has
+    /// too little called is out of the private alleles of every population,
+    /// since there the alleles of the others would all be private and the
+    /// count would measure the missing data.
+    ///
+    /// With one population every allele it called is private, since there
+    /// is no other population to hold it, so this is then
+    /// [`PopDiversity::num_alleles`].
+    #[must_use]
+    pub fn private_alleles(&self, pop: usize) -> Option<u64> {
+        if !self.stats.contains(DiversityStats::PRIVATE_ALLELES) {
+            return None;
+        }
+        self.pops.get(pop).map(|pop| pop.private_alleles)
+    }
+
     /// The variants where the population called more than one allele.
     /// `None` when `pop` is not a population of the call or
     /// [`DiversityStats::VARIABLE_VARS_RATIO`] was not asked for.
@@ -235,6 +264,29 @@ impl CountsTheAlleles {
     }
 }
 
+/// Whether a pass counts, at a variant that counted for every population,
+/// the alleles of each population that no other population called there.
+///
+/// It is the one statistic of this module that reads more than one
+/// population at a time, so it is asked for on its own and not with
+/// [`CountsTheAlleles`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CountsThePrivateAlleles {
+    Yes,
+    No,
+}
+
+impl CountsThePrivateAlleles {
+    /// Whether `stats` holds the private alleles.
+    fn of(stats: DiversityStats) -> CountsThePrivateAlleles {
+        if stats.contains(DiversityStats::PRIVATE_ALLELES) {
+            CountsThePrivateAlleles::Yes
+        } else {
+            CountsThePrivateAlleles::No
+        }
+    }
+}
+
 /// What every row of a pass is read with: the populations and the rule for
 /// which variants count for them.
 #[derive(Debug)]
@@ -244,6 +296,9 @@ struct OfThePass<'a> {
     /// all, which the alleles called and the variable variants both need
     /// and a pass asked for neither of them does without.
     counts_the_alleles: CountsTheAlleles,
+    /// Whether the alleles no other population called are counted, which
+    /// walks the counts of every population of the row a second time.
+    counts_the_private_alleles: CountsThePrivateAlleles,
     /// How many alleles a population has to have called at a variant for
     /// the variant to count for it: `min_num_individuals` genotypes of the
     /// ploidy.
@@ -276,6 +331,9 @@ impl Totals {
             of_the_pass.num_alleles = of_the_pass
                 .num_alleles
                 .saturating_add(of_the_chunk.num_alleles);
+            of_the_pass.private_alleles = of_the_pass
+                .private_alleles
+                .saturating_add(of_the_chunk.private_alleles);
             of_the_pass.num_variable_vars = of_the_pass
                 .num_variable_vars
                 .saturating_add(of_the_chunk.num_variable_vars);
@@ -330,6 +388,7 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     let of_the_pass = OfThePass {
         pops: &of_the_pops,
         counts_the_alleles: CountsTheAlleles::of(options.stats),
+        counts_the_private_alleles: CountsThePrivateAlleles::of(options.stats),
         min_called_alleles: min_called_alleles(
             options.min_num_individuals,
             // Every reader of popnei gives a ploidy of 255 at most, and a
@@ -552,16 +611,26 @@ fn add_the_rows(
     of_the_pass: &OfThePass,
     totals: &mut Totals,
 ) -> Result<()> {
-    // One array of counts for every row and every population, which
-    // `count_alleles_of` clears before it counts, so the loop over the rows
-    // allocates nothing for a variant. The statistics read it while the
-    // population is in hand; the private alleles, which need every
-    // population's counts at one variant at once, will keep them in an
-    // array of the populations by the alleles of the row instead.
-    let mut counts: AlleleCounts = [0; 128];
+    // One array of counts for each population, the populations by the
+    // alleles of the row: the private alleles need every population's
+    // counts at one variant at once, and the four other statistics read the
+    // counts of the population that is in hand. `count_alleles_of` writes
+    // every entry of the array it is given, so nothing is cleared here, and
+    // the arrays are reused from row to row, so the loop over the rows
+    // allocates nothing and what is kept never grows with the block.
+    let mut of_each_pop = vec![OfAPopAtTheRow::none(); of_the_pass.pops.len()];
+    // How many populations called each allele of the row, which says which
+    // of them are private. It is filled for the row that is in hand and
+    // reused by the next one.
+    let mut num_pops_that_called: AlleleCounts = [0; 128];
     for row in gts.chunks_exact(alleles_per_var) {
         let mut every_pop = true;
-        for (of_the_pop, counted) in of_the_pass.pops.iter().zip(totals.pops.iter_mut()) {
+        for ((of_the_pop, counted), at_the_row) in of_the_pass
+            .pops
+            .iter()
+            .zip(totals.pops.iter_mut())
+            .zip(of_each_pop.iter_mut())
+        {
             // A population of every individual of the reader in its order
             // is counted by reading the row as it is, and the width of the
             // row says that it is the row of that reader: a population
@@ -578,16 +647,20 @@ fn add_the_rows(
                 // holds, so the whole of the counts is walked below; every
                 // entry of them was written, so the ones above the largest
                 // allele of the row hold 0.
-                (count_alleles(row, &mut counts)?, counts.len())
+                (
+                    count_alleles(row, &mut at_the_row.counts)?,
+                    at_the_row.counts.len(),
+                )
             } else {
                 let counted = count_alleles_of(
                     row,
                     of_the_pass.ploidy,
                     &of_the_pop.individuals,
-                    &mut counts,
+                    &mut at_the_row.counts,
                 )?;
                 (counted.called_alleles, counted.num_alleles)
             };
+            at_the_row.one_past_the_largest = one_past_the_largest;
             // A population that called nothing at the variant does not
             // count it whatever `min_num_individuals` is, so a threshold of
             // 0 does not put a variant with no data into the totals.
@@ -600,7 +673,7 @@ fn add_the_rows(
             // holds.
             counted.num_vars = counted.num_vars.saturating_add(1);
             if of_the_pass.counts_the_alleles == CountsTheAlleles::Yes {
-                let num_different = num_different_alleles(&counts, one_past_the_largest);
+                let num_different = num_different_alleles(&at_the_row.counts, one_past_the_largest);
                 // At most 128 different alleles at a variant, the entries a
                 // count of them holds, so a sum above
                 // 18446744073709551615 needs more than 1.4e17 variants,
@@ -618,9 +691,98 @@ fn add_the_rows(
         }
         if every_pop {
             totals.num_vars_every_pop = totals.num_vars_every_pop.saturating_add(1);
+            if of_the_pass.counts_the_private_alleles == CountsThePrivateAlleles::Yes {
+                add_the_private_alleles(&of_each_pop, &mut num_pops_that_called, &mut totals.pops);
+            }
         }
     }
     Ok(())
+}
+
+/// What one population called at the row that is in hand, which the private
+/// alleles read across the populations.
+#[derive(Debug, Clone)]
+struct OfAPopAtTheRow {
+    /// How often the population called each allele of the row, which
+    /// [`count_alleles_of`] writes every entry of.
+    counts: AlleleCounts,
+    /// One past the largest allele it called there, the entry of `counts`
+    /// the walks over them stop at: every entry from it up holds 0.
+    one_past_the_largest: usize,
+}
+
+impl OfAPopAtTheRow {
+    /// The counts of one population before any row is read, which hold no
+    /// allele.
+    fn none() -> OfAPopAtTheRow {
+        OfAPopAtTheRow {
+            counts: [0; 128],
+            one_past_the_largest: 0,
+        }
+    }
+}
+
+/// It adds to every population the alleles it called at the row that no
+/// other population of the pass called there.
+///
+/// It is called for a row that counted for every population and for no
+/// other, which is the rule of "The private alleles" of
+/// `docs/specs/diversity.md`: a population that called nothing at a variant
+/// holds none of its alleles, so every allele of every other population
+/// would be private there and the count would measure the missing data.
+///
+/// `of_each_pop` is what each population called at the row, in the order of
+/// `totals`, and `num_pops_that_called` is the room for one count of the
+/// populations for each allele of the row, whose contents when this is
+/// called are of no interest. An allele is private to the population that
+/// called it exactly when one population called it, so the populations that
+/// called each allele are counted once and every population then reads that
+/// count, which is one walk of the populations by the alleles of the row
+/// and not one walk for each pair of populations.
+fn add_the_private_alleles(
+    of_each_pop: &[OfAPopAtTheRow],
+    num_pops_that_called: &mut AlleleCounts,
+    totals: &mut [OfAPop],
+) {
+    let one_past_the_largest = of_each_pop
+        .iter()
+        .map(|at_the_row| at_the_row.one_past_the_largest)
+        .max()
+        .unwrap_or(0);
+    // The entries above the largest allele of this row are not read for it,
+    // so what a row before left there stays and is cleared by the row that
+    // reaches that far.
+    for num_pops in num_pops_that_called.iter_mut().take(one_past_the_largest) {
+        *num_pops = 0;
+    }
+    for at_the_row in of_each_pop {
+        let called_and_counted = at_the_row
+            .counts
+            .iter()
+            .zip(num_pops_that_called.iter_mut())
+            .take(at_the_row.one_past_the_largest);
+        for (called, num_pops) in called_and_counted {
+            if *called > 0 {
+                // A count that saturated would have to come from 4294967295
+                // populations, and every value above 1 says the same thing
+                // here, that the allele is not private.
+                *num_pops = num_pops.saturating_add(1);
+            }
+        }
+    }
+    for (at_the_row, counted) in of_each_pop.iter().zip(totals.iter_mut()) {
+        let num_private = at_the_row
+            .counts
+            .iter()
+            .zip(num_pops_that_called.iter())
+            .take(at_the_row.one_past_the_largest)
+            .filter(|(called, num_pops)| **called > 0 && **num_pops == 1)
+            // At most 128 private alleles at a variant, the entries a count
+            // of them holds, so a sum above 18446744073709551615 needs more
+            // than 1.4e17 variants, more than any source holds.
+            .fold(0_u64, |num_private, _| num_private.saturating_add(1));
+        counted.private_alleles = counted.private_alleles.saturating_add(num_private);
+    }
 }
 
 /// How many different alleles a population called at one variant: the
@@ -831,9 +993,9 @@ mod the_pass {
     /// What a mean or a ratio of these tests may differ from the number of
     /// the spec by. Each of them is one count over another, both far below
     /// 2^53 and both exact in `f64`, and the quotients of the worked
-    /// example, 2.25, 2, 0.75 and 0.5, are exact in binary too, so the
-    /// bound is the last bit of a number near 1 and not an allowance for
-    /// any rounding.
+    /// example, 2.25, 2, 0.75, 0.5 and 0.25, are exact in binary too, so
+    /// the bound is the last bit of a number near 1 and not an allowance
+    /// for any rounding.
     const OF_AN_EXACT_QUOTIENT: f64 = f64::EPSILON;
 
     /// It checks the mean alleles of one population, the allelic richness:
@@ -848,6 +1010,21 @@ mod the_pass {
         assert!(
             (found - mean).abs() <= OF_AN_EXACT_QUOTIENT,
             "the mean alleles of {what} is {found}, and it is {mean}"
+        );
+    }
+
+    /// It checks the mean private alleles of one population: the alleles no
+    /// other population called over the variants that counted for every
+    /// population, which is the divisor this statistic has and the other
+    /// counts of the module do not.
+    fn assert_mean_private_alleles(diversity: &PopDiversity, pop: usize, mean: f64, what: &str) {
+        let private_alleles = diversity.private_alleles(pop).expect("the private alleles");
+        let num_vars = diversity.num_vars_every_pop();
+        let found = private_alleles as f64 / num_vars as f64;
+
+        assert!(
+            (found - mean).abs() <= OF_AN_EXACT_QUOTIENT,
+            "the mean private alleles of {what} is {found}, and it is {mean}"
         );
     }
 
@@ -981,6 +1158,16 @@ mod the_pass {
                 diversity.num_variable_vars(1),
                 Some(2),
                 "the variable variants of pop2 in blocks of {num_vars_per_block}"
+            );
+            assert_eq!(
+                diversity.private_alleles(0),
+                Some(2),
+                "the private alleles of pop1 in blocks of {num_vars_per_block}"
+            );
+            assert_eq!(
+                diversity.private_alleles(1),
+                Some(1),
+                "the private alleles of pop2 in blocks of {num_vars_per_block}"
             );
         }
     }
@@ -1233,5 +1420,117 @@ mod the_pass {
         // The variants that count for a population are counted whatever the
         // pass was asked for, since every statistic is over them.
         assert_eq!(of_the_variable_vars.num_vars(0), Some(4));
+    }
+
+    /// `pop1` of the worked example called an allele no other population
+    /// called at the variants 1 and 2, the allele 1 of each, 2 in all over
+    /// the 4 variants that counted for both populations and a mean of 0.5;
+    /// `pop2` called one at variant 5, the allele 1 there, 1 in all and a
+    /// mean of 0.25. At variant 3 both populations called the four alleles
+    /// `0`, `1`, `2` and `3`, so neither holds one the other does not.
+    /// "What it gives" of "The private alleles" of
+    /// `docs/specs/diversity.md`.
+    #[test]
+    fn the_populations_of_the_worked_example_have_two_and_one_private_alleles() {
+        let diversity = of_the_worked_example(1, 6);
+
+        assert_eq!(diversity.private_alleles(0), Some(2));
+        assert_eq!(diversity.private_alleles(1), Some(1));
+        assert_eq!(diversity.private_alleles(2), None);
+        assert_eq!(diversity.num_vars_every_pop(), 4);
+        assert_mean_private_alleles(&diversity, 0, 0.5, "pop1");
+        assert_mean_private_alleles(&diversity, 1, 0.25, "pop2");
+    }
+
+    /// With one population every allele it called is private, since there
+    /// is no other population to hold it, so the private alleles are the
+    /// alleles called: the 10 of the five individuals of the worked example
+    /// over its four variants. "The cases" of `docs/specs/diversity.md`.
+    #[test]
+    fn with_one_population_every_allele_it_called_is_private() {
+        let mut reader = the_worked_example(6);
+
+        let diversity = calc_pop_diversity(&mut reader, &[], &options_with_no_draw(1))
+            .expect("the diversity of one population");
+
+        assert_eq!(diversity.num_alleles(0), Some(10));
+        assert_eq!(diversity.private_alleles(0), Some(10));
+        assert_eq!(diversity.num_vars_every_pop(), 4);
+    }
+
+    /// A variant where one population has too little called counts for the
+    /// private alleles of no population, since the alleles of the others
+    /// would all be private there and the count would measure the missing
+    /// data. At a threshold of 0 the sixth variant of the worked example,
+    /// `0/. ./. ./. ./. ./.`, counts for `pop1`, which called the allele 0
+    /// there and no other population called it, and not for `pop2`, which
+    /// called nothing: `pop1` keeps its 2 private alleles over the 4
+    /// variants both populations counted, while 5 variants counted for it.
+    #[test]
+    fn a_variant_one_population_is_short_at_is_out_of_every_private_count() {
+        let diversity = of_the_worked_example(0, 6);
+
+        assert_eq!(diversity.num_vars(0), Some(5));
+        assert_eq!(diversity.num_vars_every_pop(), 4);
+        assert_eq!(diversity.private_alleles(0), Some(2));
+        assert_eq!(diversity.private_alleles(1), Some(1));
+    }
+
+    /// An allele no population called is private to none of them, which a
+    /// count that walked the alleles up to the largest one instead of the
+    /// ones called would get wrong. The variant is `0/3 0/0 0/0`, with the
+    /// first individual one population and the other two the second: the
+    /// alleles 1 and 2 were called by nobody, the allele 0 by both
+    /// populations, and only the allele 3 of the first population is
+    /// private.
+    #[test]
+    fn an_allele_no_population_called_is_private_to_none_of_them() {
+        let row: [i8; 6] = [0, 3, 0, 0, 0, 0];
+        let rows: Vec<&[i8]> = vec![&row[..]];
+        let of_the_first: [usize; 1] = [0];
+        let of_the_others: [usize; 2] = [1, 2];
+        let mut reader = GivenBlocks::of_a_source_of(3, 2, blocks_of(&rows, 3, 2, 1));
+
+        let diversity = calc_pop_diversity(
+            &mut reader,
+            &[&of_the_first, &of_the_others],
+            &options_with_no_draw(1),
+        )
+        .expect("the diversity of a variant with a gap in its alleles");
+
+        assert_eq!(diversity.private_alleles(0), Some(1));
+        assert_eq!(diversity.private_alleles(1), Some(0));
+    }
+
+    /// The private alleles are counted when they were asked for and not
+    /// otherwise, and a pass asked for them alone gives the same number as
+    /// one asked for every statistic.
+    #[test]
+    fn the_private_alleles_are_counted_only_when_they_were_asked_for() {
+        let of_the_private_alleles = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::PRIVATE_ALLELES,
+                num_called_alleles: None,
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the private alleles alone")
+        };
+        let of_the_alleles = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::NUM_ALLELES,
+                num_called_alleles: None,
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the alleles called alone")
+        };
+
+        assert_eq!(of_the_private_alleles.private_alleles(0), Some(2));
+        assert_eq!(of_the_private_alleles.private_alleles(1), Some(1));
+        assert_eq!(of_the_private_alleles.num_alleles(0), None);
+        assert_eq!(of_the_alleles.private_alleles(0), None);
     }
 }
