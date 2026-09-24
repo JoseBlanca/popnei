@@ -206,7 +206,7 @@ Work package 1, whole, since the work packages run in order.
       logistic mixed model", and from
       `docs/reports/glmm-method/README.md` for why it is a Cholesky. Serves
       deliverable 3. Needs 1.1.
-- [ ] 2.2 The step on the variance component: the trace from the identity,
+- [x] 2.2 The step on the variance component: the trace from the identity,
       through the triangular solve reading the lower half, the average
       information, the bracket and the stopping rule, with the cargo test
       that counts the inverses. It is its own task and its own commit

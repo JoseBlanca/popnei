@@ -107,8 +107,12 @@ seen is a guard that can be wrong in the direction of never firing.
 
 **Open 3, a kinship that does not identify the two variances.** Meanwhile:
 give the study with `genetic_variance`, `residual_variance` and
-`heritability` set to `None`. What it does to the logistic mixed model is
-not yet measured and will be recorded here when work package 2 is built.
+`heritability` set to `None`. Measured on 24 September 2026, it does not
+reach the logistic mixed model at all: the other half of that model's
+covariance is the reciprocals of the weights, which differ from individual
+to individual, so an identity kinship still tells the two variances apart
+and the fit lands at 0.1274 in 6 steps. Whatever the owner answers, no test
+of this plan moves.
 
 **Open 4, how negative an eigenvalue is still rounding.** Meanwhile: refuse
 when the smallest eigenvalue of the kinship is below a tenth of the largest.
@@ -483,6 +487,59 @@ its message although it is refused before any variant is read. The count it
 reports is of the dataset, so the file is part of what the message is about,
 which is the same reason the refusal beside it deliberately carries a path.
 The new assertion covers the other 24 cases and skips that one by name.
+
+## Work package 2: the logistic mixed model
+
+### Tasks 2.1 and 2.2, the linearization and the search over the variance
+
+`crates/popnei/src/gwas/logistic_mixed.rs` fits the null model of a binomial
+trait with a kinship: one pass of the penalized quasi-likelihood at a given
+variance of the kinship effect, with the covariance factored by a Cholesky
+and applied by solving and never inverted, and a search over that variance
+using the trace from the identity, the average information and a bracket.
+The core has 812 tests where work package 1 left 799.
+
+**Deliverable 1, the null model against GMMAT, holds.** The variance of the
+kinship effect comes to 1.50805069777198586 on Accelerate and
+1.50805069777198320 on faer, which is 6.302e-6 from GMMAT's 1.508057 and 63
+per cent of the 1e-5 allowed; the two backends are 1.8e-15 apart relative.
+The three covariate effects are within 1.06e-6 of GMMAT's, 11 per cent of
+their bound, the same on both backends. `residual_variance` and
+`heritability` are `None`, since a logistic model has no free residual
+variance.
+
+**Deliverable 3, the fit forms no inverse while it iterates, holds.** One
+inverse, formed at the end because the score test wants the projection
+matrix as a matrix, and 22 factorizations of the covariance over 8 steps on
+the variance, on both backends and both panels. The 22 is the number
+`docs/reports/glmm-method/README.md` measured for pyNei's fit, which
+inverts once per linearization where this one factors.
+
+**A guard was written, measured and then removed, which is the right way
+round.** Task 2.2 first refused a step on the variance that is not finite.
+Measuring showed that takes away a right answer: a kinship of all zeros
+walks to a variance of exactly 0 in 12 steps, which is the boundary the spec
+describes, because the bracket sends every step not above 0 to a quarter of
+the variance. The guard would have refused a study that has an answer. It is
+gone, and that case is now the one fixture that runs the whole search
+through the division by the variance — the division that is 0 exactly rather
+than nearly, which is the trap the owner named for this work package.
+
+**The stopping rule's denominator is pinned after all.** Task 2.1 left a
+"plus 1" that nothing tested: replacing the divisor with 1 left its round
+counts unchanged. Against the whole fit it does not move the variance either
+— identical to all 18 digits on both backends — and moves the covariate
+effects by 3.1e-13, far under GMMAT's bound. What it does move is the number
+of factorizations, 22 to 23, so the test that counts them for deliverable 3
+is what pins it, and nothing else in this plan would have.
+
+**Open 3 does not reach this model.** The meanwhile for a kinship that does
+not identify the two variances was written for the linear mixed model, where
+the criterion goes flat, and whether the logistic one had the same
+degeneracy was not known. It does not: the other half of the covariance is
+the reciprocals of the weights, which differ from individual to individual,
+so an identity kinship leaves the two apart and the fit lands at 0.1274 in 6
+steps. A test says so, and no meanwhile was needed here.
 
 ## How the work went
 
