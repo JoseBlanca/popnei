@@ -221,8 +221,12 @@ computes the formula and does not refuse the overlap: `pops` allows an
 individual in more than one population, as `docs/specs/stats.md` has it,
 and every other statistic here reads such a population without trouble.
 The totals, which ask which alleles were called and not which were drawn,
-are right whatever the overlap. This was found on 24 September 2026 by the
-enumeration under "How it is verified" below.
+are right whatever the overlap. This was worked out on 24 September 2026
+from the formula itself, not measured: the enumeration under "How it is
+verified" below runs over one draw per population independently, which is
+the same assumption, so it gives 0.5 there too. The pair that does show it
+is the nineteenth of that script, which enumerates over the labelled gene
+copies of the shared individual and gives 0.
 
 ### How it runs
 
@@ -284,7 +288,10 @@ On the panel of `docs/specs/stats.md`, `tests/reference/stats/panel.vcf.gz`,
 1200 biallelic diploid variants of 200 individuals with 3 in 100 genotypes
 missing, whose populations `p0`, `p1` and `p2` of 48, 68 and 84
 individuals are `tests/reference/stats/panel_pops_bcftools.txt`, run on
-24 September 2026 with `min_num_individuals` 20:
+24 September 2026 with `min_num_individuals` 20. The numbers below are
+stored in `tests/reference/diversity/panel_num_alleles.tsv`, which
+`tests/reference/diversity/make_reference.R` writes, and the tests read
+them from there:
 
 | population | total | mean | in a draw of 20 |
 |---|---|---|---|
@@ -380,7 +387,9 @@ with a 1 where the allele is private to the population of the row; its row
 sums are the totals. On the panel, run on 24 September 2026 with
 `min_num_individuals` 20, `poppr` gives 0, 0 and 1 for `p0`, `p1` and
 `p2`, which popnei has to match exactly; the means over the 1200 variants
-every population kept are 0, 0 and 0.0008333333. The check is a pytest
+every population kept are 0, 0 and 0.0008333333. They are stored in
+`tests/reference/diversity/panel_private_alleles.tsv`, which
+`tests/reference/diversity/make_reference.R` writes. The check is a pytest
 test at `calc_pop_diversity`, where the totals and their divisor are read
 off the result.
 
@@ -393,9 +402,23 @@ the sentence above claims. The enumeration says exactly that: for a small
 case it lists every draw of `g` each population can make, weights each by
 the ways it can be taken, runs over every combination of one draw per
 population, counts the alleles of the population that are in its own draw
-and in no other, and averages. It assumes nothing, and in particular not
-that the draws of two populations are independent, which the closed form
-does assume.
+and in no other, and averages.
+
+What that check is worth, and what it is not. It never writes the closed
+form down, so it catches any error in the algebra: the decomposition into
+one term per allele, the chance that an allele shows in a draw, and the
+product over the other populations. Changing one factor of the closed form
+makes 16 of the 18 pairs below differ. What it does not check is the one
+assumption the closed form makes, that the draws of two populations are
+independent: the enumeration takes the combinations of one draw per
+population as a product measure, which is that same assumption, so on the
+populations below the two agree by construction and not by luck. For the
+18 pairs below that is sound rather than circular, because their
+populations share no individual, and draws from disjoint sets of gene
+copies are independent as a fact of the sampling and not as an
+assumption. Where populations do share individuals the assumption is false
+and the enumeration is as wrong as the formula, which "The cases" above
+describes and which the case of the shared individual below demonstrates.
 
 Run in exact rational arithmetic on 24 September 2026 over 18 pairs of a
 case and a population, the two agree with a difference of 0, not merely
@@ -406,9 +429,21 @@ draw of 4; two populations of two alleles at a draw of 2, giving
 0.0833333333; three populations of four alleles, 0.5694444444,
 0.6805555556 and 0.4027777778; and a population holding one allele
 against one holding two at a draw of 3, 0 and 1. The script is
-`docs/reports/diversity-method/check_by_enumeration.py`, and the cases
-become cargo tests at `calc_pop_diversity` of "The Rust interface" with
-those numbers as literals.
+`tests/reference/diversity/enumerate_private.py`, which writes them to
+`tests/reference/diversity/enumerate_private.tsv` with the exact rational
+of each beside the two decimals, and the cases become cargo tests at
+`calc_pop_diversity` of "The Rust interface" with those numbers as
+literals.
+`docs/reports/diversity-method/check_by_enumeration.py` is the throwaway
+this grew from and is not what the tests read.
+
+A nineteenth pair is there for the shared individual of "The cases", and
+it is enumerated differently: over the labelled gene copies of a set of
+individuals rather than over allele counts, so that two populations
+holding the one diploid individual `0/1` draw the same copies. At a draw
+of one allele it gives 0 where the closed form gives 0.5. It is the one
+pair of the file whose difference is not 0, and it is what shows that the
+overlap "The cases" warns about is real.
 
 Two properties are asserted on the panel beside them: with
 `num_called_alleles` equal to the smallest `c` of the dataset the value is
@@ -483,16 +518,29 @@ relative, the two being the same sum of the same terms taken in different
 orders. The identity was checked on 24 September 2026 on the counts
 (10, 6), (17, 3), (1, 19) and (55, 45) at draws of 2, 4 and 10 and on
 (3, 1) at draws of 2 and 4, its 4 called alleles having no draw of 10:
-over those 14 pairs the two sides agree to 1.1e-16 or exactly. It was
+over those 14 pairs the two sides agree to 1.1e-16 or exactly, and
+`tests/reference/diversity/make_reference.R` checks those 14 pairs on
+every run. It was
 checked on the panel too, whose standardized ratios are
 0.9283948650, 0.9219209943 and 0.9197370844 against the standardized
 allele counts of 1.9283948650, 1.9219209943 and 1.9197370844. A dataset
 with variants of more than two alleles has no such identity and no
 program here to check it; the worked example covers it.
 
+`vegan::rarefy` measures the standardized number of alleles, and the
+standardized ratio is that value minus 1 by the identity above, so it is
+not a second measurement:
+`tests/reference/diversity/panel_variable_vars.tsv` stores it under a
+column name that says so. A test that reads both that file and
+`panel_num_alleles.tsv` is therefore checking popnei's two formulas
+against one measurement of `vegan`'s and against the identity, which is
+what this item claims and all that it claims.
+
 The totals and ratios on the panel, run with `min_num_individuals` 20 on
 24 September 2026: 1173, 1177 and 1184 varying variants of 1200, ratios of
-0.9775, 0.9808333333 and 0.9866666667. The totals are compared exactly.
+0.9775, 0.9808333333 and 0.9866666667, stored in
+`tests/reference/diversity/panel_variable_vars.tsv`. The totals are
+compared exactly.
 They are also the variants `docs/specs/stats.md` counts as variable, so
 the two modules have to agree on them: a pytest test at
 `calc_pop_diversity` and `calc_per_var_distribs` on the same dataset and
@@ -560,7 +608,10 @@ projections=[g], polarized=False)` does the same per variant projection,
 drops the variants below `g` called alleles, and folds. On the panel with
 `min_num_individuals` 20 and `num_called_alleles` 20, run on 24 September
 2026, all 33 entries of the three populations agree to their ten printed
-digits:
+digits. They are stored in
+`tests/reference/diversity/panel_folded_sfs_dadi.tsv`, which
+`tests/reference/diversity/make_reference.py` writes, and the test reads
+them from there:
 
 | rarer allele | p0 | p1 | p2 |
 |---|---|---|---|
@@ -576,9 +627,19 @@ digits:
 | 9 | 122.4216218019 | 124.0682314877 | 117.7147383254 |
 | 10 | 60.9568756012 | 61.9071468804 | 58.6246935652 |
 
-Each column sums to 1200, the variants that counted. They are compared
+Each column sums to 1200, the variants that counted, and the stored
+columns sum short of it by 1.3e-11, 7.0e-11 and 4.0e-11, which is `dadi`'s
+own error accumulated over 1200 variants and not the eleven roundings of
+the decimals, which could give at most 7.5e-14. So the test that checks
+that sum compares within a tolerance and not exactly. They are compared
 within 1e-12 relative, by a pytest test at `calc_pop_diversity` reading
-`folded_sfs` against these literals. `dadi` masks bin 0 and the bins above `g / 2` in a
+`folded_sfs` against these literals. That is the tightest margin in this
+module: an `f64` projection of popnei's own differs from these stored
+values by up to 7.1e-14 relative, `dadi`'s error dominating, which is 14
+times inside the tolerance, where the same comparison against
+`vegan::rarefy` sits 550 times inside it. Both were measured on 24
+September 2026 by recomputing the panel in exact rational arithmetic.
+`dadi` masks bin 0 and the bins above `g / 2` in a
 folded spectrum and popnei reports bin 0, so the comparison reads
 `fs.data` and not the masked array; the difference is one of presentation
 and the value is the same.
@@ -701,6 +762,8 @@ builds it from the two means `calc_per_var_distribs` gives for
 `obs_het` and `exp_het` over the same `pops` and the same
 `min_num_individuals`: on 24 September 2026 `scikit-allel` gives
 -0.0237536998, -0.0258924700 and -0.0247472838 for `p0`, `p1` and `p2`,
+stored in `tests/reference/diversity/panel_fis_plain_allel.tsv`, which
+`tests/reference/diversity/make_reference.py` writes, and
 compared within 1e-12 relative. The unbiased form, which
 `calc_pop_diversity` returns and which a second pytest assertion compares
 against the literals below, is
