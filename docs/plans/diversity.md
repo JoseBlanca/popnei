@@ -260,7 +260,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
 
 **Tasks.**
 
-- [ ] 2.1 `crates/popnei/src/diversity.rs` with `DiversityStats`,
+- [x] 2.1 `crates/popnei/src/diversity.rs` with `DiversityStats`,
   `DiversityOptions` and `PopDiversity`, declared in
   `crates/popnei/src/lib.rs`, with the pass that walks the blocks and
   counts nothing yet but the variants that count for each population, and
@@ -429,3 +429,17 @@ tree, and `git status --short tests/reference/diversity` has to show
 nothing. A reference file that the work quietly changed would make every
 comparison of work packages 2 and 3 pass against a number popnei itself
 moved.
+
+And one thing task 2.1 made necessary. It gave `PopDiversity` only the
+three accessors whose numbers the pass computes at that point,
+`num_pops`, `num_vars` and `num_vars_every_pop`, rather than writing the
+whole impl block of "The Rust interface" with the other ten returning 0 or
+`None`. That is the safer order, since no caller can read a number that is
+not yet what the spec promises, and each of tasks 2.2, 2.3, 2.4, 3.1, 3.2,
+3.3 and 3.4 adds its own accessor with its computation. But nothing then
+fails if one is forgotten. So at the end every method of the impl block of
+"The Rust interface" is checked to be there, with the signature the spec
+gives: `num_vars_in_draw`, `num_vars_every_pop_in_draw`, `num_alleles`,
+`num_alleles_in_draw`, `private_alleles`, `private_alleles_in_draw`,
+`num_variable_vars`, `variable_vars_ratio_in_draw`, `folded_sfs` and
+`fis`, beside the three that are there.
