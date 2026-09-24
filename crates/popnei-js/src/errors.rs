@@ -1,12 +1,21 @@
-//! The errors of the core crate on their way to a JavaScript `Error`.
+//! What a function of this crate fails with, on its way to what JavaScript
+//! catches: an error of popnei, the core crate's or this crate's own, which
+//! crosses as an `Error`; or the value an application threw from the
+//! function that is told how far a pass has got, which stopped the run and
+//! crosses back as it is. The second is no error of popnei and need not be
+//! an `Error` at all, since it is whatever the application threw, and it is
+//! [`Stopped`] here.
 //!
 //! `impl From<popnei::Error> for JsValue` cannot be written here, because
 //! neither type belongs to this crate, so every function of the crate fails
-//! with [`JsPopneiError`], which does belong to it, and wasm-bindgen throws
-//! it as an `Error`. `?` on a call of the core crate works everywhere, which
-//! is what `.claude/skills/coding/pyo3.md` asks of the Python binding crate
-//! and what section 11 of `docs/architecture.md` asks here: one place turns
-//! an error of the core into what JavaScript throws.
+//! with [`JsPopneiError`], which does belong to it, and what JavaScript
+//! throws is what this module turns that into. `?` on a call of the core
+//! crate works everywhere, which is what `.claude/skills/coding/pyo3.md`
+//! asks of the Python binding crate and what section 11 of
+//! `docs/architecture.md` asks here: one place turns an error of the core
+//! into what JavaScript throws.
+//!
+//! [`Stopped`]: JsPopneiError::Stopped
 
 use wasm_bindgen::{JsError, JsValue};
 

@@ -309,15 +309,17 @@ export function numberOfOpenPasses(): number {
  * the dataset is never in memory as a whole. The genotypes come out of it
  * through `iterBlocks` and through nothing else.
  *
- * What is done with it is of two kinds, and what a call gives back says
- * which. A step, a filter of `docs/specs/filters.md`, is a method that adds
- * itself to the list of steps, reads nothing and returns nothing, and
- * `steps` is that list. A consumer, `iterBlocks`, `writeVars` or the
- * function of a calculation, gives something back, and it runs the steps: it
- * makes as many passes over the source as it needs, each one built from the
- * steps the `Variants` has when that pass starts. So a step added between
- * two consumers holds for the second, and one added while a pass runs holds
- * from the next pass.
+ * What is done with it is of three kinds. A step, a filter of
+ * `docs/specs/filters.md`, is a method that adds itself to the list of steps,
+ * reads nothing and returns nothing, and `steps` is that list. A consumer,
+ * `iterBlocks`, `writeVars` or the function of a calculation, gives something
+ * back, and it runs the steps: it makes as many passes over the source as it
+ * needs, each one built from the steps the `Variants` has when that pass
+ * starts. So a step added between two consumers holds for the second, and one
+ * added while a pass runs holds from the next pass. The third kind is
+ * `onProgress`, which sets the function that every pass tells how far it has
+ * got: it returns nothing, as a step does, but it adds no step and changes
+ * nothing of the variants a pass gives.
  *
  * It is pyNei's `Variants` under the word of `docs/glossary.md`: what pyNei
  * calls a sample is here an individual, one organism that was genotyped.
@@ -677,14 +679,37 @@ export class Variants {
    * with nothing.
    *
    * While a consumer runs, the worker is inside wasm and reads no message,
-   * so this is how a page learns how a run is going: the source calls
-   * `told` at the first read of each pass, at the first read after every
-   * 4 MiB of the file that pass has read, and at the read that finds the end
-   * of the file, with the bytes read, the bytes the file holds, which pass
-   * of the run is reading and how many passes the run makes. A page that
-   * draws a bar from those four numbers sees it fill once per pass, so a
-   * principal component analysis that reads the file twice does not look
-   * broken when the bar goes back to empty.
+   * so this is how a page learns how a run is going. Three things make a
+   * call: the first read of each pass, which says that pass has read
+   * nothing; a read that brings the bytes read since the last call to the
+   * size of a range, 4 MiB of the file; and the end of the run, which makes
+   * one call for each of its passes, in the order of their numbers, with
+   * the bytes that pass read. The last of the three is what says a pass is
+   * over, because no read does: a pass over a vars file stops after its
+   * last batch, and a run that fails stops where it failed. Every call
+   * carries the bytes that pass has read, the bytes the file holds, which
+   * pass of the run is reading and how many passes the run makes.
+   *
+   * The 4 MiB of a range is popnei's own choice and not a number the
+   * package promises: nothing has been measured at that size, and "Speed"
+   * of `docs/specs/js_sources.md` leaves it there until a pass over a VCF of
+   * a few hundred MB is timed in Chromium at 256 KiB, 1 MiB, 4 MiB and
+   * 16 MiB, which will set it. An application that draws a bar reads the
+   * bytes of each call and not the size of a range.
+   *
+   * The bytes are those of the file on disk, so a gzipped VCF is counted in
+   * its compressed bytes: a pass over `many.vcf.gz` ends at the 21904 bytes
+   * of the gzip and not at the 117346 of the text inside it. A pass over a
+   * vars file ends below the size of the file, because it does not read all
+   * of it: it reads the last ten bytes, which say how long the footer is,
+   * then the footer, which says where the batches are, and then each batch,
+   * and never the schema message at the head of the file, since the footer
+   * carries the schema too.
+   *
+   * A page that draws a bar from these numbers sees it fill once per pass
+   * and knows which pass it is on, so a principal component analysis that
+   * reads the file twice does not look broken when the bar goes back to
+   * empty.
    *
    * What `told` throws ends the pass where it was reading, and the consumer
    * throws that same value: an application that cancels a run tells its own
