@@ -20,7 +20,10 @@
 //! their r² for each distance from `min_dist` to `max_dist`, compacted
 //! when the pass ends to the distances that hold a pair. It is what the
 //! curve of the fall-off is fitted to, which "The curve that is fitted" of
-//! the item describes and which reads no bin.
+//! the item describes and which reads no bin. The pass fits that curve for
+//! each population when it has ended, with
+//! [`fit_ld_decay`](super::fit_ld_decay) over the individuals of the
+//! population, and [`LdBins::decay`] is what it gave.
 //!
 //! Two variants make a pair only when they are on one chromosome and no
 //! further apart than `max_dist`, so the pass never needs the whole
@@ -43,7 +46,9 @@ use crate::block::{Block, BlockReader};
 use crate::error::{Error, Result};
 use crate::variant::Needs;
 
-use super::{LdDosages, a_vector_of, r2_between, the_copy_of, the_memory_for};
+use super::{
+    LdDecay, LdDosages, a_vector_of, fit_ld_decay, r2_between, the_copy_of, the_memory_for,
+};
 
 /// Where one variant lies: the number of its chromosome in the
 /// [`ChromTable`](crate::variant::ChromTable) of the reader the block came
@@ -898,6 +903,10 @@ pub struct LdAndDistOptions {
 /// `max_dist`, both included. A pair with no r², which "What it gives" of
 /// `docs/specs/ld.md` defines, is in no bin.
 ///
+/// When the pass has ended each population also gets the curve of its
+/// fall-off, [`LdBins::decay`], which [`fit_ld_decay`] fits to the pairs
+/// that population counted at each distance, over its own individuals.
+///
 /// The bins are the same, to the bit, whatever the size of the blocks the
 /// reader gives: the r² of a pair is worked out over the individuals,
 /// which no block and no tile cuts, and the bins are added up in the order
@@ -918,8 +927,10 @@ pub struct LdAndDistOptions {
 /// does not give the memory of the bins, of the pairs counted at every
 /// distance from `min_dist` to `max_dist`, of the window or of the r² of a
 /// step, which is asked of it with `try_reserve_exact` and not taken; what
-/// the dosages of a block and the r² of two tiles refuse; and whatever the
-/// reader fails with, which is given on as it is.
+/// the dosages of a block and the r² of two tiles refuse; what
+/// [`fit_ld_decay`] refuses of the pairs of each distance, which no pass
+/// gives it; and whatever the reader fails with, which is given on as it
+/// is.
 pub fn calc_ld_and_dist<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -1010,6 +1021,15 @@ fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
     for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
         bins.num_vars = of_the_pop.num_vars();
         bins.the_distances_that_hold_a_pair_are_kept()?;
+        // The n of the curve is the individuals of the population, which
+        // "The curve that is fitted" of `docs/specs/ld.md` gives the
+        // reasons for, and the dosages of a population are built over its
+        // own individuals alone. The pass counted a variant above, so it
+        // took a block and every population has its dosages; a population
+        // that somehow had none would be one of no individual, which
+        // `fit_ld_decay` refuses rather than fitting a curve to an n of 0.
+        let num_individuals = of_the_pop.dosages().map_or(0, LdDosages::num_individuals);
+        bins.the_curve_is_fitted(the_count_of(num_individuals))?;
     }
     Ok(LdAndDist {
         num_vars,
@@ -1081,6 +1101,10 @@ pub struct LdBins {
     /// The same pairs counted at each distance of the range, one distance
     /// at a time, which is what the curve of the fall-off is fitted to.
     at_each_dist: ThePairsAtEachDist,
+    /// The curve fitted to those pairs, which the pass works out when it
+    /// has ended. It is the three NaN of a population no curve was fitted
+    /// to until then.
+    decay: LdDecay,
 }
 
 impl LdBins {
@@ -1116,6 +1140,7 @@ impl LdBins {
                 &of_a_bin("the sum of the squares of r² of each bin", size_of::<f64>()),
             )?,
             at_each_dist: ThePairsAtEachDist::of(options.min_dist, options.max_dist)?,
+            decay: LdDecay::of_no_curve(),
         })
     }
 
@@ -1280,47 +1305,57 @@ impl LdBins {
     ///
     /// They are the distances of the range from `min_dist` to `max_dist`
     /// that hold a pair and not the whole range, and the pass has ended
-    /// before any of them is there.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the curve of the fall-off, which `docs/specs/ld.md` gives as \
-                      `fit_ld_decay`, is what reads the pairs of each distance when a \
-                      pass has ended, and it is not written yet; the tests of the pass \
-                      are what read them today"
-        )
-    )]
+    /// before any of them is there. They are the first of the three
+    /// slices [`fit_ld_decay`] takes.
     pub(crate) fn the_dists_that_hold_a_pair(&self) -> &[u64] {
         self.at_each_dist.dists()
     }
 
     /// How many pairs each of [`LdBins::the_dists_that_hold_a_pair`]
     /// holds, in the same order.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the curve of the fall-off when a pass has ended, as \
-                      `the_dists_that_hold_a_pair` above says"
-        )
-    )]
     pub(crate) fn the_pairs_at_each_dist(&self) -> &[u64] {
         self.at_each_dist.num_pairs()
     }
 
     /// The sum of the r² of the pairs of each of
     /// [`LdBins::the_dists_that_hold_a_pair`], in the same order.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the curve of the fall-off when a pass has ended, as \
-                      `the_dists_that_hold_a_pair` above says"
-        )
-    )]
     pub(crate) fn the_sum_of_r2_at_each_dist(&self) -> &[f64] {
         self.at_each_dist.sum_r2()
+    }
+
+    /// Fits the curve of the fall-off to the pairs counted at each
+    /// distance, in a population of `num_individuals` individuals, which
+    /// the pass calls when it has ended and the distances that hold a
+    /// pair are kept.
+    ///
+    /// # Errors
+    ///
+    /// What [`fit_ld_decay`] refuses, which of a pass is a population of
+    /// no individual alone: the three slices are of one length and hold a
+    /// count above 0 and a sum of r² that is a number at or above 0,
+    /// which is what a pair adds to them.
+    fn the_curve_is_fitted(&mut self, num_individuals: u64) -> Result<()> {
+        let fitted = fit_ld_decay(
+            self.the_dists_that_hold_a_pair(),
+            self.the_pairs_at_each_dist(),
+            self.the_sum_of_r2_at_each_dist(),
+            num_individuals,
+        )?;
+        self.decay = fitted;
+        Ok(())
+    }
+
+    /// The curve fitted to the pairs of this population, over every pair
+    /// and not over the bins above, and the distance at which it has
+    /// fallen to half.
+    ///
+    /// Its three values are NaN together for a population whose pairs
+    /// fall at fewer than two distances and for one whose fall-off the
+    /// pairs pin down at neither end of the searched range, which "The
+    /// cases" of `docs/specs/ld.md` describes and which is not an error.
+    #[must_use]
+    pub fn decay(&self) -> &LdDecay {
+        &self.decay
     }
 }
 
@@ -1845,8 +1880,13 @@ fn the_buffer_of(
     Ok(())
 }
 
+/// The three tables of "How it is verified" of `docs/specs/ld.md` are read
+/// out of one pass, so the tests of the curve fitted to their pairs run the
+/// same pass as the tests of their bins: the module is open to the rest of
+/// `ld` and the few things the tests of the curve take of it are
+/// `pub(in crate::ld)`.
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::fs::File;
     use std::io::{BufReader, Cursor};
     use std::path::{Path, PathBuf};
@@ -2664,7 +2704,7 @@ mod tests {
 
     /// The bins of the population at that position among the ones the pass
     /// was given.
-    fn bins_of(of_the_pass: &LdAndDist, pop: usize) -> &LdBins {
+    pub(in crate::ld) fn bins_of(of_the_pass: &LdAndDist, pop: usize) -> &LdBins {
         match of_the_pass.bins_of_pop(pop) {
             Some(bins) => bins,
             None => panic!("the pass has no population {pop}"),
@@ -3567,7 +3607,7 @@ mod tests {
     /// They are two passes because the major allele frequency is one
     /// threshold for the whole call, and the first table is at another
     /// than the two below it.
-    fn the_three_tables_of(num_vars_per_block: usize) -> (LdAndDist, LdAndDist) {
+    pub(in crate::ld) fn the_three_tables_of(num_vars_per_block: usize) -> (LdAndDist, LdAndDist) {
         let mut reader = the_ld_dataset(num_vars_per_block);
         let of_every_individual =
             match calc_ld_and_dist(&mut reader, &[], &the_options_of_the_tables(0.95)) {

@@ -115,8 +115,10 @@ impl LdDecay {
         self.half_dist
     }
 
-    /// The three NaN of a population no curve was fitted to.
-    fn of_no_curve() -> LdDecay {
+    /// The three NaN of a population no curve was fitted to, which is also
+    /// what the bins of a pass hold until the pass has ended and
+    /// [`fit_ld_decay`] has read the pairs of each distance.
+    pub(super) fn of_no_curve() -> LdDecay {
         LdDecay {
             rho_per_bp: f64::NAN,
             r2_at_zero: f64::NAN,
@@ -449,21 +451,41 @@ fn the_pairs_of_each_dist_are_checked(
 mod tests {
     use super::*;
 
+    use crate::ld::LdAndDist;
+    use crate::ld::dist::tests::{bins_of, the_three_tables_of};
+
     /// How close two numbers of the fit are asked to be, which is the
     /// tolerance "How it is verified" of `docs/specs/ld.md` compares the
     /// fitted values within: 480 times the 2.1·10⁻⁹ that R's `optimize`
     /// and R's `nls` disagree by on the same pairs.
     const THE_TOLERANCE: f64 = 1e-6;
 
+    /// How close the r² at a distance of 0 is asked to be, which the same
+    /// part of the spec compares that one value within.
+    ///
+    /// It is the curve's own ceiling, which the individuals of the
+    /// population fix on their own and no pair moves, so the two sides
+    /// work one formula out at a ρ of 0 and nothing but the last bits can
+    /// differ. The fitted ρ per base pair, which the two optimisers place
+    /// 2.1·10⁻⁹ apart, does not enter it.
+    const THE_TOLERANCE_OF_THE_R2_AT_ZERO: f64 = 1e-12;
+
+    /// Asserts that `found` is within `tolerance` of `expected`, relative
+    /// to `expected`.
+    #[track_caller]
+    fn assert_within(found: f64, expected: f64, tolerance: f64, what: &str) {
+        let apart = (found - expected).abs() / expected.abs();
+        assert!(
+            apart <= tolerance,
+            "{what} is {found} and the spec gives {expected}, {apart} of it apart"
+        );
+    }
+
     /// Asserts that `found` is within [`THE_TOLERANCE`] of `expected`,
     /// relative to `expected`.
     #[track_caller]
     fn assert_close(found: f64, expected: f64, what: &str) {
-        let apart = (found - expected).abs() / expected.abs();
-        assert!(
-            apart <= THE_TOLERANCE,
-            "{what} is {found} and the spec gives {expected}, {apart} of it apart"
-        );
+        assert_within(found, expected, THE_TOLERANCE, what);
     }
 
     /// The r² the curve itself gives at each distance of `dists`, with the
@@ -613,6 +635,180 @@ mod tests {
             "the half distance of two individuals is {half}, where the curve runs from \
              0.8264462809917356 down to 0.5 and never reaches half of the first",
             half = decay.half_dist()
+        );
+    }
+
+    /// The three rows of the table of "How it is verified" of
+    /// `docs/specs/ld.md`: for each population, what it is called, the
+    /// fitted ρ per base pair, the r² at a distance of 0 and the half
+    /// distance in base pairs.
+    ///
+    /// Every value is the one R 4.6.1's `optimize` gives for the same
+    /// pairs, which `docs/reports/ld-method/decay.py` groups by their
+    /// exact distance out of the r² plink2 v2.0.0-a.7.7 gives and
+    /// `docs/reports/ld-method/decay.R` fits the curve to. R's `nls`,
+    /// which uses the derivatives popnei does not take, lands 2.1·10⁻⁹ of
+    /// itself from `optimize` at the furthest of the three, and
+    /// `tests/reference/ld/ld.decay.txt` holds what that script printed.
+    ///
+    /// The populations are the ones the bins of the same part are counted
+    /// over, and the three curves are read out of the two passes those
+    /// bins are read out of: the one population of every individual at a
+    /// `max_allowed_maf` of 0.95, and `pop_a` and `pop_b` at 0.8. The n
+    /// of the curve is the individuals of the population, 100 for the
+    /// first and 50 for the other two, which is what makes the r² at a
+    /// distance of 0 of the first differ from that of the two below it.
+    ///
+    /// R prints seventeen digits of each, and the last digit of four of
+    /// them is past what an `f64` holds: the table gives the ρ per base
+    /// pair of the first population as 0.00031727347196446889 and its
+    /// half distance as 6810.5712522189806, `pop_a`'s half distance as
+    /// 7530.1038938711654 and `pop_b`'s as 7259.8060755719744, and the
+    /// four literals below are those four numbers as an `f64` holds them.
+    const THE_CURVES_OF_THE_THREE_POPS: [(&str, f64, f64, f64); 3] = [
+        (
+            "every individual",
+            0.000_317_273_471_964_468_9,
+            0.461_983_471_074_380_15,
+            6_810.571_252_218_981,
+        ),
+        (
+            "pop_a",
+            0.000_300_682_854_424_832_95,
+            0.469_421_487_603_305_76,
+            7_530.103_893_871_165,
+        ),
+        (
+            "pop_b",
+            0.000_311_877_908_218_966_46,
+            0.469_421_487_603_305_76,
+            7_259.806_075_571_974,
+        ),
+    ];
+
+    /// The curve of each of the three populations of one run, in the order
+    /// of the rows of [`THE_CURVES_OF_THE_THREE_POPS`].
+    fn the_three_curves_of(of_the_run: &(LdAndDist, LdAndDist)) -> Vec<LdDecay> {
+        let (of_every_individual, of_the_two_pops) = of_the_run;
+        vec![
+            *bins_of(of_every_individual, 0).decay(),
+            *bins_of(of_the_two_pops, 0).decay(),
+            *bins_of(of_the_two_pops, 1).decay(),
+        ]
+    }
+
+    /// The three values of each curve of a run in the bits they came out
+    /// with, which is what two runs over one dataset are compared by.
+    fn the_bits_of_the_three_curves(of_the_run: &(LdAndDist, LdAndDist)) -> Vec<(u64, u64, u64)> {
+        the_three_curves_of(of_the_run)
+            .iter()
+            .map(|decay| {
+                (
+                    decay.rho_per_bp().to_bits(),
+                    decay.r2_at_zero().to_bits(),
+                    decay.half_dist().to_bits(),
+                )
+            })
+            .collect()
+    }
+
+    /// Asserts that the three curves of a run are the three rows of the
+    /// table, and says of each which run it was.
+    #[track_caller]
+    fn assert_the_three_curves_are_the_ones_of_the_spec(
+        of_the_run: &(LdAndDist, LdAndDist),
+        at: &str,
+    ) {
+        let found = the_three_curves_of(of_the_run);
+        for (decay, (what, rho_per_bp, r2_at_zero, half_dist)) in
+            found.iter().zip(THE_CURVES_OF_THE_THREE_POPS)
+        {
+            assert_close(
+                decay.rho_per_bp(),
+                rho_per_bp,
+                &format!("the rho per base pair of {what} {at}"),
+            );
+            assert_within(
+                decay.r2_at_zero(),
+                r2_at_zero,
+                THE_TOLERANCE_OF_THE_R2_AT_ZERO,
+                &format!("the r² at a distance of 0 of {what} {at}"),
+            );
+            assert_close(
+                decay.half_dist(),
+                half_dist,
+                &format!("the half distance of {what} {at}"),
+            );
+        }
+    }
+
+    /// The three rows of the table of "How it is verified" of
+    /// `docs/specs/ld.md`, over `tests/reference/ld/ld.vcf.gz` read with
+    /// the VCF reader in blocks of 7, 64 and 500 variants, which give the
+    /// same numbers to the bit.
+    ///
+    /// The fit reads the pairs the pass counted at each distance and no
+    /// genotype, so what the three sizes of block say here is that those
+    /// pairs are the same whatever the block: a window that kept a
+    /// variant further back than `max_dist`, or dropped one a later
+    /// variant still pairs with, would move the pairs of a distance and
+    /// with them the ρ per base pair. A block of 7 holds far fewer
+    /// variants than the window of 250000 base pairs reaches over, these
+    /// variants being a thousand base pairs apart at the closest, and a
+    /// block of 500 holds the whole dataset.
+    #[test]
+    fn the_three_curves_are_the_ones_r_gives_at_every_size_of_block() {
+        let of_seven = the_three_tables_of(7);
+        assert_the_three_curves_are_the_ones_of_the_spec(&of_seven, "at blocks of 7 variants");
+        for num_vars_per_block in [64, 500] {
+            let at = format!("at blocks of {num_vars_per_block} variants");
+            let of_the_run = the_three_tables_of(num_vars_per_block);
+            assert_the_three_curves_are_the_ones_of_the_spec(&of_the_run, &at);
+            assert_eq!(
+                the_bits_of_the_three_curves(&of_the_run),
+                the_bits_of_the_three_curves(&of_seven),
+                "{at}, against blocks of 7"
+            );
+        }
+    }
+
+    /// The three curves are the same, to the bit, on a pool of one thread
+    /// and on one of four.
+    ///
+    /// The fit itself is not split across threads, and what the two pools
+    /// move is the pass under it: the VCF reader parses the lines of a
+    /// batch on the threads of the pool the caller is in, as
+    /// `docs/specs/io_vcf.md` has it, and the products of r² run on them
+    /// through faer when the `blas` feature is off, which is what
+    /// `cargo test -p popnei --no-default-features` runs. The pools are
+    /// built here and are not rayon's global one, which has one thread per
+    /// core of the machine, and `current_num_threads` inside the pool says
+    /// how many threads the pass had. rayon is a dependency of the targets
+    /// that are not wasm, so this test is compiled for those alone.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn the_number_of_threads_does_not_change_the_three_curves() {
+        let in_a_pool = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("the pool");
+            pool.install(|| {
+                assert_eq!(
+                    rayon::current_num_threads(),
+                    threads,
+                    "the pass did not run on the pool it was given"
+                );
+                the_three_tables_of(64)
+            })
+        };
+
+        let on_one = in_a_pool(1);
+        assert_the_three_curves_are_the_ones_of_the_spec(&on_one, "on one thread");
+        assert_eq!(
+            the_bits_of_the_three_curves(&in_a_pool(4)),
+            the_bits_of_the_three_curves(&on_one),
+            "four threads against one"
         );
     }
 

@@ -1,0 +1,54 @@
+the table of the spec: the curve fitted to every pair
+  all    n=100  249 distances, 46441 pairs
+    rho per bp 0.00031727347196446889   r2 at 0 0.46198347107438015   half dist 6810.5712522189806
+    nls gives 0.00031727347262306896, which is 2.08e-09 of itself away from optimize
+  pop_a  n= 50  249 distances, 39055 pairs
+    rho per bp 0.00030068285442483295   r2 at 0 0.46942148760330576   half dist 7530.1038938711654
+    nls gives 0.00030068285433219985, which is 3.08e-10 of itself away from optimize
+  pop_b  n= 50  249 distances, 40200 pairs
+    rho per bp 0.00031187790821896646   r2 at 0 0.46942148760330576   half dist 7259.8060755719744
+    nls gives 0.00031187790849117851, which is 8.73e-10 of itself away from optimize
+
+how well the curve describes this dataset, at the ten bins of the spec
+  middle of the bin   12501  mean r2 0.2077  the curve 0.1656
+  middle of the bin   37501  mean r2 0.0789  the curve 0.0784
+  middle of the bin   62501  mean r2 0.0351  the curve 0.0540
+  middle of the bin   87501  mean r2 0.0206  the curve 0.0425
+  middle of the bin  112501  mean r2 0.0150  the curve 0.0357
+  middle of the bin  137501  mean r2 0.0115  the curve 0.0313
+  middle of the bin  162501  mean r2 0.0115  the curve 0.0282
+  middle of the bin  187501  mean r2 0.0121  the curve 0.0259
+  middle of the bin  212501  mean r2 0.0154  the curve 0.0241
+  middle of the bin  237501  mean r2 0.0133  the curve 0.0227
+
+Sved's curve on the same pairs, which is not the one used
+  Hill and Weir leave the sum at 23.21, Sved at 95.73
+  Sved: rho per bp 0.0005339559268, r2 at 0 1, half dist 1872.813747
+
+what fitting the bin means instead of the pairs would give
+  10 bins at their middle: half dist 7886.601815, 0.158 of the pairs' 6810.571252 away
+  50 bins at their middle: half dist 6541.425278, -0.0395 of the pairs' 6810.571252 away
+
+what the other answers to n would have given for the first row
+  n = 100: half dist 6810.571252
+  n = 200: half dist 7157.385699
+  no sample term: half dist 7514.672294
+
+what the ends of the searched range do to the first row
+  10^[-12,  2]: rho per bp 0.00031727347196446889, 0 of itself away
+  10^[-12,  0]: rho per bp 0.00031727347209588471, 4.14e-10 of itself away
+  10^[ -9,  2]: rho per bp 0.00031727347203881084, 2.34e-10 of itself away
+  10^[ -9,  0]: rho per bp 0.00031727347478030179, 8.88e-09 of itself away
+
+the rho at which the curve is half of its value at 0, by n
+  n =  25: r2 at 0 0.484297520661157, rho at half 2.4900913485095324
+  n =  50: r2 at 0 0.46942148760330576, rho at half 2.2641731329247312
+  n = 100: r2 at 0 0.46198347107438015, rho at half 2.1608135872529166
+  n = 200: r2 at 0 0.45826446280991739, rho at half 2.1113080900232815
+
+the case of the first cargo test: r2 taken from the curve itself
+  made at rho per bp 0.0001, recovered 9.9999999605176671e-05, 3.95e-09 of itself away
+  half dist 21608.135872529165
+  r2 at 1000, 2000, 3000 bp: 0.44090247813542544 0.42172415247090567 0.40420144279602022
+
+R 4.6.1
