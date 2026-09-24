@@ -706,11 +706,23 @@ when `free()` is called reads on to its end.
 `onProgress` sets the function that is told how far every pass over that
 source has got, with four numbers: how many bytes the pass has read, how
 many the file holds, which pass of the run is reading and how many passes
-the run makes. It is called at the first read of each pass, at the first
-read after every few MiB that pass has read, and at the read that finds the
-end of the file. While a calculation runs the worker is inside wasm and
-reads no message of the page, so this is how the page learns that the run is
-going forward. What that function throws ends the pass where it was reading
+the run makes. While a calculation runs the worker is inside wasm and reads
+no message of the page, so this is how the page learns that the run is going
+forward.
+
+Three things make a call: the first read of a pass, which says it has read
+nothing; a read that brings the bytes read since the last call to the few
+MiB of a range; and the end of the run, which makes one call for each of its
+passes, in the order of their numbers, with the bytes that pass read. The
+last of the three is what says that a pass is over, because no read does: a
+pass over a vars file stops after its last batch, and a run that fails stops
+where it failed. That last call is not always `bytesRead === numBytes`, so an
+application that waits for those two to meet waits for ever over a vars file,
+which popnei does not read whole: it reads its last ten bytes, then its
+footer, then each batch, and never the schema message at the head of the
+file, since the footer carries the schema too.
+
+What that function throws ends the pass where it was reading
 and the calculation throws that same value back, which is how an application
 cancels a run without ending its worker and recognises its own cancel with
 `===`; the `Variants` is then the one it was, and the next run over it reads
