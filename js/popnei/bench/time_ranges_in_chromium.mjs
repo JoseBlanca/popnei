@@ -22,9 +22,14 @@
  * `crates/popnei-js/src/source.rs`, a constant of the build and no argument
  * of the API, so there is one build of the WebAssembly for each size: this
  * script writes the size into that constant, runs `npm run build:wasm`,
- * takes the times, and writes the file back as it found it before it ends,
- * whatever happened. It is why it is a script of `bench/` and not a test:
- * nothing of a test run edits the source of popnei.
+ * takes the times, and then, whatever happened and on an interrupt as well,
+ * writes the file back as it found it and builds the WebAssembly of `wasm/`
+ * from it again. Both are needed: the source alone put back leaves `wasm/`
+ * built at the last size measured, `git status` says nothing of it, and the
+ * next `npm run test:browser` fails at the case of a file of more than one
+ * range and `npm test` at the counts of a pass, neither of them naming this
+ * script. It is why it is a script of `bench/` and not a test: nothing of a
+ * test run edits the source of popnei.
  *
  * Each measurement gets a page and a worker of its own, so the memory of
  * wasm it reports is of that measurement alone: the memory of a module never
@@ -38,7 +43,8 @@
  * that is busy makes every row of the table slower.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { loadavg } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -89,13 +95,13 @@ function theArguments(argv) {
   return given;
 }
 
+/** Where `npm` is run from, the directory of the package. */
+const JS_POPNEI = fileURLToPath(new URL("..", import.meta.url));
+
 /** Runs `command` in `js/popnei` and waits for it. */
 function runs(command, args) {
   return new Promise((ran, failed) => {
-    const child = spawn(command, args, {
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      stdio: "inherit",
-    });
+    const child = spawn(command, args, { cwd: JS_POPNEI, stdio: "inherit" });
     child.on("error", failed);
     child.on("exit", (code) => {
       if (code === 0) {
@@ -121,6 +127,16 @@ async function buildsTheWasmAt(numBytesPerRange, theSource) {
     `const NUM_BYTES_PER_RANGE: u64 = ${numBytesPerRange};`,
   );
   await writeFile(SOURCE_RS, patched);
+  await runs("npm", ["run", "build:wasm"]);
+}
+
+/**
+ * Writes `theSource` back into `source.rs` and builds the WebAssembly of
+ * `wasm/` from it, so that the source of popnei and the artifact the tests
+ * of the package load are of the same size of range.
+ */
+async function putsTheSourceBackAndBuilds(theSource) {
+  await writeFile(SOURCE_RS, theSource);
   await runs("npm", ["run", "build:wasm"]);
 }
 
@@ -181,6 +197,26 @@ async function theServerAnswers() {
 
 const given = theArguments(process.argv.slice(2));
 const theSource = await readFile(SOURCE_RS, "utf8");
+
+// Ctrl-C ends the process where the `finally` below does not run, and what
+// that would leave behind is `source.rs` at the size being measured and the
+// WebAssembly of `wasm/` built from it. Both are put back here, with the
+// synchronous calls a handler can make.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    process.stderr.write(
+      `\n${signal}: putting \`source.rs\` back and building the ` +
+        "WebAssembly of `wasm/` from it again\n",
+    );
+    writeFileSync(SOURCE_RS, theSource);
+    spawnSync("npm", ["run", "build:wasm"], {
+      cwd: JS_POPNEI,
+      stdio: "inherit",
+    });
+    process.exit(1);
+  });
+}
+
 const server = startsTheServer();
 const browser = await chromium.launch();
 const table = [];
@@ -237,9 +273,9 @@ try {
       `${ofTheWholeFile.runs[0].numVars} variants\n`,
   );
 } finally {
-  await writeFile(SOURCE_RS, theSource);
   await browser.close();
   server.kill();
+  await putsTheSourceBackAndBuilds(theSource);
 }
 
 process.stdout.write(`the load averages after: ${loadavg().join(", ")}\n\n`);

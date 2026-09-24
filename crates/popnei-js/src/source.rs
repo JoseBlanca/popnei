@@ -292,12 +292,22 @@ fn cursor_of(bytes: &Arc<Vec<u8>>) -> Cursor<SharedBytes> {
 /// bytes and 1285000 variants of 50 diploid individuals, the best of five
 /// runs of each size: 1069 ms at 256 KiB, 1006 ms at 1 MiB, 996 ms at 4 MiB,
 /// 958 ms at 16 MiB, and 921 ms with the whole file in the memory of wasm,
-/// which is what the applications do today. That pass at 4 MiB holds
-/// 14155776 bytes of the memory of wasm against the 302383104 of the whole
-/// file, 21.4 times fewer, and costs 8.1 % of the time; 16 MiB is 38 ms
-/// faster and holds 3.7 times more. `docs/reports/js-sources-measurement.md`
-/// has the tables, the machine and the script that took the times, and
-/// "Speed" of `docs/specs/js_sources.md` the two numbers the spec carries.
+/// which is what the applications do today. Reading by ranges at 4 MiB costs
+/// 8.1 % of that pass and leaves 14155776 bytes of the memory of wasm
+/// against the 302383104 of the whole file, 21.4 times fewer.
+///
+/// The times did not choose 4 MiB: 1, 4 and 16 MiB are within 48 ms of one
+/// another on a pass of about a second, and the five runs of one point
+/// spread by as much as 73 %. What chose it is the calls into the browser
+/// and the memory. A pass over that file makes 287 calls at 1 MiB, 72 at
+/// 4 MiB and 18 at 16 MiB, and every byte of the measurement came out of a
+/// `Blob` built in the memory of the browser, so what a call costs when the
+/// file is on a disc was not measured and a smaller range pays it more
+/// often. At the other end, a pass at 16 MiB leaves 51904512 bytes of the
+/// memory of wasm where one at 4 MiB leaves 14155776.
+/// `docs/reports/js-sources-measurement.md` has the tables, the machine and
+/// the script that took the times, and "Speed" of `docs/specs/js_sources.md`
+/// the two numbers the spec carries.
 const NUM_BYTES_PER_RANGE: u64 = 4 * 1024 * 1024;
 
 /// The number of no entry of [`RUNS`] or of [`IN_JAVASCRIPT`], which a run
@@ -386,9 +396,12 @@ enum TheBytes {
 ///
 /// A read gives what is left of the range, and a read that starts where the
 /// range ends asks the browser for the next one, [`NUM_BYTES_PER_RANGE`]
-/// bytes or what is left of the file, whichever is fewer. So what a pass over
-/// a file holds in the memory of wasm is one range and what the reader over
-/// it builds, and the file is never there whole.
+/// bytes or what is left of the file, whichever is fewer. The new range is
+/// built before the one before it is freed, so a pass holds two of them at
+/// that moment and one the rest of the time, along with what the reader over
+/// it builds; the file is never in that memory whole. What the whole module
+/// came to when a pass over a VCF had ended, three range-sized blocks and
+/// 1572864 bytes, is in "Speed" of `docs/specs/js_sources.md`.
 ///
 /// A seek moves where the pass is and reads nothing: the range is read again
 /// only when the pass reads outside the one it holds, which is what lets the

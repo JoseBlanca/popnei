@@ -4,7 +4,7 @@
  * the tests under node give, a file of more than one range gives the
  * variants of every range of it, a range that comes back short or is
  * refused ends the pass with popnei's error, and a file of 299994147 bytes
- * is passed over with the memory of wasm staying under 24 MiB.
+ * is passed over with the memory of wasm staying under 16 MiB.
  *
  * A range of a `File` is read with `FileReaderSync`, which a browser has
  * only inside a web worker, so none of these seven can run under node.
@@ -59,7 +59,7 @@ test("a range the browser refused ends the pass with what the browser said", asy
   );
 });
 
-test("a File of 299994147 bytes is passed over without the memory of wasm passing 24 MiB", async ({
+test("a File of 299994147 bytes is passed over without the memory of wasm passing 16 MiB", async ({
   page,
 }) => {
   await page.goto(HARNESS);

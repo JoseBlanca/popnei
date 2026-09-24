@@ -19,13 +19,10 @@
  */
 
 import { openVcf } from "../../../dist/web.js";
-import { assertEqual, bytesOf } from "../assert.ts";
-import { aBlockOfItsOwn, pickedFileOfPieces } from "../picked_file.ts";
+import { assertEqual } from "../assert.ts";
+import { fileOfManyVcfRepeated } from "../picked_file.ts";
 
-/** Where the header of `many.vcf` ends, which is the line of its columns. */
-const NUM_BYTES_OF_THE_HEADER = 617;
-
-/** How many times the body of the file goes after that header. */
+/** How many times the body of `many.vcf` goes after its header. */
 const NUM_COPIES = 120;
 
 /**
@@ -51,17 +48,8 @@ const NUM_VARS_PER_BLOCK = 1000;
  * variants of every range of it and the bytes each call was told.
  */
 export async function run(): Promise<void> {
-  const many = await bytesOf("/tests/reference/vcf/many.vcf");
-  const header = aBlockOfItsOwn(many.subarray(0, NUM_BYTES_OF_THE_HEADER));
-  const body = aBlockOfItsOwn(many.subarray(NUM_BYTES_OF_THE_HEADER));
-  const pieces = [header];
-  for (let copy = 0; copy < NUM_COPIES; copy += 1) {
-    // The same block of memory each time: the file reads it 120 times and
-    // the worker holds it once.
-    pieces.push(body);
-  }
   const what = "the body of many.vcf 120 times as a File";
-  const file = pickedFileOfPieces("many_repeated.vcf", pieces);
+  const file = await fileOfManyVcfRepeated(NUM_COPIES);
   assertEqual(`${what}: the bytes of the file`, file.size, NUM_BYTES);
 
   const variants = openVcf(file, { onlyPassed: false });

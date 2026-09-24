@@ -12,6 +12,12 @@
  * in `.test.ts`, and Playwright the ones whose name ends in `.browser.ts`.
  */
 
+import { bytesOf } from "./assert.ts";
+
+/** Where the header of `tests/reference/vcf/many.vcf` ends, which is the
+ * line of its columns. */
+const NUM_BYTES_OF_THE_HEADER = 617;
+
 /**
  * The `File` called `name` holding `bytes`.
  *
@@ -44,4 +50,27 @@ export function aBlockOfItsOwn(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+/**
+ * The `File` of the header of `tests/reference/vcf/many.vcf` with the body
+ * of that file after it `numCopies` times: 617 + 116729 * `numCopies`
+ * bytes, and 500 * `numCopies` variants of 50 diploid individuals, the 25
+ * of each copy that failed their FILTER among them.
+ *
+ * The body goes in as one block of memory that the `File` reads again for
+ * each copy, so a file of 300 MB costs the worker the 117346 bytes of
+ * `many.vcf` and the browser the rest. A case that opens one asserts the
+ * size of the file and the variants of the pass against its own literals,
+ * which is what says the file is the one it asked for.
+ */
+export async function fileOfManyVcfRepeated(numCopies: number): Promise<File> {
+  const many = await bytesOf("/tests/reference/vcf/many.vcf");
+  const header = aBlockOfItsOwn(many.subarray(0, NUM_BYTES_OF_THE_HEADER));
+  const body = aBlockOfItsOwn(many.subarray(NUM_BYTES_OF_THE_HEADER));
+  const pieces = [header];
+  for (let copy = 0; copy < numCopies; copy += 1) {
+    pieces.push(body);
+  }
+  return pickedFileOfPieces("many_repeated.vcf", pieces);
 }
