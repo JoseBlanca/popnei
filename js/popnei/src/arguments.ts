@@ -82,13 +82,13 @@ export function wholeNumberOfOneOrMore(
  * bin or more and a ploidy of 1 to 255, is a rule of the core, which holds
  * for every pass and not for this call alone.
  *
- * The arguments that come through here all take 0: `numPrinComps`, how many
- * components the weights are asked for, where 0 asks for none;
- * `minNumSnps`, how many variants a pair of individuals needs before it
- * gets a distance, where 0 is every pair that was called at all and where
- * pyNei takes a negative number and does with it what it does with 0; and
- * `minNumIndividuals`, `ploidy` and `histKwargs.numBins` of the per variant
- * statistics, whose own rules the core holds.
+ * Which numbers the argument itself takes is in the doc comment of the
+ * function that takes it: 0 asks for no component at all in
+ * `numPrinComps`, how many components the weights are asked for, and for
+ * every pair that was called at all in `minNumSnps`, how many variants a
+ * pair of individuals needs before it gets a distance, where pyNei takes a
+ * negative number and does with it what it does with 0. The callers are
+ * not listed here; the list that was here had gone three of them behind.
  *
  * @throws {Error} When `value` is not such a number.
  */
