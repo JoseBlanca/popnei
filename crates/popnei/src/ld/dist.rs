@@ -15,6 +15,13 @@
 //! and [`DEFAULT_MAX_ALLOWED_MAF`] are what a user who names none of them
 //! gets.
 //!
+//! Beside its bins each population counts the same pairs one distance at a
+//! time, which is [`ThePairsAtEachDist`]: a count of pairs and a sum of
+//! their r² for each distance from `min_dist` to `max_dist`, compacted
+//! when the pass ends to the distances that hold a pair. It is what the
+//! curve of the fall-off is fitted to, which "The curve that is fitted" of
+//! the item describes and which reads no bin.
+//!
 //! Two variants make a pair only when they are on one chromosome and no
 //! further apart than `max_dist`, so the pass never needs the whole
 //! dataset in memory: it needs the blocks whose variants are still within
@@ -908,7 +915,8 @@ pub struct LdAndDistOptions {
 /// population; [`Error::PassGaveNoVariant`] when the reader gives no
 /// variant; [`Error::FieldsNotInTheBlock`] when a block holds variants and
 /// no genotypes or no position; [`Error::LdNoMemory`] when this machine
-/// does not give the memory of the bins, of the window or of the r² of a
+/// does not give the memory of the bins, of the pairs counted at every
+/// distance from `min_dist` to `max_dist`, of the window or of the r² of a
 /// step, which is asked of it with `try_reserve_exact` and not taken; what
 /// the dosages of a block and the r² of two tiles refuse; and whatever the
 /// reader fails with, which is given on as it is.
@@ -1001,6 +1009,7 @@ fn the_ld_and_dist_in_tiles_of<R: BlockReader + ?Sized>(
     }
     for (of_the_pop, bins) in of_the_pops.the_pops().iter().zip(&mut of_each_pop) {
         bins.num_vars = of_the_pop.num_vars();
+        bins.the_distances_that_hold_a_pair_are_kept()?;
     }
     Ok(LdAndDist {
         num_vars,
@@ -1069,6 +1078,9 @@ pub struct LdBins {
     /// The sum of the squares of the r² of the pairs of each bin, which
     /// the standard deviation is taken from.
     sum_of_squares: Vec<f64>,
+    /// The same pairs counted at each distance of the range, one distance
+    /// at a time, which is what the curve of the fall-off is fitted to.
+    at_each_dist: ThePairsAtEachDist,
 }
 
 impl LdBins {
@@ -1077,7 +1089,8 @@ impl LdBins {
     /// # Errors
     ///
     /// [`Error::LdNoMemory`] when this machine does not give the memory of
-    /// the three counts of each bin.
+    /// the three counts of each bin or of the pairs counted at every
+    /// distance of the range.
     fn of(options: &LdAndDistOptions) -> Result<LdBins> {
         let num_bins = options.num_bins;
         let of_a_bin = |what: &'static str, bytes_per_value: usize| {
@@ -1102,6 +1115,7 @@ impl LdBins {
                 num_bins,
                 &of_a_bin("the sum of the squares of r² of each bin", size_of::<f64>()),
             )?,
+            at_each_dist: ThePairsAtEachDist::of(options.min_dist, options.max_dist)?,
         })
     }
 
@@ -1173,11 +1187,17 @@ impl LdBins {
         Some((of_the_squares - mean * mean).max(0.0).sqrt())
     }
 
-    /// Counts one pair of the distance `dist`, whose r² is `r2`.
+    /// Counts one pair of the distance `dist`, whose r² is `r2`, in its
+    /// bin and at its distance.
     ///
     /// The caller has found the distance to be from `min_dist` to
     /// `max_dist` and the r² to be a number.
+    ///
+    /// The bin and the distance are counted here and not in two walks
+    /// over the pairs, so that the two sums of r² run over the same pairs
+    /// in the same order, which is the order of the variants of the pass.
     fn the_pair_is_counted(&mut self, dist: u64, r2: f64) {
+        self.at_each_dist.the_pair_is_counted(dist, r2);
         let bin = self.the_bin_of(dist);
         if let Some(num_pairs) = self.num_pairs.get_mut(bin) {
             // The pairs of a pass are at most its variants times the
@@ -1195,10 +1215,7 @@ impl LdBins {
     /// How many distances the bins cut into `num_bins` parts, which is
     /// `max_dist` − `min_dist` + 1 and 1 at least.
     fn the_distances_counted(&self) -> u128 {
-        // The caller of the pass refused a min_dist above max_dist, and
-        // the largest difference of two u64 and one more is far below
-        // what a u128 holds.
-        u128::from(self.max_dist.abs_diff(self.min_dist)).saturating_add(1)
+        the_distances_from(self.min_dist, self.max_dist)
     }
 
     /// The bin a pair of that distance falls in, which is the last bin for
@@ -1245,6 +1262,269 @@ impl LdBins {
             Some(past_the_first) => self.min_dist.saturating_add(past_the_first),
             None => self.max_dist,
         }
+    }
+
+    /// Keeps, of the pairs counted at each distance, the distances that
+    /// hold a pair, which the pass calls when it has ended.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the distances that hold a pair.
+    fn the_distances_that_hold_a_pair_are_kept(&mut self) -> Result<()> {
+        self.at_each_dist.the_distances_that_hold_a_pair_are_kept()
+    }
+
+    /// The distances at which this population counted a pair, the
+    /// smallest first, which the curve of the fall-off is fitted over.
+    ///
+    /// They are the distances of the range from `min_dist` to `max_dist`
+    /// that hold a pair and not the whole range, and the pass has ended
+    /// before any of them is there.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the curve of the fall-off, which `docs/specs/ld.md` gives as \
+                      `fit_ld_decay`, is what reads the pairs of each distance when a \
+                      pass has ended, and it is not written yet; the tests of the pass \
+                      are what read them today"
+        )
+    )]
+    pub(crate) fn the_dists_that_hold_a_pair(&self) -> &[u64] {
+        self.at_each_dist.dists()
+    }
+
+    /// How many pairs each of [`LdBins::the_dists_that_hold_a_pair`]
+    /// holds, in the same order.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the curve of the fall-off when a pass has ended, as \
+                      `the_dists_that_hold_a_pair` above says"
+        )
+    )]
+    pub(crate) fn the_pairs_at_each_dist(&self) -> &[u64] {
+        self.at_each_dist.num_pairs()
+    }
+
+    /// The sum of the r² of the pairs of each of
+    /// [`LdBins::the_dists_that_hold_a_pair`], in the same order.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the curve of the fall-off when a pass has ended, as \
+                      `the_dists_that_hold_a_pair` above says"
+        )
+    )]
+    pub(crate) fn the_sum_of_r2_at_each_dist(&self) -> &[f64] {
+        self.at_each_dist.sum_r2()
+    }
+}
+
+/// How many distances there are from `min_dist` to `max_dist`, both
+/// included, which is `max_dist` − `min_dist` + 1 and 1 at least.
+///
+/// It is a `u128` because the whole range of a `u64` is 2^64 distances,
+/// one more than a `u64` counts.
+fn the_distances_from(min_dist: u64, max_dist: u64) -> u128 {
+    // The largest difference of two u64 and one more is far below what a
+    // u128 holds, and a caller that gave a min_dist above max_dist, which
+    // the pass refuses, reads the distances between the two.
+    u128::from(max_dist.abs_diff(min_dist)).saturating_add(1)
+}
+
+/// How many pairs a pass has counted at one distance and the sum of their
+/// r², which is what the curve of the fall-off is fitted to.
+///
+/// "The curve that is fitted" of `docs/specs/ld.md` adds the pairs of one
+/// distance up before the fit and loses nothing by it: the sum, over the
+/// pairs of a distance, of the square of the r² of a pair less the curve
+/// there is the spread of those pairs around their own mean, which no
+/// fitted value moves, plus the pairs of the distance times the square of
+/// their mean less the curve. So the fit reads these two numbers of a
+/// distance and never the r² of a single pair.
+#[derive(Debug, Clone, Copy)]
+struct ThePairsAtADistance {
+    /// How many pairs the pass has counted at that distance.
+    num_pairs: u64,
+    /// The sum of the r² of those pairs, added in the order of the
+    /// variants of the pass.
+    sum_r2: f64,
+}
+
+/// The pairs one population has counted at each distance, which the curve
+/// of its fall-off is fitted to when the pass has ended.
+///
+/// While the pass runs it holds one [`ThePairsAtADistance`] for each
+/// distance from `min_dist` to `max_dist`, 16 bytes each, which is 16 MB
+/// at the [`DEFAULT_MIN_DIST`] of 1 and the [`DEFAULT_MAX_DIST`] of
+/// 1000000. That memory is asked of this machine with `try_reserve_exact`
+/// before the first block is read and refused rather than taken, as the
+/// matrix of every pair of [`calc_r2_matrix`](crate::ld::calc_r2_matrix)
+/// is, and none of it is shared between populations: twenty populations of
+/// those distances ask for 320 MB before the pass begins.
+///
+/// A pair is added here in the same step that adds it to its bin, which
+/// [`LdBins::the_pair_is_counted`] is, so the sum of r² of a distance and
+/// the sum of r² of a bin run over the same pairs in the order of the
+/// variants of the pass. That order is the order of the source, which no
+/// block and no tile cuts, so what the fit reads is the same to the bit
+/// whatever the size of the blocks, the size of the tiles and the number
+/// of threads.
+///
+/// When the pass ends the range is compacted to the distances that hold a
+/// pair, which is what the fit runs over: it evaluates the sum it makes
+/// smallest 183 times, and a distance with no pair adds nothing to any of
+/// those sums. The compaction asks for the three arrays it keeps while the
+/// range is still held, 24 bytes for each distance that holds a pair, and
+/// the range is dropped as soon as they are filled.
+#[derive(Debug)]
+struct ThePairsAtEachDist {
+    /// The smallest distance a pair is counted at, which is the distance
+    /// of the first value of `of_the_range`.
+    min_dist: u64,
+    /// One for each distance from `min_dist` to `max_dist`, the smallest
+    /// first, while the pass runs, and nothing once it has been compacted
+    /// into the three below.
+    of_the_range: Vec<ThePairsAtADistance>,
+    /// The distances that held a pair when the pass ended, the smallest
+    /// first, and nothing while the pass runs.
+    dists: Vec<u64>,
+    /// How many pairs each of `dists` holds, in the same order.
+    num_pairs: Vec<u64>,
+    /// The sum of the r² of the pairs of each of `dists`, in the same
+    /// order.
+    sum_r2: Vec<f64>,
+}
+
+impl ThePairsAtEachDist {
+    /// No pair at any distance from `min_dist` to `max_dist`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the pairs counted at every distance of the range.
+    fn of(min_dist: u64, max_dist: u64) -> Result<ThePairsAtEachDist> {
+        // A range of more distances than a `usize` counts, which the whole
+        // range of a `u64` is, is more memory than any machine gives, and
+        // it is refused with the largest number a `usize` holds: 2.9·10^20
+        // bytes at 16 for each distance.
+        let distances =
+            usize::try_from(the_distances_from(min_dist, max_dist)).unwrap_or(usize::MAX);
+        Ok(ThePairsAtEachDist {
+            min_dist,
+            of_the_range: a_vector_of(
+                ThePairsAtADistance {
+                    num_pairs: 0,
+                    sum_r2: 0.0,
+                },
+                distances,
+                &the_memory_for(
+                    "the pairs counted at every distance",
+                    distances,
+                    size_of::<ThePairsAtADistance>(),
+                ),
+            )?,
+            dists: Vec::new(),
+            num_pairs: Vec::new(),
+            sum_r2: Vec::new(),
+        })
+    }
+
+    /// Counts one pair of the distance `dist`, whose r² is `r2`, at that
+    /// distance.
+    ///
+    /// The caller has found the distance to be from `min_dist` to
+    /// `max_dist` and the r² to be a number.
+    fn the_pair_is_counted(&mut self, dist: u64, r2: f64) {
+        // The distance of a pair the caller counts is one of the range, so
+        // it is one of the values held; a distance that is not lands past
+        // them and is counted nowhere.
+        let at = usize::try_from(dist.abs_diff(self.min_dist)).unwrap_or(usize::MAX);
+        if let Some(counted) = self.of_the_range.get_mut(at) {
+            // The pairs of a pass are at most its variants times the
+            // variants of one window, and a u64 counts 1.8e19 of them.
+            counted.num_pairs = counted.num_pairs.saturating_add(1);
+            counted.sum_r2 += r2;
+        }
+    }
+
+    /// Keeps the distances that hold a pair and drops the range, which the
+    /// pass calls when it has ended.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// the distances that hold a pair, of their pairs or of the sum of the
+    /// r² of those pairs.
+    fn the_distances_that_hold_a_pair_are_kept(&mut self) -> Result<()> {
+        let with_a_pair = self
+            .of_the_range
+            .iter()
+            .filter(|counted| counted.num_pairs > 0)
+            .count();
+        let mut dists: Vec<u64> = Vec::new();
+        dists
+            .try_reserve_exact(with_a_pair)
+            .map_err(|_| Error::LdNoMemory {
+                what: "the distances that hold a pair",
+                values: with_a_pair,
+                bytes_per_value: size_of::<u64>(),
+            })?;
+        let mut num_pairs: Vec<u64> = Vec::new();
+        num_pairs
+            .try_reserve_exact(with_a_pair)
+            .map_err(|_| Error::LdNoMemory {
+                what: "the pairs of each distance that holds one",
+                values: with_a_pair,
+                bytes_per_value: size_of::<u64>(),
+            })?;
+        let mut sum_r2: Vec<f64> = Vec::new();
+        sum_r2
+            .try_reserve_exact(with_a_pair)
+            .map_err(|_| Error::LdNoMemory {
+                what: "the sum of r² of each distance that holds a pair",
+                values: with_a_pair,
+                bytes_per_value: size_of::<f64>(),
+            })?;
+        for (from_the_first, counted) in self.of_the_range.iter().enumerate() {
+            if counted.num_pairs == 0 {
+                continue;
+            }
+            // The values held are the distances from min_dist to max_dist,
+            // so this is one of them and the sum is at most max_dist.
+            dists.push(self.min_dist.saturating_add(the_count_of(from_the_first)));
+            num_pairs.push(counted.num_pairs);
+            sum_r2.push(counted.sum_r2);
+        }
+        self.dists = dists;
+        self.num_pairs = num_pairs;
+        self.sum_r2 = sum_r2;
+        // The range is what the 16 bytes of each distance were asked for,
+        // and nothing reads it once the distances that hold a pair are
+        // kept.
+        self.of_the_range = Vec::new();
+        Ok(())
+    }
+
+    /// The distances that hold a pair, the smallest first, and nothing
+    /// before the pass has ended.
+    fn dists(&self) -> &[u64] {
+        &self.dists
+    }
+
+    /// How many pairs each of `dists` holds, in the same order.
+    fn num_pairs(&self) -> &[u64] {
+        &self.num_pairs
+    }
+
+    /// The sum of the r² of the pairs of each of `dists`, in the same
+    /// order.
+    fn sum_r2(&self) -> &[f64] {
+        &self.sum_r2
     }
 }
 
@@ -1573,8 +1853,8 @@ mod tests {
 
     use super::{
         LdAndDist, LdAndDistOptions, LdBins, THE_VARS_OF_A_TILE_OF_THE_WINDOW, TheDosagesOfThePops,
-        ThePopOverTheWindow, TheVariantOfTheWindow, TheWindowOfTheBlocks, calc_ld_and_dist,
-        the_ld_and_dist_in_tiles_of, the_variants_of,
+        ThePairsAtADistance, ThePairsAtEachDist, ThePopOverTheWindow, TheVariantOfTheWindow,
+        TheWindowOfTheBlocks, calc_ld_and_dist, the_ld_and_dist_in_tiles_of, the_variants_of,
     };
 
     use crate::block::{Block, BlockReader};
@@ -3348,6 +3628,10 @@ mod tests {
         /// and `None` for a bin with no pair, as `the_values_of` gives
         /// them.
         values: Vec<Option<(u64, u64)>>,
+        /// The distances that hold a pair, with the pairs of each of them
+        /// and the sum of their r² in its bits, which is what the curve of
+        /// the fall-off is fitted to.
+        at_each_dist: Vec<(u64, u64, u64)>,
     }
 
     /// The three tables of one run in the bits they came out with.
@@ -3365,6 +3649,7 @@ mod tests {
             num_vars: bins.num_vars(),
             num_pairs: the_pairs_of(bins),
             values: the_values_of(bins),
+            at_each_dist: the_bits_at_each_dist_of(bins),
         })
         .collect()
     }
@@ -3541,5 +3826,285 @@ mod tests {
             the_values_of_the_three_tables(&on_one),
             "four threads against one"
         );
+    }
+    /// The distances at which the population counted a pair, with how many
+    /// pairs each of them holds and the sum of their r², which is what the
+    /// curve of the fall-off is fitted to.
+    fn at_each_dist_of(bins: &LdBins) -> Vec<(u64, u64, f64)> {
+        let dists = bins.the_dists_that_hold_a_pair();
+        let num_pairs = bins.the_pairs_at_each_dist();
+        let sum_r2 = bins.the_sum_of_r2_at_each_dist();
+        assert_eq!(
+            (dists.len(), num_pairs.len()),
+            (num_pairs.len(), sum_r2.len()),
+            "the three arrays of the distances are not of one length"
+        );
+        dists
+            .iter()
+            .zip(num_pairs)
+            .zip(sum_r2)
+            .map(|((dist, num_pairs), sum_r2)| (*dist, *num_pairs, *sum_r2))
+            .collect()
+    }
+
+    /// The same with the sum of the r² of each distance in its bits, which
+    /// is what two runs are compared by: the fit reads the sum itself, so
+    /// two runs that differ in its last bit fit two curves.
+    fn the_bits_at_each_dist_of(bins: &LdBins) -> Vec<(u64, u64, u64)> {
+        at_each_dist_of(bins)
+            .into_iter()
+            .map(|(dist, num_pairs, sum_r2)| (dist, num_pairs, sum_r2.to_bits()))
+            .collect()
+    }
+
+    /// The two populations of [`the_vcf_of_a_long_pass`], the first half of
+    /// its individuals and the second.
+    fn the_two_pops_of_a_long_pass() -> (Vec<usize>, Vec<usize>) {
+        let of_a_pop = THE_INDIVIDUALS_OF_A_LONG_PASS / 2;
+        (
+            (0..of_a_pop).collect(),
+            (of_a_pop..THE_INDIVIDUALS_OF_A_LONG_PASS).collect(),
+        )
+    }
+
+    /// What the bins of [`the_vcf_of_a_long_pass`] are counted with, which
+    /// is a window of 10000 base pairs over variants a thousand apart.
+    const THE_OPTIONS_OF_A_LONG_PASS: LdAndDistOptions = LdAndDistOptions {
+        min_dist: 1,
+        max_dist: 10_000,
+        num_bins: 5,
+        max_allowed_maf: 0.9,
+    };
+
+    #[test]
+    fn the_pairs_at_each_dist_are_the_pairs_of_the_bins_of_the_same_pass() {
+        let vcf = the_vcf_of_a_long_pass();
+        let (pop_a, pop_b) = the_two_pops_of_a_long_pass();
+        let pops: [&[usize]; 2] = [&pop_a, &pop_b];
+        let options = THE_OPTIONS_OF_A_LONG_PASS;
+        let of_the_pass = the_bins_of_a_pass(&vcf, &pops, 64, &options, 7);
+        for pop in 0..2 {
+            let bins = bins_of(&of_the_pass, pop);
+            let at_each_dist = at_each_dist_of(bins);
+            assert!(
+                !at_each_dist.is_empty(),
+                "the population {pop} counted no pair at any distance"
+            );
+            for (dist, num_pairs, sum_r2) in &at_each_dist {
+                assert!(
+                    (options.min_dist..=options.max_dist).contains(dist),
+                    "the distance {dist} of the population {pop} is outside the range counted"
+                );
+                assert!(
+                    *num_pairs > 0,
+                    "the distance {dist} of the population {pop} was kept with no pair"
+                );
+                assert!(
+                    sum_r2.is_finite(),
+                    "the sum of r² at the distance {dist} of the population {pop} is {sum_r2:?}"
+                );
+            }
+            // Every pair of a bin is a pair at a distance of that bin, so
+            // the two counts of a bin are the same number and the two sums
+            // of its r² are the same terms. The sums are compared within
+            // the 1e-12 relative of "How it is verified" and not to the
+            // bit, because the pairs of a distance are added up before the
+            // distances of a bin are and a sum of floats moves in its last
+            // bits when the order of its terms does.
+            for bin in 0..bins.num_bins() {
+                let (smallest, largest) = match bins.bounds(bin) {
+                    Some(bounds) => bounds,
+                    None => panic!("the bins have no bin {bin}"),
+                };
+                let of_the_bin: Vec<(u64, u64, f64)> = at_each_dist
+                    .iter()
+                    .filter(|(dist, _, _)| (smallest..=largest).contains(dist))
+                    .copied()
+                    .collect();
+                let num_pairs: u64 = of_the_bin.iter().map(|(_, num_pairs, _)| num_pairs).sum();
+                assert_eq!(
+                    Some(num_pairs),
+                    bins.num_pairs(bin),
+                    "the pairs of the distances {smallest} to {largest} of the population {pop}"
+                );
+                if num_pairs == 0 {
+                    continue;
+                }
+                let sum_r2: f64 = of_the_bin.iter().map(|(_, _, sum_r2)| sum_r2).sum();
+                assert_the_value_is(
+                    sum_r2 / num_pairs as f64,
+                    the_mean_of(bins, bin),
+                    &format!("the mean of the r² of the bin {bin} of the population {pop}"),
+                );
+            }
+            let of_the_bins: u64 = the_pairs_of(bins).iter().sum();
+            let of_the_dists: u64 = at_each_dist.iter().map(|(_, num_pairs, _)| num_pairs).sum();
+            assert_eq!(
+                of_the_dists, of_the_bins,
+                "the pairs of every distance and of every bin of the population {pop}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pairs_at_each_dist_do_not_move_with_the_blocks_nor_with_the_tiles() {
+        let vcf = the_vcf_of_a_long_pass();
+        let (pop_a, pop_b) = the_two_pops_of_a_long_pass();
+        let pops: [&[usize]; 2] = [&pop_a, &pop_b];
+        let options = THE_OPTIONS_OF_A_LONG_PASS;
+        let of_one_block = the_bins_of_a_pass(&vcf, &pops, 500, &options, 256);
+        // The window holds eleven of these variants, so at every size of
+        // block below that a step counts pairs against variants the blocks
+        // before it gave.
+        assert!(
+            the_bits_at_each_dist_of(bins_of(&of_one_block, 0)).len() > 1,
+            "the first population counted pairs at one distance at most"
+        );
+        for num_vars_per_block in [1, 2, 3, 7, 64, 500] {
+            for vars_per_tile in [1, 2, 7, 256] {
+                let of_the_pass =
+                    the_bins_of_a_pass(&vcf, &pops, num_vars_per_block, &options, vars_per_tile);
+                let at = format!(
+                    "at blocks of {num_vars_per_block} variants and tiles of {vars_per_tile}"
+                );
+                for pop in 0..2 {
+                    assert_eq!(
+                        the_bits_at_each_dist_of(bins_of(&of_the_pass, pop)),
+                        the_bits_at_each_dist_of(bins_of(&of_one_block, pop)),
+                        "{at}, population {pop}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Three variants of one chromosome whose three pairs are 100, 200 and
+    /// 300 base pairs apart, each of them with two dosages at least among
+    /// the four individuals so that the r² of every pair is a number.
+    ///
+    /// Their major allele frequencies over the four are 0.5 at 100, 0.625
+    /// at 200 and 0.75 at 400, so a `max_allowed_maf` of 0.8 keeps all
+    /// three.
+    const THE_VARIANTS_AT_THREE_DISTANCES: [(&str, u64, [&str; 4]); 3] = [
+        ("chr1", 100, ["0/0", "0/1", "0/1", "1/1"]),
+        ("chr1", 200, ["0/0", "0/0", "0/1", "1/1"]),
+        ("chr1", 400, ["0/1", "0/1", "1/1", "1/1"]),
+    ];
+
+    #[test]
+    fn a_distance_that_holds_no_pair_is_gone_when_the_pass_ends() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_AT_THREE_DISTANCES);
+        let pops: [&[usize]; 0] = [];
+        // The 500 distances are cut into bins a hundred wide, so the pair
+        // at 100 is the only one of the first bin, the pair at 200 the only
+        // one of the second and the pair at 300 the only one of the third.
+        let options = LdAndDistOptions {
+            min_dist: 1,
+            max_dist: 500,
+            num_bins: 5,
+            max_allowed_maf: 0.8,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &pops, 3, &options, 4);
+        let bins = bins_of(&of_the_pass, 0);
+        let at_each_dist = at_each_dist_of(bins);
+        assert_eq!(
+            at_each_dist
+                .iter()
+                .map(|(dist, num_pairs, _)| (*dist, *num_pairs))
+                .collect::<Vec<(u64, u64)>>(),
+            vec![(100, 1), (200, 1), (300, 1)],
+            "the distances that hold a pair"
+        );
+        assert_eq!(the_pairs_of(bins), vec![1, 1, 1, 0, 0]);
+        // A bin of one pair has the r² of that pair as its mean, so the sum
+        // of the distance and the mean of the bin are the same number to
+        // the bit.
+        for (bin, (dist, _, sum_r2)) in at_each_dist.iter().enumerate() {
+            assert_eq!(
+                sum_r2.to_bits(),
+                the_mean_of(bins, bin).to_bits(),
+                "the sum of r² at the distance {dist} and the mean of the bin {bin}"
+            );
+            assert!(*sum_r2 > 0.0, "the r² at the distance {dist} is {sum_r2:?}");
+        }
+    }
+
+    #[test]
+    fn the_distances_are_counted_from_min_dist_and_a_pair_outside_the_range_is_at_none() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_AT_THREE_DISTANCES);
+        let pops: [&[usize]; 0] = [];
+        // The pair 100 base pairs apart is below `min_dist` and the pair
+        // 300 apart is the largest distance counted.
+        let options = LdAndDistOptions {
+            min_dist: 150,
+            max_dist: 300,
+            num_bins: 2,
+            max_allowed_maf: 0.8,
+        };
+        let of_the_pass = the_bins_of_a_pass(&vcf, &pops, 1, &options, 2);
+        let bins = bins_of(&of_the_pass, 0);
+        assert_eq!(
+            at_each_dist_of(bins)
+                .iter()
+                .map(|(dist, num_pairs, _)| (*dist, *num_pairs))
+                .collect::<Vec<(u64, u64)>>(),
+            vec![(200, 1), (300, 1)],
+            "the distances that hold a pair"
+        );
+    }
+
+    #[test]
+    fn the_pairs_at_every_distance_this_machine_has_not_the_memory_for_are_an_error_and_not_the_end_of_the_process()
+     {
+        // A count and a sum for each distance, 16 bytes, which is what
+        // "How it runs" of `docs/specs/ld.md` counts the memory of a pass
+        // with: 16 MB for each population at the default `min_dist` of 1
+        // and `max_dist` of 1000000.
+        assert_eq!(size_of::<ThePairsAtADistance>(), 16);
+        // The whole range of a u64 is 2^64 distances, which is 2.9e20
+        // bytes. The memory is asked for with `try_reserve_exact`, which
+        // gives it back as an error where `vec![value; n]` would end the
+        // process, and which refuses a number of values whose bytes this
+        // machine does not count before it asks the allocator for
+        // anything.
+        match ThePairsAtEachDist::of(0, u64::MAX) {
+            Err(Error::LdNoMemory {
+                what,
+                values,
+                bytes_per_value,
+            }) => {
+                assert_eq!(
+                    (what, values, bytes_per_value),
+                    ("the pairs counted at every distance", usize::MAX, 16)
+                );
+            }
+            Ok(_) => panic!("the distances of the whole range of a u64 were given"),
+            Err(other) => panic!("the memory failed with another error: {other:?}"),
+        }
+        // The pass asks for them before it reads a block, so a call whose
+        // distances this machine cannot hold is an error and not a process
+        // that ends.
+        let vcf = vcf_of(&THE_VARIANTS_OF_THE_EXAMPLE);
+        let pops: [&[usize]; 0] = [];
+        let options = LdAndDistOptions {
+            min_dist: 0,
+            max_dist: u64::MAX,
+            num_bins: 4,
+            max_allowed_maf: 1.0,
+        };
+        match the_bins_or_the_error(&vcf, &pops, 2, &options, 4) {
+            Err(Error::LdNoMemory { what, .. }) => {
+                assert_eq!(what, "the pairs counted at every distance");
+            }
+            Ok(_) => panic!("the pass over the whole range of a u64 was not refused"),
+            Err(other) => panic!("the pass failed with another error: {other:?}"),
+        }
+        let message = Error::LdNoMemory {
+            what: "the pairs counted at every distance",
+            values: 1_000_000,
+            bytes_per_value: size_of::<ThePairsAtADistance>(),
+        }
+        .to_string();
+        assert!(message.contains("1000000 values of 16 bytes"), "{message}");
     }
 }
