@@ -2462,10 +2462,11 @@ mod tests {
         let bins = bins_of(&of_the_pass, 0);
         assert_eq!(bins.num_vars(), 5);
         assert_eq!(the_bounds_of(bins), vec![(1, 2000), (2001, 4000)]);
-        // The first bin holds v1-v2, v2-v3 and v3-v4 at 1000 base pairs
-        // and v1-v3, v2-v4 and v3-v5 at 2000, and the second v1-v4 and
-        // v2-v5 at 3000 and v1-v5 at 4000. v4 has no variance, so the four
-        // pairs that hold it have no r² and are in no bin.
+        // The first bin holds v1-v2, v2-v3, v3-v4 and v4-v5 at 1000 base
+        // pairs and v1-v3, v2-v4 and v3-v5 at 2000, and the second v1-v4
+        // and v2-v5 at 3000 and v1-v5 at 4000. v4 has no variance, so the
+        // four pairs that hold it have no r² and are in no bin, three of
+        // them out of the first and one out of the second.
         assert_eq!(the_pairs_of(bins), vec![4, 2]);
         assert_the_value_is(
             the_mean_of(bins, 0),

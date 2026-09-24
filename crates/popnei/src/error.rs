@@ -1295,6 +1295,14 @@ pub enum Error {
     /// caller that wants one population of every individual gives no
     /// population at all. In Python it is a `ValueError` that names no
     /// file: it is the individuals a user wrote for that population.
+    ///
+    /// The message gives the position of the population and not its name,
+    /// which is what a caller of the core has, since it gives the
+    /// populations as the indices of their individuals. Neither binding
+    /// crate reaches this case: both look the individuals of each
+    /// population up by name before the pass and refuse an empty one with
+    /// [`Error::PopWithNoIndividual`], whose message names the
+    /// population.
     #[error(
         "the population at the position {pop} names no individual, and the r² of a population is taken over its individuals; a caller that wants one population of every individual gives no population at all"
     )]

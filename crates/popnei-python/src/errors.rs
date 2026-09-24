@@ -493,18 +493,20 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // work, and a user reports it.
         | popnei::Error::KinshipLinalg { .. }
         // The four of the r² of two sets of variants that no argument of
-        // `calc_rogers_huff_r2_matrix` gives, for the same reason as the
-        // two of the principal component analysis above: a range of
-        // variants that is not in the dosages, which the tiles of the
-        // products and the window of the filter by linkage disequilibrium
-        // ask for; two sets of dosages built over different individuals of
-        // the block, which one call of this crate builds both of; a buffer
-        // for the r² that does not hold one value for each pair, which
-        // this crate holds and a user never sees; and a product of the
-        // linear algebra that did not run, which is left with a result of
-        // more values than the routines of BLAS and LAPACK count in, a
-        // size the cap of `calc_r2_matrix` refuses before a user reaches
-        // it.
+        // `calc_rogers_huff_r2_matrix` or of `calc_ld_and_dist_per_pop`
+        // gives, for the same reason as the two of the principal component
+        // analysis above: a range of variants that is not in the dosages,
+        // which the tiles of the products, the tiles of the pairs of the
+        // fall-off of r² with distance and the window of the filter by
+        // linkage disequilibrium ask for; two sets of dosages built over
+        // different individuals of the block, which one call of this crate
+        // builds both of; a buffer for the r² that does not hold one value
+        // for each pair, which this crate holds and a user never sees; and
+        // a product of the linear algebra that did not run, which is left
+        // with a result of more values than the routines of BLAS and
+        // LAPACK count in, a size the cap of `calc_r2_matrix` refuses
+        // before a user reaches it and the dosages of a window refuse
+        // where they are built.
         | popnei::Error::LdRowsNotInTheDosages { .. }
         | popnei::Error::LdDosagesOfOtherIndividuals { .. }
         | popnei::Error::LdR2OfAnotherSize { .. }
