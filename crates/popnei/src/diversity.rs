@@ -1206,6 +1206,66 @@ fn num_different_alleles(counts: &AlleleCounts, one_past_the_largest: usize) -> 
         .fold(0_u64, |num_different, _| num_different.saturating_add(1))
 }
 
+/// The chance that a draw of `num_called_alleles` of the `called_alleles`
+/// copies a population called at one variant, taken without replacement,
+/// holds no copy of an allele the population called `count_of_the_allele`
+/// times: `C(c - n, g) / C(c, g)`, with `c` the called alleles, `n` the
+/// count of the allele and `g` the draw.
+///
+/// One minus it is the chance that the draw shows the allele, and the sum
+/// of that over the alleles the population called is the alleles the draw
+/// is expected to show, which "What it gives" of "The number of alleles"
+/// of `docs/specs/diversity.md` states. Every standardized value of this
+/// module is built from this one chance.
+///
+/// `num_called_alleles` is at most `called_alleles`, which is what makes
+/// the variant one of the draw for that population, and the caller leaves
+/// the variants where it is not out. The chance is exactly 0 when fewer
+/// than `num_called_alleles` of the called copies are of another allele,
+/// since then no draw of that size avoids this allele; a
+/// `num_called_alleles` above `called_alleles`, which is no draw at all,
+/// gives that same 0. A `count_of_the_allele` of 0, an allele the
+/// population did not call, gives 1.
+///
+/// It is the product of `num_called_alleles` factors,
+/// `(c - n - i) / (c - i)` for `i` from 0 up, each in `f64`, and not the
+/// ratio of three factorials: 171! is already an infinity in an `f64`, and
+/// the largest dataset of `docs/objectives.md`, 10000 individuals, has
+/// 20000 copies at one variant. The factors are multiplied with `i` rising
+/// on every call, so two populations of one pass round the same way.
+/// Division and multiplication are rounded the same way on every platform,
+/// unlike `exp` and `ln`, so a test of this asserts the digits of what it
+/// gives.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the standardized values that call it are tasks 3.2, 3.3 \
+                  and 3.4 of docs/plans/diversity.md, and until they are \
+                  written the tests of this module are its only callers; \
+                  this expect fails the build once one of them calls it"
+    )
+)]
+fn chance_a_draw_misses_an_allele(
+    called_alleles: u32,
+    count_of_the_allele: u32,
+    num_called_alleles: u32,
+) -> f64 {
+    let all_the_copies = f64::from(called_alleles);
+    let of_another_allele = all_the_copies - f64::from(count_of_the_allele);
+    let drawn = f64::from(num_called_alleles);
+
+    if of_another_allele < drawn {
+        return 0.0;
+    }
+
+    (0..num_called_alleles)
+        .map(f64::from)
+        .fold(1.0, |chance, drawn_before| {
+            chance * ((of_another_allele - drawn_before) / (all_the_copies - drawn_before))
+        })
+}
+
 #[cfg(test)]
 mod fixtures {
     use crate::block::{Block, BlockReader};
@@ -2683,5 +2743,201 @@ mod the_names_of_the_statistics {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod the_chance_a_draw_misses_an_allele {
+    use super::chance_a_draw_misses_an_allele;
+
+    /// What a value of these tests may differ from the number of the spec's
+    /// table by. `vegan` printed the alleles a draw shows to ten digits, so
+    /// a literal taken from that table is up to half of the last one away
+    /// from the value it stands for: 1.5333333333 is 3.3e-11 below the 23/15
+    /// it is. What the function adds is a few divisions and
+    /// multiplications, each rounding by at most 1.2e-16 of the value, so
+    /// this bound is the digits of the table and no allowance for the
+    /// rounding.
+    const OF_TEN_DIGITS: f64 = 5e-11;
+
+    /// What a value of these tests may differ from a fraction the test
+    /// itself writes by. The longest of them adds two chances of a draw of
+    /// 2, six divisions and multiplications, and the fraction it is held
+    /// against rounds once more: nine roundings, each of at most half of the
+    /// last bit, 1.1e-16 of the value, so 1.0e-15 for a value near 1. This
+    /// bound is eight times the last bit, 1.8e-15, and has nearly twice the
+    /// room those roundings need. A factorial in place of the product misses
+    /// it by a NaN and not by a last bit.
+    const OF_A_FEW_ROUNDINGS: f64 = 8.0 * f64::EPSILON;
+
+    /// The allele counts of one population at the four variants of the
+    /// worked example that count for it, and beside each the alleles
+    /// `vegan` 2.7.6 expects a draw of 2 to show there. Both columns are
+    /// the table at the end of "How it is verified" of "The number of
+    /// alleles" of `docs/specs/diversity.md`, whose variants are 1, 2, 3
+    /// and 5.
+    type AtADrawOfTwo = [(&'static [u32], f64); 4];
+
+    /// The counts of `pop1`, `i1` and `i2` of the worked example, and what
+    /// `vegan` expects of them.
+    const POP1: AtADrawOfTwo = [
+        (&[3, 1], 1.5),
+        (&[3, 1], 1.5),
+        (&[1, 1, 1, 1], 2.0),
+        (&[4], 1.0),
+    ];
+
+    /// The counts of `pop2`, `i3`, `i4` and `i5`, and what `vegan` expects
+    /// of them. Variant 5, 4 copies of one allele and 2 of another, is the
+    /// one of the eight the spec says a reader cannot do in their head.
+    const POP2: AtADrawOfTwo = [
+        (&[5], 1.0),
+        (&[3], 1.0),
+        (&[1, 1, 1, 1], 2.0),
+        (&[4, 2], 1.5333333333),
+    ];
+
+    /// The alleles a draw of `num_called_alleles` is expected to show at one
+    /// variant: one minus the chance of missing an allele, summed over the
+    /// counts the population called there, which is the formula of "What it
+    /// gives" of "The number of alleles". The module gets it in task 3.2 of
+    /// `docs/plans/diversity.md`; here it is what turns the chance into the
+    /// numbers `vegan` gave.
+    fn alleles_a_draw_shows(counts: &[u32], num_called_alleles: u32) -> f64 {
+        let called_alleles: u32 = counts.iter().sum();
+
+        counts
+            .iter()
+            .map(|count| {
+                1.0 - chance_a_draw_misses_an_allele(called_alleles, *count, num_called_alleles)
+            })
+            .sum()
+    }
+
+    /// It checks the four values of one population against `vegan`'s and
+    /// their mean, which is the allelic richness of a draw of 2 there.
+    fn assert_a_draw_of_two_shows(of_the_pop: AtADrawOfTwo, mean: f64, what: &str) {
+        let mut total = 0.0;
+
+        for (counts, vegan) in of_the_pop {
+            let found = alleles_a_draw_shows(counts, 2);
+
+            assert!(
+                (found - vegan).abs() <= OF_TEN_DIGITS,
+                "a draw of 2 of {counts:?} in {what} shows {found} alleles, \
+                 and vegan gives {vegan}"
+            );
+            total += found;
+        }
+
+        let found = total / 4.0;
+
+        assert!(
+            (found - mean).abs() <= OF_TEN_DIGITS,
+            "the mean over the four variants of {what} is {found}, and it is {mean}"
+        );
+    }
+
+    /// The four variants that count for `pop1`: two where it called 3
+    /// copies of one allele and 1 of another, one where each of four alleles
+    /// has a single copy, and one where all 4 copies it called are alike. A
+    /// draw of 2 shows 1.5, 1.5, 2 and 1 alleles there, 1.5 on average.
+    #[test]
+    fn a_draw_of_two_shows_one_and_a_half_alleles_in_pop1_of_the_worked_example() {
+        assert_a_draw_of_two_shows(POP1, 1.5, "pop1");
+    }
+
+    /// The four that count for `pop2`: two where every copy it called is
+    /// alike, so a draw of 2 shows 1 allele however it falls, one of four
+    /// single copies, and variant 5, of 4 copies of one allele and 2 of
+    /// another, which the table gives to ten digits.
+    #[test]
+    fn a_draw_of_two_shows_1_3833_alleles_in_pop2_of_the_worked_example() {
+        assert_a_draw_of_two_shows(POP2, 1.3833333333, "pop2");
+    }
+
+    /// Variant 5 of `pop2` said the other way round, which is how the spec
+    /// words it: of 4 copies of allele 0 and 2 of allele 1, a draw of 2
+    /// shows both alleles with chance 8/15. The allele called 4 times is
+    /// called more often than the draw takes and is still missed, by the
+    /// one draw of the 15 that takes the two rare copies, so the count of an
+    /// allele above the draw size is not a chance of 0.
+    #[test]
+    fn a_draw_of_two_of_four_and_two_copies_shows_both_alleles_with_chance_eight_fifteenths() {
+        let misses_the_common = chance_a_draw_misses_an_allele(6, 4, 2);
+        let misses_the_rare = chance_a_draw_misses_an_allele(6, 2, 2);
+        let shows_both = 1.0 - misses_the_common - misses_the_rare;
+
+        assert!(
+            (shows_both - 8.0 / 15.0).abs() <= OF_A_FEW_ROUNDINGS,
+            "a draw of 2 of 4 and 2 copies shows both alleles with chance \
+             {shows_both}, which misses 1/15 and 6/15 of the draws, and it \
+             is 8/15"
+        );
+    }
+
+    /// A draw takes an allele it has no room to avoid. With 5 of the 6
+    /// copies of one allele only 1 is of another, so every draw of 2 holds
+    /// the common one; with the draw as large as the called copies every
+    /// draw holds every allele. A draw larger than the called copies is no
+    /// draw at all and is the same 0, which is what keeps a caller that
+    /// forgot to leave such a variant out of a NaN.
+    #[test]
+    fn a_draw_that_cannot_avoid_an_allele_misses_it_with_chance_zero() {
+        for (called_alleles, count_of_the_allele, num_called_alleles) in
+            [(6_u32, 5_u32, 2_u32), (4, 1, 4), (4, 1, 6)]
+        {
+            let found = chance_a_draw_misses_an_allele(
+                called_alleles,
+                count_of_the_allele,
+                num_called_alleles,
+            );
+
+            assert!(
+                found == 0.0,
+                "a draw of {num_called_alleles} of {called_alleles} copies \
+                 misses an allele called {count_of_the_allele} times with \
+                 chance {found}, and it is 0"
+            );
+        }
+    }
+
+    /// An allele with no copy called is missed by every draw. No
+    /// standardized value asks for it, since all of them walk the alleles
+    /// the population called, and what the case pins is that the factors of
+    /// a count of 0 are each exactly 1 and their product is 1 and not a
+    /// number near it.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "every factor of a count of 0 is a number over itself, \
+                  which is exactly 1 in an f64, so the product is 1 to the \
+                  bit"
+    )]
+    fn an_allele_the_population_did_not_call_is_missed_by_every_draw() {
+        let found = chance_a_draw_misses_an_allele(4, 0, 2);
+
+        assert!(
+            found == 1.0,
+            "a draw of 2 of 4 copies misses an allele called 0 times with \
+             chance {found}, and it is 1"
+        );
+    }
+
+    /// A million copies of a variant, one of them of this allele: the two
+    /// factors are 999999/1000000 and 999998/999999, whose product is
+    /// 999998/1000000. A version built from three factorials gives a NaN
+    /// here, since a factorial above 170! is an infinity in an `f64` and
+    /// this one has a million terms, so this is the case that holds the
+    /// function to the product of its factors.
+    #[test]
+    fn a_million_called_copies_give_a_chance_no_factorial_could() {
+        let found = chance_a_draw_misses_an_allele(1_000_000, 1, 2);
+
+        assert!(
+            (found - 0.999998).abs() <= OF_A_FEW_ROUNDINGS,
+            "a draw of 2 of a million copies misses a single copy with \
+             chance {found}, and it is 0.999998"
+        );
     }
 }
