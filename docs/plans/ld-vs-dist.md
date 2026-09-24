@@ -1,6 +1,7 @@
 # Plan: the curve of r² against distance, per population
 
-24 September 2026. State: draft, waiting for the owner. It builds the item
+24 September 2026. State: approved by the owner on 24 September 2026, not
+started. It builds the item
 "LD against distance, per population" of `docs/specs/ld.md`, which gives,
 for each population of a dataset, how the r² of a pair of variants falls
 off as the two move apart along a chromosome: the fall-off in bins of
