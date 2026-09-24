@@ -687,6 +687,77 @@ Who it reaches: popnei forms this inverse once per study, so one study in
 one process is safe. A user running two studies in threads in one process
 would see numbers move in the fourth digit.
 
+### What the review of work package 2 changed above the core
+
+**A user was told the model they wanted was not built.** Both packages
+opened with "three of the four models" and described the fourth as built
+twenty-six lines later, so `help(popnei.gwas)` and the hover over
+`calcGwas` said the opposite of the code. Two terms that did work without
+being explained, the fitting method and the working trait, are in
+`docs/glossary.md` now.
+
+**Which errors name the file is decided in one exhaustive match.** The
+Python binding classified each error by hand and let anything unlisted fall
+through a wildcard that glued the VCF path onto a message about the user's
+own arguments; the comment above that list recorded it happening twice, a
+day lost each time, and the only check needed somebody to remember to add a
+case first. The decision now lives in the core as
+`popnei::Error::names_the_file`, which the compiler will not let a new
+variant skip. Every message a user sees is unchanged.
+
+**An error told a user to wait for something that had shipped.** With all
+four models written, the only arm still reaching `GwasModelNotBuilt` is a
+mixed model whose kinship has vanished, which is popnei's defect and not a
+study anyone asked for. It says so, and is a `RuntimeError`.
+
+**A refusal named a model the user had not asked for.** The logistic mixed
+model fits the plain logistic null as its starting point, and when that
+inner fit ran away the user was told "a binomial trait with no kinship is a
+logistic regression" — for a call that brought a kinship. Six individuals
+whose covariate is the trait itself reach it. That one refusal is remapped;
+every other error of the same inner fit passes through unchanged, which the
+plain model's own tests and the shared refusals list assert.
+
+**What is left imprecise, and I am leaving it.** The remapped message offers
+three things to look at, and the third, a kinship asking for a random effect
+the trait cannot fit, cannot be the cause of a runaway in the starting fit,
+which has no kinship in it. Separating them needs an error case of its own
+and a line in the spec. The spec asks only that the refusal name the model
+and the round, which it does.
+
+**Three numbers and a date.** The node suite's shared tolerance said its
+worst user was the linear mixed model's genetic variance at 1.273e-6, 13
+per cent of what is allowed; measured under node, the worst user is now the
+logistic mixed model's variance of the kinship effect at 6.033e-6, 60 per
+cent, the same figure pytest measures natively. The round at which a
+collapsed weight is refused is 26 on both backends, as the spec says, and
+the test asserts the number rather than that it is above 0. And one date
+two days ahead was not in the file the review named: it had moved into the
+core with the exhaustive match.
+
+### What the spec needs and no session owns
+
+`docs/specs/gwas.md` is on `main` and the session that owned it has ended,
+so these are the owner's:
+
+- **Its agreement with pyNei is the prototype's, not this code's.** The spec
+  says the variance agrees to 2.9e-15 and the covariate effects to 3.3e-15;
+  measured through both packages, 5.404e-14 and 8.415e-15. Those two figures
+  are `docs/reports/glmm-method/README.md`'s, which measured a numpy
+  prototype. The third number of the same sentence, 8.497e-6 against GMMAT,
+  is reproduced to every digit. The pytest suite already carries the true
+  values, so the spec and the suite disagree.
+- **Open 4's meanwhile is unbuilt**, as recorded above.
+- **A divergence from pyNei is not written down.** With a kinship of all
+  zeros popnei answers a variance of 0 and pyNei raises, because pyNei's
+  test of a step at 0 is false for a value that is not a number.
+  `docs/objectives.md` asks for those to be recorded.
+- **Open 3 does not say which model its meanwhile binds.** It was measured
+  not to reach the logistic mixed model, and that measurement lives in a doc
+  comment and in this report, not in the open point.
+- **Open 2's fourth place now has a fixture**, whose numbers are in this
+  report and in the code but not in the item.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
