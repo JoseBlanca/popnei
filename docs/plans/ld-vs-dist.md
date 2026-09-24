@@ -154,7 +154,7 @@ are.
   cargo tests are of the window alone, on readers built in the test, and
   they are the first tests `cargo test -p popnei --lib ld::dist --
   --list` prints, where it prints `0 tests` today.
-- [ ] 1.2 The dosages of each population over the window: for each
+- [x] 1.2 The dosages of each population over the window: for each
   population, the variants of the held blocks that pass its
   `max_allowed_maf`, and the matrices `LdDosages` holds over the
   individuals of that population, as "How it runs" has it. The major

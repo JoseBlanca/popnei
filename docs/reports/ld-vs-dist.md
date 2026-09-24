@@ -74,3 +74,32 @@ clippy --workspace --all-targets -- -D warnings`, `cargo wasm-check`,
 `uv run ruff format --check` and `uv run ruff check` are clean, and `uv
 run pytest` gives 499 passed. Every one of these was run by the
 orchestrator and not taken from the task's report.
+
+**1.2, the dosages of each population over the window.** Commit
+`175818f`, in the same `crates/popnei/src/ld/dist.rs`. For each
+population it keeps the variants of the held blocks that pass that
+population's major allele frequency and one set of dosage matrices over
+them, rebuilt at each block, so that a tile spanning a block boundary is
+one call.
+
+It added two of the errors that the spec's `# Errors` of
+`calc_ld_and_dist` already names, a `max_allowed_maf` that is NaN or not
+from 0 to 1, and a population with no individual. Without the first a NaN
+threshold empties every population without saying so, and without the
+second an empty population is read as every individual. Both are a
+`ValueError` in Python, which is where the spec puts an argument out of
+range and a population with no individual. No spec change was needed.
+
+`cargo test -p popnei --lib ld::dist -- --list` prints `25 tests`, where
+it printed 14. `cargo test --workspace` gives 812 passed with 2 ignored,
+and `--no-default-features` the same 812 on faer; 149 in the linear
+algebra crate, 499 pytest, and fmt, clippy, wasm-check and ruff clean.
+Every one was run by the orchestrator.
+
+**One number for the performance review that follows this plan.** Each
+block builds two sets of dosages for each population, one over the block
+to work out the frequencies and one over the whole window, so a pass at
+blocks of 7 variants with a window of 250 variants reads the genotypes of
+a variant about 36 times over. It was left alone on purpose: the owner
+decided on 24 September 2026 that the speed of this pass is a review of
+its own.
