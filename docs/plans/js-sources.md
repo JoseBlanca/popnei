@@ -2,9 +2,10 @@
 
 24 September 2026. The breakdown was approved by the owner in chat on 24
 September 2026 and this document is that breakdown with its deliverables and
-tasks; the state is under way, on the branch `plan/js-sources` in the
+tasks; the state is done, on the branch `plan/js-sources` in the
 worktree `.claude/worktrees/js-sources`, with its work report in
-`docs/reports/js-sources.md`. It builds from one spec,
+`docs/reports/js-sources.md` and the measurement of its last work package
+in `docs/reports/js-sources-measurement.md`. It builds from one spec,
 `docs/specs/js_sources.md`, committed at 465c5c0 on the branch
 `spec/file-source`, which this branch starts from because that spec is not
 in `main` yet.
