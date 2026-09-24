@@ -1,6 +1,7 @@
 //! What the two sources of variants share: one pass over a source, the
-//! columns of the blocks that pass gives JavaScript, and the bytes of the
-//! vars file written from it.
+//! columns of the blocks that pass gives JavaScript, the bytes of the vars
+//! file written from it, and how many passes each consumer of the package
+//! makes.
 //!
 //! A source is the bytes of a file with what is needed to read it, a VCF
 //! with its options in `vcf.rs` and a vars file in `vars.rs`. Each is a
@@ -61,6 +62,135 @@ use crate::steps::{Steps, chain_of};
 /// `Number.isSafeInteger` stands for: above 2^53 - 1 the numbers a user
 /// can write no longer run one by one.
 pub(crate) const LARGEST_POSITION: u64 = 9_007_199_254_740_992;
+
+/// One consumer of the package, the function that runs a `Variants`, with
+/// the argument of the one whose number of passes depends on it.
+///
+/// One call of a consumer is a run, and a run is one or two passes over the
+/// source, each a reading of it from its start, which is how
+/// `docs/glossary.md` has the three words. Which consumer it is says how
+/// many passes, and nothing else does, so this is what a consumer names
+/// itself with when it asks for [`Consumer::num_passes`].
+pub(crate) enum Consumer {
+    /// `calcPerVarDistribs`.
+    PerVarDistribs,
+    /// `calcPerIndividualStats`.
+    PerIndividualStats,
+    /// `calcPairwiseKosmanDists`.
+    KosmanDists,
+    /// `calcPopDists`.
+    PopDists,
+    /// `calcRogersHuffR2Matrix`.
+    R2Matrix,
+    /// `calcKinship`.
+    Kinship,
+    /// `doPcaFromVariants`, the one consumer that reads the source twice.
+    PcaOfVariants {
+        /// How many components the weight of each variant is asked for,
+        /// the `numPrinComps` of the call, where 0 asks for no weight.
+        num_prin_comps: usize,
+    },
+    /// `calcGwas`.
+    Gwas,
+    /// `writeVars`.
+    WriteVars,
+    /// The iteration of `iterBlocks`.
+    IterBlocks,
+}
+
+impl Consumer {
+    /// How many passes over the source this consumer makes.
+    ///
+    /// Every consumer reads the source once, except the principal
+    /// components of the variants asked for weights: a weight needs the
+    /// eigenvectors, which are known when the first pass ends, so the
+    /// variants are read a second time. `numPrinComps` 0 asks for no
+    /// weight and reads the source once.
+    ///
+    /// It is what [`num_passes_of`] gives a page before a run starts, and
+    /// it is also what a consumer opens its run with, so that every call
+    /// that tells the page how far a pass has got carries this same number
+    /// and the two cannot disagree.
+    pub(crate) fn num_passes(&self) -> u32 {
+        match *self {
+            Consumer::PcaOfVariants { num_prin_comps } => {
+                if num_prin_comps > 0 {
+                    2
+                } else {
+                    1
+                }
+            }
+            Consumer::PerVarDistribs
+            | Consumer::PerIndividualStats
+            | Consumer::KosmanDists
+            | Consumer::PopDists
+            | Consumer::R2Matrix
+            | Consumer::Kinship
+            | Consumer::Gwas
+            | Consumer::WriteVars
+            | Consumer::IterBlocks => 1,
+        }
+    }
+
+    /// The consumer a user of the package named, with the `num_prin_comps`
+    /// of the call, which every consumer but the principal components of
+    /// the variants ignores.
+    ///
+    /// # Errors
+    ///
+    /// When `name` is of no consumer of the package.
+    fn of_the_name(name: &str, num_prin_comps: usize) -> Result<Consumer, JsPopneiError> {
+        match name {
+            "calcPerVarDistribs" => Ok(Consumer::PerVarDistribs),
+            "calcPerIndividualStats" => Ok(Consumer::PerIndividualStats),
+            "calcPairwiseKosmanDists" => Ok(Consumer::KosmanDists),
+            "calcPopDists" => Ok(Consumer::PopDists),
+            "calcRogersHuffR2Matrix" => Ok(Consumer::R2Matrix),
+            "calcKinship" => Ok(Consumer::Kinship),
+            "doPcaFromVariants" => Ok(Consumer::PcaOfVariants { num_prin_comps }),
+            "calcGwas" => Ok(Consumer::Gwas),
+            "writeVars" => Ok(Consumer::WriteVars),
+            "iterBlocks" => Ok(Consumer::IterBlocks),
+            _ => Err(JsPopneiError::Refused(format!(
+                "`{name}` is not a consumer of popnei, which are the functions \
+                 that read the variants of a `Variants`: {names}",
+                names = THE_CONSUMERS.join(", ")
+            ))),
+        }
+    }
+}
+
+/// The name of each consumer as a user of the package writes it, for the
+/// message of a name that is of none of them.
+const THE_CONSUMERS: [&str; 10] = [
+    "calcPerVarDistribs",
+    "calcPerIndividualStats",
+    "calcPairwiseKosmanDists",
+    "calcPopDists",
+    "calcRogersHuffR2Matrix",
+    "calcKinship",
+    "doPcaFromVariants",
+    "calcGwas",
+    "writeVars",
+    "iterBlocks",
+];
+
+/// How many passes over the source the consumer called `consumer` makes,
+/// with the `num_prin_comps` of the call, which every consumer but
+/// `doPcaFromVariants` ignores.
+///
+/// A page that draws one bar for a whole run asks this before the run
+/// starts, and every call that tells the page how far a pass has got
+/// carries this same number: the consumer asks for it here and opens its
+/// run with it, so the two cannot disagree.
+///
+/// # Errors
+///
+/// When `consumer` is of no consumer of the package.
+#[wasm_bindgen]
+pub fn num_passes_of(consumer: &str, num_prin_comps: usize) -> Result<u32, JsPopneiError> {
+    Ok(Consumer::of_the_name(consumer, num_prin_comps)?.num_passes())
+}
 
 /// A file of variants that was opened, which every pass reads again.
 pub(crate) trait OpenSource {

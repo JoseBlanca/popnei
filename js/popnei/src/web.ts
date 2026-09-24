@@ -44,6 +44,8 @@ export type {
   PcaResult,
   VariantsPcaResult,
 } from "./pca.js";
+export { numPassesOf } from "./passes.js";
+export type { ConsumerName } from "./passes.js";
 export { calcPopDists } from "./pop_dists.js";
 export type {
   CalcPopDistsOptions,
