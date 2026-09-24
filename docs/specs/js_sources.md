@@ -303,9 +303,12 @@ A function that throws is called no more in that pass, and the call that
 ends that pass is not made either: what the application stopped it is not
 told how far it had got.
 
-A pass that never reads a byte is never told of: the PCA of a source whose
-first pass gives no variant with variance fails before its second reader
-reads, and the page hears of one pass and not of two.
+A pass whose reader is never built is never told of, and a pass whose
+reader is built always is: a reader reads when it is built. So the PCA of
+a source whose first pass gives no variant with variance, which fails
+before its second reader asks for a block, has told the page of both
+passes; and asked for no weight, which builds no second reader, it tells
+the page of one.
 
 Passes are counted inside a run and not inside a source. A consumer opens a
 run, every reader it opens belongs to it, and a pass takes its number when
