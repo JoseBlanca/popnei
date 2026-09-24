@@ -258,7 +258,7 @@ Tasks:
       its doc comment, and the "Speed" part of the spec, which is a commit
       of its own before the commit of the code. From "Speed". Needs 3.1 and
       3.2. Serves deliverables 1, 2 and 4.
-- [ ] 4.2 The test of deliverable 3. Needs 4.1 for the bound. Serves
+- [x] 4.2 The test of deliverable 3. Needs 4.1 for the bound. Serves
       deliverables 3 and 4.
 
 ## How the whole plan is checked
