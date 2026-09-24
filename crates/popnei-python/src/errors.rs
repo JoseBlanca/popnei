@@ -511,12 +511,16 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasInputOfAnotherSize { .. }
         | popnei::Error::GwasAnswersOfAnotherSize { .. }
         | popnei::Error::GwasLinalg { .. }
-        // The mixed model that was to be fitted and whose kinship was not
-        // there, which is a fourth of that kind: the pass chooses a mixed
-        // model only for a study that brought a kinship, so no study
-        // reaches it, and it names no file, being raised before the pass
-        // has read one.
-        | popnei::Error::GwasModelNotBuilt { .. } => {
+        // The two of the model that was fitted, which are a fourth and a
+        // fifth of that kind: the mixed model whose kinship was not there,
+        // and the model with no projection matrix that the GRAMMAR-Gamma
+        // approximation was to be estimated against. The pass chooses a
+        // mixed model only for a study that brought a kinship and refuses
+        // the approximation for a study that brought none, so no study
+        // reaches either, and neither names a file, both being of the model
+        // the trait and the kinship chose.
+        | popnei::Error::GwasModelNotBuilt { .. }
+        | popnei::Error::GwasGrammarGammaOfAModelWithNoProjection { .. } => {
             PyRuntimeError::new_err(what_a_user_reads(&error, message, path))
         }
         // The two errors of a trait that the layer holding the frame names:

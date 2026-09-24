@@ -1664,6 +1664,30 @@ pub enum Error {
     )]
     GwasGrammarGammaWithoutASecondPass,
 
+    /// The factor of the GRAMMAR-Gamma approximation was to be estimated
+    /// and the model that was fitted has no projection matrix to estimate
+    /// it against.
+    ///
+    /// A study that asks for the approximation with no kinship is refused
+    /// before any model is fitted, and a study with a kinship fits one of
+    /// the two mixed models, so the model that reaches the estimate has
+    /// that matrix. This is the arm where it has not: a kinship was given
+    /// and the model chosen for it is not a mixed one, which no study
+    /// reaches. Telling the user that a study with no kinship has no such
+    /// denominator, which is what [`Error::GwasGrammarGammaWithoutAKinship`]
+    /// says, would be telling them to give the kinship they gave. In Python
+    /// it is a `RuntimeError`: nothing a user asked for gives it, so
+    /// whoever gets one reports it instead of looking for what they typed
+    /// wrong.
+    #[error(
+        "popnei has a defect: the GRAMMAR-Gamma approximation stands in for the denominator of a mixed model's test, a kinship was given and the model fitted for it was `{name}`, which has no such denominator; report it",
+        name = model.name()
+    )]
+    GwasGrammarGammaOfAModelWithNoProjection {
+        /// Which of the four models was fitted, which the message names.
+        model: crate::gwas::GwasModel,
+    },
+
     /// No variant of the first block of that second pass has any variance
     /// among the tested individuals, so there is no ratio of the exact
     /// denominator to the approximate one to average. It is pyNei's refusal
@@ -2474,9 +2498,12 @@ impl Error {
             // user takes out; a kinship that the covariance of the working
             // trait of a logistic mixed model cannot be factored from,
             // which is the matrix the user's missing genotypes made; and
-            // the mixed model whose kinship was not there, which is a
-            // defect and names no file either, since it is raised before
-            // the pass has read anything.
+            // the two defects of the model that was fitted, the mixed model
+            // whose kinship was not there and the model with no projection
+            // matrix that the approximation was to be estimated against,
+            // which name no file either: what they are of is the model the
+            // trait and the kinship chose, which is settled before anything
+            // is read.
             | Self::GwasPhenotypeNotFinite { .. }
             | Self::GwasPhenotypeNotBinomial { .. }
             | Self::GwasPhenotypeOfOneValue { .. }
@@ -2493,6 +2520,7 @@ impl Error {
             | Self::GwasFitDidNotSettle { .. }
             | Self::GwasKinshipNotACovariance { .. }
             | Self::GwasModelNotBuilt { .. }
+            | Self::GwasGrammarGammaOfAModelWithNoProjection { .. }
             | Self::GwasTraitOfAnUnknownName { .. }
             | Self::GwasTestOfAnUnknownName { .. } => false,
             // The dataset a user gave, which is a file: a pass that gave
@@ -2980,6 +3008,9 @@ mod tests {
             Error::GwasModelNotBuilt {
                 model: GwasModel::Lmm,
             },
+            Error::GwasGrammarGammaOfAModelWithNoProjection {
+                model: GwasModel::Lm,
+            },
             Error::NoPop,
         ] {
             assert!(
@@ -3022,5 +3053,24 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("being written"), "{message}");
+    }
+
+    /// The model the GRAMMAR-Gamma approximation had no projection matrix
+    /// of is a defect of popnei and does not tell the user to give a
+    /// kinship.
+    ///
+    /// The arm it comes from is reached only when a kinship was given and
+    /// the model chosen for it is not a mixed one, so the message a study
+    /// with no kinship gets, "give a kinship or ask for no approximation",
+    /// would be telling the user to give the kinship they gave.
+    #[test]
+    fn the_model_the_approximation_had_no_projection_of_is_a_defect() {
+        let message = Error::GwasGrammarGammaOfAModelWithNoProjection {
+            model: GwasModel::Lm,
+        }
+        .to_string();
+        assert!(message.contains("popnei has a defect"), "{message}");
+        assert!(message.contains("`lm`"), "{message}");
+        assert!(!message.contains("give a kinship"), "{message}");
     }
 }

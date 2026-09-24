@@ -105,13 +105,22 @@ impl TheFittedModel {
     /// # Errors
     ///
     /// Whatever the model's own estimate of the factor fails with, and
-    /// [`Error::GwasGrammarGammaWithoutAKinship`] for the two models that
-    /// have no projection matrix.
+    /// [`Error::GwasGrammarGammaOfAModelWithNoProjection`] for the two
+    /// models that have no projection matrix, which a kinship was given for
+    /// and which is popnei's own defect.
     fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
         match self {
-            TheFittedModel::Linear(_) | TheFittedModel::Logistic(_) => {
-                Err(Error::GwasGrammarGammaWithoutAKinship)
-            }
+            // A study with no kinship was refused before any model was
+            // fitted, so the model here was chosen for a study that brought
+            // one. Telling the user that a study with no kinship has no
+            // denominator to approximate would be telling them to give the
+            // kinship they gave.
+            TheFittedModel::Linear(_) => Err(Error::GwasGrammarGammaOfAModelWithNoProjection {
+                model: GwasModel::Lm,
+            }),
+            TheFittedModel::Logistic(_) => Err(Error::GwasGrammarGammaOfAModelWithNoProjection {
+                model: GwasModel::Glm,
+            }),
             TheFittedModel::Mixed(fitted) => fitted.approximate_the_denominator(dosages),
             TheFittedModel::LogisticMixed(fitted) => fitted.approximate_the_denominator(dosages),
         }

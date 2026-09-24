@@ -1056,11 +1056,14 @@ impl LogisticMixedModel {
     ///
     /// What [`GrammarGamma::of_the_first_block`] refuses of that block: no
     /// variant of it that varies among the tested individuals, and a factor
-    /// that is not a finite number above 0.
+    /// that is not a finite number above 0, which is what a block of
+    /// nothing but variants the design explains gives, since the ratio of
+    /// such a variant is left out of the mean.
     pub(crate) fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
         self.approximation = Some(GrammarGamma::of_the_first_block(
             &self.projection,
             self.num_individuals,
+            self.largest_of_the_projection,
             dosages,
         )?);
         Ok(())
