@@ -511,9 +511,15 @@ using the trace from the identity, the average information and a bracket.
 The core has 812 tests where work package 1 left 799.
 
 **Deliverable 1, the null model against GMMAT, holds.** The variance of the
-kinship effect comes to 1.50805069777198586 on Accelerate and
-1.50805069777198320 on faer, which is 6.302e-6 from GMMAT's 1.508057 and 63
-per cent of the 1e-5 allowed; the two backends are 1.8e-15 apart relative.
+kinship effect is 1.5080506977719876, which is 6.302e-6 from GMMAT's
+1.508057 and 63 per cent of the 1e-5 allowed. It was 1.50805069777198586
+until the review: writing the trace's right hand side as the square root of
+the reciprocal weight, rather than the reciprocal of the square root, moved
+popnei's own digits by 8.8e-16 of themselves. That is a rounding and not a
+correction of the value; what it corrects is that the score at a variance of
+0 is now exactly 0 by construction rather than by two hundred quotients
+happening to round to 1. No reference literal moved, and no suite asserts
+popnei's own digits, which is why nothing went red.
 The three covariate effects are within 1.06e-6 of GMMAT's, 11 per cent of
 their bound, the same on both backends. `residual_variance` and
 `heritability` are `None`, since a logistic model has no free residual
