@@ -286,7 +286,7 @@ and `ExpHet::of_var` of `crates/popnei/src/stats.rs`, all public today.
   dataclass and the enum, its exports in `python/popnei/__init__.py`, and
   `tests/test_diversity.py`. From "Its Python function" and "The cases".
   Needs 2.2, 2.3 and 2.4. Serves deliverables 5, 6 and 8.
-- [ ] 2.6 `crates/popnei-js/src/diversity.rs`, its entry in that crate's
+- [x] 2.6 `crates/popnei-js/src/diversity.rs`, its entry in that crate's
   `lib.rs`, `js/popnei/src/diversity.ts`, its exports in `node.ts` and
   `web.ts`, and `js/popnei/test/diversity.test.ts`. From the TypeScript
   paragraph of "Its Python function". Needs 2.5, whose Python names it
