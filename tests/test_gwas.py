@@ -117,20 +117,31 @@ OF_PYNEI_P_VALUE = 1e-11
 # The bound against pyNei is per model, 1e-9 relative being the ceiling of
 # "How it is verified" of "What every model shares" and not its value, and
 # this model measures far inside it. Measured on 24 September 2026 over the
-# 1200 variants of each panel with each of the two tests, on both backends,
-# the furthest of the three columns is the p-value: 4.524e-14 of itself at
-# `var1004` of the panel with every genotype called under the Wald test, on
-# Accelerate, where faer's worst p-value is 3.213e-14 at `var0833` of the
-# panel with genotypes missing under the score test. The `beta` is nearer,
-# 1.151e-14 of the `se` of its variant at worst, at `var0197` under the score
-# test on faer and 1.090e-14 on Accelerate, and the `se` nearer still at
-# 3.368e-15 of itself. The effects of the null model are 1.970e-16 of pyNei's
-# away, 2.220e-16 absolute, in all four runs on both backends. So this is 22
-# times where the bound breaks, where the spec's 1e-9 would have been 22000
-# times it; the procedure of "How it is verified" sets a bound two or three
-# times above where it breaks, which here is 1.5e-13, and the owner is asked
-# before it moves.
-OF_PYNEI_LOGISTIC = 1e-12
+# 1200 variants of each panel under each of the two tests, on Accelerate and
+# on faer, the furthest each of the four is from pyNei:
+#
+# - the p-value, which is the one the bound has to clear, 4.524e-14 of itself
+#   at `var1004` of the panel with every genotype called under the Wald test,
+#   on Accelerate; faer's furthest is 3.213e-14 at `var0833` of the panel
+#   with genotypes missing under the score test;
+# - the `beta`, as a share of the `se` of its variant, 1.151e-14 at `var0197`
+#   of the panel with every genotype called under the score test, on faer,
+#   and 1.090e-14 at `var0833` of the panel with genotypes missing under the
+#   score test, on Accelerate;
+# - the `se`, as a share of itself, 3.368e-15 at `var1151` of the panel with
+#   every genotype called under the Wald test, on Accelerate, and 1.920e-15
+#   at `var0122` of the panel with genotypes missing under the Wald test, on
+#   faer;
+# - the effects of the null model, 1.970e-16 of pyNei's and 2.220e-16
+#   absolute, the same in all four runs on both backends.
+#
+# So the bound breaks at the p-value's 4.524e-14, and this is 2.2 times it,
+# the ratio `OF_PYNEI` above takes. It is not set further out because the
+# errors this comparison is the only one able to catch are of that size: a
+# reviewer dropped each of the fit's two final reweightings in turn and
+# measured the columns moving by 1.1e-9 and 3.0e-9, which the comparisons
+# with plink2 and with R catch as well.
+OF_PYNEI_LOGISTIC = 1e-13
 
 # How far a `beta` and an `se` of the logistic Wald test may be from
 # plink2's, as a share of the `se` plink2 printed for that variant, and how
