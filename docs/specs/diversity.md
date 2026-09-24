@@ -408,12 +408,13 @@ What that check is worth, and what it is not. It never writes the closed
 form down, so it catches any error in the algebra: the decomposition into
 one term per allele, the chance that an allele shows in a draw, and the
 product over the other populations. Changing one factor of the closed form
-makes 16 of the 18 pairs below differ. What it does not check is the one
+makes 19 of the 22 pairs below differ, measured on 24 September 2026.
+What it does not check is the one
 assumption the closed form makes, that the draws of two populations are
 independent: the enumeration takes the combinations of one draw per
 population as a product measure, which is that same assumption, so on the
 populations below the two agree by construction and not by luck. For the
-18 pairs below that is sound rather than circular, because their
+22 pairs below that is sound rather than circular, because their
 populations share no individual, and draws from disjoint sets of gene
 copies are independent as a fact of the sampling and not as an
 assumption. Where populations do share individuals the assumption is false
@@ -437,13 +438,38 @@ literals.
 `docs/reports/diversity-method/check_by_enumeration.py` is the throwaway
 this grew from and is not what the tests read.
 
-A nineteenth pair is there for the shared individual of "The cases", and
-it is enumerated differently: over the labelled gene copies of a set of
+Four more pairs are in that file, added on 24 September 2026 because the
+18 above are a thin fixture for what they become: seven of their values
+are exactly 0 and two exactly 1, and fourteen of their eighteen population
+slots have exactly 4 called alleles, so almost nothing there could catch an
+implementation that took one population's called alleles for another's.
+
+- **One population of three alleles**, 3, 2 and 1 copies of 6 called at a
+  draw of 3, giving 9/4. It is what "The cases" above means by a lone
+  population holding as private every allele it called, and it is the only
+  pair with one population.
+- **Three populations of 3, 5 and 6 called alleles**, `2,1 | 3,1,1 |
+  2,2,1,1` at a draw of 2, giving 1/5, 8/25 and 49/75. No population has 4
+  called alleles and the fourth allele is in the third population alone.
+
+And a twenty-third pair for the shared individual of "The cases", which is
+enumerated differently: over the labelled gene copies of a set of
 individuals rather than over allele counts, so that two populations
 holding the one diploid individual `0/1` draw the same copies. At a draw
 of one allele it gives 0 where the closed form gives 0.5. It is the one
 pair of the file whose difference is not 0, and it is what shows that the
-overlap "The cases" warns about is real.
+overlap "The cases" warns about is real. The file names, for every pair,
+which of the two things it enumerated over, and it carries the exact
+rational of the closed form and of the enumeration side by side, since on
+that pair they differ.
+
+So the file holds 23 pairs, 22 with a difference of exactly 0 and that one
+with exactly 1/2. Two guards hold the added cases up, since no program
+outside popnei gives their values: the two ways agree exactly, and the
+enumeration over labelled gene copies reproduces the enumeration over
+allele counts on all 22 pairs whose populations share no individual, which
+is what says the 0 of the last pair comes from the sharing and not from a
+second way of counting.
 
 Two properties are asserted on the panel beside them: with
 `num_called_alleles` equal to the smallest `c` of the dataset the value is
@@ -458,7 +484,7 @@ them: they come from `docs/reports/diversity-method/panel.py`, which
 computes the five quantities in Python as this spec defines them and which
 produced the tables here. So they check that popnei's Rust agrees with
 that Python and nothing more; what checks the formula itself is the
-enumeration above, over the 18 pairs, and the two properties.
+enumeration above, over the 22 pairs, and the two properties.
 
 The worked example, the same six variants and two populations as above at
 `num_called_alleles` 4. Three variants have both populations at 4 called
@@ -938,7 +964,7 @@ their own and not items of `docs/specs/stats.md`, in the opening; that the
 five reference programs become development dependencies of popnei, also in
 the opening; and that the standardized private alleles are checked by
 enumerating every draw rather than by building ADZE, under "How it is
-verified" of that item, where the 18 pairs the two agree on are listed.
+verified" of that item, where the pairs the two agree on are listed.
 A fifth, whether `dadi` is worth an environment of its own, the writer
 decided, under "How it is verified" of the folded spectrum, because it
 changes no value a user sees and no public API.
