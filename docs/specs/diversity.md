@@ -752,12 +752,20 @@ own error accumulated over 1200 variants and not the eleven roundings of
 the decimals, which could give at most 7.5e-14. So the test that checks
 that sum compares within a tolerance and not exactly. They are compared
 within 1e-12 relative, by a pytest test at `calc_pop_diversity` reading
-`folded_sfs` against these literals. That is the tightest margin in this
-module: an `f64` projection of popnei's own differs from these stored
-values by up to 7.1e-14 relative, `dadi`'s error dominating, which is 14
-times inside the tolerance, where the same comparison against
-`vegan::rarefy` sits 550 times inside it. Both were measured on 24
-September 2026 by recomputing the panel in exact rational arithmetic.
+`folded_sfs` against these literals.
+
+**That is the tightest margin in this module**, and the two things it is
+made of are worth keeping apart, because an earlier version of this
+paragraph gave a number of one as a number of the other. popnei against
+`dadi`'s stored values is up to 6.674682e-14 relative, 15 times inside the
+tolerance, and almost all of it is `dadi`'s: popnei against exact rational
+arithmetic is 4.0e-16 on the same 33 values. The other comparison of this
+spec, the standardized allele counts against `vegan`'s stored values, is
+2.414e-16, 4143 times inside. So what the spectrum's tolerance is really
+spending is `dadi`'s error and not popnei's, which is why it cannot be
+tightened by improving popnei. Measured on 24 September 2026 by
+recomputing the panel from `tests/reference/stats/panel.vcf.gz` in exact
+rational arithmetic.
 `dadi` masks bin 0 and the bins above `g / 2` in a
 folded spectrum and popnei reports bin 0, so the comparison reads
 `fs.data` and not the masked array; the difference is one of presentation
@@ -1013,7 +1021,8 @@ with every individual.
 /// `num_called_alleles` below 2 or above the individuals of the reader
 /// times its ploidy, a `stats` naming no statistic, a name that is no
 /// statistic, a population with no individual, an index that is not an
-/// individual of the dataset, an individual asked for more than once, no
+/// individual of the dataset, an individual asked for more than once, a
+/// spectrum of more bins than the machine can hold, no
 /// variant in the reader, a ploidy the reader states that popnei does not
 /// read, a variant of more alleles than a count of them holds, a block
 /// saying it holds more variants than a pass counts them in, and those of
@@ -1080,7 +1089,8 @@ asked for without a draw size, a draw size below 2, a draw size above the
 individuals of the dataset times the ploidy, a `stats` naming no
 statistic at all, a name that is no statistic of this module, a population
 with no individual, an individual the dataset has not or named twice, a
-pass with no variant, a ploidy the reader states that popnei does not
+pass with no variant, a spectrum of more bins than the machine can hold, a
+ploidy the reader states that popnei does not
 read, a variant of more alleles than a count of them holds, and a block
 saying it holds more variants than the variants of a
 pass are counted in. The last three are of the variants the pass read and
