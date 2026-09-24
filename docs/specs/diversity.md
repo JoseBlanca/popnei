@@ -583,11 +583,18 @@ folded spectrum and popnei reports bin 0, so the comparison reads
 `fs.data` and not the masked array; the difference is one of presentation
 and the value is the same.
 
-`dadi` does not build on the project's Python, 3.14 with the free
-threading build, its `nlopt` dependency failing to compile on 24 September
-2026; it installs and runs on 3.12, so the reference script of this module
-makes an environment of its own with `uv venv --python 3.12`, which takes
-about 5 seconds, and says in a comment why. It is the first reference of
+`dadi` installs and runs on the project's Python, which is 3.14.5 with the
+global interpreter lock and which `.python-version` pins by its patch
+version. What it does not build on is 3.14.7, the free threading build,
+which `uv venv --python 3.14` picks by itself on the owner's machine: its
+`nlopt` dependency compiles from source and stops for want of `cmake`,
+which is not installed there. Both were measured on 24 September 2026, and
+the folded spectrum `dadi` gives is the same on the two interpreters. The
+reference script of this module nevertheless makes an environment of its
+own with `uv venv --python 3.12`, which takes about 5 seconds, so that the
+stored numbers come from the one version of `dadi` this spec names,
+whatever the development dependencies of popnei later hold; it says so in
+a comment. It is the first reference of
 popnei that is not a program run by a shell script or a library of the one
 environment, and it is worth that because the projection is the arithmetic
 here most easily got wrong, being a distribution over bins and not a
