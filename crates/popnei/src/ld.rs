@@ -37,7 +37,7 @@ use crate::variant::{
 mod dist;
 
 pub use dist::{
-    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_BINS, LdAndDist,
+    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_DIST_BINS, LdAndDist,
     LdAndDistOptions, LdBins, calc_ld_and_dist,
 };
 

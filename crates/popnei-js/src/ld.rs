@@ -36,7 +36,7 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::ld::{
-    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_BINS,
+    DEFAULT_MAX_ALLOWED_MAF, DEFAULT_MAX_DIST, DEFAULT_MIN_DIST, DEFAULT_NUM_DIST_BINS,
     LdAndDistOptions, LdBins, MAX_NUM_VARS_OF_THE_MATRIX, TheMatrixGivenAway, calc_ld_and_dist,
     calc_r2_matrix,
 };
@@ -270,14 +270,10 @@ pub fn default_max_dist() -> f64 {
 
 /// How many bins of distance the pairs are put into, when the caller says
 /// nothing.
-///
-/// It is `defaultNumDistBins` and not `defaultNumBins`, which is already
-/// the bins of the histogram of a statistic, as `DEFAULT_NUM_DIST_BINS` is
-/// in the Python binding crate for the same reason.
 #[wasm_bindgen]
 #[must_use]
 pub fn default_num_dist_bins() -> usize {
-    DEFAULT_NUM_BINS
+    DEFAULT_NUM_DIST_BINS
 }
 
 /// The largest major allele frequency a variant has in a population and is

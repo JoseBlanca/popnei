@@ -101,15 +101,12 @@ mod _core {
     // The four of `calc_ld_and_dist_per_pop`, the bins of the distances a
     // pair of variants is counted at and the major allele frequency a
     // variant is counted at, which are the constants of the core as well.
-    // The bins of the distances are `DEFAULT_NUM_DIST_BINS` here because
-    // `DEFAULT_NUM_BINS` above is already the bins of the histogram of a
-    // statistic, and one module of Python holds the two.
     #[pymodule_export]
     const DEFAULT_MIN_DIST: u64 = popnei::ld::DEFAULT_MIN_DIST;
     #[pymodule_export]
     const DEFAULT_MAX_DIST: u64 = popnei::ld::DEFAULT_MAX_DIST;
     #[pymodule_export]
-    const DEFAULT_NUM_DIST_BINS: usize = popnei::ld::DEFAULT_NUM_BINS;
+    const DEFAULT_NUM_DIST_BINS: usize = popnei::ld::DEFAULT_NUM_DIST_BINS;
     #[pymodule_export]
     const DEFAULT_MAX_ALLOWED_MAF: f64 = popnei::ld::DEFAULT_MAX_ALLOWED_MAF;
 

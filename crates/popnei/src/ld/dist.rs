@@ -821,7 +821,7 @@ pub const DEFAULT_MAX_DIST: u64 = 1_000_000;
 /// has none: it bins no pair and hands over a sample of them instead. At
 /// the [`DEFAULT_MAX_DIST`] of a million base pairs each bin is 20000 base
 /// pairs wide.
-pub const DEFAULT_NUM_BINS: usize = 50;
+pub const DEFAULT_NUM_DIST_BINS: usize = 50;
 
 /// The largest major allele frequency a variant has in a population and is
 /// still counted there when the user names no number, which is the default
