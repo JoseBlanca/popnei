@@ -29,7 +29,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 
 use popnei::block::BlockReader;
 use popnei::diversity::{
-    DiversityOptions, DiversityStats, calc_pop_diversity as diversity_of_the_pops,
+    DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity as diversity_of_the_pops,
 };
 use popnei::stats::Pops;
 
@@ -92,10 +92,12 @@ pub(crate) struct ArgumentsOfTheDiversity {
 /// than two alleles; when a population names an individual the pass does not
 /// give, names one twice or names none, and when `pops` holds no population;
 /// when the source cannot be read, a wrong line of a VCF among the causes;
-/// when the pass gives no variant; when a variant holds more alleles than a
-/// count of them holds; when the pass counted the variants of no population,
-/// which is a defect of popnei; and when a count is above what a JavaScript
-/// array of counts holds.
+/// when the draw is of more alleles than the dataset holds gene copies; when
+/// the pass gives no variant; when a variant holds more alleles than a
+/// count of them holds; when the pass counted the variants of no population or
+/// gave the populations spectra of different numbers of bins, which are both a
+/// defect of popnei; and when a count is above what a JavaScript array of
+/// counts holds.
 pub(crate) fn pop_diversity_of(
     source: &dyn OpenSource,
     steps: &Steps,
@@ -129,15 +131,18 @@ pub(crate) fn pop_diversity_of(
              of them"
         )));
     };
-    // The draw of a common number of called alleles is work package 3 of
-    // `docs/plans/diversity.md`: the core counts no variant in a draw yet
-    // and has no standardized value and no spectrum, so the arrays that
-    // hold them are the missing value here, which is what the spec gives
-    // them when there is no draw.
-    let none_in_a_draw = || vec![f64::NAN; num_pops];
+    let Some(num_vars_in_draw) = of_every_pop(num_pops, |pop| diversity.num_vars_in_draw(pop))
+    else {
+        return Err(JsPopneiError::Broken(format!(
+            "the pass counted the variants in the draw for no population, and it was \
+             over {num_pops} of them"
+        )));
+    };
     // The package reads a statistic as the total and the standardized value
     // together and refuses a result that holds one of the two, so the
-    // second is there exactly when the first is.
+    // second is there exactly when the first is: the two accessors of the core
+    // answer with nothing for the same reason, that nobody asked for the
+    // statistic.
     let num_alleles_total = total_for_javascript(
         of_every_pop(num_pops, |pop| diversity.num_alleles(pop)),
         "the alleles one population called",
@@ -150,26 +155,94 @@ pub(crate) fn pop_diversity_of(
         of_every_pop(num_pops, |pop| diversity.num_variable_vars(pop)),
         "the variable variants of one population",
     )?;
+    let spectrum = the_spectrum_of_every_pop(num_pops, &diversity)?;
     Ok(PopDiversityOfAPass {
         pop_names: Some(pop_names),
         num_vars_with_data: Some(for_javascript_each(
             num_vars_with_data,
             "the variants of one population",
         )?),
-        num_vars_in_draw: Some(vec![0_u32; num_pops]),
+        num_vars_in_draw: Some(for_javascript_each(
+            num_vars_in_draw,
+            "the variants in the draw for one population",
+        )?),
         num_vars_every_pop: for_javascript(
             diversity.num_vars_every_pop(),
             "the variants that counted for every population",
         )?,
-        num_vars_every_pop_in_draw: 0,
-        num_alleles_in_draw: num_alleles_total.is_some().then(none_in_a_draw),
+        num_vars_every_pop_in_draw: for_javascript(
+            diversity.num_vars_every_pop_in_draw(),
+            "the variants every population reached the draw at",
+        )?,
+        num_alleles_in_draw: of_every_pop(num_pops, |pop| diversity.num_alleles_in_draw(pop)),
         num_alleles_total,
-        private_alleles_in_draw: private_alleles_total.is_some().then(none_in_a_draw),
+        private_alleles_in_draw: of_every_pop(num_pops, |pop| {
+            diversity.private_alleles_in_draw(pop)
+        }),
         private_alleles_total,
-        variable_vars_in_draw: variable_vars_total.is_some().then(none_in_a_draw),
+        variable_vars_in_draw: of_every_pop(num_pops, |pop| {
+            diversity.variable_vars_ratio_in_draw(pop)
+        }),
         variable_vars_total,
+        num_sfs_bins: spectrum.num_bins,
+        folded_sfs: spectrum.bins_of_every_pop,
         fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
         counts,
+    })
+}
+
+/// The folded spectrum of every population as it crosses to JavaScript: the
+/// bins of the first population, then those of the second, in one array, with
+/// how many bins each of them has.
+///
+/// A `Vec<Vec<f64>>` is not one of the types wasm-bindgen carries, so the
+/// values cross flat, as the names of the individuals of the populations do,
+/// and the bin count is what cuts them: the package hands a user one
+/// `Float64Array` per population, so the bins of one population lie together.
+struct SpectrumOfEveryPop {
+    /// The bins of each population one after another, and nothing when nobody
+    /// asked for the spectrum.
+    bins_of_every_pop: Option<Vec<f64>>,
+    /// How many bins each population has, which is
+    /// `num_called_alleles / 2 + 1`, and 0 when nobody asked for the
+    /// spectrum.
+    num_bins: u32,
+}
+
+/// The folded spectrum of every population of `diversity`, flat.
+///
+/// # Errors
+///
+/// When the populations do not all have the same bins, and when a population
+/// has more bins than a count of them holds, which are both a defect of
+/// popnei: the bins of a spectrum are the counts of the rarer allele from 0 to
+/// `num_called_alleles` over 2, one draw size for the whole call, and the core
+/// refuses a draw of more alleles than the dataset holds gene copies.
+fn the_spectrum_of_every_pop(
+    num_pops: usize,
+    diversity: &PopDiversity,
+) -> Result<SpectrumOfEveryPop, JsPopneiError> {
+    let Some(of_each_pop) = of_every_pop(num_pops, |pop| diversity.folded_sfs(pop)) else {
+        return Ok(SpectrumOfEveryPop {
+            bins_of_every_pop: None,
+            num_bins: 0,
+        });
+    };
+    let num_bins = of_each_pop.first().map_or(0, |bins| bins.len());
+    if of_each_pop.iter().any(|bins| bins.len() != num_bins) {
+        return Err(JsPopneiError::Broken(format!(
+            "the pass gave the folded spectrum of {num_pops} populations and not the \
+             same {num_bins} bins for each of them"
+        )));
+    }
+    Ok(SpectrumOfEveryPop {
+        bins_of_every_pop: Some(of_each_pop.concat()),
+        num_bins: u32::try_from(num_bins).map_err(|_| {
+            JsPopneiError::NotInJavaScript(format!(
+                "the folded spectrum of one population came to {num_bins} bins, more \
+                 than a JavaScript array of counts holds"
+            ))
+        })?,
     })
 }
 
@@ -292,8 +365,9 @@ fn for_javascript(count: u64, what: &str) -> Result<u32, JsPopneiError> {
 /// populations in their order, the variants that counted for each of them
 /// and those of them that reached the draw, the same two counts over the
 /// populations together, the alleles called, the private ones and the
-/// variable variants each as a total and a standardized value, F_IS, and the
-/// counts of the pass.
+/// variable variants each as a total and a standardized value, the folded
+/// spectrum of every population with how many bins each of them has, F_IS,
+/// and the counts of the pass.
 ///
 /// Every array leaves the memory of wasm the first time it is asked for, and
 /// the call after that gives nothing: the package reads each of them once,
@@ -311,6 +385,12 @@ pub struct PopDiversityOfAPass {
     private_alleles_in_draw: Option<Vec<f64>>,
     variable_vars_total: Option<Vec<u32>>,
     variable_vars_in_draw: Option<Vec<f64>>,
+    /// The bins of the first population, then those of the second, in one
+    /// array: a `Vec<Vec<f64>>` is not one of the types wasm-bindgen carries.
+    folded_sfs: Option<Vec<f64>>,
+    /// How many bins each population has, which cuts `folded_sfs` into the
+    /// spectrum of each of them.
+    num_sfs_bins: u32,
     fis: Option<Vec<f64>>,
     counts: PassCounts,
 }
@@ -379,6 +459,22 @@ impl PopDiversityOfAPass {
     /// allele, averaged over the variants in the draw.
     pub fn variable_vars_in_draw(&mut self) -> Option<Vec<f64>> {
         self.variable_vars_in_draw.take()
+    }
+
+    /// How many variants of each population a draw of `num_called_alleles` is
+    /// expected to show each count of the rarer allele at, and nothing when
+    /// nobody asked for the spectrum: the bins of the first population, then
+    /// those of the second, which [`PopDiversityOfAPass::num_sfs_bins`] cuts
+    /// into one spectrum per population.
+    pub fn folded_sfs(&mut self) -> Option<Vec<f64>> {
+        self.folded_sfs.take()
+    }
+
+    /// How many bins the spectrum of each population has, which is
+    /// `num_called_alleles / 2 + 1`, and 0 when nobody asked for the spectrum.
+    #[must_use]
+    pub fn num_sfs_bins(&self) -> u32 {
+        self.num_sfs_bins
     }
 
     /// The inbreeding coefficient of each population, NaN where it has none.

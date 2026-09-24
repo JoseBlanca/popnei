@@ -1,6 +1,7 @@
 """How much variety each population holds, from Python: the alleles each
-population called, the private ones among them, the variants that vary in it
-and F_IS, over the panel and over the cases a user can reach.
+population called, the private ones among them, the variants that vary in it,
+how its variants are spread over the count of their rarer allele and F_IS,
+over the panel and over the cases a user can reach.
 
 `docs/specs/diversity.md` has the five statistics and, under "How it is
 verified" of each, the program its numbers come from. pyNei has none of the
@@ -16,15 +17,16 @@ three.
 The counts the tests assert are read from the files of
 `tests/reference/diversity/`, whose `README.md` says which file holds what
 and which program wrote it: `adegenet` 2.1.11 counted the alleles and the
-variable variants, `poppr` 2.9.8 the private ones, and `scikit-allel` 1.3.13
-gave the plain form of F_IS. The unbiased form, which popnei returns, is in
-the spec and not in a file: no program outside popnei computes it, and the
-values there come from `docs/reports/diversity-method/panel.py`, which works
-the five quantities out in Python as the spec defines them.
+variable variants, `poppr` 2.9.8 the private ones, `vegan` 2.7.6 measured the
+alleles a draw of 20 shows, `dadi` 2.4.4 projected the spectrum to a draw of
+20, and `scikit-allel` 1.3.13 gave the plain form of F_IS.
 
-The draw of a common number of called alleles is not asserted here: the
-standardized values and the folded spectrum are work package 3 of
-`docs/plans/diversity.md`.
+Two sets of numbers are literals here instead, because no program outside
+popnei computes them: the unbiased F_IS, which popnei returns where
+`scikit-allel` returns the plain form, and the standardized private alleles.
+Both come from `docs/reports/diversity-method/panel.py`, which works the five
+quantities out in Python as the spec defines them, so what they check is
+popnei's Rust against that Python.
 """
 
 import math
@@ -51,6 +53,17 @@ PANEL = STATS_REFERENCE_DIR / "panel.vcf.gz"
 # of every item of the spec ran the reference programs at.
 PANEL_NUM_VARS = 1200
 PANEL_MIN_NUM_INDIVIDUALS = 20
+
+# The draw the reference programs were run at, and the bins of a spectrum of
+# that draw, which are the counts of the rarer allele from 0 to 20 // 2.
+PANEL_NUM_CALLED_ALLELES = 20
+PANEL_SFS_BINS = 11
+
+# Every gene copy the panel holds, its 200 individuals at a ploidy of 2, which
+# is the largest draw it allows: the panel's missing genotypes leave no
+# population able to call that many alleles at any variant, so the draw is
+# taken and every value of it is missing, and one allele more is refused.
+EVERY_GENE_COPY_OF_THE_PANEL = 400
 
 # What a value of popnei may differ from the number it is compared with by,
 # which is what every item of the spec asks for its floats: 1e-12 of the
@@ -82,6 +95,24 @@ PANEL_FIS = {
     "p1": -0.018110713076467277,
     "p2": -0.018458583231322434,
 }
+
+# The standardized private alleles of the three populations at a draw of 20,
+# from "How it is verified" of "The private alleles" of the spec, which gives
+# them to ten decimals. No program outside popnei computes a standardized
+# private allele value, so there is no file to read them from, and
+# `docs/reports/diversity-method/panel.py` is where they come from.
+PANEL_PRIVATE_ALLELES_IN_DRAW = {
+    "p0": 0.0112196177,
+    "p1": 0.0099715392,
+    "p2": 0.0089014974,
+}
+
+# What a number printed to ten decimals stands for, which is the bound those
+# three are compared within: anything within 5e-11 of what is written rounds
+# to the same ten decimals. It is wider than `OF_A_REFERENCE_VALUE` below,
+# 1e-12 of 0.0112 being 1.1e-14, because the digits the spec prints are all
+# there are.
+OF_TEN_DECIMALS = 5e-11
 
 
 def _pops_of(path: Path) -> dict[str, list[str]]:
@@ -155,8 +186,9 @@ def _the_same_number(ours, theirs) -> bool:
     return math.isclose(ours, theirs, rel_tol=OF_A_REFERENCE_VALUE, abs_tol=0)
 
 
-# The four statistics of this work package, which are every one but the
-# folded spectrum: that one needs a draw, and the draw is work package 3.
+# The four statistics that need no draw, which is every one but the folded
+# spectrum: the bins of a spectrum are the counts of the rarer allele in a
+# draw, so a call that names it gives `num_called_alleles` as well.
 WITH_NO_SPECTRUM = (
     PopDiversityStat.NUM_ALLELES,
     PopDiversityStat.PRIVATE_ALLELES,
@@ -361,29 +393,11 @@ def test_the_statistics_are_given_by_name_and_not_after_the_populations() -> Non
     assert diversity.pops == PANEL_POP_NAMES
 
 
-def test_the_draw_and_the_spectrum_are_not_built_yet() -> None:
-    """A `num_called_alleles` and a `stats` that names the spectrum are
-    refused while the pass computes neither, and the message names the work
-    package that builds them.
-
-    Without the refusal both give an answer that is wrong and reads as an
-    answer: NaN in the three `in_draw` columns, which this module keeps for a
-    draw above every population's called alleles, and `None` in `folded_sfs`,
-    which it keeps for a statistic nobody asked for.
-    """
-    with pytest.raises(NotImplementedError, match="work package 3"):
-        _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
-    with pytest.raises(NotImplementedError, match="work package 3"):
-        _of_the_panel(stats=(PopDiversityStat.FOLDED_SFS,))
-    with pytest.raises(NotImplementedError, match="folded site frequency spectrum"):
-        _of_the_panel(stats=(PopDiversityStat.FIS, PopDiversityStat.FOLDED_SFS))
-
-
 def test_a_num_called_alleles_that_is_no_draw_is_refused_as_a_wrong_argument() -> None:
-    """A value that is no draw at all is wrong whatever popnei computes, so it
-    is refused as one and not as a statistic that is not built: a whole number
-    is what the argument takes, and 0 and 1 are draws no standardized value
-    can be taken over."""
+    """A whole number is what the argument takes, and 0 and 1 are draws no
+    standardized value can be taken over: what is no whole number at all is a
+    `TypeError` and a number out of range is a `ValueError`, each naming the
+    argument."""
     with pytest.raises(TypeError, match="num_called_alleles"):
         _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=2.5)
     with pytest.raises(TypeError, match="num_called_alleles"):
@@ -394,14 +408,6 @@ def test_a_num_called_alleles_that_is_no_draw_is_refused_as_a_wrong_argument() -
         _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=1)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the draw is task 3.5 of `docs/plans/diversity.md`, and until it is "
-    "built `calc_pop_diversity` refuses a `num_called_alleles`. The day the pass "
-    "fills the three `in_draw` columns and the two counts of the variants in a "
-    "draw this passes, `strict` turns that into a failure of the suite, and "
-    "whoever built it has to take this marker off and leave the assertions.",
-)
 def test_the_standardized_values_of_the_panel_are_vegans() -> None:
     """The alleles a draw of 20 is expected to show and the chance that such a
     draw varies, averaged over the variants of each population of the panel,
@@ -413,7 +419,9 @@ def test_the_standardized_values_of_the_panel_are_vegans() -> None:
     them.
     """
     with_no_draw = _of_the_panel(stats=WITH_NO_SPECTRUM)
-    of_a_draw_of_20 = _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=20)
+    of_a_draw_of_20 = _of_the_panel(
+        stats=WITH_NO_SPECTRUM, num_called_alleles=PANEL_NUM_CALLED_ALLELES
+    )
     of_the_alleles = _reference("panel_num_alleles.tsv")
     of_the_variable = _reference("panel_variable_vars.tsv")
 
@@ -443,26 +451,57 @@ def test_the_standardized_values_of_the_panel_are_vegans() -> None:
         assert of_a_draw_of_20.fis[pop] == with_no_draw.fis[pop]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the folded site frequency spectrum is task 3.5 of "
-    "`docs/plans/diversity.md`, and until it is built `calc_pop_diversity` "
-    "refuses a `stats` that names it. The day the pass fills it this passes, "
-    "`strict` turns that into a failure of the suite, and whoever built it has "
-    "to take this marker off and leave the assertions.",
-)
+def test_the_standardized_private_alleles_of_the_panel_are_the_ones_of_the_spec() -> (
+    None
+):
+    """The alleles a draw of 20 is expected to show in one population of the
+    panel and in no other, averaged over the variants every population reached
+    the draw at, against the three values of the spec.
+
+    They are literals and not read from a file because no program outside
+    popnei computes a standardized private allele value: the spec gives them
+    under "How it is verified" of "The private alleles", from
+    `docs/reports/diversity-method/panel.py`, so what this asserts is that
+    popnei's Rust agrees with that Python over the 1200 variants. What checks
+    the formula itself is the enumeration of every draw, which the cargo tests
+    run over 22 pairs of a case and a population.
+    """
+    diversity = _of_the_panel(
+        stats=WITH_NO_SPECTRUM, num_called_alleles=PANEL_NUM_CALLED_ALLELES
+    )
+
+    assert diversity.num_vars_every_pop_in_draw == PANEL_NUM_VARS
+    for pop in PANEL_POP_NAMES:
+        of_the_spec = PANEL_PRIVATE_ALLELES_IN_DRAW[pop]
+        ours = diversity.private_alleles.loc[pop, "in_draw"]
+        assert ours == pytest.approx(of_the_spec, abs=OF_TEN_DECIMALS, rel=0), (
+            f"the private alleles a draw of 20 shows in {pop} are {ours!r} and "
+            f"the spec gives {of_the_spec}"
+        )
+
+
 def test_the_folded_spectrum_of_the_panel_is_dadis() -> None:
     """The variants of each population of the panel expected to show each
     count of their rarer allele in a draw of 20, against `dadi`'s numbers
     stored in `tests/reference/diversity/panel_folded_sfs_dadi.tsv`: eleven
     rows, the counts 0 to 10, each column summing to the 1200 variants that
-    counted."""
+    counted.
+
+    The three sums are compared within the tolerance and not exactly. Each
+    variant in the draw gives the eleven bins the chance of showing that many
+    rarer copies there, so a column sums to the variants it was taken over,
+    and where the addition is done decides the last bits: `dadi`'s stored
+    columns are short of 1200 by 1.3e-11, 7.0e-11 and 4.0e-11 and popnei's own
+    are within 2.3e-13, both inside the 1.2e-9 that 1e-12 of 1200 allows,
+    measured on 24 September 2026.
+    """
     diversity = _of_the_panel(
-        stats=(PopDiversityStat.FOLDED_SFS,), num_called_alleles=20
+        stats=(PopDiversityStat.FOLDED_SFS,),
+        num_called_alleles=PANEL_NUM_CALLED_ALLELES,
     )
     of_dadi = _reference_spectrum()
 
-    assert list(diversity.folded_sfs.index) == list(range(11))
+    assert list(diversity.folded_sfs.index) == list(range(PANEL_SFS_BINS))
     for pop in PANEL_POP_NAMES:
         for rarer_allele, theirs in enumerate(of_dadi[pop]):
             assert _the_same_number(
@@ -473,15 +512,6 @@ def test_the_folded_spectrum_of_the_panel_is_dadis() -> None:
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the spectrum is task 3.5 of `docs/plans/diversity.md`, and until it "
-    "is built `calc_pop_diversity` refuses a `stats` that names it with a "
-    "`NotImplementedError`, before the core is reached. The day the pass fills "
-    "the spectrum this `ValueError` of the core is what a user who gives no "
-    "`num_called_alleles` reads again, `strict` turns the pass into a failure of "
-    "the suite, and whoever built it has to take this marker off.",
-)
 def test_the_spectrum_asked_for_with_no_draw_is_refused() -> None:
     """The bins of a folded spectrum are the counts of the rarer allele in a
     draw, so the spectrum needs `num_called_alleles`. A user who names no
@@ -497,6 +527,120 @@ def test_a_draw_of_fewer_than_two_alleles_is_refused() -> None:
     so every standardized value of it would say nothing."""
     with pytest.raises(ValueError, match="num_called_alleles"):
         _of_the_panel(stats=WITH_NO_SPECTRUM, num_called_alleles=1)
+
+
+def test_a_draw_no_population_can_fill_leaves_the_draw_missing_and_the_rest_alone() -> (
+    None
+):
+    """A `num_called_alleles` of 400 on the panel is every gene copy its 200
+    diploid individuals hold, which the largest draw the dataset allows, and
+    the 3 in 100 genotypes it is missing leave no population able to call that
+    many alleles at any variant.
+
+    It is not an error: the two counts of the variants in a draw are 0, the
+    three `in_draw` columns are NaN and every bin of the spectrum is 0, which
+    is what says that the question was not answered. The totals, the means,
+    the ratio and F_IS read no draw and are the numbers of a call that gave
+    none.
+    """
+    with_no_draw = _of_the_panel(stats=WITH_NO_SPECTRUM)
+    of_every_copy = _of_the_panel(
+        stats=(*WITH_NO_SPECTRUM, PopDiversityStat.FOLDED_SFS),
+        num_called_alleles=EVERY_GENE_COPY_OF_THE_PANEL,
+    )
+
+    assert of_every_copy.num_vars_every_pop == PANEL_NUM_VARS
+    assert of_every_copy.num_vars_every_pop_in_draw == 0
+    assert list(of_every_copy.folded_sfs.index) == list(
+        range(EVERY_GENE_COPY_OF_THE_PANEL // 2 + 1)
+    )
+    for pop in PANEL_POP_NAMES:
+        assert of_every_copy.num_vars.loc[pop, "with_data"] == PANEL_NUM_VARS
+        assert of_every_copy.num_vars.loc[pop, "in_draw"] == 0
+        for statistic in ("num_alleles", "private_alleles", "variable_vars_ratio"):
+            assert math.isnan(getattr(of_every_copy, statistic).loc[pop, "in_draw"]), (
+                f"the {statistic} of {pop} in a draw of {EVERY_GENE_COPY_OF_THE_PANEL}"
+            )
+        assert (of_every_copy.folded_sfs[pop] == 0).all(), f"the spectrum of {pop}"
+        # The draw changes the standardized values alone.
+        for statistic, column in (
+            ("num_alleles", "total"),
+            ("num_alleles", "mean"),
+            ("private_alleles", "total"),
+            ("private_alleles", "mean"),
+            ("variable_vars_ratio", "total"),
+            ("variable_vars_ratio", "ratio"),
+        ):
+            assert (
+                getattr(of_every_copy, statistic).loc[pop, column]
+                == getattr(with_no_draw, statistic).loc[pop, column]
+            ), f"the {column} of the {statistic} of {pop}"
+        assert of_every_copy.fis[pop] == with_no_draw.fis[pop]
+
+
+def test_a_draw_larger_than_the_dataset_holds_is_refused_and_names_no_file() -> None:
+    """One allele more than every gene copy the dataset holds is a draw no
+    variant of any population could reach, so it is a user's mistake and not a
+    fact about the data, and the message names the largest draw the dataset
+    allows.
+
+    The panel is 200 diploid individuals, so 400 is that largest draw and 401
+    is refused. The message names no file: what a user wrote is wrong whatever
+    variants are read.
+    """
+    with pytest.raises(ValueError, match="`num_called_alleles` is 401") as refusal:
+        _of_the_panel(
+            stats=WITH_NO_SPECTRUM,
+            num_called_alleles=EVERY_GENE_COPY_OF_THE_PANEL + 1,
+        )
+
+    message = str(refusal.value)
+    assert "the largest draw this dataset allows is 400" in message
+    assert "200 individuals at a ploidy of 2" in message
+    assert PANEL.name not in message
+    assert getattr(refusal.value, "filename", None) is None
+
+
+def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> None:
+    """Two variants of three diploid individuals in two populations at a draw
+    of 2, where one population is short of the draw at the second variant, so
+    that the four counts of variants come out as four different numbers.
+
+    `pop1` is `ind1` and `ind2`, which call 4 alleles at both variants, and
+    `pop2` is `ind3`, which calls 2 at the first and, its genotype there being
+    the half called `0/.`, one at the second. At a `min_num_individuals` of 0
+    that one allele counts the variant for `pop2`, since the population called
+    something, and 1 is below the draw of 2, so the variant is out of the draw
+    for it.
+
+    The variants with data are then 2 and 2, the variants in the draw 2 and 1,
+    the variants every population counted 2 and the variants every population
+    reached the draw at 1. On the panel all four are 1200, so a value taken
+    from the wrong one of them gives the same number there.
+    """
+    path = write_vcf(
+        [
+            "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t0/0\t0/0",
+            "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
+        ]
+    )
+
+    diversity = calc_pop_diversity(
+        open_vcf(path),
+        pops={"pop1": ["ind1", "ind2"], "pop2": ["ind3"]},
+        stats=WITH_NO_SPECTRUM,
+        num_called_alleles=2,
+        min_num_individuals=0,
+    )
+
+    assert list(diversity.num_vars["with_data"]) == [2, 2]
+    assert list(diversity.num_vars["in_draw"]) == [2, 1]
+    assert diversity.num_vars_every_pop == 2
+    assert diversity.num_vars_every_pop_in_draw == 1
+    for pop in ("pop1", "pop2"):
+        for statistic in ("num_alleles", "private_alleles", "variable_vars_ratio"):
+            value = getattr(diversity, statistic).loc[pop, "in_draw"]
+            assert not math.isnan(value), f"the {statistic} of {pop} in the draw"
 
 
 def test_a_population_that_names_no_individual_of_the_pass_is_refused() -> None:
@@ -647,38 +791,6 @@ def test_a_name_that_is_of_no_statistic_is_refused_and_names_no_file() -> None:
     assert "num_alleles, private_alleles, variable_vars_ratio, folded_sfs, fis" in (
         message
     )
-    assert PANEL.name not in message
-    assert getattr(refusal.value, "filename", None) is None
-
-
-def test_a_draw_larger_than_the_dataset_is_refused_and_names_no_file() -> None:
-    """What a user who calls `popnei._core` themselves reads.
-
-    The package refuses every `num_called_alleles` until the draw is built
-    over it, so a draw reaches the Rust core only from a caller that went
-    round the package. The panel is 200 diploid individuals, so 400 called
-    alleles is every gene copy it holds and the largest draw it allows: that
-    draw is taken, although the missing genotypes of the panel leave no
-    population able to fill it, and 401 is refused. The message names the draw
-    and the largest one, and names no file: what a user wrote is wrong
-    whatever variants are read.
-    """
-    of_400 = _panel()
-    of_401 = _panel()
-
-    at_400 = _core.calc_pop_diversity(
-        of_400._source, of_400._steps, None, ["num_alleles"], 400, 20
-    )
-
-    with pytest.raises(ValueError, match="`num_called_alleles` is 401") as refusal:
-        _core.calc_pop_diversity(
-            of_401._source, of_401._steps, None, ["num_alleles"], 401, 20
-        )
-
-    assert at_400[0] == ["pop"]
-    message = str(refusal.value)
-    assert "the largest draw this dataset allows is 400" in message
-    assert "200 individuals at a ploidy of 2" in message
     assert PANEL.name not in message
     assert getattr(refusal.value, "filename", None) is None
 

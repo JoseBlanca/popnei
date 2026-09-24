@@ -1,17 +1,18 @@
 /**
  * How much variety each population holds, from TypeScript: the alleles each
  * population called, the private ones among them, the variants that vary in
- * it and F_IS, over the panel and over the cases a user can reach.
+ * it, how its variants are spread over the count of their rarer allele and
+ * F_IS, over the panel and over the cases a user can reach.
  *
  * `docs/specs/diversity.md` has the five statistics and, under "How it is
  * verified" of each, the program its numbers come from. The literals here
  * are the ones `tests/test_diversity.py` asserts, which is what goal 1 of
  * `docs/objectives.md` asks for: the two packages give a user the same
  * numbers. The Python suite reads them from the files of
- * `tests/reference/diversity/`, which `adegenet` 2.1.11, `poppr` 2.9.8 and
- * `scikit-allel` 1.3.13 wrote; node runs none of those programs, so they are
- * written here as literals, as section 11 of `docs/architecture.md` has it
- * for the tests of this package.
+ * `tests/reference/diversity/`, which `adegenet` 2.1.11, `poppr` 2.9.8,
+ * `vegan` 2.7.6, `dadi` 2.4.4 and `scikit-allel` 1.3.13 wrote; node runs none
+ * of those programs, so they are written here as literals, as section 11 of
+ * `docs/architecture.md` has it for the tests of this package.
  *
  * The dataset is the panel of `docs/specs/stats.md`,
  * `tests/reference/stats/panel.vcf.gz`: 1200 biallelic diploid variants of
@@ -19,14 +20,6 @@
  * populations `p0`, `p1` and `p2` of 48, 68 and 84 individuals that
  * `panel_pops_bcftools.txt` beside it holds. At `minNumIndividuals` 20 all
  * 1200 variants count for all three.
- *
- * The draw of a common number of called alleles is refused and not
- * asserted: the three standardized columns and the folded spectrum are work
- * package 3 of `docs/plans/diversity.md`, and until they are there a call
- * that gives `numCalledAlleles`, or that asks for the spectrum, is an
- * `Error`, since the NaN and the 0 such a call would read are what a result
- * gives for a draw no population reached. One test holds those two refusals
- * and fails the day the draw arrives, which is what it is for.
  */
 
 import assert from "node:assert/strict";
@@ -122,9 +115,93 @@ const PANEL_FIS = [
 const OF_A_REFERENCE_VALUE = 1e-12;
 
 /**
- * The four statistics of this work package, which are every one but the
- * folded spectrum: that one needs a draw, and the draw is work package 3 of
- * `docs/plans/diversity.md`.
+ * How many called alleles every population is brought down to in the draw the
+ * reference programs were run at, and how many bins a spectrum of that draw
+ * has: the counts of the rarer allele from 0 to 20 / 2.
+ */
+const PANEL_NUM_CALLED_ALLELES = 20;
+const PANEL_SFS_BINS = 11;
+
+/**
+ * Every gene copy the panel holds, its 200 individuals at a ploidy of 2,
+ * which is the largest draw it allows: the 3 in 100 genotypes it is missing
+ * leave no population able to call that many alleles at any variant, so the
+ * draw is taken and every value of it is missing, and one allele more is
+ * refused.
+ */
+const EVERY_GENE_COPY_OF_THE_PANEL = 400;
+
+/**
+ * The alleles a draw of 20 is expected to show in each population, which
+ * `vegan` measured, and the chance that such a draw shows more than one
+ * allele, which is each of those less 1: every variant of the panel has two
+ * alleles, so a draw there shows one of them or both.
+ */
+const PANEL_NUM_ALLELES_IN_DRAW = [
+  1.9283948650041205, 1.9219209943237829, 1.9197370843937562,
+];
+const PANEL_VARIABLE_VARS_RATIO_IN_DRAW = PANEL_NUM_ALLELES_IN_DRAW.map(
+  (alleles) => alleles - 1,
+);
+
+/**
+ * The alleles a draw of 20 is expected to show in one population and in no
+ * other, averaged over the 1200 variants every population reached the draw
+ * at, from "How it is verified" of "The private alleles" of the spec, which
+ * gives them to ten decimals.
+ *
+ * No program outside popnei computes a standardized private allele value, so
+ * these come from `docs/reports/diversity-method/panel.py` as the unbiased
+ * F_IS above does.
+ */
+const PANEL_PRIVATE_ALLELES_IN_DRAW = [
+  0.0112196177, 0.0099715392, 0.0089014974,
+];
+
+/**
+ * What a number printed to ten decimals stands for, which is the bound those
+ * three are compared within: anything within 5e-11 of what is written rounds
+ * to the same ten decimals.
+ */
+const OF_TEN_DECIMALS = 5e-11;
+
+/**
+ * How many variants of each population a draw of 20 is expected to show each
+ * count of the rarer allele at, from `dadi` through
+ * `tests/reference/diversity/panel_folded_sfs_dadi.tsv`: one array per
+ * population, the count 0 first.
+ *
+ * Each column sums to the 1200 variants that counted, and the sum is compared
+ * within the tolerance and not exactly: `dadi`'s stored columns are short of
+ * 1200 by 1.3e-11, 7.0e-11 and 4.0e-11 and popnei's own are within 2.3e-13,
+ * both inside the 1.2e-9 that 1e-12 of 1200 allows, measured on 24 September
+ * 2026.
+ */
+const PANEL_FOLDED_SFS = [
+  [
+    85.92616199505309, 92.99651940325519, 106.88963282305795,
+    115.54543767638108, 120.50559386225342, 122.94119349597617,
+    124.08151270035586, 124.23937415023605, 123.49607649027779,
+    122.42162180189403, 60.95687560124602,
+  ],
+  [
+    93.69480681145635, 95.45880325926598, 103.72623430085372,
+    110.6831031478722, 116.6729455230275, 121.05177240834107,
+    123.60219049366185, 124.59443950850212, 124.54032617876919,
+    124.0682314877391, 61.907146880441395,
+  ],
+  [
+    96.3154987274892, 101.37814416196603, 108.05152927646787,
+    114.8500079366327, 119.73977861754621, 121.88331138362474,
+    121.86450896763563, 120.60097546763699, 118.97681357034003,
+    117.71473832544012, 58.62469356518016,
+  ],
+];
+
+/**
+ * The four statistics that need no draw, which are every one but the folded
+ * spectrum: the bins of a spectrum are the counts of the rarer allele in a
+ * draw, so a call that names it gives `numCalledAlleles` as well.
  */
 const WITH_NO_SPECTRUM = [
   "num_alleles",
@@ -225,6 +302,26 @@ function assertValues(
     assert.ok(
       Math.abs(ours - value) <=
         OF_A_REFERENCE_VALUE * Math.max(Math.abs(ours), Math.abs(value)),
+      `the ${what} of ${PANEL_POP_NAMES[pop]} is ${ours} and not ${value}`,
+    );
+  }
+}
+
+/**
+ * That `found` holds the numbers of `expected`, each within `OF_TEN_DECIMALS`
+ * of its value, which is what a number the spec prints to ten decimals stands
+ * for.
+ */
+function assertToTenDecimals(
+  found: Float64Array,
+  expected: readonly number[],
+  what: string,
+): void {
+  assert.equal(found.length, expected.length, `the populations of ${what}`);
+  for (const [pop, value] of expected.entries()) {
+    const ours = found[pop] as number;
+    assert.ok(
+      Math.abs(ours - value) <= OF_TEN_DECIMALS,
       `the ${what} of ${PANEL_POP_NAMES[pop]} is ${ours} and not ${value}`,
     );
   }
@@ -357,40 +454,192 @@ test("a call that names no statistic gives the four that need no draw", () => {
   assert.deepEqual(diversity.numVars.withData, Uint32Array.of(PANEL_NUM_VARS));
 });
 
-test("a draw of a common number of called alleles is refused until it is calculated", () => {
-  // THE DAY THE DRAW ARRIVES THIS TEST FAILS, AND THAT IS WHAT IT IS FOR.
-  // Nothing of the draw is calculated: the three `inDraw` columns are NaN,
-  // `numVars.inDraw` is 0 and `foldedSfs` is `null`, which are the values a
-  // result gives for a draw no population reached and for a statistic nobody
-  // asked for, so a call that asked for a draw would read them as an answer.
-  // Both calls are refused instead.
-  //
-  // Work package 3 of `docs/plans/diversity.md` calculates it, and whoever
-  // does it takes the two refusals out of `js/popnei/src/diversity.ts` and
-  // replaces this test with the values of "How it is verified" of the spec:
-  // at `numCalledAlleles` 20 the mean alleles of the panel in the draw are
-  // 1.9283948650041205, 1.9219209943237829 and 1.9197370843937562, its
-  // ratios of variable variants in the draw are those three less one, and
-  // `numVars.inDraw` is 1200 for each of the three populations.
-  assert.throws(
-    () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: 20 }),
-    { message: /`numCalledAlleles` is 20 and the draw/ },
+test("the standardized values of the panel in a draw of 20 are the ones of the reference", () => {
+  // The alleles a draw of 20 shows and the chance that such a draw varies,
+  // which `vegan` measured, and the private alleles of the draw, which the
+  // spec gives: all three populations of the panel reach 20 called alleles at
+  // every one of its 1200 variants, so the three standardized values are
+  // means over all of them and `numVars.inDraw` is 1200.
+  const diversity = ofThePanel({
+    stats: WITH_NO_SPECTRUM,
+    numCalledAlleles: PANEL_NUM_CALLED_ALLELES,
+  });
+
+  assertValues(
+    counted(diversity.numAlleles, "count of alleles").inDraw,
+    PANEL_NUM_ALLELES_IN_DRAW,
+    "alleles a draw of 20 shows",
   );
+  assertValues(
+    counted(diversity.variableVarsRatio, "count of variable variants").inDraw,
+    PANEL_VARIABLE_VARS_RATIO_IN_DRAW,
+    "chance that a draw of 20 varies",
+  );
+  assertToTenDecimals(
+    counted(diversity.privateAlleles, "count of private alleles").inDraw,
+    PANEL_PRIVATE_ALLELES_IN_DRAW,
+    "private alleles a draw of 20 shows",
+  );
+  assert.deepEqual(
+    diversity.numVars.inDraw,
+    Uint32Array.of(PANEL_NUM_VARS, PANEL_NUM_VARS, PANEL_NUM_VARS),
+  );
+  assert.equal(diversity.numVarsEveryPopInDraw, PANEL_NUM_VARS);
+  // A draw changes the standardized values alone: the totals and F_IS are the
+  // numbers of a call that gave none.
+  const withNoDraw = ofThePanel({ stats: WITH_NO_SPECTRUM });
+  assert.deepEqual(
+    counted(diversity.numAlleles, "count of alleles").total,
+    counted(withNoDraw.numAlleles, "count of alleles").total,
+  );
+  assert.deepEqual(
+    counted(diversity.numAlleles, "count of alleles").mean,
+    counted(withNoDraw.numAlleles, "count of alleles").mean,
+  );
+  assert.deepEqual(diversity.fis, withNoDraw.fis);
+});
+
+test("the folded spectrum of the panel in a draw of 20 is the one dadi projected", () => {
+  // Eleven bins, the counts of the rarer allele 0 to 10, one `Float64Array`
+  // per population under its name. Each variant in the draw gives every bin
+  // the chance that a draw of 20 shows that many rarer copies there, so the
+  // values are not whole numbers and each column sums to the 1200 variants it
+  // was taken over.
+  const diversity = ofThePanel({
+    stats: ["folded_sfs"],
+    numCalledAlleles: PANEL_NUM_CALLED_ALLELES,
+  });
+
+  const spectra = counted(diversity.foldedSfs, "folded spectrum");
+  assert.deepEqual(Object.keys(spectra), PANEL_POP_NAMES);
+  for (const [pop, name] of PANEL_POP_NAMES.entries()) {
+    const ours = spectra[name] as Float64Array;
+    const theirs = PANEL_FOLDED_SFS[pop] as number[];
+    assert.equal(ours.length, PANEL_SFS_BINS, `the bins of ${name}`);
+    for (const [rarerAllele, value] of theirs.entries()) {
+      const found = ours[rarerAllele] as number;
+      assert.ok(
+        Math.abs(found - value) <=
+          OF_A_REFERENCE_VALUE * Math.max(Math.abs(found), Math.abs(value)),
+        `the variants of ${name} with ${rarerAllele} copies of the rarer ` +
+          `allele are ${found} and not ${value}`,
+      );
+    }
+    const total = ours.reduce((sum, value) => sum + value, 0);
+    assert.ok(
+      Math.abs(total - PANEL_NUM_VARS) <=
+        OF_A_REFERENCE_VALUE * PANEL_NUM_VARS,
+      `the spectrum of ${name} sums to ${total} and not ${PANEL_NUM_VARS}`,
+    );
+  }
+  // The other four statistics were not asked for, and the counts of the
+  // variants are there whatever was asked for.
+  assert.equal(diversity.numAlleles, null);
+  assert.deepEqual(
+    diversity.numVars.inDraw,
+    Uint32Array.of(PANEL_NUM_VARS, PANEL_NUM_VARS, PANEL_NUM_VARS),
+  );
+});
+
+test("the spectrum asked for without a draw is refused", () => {
+  // The bins of a folded spectrum are the counts of the rarer allele in a
+  // draw, so the spectrum needs `numCalledAlleles`. The message is the core's,
+  // with the name of the option written as a TypeScript user wrote it.
   assert.throws(() => ofThePanel({ stats: ["folded_sfs"] }), {
-    message: /folded site frequency spectrum/,
+    message: /`numCalledAlleles` was not given/,
   });
   assert.throws(() => ofThePanel({ stats: ["fis", "folded_sfs"] }), {
     message: /folded site frequency spectrum/,
   });
 });
 
+test("a draw no population can fill leaves the draw missing and the rest alone", () => {
+  // A `numCalledAlleles` of 400 is every gene copy the 200 diploid
+  // individuals of the panel hold, which is the largest draw the dataset
+  // allows, and its missing genotypes leave no population able to call that
+  // many alleles at any variant. It is not an error: the two counts of the
+  // variants in a draw are 0, the three `inDraw` arrays are NaN and every bin
+  // of the spectrum is 0, which is what says the question was not answered.
+  const withNoDraw = ofThePanel({ stats: WITH_NO_SPECTRUM });
+  const diversity = ofThePanel({
+    stats: [...WITH_NO_SPECTRUM, "folded_sfs"],
+    numCalledAlleles: EVERY_GENE_COPY_OF_THE_PANEL,
+  });
+
+  assert.deepEqual(diversity.numVars.inDraw, Uint32Array.of(0, 0, 0));
+  assert.equal(diversity.numVarsEveryPop, PANEL_NUM_VARS);
+  assert.equal(diversity.numVarsEveryPopInDraw, 0);
+  const alleles = counted(diversity.numAlleles, "count of alleles");
+  const theirPrivate = counted(
+    diversity.privateAlleles,
+    "count of private alleles",
+  );
+  const variable = counted(
+    diversity.variableVarsRatio,
+    "count of variable variants",
+  );
+  const spectra = counted(diversity.foldedSfs, "folded spectrum");
+  for (const [pop, name] of PANEL_POP_NAMES.entries()) {
+    for (const [what, inDraw] of [
+      ["alleles", alleles.inDraw],
+      ["private alleles", theirPrivate.inDraw],
+      ["variable variants", variable.inDraw],
+    ] as const) {
+      assert.ok(
+        Number.isNaN(inDraw[pop] as number),
+        `the ${what} of ${name} in a draw of ${EVERY_GENE_COPY_OF_THE_PANEL}`,
+      );
+    }
+    const ours = spectra[name] as Float64Array;
+    assert.equal(
+      ours.length,
+      EVERY_GENE_COPY_OF_THE_PANEL / 2 + 1,
+      `the bins of ${name}`,
+    );
+    assert.ok(
+      ours.every((value) => value === 0),
+      `the spectrum of ${name}`,
+    );
+  }
+  // The totals, the means, the ratio and F_IS read no draw.
+  assert.deepEqual(
+    alleles.total,
+    counted(withNoDraw.numAlleles, "count of alleles").total,
+  );
+  assert.deepEqual(
+    variable.ratio,
+    counted(withNoDraw.variableVarsRatio, "count of variable variants").ratio,
+  );
+  assert.deepEqual(diversity.fis, withNoDraw.fis);
+});
+
+test("a draw larger than the dataset holds is refused and names the largest it allows", () => {
+  // One allele more than every gene copy the dataset holds is a draw no
+  // variant of any population could reach, so it is a user's mistake and not a
+  // fact about the data. It is a different case from the draw of 400 above,
+  // which this dataset's missing genotypes leave unfillable and which is no
+  // error.
+  assert.throws(
+    () =>
+      ofThePanel({
+        stats: WITH_NO_SPECTRUM,
+        numCalledAlleles: EVERY_GENE_COPY_OF_THE_PANEL + 1,
+      }),
+    {
+      message:
+        "`numCalledAlleles` is 401 and the largest draw this dataset allows " +
+        "is 400, every gene copy of its 200 individuals at a ploidy of 2: no " +
+        "population can have called more alleles than that at a variant",
+    },
+  );
+});
+
 test("a numCalledAlleles that is no draw at all is refused as the wrong argument it is", () => {
-  // The draw is refused above whatever its value, and a value that is no
-  // draw is refused before that, with the rule it broke: a number of
-  // JavaScript reaches a whole number of the core as 32 bits with no error,
-  // so a draw of 20.5 alleles would be a draw of 20 and one of -1 a draw of
-  // 4294967295, and a draw of one allele finds one allele whatever the
-  // population holds.
+  // A value that is no draw is refused by the package, with the rule it
+  // broke: a number of JavaScript reaches a whole number of the core as 32
+  // bits with no error, so a draw of 20.5 alleles would be a draw of 20 and
+  // one of -1 a draw of 4294967295, and a draw of one allele finds one allele
+  // whatever the population holds.
   for (const given of [20.5, -1, 0, 1]) {
     assert.throws(
       () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: given }),

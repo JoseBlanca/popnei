@@ -286,16 +286,15 @@ def calc_pop_diversity(
     population by that rule and the population called at least
     `num_called_alleles` there, both and not the second alone.
 
+    A `num_called_alleles` above the individuals of the dataset times the
+    ploidy is a ``ValueError`` too, and it names the largest draw the dataset
+    allows: that product is every gene copy the dataset holds, so no variant of
+    any population could reach it. It is a different case from the one above,
+    the draw that this dataset's missing genotypes leave no population able to
+    fill, which is no error.
+
     A pass that gives no variant is a ``ValueError``, whether the source
     holds none or the steps kept none.
-
-    The draw is not built yet, so a `num_called_alleles` and a `stats` that
-    names the spectrum are each a ``NotImplementedError`` that says so: what
-    is given today is the four statistics over the called alleles each
-    population has, and work package 3 of `docs/plans/diversity.md` adds the
-    three `in_draw` columns and `folded_sfs`. A `num_called_alleles` that is no
-    whole number or is out of range is refused as the wrong argument it is,
-    whatever popnei computes.
 
     pyNei has none of the five, so no result here is compared with it.
     """
@@ -310,7 +309,6 @@ def calc_pop_diversity(
             f"calc_pop_diversity(open_vcf(vcf_path))"
         )
     asked_for = _the_stats(stats)
-    _refuse_what_is_not_built_yet(asked_for, num_called_alleles)
     named = _the_pops(pops)
     (
         pop_names,
@@ -353,74 +351,6 @@ def calc_pop_diversity(
         num_vars_every_pop_in_draw=int(num_vars_every_pop_in_draw),
         pass_stats=_pass_stats_of(counts),
     )
-
-
-# The four statistics the pass computes, as a Python user writes them, for the
-# message that refuses the fifth. They are read from the enumeration, so a
-# member renamed there is renamed in the message too.
-_THE_FOUR_THAT_ARE_COMPUTED = ", ".join(
-    f"PopDiversityStat.{stat.name}"
-    for stat in PopDiversityStat
-    if stat is not PopDiversityStat.FOLDED_SFS
-)
-
-
-def _refuse_what_is_not_built_yet(
-    asked_for: list[str], num_called_alleles: int | None
-) -> None:
-    """It refuses the draw and the folded spectrum while the pass computes
-    neither.
-
-    The pass gives the four statistics that are over the called alleles each
-    population has, and work package 3 of `docs/plans/diversity.md` adds the
-    draw to it. Until then a call that asked for either would get NaN in the
-    three `in_draw` columns and ``None`` in `folded_sfs`, which are what this
-    module gives a draw above every population's called alleles and a
-    statistic nobody asked for: the answer would be wrong and would read as an
-    answer. The two refusals go when the values arrive, with the paragraph of
-    :func:`calc_pop_diversity` that names them and the marker of the tests
-    that assert them.
-
-    Raises:
-        NotImplementedError: when `stats` names the spectrum, and when
-            `num_called_alleles` is a draw the pass would compute over.
-    """
-    if PopDiversityStat.FOLDED_SFS in asked_for:
-        raise NotImplementedError(
-            f"popnei does not compute the folded site frequency spectrum yet: it "
-            f"is work package 3 of `docs/plans/diversity.md`, and `stats` names "
-            f"it. Leave `stats` out, or write "
-            f"stats=({_THE_FOUR_THAT_ARE_COMPUTED},), for the four that are "
-            f"computed."
-        )
-    if _is_a_draw_the_pass_would_take(num_called_alleles):
-        raise NotImplementedError(
-            f"popnei does not take the alleles of a population down to a common "
-            f"number yet: the draw is work package 3 of "
-            f"`docs/plans/diversity.md`, and `num_called_alleles` is "
-            f"{num_called_alleles!r}. Leave `num_called_alleles` out for the "
-            f"totals, the means, the ratios and F_IS, which are over the called "
-            f"alleles each population has."
-        )
-
-
-def _is_a_draw_the_pass_would_take(num_called_alleles: int | None) -> bool:
-    """Whether `num_called_alleles` is a draw the pass would compute over once
-    the draw is built.
-
-    Anything else is a wrong argument whatever popnei computes, and it is
-    refused as one where every argument of the call is refused, by the binding
-    crate for what is no whole number and for what is negative or larger than a
-    count of called alleles, and by the Rust core for a draw of fewer than two
-    alleles: a user reads the same sentence for it now as they will then. What
-    the bound here does not have is that upper limit, so a whole number above
-    it is told that the draw is not built where it will be told that it is out
-    of range; writing the limit again here would give a user two of them for
-    one argument.
-    """
-    if isinstance(num_called_alleles, bool) or not isinstance(num_called_alleles, int):
-        return False
-    return num_called_alleles >= 2
 
 
 def _the_stats(stats: Iterable[PopDiversityStat]) -> list[str]:

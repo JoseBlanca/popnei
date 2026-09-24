@@ -24,6 +24,7 @@
 
 use std::path::Path;
 
+use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -77,18 +78,42 @@ struct OfThePass {
     /// the counts of the variants are there whatever statistics were asked
     /// for, and `None` here is a defect of popnei.
     num_vars: Option<Vec<u64>>,
+    /// Of those, the ones each population reached `num_called_alleles` at:
+    /// the variants in the draw for it, which is 0 everywhere for a pass that
+    /// was given no draw.
+    num_vars_in_draw: Option<Vec<u64>>,
     /// The variants that counted for every population at once.
     num_vars_every_pop: u64,
+    /// Of those, the ones every population reached the draw at, which is the
+    /// divisor of the standardized private alleles.
+    num_vars_every_pop_in_draw: u64,
     /// The alleles each population called.
-    num_alleles: Option<Vec<u64>>,
+    num_alleles: Option<CountOfThePass>,
     /// Of those, the ones no other population called at the same variant.
-    private_alleles: Option<Vec<u64>>,
+    private_alleles: Option<CountOfThePass>,
     /// The variants each population called more than one allele at.
-    num_variable_vars: Option<Vec<u64>>,
+    num_variable_vars: Option<CountOfThePass>,
+    /// The folded spectrum of each population, one value per count of the
+    /// rarer allele.
+    folded_sfs: Option<Vec<Vec<f64>>>,
     /// The inbreeding coefficient of each population, NaN where it has none.
     fis: Option<Vec<f64>>,
     /// The variants the pass gave and what each of its filters counted.
     counts: PassCounts,
+}
+
+/// One count of a statistic as the core gives it: the total of every
+/// population over the called alleles it has, and the value of every
+/// population in a draw of `num_called_alleles`.
+///
+/// The two are one struct because the core gives both or neither: each
+/// accessor is `None` for the same reason, that nobody asked for the
+/// statistic.
+struct CountOfThePass {
+    /// The total of each population, in their order.
+    total: Vec<u64>,
+    /// The standardized value of each population, NaN where it has none.
+    in_draw: Vec<f64>,
 }
 
 // How much variety each population of `pops` holds, over one pass of
@@ -179,10 +204,26 @@ fn over_the_source(
     Ok(OfThePass {
         pop_names,
         num_vars: of_every_pop(num_pops, |pop| diversity.num_vars(pop)),
+        num_vars_in_draw: of_every_pop(num_pops, |pop| diversity.num_vars_in_draw(pop)),
         num_vars_every_pop: diversity.num_vars_every_pop(),
-        num_alleles: of_every_pop(num_pops, |pop| diversity.num_alleles(pop)),
-        private_alleles: of_every_pop(num_pops, |pop| diversity.private_alleles(pop)),
-        num_variable_vars: of_every_pop(num_pops, |pop| diversity.num_variable_vars(pop)),
+        num_vars_every_pop_in_draw: diversity.num_vars_every_pop_in_draw(),
+        num_alleles: count_of_the_pass(
+            num_pops,
+            |pop| diversity.num_alleles(pop),
+            |pop| diversity.num_alleles_in_draw(pop),
+        ),
+        private_alleles: count_of_the_pass(
+            num_pops,
+            |pop| diversity.private_alleles(pop),
+            |pop| diversity.private_alleles_in_draw(pop),
+        ),
+        num_variable_vars: count_of_the_pass(
+            num_pops,
+            |pop| diversity.num_variable_vars(pop),
+            |pop| diversity.variable_vars_ratio_in_draw(pop),
+        ),
+        folded_sfs: of_every_pop(num_pops, |pop| diversity.folded_sfs(pop))
+            .map(|of_each_pop| of_each_pop.into_iter().map(<[f64]>::to_vec).collect()),
         fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
         counts: (diversity.num_vars_of_the_pass(), filtering),
     })
@@ -196,6 +237,23 @@ fn over_the_source(
 /// `0..num_pops` of the result itself, so `None` can only be the second.
 fn of_every_pop<T>(num_pops: usize, of_the_pop: impl Fn(usize) -> Option<T>) -> Option<Vec<T>> {
     (0..num_pops).map(of_the_pop).collect()
+}
+
+/// One count of a statistic for every population, its total and its
+/// standardized value, and `None` when the statistic was not asked for.
+///
+/// The two accessors of the core answer `None` together, both of them for the
+/// statistic nobody asked for, so a count with one of the two is not a case
+/// this can give.
+fn count_of_the_pass(
+    num_pops: usize,
+    total: impl Fn(usize) -> Option<u64>,
+    in_draw: impl Fn(usize) -> Option<f64>,
+) -> Option<CountOfThePass> {
+    Some(CountOfThePass {
+        total: of_every_pop(num_pops, total)?,
+        in_draw: of_every_pop(num_pops, in_draw)?,
+    })
 }
 
 /// What the pass gave, as the arrays and the tuples the Python package
@@ -213,10 +271,13 @@ fn for_python<'py>(
     let OfThePass {
         pop_names,
         num_vars,
+        num_vars_in_draw,
         num_vars_every_pop,
+        num_vars_every_pop_in_draw,
         num_alleles,
         private_alleles,
         num_variable_vars,
+        folded_sfs,
         fis,
         counts,
     } = of_the_pass;
@@ -224,7 +285,7 @@ fn for_python<'py>(
     // Every pass counts the variants of each of its populations, whatever
     // statistics it was asked for, so a result with no such count is a
     // defect and not a statistic nobody asked for.
-    let Some(num_vars) = num_vars else {
+    let (Some(num_vars), Some(num_vars_in_draw)) = (num_vars, num_vars_in_draw) else {
         return Err(PyPopneiError::Broken {
             message: format!(
                 "the pass counted the variants of no population, and it was over \
@@ -246,21 +307,18 @@ fn for_python<'py>(
             path: None,
         });
     }
-    // The draw of a common number of called alleles is work package 3 of
-    // `docs/plans/diversity.md`: the core counts no variant in a draw yet
-    // and has no standardized value and no spectrum, so the columns that
-    // hold them are the missing value here, which is what the spec gives
-    // them when there is no draw.
-    let none_in_a_draw = || vec![f64::NAN; num_pops];
     Ok((
         pop_names,
         of_a_result_each(num_vars)?.into_pyarray(py),
-        vec![0_i64; num_pops].into_pyarray(py),
-        (of_a_result(num_vars_every_pop)?, 0),
-        count_for_python(py, num_alleles, none_in_a_draw())?,
-        count_for_python(py, private_alleles, none_in_a_draw())?,
-        count_for_python(py, num_variable_vars, none_in_a_draw())?,
-        None,
+        of_a_result_each(num_vars_in_draw)?.into_pyarray(py),
+        (
+            of_a_result(num_vars_every_pop)?,
+            of_a_result(num_vars_every_pop_in_draw)?,
+        ),
+        count_for_python(py, num_alleles)?,
+        count_for_python(py, private_alleles)?,
+        count_for_python(py, num_variable_vars)?,
+        spectrum_for_python(py, folded_sfs)?,
         fis.map(|fis| fis.into_pyarray(py)),
         counts,
     ))
@@ -274,16 +332,58 @@ fn for_python<'py>(
 /// When a count is above what an array of a result holds.
 fn count_for_python<'py>(
     py: Python<'py>,
-    total: Option<Vec<u64>>,
-    in_draw: Vec<f64>,
+    count: Option<CountOfThePass>,
 ) -> Result<Option<CountOfEveryPop<'py>>, PyPopneiError> {
-    let Some(total) = total else {
+    let Some(CountOfThePass { total, in_draw }) = count else {
         return Ok(None);
     };
     Ok(Some((
         of_a_result_each(total)?.into_pyarray(py),
         in_draw.into_pyarray(py),
     )))
+}
+
+/// The folded spectrum of every population as the bins x populations array
+/// the Python package indexes by the count of the rarer allele and names by
+/// the population, or `None` when nobody asked for it.
+///
+/// The core gives one value per bin for each population and the frame holds
+/// one row per bin, so the values are laid out here bin by bin.
+///
+/// # Errors
+///
+/// When the populations do not all have the same bins, which is a defect of
+/// popnei: the bins of a spectrum are the counts of the rarer allele from 0 to
+/// `num_called_alleles` over 2, one draw size for the whole call.
+fn spectrum_for_python<'py>(
+    py: Python<'py>,
+    of_each_pop: Option<Vec<Vec<f64>>>,
+) -> Result<Option<Bound<'py, PyArray2<f64>>>, PyPopneiError> {
+    let Some(of_each_pop) = of_each_pop else {
+        return Ok(None);
+    };
+    let num_pops = of_each_pop.len();
+    let num_bins = of_each_pop.first().map_or(0, Vec::len);
+    let of_other_bins = || PyPopneiError::Broken {
+        message: format!(
+            "the pass gave the folded spectrum of {num_pops} populations and not the \
+             same {num_bins} bins for each of them"
+        ),
+        path: None,
+    };
+    if of_each_pop.iter().any(|bins| bins.len() != num_bins) {
+        return Err(of_other_bins());
+    }
+    let bins_by_pops: Vec<f64> = (0..num_bins)
+        .flat_map(|bin| {
+            of_each_pop
+                .iter()
+                .filter_map(move |bins| bins.get(bin).copied())
+        })
+        .collect();
+    let spectrum =
+        Array2::from_shape_vec((num_bins, num_pops), bins_by_pops).map_err(|_| of_other_bins())?;
+    Ok(Some(spectrum.into_pyarray(py)))
 }
 
 /// Every count of `counts` as the arrays of a result hold them, in their
