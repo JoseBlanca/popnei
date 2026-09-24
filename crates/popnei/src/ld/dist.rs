@@ -1428,9 +1428,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        LdAndDist, LdAndDistOptions, LdBins, TheDosagesOfThePops, ThePopOverTheWindow,
-        TheVariantOfTheWindow, TheWindowOfTheBlocks, calc_ld_and_dist, the_ld_and_dist_in_tiles_of,
-        the_variants_of,
+        LdAndDist, LdAndDistOptions, LdBins, THE_VARS_OF_A_TILE_OF_THE_WINDOW, TheDosagesOfThePops,
+        ThePopOverTheWindow, TheVariantOfTheWindow, TheWindowOfTheBlocks, calc_ld_and_dist,
+        the_ld_and_dist_in_tiles_of, the_variants_of,
     };
 
     use crate::block::{Block, BlockReader};
@@ -2370,11 +2370,29 @@ mod tests {
         }
     }
 
-    /// A VCF of 300 variants of six diploid individuals: 200 of `chr1` a
-    /// thousand base pairs apart and 100 of `chr2` the same, with a
-    /// genotype of each individual drawn from a generator of its own so
-    /// that the variants differ in their frequencies and in what is
-    /// missing.
+    /// How many diploid individuals the VCF of a long pass holds, which
+    /// the test of the order of the sums reads in two populations of half
+    /// of them.
+    ///
+    /// They are 24 and not 6 because over 3 individuals every r² is a
+    /// multiple of 1/4 and every sum of them is exact in an `f64` in
+    /// whatever order it is added, so with two populations of 3
+    /// `the_bins_do_not_move_with_the_blocks_nor_with_the_tiles` could
+    /// not fail for the order of the sums at all: it passed with the
+    /// columns of a tile enumerated backwards, which it now refuses, and
+    /// with the bins added up tile pair by tile pair. The second of those
+    /// moves the mean of a bin of these 300 variants by nothing and the
+    /// mean of a bin of the 500 of `ld.vcf.gz` by one bit in the last
+    /// place, so what refuses it is `the_three_tables_do_not_move_with_
+    /// the_tiles`, which compares the bits of that dataset at four sizes
+    /// of tile.
+    const THE_INDIVIDUALS_OF_A_LONG_PASS: usize = 24;
+
+    /// A VCF of 300 variants of [`THE_INDIVIDUALS_OF_A_LONG_PASS`] diploid
+    /// individuals: 200 of `chr1` a thousand base pairs apart and 100 of
+    /// `chr2` the same, with a genotype of each individual drawn from a
+    /// generator of its own so that the variants differ in their
+    /// frequencies and in what is missing.
     ///
     /// It is what says that the bins do not move with the blocks: a window
     /// of 10000 base pairs holds eleven of these variants, so at blocks of
@@ -2389,8 +2407,12 @@ mod tests {
         let mut vcf = String::from(
             "##fileformat=VCFv4.2\n\
              ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
-             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ti0\ti1\ti2\ti3\ti4\ti5\n",
+             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT",
         );
+        for individual in 0..THE_INDIVIDUALS_OF_A_LONG_PASS {
+            vcf.push_str(&format!("\ti{individual}"));
+        }
+        vcf.push('\n');
         // A linear congruential generator, which gives the same genotypes
         // on every machine and in every build.
         let mut state = 12_345_u64;
@@ -2405,7 +2427,7 @@ mod tests {
                 true => ("chr1", var + 1),
                 false => ("chr2", var - 199),
             };
-            let gts: Vec<&str> = (0..6)
+            let gts: Vec<&str> = (0..THE_INDIVIDUALS_OF_A_LONG_PASS)
                 .map(|_| match next() % 10 {
                     0 => "./.",
                     1..=3 => "0/0",
@@ -2425,8 +2447,9 @@ mod tests {
     #[test]
     fn the_bins_do_not_move_with_the_blocks_nor_with_the_tiles() {
         let vcf = the_vcf_of_a_long_pass();
-        let pop_a: [usize; 3] = [0, 1, 2];
-        let pop_b: [usize; 3] = [3, 4, 5];
+        let of_a_pop = THE_INDIVIDUALS_OF_A_LONG_PASS / 2;
+        let pop_a: Vec<usize> = (0..of_a_pop).collect();
+        let pop_b: Vec<usize> = (of_a_pop..THE_INDIVIDUALS_OF_A_LONG_PASS).collect();
         let pops: [&[usize]; 2] = [&pop_a, &pop_b];
         let options = LdAndDistOptions {
             min_dist: 1,
@@ -3058,6 +3081,38 @@ mod tests {
         (of_every_individual, of_the_two_pops)
     }
 
+    /// The same with the pairs of each step taken in tiles of
+    /// `vars_per_tile` variants, where [`the_three_tables_of`] goes
+    /// through [`calc_ld_and_dist`] and so takes them in the
+    /// [`THE_VARS_OF_A_TILE_OF_THE_WINDOW`] of the module.
+    fn the_three_tables_in_tiles_of(
+        num_vars_per_block: usize,
+        vars_per_tile: usize,
+    ) -> (LdAndDist, LdAndDist) {
+        let mut reader = the_ld_dataset(num_vars_per_block);
+        let of_every_individual = match the_ld_and_dist_in_tiles_of(
+            &mut reader,
+            &[],
+            &the_options_of_the_tables(0.95),
+            vars_per_tile,
+        ) {
+            Ok(of_the_pass) => of_the_pass,
+            Err(error) => panic!("the pass of every individual was refused: {error}"),
+        };
+        let mut reader = the_ld_dataset(num_vars_per_block);
+        let pops: [&[usize]; 2] = [&THE_INDIVIDUALS_OF_POP_A, &THE_INDIVIDUALS_OF_POP_B];
+        let of_the_two_pops = match the_ld_and_dist_in_tiles_of(
+            &mut reader,
+            &pops,
+            &the_options_of_the_tables(0.8),
+            vars_per_tile,
+        ) {
+            Ok(of_the_pass) => of_the_pass,
+            Err(error) => panic!("the pass of the two populations was refused: {error}"),
+        };
+        (of_every_individual, of_the_two_pops)
+    }
+
     /// The table of one population in the bits it came out with, which is
     /// what two runs are compared by.
     #[derive(Debug, PartialEq, Eq)]
@@ -3189,6 +3244,38 @@ mod tests {
                 the_values_of_the_three_tables(&of_the_run),
                 the_values_of_the_three_tables(&of_seven),
                 "{at}, against blocks of 7"
+            );
+        }
+    }
+
+    /// The three tables are the same, to the bit, in tiles of 7, 64 and
+    /// 500 variants as in the 256 of the module.
+    ///
+    /// It is the order of the terms of the sums of the bins that this
+    /// guards, which "How it runs" of `docs/specs/ld.md` asks not to move
+    /// with the tiles: the r² of a tile of columns is worked out tile
+    /// pair by tile pair and the bins are then added up one column at a
+    /// time, the variants of a column in the order of the pass, so a tile
+    /// that a block ends inside adds its pairs in the same order as one
+    /// that no block cuts. Adding the bins up tile pair by tile pair
+    /// instead moves the mean of a bin of these 500 variants by one bit
+    /// in the last place, which no comparison within 1e-12 of the value
+    /// can see.
+    ///
+    /// The tile of 500 holds every variant of the dataset and the tile of
+    /// 7 cuts every window of it, so between them the pairs of a step are
+    /// taken in one product and in many.
+    #[test]
+    fn the_three_tables_do_not_move_with_the_tiles() {
+        let of_the_module = the_three_tables_of(64);
+        for vars_per_tile in [7, 64, THE_VARS_OF_A_TILE_OF_THE_WINDOW, 500] {
+            let at = format!("at tiles of {vars_per_tile} variants");
+            let of_the_run = the_three_tables_in_tiles_of(64, vars_per_tile);
+            assert_the_three_tables_are_the_ones_of_the_spec(&of_the_run, &at);
+            assert_eq!(
+                the_values_of_the_three_tables(&of_the_run),
+                the_values_of_the_three_tables(&of_the_module),
+                "{at}, against the tiles of the module"
             );
         }
     }
