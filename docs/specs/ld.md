@@ -586,7 +586,7 @@ can be seen between one base pair and the largest
 bp, and above 10² it has fallen before the second base pair. Narrowing
 the range, at the bottom to 10⁻⁹, at the top to 10⁰, or both, moves the
 fitted value of the first population of "How it is verified" by at most
-8.9·10⁻⁹ of itself, which is what the rounding of the sum leaves and not
+9.3·10⁻⁹ of itself, which is what the rounding of the sum leaves and not
 something the range did.
 
 How close the fit comes was measured on 24 September 2026, on tables it
@@ -601,7 +601,7 @@ tenth of that from the answer because what it keeps is the best of the
 points it evaluated and not an end of the bracket.
 
 On the pairs of a real population the rounding of the sum stops the
-search before the bracket does, and that is what the 8.9·10⁻⁹ above is.
+search before the bracket does, and that is what the 9.3·10⁻⁹ above is.
 The sum of the first population of "How it is verified" is 23.21 at its
 smallest, an `f64` steps from 23.21 by 3.55·10⁻¹⁵, and moving the ρ per
 base pair away from the smallest does not raise the sum steadily at that
