@@ -1170,9 +1170,10 @@ agree within 0.009 s on every row and within 0.003 s on four of the seven.
 The threads are rayon's, which popnei takes from the environment because
 it builds no pool of its own. `docs/reports/perf-diversity-2026-09-24.md`
 holds the rest of the measurement. It gives the load average of the
-experiment it ran and of the two figures taken later that day; the runs
-behind this table were not kept one by one, and what is here is the best
-of each set of 5.
+experiment it ran and of the two figures it took later that day, the pass
+asked for the three standardized values together and the floor that pass
+is read against; the runs behind this table were not kept one by one, and
+what is here is the best of each set of 5.
 
 The dataset is `/Users/jose/devel/popnei-bench/big.vars`, popnei's vars
 file of 100000 variants of 1000 diploid individuals with 3 in 100
@@ -1236,13 +1237,21 @@ statistic is the least a pass of this module can be asked for.
 | the four that need no draw | 20 | 0.205, 0.206, 0.207 s | |
 | all five | 20 | 0.218, 0.218, 0.218 s | |
 
-The two rows of the four that need no draw are `--stats without_a_draw`
-with a draw given that those four do not read, and they are there to be
-subtracted from the row of all five beside them. The rows at a draw of 20
-are three rounds the orchestrator of the plan ran on 24 September 2026,
-alternating the two passes, at load averages of 2.82 to 2.98; the pass
-with all five read 0.218 s in each of the three. The four that do need a
-draw are in no row: `--stats
+The four that need no draw are the number of alleles, the private alleles,
+the ratio of variable variants and F_IS, each computed with no draw
+anywhere, which is `--stats without_a_draw` and what a user who names no
+statistic gets. Their two rows were run with a draw given that those four
+do not read, and they are there to be subtracted from the row of all five
+beside them. The rows at a draw of 20 are three rounds the orchestrator of
+the plan ran on 24 September 2026, alternating the two passes, at load
+averages of 2.82 to 2.98; the pass with all five read 0.218 s in each of
+the three.
+
+The four that do need a draw are not those four. They are the number of
+alleles, the private alleles and the ratio of variable variants with a
+draw given, where each becomes its standardized value, and the folded
+spectrum in the place of F_IS, which takes no draw. They are in no row of
+the table: `--stats
 num_alleles,private_alleles,variable_vars_ratio,folded_sfs --draw 200` was
 run once, at a load average of 4.74, and read 0.456 s, against 0.386 s for
 the four that need none and 0.497 s for all five in that same round.

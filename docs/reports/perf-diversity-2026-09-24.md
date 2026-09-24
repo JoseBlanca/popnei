@@ -197,18 +197,26 @@ against the 0.126 s of the quieter set this table comes from.
 | the four that need no draw | 20 | 0.205, 0.206, 0.207 s | |
 | all five | 20 | 0.218, 0.218, 0.218 s | |
 
-The two rows of the four that need no draw are `--stats without_a_draw`
-with a draw given that those four do not read, and they are there to be
-subtracted from the row of all five beside them. The rows at a draw of 20
-are three rounds the orchestrator of the plan ran on 24 September 2026,
-alternating the two passes, at load averages of 2.82 to 2.98; the pass
-with all five read 0.218 s in each of the three. The four that do need a
-draw are in no row of the table. `--stats
+The four that need no draw are the number of alleles, the private alleles,
+the ratio of variable variants and F_IS, each computed with no draw
+anywhere, which is `--stats without_a_draw` and what a user who names no
+statistic gets. Their two rows were run with a draw given that those four
+do not read, and they are there to be subtracted from the row of all five
+beside them. The rows at a draw of 20 are three rounds the orchestrator of
+the plan ran on 24 September 2026, alternating the two passes, at load
+averages of 2.82 to 2.98; the pass with all five read 0.218 s in each of
+the three.
+
+The four that do need a draw are not those four. They are the number of
+alleles, the private alleles and the ratio of variable variants with a
+draw given, where each becomes its standardized value, and the folded
+spectrum in the place of F_IS, which takes no draw. They are in no row of
+the table. `--stats
 num_alleles,private_alleles,variable_vars_ratio,folded_sfs --draw 200` was
 run once, at a load average of 4.74, and read 0.456 s, against 0.386 s for
 the four that need none and 0.497 s for all five in that same round. Those
-three are what say which four the row of 0.371, 0.393 and 0.396 s holds:
-0.386 s is inside that range and 0.456 s is far outside it.
+three figures are what say which four the row of 0.371, 0.393 and 0.396 s
+holds: 0.386 s is inside that range and 0.456 s is far outside it.
 
 What the spectrum costs is two quantities and not one. What it adds to a
 pass that computes the other four is what a user who asks for all five
