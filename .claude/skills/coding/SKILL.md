@@ -92,9 +92,22 @@ variants of 10000 samples, has 1e10 genotypes, which does not fit in a
 ## Floats
 
 - Results are `f64`. An `f32` appears only where a file format has one.
-- A missing value is `Option<f64>` or an explicit enum inside the core,
-  and becomes NaN only at the boundary with Python, where pandas expects
-  it. NaN that travels through Rust arithmetic hides where it was born.
+- A missing value that goes on to be computed with is `Option<f64>` or an
+  explicit enum inside the core, and becomes NaN only at the boundary with
+  Python, where pandas expects it. NaN that travels through Rust
+  arithmetic hides where it was born, and that is what the rule is for. A
+  value the core has finished with, which a caller only reads, may be NaN
+  inside the core when its doc comment says every reason it can be one:
+  `f64` is the type of the thing, the caller tests `is_nan` once, and an
+  `Option` there would either say nothing the doc does not or nest inside
+  the `Option` that already says whether the caller asked for the value at
+  all. The owner decided this on 24 September 2026 over `fis` of
+  `docs/specs/diversity.md`, which is one number per population behind an
+  accessor that is already an `Option`, so keeping NaN out of it needed
+  `Option<Option<f64>>` or a new enum for a number nothing computes with.
+  The per variant and per pair columns of `gwas` and `kinship` are the same
+  case for a second reason: an `Option<f64>` per entry is sixteen bytes
+  where a `f64` is eight, and those columns are as long as the dataset.
   The quality of a variant is the exception, which the owner decided on 21
   September 2026: the column of a block is `Vec<f32>` with NaN for a
   variant that has no quality, inside the core as in Python and in
