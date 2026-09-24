@@ -1091,7 +1091,9 @@ names to check them against.
 `num_called_alleles` is refused before the pass starts in every layer, so
 a value that is not a whole number, or one above what a `u32` holds, is
 refused by the package that was given it, in the words of its own
-language. Only the value below 2 reaches the core.
+language. Two reach the core, and they are the two that need the dataset:
+a draw below 2, and a draw above the gene copies the reader's individuals
+and ploidy give.
 
 ## Speed
 
