@@ -206,20 +206,29 @@ fn the_curve_at(rho: f64, num_individuals: f64) -> f64 {
 /// The sum the fit makes smallest at one ρ per base pair,
 ///
 /// ```text
-/// Σ over the distances of [ n_d · f(d)² − 2 · S_d · f(d) ]
+/// Σ over the distances of [ n_d · (m_d − f(d))² ]
 /// ```
 ///
-/// where n_d is how many pairs the distance d holds, S_d the sum of their
-/// r² and f(d) the curve at that distance.
+/// where n_d is how many pairs the distance d holds, m_d the mean of their
+/// r², their sum divided by n_d, and f(d) the curve at that distance. A
+/// distance that holds no pair is refused before the fit, so n_d is 1 or
+/// more and the mean is a division by a positive number.
 ///
 /// "The curve that is fitted" of `docs/specs/ld.md` derives it: the sum
 /// over every pair of the square of its r² less the curve at its distance
 /// is the spread of the pairs of a distance around their own mean, which
-/// no ρ changes, plus what this sum holds, plus the square of the r² of
-/// every pair, which is the same at every ρ. So the ρ that makes this
+/// no ρ changes, plus what this sum holds. So the ρ that makes this
 /// smallest is the ρ that makes the squared residuals of every pair
 /// smallest, and the pairs of one distance are added up before the fit
 /// with nothing lost.
+///
+/// Multiplying the square out into Σ [ n_d · f(d)² − 2 · S_d · f(d) ],
+/// with S_d the sum of the r² of the distance, gives this number less
+/// Σ n_d · m_d², which no ρ changes and which the same part of the spec
+/// measures at 475.36 on the first of its three populations, where this
+/// sum is 23.21 at the fitted ρ. The terms that depend on ρ would then be
+/// added inside a total 19.5 times their size, and what that costs the
+/// fitted ρ per base pair is in the spec.
 ///
 /// The distances are read in the order they were given, which is the order
 /// a pass compacted them in, so two runs over one dataset add the same
@@ -234,7 +243,9 @@ fn the_sum_to_make_smallest(
     let mut total = 0.0;
     for ((dist, pairs), sum) in dists.iter().zip(num_pairs).zip(sum_r2) {
         let curve = the_curve_at(*dist as f64 * rho_per_bp, num_individuals);
-        total += *pairs as f64 * curve * curve - 2.0 * sum * curve;
+        let mean = *sum / *pairs as f64;
+        let apart = mean - curve;
+        total += *pairs as f64 * apart * apart;
     }
     total
 }
@@ -510,7 +521,7 @@ mod tests {
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "the tests give a step of 500 or 1000 and a last distance of at most \
-                  250000, so no product of the two reaches a quarter of a million"
+                  1000000, so no product of the two reaches two million"
     )]
     fn the_dists_from(step: u64, last: u64) -> Vec<u64> {
         (1..)
@@ -552,6 +563,28 @@ mod tests {
         assert_close(
             decay.r2_at_zero(),
             0.46942148760330576,
+            "the r² at a distance of 0",
+        );
+    }
+
+    #[test]
+    fn the_fit_gives_back_a_fall_off_that_takes_the_whole_of_the_default_max_dist() {
+        let dists = the_dists_from(1000, 1_000_000);
+        assert_eq!(dists.len(), 1000, "the distances of the table");
+        let (num_pairs, sum_r2) = the_table_of_the_curve(&dists, 4.17e-8, 100);
+        let decay = fit_ld_decay(&dists, &num_pairs, &sum_r2, 100).expect("the fit");
+        assert_close(decay.rho_per_bp(), 4.17e-8, "the fitted rho per base pair");
+        // The spec writes the ρ that halves the curve at 100 individuals
+        // as 2.1608135872529166, and the half distance is it divided by
+        // the ρ per base pair the table was made with.
+        assert_close(
+            decay.half_dist(),
+            2.160_813_587_252_916_6 / 4.17e-8,
+            "the half distance",
+        );
+        assert_close(
+            decay.r2_at_zero(),
+            0.46198347107438015,
             "the r² at a distance of 0",
         );
     }
