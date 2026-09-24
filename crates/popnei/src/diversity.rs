@@ -525,12 +525,14 @@ impl PopDiversity {
     /// variant from every population's standardized value.
     ///
     /// It is the estimator of Kalinowski (2004), which ADZE computes, and it
-    /// reads the two draws of two populations as draws of different copies.
+    /// reads the draws of two populations as draws of copies of their own.
     /// Where two populations hold an individual in common that is not so, and
-    /// the value is above the alleles the two draws can really tell apart:
-    /// two populations that are both the one diploid individual `0/1` get 0.5
-    /// each at a draw of one allele, where the truth is 0, which "The cases"
-    /// of `docs/specs/diversity.md` works out. popnei computes the estimator
+    /// the value can then be above the alleles their draws can really tell
+    /// apart: a population against a copy of itself, at a variant where it
+    /// called one allele 3 times and another once, gets 0.25 at a draw of 2
+    /// and 0 only at a draw of 4, which takes every copy it called. "The
+    /// cases" and "How it is verified" of "The private alleles" of
+    /// `docs/specs/diversity.md` work that out. popnei computes the estimator
     /// and does not refuse the overlap, since a caller may put an individual
     /// in more than one population and every other value here reads such a
     /// population without trouble.
@@ -1930,8 +1932,10 @@ fn add_the_private_alleles(
 /// [`chance_a_draw_misses_an_allele`], the one product of `num_called_alleles`
 /// factors this module has. The alleles are summed in the order of their
 /// numbers and the chances of the other populations multiplied in the order of
-/// the populations, on every call and for every population, so two
-/// populations of one pass round the same way.
+/// the call, on every row and for every population, so no value depends on how
+/// the rows were shared out among the threads. In its last bits a value does
+/// depend on the order the populations were given, that order being the order
+/// of the product over the others.
 ///
 /// That product is taken again for each population, which for an allele of a
 /// pass of 50 populations is 2500 multiplications where a product from the left
@@ -2748,9 +2752,9 @@ mod the_pass {
     /// draw, and prints each to seventeen digits, which reads back as the
     /// float64 nearest the exact value. popnei evaluates that closed form in
     /// float64, every factor of it a product of `num_called_alleles`
-    /// divisions, so the two differ by a few units of the last place: over
-    /// the 23 pairs of the file the largest difference is 5.6e-17, measured
-    /// on 24 September 2026.
+    /// divisions, so the two differ by a few units of the last place: over the
+    /// 22 pairs the test below asserts, eighteen come out to the bit, three
+    /// differ by 5.6e-17 and one by 2.8e-17. Measured on 24 September 2026.
     const OF_THE_ENUMERATION: f64 = f64::EPSILON;
 
     /// It checks the standardized private alleles of one population: the
@@ -3917,10 +3921,13 @@ mod the_pass {
         }
     }
 
-    /// The standardized private alleles of a population are at most the
-    /// alleles the same draw shows in it, a private allele being an allele.
-    /// "How it is verified" of "The private alleles" of
-    /// `docs/specs/diversity.md` asks for it on the panel.
+    /// Where every variant is in the draw for every population, the
+    /// standardized private alleles of a population are at most the alleles
+    /// the same draw shows in it, a private allele being an allele. "How it is
+    /// verified" of "The private alleles" of `docs/specs/diversity.md` asks
+    /// for it on the panel, with `num_called_alleles` at the smallest count of
+    /// called alleles the dataset holds, and that condition is what the two
+    /// counts asserted below stand for.
     ///
     /// The draw is of 20 called alleles, which every population of the panel
     /// reaches at every one of its 1200 variants, so the two values are means
@@ -3929,7 +3936,7 @@ mod the_pass {
     /// called alleles at some variant the divisors would differ and the
     /// inequality would not follow from the per variant one.
     #[test]
-    fn the_standardized_private_alleles_of_a_population_are_at_most_the_alleles_of_its_draw() {
+    fn the_private_alleles_of_a_draw_every_variant_reached_are_at_most_the_alleles_it_shows() {
         let diversity = of_the_panel_at_a_draw(20);
 
         assert_eq!(diversity.num_vars_every_pop_in_draw(), 1200);
@@ -4160,16 +4167,21 @@ mod the_pass {
     /// `closed_form` fields of the file, in its order, with the value of each
     /// population of a case in the order the file names them. Three of the
     /// cases are the variants of the worked example that have a draw of 4 and
-    /// the other seven were made up for this check, at draws of 2 and 3, with
-    /// populations of 3, 4, 5 and 6 called alleles: no case has every
-    /// population at the same number of called alleles except the ones of the
-    /// worked example, so a value read off the wrong population's counts does
-    /// not go unseen.
+    /// the other seven were made up for this check, at draws of 2 and 3. Four
+    /// of the ten hold a population whose called alleles are not 4: variants 1
+    /// and 5 of the worked example, 4 against 5 and 4 against 6; the lone
+    /// population of 6 copies; and the three populations of 3, 5 and 6. The
+    /// other six hold every population at 4, which is why the file says the
+    /// last two cases were added. Taking the called alleles of the first
+    /// population of a row for every population of it moves four of the 22
+    /// pairs here, `pop2` of variant 5 of the worked example and all three of
+    /// the case of 3, 5 and 6, and no pair of any other case: measured on 24
+    /// September 2026.
     ///
     /// Each case is one variant, so the mean over the variants in the draw
     /// for every population is the value at that variant.
     #[test]
-    fn the_standardized_private_alleles_are_the_ones_the_enumeration_of_every_draw_gives() {
+    fn the_standardized_private_alleles_of_the_ten_cases_are_the_ones_the_enumeration_gives() {
         let of_each_case: [OfACaseOfTheEnumeration; 10] = [
             (
                 "worked example, variant 1",
@@ -4347,16 +4359,17 @@ mod the_pass {
         );
     }
 
-    /// A population against a copy of itself has no private allele at any
-    /// draw size, every allele it called having been called by the copy too.
-    /// The two populations are both `pop1` of the worked example, and the
-    /// draws are of 2 and of 4 called alleles.
+    /// A population against a copy of itself counts no private allele at any
+    /// draw size, every allele it called having been called by the copy too:
+    /// the totals ask which alleles a population called and not which a draw
+    /// of them showed. The two populations are both `pop1` of the worked
+    /// example, and the draws are of 2 and of 4 called alleles.
     ///
     /// Its standardized value is 0 only where the draw takes every copy the
     /// population called, which at a draw of 4 it does at each of the four
     /// variants that count for `pop1`: there every allele it holds is certain
     /// in both draws. At a draw of 2 the value is 0.375, the estimator
-    /// reading the two draws as draws of different copies, which is the
+    /// reading the two draws as draws of copies of their own, which is the
     /// overlap "The cases" of `docs/specs/diversity.md` describes and which
     /// the twenty-third pair of
     /// `tests/reference/diversity/enumerate_private.tsv` shows on the
@@ -4369,7 +4382,8 @@ mod the_pass {
     /// variant 5, where it called one allele, gives 0: 1.5 over the 4
     /// variants.
     #[test]
-    fn a_population_against_a_copy_of_itself_has_no_private_allele_at_any_draw_size() {
+    fn a_population_against_a_copy_of_itself_counts_no_private_allele_and_only_a_draw_of_every_copy_shows_none()
+     {
         let of_a_draw = |num_called_alleles| {
             let mut reader = the_worked_example(6);
             calc_pop_diversity(
@@ -5168,10 +5182,10 @@ mod the_private_alleles_of_one_variant {
     /// pass, because a pass refuses a `num_called_alleles` below 2 and the draw
     /// of this pair is of one allele. What a pass shows of the same overlap is
     /// in
-    /// `a_population_against_a_copy_of_itself_has_no_private_allele_at_any_draw_size`,
+    /// `a_population_against_a_copy_of_itself_counts_no_private_allele_and_only_a_draw_of_every_copy_shows_none`,
     /// at a draw of 2.
     #[test]
-    fn two_populations_of_one_shared_individual_get_half_a_private_allele_each() {
+    fn two_populations_of_one_shared_individual_get_half_a_private_allele_each_at_a_draw_of_one() {
         let of_the_shared_individual = {
             let mut of_the_pop = OfAPopAtTheRow::none();
             of_the_pop.counts[0] = 1;
