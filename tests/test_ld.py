@@ -760,6 +760,34 @@ def test_ld_and_dist_fits_the_curve_of_the_first_row_of_the_table_of_the_spec() 
         _assert_the_curve_is(of_the_two_pops.decay_per_pop[pop], of_the_spec)
 
 
+def test_the_repr_of_ld_and_dist_counts_the_pops_the_bins_and_the_curves() -> None:
+    """What a session and a traceback print of a result, which is not the
+    rows of its frames: at the 50 bins of the default those run to hundreds
+    of lines.
+
+    `pop_a` and `pop_b` are fitted a curve each and `of_one_individual` is
+    fitted none, so the populations of the call and the ones with a curve
+    are different numbers and the repr cannot be reading one for the other.
+    One individual has one dosage at every variant, so no variant of it has
+    variance and it counts no pair, which "The cases" of `docs/specs/ld.md`
+    gives the three NaN.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        pops=THE_TWO_POPS | {"of_one_individual": ["i000"]},
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.8,
+    )
+
+    assert math.isnan(of_the_pass.decay_per_pop["of_one_individual"].rho_per_bp)
+    assert repr(of_the_pass) == (
+        "<LdAndDistPerPop of 3 populations in 10 bins of distance, with a "
+        "fitted curve for 2 of them and the counts of its pass>"
+    )
+
+
 def test_ld_and_dist_gives_every_count_and_every_distance_as_a_signed_number() -> None:
     """The counts and the distances of the bins are signed 64 bit integers,
     as pyNei's counts are, so that the difference of two of them is a

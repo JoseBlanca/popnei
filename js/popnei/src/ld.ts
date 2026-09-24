@@ -359,6 +359,13 @@ export interface LdDecay {
    * The distance in base pairs at which the fitted curve has fallen to half
    * of `r2AtZero`.
    *
+   * It is read off the curve and not off the pairs, so it can fall beyond
+   * every distance the pass counted a pair at, and a plot that marks it on
+   * the bins may have to run past them. Three individuals of the dataset
+   * `docs/specs/ld.md` verifies against, taken as one population at the
+   * defaults, give 1868334.8 base pairs where `maxDist` is 1000000 and
+   * their furthest pair is under 260000.
+   *
    * What is halved is the curve at a distance of 0 and not the mean r² of
    * the shortest bin, so `numBins` does not move this distance; `minDist`
    * and `maxDist` do, through `rhoPerBp`, since they choose which pairs the
@@ -577,15 +584,12 @@ export function calcLdAndDistPerPop(
         meanR2: meanR2.subarray(first, pastTheLast),
         sdR2: sdR2.subarray(first, pastTheLast),
       };
-      const kept = varsOfEachPop[which];
-      if (kept === undefined) {
-        throw new Error(
-          `popnei: the pass counted ${popNames.length} populations and how ` +
-            `many variants ${varsOfEachPop.length} of them kept, which is a ` +
-            "defect of popnei; please report it",
-        );
-      }
-      numVarsPerPop[pop] = kept;
+      numVarsPerPop[pop] = theValueOfThePop(
+        varsOfEachPop,
+        which,
+        numPops,
+        "how many variants it kept",
+      );
       decayPerPop[pop] = {
         rhoPerBp: theValueOfThePop(
           rhoPerBp,
@@ -622,12 +626,15 @@ export function calcLdAndDistPerPop(
  * The value of the population `which` of an array that holds one for each
  * population of the pass, `what` naming what it is.
  *
- * The three values of the curve cross in one array each, one value for each
- * population, and this reads the one of a population out of such an array.
+ * The variants a population kept and the three values of its curve cross in
+ * one array each, one value for each population, and this reads the one of a
+ * population out of such an array. Every per-population value of the result
+ * that is not an array of bins is read through it, so a value added later
+ * is checked the same way as the four there are.
  *
  * @throws {Error} When the array holds no value for that population, which
  * is a defect of popnei and not something a caller can do: the binding
- * crate fills the three arrays with one value for each population it
+ * crate fills each of the four arrays with one value for each population it
  * counted.
  */
 function theValueOfThePop(

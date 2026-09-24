@@ -27,6 +27,7 @@ half. :class:`LdAndDistPerPop` is what the two come in.
 `docs/specs/ld.md` has the calculation and the numbers the tests assert.
 """
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -238,6 +239,13 @@ class LdDecay:
     """The distance in base pairs at which the fitted curve has fallen to
     half of :attr:`r2_at_zero`.
 
+    It is read off the curve and not off the pairs, so it can fall beyond
+    every distance the pass counted a pair at, and a plot that marks it on
+    the bins may have to run past them. Three individuals of the dataset
+    `docs/specs/ld.md` verifies against, taken as one population at the
+    defaults, give 1868334.8 base pairs where `max_dist` is 1000000 and their
+    furthest pair is under 260000.
+
     What is halved is the curve at a distance of 0 and not the mean r² of the
     shortest bin, so `num_bins` does not move this distance; `min_dist` and
     `max_dist` do, through :attr:`rho_per_bp`, since they choose which pairs
@@ -306,8 +314,9 @@ class LdAndDistPerPop:
     each filter of the ``Variants`` was given and kept."""
 
     def __repr__(self) -> str:
-        """How many populations and how many bins the result holds, and not
-        the frames.
+        """How many populations the result holds, how many bins of distance,
+        and how many of the populations a curve was fitted to, and not the
+        frames.
 
         The one a dataclass writes prints every row of every frame, which
         for the 50 bins of the default is hundreds of lines in a session or
@@ -315,11 +324,14 @@ class LdAndDistPerPop:
         """
         num_pops = len(self.per_pop)
         num_bins = max((len(frame) for frame in self.per_pop.values()), default=0)
+        fitted = sum(
+            not math.isnan(curve.rho_per_bp) for curve in self.decay_per_pop.values()
+        )
         return (
             f"<LdAndDistPerPop of {num_pops} "
             f"{'population' if num_pops == 1 else 'populations'} in {num_bins} "
-            f"{'bin' if num_bins == 1 else 'bins'} of distance, "
-            f"with the counts of its pass>"
+            f"{'bin' if num_bins == 1 else 'bins'} of distance, with a fitted "
+            f"curve for {fitted} of them and the counts of its pass>"
         )
 
 
