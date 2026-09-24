@@ -226,6 +226,20 @@ other before any variant is looked at. The two of popnei are the linear
 mixed model, `lmm`, and the logistic one, `glmm`, two of the four values of
 `GWASModel`.
 
+**working trait.** The continuous trait that a logistic mixed model fits in
+place of the 0 and 1 of the phenotype: one number per individual that says
+where the fit so far puts it, each individual carrying a weight that says
+how much its 0 or 1 tells us there. It is made again from every new fit.
+`working_trait` in the core crate, `working` in pyNei's `_fit_pql_for_tau`.
+`docs/specs/gwas.md`.
+
+**penalized quasi-likelihood.** How a logistic mixed model is fitted, the
+likelihood of a 0 and 1 trait having no closed form once the random effect
+of the kinship is in it: at a fixed variance of that effect a weighted
+linear mixed model is fitted to the working trait, the working trait and the
+weights are made again from that fit, and so on. One pass of it is a
+**linearization**. `docs/specs/gwas.md`. Not used: PQL.
+
 **Wald test.** The test of a variant that fits the model again with the
 variant in it and asks how many of its own standard errors the effect is
 away from 0. `TestType.WALD`.

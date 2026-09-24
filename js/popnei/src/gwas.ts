@@ -13,10 +13,10 @@
  * probability of seeing an effect that far from 0 when the variant has
  * none.
  *
- * `calcGwas` fits three of the four models. A trait that is a measurement
- * without a kinship is the linear model, which is what plink2's `--glm`
- * computes, and its test is the t test of the effect: the effect divided by
- * its standard error, which under the
+ * The trait and the kinship together decide which of four models `calcGwas`
+ * fits. A trait that is a measurement without a kinship is the linear model,
+ * which is what plink2's `--glm` computes, and its test is the t test of the
+ * effect: the effect divided by its standard error, which under the
  * hypothesis that the variant has none follows a Student t distribution
  * with as many degrees of freedom as there are individuals left once the
  * covariates and the variant have been fitted, and `pValue` is the chance
@@ -39,8 +39,16 @@
  *
  * A trait that is 0 and 1 with a kinship is the logistic mixed model, which
  * is GMMAT's `glmm.score`: the same logistic curve with a random effect of
- * the kinship in it. Its only test is the score test, since a Wald test
- * would fit one mixed model for every variant.
+ * the kinship in it. It is fitted by penalized quasi-likelihood, which
+ * stands in for a likelihood that has no closed form once that random effect
+ * is in it: at a fixed variance of the effect the 0 and 1 are turned into a
+ * continuous working trait, one number per individual that says where the
+ * fit so far puts it, each individual carrying a weight that says how much
+ * its 0 or 1 tells us there, and a weighted linear mixed model is fitted to
+ * that working trait; the working trait and the weights are then made again
+ * from the new fit, and so on until the fit stops moving. Its only test is
+ * the score test, since a Wald test would fit one mixed model for every
+ * variant.
  *
  * The GRAMMAR-Gamma approximation a mixed model can take instead of the
  * exact denominator of its test is being written; asking for it is an
@@ -103,9 +111,11 @@ export type TraitType = "continuous" | "binomial";
  *
  * Under the hypothesis that the variant has no effect the two have the same
  * distribution in large samples; they differ in what they cost. The linear
- * model has the Wald test alone, which for it is the t test of the effect,
- * and asking it for the score test is an `Error`; the linear mixed model and
- * the logistic regression take either.
+ * mixed model and the logistic regression take either. The linear model has
+ * the Wald test alone, which for it is the t test of the effect, and the
+ * logistic mixed model has the score test alone, since a Wald test would fit
+ * one mixed model for every variant; asking either of those two for the test
+ * it has not is an `Error`.
  */
 export type TestType = "wald" | "score";
 
@@ -129,7 +139,11 @@ export type GwasModel = "lm" | "lmm" | "glm" | "glmm";
  * effect has no finite value to walk towards, and one that repeats a
  * covariate, which separates nobody and leaves the fit a system with no one
  * solution. The score test fits nothing for a variant and gives all three
- * numbers for either of them.
+ * numbers for either of them. And so is a variant that the covariates and
+ * the kinship leave nothing of, under the score test of a mixed model: what
+ * the projection of the null model leaves of its dosages has fallen to the
+ * rounding of what there was before the covariates were taken out, so an
+ * effect divided by it would be noise.
  */
 export interface GwasStats {
   /**
@@ -364,14 +378,15 @@ export interface CalcGwasOptions {
  * associated with; when the columns of the design are not independent; when
  * a binomial trait holds a value that is neither 0 nor 1; when the Wald test
  * is asked of a binomial trait with a kinship, which is the logistic mixed
- * model and has only the score test; when the covariance of the working
- * trait of that model cannot be factored, which is a kinship that is not a
- * covariance; when the null model of a binomial trait walks towards an
- * infinite coefficient instead of settling; when the source cannot be read,
- * a wrong line of a VCF among the causes; when a variant has more than two
- * alleles among its called genotypes and `transformToBiallelic` is false;
- * when the pass gives no variant; when the linear algebra of the fit or of a
- * test could not be done; and when `init` has not been awaited.
+ * model and has only the score test; when the covariance of the continuous
+ * working trait that model fits in place of the 0 and 1 cannot be factored,
+ * which is a kinship that is not a covariance; when the null model of a
+ * binomial trait walks towards an infinite coefficient instead of settling;
+ * when the source cannot be read, a wrong line of a VCF among the causes;
+ * when a variant has more than two alleles among its called genotypes and
+ * `transformToBiallelic` is false; when the pass gives no variant; when the
+ * linear algebra of the fit or of a test could not be done; and when `init`
+ * has not been awaited.
  */
 export function calcGwas(
   variants: Variants,

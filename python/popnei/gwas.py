@@ -13,14 +13,14 @@ of interest but has to be taken out, the field a plant grew in for instance,
 and the top principal components of the panel go in as covariates so that a
 variant which only marks ancestry does not look associated.
 
-Three of the four models are built. A trait that is a measurement without a
-kinship is the linear model, which is what plink2's ``--glm`` computes, and
-its test is the t test of the effect: the effect divided by its standard
-error, which under the hypothesis that the variant has none follows a
-Student t distribution with as many degrees of freedom as there are
-individuals left once the covariates and the variant have been fitted, and
-the p-value is the chance that such a t falls further from 0 than this one
-did, either way.
+The trait and the kinship together decide which of four models a study fits.
+A trait that is a measurement without a kinship is the linear model, which is
+what plink2's ``--glm`` computes, and its test is the t test of the
+effect: the effect divided by its standard error, which under the hypothesis
+that the variant has none follows a Student t distribution with as many
+degrees of freedom as there are individuals left once the covariates and the
+variant have been fitted, and the p-value is the chance that such a t falls
+further from 0 than this one did, either way.
 
 With a kinship it is the linear mixed model, which a panel with families in
 it needs: the trait carries a random effect whose covariance is the kinship
@@ -41,9 +41,16 @@ three numbers.
 
 A trait that is 0 and 1 with a kinship is the logistic mixed model, which is
 what GMMAT's ``glmm.score`` computes: the same logistic curve with a random
-effect of the kinship in it, fitted by penalized quasi-likelihood. Its only
-test is the score test, since a Wald test would fit one mixed model for every
-variant, and asking for the Wald test is a ``ValueError`` that says so.
+effect of the kinship in it. It is fitted by penalized quasi-likelihood,
+which stands in for a likelihood that has no closed form once that random
+effect is in it: at a fixed variance of the effect the 0 and 1 are turned
+into a continuous working trait, one number per individual that says where
+the fit so far puts it, each individual carrying a weight that says how much
+its 0 or 1 tells us there, and a weighted linear mixed model is fitted to
+that working trait; the working trait and the weights are then made again
+from the new fit, and so on until the fit stops moving. Its only test is the
+score test, since a Wald test would fit one mixed model for every variant,
+and asking for the Wald test is a ``ValueError`` that says so.
 
 The GRAMMAR-Gamma approximation, which a mixed model can take instead of the
 exact denominator of its test, is being written; asking for it is a
@@ -91,6 +98,12 @@ class TestType(StrEnum):
     Both ask whether the effect of the variant on the trait is 0, and under
     that they have the same distribution in large samples; they differ in
     what they cost.
+
+    The linear mixed model and the logistic regression take either. The
+    linear model has the Wald test alone, which for it is the t test of the
+    effect, and the logistic mixed model has the score test alone, since a
+    Wald test would fit one mixed model for every variant; asking either of
+    those two for the test it has not is a ``ValueError``.
     """
 
     WALD = "wald"
@@ -196,7 +209,12 @@ class GWASResult:
     condition from those that have not, whose effect has no finite value to
     walk towards, and one that repeats a covariate, which separates nobody
     and leaves the fit a system with no one solution. The score test fits
-    nothing for a variant and gives all three numbers for either of them."""
+    nothing for a variant and gives all three numbers for either of them.
+    And so is a variant that the covariates and the kinship leave nothing
+    of, under the score test of a mixed model: what the projection of the
+    null model leaves of its dosages has fallen to the rounding of what
+    there was before the covariates were taken out, so an effect divided by
+    it would be noise."""
 
     null_model: NullModel
     """The model fitted with no variant in it."""
@@ -288,8 +306,10 @@ def calc_gwas(
     fit walks towards an infinite coefficient instead of settling is a
     ``ValueError`` too: what takes it there is a covariate that separates
     the individuals that have the condition from those that have not, and
-    the user takes that covariate out. A kinship that the covariance of the
-    working trait of a logistic mixed model cannot be factored from is a
+    the user takes that covariate out. The logistic mixed model fits a
+    continuous working trait in place of the 0 and 1, one number per
+    individual that says where the fit so far puts it, and a kinship that
+    the covariance of that working trait cannot be factored from is a
     ``ValueError`` as well, naming the row it stopped at: missing genotypes
     leave every pair of individuals counted over its own variants, which can
     give the matrix an eigenvalue below 0, and the user builds it from
