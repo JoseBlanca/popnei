@@ -26,7 +26,20 @@
 //! subtracts the size of every free, and keeps the largest total it ever
 //! saw. Each run reads that total from the moment before the pass starts to
 //! the moment it ends, so what is printed is the most bytes the process held
-//! live at once across the pass, and the same number comes out of every run.
+//! live at once across the pass.
+//!
+//! At one thread the same number comes out of every run, to the byte. At
+//! more than one it does so only when the pass has the pool to itself: on a
+//! busy machine 27 runs of `--individuals 200 --pops 3 --draw 20` at 18
+//! threads gave 0.029 to 0.048 MB, none of them the 0.053 MB that the same
+//! command gives twelve times out of twelve with the machine quiet, and 27
+//! runs of `--individuals 500 --pops 50 --draw 180` gave 1.627 to 1.763 MB
+//! against 2.007 MB eight times out of nine quiet. The extra at many threads
+//! is suspected to be rayon's own splitting and stealing, whose allocations
+//! this allocator counts because it counts the whole process; nobody has
+//! measured that, and it is a suspicion and not a finding. So a memory
+//! figure at more than one thread is taken with nothing else running.
+//!
 //! `/usr/bin/time -l` cannot be used for this: its maximum resident set is
 //! the whole process, the binary and the pages the allocator keeps among
 //! them, and it cannot separate the few tens of kilobytes of the counts of
