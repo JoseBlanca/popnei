@@ -164,9 +164,11 @@ dataset or to report the wrong cause:
   another's. Two cases were added, one of a single population and one of
   three populations with three different counts.
 
-**Everything above was fixed**, in four commits, one per file: `0b5c614`
-for the R script, `dfc8872` for the Python one, `9babbd0` for the
-enumeration and `87a9b7b` for the page. The refusals were provoked to see
+**Everything above was fixed**, in five commits: `0b5c614` for the R
+script, `dfc8872` for the Python one, `9babbd0` for the enumeration, and
+`87a9b7b` and `5bd51ee` for the page, which took two because the second
+waited for the enumeration's new shape to be committed before describing
+it. The refusals were provoked to see
 them fire, and the orchestrator provoked one of them itself: a populations
 file one line short now exits 1 naming the file, the count and the missing
 individual, where before it produced a wrong spectrum bin. After the fixes
