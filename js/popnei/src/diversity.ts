@@ -32,10 +32,8 @@ import {
 } from "../wasm/popnei.js";
 
 import {
-  LARGEST_WHOLE_NUMBER,
   namesOf,
   popsOfTheObject,
-  whatWasGiven,
   wholeNumberOfZeroOrMore,
 } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
@@ -360,7 +358,17 @@ export function calcPopDiversity(
   const { source, steps } = sourceOfTheVariants("variants", variants);
   const stats = theStats(options.stats);
   const pops = thePops(options.pops);
-  const numCalledAlleles = theNumCalledAlleles(options.numCalledAlleles);
+  // What is checked here is that the number arrives as the number the user
+  // wrote, since the generated code throws the fraction of 20.5 away and turns
+  // -1 into a count of about four thousand million. How small a draw may be,
+  // and how large the dataset allows, are rules of the core, which refuses 0
+  // and 1 and a draw above the gene copies the dataset holds: writing either
+  // bound here as well would leave this package refusing what Python takes the
+  // day one of them moves.
+  const numCalledAlleles =
+    options.numCalledAlleles === undefined
+      ? undefined
+      : wholeNumberOfZeroOrMore("numCalledAlleles", options.numCalledAlleles);
   const minNumIndividuals =
     options.minNumIndividuals === undefined
       ? defaultMinNumIndividuals()
@@ -437,6 +445,35 @@ export function calcPopDiversity(
 }
 
 /**
+ * The four statistics that need no draw: the alleles a population called, the
+ * private ones among them, the variants that vary in it and F_IS. They are
+ * what a call that names no statistic asks for.
+ *
+ * A user who wants those four and the folded spectrum writes
+ * `stats: [...popDiversityStatsWithoutADraw(), "folded_sfs"]` and does not
+ * have to name the four in their own code. The list is the core's, as the
+ * default of `stats` is, so a statistic added there arrives in this package and
+ * in the Python one with nothing written in either; the Python package gives
+ * the same list as `PopDiversityStat.WITHOUT_A_DRAW`.
+ *
+ * @throws {Error} When the core names a statistic this package does not have,
+ * which is a defect of popnei, and when `init` has not been awaited.
+ */
+export function popDiversityStatsWithoutADraw(): PopDiversityStat[] {
+  theWasmHasToBeLoaded();
+  return statsWithoutADraw().map((name) => {
+    const statistic = name as PopDiversityStat;
+    if (!THE_STATISTICS.includes(statistic)) {
+      throw new Error(
+        `popnei: the core names \`${name}\` a statistic of a population that ` +
+          "needs no draw, and this package has no statistic of that name",
+      );
+    }
+    return statistic;
+  });
+}
+
+/**
  * The names of the statistics a user asked for, each once and in the order
  * they named them, and the four that need no draw when they named none.
  *
@@ -486,43 +523,6 @@ function thePops(pops: Record<string, readonly string[]> | undefined): {
     };
   }
   return popsOfTheObject(pops);
-}
-
-/**
- * How many called alleles every population is brought down to, and
- * `undefined` for a pass that takes no draw.
- *
- * The rule is written here and not taken from the checks that every other
- * whole number goes through, because those say "0 or more" and 0 and 1 are
- * no draw: a draw of one allele finds one allele whatever the population
- * holds. A user who reads a bound and writes a number inside it has to be
- * taken.
- *
- * @throws {Error} When `numCalledAlleles` is not a whole number of 2 or more
- * that the core holds. What the generated code would do with the numbers
- * this refuses is to throw the fraction of 20.5 away and turn -1 into a
- * count of about four thousand million.
- */
-function theNumCalledAlleles(
-  numCalledAlleles: number | undefined,
-): number | undefined {
-  if (numCalledAlleles === undefined) {
-    return undefined;
-  }
-  if (
-    typeof numCalledAlleles !== "number" ||
-    !Number.isSafeInteger(numCalledAlleles) ||
-    numCalledAlleles < 2 ||
-    numCalledAlleles > LARGEST_WHOLE_NUMBER
-  ) {
-    throw new Error(
-      "popnei: `numCalledAlleles` is how many called alleles every " +
-        "population is brought down to, a whole number of 2 or more and at " +
-        `most ${LARGEST_WHOLE_NUMBER}, or left out for no draw at all, and ` +
-        `${whatWasGiven(numCalledAlleles)} was given`,
-    );
-  }
-  return numCalledAlleles;
 }
 
 /**

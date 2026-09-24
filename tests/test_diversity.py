@@ -380,6 +380,15 @@ def test_the_default_stats_are_the_ones_of_the_core() -> None:
     assert PopDiversityStat.FOLDED_SFS not in PopDiversityStat.WITHOUT_A_DRAW
 
 
+def test_the_private_module_of_the_diversity_explains_nothing() -> None:
+    """The package is the API, and a user who calls ``help`` on what they can
+    reach reads the signature, the defaults and the errors there; the module of
+    the binding crate carries none of that."""
+    assert _core.calc_pop_diversity.__doc__ is None
+    assert _core.diversity_stats_without_a_draw.__doc__ is None
+    assert calc_pop_diversity.__doc__ is not None
+
+
 def test_the_statistics_are_given_by_name_and_not_after_the_populations() -> None:
     """`stats` and the two arguments after it are keyword only, so that the
     argument after the variants cannot mean the populations in one function of
@@ -604,7 +613,8 @@ def test_a_draw_larger_than_the_dataset_holds_is_refused_and_names_no_file() -> 
 def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> None:
     """Two variants of three diploid individuals in two populations at a draw
     of 2, where one population is short of the draw at the second variant, so
-    that the four counts of variants come out as four different numbers.
+    that the four counts of variants come out as four different numbers and
+    every standardized value is over a divisor of its own.
 
     `pop1` is `ind1` and `ind2`, which call 4 alleles at both variants, and
     `pop2` is `ind3`, which calls 2 at the first and, its genotype there being
@@ -617,11 +627,33 @@ def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> 
     the variants every population counted 2 and the variants every population
     reached the draw at 1. On the panel all four are 1200, so a value taken
     from the wrong one of them gives the same number there.
+
+    The genotypes are `0/1 1/1 2/2` and `0/0 0/1 0/.`, so at the first variant
+    `pop1` called the allele 0 once and the allele 1 three times of 4 and
+    `pop2` called the allele 2 twice of 2, and at the second `pop1` called 0
+    three times and 1 once and `pop2` called 0 once.
+
+    The standardized values, worked out from the formulas of the spec:
+
+    - The alleles a draw of 2 shows in `pop1` are
+      1 - C(3, 2) / C(4, 2) = 0.5 for the allele it called once and
+      1 - C(1, 2) / C(4, 2) = 1 for the one it called three times, which is
+      1.5 at each of its two variants. `pop2` shows its one allele for
+      certain, 1, at the one variant in its draw.
+    - The chance that the draw of `pop1` is not all of one allele is
+      1 - (C(1, 2) + C(3, 2)) / C(4, 2) = 0.5 at each variant, and `pop2`,
+      holding one allele, has 0.
+    - The private alleles are over the one variant every population reached the
+      draw at, the first. There `pop1`'s two alleles are in no draw of `pop2`,
+      which holds neither, so its two chances of showing them, 0.5 and 1, add
+      to 1.5; `pop2`'s allele is in no draw of `pop1` and shows for certain, 1.
+      Over the variants of each population instead, which is the divisor of the
+      other two values, `pop1` would read 0.75.
     """
     path = write_vcf(
         [
-            "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/1\t0/0\t0/0",
-            "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
+            "chr1\t10\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/1\t1/1\t2/2",
+            "chr1\t20\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
         ]
     )
 
@@ -637,10 +669,15 @@ def test_the_two_counts_of_the_variants_in_a_draw_are_of_the_draw(write_vcf) -> 
     assert list(diversity.num_vars["in_draw"]) == [2, 1]
     assert diversity.num_vars_every_pop == 2
     assert diversity.num_vars_every_pop_in_draw == 1
-    for pop in ("pop1", "pop2"):
-        for statistic in ("num_alleles", "private_alleles", "variable_vars_ratio"):
-            value = getattr(diversity, statistic).loc[pop, "in_draw"]
-            assert not math.isnan(value), f"the {statistic} of {pop} in the draw"
+    assert list(diversity.num_alleles["total"]) == [4, 2]
+    assert list(diversity.num_alleles["mean"]) == [2.0, 1.0]
+    assert list(diversity.num_alleles["in_draw"]) == [1.5, 1.0]
+    assert list(diversity.private_alleles["total"]) == [3, 1]
+    assert list(diversity.private_alleles["mean"]) == [1.5, 0.5]
+    assert list(diversity.private_alleles["in_draw"]) == [1.5, 1.0]
+    assert list(diversity.variable_vars_ratio["total"]) == [2, 0]
+    assert list(diversity.variable_vars_ratio["ratio"]) == [1.0, 0.0]
+    assert list(diversity.variable_vars_ratio["in_draw"]) == [0.5, 0.0]
 
 
 def test_a_population_that_names_no_individual_of_the_pass_is_refused() -> None:

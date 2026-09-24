@@ -93,9 +93,9 @@ struct OfThePass {
     private_alleles: Option<CountOfThePass>,
     /// The variants each population called more than one allele at.
     num_variable_vars: Option<CountOfThePass>,
-    /// The folded spectrum of each population, one value per count of the
-    /// rarer allele.
-    folded_sfs: Option<Vec<Vec<f64>>>,
+    /// The folded spectrum of every population, laid out as the frame that
+    /// holds it.
+    folded_sfs: Option<SpectrumOfThePass>,
     /// The inbreeding coefficient of each population, NaN where it has none.
     fis: Option<Vec<f64>>,
     /// The variants the pass gave and what each of its filters counted.
@@ -114,6 +114,47 @@ struct CountOfThePass {
     total: Vec<u64>,
     /// The standardized value of each population, NaN where it has none.
     in_draw: Vec<f64>,
+}
+
+/// The folded spectrum of every population, laid out as the frame that holds
+/// it: one row per count of the rarer allele and one column per population.
+///
+/// The core keeps the bins of one population together and the frame is indexed
+/// by the bin, so the values are read across the populations, which is the one
+/// pass that copies them out of the result of the core.
+struct SpectrumOfThePass {
+    /// The value of every population at the first bin, then at the second, and
+    /// so on: the bins x populations array of the result, row after row.
+    bins_by_pops: Vec<f64>,
+    /// How many bins each population has, which is the rows of that array.
+    num_bins: usize,
+}
+
+impl SpectrumOfThePass {
+    /// The spectrum of every population of `of_each_pop`, in their order.
+    ///
+    /// `num_bins` is the most bins any one population has, so that a
+    /// population of fewer leaves the values short of the shape they are given
+    /// and is refused where the array is built, rather than being read as if
+    /// it had them.
+    fn of_each_pop(of_each_pop: &[&[f64]]) -> SpectrumOfThePass {
+        let num_bins = of_each_pop
+            .iter()
+            .map(|bins| bins.len())
+            .max()
+            .unwrap_or_default();
+        let bins_by_pops = (0..num_bins)
+            .flat_map(|bin| {
+                of_each_pop
+                    .iter()
+                    .filter_map(move |bins| bins.get(bin).copied())
+            })
+            .collect();
+        SpectrumOfThePass {
+            bins_by_pops,
+            num_bins,
+        }
+    }
 }
 
 // How much variety each population of `pops` holds, over one pass of
@@ -223,7 +264,8 @@ fn over_the_source(
             |pop| diversity.variable_vars_ratio_in_draw(pop),
         ),
         folded_sfs: of_every_pop(num_pops, |pop| diversity.folded_sfs(pop))
-            .map(|of_each_pop| of_each_pop.into_iter().map(<[f64]>::to_vec).collect()),
+            .as_deref()
+            .map(SpectrumOfThePass::of_each_pop),
         fis: of_every_pop(num_pops, |pop| diversity.fis(pop)),
         counts: (diversity.num_vars_of_the_pass(), filtering),
     })
@@ -318,7 +360,7 @@ fn for_python<'py>(
         count_for_python(py, num_alleles)?,
         count_for_python(py, private_alleles)?,
         count_for_python(py, num_variable_vars)?,
-        spectrum_for_python(py, folded_sfs)?,
+        spectrum_for_python(py, folded_sfs, num_pops)?,
         fis.map(|fis| fis.into_pyarray(py)),
         counts,
     ))
@@ -347,8 +389,9 @@ fn count_for_python<'py>(
 /// the Python package indexes by the count of the rarer allele and names by
 /// the population, or `None` when nobody asked for it.
 ///
-/// The core gives one value per bin for each population and the frame holds
-/// one row per bin, so the values are laid out here bin by bin.
+/// The values were laid out bin by bin where they were copied out of the
+/// result of the core, so nothing is copied here: the array takes the vector
+/// and numpy takes the array.
 ///
 /// # Errors
 ///
@@ -357,32 +400,25 @@ fn count_for_python<'py>(
 /// `num_called_alleles` over 2, one draw size for the whole call.
 fn spectrum_for_python<'py>(
     py: Python<'py>,
-    of_each_pop: Option<Vec<Vec<f64>>>,
+    spectrum: Option<SpectrumOfThePass>,
+    num_pops: usize,
 ) -> Result<Option<Bound<'py, PyArray2<f64>>>, PyPopneiError> {
-    let Some(of_each_pop) = of_each_pop else {
+    let Some(SpectrumOfThePass {
+        bins_by_pops,
+        num_bins,
+    }) = spectrum
+    else {
         return Ok(None);
     };
-    let num_pops = of_each_pop.len();
-    let num_bins = of_each_pop.first().map_or(0, Vec::len);
-    let of_other_bins = || PyPopneiError::Broken {
-        message: format!(
-            "the pass gave the folded spectrum of {num_pops} populations and not the \
-             same {num_bins} bins for each of them"
-        ),
-        path: None,
-    };
-    if of_each_pop.iter().any(|bins| bins.len() != num_bins) {
-        return Err(of_other_bins());
-    }
-    let bins_by_pops: Vec<f64> = (0..num_bins)
-        .flat_map(|bin| {
-            of_each_pop
-                .iter()
-                .filter_map(move |bins| bins.get(bin).copied())
-        })
-        .collect();
-    let spectrum =
-        Array2::from_shape_vec((num_bins, num_pops), bins_by_pops).map_err(|_| of_other_bins())?;
+    let spectrum = Array2::from_shape_vec((num_bins, num_pops), bins_by_pops).map_err(|_| {
+        PyPopneiError::Broken {
+            message: format!(
+                "the pass gave the folded spectrum of {num_pops} populations and not \
+                 the same {num_bins} bins for each of them"
+            ),
+            path: None,
+        }
+    })?;
     Ok(Some(spectrum.into_pyarray(py)))
 }
 
@@ -396,14 +432,16 @@ fn of_a_result_each(counts: Vec<u64>) -> Result<Vec<i64>, PyPopneiError> {
     counts.into_iter().map(of_a_result).collect()
 }
 
-/// The names of the statistics that need no draw, which is what a user who
-/// names no statistic in `stats` asks for: the alleles a population called,
-/// the private ones among them, the variants that vary in it and F_IS.
-///
-/// The Python package builds the default of its `stats` from this list. The
-/// four are named in the core alone, and not there as well as in the
-/// TypeScript package, so a statistic that needs no draw is added in one
-/// place.
+// The names of the statistics that need no draw, which is what a user who
+// names no statistic in `stats` asks for: the alleles a population called, the
+// private ones among them, the variants that vary in it and F_IS. A `///`
+// comment here would become the `__doc__` of
+// `popnei._core.diversity_stats_without_a_draw`, and what a Python user reads
+// belongs to the package, which is the API.
+//
+// The Python package builds the default of its `stats` from this list. The
+// four are named in the core alone, and not there as well as in the TypeScript
+// package, so a statistic that needs no draw is added in one place.
 #[pyfunction]
 pub fn diversity_stats_without_a_draw() -> Vec<&'static str> {
     DiversityStats::WITHOUT_A_DRAW.names()

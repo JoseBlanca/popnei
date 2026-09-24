@@ -26,7 +26,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PopDiversity, Variants } from "popnei";
-import { calcPopDiversity, init, openVcf } from "popnei";
+import {
+  calcPopDiversity,
+  init,
+  openVcf,
+  popDiversityStatsWithoutADraw,
+} from "popnei";
 
 import { referenceStats, vcfOf } from "./reference.ts";
 
@@ -47,23 +52,32 @@ const PANEL_MIN_NUM_INDIVIDUALS = 20;
 
 /**
  * The individuals of each population of the panel, under the name of the
- * population, the names in the order `p0`, `p1`, `p2`, which is the order
- * every result of a call with these populations is in.
+ * population, in the order `panel_pops_bcftools.txt` names them, which is the
+ * order every result of a call with these populations is in.
  */
 const PANEL_POPS = popsOf(
   new TextDecoder().decode(await referenceStats("panel_pops_bcftools.txt")),
 );
 
-/** The three populations in the order of the keys of `PANEL_POPS`. */
-const PANEL_POP_NAMES = ["p0", "p1", "p2"];
+/**
+ * The three populations in the order of the keys of `PANEL_POPS`, which is
+ * the order `panel_pops_bcftools.txt` names them in and the order every
+ * result of a call with those populations has to be in.
+ *
+ * It is not alphabetical, and that is what it is for: `p2` comes before `p1`
+ * in the file, so every array of literals below is written in that order, and
+ * a result that put the populations in any other would fail here. The Python
+ * suite reads the same file and keeps the same order.
+ */
+const PANEL_POP_NAMES = ["p0", "p2", "p1"];
 
 /**
  * The alleles the three populations called over the 1200 variants and the
  * mean of each, which is the allelic richness, from `adegenet`.
  */
-const PANEL_NUM_ALLELES = [2373, 2377, 2384];
+const PANEL_NUM_ALLELES = [2373, 2384, 2377];
 const PANEL_MEAN_NUM_ALLELES = [
-  1.9775, 1.9808333333333332, 1.9866666666666666,
+  1.9775, 1.9866666666666666, 1.9808333333333332,
 ];
 
 /**
@@ -71,17 +85,17 @@ const PANEL_MEAN_NUM_ALLELES = [
  * variant, from `poppr`, and their mean over the 1200 variants that counted
  * for every population.
  */
-const PANEL_PRIVATE_ALLELES = [0, 0, 1];
-const PANEL_MEAN_PRIVATE_ALLELES = [0, 0, 0.0008333333333333334];
+const PANEL_PRIVATE_ALLELES = [0, 1, 0];
+const PANEL_MEAN_PRIVATE_ALLELES = [0, 0.0008333333333333334, 0];
 
 /**
  * The variants each population called more than one allele at, from
  * `adegenet`, and that count over the 1200 variants that counted for the
  * population.
  */
-const PANEL_VARIABLE_VARS = [1173, 1177, 1184];
+const PANEL_VARIABLE_VARS = [1173, 1184, 1177];
 const PANEL_VARIABLE_VARS_RATIO = [
-  0.9775, 0.9808333333333333, 0.9866666666666667,
+  0.9775, 0.9866666666666667, 0.9808333333333333,
 ];
 
 /**
@@ -103,7 +117,7 @@ const PANEL_VARIABLE_VARS_RATIO = [
  * with `scikit-allel`.
  */
 const PANEL_FIS = [
-  -0.012758486763377208, -0.018110713076467277, -0.018458583231322434,
+  -0.012758486763377208, -0.018458583231322434, -0.018110713076467277,
 ];
 
 /**
@@ -138,7 +152,7 @@ const EVERY_GENE_COPY_OF_THE_PANEL = 400;
  * alleles, so a draw there shows one of them or both.
  */
 const PANEL_NUM_ALLELES_IN_DRAW = [
-  1.9283948650041205, 1.9219209943237829, 1.9197370843937562,
+  1.9283948650041205, 1.9197370843937562, 1.9219209943237829,
 ];
 const PANEL_VARIABLE_VARS_RATIO_IN_DRAW = PANEL_NUM_ALLELES_IN_DRAW.map(
   (alleles) => alleles - 1,
@@ -155,7 +169,7 @@ const PANEL_VARIABLE_VARS_RATIO_IN_DRAW = PANEL_NUM_ALLELES_IN_DRAW.map(
  * F_IS above does.
  */
 const PANEL_PRIVATE_ALLELES_IN_DRAW = [
-  0.0112196177, 0.0099715392, 0.0089014974,
+  0.0112196177, 0.0089014974, 0.0099715392,
 ];
 
 /**
@@ -185,16 +199,16 @@ const PANEL_FOLDED_SFS = [
     122.42162180189403, 60.95687560124602,
   ],
   [
-    93.69480681145635, 95.45880325926598, 103.72623430085372,
-    110.6831031478722, 116.6729455230275, 121.05177240834107,
-    123.60219049366185, 124.59443950850212, 124.54032617876919,
-    124.0682314877391, 61.907146880441395,
-  ],
-  [
     96.3154987274892, 101.37814416196603, 108.05152927646787,
     114.8500079366327, 119.73977861754621, 121.88331138362474,
     121.86450896763563, 120.60097546763699, 118.97681357034003,
     117.71473832544012, 58.62469356518016,
+  ],
+  [
+    93.69480681145635, 95.45880325926598, 103.72623430085372,
+    110.6831031478722, 116.6729455230275, 121.05177240834107,
+    123.60219049366185, 124.59443950850212, 124.54032617876919,
+    124.0682314877391, 61.907146880441395,
   ],
 ];
 
@@ -230,13 +244,34 @@ const SOME_VARS_MISSED = vcfOf([
 ]);
 
 /**
+ * Two variants of the same three individuals, for the four counts of variants
+ * that the panel cannot tell apart either: there all four are 1200, so a
+ * divisor or a count read from the wrong one of them gives the same number.
+ *
+ * The genotypes are `0/1 1/1 2/2` and `0/0 0/1 0/.`. With `ind1` and `ind2` in
+ * one population and `ind3` in another, at a draw of 2 and a
+ * `minNumIndividuals` of 0, the first population calls 4 alleles at both
+ * variants and the second calls 2 at the first and, its genotype there being
+ * the half called `0/.`, one at the second: that one allele counts the variant
+ * for it, the population having called something, and is below the draw. So
+ * the variants with data are 2 and 2, the variants in the draw 2 and 1, the
+ * variants every population counted 2 and the variants every population
+ * reached the draw at 1.
+ */
+const SOME_VARS_SHORT_OF_THE_DRAW = vcfOf([
+  "chr1\t10\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/1\t1/1\t2/2",
+  "chr1\t20\t.\tA\tT,G\t.\tPASS\t.\tGT\t0/0\t0/1\t0/.",
+]);
+
+/**
  * The individuals of each population of a file of two columns, the name of
  * an individual and the name of its population, under the names of the
- * populations in order.
+ * populations in the order the file names them.
  *
- * The order of the keys is the order of every array of a result, so the
- * names are sorted and not taken as the file has them: what the literals
- * above are written in is `p0`, `p1`, `p2`.
+ * They are not sorted. The order of the keys is the order of every array of a
+ * result, and the file names `p2` before `p1`, so a result that sorted the
+ * populations anywhere, or that put one population's counts under another's
+ * name, gives the literals above in the wrong order and fails.
  */
 function popsOf(text: string): Record<string, string[]> {
   const ofEachName = new Map<string, string[]>();
@@ -254,11 +289,7 @@ function popsOf(text: string): Record<string, string[]> {
     individuals.push(individual);
     ofEachName.set(pop, individuals);
   }
-  const pops: Record<string, string[]> = {};
-  for (const pop of [...ofEachName.keys()].sort()) {
-    pops[pop] = ofEachName.get(pop) as string[];
-  }
-  return pops;
+  return Object.fromEntries(ofEachName);
 }
 
 /** The 1200 variants of the panel. */
@@ -454,6 +485,29 @@ test("a call that names no statistic gives the four that need no draw", () => {
   assert.deepEqual(diversity.numVars.withData, Uint32Array.of(PANEL_NUM_VARS));
 });
 
+test("the four statistics that need no draw are the default and have a name", () => {
+  // The four are named in the core, and a user who wants them and the folded
+  // spectrum takes them from here rather than writing the names into their own
+  // code, as a Python user takes `PopDiversityStat.WITHOUT_A_DRAW`.
+  assert.deepEqual(popDiversityStatsWithoutADraw(), [...WITH_NO_SPECTRUM]);
+
+  const diversity = ofThePanel({
+    stats: [...popDiversityStatsWithoutADraw(), "folded_sfs"],
+    numCalledAlleles: PANEL_NUM_CALLED_ALLELES,
+  });
+
+  assertValues(
+    counted(diversity.numAlleles, "count of alleles").inDraw,
+    PANEL_NUM_ALLELES_IN_DRAW,
+    "alleles a draw of 20 shows",
+  );
+  assertValues(diversity.fis, PANEL_FIS, "F_IS");
+  assert.equal(
+    Object.keys(counted(diversity.foldedSfs, "folded spectrum")).length,
+    PANEL_POP_NAMES.length,
+  );
+});
+
 test("the standardized values of the panel in a draw of 20 are the ones of the reference", () => {
   // The alleles a draw of 20 shows and the chance that such a draw varies,
   // which `vegan` measured, and the private alleles of the draw, which the
@@ -634,19 +688,91 @@ test("a draw larger than the dataset holds is refused and names the largest it a
   );
 });
 
-test("a numCalledAlleles that is no draw at all is refused as the wrong argument it is", () => {
-  // A value that is no draw is refused by the package, with the rule it
-  // broke: a number of JavaScript reaches a whole number of the core as 32
-  // bits with no error, so a draw of 20.5 alleles would be a draw of 20 and
-  // one of -1 a draw of 4294967295, and a draw of one allele finds one allele
-  // whatever the population holds.
-  for (const given of [20.5, -1, 0, 1]) {
+test("a numCalledAlleles that is no whole number the core holds is refused by the package", () => {
+  // What the package checks is that the number arrives as the number the user
+  // wrote: a number of JavaScript reaches a whole number of the core as 32
+  // bits with no error, so a draw of 20.5 alleles would be a draw of 20, one
+  // of -1 a draw of 4294967295 and one of 4294967296 a draw of 0.
+  for (const given of [20.5, -1, 4294967296]) {
     assert.throws(
       () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: given }),
-      { message: /a whole number of 2 or more/ },
+      { message: /`numCalledAlleles` is a whole number of 0 or more/ },
       `numCalledAlleles: ${given}`,
     );
   }
+});
+
+test("a draw of fewer than two alleles is refused by the core", () => {
+  // How small a draw may be is a rule of the core and is not written here as
+  // well: a draw of one allele finds one allele whatever the population holds.
+  // A Python user reads the same sentence, with `num_called_alleles` where
+  // this one has the name they wrote.
+  for (const given of [0, 1]) {
+    assert.throws(
+      () => ofThePanel({ stats: WITH_NO_SPECTRUM, numCalledAlleles: given }),
+      {
+        message:
+          `\`numCalledAlleles\` is ${given}, and a draw shows more than one ` +
+          "allele only when it is of 2 alleles at least: a draw of one " +
+          "allele finds one allele whatever the population holds",
+      },
+      `numCalledAlleles: ${given}`,
+    );
+  }
+});
+
+test("the four counts of variants and the values over each of them are of the draw", () => {
+  // The two variants of `SOME_VARS_SHORT_OF_THE_DRAW`, whose comment says what
+  // each population calls where. The four counts of variants are four
+  // different numbers here, so a value taken from the wrong one of them fails,
+  // which on the panel it cannot: all four are 1200 there.
+  //
+  // The standardized values are the formulas of the spec on those counts, and
+  // `tests/test_diversity.py` works each of them out and asserts the same
+  // numbers. At the first variant `p1` called the allele 0 once and the allele
+  // 1 three times of 4, so a draw of 2 shows the first with chance
+  // 1 - C(3, 2) / C(4, 2) = 0.5 and the second for certain: 1.5 alleles, and
+  // the same 1.5 at the second variant, where the counts are 3 and 1. `p2`
+  // shows its one allele for certain at the one variant in its draw.
+  //
+  // The private alleles are over the one variant every population reached the
+  // draw at, where `p1` holds two alleles that no draw of `p2` can show, 0.5
+  // and 1, which add to 1.5, and `p2` holds one that no draw of `p1` can show,
+  // 1. Over the variants of each population instead, which is the divisor of
+  // the other two standardized values, `p1` would read 0.75.
+  const variants = openVcf(SOME_VARS_SHORT_OF_THE_DRAW);
+
+  const diversity = calcPopDiversity(variants, {
+    pops: { p1: ["ind1", "ind2"], p2: ["ind3"] },
+    stats: WITH_NO_SPECTRUM,
+    numCalledAlleles: 2,
+    minNumIndividuals: 0,
+  });
+
+  assert.deepEqual(diversity.pops, ["p1", "p2"]);
+  assert.deepEqual(diversity.numVars.withData, Uint32Array.of(2, 2));
+  assert.deepEqual(diversity.numVars.inDraw, Uint32Array.of(2, 1));
+  assert.equal(diversity.numVarsEveryPop, 2);
+  assert.equal(diversity.numVarsEveryPopInDraw, 1);
+  const alleles = counted(diversity.numAlleles, "count of alleles");
+  assert.deepEqual(alleles.total, Uint32Array.of(4, 2));
+  assert.deepEqual(alleles.mean, Float64Array.of(2, 1));
+  assert.deepEqual(alleles.inDraw, Float64Array.of(1.5, 1));
+  const theirPrivate = counted(
+    diversity.privateAlleles,
+    "count of private alleles",
+  );
+  assert.deepEqual(theirPrivate.total, Uint32Array.of(3, 1));
+  assert.deepEqual(theirPrivate.mean, Float64Array.of(1.5, 0.5));
+  assert.deepEqual(theirPrivate.inDraw, Float64Array.of(1.5, 1));
+  const variable = counted(
+    diversity.variableVarsRatio,
+    "count of variable variants",
+  );
+  assert.deepEqual(variable.total, Uint32Array.of(2, 0));
+  assert.deepEqual(variable.ratio, Float64Array.of(1, 0));
+  assert.deepEqual(variable.inDraw, Float64Array.of(0.5, 0));
+  variants.free();
 });
 
 test("the mean private alleles are over the variants that counted for every population", () => {
