@@ -27,7 +27,8 @@
 #                                population called, from poppr
 #     panel_variable_vars.tsv    the variants that vary in each population,
 #                                from adegenet, and the chance that such a
-#                                draw of 20 varies, from vegan
+#                                draw of 20 varies, which is vegan's number
+#                                of alleles minus one
 #
 # The tables of the spec are computed with min_num_individuals 20, how many
 # called genotypes a population needs at a variant for the variant to count
@@ -39,10 +40,15 @@
 #
 # The standardized ratio of variable variants is what vegan's rarefy gives
 # minus 1. On a variant of two alleles a draw shows one allele or two, so the
-# alleles it is expected to show are one plus the chance that it varies. The
-# script stops if any variant of the panel has more than two alleles, which is
-# what that identity needs; "How it is verified" of the variable variants of
-# the spec has the rest of it.
+# alleles it is expected to show are one plus the chance that it varies. vegan
+# measures one of the two numbers and the other is derived from it, which is
+# why the column of panel_variable_vars.tsv is named in_draw_vegan_minus_one
+# and not after a measurement of its own. The script stops if any variant of
+# the panel has more than two alleles, which is what the identity needs, and
+# it checks the identity itself on every run on the 14 pairs of allele counts
+# and draw that "How it is verified" of the variable variants of the spec
+# gives, comparing rarefy against one plus the chance of varying computed from
+# the counts, within the 1e-12 relative of the spec.
 #
 # The floats go in to 17 significant digits and not to the ten the spec
 # prints, because the tests compare with vegan within 1e-12 of the value and a
@@ -76,6 +82,10 @@ MIN_NUM_INDIVIDUALS <- 20L
 
 # The spec prints ten decimals, so its literal is up to 5e-11 from the value.
 TOLERANCE <- 1e-10
+
+# What the spec allows between the two sides of the identity of the variable
+# variants, which are the same terms added in different orders.
+IDENTITY_TOLERANCE <- 1e-12
 
 check_versions <- function() {
   for (package in names(VERSIONS)) {
@@ -174,12 +184,20 @@ count_alleles <- function(panel, pop_of, pop_names) {
        called_genotypes = called_genotypes, max_allele = max_allele)
 }
 
-# The four things the numbers below rest on: no genotype is half called, so
-# adegenet and the counts built here read the same alleles; no variant has more
-# than two alleles, which the standardized ratio of variable variants needs;
-# and every variant reaches both thresholds in every population, so the
-# programs, which have no thresholds, count the variants popnei counts.
+# The five things the numbers below rest on: no genotype is phased, since
+# df2genind is given "/" as the separator and would read "0|1" as one allele;
+# no genotype is half called, so adegenet and the counts built here read the
+# same alleles; no variant has more than two alleles, which the standardized
+# ratio of variable variants needs; and every variant reaches both thresholds
+# in every population, so the programs, which have no thresholds, count the
+# variants popnei counts.
 check_the_panel <- function(panel, alleles, pop_names) {
+  phased <- grepl("|", panel$calls, fixed = TRUE)
+  if (any(phased)) {
+    stop(sprintf(paste("phased genotypes in the panel: %d. adegenet is given",
+                       "\"/\" as the separator of a genotype here"),
+                 sum(phased)))
+  }
   half_called <- xor(is.na(panel$first), is.na(panel$second))
   if (any(half_called)) {
     stop(sprintf(paste("half called genotypes in the panel: %d. adegenet and",
@@ -206,6 +224,41 @@ check_the_panel <- function(panel, alleles, pop_names) {
                        "and the means written here are over every variant"),
                  NUM_CALLED_ALLELES, paste(short, collapse = " ")))
   }
+}
+
+# The identity that lets one run of vegan stand for two items of the spec: on
+# a variant of two alleles the alleles a draw is expected to show are one plus
+# the chance that the draw is not all of one allele. The 14 pairs of allele
+# counts and draw are the ones "How it is verified" of the variable variants
+# of the spec names.
+check_the_identity_of_the_variable_variants <- function() {
+  differences <- c()
+  for (counts in list(c(10L, 6L), c(17L, 3L), c(1L, 19L), c(55L, 45L))) {
+    for (draw in c(2L, 4L, 10L)) {
+      differences <- c(differences, check_one_pair_of_the_identity(counts, draw))
+    }
+  }
+  for (draw in c(2L, 4L)) {
+    differences <- c(differences, check_one_pair_of_the_identity(c(3L, 1L), draw))
+  }
+  differences
+}
+
+# vegan's alleles expected in a draw of `draw` of the `counts` against one plus
+# 1 - sum over a of C(n_a, g) / C(c, g), the chance that such a draw varies.
+check_one_pair_of_the_identity <- function(counts, draw) {
+  # rarefy warns on counts that do not look like the counts of a community,
+  # which allele counts do not, and it warns and gives NA where the draw is
+  # larger than the called alleles, which the NA below catches.
+  from_vegan <- unname(suppressWarnings(rarefy(matrix(counts, nrow = 1), sample = draw)))
+  varies <- 1 - sum(choose(counts, draw)) / choose(sum(counts), draw)
+  difference <- abs(from_vegan - (1 + varies))
+  if (is.na(difference) || difference > IDENTITY_TOLERANCE * (1 + varies)) {
+    stop(sprintf(paste("the counts %s at a draw of %d: vegan gives %.17g",
+                       "alleles and one plus the chance of varying is %.17g"),
+                 paste(counts, collapse = ", "), draw, from_vegan, 1 + varies))
+  }
+  difference
 }
 
 # adegenet: the alleles each population called at each variant, as a table of
@@ -266,13 +319,24 @@ check_counts <- function(got, want, what) {
   }
 }
 
-check_values <- function(got, want, what) {
-  differences <- abs(unname(got) - want)
-  if (any(differences > TOLERANCE)) {
-    stop(sprintf("%s: the spec has %s and the programs gave %s, off by %s", what,
+# `pops` names the populations of `got` in its order, so that a value a program
+# did not give is reported as the population it is missing for: rarefy returns
+# NA with a warning where the draw is larger than the called alleles, and a
+# comparison against NA would end in R's message and name nothing.
+check_values <- function(got, want, what, pops) {
+  got <- unname(got)
+  differences <- abs(got - want)
+  if (anyNA(differences) || any(differences > TOLERANCE)) {
+    no_value <- if (anyNA(differences)) {
+      sprintf("; no value for %s", paste(pops[is.na(differences)], collapse = " "))
+    } else {
+      ""
+    }
+    stop(sprintf("%s: the spec has %s and the programs gave %s, off by %s%s", what,
                  paste(sprintf("%.10f", want), collapse = " "),
-                 paste(sprintf("%.10f", unname(got)), collapse = " "),
-                 paste(sprintf("%.3g", differences), collapse = " ")))
+                 paste(sprintf("%.10f", got), collapse = " "),
+                 paste(sprintf("%.3g", differences), collapse = " "),
+                 no_value))
   }
 }
 
@@ -282,16 +346,17 @@ check <- function(rows) {
   check_counts(rows$num_vars_in_draw, c(1200L, 1200L, 1200L), "the variants in the draw")
   check_counts(rows$alleles_called, c(2373L, 2377L, 2384L), "the alleles called")
   check_values(rows$alleles_mean, c(1.9775, 1.9808333333, 1.9866666667),
-               "the mean alleles called")
+               "the mean alleles called", rows$pop)
   check_values(rows$alleles_in_draw, c(1.9283948650, 1.9219209943, 1.9197370844),
-               "the alleles in a draw of 20")
+               "the alleles in a draw of 20", rows$pop)
   check_counts(rows$private_alleles, c(0L, 0L, 1L), "the private alleles")
-  check_values(rows$private_mean, c(0, 0, 0.0008333333), "the mean private alleles")
+  check_values(rows$private_mean, c(0, 0, 0.0008333333),
+               "the mean private alleles", rows$pop)
   check_counts(rows$variable_vars, c(1173L, 1177L, 1184L), "the variable variants")
   check_values(rows$variable_ratio, c(0.9775, 0.9808333333, 0.9866666667),
-               "the ratio of variable variants")
+               "the ratio of variable variants", rows$pop)
   check_values(rows$variable_in_draw, c(0.9283948650, 0.9219209943, 0.9197370844),
-               "the ratio of variable variants in a draw of 20")
+               "the ratio of variable variants in a draw of 20", rows$pop)
 }
 
 write_tsv <- function(path, header, columns) {
@@ -318,6 +383,7 @@ main <- function() {
   pop_names <- sort(unique(pop_of))
   alleles <- count_alleles(panel, pop_of, pop_names)
   check_the_panel(panel, alleles, pop_names)
+  identity_differences <- check_the_identity_of_the_variable_variants()
 
   from_adegenet <- run_adegenet(panel, pop_of)
   from_poppr <- run_poppr(from_adegenet$genind, pop_names)
@@ -359,10 +425,15 @@ main <- function() {
   )
   write_tsv(
     file.path(here, "panel_variable_vars.tsv"),
-    "pop\tnum_vars_with_data\ttotal_adegenet\tratio\tnum_vars_in_draw\tin_draw_vegan",
+    paste0("pop\tnum_vars_with_data\ttotal_adegenet\tratio\tnum_vars_in_draw\t",
+           "in_draw_vegan_minus_one"),
     rows[c("pop", "num_vars_with_data", "variable_vars", "variable_ratio",
            "num_vars_in_draw", "variable_in_draw")]
   )
+  cat(sprintf(paste("the identity of the variable variants holds on %d pairs of",
+                    "allele counts and draw, the largest difference %.3g\n"),
+              length(identity_differences), max(identity_differences)),
+      file = stderr())
   cat("done\n", file = stderr())
 }
 
