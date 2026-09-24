@@ -1116,7 +1116,7 @@ fn through_the_projection(projection: &[f64], phenotype: &[f64]) -> Result<Vec<f
 /// `glmmkin`, and the fit's own identity, which "The linear mixed model"
 /// of `docs/specs/gwas.md` has as the two checks of that fit.
 #[cfg(test)]
-mod lmm {
+pub(crate) mod lmm {
     use std::io::Read;
     use std::path::{Path, PathBuf};
 
@@ -1216,7 +1216,7 @@ mod lmm {
     /// The mixed models are given the kinship that came from plink2 and
     /// not from popnei or pyNei, as "How it is verified" of "What every
     /// model shares" of `docs/specs/gwas.md` asks.
-    fn the_kinship_of(name: &str) -> Vec<f64> {
+    pub(crate) fn the_kinship_of(name: &str) -> Vec<f64> {
         let path = the_kinship_path(&format!("{name}.plink2.rel.bin.gz"));
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
@@ -1238,7 +1238,7 @@ mod lmm {
     /// and its columns in, which is the order the VCF has them.
     ///
     /// The file holds one header line, `#IID`, and then one name per line.
-    fn the_individuals_of_the_kinship(name: &str) -> Vec<String> {
+    pub(crate) fn the_individuals_of_the_kinship(name: &str) -> Vec<String> {
         let path = the_kinship_path(&format!("{name}.plink2.rel.id"));
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,

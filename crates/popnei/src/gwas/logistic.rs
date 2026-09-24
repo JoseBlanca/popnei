@@ -328,12 +328,7 @@ impl LogisticModel {
             .zip(&mut self.residuals)
             .zip(self.linear_predictor.iter().zip(phenotype))
         {
-            // The logistic curve of the linear predictor, which is the
-            // chance that the individual has the condition. A predictor
-            // far below 0 overflows the exponential and gives a chance of
-            // 0, and one far above it gives 1; both are chances, and the
-            // weight of either is 0.
-            let chance = 1.0 / (1.0 + (-predicted).exp());
+            let chance = the_chance_of(*predicted);
             *weight = chance * (1.0 - chance);
             *residual = measured - chance;
         }
@@ -411,6 +406,44 @@ impl LogisticModel {
                 source,
             },
         )
+    }
+
+    /// The effects the fit settled at, one for each column of the design,
+    /// as log odds ratios.
+    ///
+    /// "The logistic mixed model" of `docs/specs/gwas.md` starts its own
+    /// fit from these and from
+    /// [`LogisticModel::linear_predictor`], and from nowhere else: a fit
+    /// started elsewhere walks a different path through the bracket of the
+    /// variance of the kinship effect and can stop at another value of it.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the logistic mixed model is what reads this, and the study refuses \
+                      that model until its step on the variance of the kinship effect and \
+                      its score test are written"
+        )
+    )]
+    pub(super) fn coefs(&self) -> &[f64] {
+        &self.coefs
+    }
+
+    /// The design times those effects, one value per tested individual,
+    /// which the fitted chance of the individual is the logistic curve of.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the logistic mixed model is what reads this, and the study refuses \
+                      that model until its step on the variance of the kinship effect and \
+                      its score test are written"
+        )
+    )]
+    pub(super) fn linear_predictor(&self) -> &[f64] {
+        &self.linear_predictor
     }
 
     /// The null model of the result: the effects of the intercept and of
@@ -706,16 +739,69 @@ enum TheAnswerOfAVariant {
     RanAway,
 }
 
-/// What became of the system of one round: `d' w d` of the design with the
-/// variant in it, factored and solved against.
-enum TheSystemOfTheFit {
+/// What became of the square system of one round of a fit weighted by the
+/// fitted chances, factored and solved against: `d' w d` of the design
+/// with the variant in it for the Wald test of the logistic model, and
+/// `d' sigma⁻¹ d` for the linearization of the logistic mixed model.
+pub(super) enum TheSystemOfTheFit {
     /// It was factored, or solved, and the fit goes on.
     Worked,
-    /// The linear algebra crate refused it as singular, which is the fit
-    /// running away: the columns of the design are independent and the
-    /// weights are what took the matrix there, and they fall to 0 as the
-    /// chances the fit gives reach 0 and 1.
+    /// The linear algebra crate refused it as singular, or its pivots have
+    /// collapsed, which is the fit running away: the columns of the design
+    /// are independent and the weights are what took the matrix there, and
+    /// they fall to 0 as the chances the fit gives reach 0 and 1.
     RanAway,
+}
+
+/// The chance that an individual has the condition at the linear predictor
+/// `predicted`, which is the logistic curve of it.
+///
+/// A predictor far below 0 overflows the exponential and gives a chance of
+/// 0, and one far above it gives 1; both are chances, and the weight of an
+/// individual at either is 0.
+pub(super) fn the_chance_of(predicted: f64) -> f64 {
+    1.0 / (1.0 + (-predicted).exp())
+}
+
+/// Whether the system a round factored still has a direction left to move
+/// the fit in, read off the pivots of the factorization `factored` of `n` x
+/// `n`: the smallest of them against the largest.
+///
+/// A Cholesky factorization accepts a system whose smallest pivot is above
+/// 0 by any margin, and a logistic fit whose weighted design has collapsed
+/// can walk far past the point where its system says anything: the steps it
+/// solves shrink because the system is nearly singular, not because the
+/// coefficients have settled, so the fit declares itself settled while they
+/// are still moving and answers with an effect it knows nothing about
+/// beside a standard error of 1e7. **Open 5** of `docs/specs/gwas.md` has
+/// the eight individuals that gave a p-value of 0.9999996 on one backend
+/// and three NaNs on the other, and this is the rule it chose: the same
+/// share of a scale that **Open 2** refuses a variant at,
+/// `num_individuals` times 2.2e-16, with the largest pivot for the scale.
+///
+/// The pivots are the squares of the diagonal of what the factorization
+/// wrote, since the matrix it factored is `l l'`.
+pub(super) fn the_system_that_is_left(
+    factored: &[f64],
+    n: usize,
+    num_individuals: usize,
+) -> TheSystemOfTheFit {
+    let mut smallest = f64::INFINITY;
+    let mut largest = 0.0_f64;
+    for (row, values) in factored.chunks_exact(n.max(1)).enumerate().take(n) {
+        let diagonal = values.get(row).copied().unwrap_or(f64::NAN);
+        let pivot = diagonal * diagonal;
+        if pivot < smallest {
+            smallest = pivot;
+        }
+        if pivot > largest {
+            largest = pivot;
+        }
+    }
+    match smallest <= the_share_that_is_nothing(num_individuals) * largest {
+        true => TheSystemOfTheFit::RanAway,
+        false => TheSystemOfTheFit::Worked,
+    }
 }
 
 /// The buffers one variant is fitted and tested in by the Wald test, made
@@ -954,7 +1040,7 @@ impl TheFitOfOneVariant {
     /// fit holds, and what is built from it: the weights, the trait less
     /// that chance, the design weighted by the weights and the Cholesky
     /// factorization of `d' w d`, whose pivots are then read by
-    /// [`TheFitOfOneVariant::the_system_that_is_left`].
+    /// [`the_system_that_is_left`].
     ///
     /// # Errors
     ///
@@ -986,12 +1072,7 @@ impl TheFitOfOneVariant {
             .zip(&mut self.residuals)
             .zip(self.linear_predictor.iter().zip(&self.phenotype))
         {
-            // The logistic curve of the linear predictor, which is the
-            // chance that the individual has the condition. A predictor
-            // far below 0 overflows the exponential and gives a chance of
-            // 0, and one far above it gives 1; both are chances, and the
-            // weight of either is 0.
-            let chance = 1.0 / (1.0 + (-predicted).exp());
+            let chance = the_chance_of(*predicted);
             *weight = chance * (1.0 - chance);
             *residual = measured - chance;
         }
@@ -1026,47 +1107,12 @@ impl TheFitOfOneVariant {
             popnei_linalg::cholesky_lower(&mut self.system, num_coefs),
             "factorization of the weighted design of the logistic fit of a variant",
         )? {
-            TheSystemOfTheFit::Worked => Ok(self.the_system_that_is_left()),
+            TheSystemOfTheFit::Worked => Ok(the_system_that_is_left(
+                &self.system,
+                num_coefs,
+                self.num_individuals,
+            )),
             TheSystemOfTheFit::RanAway => Ok(TheSystemOfTheFit::RanAway),
-        }
-    }
-
-    /// Whether the system the round factored still has a direction left to
-    /// move the fit in, read off the pivots of the factorization: the
-    /// smallest of them against the largest.
-    ///
-    /// A Cholesky factorization accepts a system whose smallest pivot is
-    /// above 0 by any margin, and a logistic fit whose weighted design has
-    /// collapsed can walk far past the point where its system says
-    /// anything: the steps it solves shrink because the system is nearly
-    /// singular, not because the coefficients have settled, so the fit
-    /// declares itself settled while they are still moving and answers
-    /// with an effect it knows nothing about beside a standard error of
-    /// 1e7. **Open 5** of `docs/specs/gwas.md` has the eight individuals
-    /// that gave a p-value of 0.9999996 on one backend and three NaNs on
-    /// the other, and this is the rule it chose: the same share of a scale
-    /// that **Open 2** refuses a variant at, `n` times 2.2e-16, with the
-    /// largest pivot for the scale. A fit it catches is a runaway and gets
-    /// the three NaNs.
-    ///
-    /// The pivots are the squares of the diagonal of what the
-    /// factorization wrote, since `d' w d` is `l l'`.
-    fn the_system_that_is_left(&self) -> TheSystemOfTheFit {
-        let mut smallest = f64::INFINITY;
-        let mut largest = 0.0_f64;
-        for (row, values) in self.system.chunks_exact(self.num_coefs).enumerate() {
-            let diagonal = values.get(row).copied().unwrap_or(f64::NAN);
-            let pivot = diagonal * diagonal;
-            if pivot < smallest {
-                smallest = pivot;
-            }
-            if pivot > largest {
-                largest = pivot;
-            }
-        }
-        match smallest <= the_share_that_is_nothing(self.num_individuals) * largest {
-            true => TheSystemOfTheFit::RanAway,
-            false => TheSystemOfTheFit::Worked,
         }
     }
 
@@ -1145,9 +1191,9 @@ impl TheFitOfOneVariant {
     }
 }
 
-/// What a factorization or a solve of the Wald fit of one variant came to:
-/// the matrix the weights made is refused as singular when the fit has run
-/// away, and every other refusal is an error.
+/// What a factorization or a solve of a fit weighted by the fitted chances
+/// came to: the matrix the weights made is refused as singular when the
+/// fit has run away, and every other refusal is an error.
 ///
 /// `operation` says what was being done, which the error names.
 ///
@@ -1155,7 +1201,7 @@ impl TheFitOfOneVariant {
 ///
 /// [`Error::GwasLinalg`] when the linear algebra crate refused the call
 /// for a reason that is not a singular matrix.
-fn the_system_of(
+pub(super) fn the_system_of(
     what_it_gave: popnei_linalg::Result<()>,
     operation: &'static str,
 ) -> Result<TheSystemOfTheFit> {

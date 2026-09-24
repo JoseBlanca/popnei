@@ -1465,6 +1465,28 @@ pub enum Error {
         and_back: f64,
     },
 
+    /// The covariance of the working trait of the logistic mixed model,
+    /// the kinship times the variance of its random effect plus the
+    /// reciprocals of the weights on the diagonal, could not be factored
+    /// at the row the value names, counting from 0, so it is not a
+    /// covariance. A weight is at most 0.25, so the reciprocals put 4 at
+    /// least on every diagonal entry, and what takes such a matrix below 0
+    /// is a kinship whose own smallest eigenvalue is below 0 times a
+    /// variance large enough to reach it. The per pair denominators of
+    /// `docs/specs/kinship.md` are what put that eigenvalue there: a pair
+    /// of individuals whose genotypes are missing in different variants is
+    /// counted over a different set of variants from the next pair. The
+    /// user gives a kinship built from variants with fewer genotypes
+    /// missing. It is neither a defect of popnei nor a wrong argument but
+    /// the matrix the data made, and in Python it is a `ValueError`.
+    #[error(
+        "the covariance of the working trait of the logistic mixed model, the kinship times the variance of its random effect plus the weights, could not be factored at its row {at}, counting from 0, so the kinship is not a covariance: missing genotypes leave every pair of individuals counted over its own variants, which can give the matrix an eigenvalue below 0; build the kinship from variants with fewer genotypes missing"
+    )]
+    GwasKinshipNotACovariance {
+        /// The row the factorization stopped at, counting from 0.
+        at: usize,
+    },
+
     /// The columns of the design of a study are not independent: a
     /// covariate is constant, or it is a combination of the others, such as
     /// a copy of one or the sum of two. The effects of such a design are

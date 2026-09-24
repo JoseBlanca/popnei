@@ -59,11 +59,14 @@
 //! weights and the residuals that fit left, and the Wald test, which fits
 //! one logistic regression per variant with the variant in the design.
 //!
-//! The logistic mixed model is being written too, and it is a module of
-//! its own beside these three: it takes its design from `study`, its
-//! dosages from `dosages` and its p-value from `distributions`, it fills
-//! the [`Gwas`] of `result` with the answers of a block, and `pass` is
-//! what fits it and reads the blocks through it.
+//! [`TheLinearization`](logistic_mixed::TheLinearization), of
+//! `logistic_mixed`, is the fourth model being written: it starts from the
+//! logistic null of `logistic` and runs one linearization of the logistic
+//! mixed model at one value of the variance of the kinship effect, the
+//! working trait and its weights, the covariance of that trait factored
+//! with a Cholesky and applied by solving, and the working trait through
+//! the projection matrix. The step on that variance, the score test of a
+//! block and the model reaching `pass` are being written beside it.
 //! `the_share_that_is_nothing` is here and not in a model because every
 //! model reads it.
 
@@ -72,6 +75,20 @@ mod dosages;
 mod linear;
 mod linear_mixed;
 mod logistic;
+// Nothing outside the tests reaches this module yet: `calc_gwas` refuses
+// the logistic mixed model until the step on the variance of the kinship
+// effect and the score test are written, so every item here is dead in a
+// build without them. It is committed on its own because a linearization
+// that is wrong in its last digits moves the fit and crashes nothing.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the study refuses the logistic mixed model until its step on the \
+                  variance of the kinship effect and its score test are written"
+    )
+)]
+mod logistic_mixed;
 mod pass;
 mod result;
 mod study;
@@ -107,10 +124,12 @@ pub use study::{GwasInput, GwasInputShape, GwasModel, TestType, TraitType};
 ///   variant leaves of the trait where the other three are what the design
 ///   leaves of the variant.
 ///
-/// The logistic model's Wald test reads the same share a fifth time, and
-/// there it is the smallest pivot of the Cholesky factorization of one
-/// variant's fit against the largest, which is the meanwhile of **Open 5**
-/// of that spec and is why this is not named for **Open 2** alone.
+/// Two more places read the same share, and there it is the smallest pivot
+/// of a Cholesky factorization against the largest, which is the meanwhile
+/// of **Open 5** of that spec and is why this is not named for **Open 2**
+/// alone: the system of one variant's fit in the logistic model's Wald
+/// test, and the design weighted by the covariance of the working trait in
+/// the logistic mixed model's linearization.
 ///
 /// It is written here once because the logistic mixed model adds a second
 /// caller of the third of them, and because a threshold that differed
