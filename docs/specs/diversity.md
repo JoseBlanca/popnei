@@ -153,6 +153,26 @@ every variant; asking for it without `num_called_alleles` is a
 `ValueError`. A `num_called_alleles` below 2 is a `ValueError`: a draw of
 one allele shows one allele whatever the population holds.
 
+**A `num_called_alleles` above the individuals of the dataset times the
+ploidy is a `ValueError` too**, naming the largest draw the dataset allows.
+No variant of any population could reach it, since that product is every
+gene copy the dataset holds, so it is a user's mistake and not a fact about
+the data. The owner decided this on 24 September 2026, when task 3.4 found
+that nothing bounded the argument: the spectrum has one bin per count of
+the rarer allele up to half the draw, so a draw at the top of what a `u32`
+holds asks for 2147483648 bins for each population, 51 GB of result over
+three of them, and popnei would die allocating it rather than say what was
+wrong. The measured sizes are 264 bytes over three populations at a draw of
+20, 2424 at 200 and 12 MB at a million.
+
+This refusal is separate from the case below it, which stays as it was: a
+draw that this dataset's **missing data** puts out of reach is not an
+error. The two are different questions. A draw of 400 on a dataset of 200
+diploid individuals is a draw of every copy there is, which is allowed and
+which the missingness may still leave no population able to fill; a draw of
+401 is impossible for any dataset that reader gives, and asking for it
+means the user meant something else.
+
 It takes one number and not a sequence of them, so a user who wants the
 curve of allelic richness against the number of alleles drawn, which shows
 whether a population has been sampled enough, calls the function once per
@@ -984,10 +1004,13 @@ with every individual.
 /// # Errors
 ///
 /// `FOLDED_SFS` asked for with no `num_called_alleles`, a
-/// `num_called_alleles` below 2, a population with no individual, an index
-/// that is not an individual of the dataset, an individual asked for more
-/// than once, no variant in the reader, a variant of more alleles than a
-/// count of them holds, and those of the reader.
+/// `num_called_alleles` below 2 or above the individuals of the reader
+/// times its ploidy, a `stats` naming no statistic, a population with no
+/// individual, an index that is not an individual of the dataset, an
+/// individual asked for more than once, no variant in the reader, a
+/// variant of more alleles than a count of them holds, a block saying it
+/// holds more variants than a pass counts them in, and those of the
+/// reader.
 pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -1046,7 +1069,8 @@ that two populations of one pass round the same way.
 This module adds cases to the error of the crate, and the two binding
 crates divide them as `docs/specs/pca.md` divides its own. All of them are
 the wrong input of a function and a `ValueError` in Python: the spectrum
-asked for without a draw size, a draw size below 2, a `stats` naming no
+asked for without a draw size, a draw size below 2, a draw size above the
+individuals of the dataset times the ploidy, a `stats` naming no
 statistic at all, a name that is no statistic of this module, a population
 with no individual, an individual the dataset has not or named twice, a
 pass with no variant, a variant of more alleles than a count of them
