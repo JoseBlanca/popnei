@@ -2,11 +2,12 @@
  * That popnei reads a file the user picked in the page one range of bytes
  * at a time: a VCF, the same VCF gzipped and a vars file give the variants
  * the tests under node give, a file of more than one range gives the
- * variants of every range of it, and a range that comes back short or is
- * refused ends the pass with popnei's error.
+ * variants of every range of it, a range that comes back short or is
+ * refused ends the pass with popnei's error, and a file of 299994147 bytes
+ * is passed over with the memory of wasm staying under 24 MiB.
  *
  * A range of a `File` is read with `FileReaderSync`, which a browser has
- * only inside a web worker, so none of these six can run under node.
+ * only inside a web worker, so none of these seven can run under node.
  * Playwright starts Chromium and the server of `server.ts`, opens
  * `harness.html` and asks it for a case of `cases/`, which asserts the
  * numbers inside the worker and whose message is what a failure here shows.
@@ -55,5 +56,15 @@ test("a range the browser refused ends the pass with what the browser said", asy
   await page.evaluate(
     (name) => window.runInTheWorker(name),
     "browser_refused",
+  );
+});
+
+test("a File of 299994147 bytes is passed over without the memory of wasm passing 24 MiB", async ({
+  page,
+}) => {
+  await page.goto(HARNESS);
+  await page.evaluate(
+    (name) => window.runInTheWorker(name),
+    "wasm_memory_over_300_mb",
   );
 });
