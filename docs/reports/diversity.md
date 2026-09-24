@@ -463,31 +463,56 @@ and 831, 519 and 337 now.
 
 ### What the owner should know
 
-Three questions, none of which blocks the plan.
 
-**The simplest call fails.** `calc_pop_diversity(variants)` with no other
-argument is refused, because the default `stats` is all five statistics and
-the folded spectrum needs a draw size. That is what the spec says. Leave
-it, with the message saying what to type; or default `stats` to the four
-that need no draw, so the plain call works and an explicit ask for the
-spectrum without a draw is still refused; or make the spectrum silently
-absent, which the spec chose against. The second is the recommendation. It
-changes what a user gets from a call, so it is the owner's.
+The owner answered all three on 24 September 2026, after work package 2
+was done and before work package 3 began. Two of the answers are built and
+the third is written into the `coding` skill.
 
-**The two optional arguments are in the opposite order from the sibling
-function.** `calc_pop_diversity(variants, pops, stats, ...)` against
-`calc_per_var_distribs(variants, stats, pops, ...)`, which the spec fixes
-for both. A reviewer asked for a deliberate answer rather than a
-coincidence.
+**The plain call works, and gives the four statistics that need no draw.**
+The default of `stats` was every statistic, the folded spectrum needs a
+`num_called_alleles`, and asking for the spectrum without one is a
+`ValueError`, so `calc_pop_diversity(variants)` refused itself and its
+message named an argument the user had not written. The default is now
+`PopDiversityStat.WITHOUT_A_DRAW`, the four, with
+`DiversityStats::WITHOUT_A_DRAW` beside `ALL` in the core and both binding
+crates reading it from there so the four are named once. Asking for the
+spectrum by name without a draw is still refused, which is a user asking
+for something popnei cannot give. Spec in `71c63cb`, code in `d24083f`.
 
-**`fis` returns `Some(NaN)` from the core**, where the `coding` skill says
-a missing value is an `Option<f64>` inside the core and becomes NaN only at
-the boundary with Python. The spec's "The Rust interface" documents NaN as
-an accessor's value, and `gwas` and `kinship` put NaN in their result
-columns too, so the skill and three specs disagree. Whichever way it goes
-it is crate-wide and not this module's.
+**The choice of what to compute is given by name.** Three calculations of
+popnei take both a set of populations and a choice of what to compute, and
+they disagreed about which came second: `calc_per_var_distribs` takes
+`stats` there and `calc_pop_dists` takes `pops`, as this one did, so the
+same position meant two things. `calc_pop_diversity` now takes `stats`,
+`num_called_alleles` and `min_num_individuals` by name. TypeScript needed
+nothing, taking everything but the variants in an options object already.
 
-And the one from work package 1 is still open: whether `scikit-allel` and
-`dadi` become development dependencies of popnei, as the spec's opening
-records the owner deciding, or stay in the environments the reference
-script builds, which is what the plan does and what the work kept.
+**`calc_per_var_distribs` and `calc_pop_dists` are to follow, and that is
+asked of the owner rather than done.** The owner approved the convention
+for all three; only this module's function was changed, because it has no
+users yet and the change is free, where theirs is a change to two settled
+specs and two built modules and so is outside what this plan said it was
+building. Until it is done the inconsistency is smaller and not gone: a
+caller of those two can still pass the choice positionally and a caller of
+this one cannot. `docs/specs/diversity.md` says so under "Its Python
+function", so nobody reads the half-done state as finished.
+
+**The rule against NaN in the core now says which values it is about.**
+`fis` returns `Some(NaN)` for a population with no F_IS, where the `coding`
+skill asked for an `Option<f64>` inside the core. The skill's own reason is
+that NaN travelling through Rust arithmetic hides where it was born, which
+is about values that go on to be computed with, and it was written as
+though it covered every value. The rule now says so, and a value the core
+has finished with may be NaN when its doc comment gives every reason it can
+be one. That was the cheaper side by a wide margin: the alternative was
+`Option<Option<f64>>` or a new enum here, about thirty lines, and the same
+again in `gwas` and `kinship` for the rule to mean anything, and those two
+have a second reason, an `Option<f64>` being sixteen bytes against eight in
+columns as long as the dataset, which the orchestrator had missed when it
+first put the question. No code changed; `bd1514c` changed the skill.
+
+**One question of work package 1 is still open**: whether `scikit-allel`
+and `dadi` become development dependencies of popnei, as the spec's opening
+records the owner deciding, or stay in the environments
+`tests/reference/diversity/make_reference.py` builds, which is what the
+plan does and what the work kept.
