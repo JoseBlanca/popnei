@@ -516,3 +516,191 @@ and `dadi` become development dependencies of popnei, as the spec's opening
 records the owner deciding, or stay in the environments
 `tests/reference/diversity/make_reference.py` builds, which is what the
 plan does and what the work kept.
+
+## Work package 3: the draw, through the same four layers
+
+It finished as planned, with one task added. The module is now what the
+spec describes: a user gives `num_called_alleles` and gets the alleles
+called, the private ones and the variable variants as a draw of that many
+called alleles would show them, and the folded site frequency spectrum
+projected to it. Six tasks became seven, and the review in all seven
+categories found twenty-one findings that held, every one fixed.
+
+Across the plan: 787 cargo tests, 499 pytest and 325 node when it started,
+and **868, 530 and 345** now, the 868 the same on the faer backend.
+
+### The deliverables, each with the command the orchestrator ran
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, the draw arithmetic | `cargo test -p popnei --lib -- chance_a_draw` | `8 passed`, `vegan`'s eight per variant values and their two means |
+| 2, 3, 4, 5 | `uv run pytest tests/test_diversity.py` | `31 passed` |
+| 6, the worked example at a draw of 4 | the five named cargo tests | all pass |
+| the seven checks | as the `coding` skill gives them | `868 passed` with 2 ignored and `149 passed`, `868` again on faer, `530 passed`, `35 files already formatted`, the rest clean |
+| the TypeScript package | `npm run build && npm test` in `js/popnei` | `tests 345`, `pass 345`, `fail 0` |
+| the plan's final check | both reference scripts and the enumeration again | `git status --short tests/reference/diversity` empty |
+
+The numbers the module now gives, against what is stored: the panel's
+standardized allele counts agree with `vegan` within 2.3e-16 of the value
+and the standardized ratios of variable variants within 1.2e-16; the
+standardized private alleles give the spec's ten decimals; all 33 spectrum
+values agree with `dadi` within 6.674682e-14 and with exact rational
+arithmetic within 4.0e-16.
+
+### What was changed in the plan, and why
+
+**A task was added, 3.4b.** Task 3.4 found that nothing bounded
+`num_called_alleles` above 2. The spectrum has one bin per count of the
+rarer allele up to half the draw, so a draw at the top of what a `u32`
+holds asks for 2147483648 bins for each population, 51 GB of result over
+three of them, and popnei would have died allocating it rather than say
+what was wrong. The owner decided the refusal on 24 September 2026: a draw
+above the individuals of the dataset times the ploidy, which is every gene
+copy it holds, is refused naming the largest it allows. The case below that
+bound which a dataset's missing data leaves unfillable is untouched and
+still gives NaN and zeros. On the panel's 200 diploid individuals, 400 is
+taken and 401 refused, and a test holds both sides, because a refusal
+creeping one step further would eat the case the spec protects.
+
+### What the review found
+
+Six reviewers over `df6c872`, in all seven categories, paired where the
+work was small. **Four mutations passed every one of the 1729 tests of the
+three suites, and one of them was a wrong number a user could reach.**
+
+**The folded spectrum lost whole variants at a large draw.** This is the
+worst defect the plan found. The recurrence for the bins started at the
+smallest term of its range, which underflows to a subnormal and then to 0
+long before any bin's own value would, and once it is 0 every later step
+stays 0, so the variant contributed nothing to any bin. The failure is not
+monotone, which is why nothing caught it. Measured on 600 diploid
+individuals, every genotype `0/1`, three variants, where the column must
+sum to 3:
+
+| draw | the column summed to |
+|---|---|
+| 400 | 3.000000000000002 |
+| 560 | 3.000000000000001 |
+| 580 | 3.043348989886391 |
+| 584 to 616 | 0.0 |
+| 620 | 3.043348989886391 |
+| 1000 | 2.9999999999999973 |
+
+The reviewer measured the threshold with an `f64` replica against exact
+rationals: about 525 diploid individuals in a population is where a draw
+first loses more than 1e-12 of the mass, and about 560 where the variant
+vanishes. `docs/objectives.md` puts popnei's largest dataset at ten
+thousand individuals, so this was well inside the range popnei claims, in
+the statistic the spec calls the input of the programs that fit a
+demographic model. And the result contradicted itself in silence:
+`num_vars.in_draw` said three beside a column of zeros, with no error,
+against the rule the owner gave on 21 September 2026. All 858 cargo tests
+passed, because the panel's largest case is 168 called alleles at a draw of
+20.
+
+The chance is now carried as a mantissa with the power of two it is worth,
+kept in range by exact multiplications by 2^512, which reuses the one
+product the module already has rather than needing a second. It is
+bit-identical wherever the old arithmetic stayed normal, and it was checked
+against exact rationals over 30633 combinations of the called alleles, the
+rarer allele's count and the draw, worst bin 1.2e-14. Every draw of the
+fixture above now sums to 3 within 5.3e-15, which the orchestrator
+confirmed.
+
+**Three more mutations passed every test.** The spectrum could read the
+rarest allele instead of the major one, which changes `[0.1, 0.9]` into
+`[0.5, 0.5]` on a variant of counts 3, 2 and 1 at a draw of 3 and was
+invisible because every asserted fixture is biallelic or has equal counts,
+and for two alleles the fold makes the two choices the same. The
+standardized private alleles could be summed over rows not in the draw for
+every population, 50 per cent wrong on a probe and invisible because the
+panel has every variant in every population's draw. And the largest
+allowed draw could hard-code a ploidy of 2, which refuses a legitimate
+draw on tetraploid data and accepts an impossible one on haploid, the line
+task 3.4b was built to hold, undone by a fixture set that is entirely
+diploid. Each now fails exactly one test.
+
+**The memory of the spectrum was measured, not read, and the earlier fix
+had solved half of it.** The review of work package 2 predicted about 7 MB
+of partials for a particular block; task 3.4 replied with one flat vector
+per chunk instead of one per population and reported the allocation count
+falling from 7850 to 157. The `architecture` reviewer counted bytes and
+found the prediction had come true anyway, because the reduction collects
+one set of partials per chunk and holds them all alive:
+
+| individuals | block | populations | draw | before | after |
+|---|---|---|---|---|---|
+| 200 | default | 3 | 20 | 0.293 MB | 0.045 MB |
+| 500 | 10000 rows | 50 | 180 | 7.041 MB | 2.342 MB |
+| 1000 | 5000 rows | 50 | 2000 | 33.011 MB | 15.871 MB |
+| 10000 | 500 rows | 50 | 20000 | 36.481 MB | 36.481 MB |
+
+The chunks are now read in groups of a few per thread and the partials
+added in index order, which keeps the order the float sums depend on. The
+last row did not move and the fixer said so rather than claiming it: that
+block holds eight chunks, fewer than one group, so the grouping has nothing
+to bite on. Whether to read fewer chunks than the pool has threads is a
+trade nobody has measured.
+
+**Seventeen smaller findings held**, each fixed. A ploidy the reader states
+was refused with the `stats` module's message, naming the `ploidy` and
+`exponent` arguments that `calc_pop_diversity` does not have, where
+`docs/specs/dists.md` had met the same thing and given `calc_pop_dists` a
+case of its own. `Totals::of` bounded the bins per population but nothing
+bounded the populations, so what kept its multiplication from saturating
+was the machine's memory and the failure was the standard library's panic
+rather than an error of popnei. The TypeScript package refused a draw below
+2 itself, where the spec puts that refusal in the core and Python leaves it
+there, so the one rule was written twice and the two languages gave
+different sentences for the same mistake. The TypeScript suite sorted its
+populations, so it could not catch a reordering that would hand every
+population another's counts and spectrum; a sort added to the package left
+all 17 of its diversity tests passing. The four statistics that need no
+draw had no TypeScript name, so an application would copy the list the core
+owns. The node suite had no fixture where the four counts of variants
+differ. The spectrum crossed to Python through three copies. A `///`
+comment in the private `_core` module became a `__doc__` that the same file
+says belongs to the package. The `# Errors` of `calc_pop_diversity` and the
+spec's list disagreed in both directions. Two public items both binding
+crates call were in no spec item. `chance_a_draw_misses_an_allele`
+contradicted its own doc comment in a corner no caller reaches. And four
+test names and three comments claimed more than the thing they sat on
+proved, which the fixer found by auditing its own work after one was
+pointed out.
+
+**Nothing was set aside.** Every finding of this work package held and
+every one is fixed.
+
+### What the owner should know
+
+**The spec was corrected nine times during this work package**, every time
+because a task or a reviewer tried to assert what it said and found it
+false, incomplete or ambiguous. The three worth naming: a population
+compared against a copy of itself was said to have no standardized private
+alleles at any draw size, which is true of the totals and false of the
+standardized value, because the closed form treats a population's draw and
+its copy's draw as independent; nothing bounded the draw; and one
+paragraph gave popnei's agreement with `vegan` measured against exact
+arithmetic as though it were measured against the stored values, a number
+of one quantity given as a number of the other, which the orchestrator had
+put into a task's brief and which reached a doc comment.
+
+**Three things outside this plan are waiting**, none urgent and none this
+plan's to do.
+
+`crates/popnei/src/io/vars.rs` gives the ploidy its metadata states with no
+ceiling, which is what lets a ploidy popnei cannot read reach any pass.
+That is `docs/specs/io_vars.md`'s question.
+
+`docs/reports/diversity-method/panel.py` hardcodes paths into a worktree
+that no longer exists, so the script this spec names as the source of its
+unbiased F_IS and its standardized private alleles cannot be rerun as it
+stands. Two reviewers and the orchestrator each had to copy it to reproduce
+those numbers. It is the provenance of values that tests assert, so it is
+worth an hour.
+
+`calc_per_var_distribs` and `calc_pop_dists` still take their choice of
+what to compute positionally, where `calc_pop_diversity` now takes it by
+name. The owner approved the convention for all three on 24 September 2026
+and only this module's function was changed, its having no users yet;
+theirs is a change to two settled specs and two built modules.

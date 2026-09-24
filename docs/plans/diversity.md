@@ -316,6 +316,13 @@ it per block instead of per row grows with the block and fails no test.
 
 ## Work package 3: the draw, through the same four layers
 
+**Done on 24 September 2026**, reviewed in all seven categories, with every
+finding fixed and every deliverable run again after. Task 3.4b was added to
+it, and the review found four mutations that passed all 1729 tests of the
+three suites, one of them a wrong number a user could reach: the folded
+spectrum lost whole variants at a draw above about 560 called alleles in a
+population. `docs/reports/diversity.md` has the rest.
+
 **What it gives.** The same call takes `num_called_alleles` and gives, per
 population, the alleles called and the private ones and the variable
 variants as they would be in a draw of that many called alleles, and the
