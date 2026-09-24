@@ -373,7 +373,7 @@ module is what the spec describes.
 - [x] 3.3 The standardized private alleles, from "What it gives" of "The
   private alleles". Needs 3.1. Serves deliverables 3 and 6. Its own
   commit for the same reason as 2.3.
-- [ ] 3.4 The folded spectrum, from "What it gives" of "The folded site
+- [x] 3.4 The folded spectrum, from "What it gives" of "The folded site
   frequency spectrum", whose range for the count of the rarer allele is
   the part to read twice. Needs 3.1. Serves deliverables 4 and 6. Its own
   commit: a wrong bin moves a number and fails nothing else.
