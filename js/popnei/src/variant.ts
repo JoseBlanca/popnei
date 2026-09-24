@@ -323,7 +323,12 @@ export function numberOfOpenPasses(): number {
  * calls a sample is here an individual, one organism that was genotyped.
  */
 export class Variants {
-  /** The file in the memory of wasm, and `null` once `free` took it. */
+  /**
+   * The source in the memory of wasm, which holds the bytes of the file when
+   * it was opened over a `Uint8Array` and the number of the entry that holds
+   * the handle of the file when it was opened over a `File` or a `Blob`, and
+   * `null` once `free` took it.
+   */
   #source: SourceOfVariants | null;
   /**
    * The steps in the memory of wasm, which every pass is built from, and

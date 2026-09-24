@@ -6,15 +6,20 @@ the code that a browser or node calls it through, and the functions and
 the result objects an application uses. What the package exports today is
 `init`, which loads the WebAssembly and is awaited before anything else is
 called, and `version`, the version of the core crate; `openVcf`, which
-reads the header of a VCF held as bytes and gives a `Variants`, the handle
-whose `iterBlocks` gives the genotypes block by block; `writeVars`, which
+reads the header of a VCF, held as bytes or as the file the user picked in
+the page, and gives a `Variants`, the handle whose `iterBlocks` gives the
+genotypes block by block; `writeVars`, which
 gives back the bytes of a vars file with every variant of a `Variants`, and
-`openVars`, which opens such bytes as another `Variants`. A vars file is
+`openVars`, which opens such a file, its bytes or the file of the page, as
+another `Variants`. A vars file is
 one arrow IPC file, also called feather v2, which pandas, R and polars open
 as a table with no popnei installed: it is where a user keeps their
-variants once the VCF has been read.
+variants once the VCF has been read. `numPassesOf` and the `onProgress` of
+a `Variants` are for an application that shows how far a calculation has
+got and lets its user stop it, and "A file of the page, in a web worker"
+below has both.
 
-Five calculations read the variants of a `Variants`.
+Eight calculations read the variants of a `Variants`.
 `calcPairwiseKosmanDists` gives, in a `Distances`, the Kosman distance of
 every pair of individuals, how many alleles the two do not share at a
 variant averaged over the variants at which both were called, which runs
@@ -43,15 +48,37 @@ missing, `missingGtRate`, and the share of its called genotypes at which it
 is heterozygous, `obsHetRate`. The second says which individuals are more
 heterozygous than the rest, a sign of a mixed sample or of an outcrossed
 individual among inbred ones, and it is NaN for an individual that called
-no genotype. `doPca`, which is not a consumer of a `Variants`, gives the
-components of a table of individuals and traits handed to it as numbers,
-which is the same analysis over values an application holds and not over a
-source of variants.
+no genotype.
 
-Each of the seven consumers of a `Variants`, `iterBlocks`, `writeVars`,
-`calcPairwiseKosmanDists`, `calcRogersHuffR2Matrix`, `doPcaFromVariants`,
-`calcPerVarDistribs` and `calcPerIndividualStats`, gives back the counts of
-the pass it made over the source, in a `passStats`: how many variants it
+The other three read the same variants. `calcPopDists` gives how far apart
+every pair of the populations a user names is: two populations are far apart
+when the alleles of their individuals are not the same alleles in the same
+proportions, and there are seven measures of how far, Hudson's F_ST, f_2,
+the chord distance, Nei's D_A, Jost's D, Nei's G_ST and the standardized
+G''_ST, each answering a different question. One pass gives the ones that
+were asked for, in a `PopDists` with a `Distances` for each measure and the
+standard error of every pair beside its value. `calcKinship` gives, in a
+`Kinship`, how much more of their genome each pair of individuals shares
+than two individuals drawn at random from the same panel do: it is the
+matrix of VanRaden 2008, which plink2's `--make-rel` computes, where an
+entry off the diagonal is about 0.5 for full sibs or for a parent and a
+child and near 0 for two individuals with no recent ancestor in common, and
+an entry on the diagonal is 1 plus the inbreeding of that individual.
+`calcGwas` says, in a `GwasResult`, which variants are associated with a
+trait the user hands it as one number for each individual: it tests one
+variant at a time over the dosages of the individuals, with the covariates
+the user gives, and, when it is given a `Kinship`, with the relatedness of
+the panel as a random effect, so that a variant which only marks the
+ancestry of the panel does not look associated. `doPca`, which is not a
+consumer of a `Variants`, gives the components of a table of individuals and
+traits handed to it as numbers, which is the same analysis over values an
+application holds and not over a source of variants.
+
+Each of the ten consumers of a `Variants`, `iterBlocks`, `writeVars`,
+`calcPairwiseKosmanDists`, `calcPopDists`, `calcRogersHuffR2Matrix`,
+`calcKinship`, `doPcaFromVariants`, `calcGwas`, `calcPerVarDistribs` and
+`calcPerIndividualStats`, gives back the counts of the pass it made over the
+source, in a `passStats`: how many variants it
 took, and how many each filter of the `Variants` was given and kept. A
 filter is a step, a method of the `Variants` that `steps` then lists, and
 there are five of them. Four take variants out: `filterByMissingData`,
@@ -72,7 +99,10 @@ the binding crate, the Rust that is compiled to WebAssembly and that holds
 no calculation of its own, and `docs/specs/io_vcf.md`,
 `docs/specs/io_vars.md`, `docs/specs/block.md`, `docs/specs/variant.md`,
 `docs/specs/filters.md`, `docs/specs/dists.md`, `docs/specs/pca.md`,
-`docs/specs/ld.md` and `docs/specs/stats.md` say what they give.
+`docs/specs/kinship.md`, `docs/specs/gwas.md`, `docs/specs/ld.md` and
+`docs/specs/stats.md` say what they give. `docs/specs/js_sources.md` has
+what a source of this package is read from and what it tells the page while
+it reads.
 
 ## Building it
 
@@ -91,13 +121,14 @@ function exported from Rust; and the TypeScript compiler, which writes
 `wasm/` nor `dist/` nor `node_modules/` is in git.
 
 The `wasm-bindgen` command line is given `--remove-name-section`, which
-takes out of the wasm file the section that holds the name of every
-function of it: `js/popnei/wasm/popnei_bg.wasm` is 1242562 bytes with the
-flag and 1687938 bytes without, 443209 bytes of names that every user of
-the package downloads. What they are for is the stack of a trap, a panic
-of Rust among the causes, which with the flag names the functions by their
-number and without it by their name. To read one, build again without the
-flag and make the trap happen there.
+takes out of the wasm file the section that holds the name of every function
+of it: `js/popnei/wasm/popnei_bg.wasm` is 2021550 bytes with the flag and
+2621987 bytes without, 600437 bytes of names that every user of the package
+downloads. Both are of the build of 24 September 2026, on macOS on aarch64,
+and they grow with the code of the crates. What they are for is the stack of
+a trap, a panic of Rust among the causes, which with the flag names the
+functions by their number and without it by their name. To read one, build
+again without the flag and make the trap happen there.
 
 The version of the `wasm-bindgen` crate, in the `Cargo.toml` of the
 workspace, has to be the version of the `wasm-bindgen` command line that
@@ -192,6 +223,14 @@ declarations then hold, as it was found with wasm-bindgen 0.2.128:
   is what an application that runs out of memory lowers, and it is the
   size of the block that is read as well as the size of the batch that is
   written.
+- A `Blob`, which the `File` of a page is one of, crosses as a handle and
+  costs no copy: what goes into the memory of wasm is the number of the
+  entry of a table of the binding crate that holds the `Blob`, the
+  `FileReaderSync` that reads its ranges and the function the page is told
+  the progress with. They stay in JavaScript because a reader of the core
+  has to be `Send`, movable to another thread, which no handle of JavaScript
+  is. Each range popnei reads crosses once, copied out of the `ArrayBuffer`
+  that `FileReaderSync` fills.
 - A panic of Rust in wasm is a trap: the call ends where it is, the memory
   of wasm keeps what it held, and an object that was borrowed at that
   moment stays borrowed, so a later `free()` of it throws "attempted to
@@ -298,6 +337,24 @@ writes a vars file of 12 MB and asks that the write stay under twice the
 file, and then opens twelve passes over it at once and asks that they
 grow the memory by less than one copy of it, which a reader that copied
 the bytes for each pass would not.
+`test/blob_outside_a_worker.test.ts` asserts the one thing about the
+reading of a file of the page that node can: node has `Blob` and `File` and
+no `FileReaderSync`, which is the case of the main thread of a page, so
+`openVcf` and `openVars` of a `Blob` and of a `File` are refused there with
+a message that names the reader and the worker, and the same bytes open.
+
+What a range of a real file gives is asserted in a browser:
+
+    npm run test:browser
+
+It runs Playwright, which drives a browser from a script, over Chromium
+headless. A page served from the repository starts a module web worker, the
+worker loads the WebAssembly of `wasm/` through `dist/web.js`, and the
+assertions are made in there, on the literals the tests under node assert.
+Chromium is downloaded once, with `npx playwright install chromium`, and
+Playwright says so when it is missing. Firefox and WebKit are not run: the
+owner decided on 24 September 2026 to start with Chromium and to add them
+when an application needs them.
 
 ## Where it runs
 
@@ -405,10 +462,11 @@ a second call gives the same promise as the first.
 
 `openVcf` takes the bytes of the file, plain or gzipped, and reads its
 header, so bytes that are not a VCF throw there and not at the first block.
-A `File` that a user picked in a page is read inside a web worker, which
-section 11 of `docs/architecture.md` has and this package does not do yet.
-Every call of `iterBlocks` reads the bytes again from their start, so the
-same `Variants` can be given to one calculation after another.
+It takes the `File` a user picked in a page where it takes those bytes, and
+then it reads the header out of the file itself, which "A file of the page,
+in a web worker" below has. Every call of `iterBlocks` reads the source
+again from its start, so the same `Variants` can be given to one calculation
+after another.
 
 The variants of that handle are written into a vars file, and read back,
 with the two functions of `docs/specs/io_vars.md`:
@@ -547,8 +605,11 @@ finds other repetitions. Both files hold the same table and each library
 reads both, and no test compares the two sizes.
 
 The arguments are checked before they reach the core, and each of these is
-an `Error` that says what was given: a `source` that is not a
-`Uint8Array`, a `ploidy` or a `numVarsPerBlock` that is not a whole number
+an `Error` that says what was given: a `source` that is neither a
+`Uint8Array` nor a `File` or a `Blob`, a `Uint8Array` whose buffer was
+transferred, to a web worker or elsewhere, which leaves it with no bytes to
+read, a `File` or a `Blob` given where there is no `FileReaderSync`, a
+`ploidy` or a `numVarsPerBlock` that is not a whole number
 of 1 or more and at most 4294967295, an `onlyPassed` that is not a
 boolean, a `fields` that is not an array of names, a name that is not one
 of the five columns, a `variants` that is not what `openVcf` or `openVars`
@@ -577,27 +638,117 @@ whose message writes the names there are. In TypeScript
 `fields` and `stats` take their names and nothing
 else, so a typo does not compile.
 
+## A file of the page, in a web worker
+
+An application in a browser tab gets a `File` when its user picks a file in
+a form or drops one on it: a handle that carries the name and the size of
+the file and gives any range of its bytes, and that costs nothing to hold or
+to send to a web worker, the thread of the page that cannot touch what the
+page shows, because it is a handle and not the bytes. `openVcf` and
+`openVars` take that `File` where they take a `Uint8Array`, and a `Blob`,
+the piece of bytes of a page that a `File` is one of, is read the same way:
+
+```ts
+// In a module web worker. The page sends it the File its user picked and
+// reads what comes back with worker.onmessage.
+import { calcPerIndividualStats, init, numPassesOf, openVcf } from "popnei";
+
+self.onmessage = async (picked: MessageEvent<File>) => {
+  await init();
+  const variants = openVcf(picked.data);
+  try {
+    // The bar of the page covers the whole run. How many passes that is,
+    // one for this calculation, is the `numPasses` of every call below and
+    // is asked here for the bar that is drawn before a byte is read.
+    const passesOfTheRun = numPassesOf("calcPerIndividualStats");
+    self.postMessage({ done: 0, numPasses: passesOfTheRun });
+    variants.onProgress(({ bytesRead, numBytes, pass, numPasses }) => {
+      self.postMessage({
+        done: (pass - 1 + bytesRead / numBytes) / numPasses,
+      });
+    });
+    self.postMessage(calcPerIndividualStats(variants).obsHetRate);
+  } finally {
+    variants.free();
+  }
+};
+```
+
+What that pass holds in the memory of wasm is one range of the file, of a
+few MiB, the block it is building and, over a vars file, the batch it is
+reading, which at the size popnei writes is about 10 MB of genotypes for
+1000 individuals. The file itself is never there: popnei asks the `File` for
+the ranges it needs, one at a time, through `FileReaderSync`, the reader
+that returns when it has the bytes of a range. So the size of a file a user
+opens stops being bounded by the memory of the tab, where a `Uint8Array`
+costs a copy of the whole file inside wasm that stays there for as long as
+the page lives, which "What crosses between Rust and JavaScript" above
+measures. Which size of range
+popnei reads by has not been measured yet, nor what a pass over a `File`
+costs against a pass over the same file in memory: both are the measurement
+that "Speed" of `docs/specs/js_sources.md` asks for.
+
+A browser gives `FileReaderSync` only inside a web worker. `openVcf` and
+`openVars` of a `File` or a `Blob` on the main thread of a page, and under
+node, throw an `Error` at the call that names the reader and says to open
+the file inside a worker or to give its bytes; a `Uint8Array` is read
+wherever it is given. A range that comes back shorter than the one popnei
+asked for, inside a file of that size, is an `Error` in the middle of the
+pass and not the end of the file: a browser gives a short range when the
+file changed on disk after the page got its handle, and a reader that took
+it for the end would give the variants it had and say nothing.
+
+Every pass reads the file again from its start, as a pass over bytes does,
+so one `Variants` goes to one calculation after another. What it holds until
+its `free()` is the handle of the file, and a pass that is still reading
+when `free()` is called reads on to its end.
+
+`onProgress` sets the function that is told how far every pass over that
+source has got, with four numbers: how many bytes the pass has read, how
+many the file holds, which pass of the run is reading and how many passes
+the run makes. It is called at the first read of each pass, at the first
+read after every few MiB that pass has read, and at the read that finds the
+end of the file. While a calculation runs the worker is inside wasm and
+reads no message of the page, so this is how the page learns that the run is
+going forward. What that function throws ends the pass where it was reading
+and the calculation throws that same value back, which is how an application
+cancels a run without ending its worker and recognises its own cancel with
+`===`; the `Variants` is then the one it was, and the next run over it reads
+the file from its start. `numPassesOf` answers that fourth number before a
+run starts, so that a bar covers the run and not each pass from the moment
+it is drawn: every consumer makes one pass, except `doPcaFromVariants` when
+it is asked for the weights of the variants, which needs the components of a
+first pass to calculate them in a second.
+
+Where an application sets the function that is told the progress is not
+settled. `docs/specs/js_sources.md` leaves it open between the method of
+`Variants` that is written here, an option of `openVcf` and `openVars` that
+would hold for the life of the source, and an argument of every consumer;
+the method is what this package gives until the owner decides.
+
 ## What has to be freed
 
 The objects of the core live in the memory of the WebAssembly, which the
 garbage collector of JavaScript does not see, so they are given back by
 hand:
 
-- The `Variants` of `openVcf` and of `openVars` holds the bytes of the
-  file and its steps until its `free()` is called, which `using variants =
-  openVcf(bytes)` does at the end of its block. Its names and its ploidy
-  are in JavaScript and answer after that; `iterBlocks`, `writeVars` and
-  `steps` throw.
-- One pass over the variants holds the reader and the block being built.
-  What `iterBlocks` gives back gives it back when the iteration ends, when
-  it is left with a `break` and when a block throws. An iterator that is
-  made and never iterated keeps it until the garbage collector reaches it:
-  wasm-bindgen registers what it generates in a `FinalizationRegistry`,
-  which frees it at a moment nobody chooses. The `finally` that frees it
-  cannot do that one, because a generator that never ran its first line
-  never runs its last either. Its `passStats` is read after the pass is
-  over all the same: the counts are taken out of the pass just before it
-  is freed, and they are numbers of JavaScript.
+- The `Variants` of `openVcf` and of `openVars` holds its steps until its
+  `free()` is called, which `using variants = openVcf(bytes)` does at the
+  end of its block, and with it the bytes of the file when it was opened
+  over a `Uint8Array`. Opened over a `File` it holds the handle of the file,
+  its name and its size, and the memory of wasm keeps nothing of the file
+  between two ranges. Its names and its ploidy are in JavaScript and answer
+  after that; `iterBlocks`, `writeVars` and `steps` throw.
+- One pass over the variants holds the reader, the block being built and,
+  over a `File`, the range it is reading. What `iterBlocks` gives back gives
+  it back when the iteration ends, when it is left with a `break` and when a
+  block throws. An iterator that is made and never iterated keeps it until
+  the garbage collector reaches it: wasm-bindgen registers what it generates
+  in a `FinalizationRegistry`, which frees it at a moment nobody chooses.
+  The `finally` that frees it cannot do that one, because a generator that
+  never ran its first line never runs its last either. Its `passStats` is
+  read after the pass is over all the same: the counts are taken out of the
+  pass just before it is freed, and they are numbers of JavaScript.
 - The `Uint8Array` of `writeVars` is the user's own, in the heap of
   JavaScript: the file is read out of the memory of wasm in pieces, each
   of them freed there as it is copied, so nothing of it is left to free by
