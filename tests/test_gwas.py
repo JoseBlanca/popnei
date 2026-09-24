@@ -2202,6 +2202,16 @@ def _the_calls_that_typescript_alone_refuses(worked_example: pathlib.Path) -> di
     }
 
 
+# The one case of the `refusals` of that file whose message names the file
+# the variants were read from, and the only one the test below lets name it.
+# How many individuals a study tests is the individuals of the source that
+# have a phenotype, so that count is of the dataset and not of the arguments
+# alone, and its error goes through the wildcard arm of
+# `crates/popnei-python/src/errors.rs`, which puts the path in front of the
+# message. Whether it belongs there is the owner's to say.
+_TOO_FEW_INDIVIDUALS = "fewer individuals than the design has columns plus two"
+
+
 def _the_calls_of(which: str, calls: dict) -> list[tuple[dict, object]]:
     """Each case of the list `which` of `refusals_of_both_layers.json` with
     the call this suite writes for it.
@@ -2239,14 +2249,29 @@ def test_both_layers_refuse_the_same_calls(worked_example: pathlib.Path) -> None
     the wrong type altogether, which this layer has an exception of its own
     for and which JavaScript has not: it is the class that differs and not
     the message, and the message is what the file binds.
+
+    All but one of these calls are refused for what the user wrote, which is
+    wrong whatever file the study is given, so their messages name no file.
+    That is what puts each of their errors in the arm of
+    `crates/popnei-python/src/errors.rs` that raises them bare, and not in
+    the wildcard arm at the end, which glues the path of the source to the
+    front of the message. `match` alone would not notice the difference,
+    since `pytest.raises` searches the message rather than anchoring at its
+    start, which is how `GwasFitDidNotSettle` spent a day in the wrong arm.
+    The one that does name the file is the study of fewer individuals than
+    its design has columns plus two, and the comment on
+    `_TOO_FEW_INDIVIDUALS` above says why.
     """
     for case, call in _the_calls_of(
         "refusals", _the_calls_that_are_refused(worked_example)
     ):
         raises = TypeError if case.get("python_raises") == "TypeError" else ValueError
         match = case.get("match", case.get("match_in_python"))
-        with pytest.raises(raises, match=match):
+        with pytest.raises(raises, match=match) as refusal:
             call()
+
+        if case["case"] != _TOO_FEW_INDIVIDUALS:
+            assert str(worked_example) not in str(refusal.value), case["case"]
 
 
 def test_both_layers_read_a_value_that_is_not_a_number_as_the_number_it_holds(

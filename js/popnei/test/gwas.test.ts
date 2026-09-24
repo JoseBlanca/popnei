@@ -320,6 +320,60 @@ const OF_PLINK2_LOGISTIC_SE = 1e-4;
 const OF_PLINK2_LOGISTIC_P_VALUE = 5e-3;
 
 /**
+ * What R 4.6.1's `anova(glm, test = "Rao")` wrote for six variants of the
+ * panel with every genotype called, one logistic regression per variant with
+ * `cov1` and `cov2` as covariates, in
+ * `tests/reference/gwas/r.panel_called.glm.score.tsv`: the score statistic,
+ * which popnei gives as `(beta / se)**2`, and its p-value.
+ *
+ * They are the same six variants the Wald literals above are of, five of
+ * them the causal variants of `causal_vars.csv` and `var0000` not causal.
+ * The score test fits nothing per variant, so `var0006`, whose Wald fit runs
+ * away, has an answer here and is not left out of anything.
+ *
+ * R reports the statistic and popnei reports `beta` and `se`, and the two
+ * libraries count the dosages of a variant from different alleles, R from
+ * the alternative one and popnei from the one that is not the major one
+ * among the tested individuals. That turns the sign of `beta` over for some
+ * variants and leaves the statistic and the p-value as they are.
+ */
+const OF_R_LOGISTIC_SCORE_SIX: {
+  id: string;
+  statistic: number;
+  pValue: number;
+}[] = [
+  { id: "var0000", statistic: 4.938_245, pValue: 0.026_268_700 },
+  { id: "var0052", statistic: 12.484_427, pValue: 0.000_410_359 },
+  { id: "var0629", statistic: 9.165_576, pValue: 0.002_466_100 },
+  { id: "var0751", statistic: 1.480_401, pValue: 0.223_711_736 },
+  { id: "var1137", statistic: 2.911_424, pValue: 0.087_954_199 },
+  { id: "var1188", statistic: 10.382_961, pValue: 0.001_271_835 },
+];
+
+/**
+ * How far the score statistic of one of the six may be from R's, absolute,
+ * and how far its p-value may be, in `log10`: 1e-3 and 1e-3, which is what
+ * "How it is verified" of "The logistic model" holds the same six literals
+ * to and what the cargo test of them holds.
+ *
+ * R writes both at full precision, so what these measure is where R's fit
+ * stopped against where popnei's did, and not the width of a printed digit:
+ * R's glm converges to 1e-8 in the deviance. The first is absolute where the
+ * statistics of the six run from 1.48 to 12.48, which on a panel whose
+ * statistics were far larger would fail a right answer rather than pass a
+ * wrong one.
+ *
+ * Measured under node on 24 September 2026, the worst statistic is 6.024e-4,
+ * `var0629`, 60 per cent of what is allowed, and the worst p-value is
+ * 1.430e-4 in `log10`, `var0629` again, 14 per cent of its bound. The cargo
+ * test of the same six measures 6.024e-4 and 1.430e-4 on faer natively and
+ * on Accelerate, so none of the distance from R is WebAssembly's own
+ * rounding.
+ */
+const OF_R_LOGISTIC_STATISTIC = 1e-3;
+const OF_R_LOGISTIC_P_VALUE_IN_LOG10 = 1e-3;
+
+/**
  * How far `1 / se**2` of the score test may be from GMMAT's `VAR`, as a
  * share of it, and how far a p-value may be from GMMAT's in `log10`: 1e-5
  * and 1e-4, which is what "How it is verified" of "The linear mixed model"
@@ -533,9 +587,10 @@ function theStudyOfThePanel(): GwasResult {
 
 /**
  * The study of the binomial trait of the panel with `cov1` and `cov2`, which
- * is what plink2 was given for its logistic regression.
+ * is what plink2 was given for its logistic regression and, with `test` set
+ * to `score`, what R fitted one regression per variant for.
  */
-function theLogisticStudyOfThePanel(): GwasResult {
+function theLogisticStudyOfThePanel(test?: "wald" | "score"): GwasResult {
   return gwasOf(PANEL_VCF, {
     phenotype: PHENOTYPES.binom as Record<string, number>,
     trait: "binomial",
@@ -543,6 +598,7 @@ function theLogisticStudyOfThePanel(): GwasResult {
       cov1: PHENOTYPES.cov1 as Record<string, number>,
       cov2: PHENOTYPES.cov2 as Record<string, number>,
     },
+    test,
   });
 }
 
@@ -813,15 +869,7 @@ test("the logistic score test of the panel is fitted and the wald test is the de
   // share the null fit and nothing else: the coefficients are the same and
   // the rows are not.
   const byDefault = theLogisticStudyOfThePanel();
-  const score = gwasOf(PANEL_VCF, {
-    phenotype: PHENOTYPES.binom as Record<string, number>,
-    trait: "binomial",
-    covariates: {
-      cov1: PHENOTYPES.cov1 as Record<string, number>,
-      cov2: PHENOTYPES.cov2 as Record<string, number>,
-    },
-    test: "score",
-  });
+  const score = theLogisticStudyOfThePanel("score");
 
   assert.equal(score.nullModel.model, "glm");
   assert.equal(score.test, "score");
@@ -842,6 +890,42 @@ test("the logistic score test of the panel is fitted and the wald test is the de
   // there where the Wald test has none.
   const separating = score.stats.pValue[rowOf(score, "var0006")] as number;
   assert.ok(!Number.isNaN(separating));
+});
+
+test("the six variants of the panel are r's logistic score statistic and p-value", () => {
+  // The per variant arithmetic of the score test is its own, and until this
+  // test was written nothing under node asserted a number of it: the test
+  // above compares its null fit with the Wald study's, which is popnei
+  // against popnei, and then only that `var0006` is not NaN. A reviewer
+  // multiplied this test's `beta` and its statistic by 1.5 in the core,
+  // rebuilt the WebAssembly and saw all 328 node tests pass while two cargo
+  // tests failed.
+  const result = theLogisticStudyOfThePanel("score");
+
+  assert.equal(result.nullModel.model, "glm");
+  assert.equal(result.test, "score");
+  assert.equal(result.trait, "binomial");
+  assert.equal(result.nullModel.numIndividuals, PANEL_NUM_INDIVIDUALS);
+  assert.equal(result.stats.beta.length, PANEL_NUM_VARS);
+  for (const { id, statistic, pValue } of OF_R_LOGISTIC_SCORE_SIX) {
+    const at = rowOf(result, id);
+    const ours =
+      (result.stats.beta[at] as number) / (result.stats.se[at] as number);
+    const ofPopnei = ours * ours;
+    const difference = Math.abs(ofPopnei - statistic);
+    assert.ok(
+      difference <= OF_R_LOGISTIC_STATISTIC,
+      `the score statistic of ${id} is ${ofPopnei} and R gives ${statistic}, ` +
+        `${difference} away against the ${OF_R_LOGISTIC_STATISTIC} allowed`,
+    );
+    const found = result.stats.pValue[at] as number;
+    const apart = Math.abs(Math.log10(found / pValue));
+    assert.ok(
+      apart <= OF_R_LOGISTIC_P_VALUE_IN_LOG10,
+      `the p-value of ${id} is ${found} and R gives ${pValue}, ${apart} ` +
+        `apart in log10 against the ${OF_R_LOGISTIC_P_VALUE_IN_LOG10} allowed`,
+    );
+  }
 });
 
 test("an individual with no phenotype is not tested and the frequencies are of the rest", () => {
