@@ -15,15 +15,6 @@ use super::study::{GwasModel, TestType};
 /// Whether a study used the GRAMMAR-Gamma approximation, which a mixed
 /// model can take to spend one product per variant instead of a fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only a mixed model makes the approximation, the approximation itself \
-                  is being written and a study that asks for it is refused, so nothing \
-                  outside the tests builds `Used`"
-    )
-)]
 pub(crate) enum GrammarGammaApprox {
     /// The study made the approximation.
     Used,

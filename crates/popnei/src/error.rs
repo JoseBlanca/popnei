@@ -1653,18 +1653,47 @@ pub enum Error {
     )]
     GwasGrammarGammaWithoutAKinship,
 
-    /// The GRAMMAR-Gamma approximation was asked for by a study that has a
-    /// kinship, which is the pair it is for, and popnei has not written it
-    /// yet. It is refused and not ignored: a study that made the exact test
-    /// of every variant and reported that it had approximated nothing would
-    /// give the user no way to tell that what they asked for did not
-    /// happen. Until it is written the user asks for no approximation and
-    /// gets the exact test, which is what every number of
-    /// `docs/specs/gwas.md` is. In Python it is a `ValueError`.
+    /// The GRAMMAR-Gamma approximation was asked for and no second pass was
+    /// given to estimate its factor from. The factor comes from the first
+    /// block of a pass over the same variants as the one that tests them,
+    /// and `calc_gwas` takes that pass as its second argument. Both binding
+    /// crates open it themselves, so it is a caller of the core crate that
+    /// meets this, and in Python it is a `ValueError` naming no file.
     #[error(
-        "the GRAMMAR-Gamma approximation is being written; ask for no approximation and every variant gets the exact denominator of its test, which is what it stands in for"
+        "the GRAMMAR-Gamma approximation estimates its factor from the first block of a second pass over the same variants, and none was given; open a second pass or ask for no approximation"
     )]
-    GwasGrammarGammaNotBuilt,
+    GwasGrammarGammaWithoutASecondPass,
+
+    /// No variant of the first block of that second pass has any variance
+    /// among the tested individuals, so there is no ratio of the exact
+    /// denominator to the approximate one to average. It is pyNei's refusal
+    /// in `estimate_gamma` of `pynei/gwas.py`, and in Python it is a
+    /// `ValueError` naming the file the pass read.
+    #[error(
+        "the GRAMMAR-Gamma approximation estimates its factor from the variants of the first block that vary, and no variant of that block varies among the {num_individuals} tested individuals; test more variants or ask for no approximation"
+    )]
+    GwasGrammarGammaWithoutAVariantThatVaries {
+        /// How many individuals the study tests, over which the variants of
+        /// that block were found to have no variance.
+        num_individuals: usize,
+    },
+
+    /// The factor the first block gave is not a finite number above 0,
+    /// which the exact denominators of variants that the design explains
+    /// give: each of them is the rounding of a cancellation and falls on
+    /// either side of 0. Every variant of the study would be left with no
+    /// answer, so the study is refused instead. In Python it is a
+    /// `ValueError` naming the file the pass read.
+    #[error(
+        "the GRAMMAR-Gamma approximation multiplies the squared length of a variant's centered dosages by {factor}, which the {num_vars} variants of the first block that vary gave and which is not a number above 0; the design explains those variants, and a study of other variants or with no approximation is tested against the exact denominator"
+    )]
+    GwasGrammarGammaFactorNotAboveZero {
+        /// The factor those variants gave: 0, a number below it, or one
+        /// that is not finite.
+        factor: f64,
+        /// How many variants of the first block it was the mean over.
+        num_vars: usize,
+    },
 
     /// A mixed model was to be fitted and the kinship that chose it was no
     /// longer there.
@@ -2355,10 +2384,11 @@ impl Error {
     /// let every other one fall through a wildcard arm, and twice an error
     /// of the association study arrived with the path of the VCF glued in
     /// front of a message about the user's own arguments, each time costing
-    /// a day to find: `GwasGrammarGammaNotBuilt` and `GwasFitDidNotSettle`,
-    /// both of which were there until 24 September 2026. A case added to
-    /// the enum now does not compile until somebody has said which of the
-    /// two it is.
+    /// a day to find: the GRAMMAR-Gamma approximation a study asked for and
+    /// could not be given, which was `GwasGrammarGammaNotBuilt` until 24
+    /// September 2026, and [`Error::GwasFitDidNotSettle`]. Both were in the
+    /// wrong place until that day. A case added to the enum now does not
+    /// compile until somebody has said which of the two it is.
     #[must_use]
     pub fn names_the_file(&self) -> bool {
         match *self {
@@ -2436,8 +2466,10 @@ impl Error {
             // that explain the whole of the trait; the two pairs of a test
             // and a model that no model has, and a trait or a test under a
             // name that is of neither of the two; the GRAMMAR-Gamma
-            // approximation, asked for by a study with a kinship and by one
-            // without; a null model that walked towards an infinite
+            // approximation, asked for by a study with no kinship and asked
+            // of the core with no second pass to estimate its factor from,
+            // both of which are arguments of the call; a null model that
+            // walked towards an infinite
             // coefficient instead of settling, which is a covariate the
             // user takes out; a kinship that the covariance of the working
             // trait of a logistic mixed model cannot be factored from,
@@ -2457,7 +2489,7 @@ impl Error {
             | Self::GwasScoreTestOfALinearModel
             | Self::GwasWaldTestOfALogisticMixedModel
             | Self::GwasGrammarGammaWithoutAKinship
-            | Self::GwasGrammarGammaNotBuilt
+            | Self::GwasGrammarGammaWithoutASecondPass
             | Self::GwasFitDidNotSettle { .. }
             | Self::GwasKinshipNotACovariance { .. }
             | Self::GwasModelNotBuilt { .. }
@@ -2496,6 +2528,15 @@ impl Error {
             | Self::GwasIndividualNotInTheDataset { .. }
             | Self::GwasIndividualTestedTwice { .. }
             | Self::GwasIndividualsOutOfOrder { .. }
+            // The two of the GRAMMAR-Gamma approximation that are of the
+            // variants the second pass gave: a first block in which nothing
+            // varies among the tested individuals, and a first block whose
+            // variants the design explains, which gives a factor that is
+            // not above 0. Which file was read is what tells a user whether
+            // it is that file or the steps of their pass that left them
+            // with those variants.
+            | Self::GwasGrammarGammaWithoutAVariantThatVaries { .. }
+            | Self::GwasGrammarGammaFactorNotAboveZero { .. }
             | Self::GwasVariantsTooLarge
             // The defects: a reader that gave blocks which do not hold
             // one dataset, a block whose arrays are not of its size, a
@@ -2931,7 +2972,7 @@ mod tests {
     #[test]
     fn the_errors_of_what_a_user_wrote_name_no_file() {
         for error in [
-            Error::GwasGrammarGammaNotBuilt,
+            Error::GwasGrammarGammaWithoutASecondPass,
             Error::GwasFitDidNotSettle {
                 model: GwasModel::Glmm,
                 rounds: 200,
@@ -2950,6 +2991,13 @@ mod tests {
             Error::PcaNoVariants,
             Error::VcfBgzipEndMissing,
             Error::GwasVariantsTooLarge,
+            Error::GwasGrammarGammaWithoutAVariantThatVaries {
+                num_individuals: 200,
+            },
+            Error::GwasGrammarGammaFactorNotAboveZero {
+                factor: -1.5e-16,
+                num_vars: 3,
+            },
         ] {
             assert!(error.names_the_file(), "{error} was said to name no file");
         }

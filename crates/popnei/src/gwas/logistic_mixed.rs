@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 
 use super::distributions::chi2_sf_1df;
 use super::dosages::GwasDosages;
+use super::grammar_gamma::GrammarGamma;
 use super::logistic::{
     LogisticModel, TheSystemOfTheFit, the_chance_of, the_system_of, the_system_that_is_left,
 };
@@ -846,9 +847,18 @@ pub(crate) struct LogisticMixedModel {
         )
     )]
     inverses: usize,
+    /// The GRAMMAR-Gamma approximation, when the study asked for it and
+    /// [`LogisticMixedModel::approximate_the_denominator`] estimated its
+    /// factor from the first block of the second pass, and `None` when
+    /// every variant gets the exact denominator.
+    approximation: Option<GrammarGamma>,
     /// The dosages of a block through the projection matrix, `x p`, the
-    /// variants that have variance x `num_individuals`.
+    /// variants that have variance x `num_individuals`. It stays empty
+    /// under the approximation, which is the product it does not make.
     projected: Vec<f64>,
+    /// The denominator of each variant that has variance, `x' p x`, one per
+    /// variant, formed from the row above or approximated.
+    den: Vec<f64>,
     /// Each variant times the residual the null left, `x' r`, one per
     /// variant that has variance, which is the `x' p y` of the score test
     /// with the residual this model has in place of `p y`.
@@ -998,7 +1008,9 @@ impl LogisticMixedModel {
             linearizations: fitted.factorizations,
             steps_on_the_variance,
             inverses,
+            approximation: None,
             projected: Vec::new(),
+            den: Vec::new(),
             num: Vec::new(),
             beta: Vec::new(),
             se: Vec::new(),
@@ -1027,6 +1039,106 @@ impl LogisticMixedModel {
         }
     }
 
+    /// Estimates the factor of the GRAMMAR-Gamma approximation from
+    /// `dosages`, the first block of the second pass, and makes every
+    /// variant tested after it take the approximate denominator.
+    ///
+    /// "The GRAMMAR-Gamma approximation" of `docs/specs/gwas.md` says what
+    /// it buys and what it costs: the denominator of a variant stops being
+    /// a product with the projection matrix, which grows with the square of
+    /// the individuals, and becomes one factor times the squared length of
+    /// the variant's centered dosages, which grows with the individuals
+    /// alone. The factor stands for a quantity that differs from variant to
+    /// variant, so what it costs in accuracy grows with how strongly the
+    /// panel is structured.
+    ///
+    /// # Errors
+    ///
+    /// What [`GrammarGamma::of_the_first_block`] refuses of that block: no
+    /// variant of it that varies among the tested individuals, and a factor
+    /// that is not a finite number above 0.
+    pub(crate) fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
+        self.approximation = Some(GrammarGamma::of_the_first_block(
+            &self.projection,
+            self.num_individuals,
+            dosages,
+        )?);
+        Ok(())
+    }
+
+    /// The factor of the approximation, and `None` for a model that makes
+    /// the exact denominator.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the factor is in no result and the test that compares it with the \
+                      one pyNei's `estimate_gamma` gives is what reads it"
+        )
+    )]
+    pub(crate) fn grammar_gamma_factor(&self) -> Option<f64> {
+        self.approximation
+            .map(|approximation| approximation.factor())
+    }
+
+    /// The denominator of every variant of a block that has variance, in
+    /// the order of the block, left in `den`.
+    ///
+    /// Without the approximation it is `x' p x`, the variant through the
+    /// projection matrix and then against itself, and the product of the
+    /// block with that matrix is the larger half of the cost of a block.
+    /// With it, it is the factor times the squared length of the variant's
+    /// centered dosages, and no product is made.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::GwasVariantsTooLarge`] when the values of the block are
+    /// more than a `usize` counts, and [`Error::GwasLinalg`] when the
+    /// product could not be done, which is where a block of other
+    /// individuals than the null model was fitted over is refused.
+    fn the_denominators_of(&mut self, dosages: &GwasDosages, num_vars: usize) -> Result<()> {
+        self.den.clear();
+        let of_the_variants = dosages.dosages().chunks_exact(self.num_individuals.max(1));
+        if let Some(approximation) = self.approximation {
+            self.den
+                .extend(of_the_variants.map(|of_the_variant| approximation.den_of(of_the_variant)));
+            return Ok(());
+        }
+        let values = num_vars
+            .checked_mul(self.num_individuals)
+            .ok_or(Error::GwasVariantsTooLarge)?;
+        self.projected.resize(values, 0.0);
+        popnei_linalg::product(
+            TheFirstOperand::ByTheRowsOfTheResult {
+                values: dosages.dosages(),
+                rows: num_vars,
+            },
+            self.num_individuals,
+            TheSecondOperand::ByTheValuesSummedOver {
+                values: &self.projection,
+                cols: self.num_individuals,
+            },
+            &mut self.projected,
+        )
+        .map_err(|source| Error::GwasLinalg {
+            operation: "product of a block of variants with the projection matrix",
+            source,
+        })?;
+        self.den.extend(
+            self.projected
+                .chunks_exact(self.num_individuals.max(1))
+                .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
+                .map(|(row, of_the_variant)| {
+                    row.iter()
+                        .zip(of_the_variant)
+                        .map(|(projected, dosage)| projected * dosage)
+                        .sum::<f64>()
+                }),
+        );
+        Ok(())
+    }
+
     /// The score test of every variant of a block that has variance among
     /// the tested individuals, in the order of the block.
     ///
@@ -1052,7 +1164,9 @@ impl LogisticMixedModel {
     ///
     /// The two products are the whole cost of a block, and the first of
     /// them, the dosages through the projection matrix, is what the
-    /// GRAMMAR-Gamma approximation of `docs/specs/gwas.md` stands in for.
+    /// GRAMMAR-Gamma approximation of `docs/specs/gwas.md` stands in for. A
+    /// model that [`LogisticMixedModel::approximate_the_denominator`] was
+    /// called on makes it no more.
     ///
     /// A variant of which the projection leaves at most the tested
     /// individuals times 2.2e-16 of what there was has no answer, and gets
@@ -1062,6 +1176,16 @@ impl LogisticMixedModel {
     /// mixed model's score test takes, so that the two mixed models answer
     /// a variant there is nothing left to test alike rather than each
     /// picking its own. It is **Open 2** of `docs/specs/gwas.md`.
+    ///
+    /// That comparison is made against whichever of the two denominators
+    /// the study formed, and under the approximation it stops firing, which
+    /// "Open 2's threshold under the approximation" of that spec states and
+    /// which is a decision of 24 September 2026: the approximate
+    /// denominator is a factor above 0 times a sum of squares, so it holds
+    /// no cancellation and it is above 0 for every variant that varies,
+    /// whatever the projection would have left of that variant. The linear
+    /// mixed model's own `test_the_block` has what was measured, and the
+    /// two models take the same decision here as they take the same scale.
     ///
     /// # Errors
     ///
@@ -1080,26 +1204,7 @@ impl LogisticMixedModel {
             // result, with the three NaNs of a variant that has no answer.
             return Ok(self.answers());
         }
-        let values = num_vars
-            .checked_mul(self.num_individuals)
-            .ok_or(Error::GwasVariantsTooLarge)?;
-        self.projected.resize(values, 0.0);
-        popnei_linalg::product(
-            TheFirstOperand::ByTheRowsOfTheResult {
-                values: dosages.dosages(),
-                rows: num_vars,
-            },
-            self.num_individuals,
-            TheSecondOperand::ByTheValuesSummedOver {
-                values: &self.projection,
-                cols: self.num_individuals,
-            },
-            &mut self.projected,
-        )
-        .map_err(|source| Error::GwasLinalg {
-            operation: "product of a block of variants with the projection matrix",
-            source,
-        })?;
+        self.the_denominators_of(dosages, num_vars)?;
         self.num.resize(num_vars, 0.0);
         popnei_linalg::product(
             TheFirstOperand::ByTheRowsOfTheResult {
@@ -1121,17 +1226,13 @@ impl LogisticMixedModel {
         // leave of it for the variant to be worth testing.
         let share_that_is_nothing = the_share_that_is_nothing(self.num_individuals);
         let largest_of_the_projection = self.largest_of_the_projection;
-        for ((row, num), of_the_variant) in self
-            .projected
-            .chunks_exact(self.num_individuals.max(1))
+        for ((den, num), of_the_variant) in self
+            .den
+            .iter()
+            .copied()
             .zip(&self.num)
             .zip(dosages.dosages().chunks_exact(self.num_individuals.max(1)))
         {
-            let den = row
-                .iter()
-                .zip(of_the_variant)
-                .map(|(projected, dosage)| projected * dosage)
-                .sum::<f64>();
             let of_the_dosages = of_the_variant
                 .iter()
                 .map(|dosage| dosage * dosage)
@@ -1614,8 +1715,9 @@ mod glmm {
     use super::{
         LogisticMixedModel, TheBracket, TheLinearization, TheStepOnTheVariance, the_projection_of,
     };
-    use crate::block::BlockReader;
+    use crate::block::{BlockReader, Reblock};
     use crate::error::Error;
+    use crate::gwas::dosages::{BlockOfThePass, GwasDosages};
     use crate::gwas::linear::lm::{
         THE_HEADER_OF_EIGHT, reader_over, the_study_of, the_trait_and_the_design_of_the_panel,
     };
@@ -1626,6 +1728,7 @@ mod glmm {
     use crate::gwas::result::Gwas;
     use crate::gwas::study::{Design, GwasInput, GwasModel, TestType, TraitType};
     use crate::io::vcf::{VcfOptions, VcfReader};
+    use crate::variant::Needs;
 
     /// The variance of the random effect of the kinship that GMMAT 1.5.0's
     /// `glmmkin` fitted for the panel with every genotype called, from
@@ -2975,6 +3078,311 @@ mod glmm {
         match the_study_of(&mut reader, &study) {
             Ok(result) => result,
             Err(error) => panic!("the study of {name}: {error}"),
+        }
+    }
+
+    /// The factor pyNei's `estimate_gamma` gives for each panel under the
+    /// logistic mixed model, with the smallest, the largest and the
+    /// standard deviation of the 100 ratios it is the mean of.
+    ///
+    /// Measured on 24 September 2026 with pyNei at the commit
+    /// `pyproject.toml` names, numpy 2.5.3 on Accelerate, on the trait
+    /// `binom` and the covariates `cov1` and `cov2` of
+    /// `tests/reference/gwas/phenotypes.csv` over the kinship plink2 wrote
+    /// for the panel with every genotype called.
+    ///
+    /// The factor is five times smaller than the linear mixed model's on
+    /// the same panel, 0.105 against 0.517, because the projection matrix
+    /// of this model is weighted by the variance of a binomial trait, which
+    /// is at most a quarter. The spread around it is the same shape: the
+    /// ratios run from 0.0726 to 0.1220, a standard deviation of 0.00966,
+    /// which is 9.2 per cent of the mean and a largest over smallest of
+    /// 1.68, against 12.9 per cent and 2.15 for the linear mixed model. So
+    /// one factor stands in for a quantity that differs from variant to
+    /// variant here as it does there, and a factor that fell outside that
+    /// range would be reporting the ratios of some other set of variants.
+    const OF_PYNEI_GAMMA_OF_EACH_PANEL: [(&str, f64, f64, f64, f64); 2] = [
+        (
+            "panel_called",
+            0.105_320_734_389_783_95,
+            0.072_578_464_929_525_54,
+            0.121_993_904_517_353_51,
+            0.009_655_522_042_929_226,
+        ),
+        (
+            "panel",
+            0.106_058_860_871_757_5,
+            0.073_708_044_241_363_11,
+            0.123_332_208_807_525_8,
+            0.009_666_946_916_712_202,
+        ),
+    ];
+
+    /// How far the factor of a panel may be from the one pyNei's
+    /// `estimate_gamma` gives for it: 1e-8 of it, relative.
+    ///
+    /// It measures the distance between two fits and the two projection
+    /// matrices they build, the factor being read out of pyNei at full
+    /// precision above. This model's fit is the one popnei writes
+    /// differently from pyNei, a Cholesky and a solve where pyNei inverts,
+    /// so what the bound covers here is that route as well as the
+    /// arithmetic.
+    ///
+    /// Measured over the two panels on 24 September 2026: the worst is the
+    /// panel with every genotype called, 1.77e-14 of the factor away on
+    /// Accelerate and 1.84e-14 on faer, and the panel with 3 in 100
+    /// genotypes missing is 1.78e-14 and 1.82e-14. The bound is 5.4 times
+    /// the worst of the four.
+    ///
+    /// It is 100000 times tighter than the 1e-8 the linear mixed model's
+    /// own `OF_PYNEI_GAMMA` takes, and the difference is the fit and not
+    /// this model's arithmetic: pyNei and popnei walk the search on the
+    /// variance of the kinship effect to the same value here, where the
+    /// linear mixed model's restricted maximum likelihood has a criterion
+    /// that is flat at its minimum and the two land on eigenvalues that
+    /// differ in their last bits.
+    const OF_PYNEI_GAMMA: f64 = 1e-13;
+
+    /// The factor of each panel under the logistic mixed model is the one
+    /// pyNei's `estimate_gamma` gives, estimated from 100 variants of the
+    /// first block.
+    ///
+    /// The first block of either panel holds all 1200 of its variants and
+    /// all 1200 vary, so the 100 the factor comes from are the first 100 of
+    /// the file and are the ones pyNei took. It is the one check there is
+    /// on the factor itself: no program outside the project computes it,
+    /// GMMAT making the exact denominator, and the relation to popnei's own
+    /// exact answer allows a p-value to be out by a factor of 30.
+    #[test]
+    fn the_factor_of_each_panel_is_pyneis_over_a_hundred_variants() {
+        for (name, gamma, smallest, largest, deviation) in OF_PYNEI_GAMMA_OF_EACH_PANEL {
+            let (mut fitted, dosages) = the_null_and_the_first_block_of(name);
+            assert_eq!(dosages.num_vars(), 1200, "the first block of {name}");
+            assert_eq!(
+                dosages.num_with_variance(),
+                1200,
+                "the variants of that block that vary"
+            );
+            assert_eq!(fitted.grammar_gamma_factor(), None, "before the estimate");
+
+            if let Err(error) = fitted.approximate_the_denominator(&dosages) {
+                panic!("the factor of {name}: {error}");
+            }
+
+            let found = fitted
+                .grammar_gamma_factor()
+                .expect("the factor of a model that approximates");
+            let away = (found - gamma).abs() / gamma;
+            assert!(
+                away <= OF_PYNEI_GAMMA,
+                "the factor of {name} is {found} and pyNei gives {gamma}, {away} of it \
+                 away, against the {OF_PYNEI_GAMMA} allowed"
+            );
+            assert!(
+                found > smallest && found < largest,
+                "the factor of {name} is {found} and the 100 ratios it is the mean of \
+                 run from {smallest} to {largest}, a standard deviation of {deviation}"
+            );
+        }
+    }
+
+    /// The logistic mixed model of a panel, fitted as
+    /// [`the_study_of_the_panel`] fits it, with the dosages of the first
+    /// block of a pass over its variants.
+    ///
+    /// The pair is what the second pass of the GRAMMAR-Gamma approximation
+    /// gives `calc_gwas`: the first block of a pass that asks for the
+    /// genotypes alone, with `Reblock` in front of it.
+    fn the_null_and_the_first_block_of(name: &str) -> (LogisticMixedModel, GwasDosages) {
+        let path = the_vcf_of_the_panel(name);
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let individuals = reader.individuals().to_vec();
+        let kinship = the_kinship_of("panel_called");
+        let (phenotype, values) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Binomial);
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &values,
+            num_coefs: 3,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: false,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        let design = match Design::of_the_study(&study, individuals.len()) {
+            Ok(design) => design,
+            Err(error) => panic!("the design of {name}: {error}"),
+        };
+        let fitted = match LogisticMixedModel::of_the_study(&phenotype, &design, &kinship) {
+            Ok(fitted) => fitted,
+            Err(error) => panic!("the null model of {name}: {error}"),
+        };
+        reader.set_needs(Needs::GTS);
+        let mut blocks = match Reblock::new(&mut reader, None) {
+            Ok(blocks) => blocks,
+            Err(error) => panic!("the blocks of {name}: {error}"),
+        };
+        let mut block = match blocks.next_block() {
+            Ok(Some(block)) => block,
+            Ok(None) => panic!("{name} gave no block"),
+            Err(error) => panic!("the first block of {name}: {error}"),
+        };
+        let mut dosages = GwasDosages::of_a_study();
+        if let Err(error) = dosages.read_the_block(
+            &mut block,
+            &design,
+            BlockOfThePass {
+                ploidy: 2,
+                first_var: 0,
+            },
+        ) {
+            panic!("the dosages of the first block of {name}: {error}");
+        }
+        (fitted, dosages)
+    }
+
+    /// How far the middle of `log10(p_approx / p_exact)` may be from 0 over
+    /// a whole panel, how far the worst variant of it may be, and how far
+    /// an effect may be from the exact one as a share of it: 0.1, 1.5 and
+    /// 0.5.
+    ///
+    /// They are the three numbers of "What it gives" and "How it is
+    /// verified" of the approximation in `docs/specs/gwas.md`, which has
+    /// them from `test_grammar_gamma_approx` of pyNei and states them for
+    /// the linear mixed model. The spec does not measure the logistic mixed
+    /// model, and this test holds it to the same three: what the bound is
+    /// about is one factor standing in for a quantity that differs from
+    /// variant to variant, which is the same in both models.
+    ///
+    /// Measured over the 1200 variants of each panel on 24 September 2026,
+    /// the same on Accelerate and on faer to six digits: on the panel with
+    /// every genotype called the median is 0.00981, the largest 0.524 and
+    /// the worst effect 0.393; on the panel with 3 in 100 genotypes missing
+    /// they are 0.0107, 0.525 and 0.385. So the worst variant uses 35 per
+    /// cent of what its p-value is allowed and 79 per cent of what its
+    /// effect is, which is what the linear mixed model's own
+    /// `OF_THE_APPROXIMATE_EFFECT` explains: the effect is `num / den` and
+    /// the approximation leaves `num` alone, so the share an effect moves
+    /// by is exactly the share that variant's own ratio of the two
+    /// denominators is from the factor.
+    const OF_THE_APPROXIMATION: (f64, f64, f64) = (0.1, 1.5, 0.5);
+
+    /// The approximation gives every variant of a panel an answer near the
+    /// exact one, and the result says that it was used.
+    ///
+    /// There is no program outside the project to check this against: GMMAT
+    /// makes the exact denominator. So what is compared is the same study
+    /// of the same panel with and without the approximation, which is
+    /// pyNei's own `test_grammar_gamma_approx` one model along. The bound
+    /// is loose, and the factor itself is where an error that does not grow
+    /// with the panel would show, which the test against pyNei's
+    /// `estimate_gamma` above is for.
+    #[test]
+    fn the_approximate_answers_of_both_panels_are_near_the_exact_ones() {
+        let (of_the_median, of_the_largest, of_the_effects) = OF_THE_APPROXIMATION;
+        for name in ["panel_called", "panel"] {
+            let exact = the_study_of_the_panel(name);
+            let approximated = the_approximated_study_of_the_panel(name);
+
+            assert!(
+                approximated.used_grammar_gamma_approx,
+                "the study of {name} says it approximated"
+            );
+            assert!(
+                !exact.used_grammar_gamma_approx,
+                "the study of {name} that did not approximate says so"
+            );
+            assert_eq!(approximated.num_vars, 1200, "the variants of {name}");
+            assert_eq!(
+                approximated.null_model, exact.null_model,
+                "the null model of {name} is the same fit either way, since the \
+                 approximation is of the test of a variant and not of the fit"
+            );
+            let mut of_the_p_values: Vec<f64> = Vec::new();
+            let mut worst_effect = 0.0_f64;
+            for (var, ((p_approx, p_exact), (beta_approx, beta_exact))) in approximated
+                .p_value
+                .iter()
+                .zip(&exact.p_value)
+                .zip(approximated.beta.iter().zip(&exact.beta))
+                .enumerate()
+            {
+                assert!(
+                    p_approx.is_finite() && p_exact.is_finite(),
+                    "the variant {var} of {name} has a p-value under both, {p_approx} \
+                     approximated and {p_exact} exact"
+                );
+                of_the_p_values.push((p_approx / p_exact).log10().abs());
+                worst_effect =
+                    worst_effect.max((beta_approx - beta_exact).abs() / beta_exact.abs());
+            }
+            of_the_p_values.sort_by(f64::total_cmp);
+            let median = of_the_p_values.get(600).copied().unwrap_or(f64::NAN);
+            let largest = of_the_p_values.last().copied().unwrap_or(f64::NAN);
+            assert!(
+                median <= of_the_median,
+                "the middle variant of {name} moves its p-value by {median} in the log, \
+                 against the {of_the_median} allowed"
+            );
+            assert!(
+                largest <= of_the_largest,
+                "the worst variant of {name} moves its p-value by {largest} in the log, \
+                 against the {of_the_largest} allowed"
+            );
+            assert!(
+                worst_effect <= of_the_effects,
+                "the worst effect of {name} moves by {worst_effect} of itself, against \
+                 the {of_the_effects} allowed"
+            );
+        }
+    }
+
+    /// The study of a panel with the GRAMMAR-Gamma approximation, which is
+    /// the study [`the_study_of_the_panel`] makes with a second pass over
+    /// the same file beside it.
+    fn the_approximated_study_of_the_panel(name: &str) -> Gwas {
+        let path = the_vcf_of_the_panel(name);
+        let options = VcfOptions {
+            ploidy: 2,
+            ..VcfOptions::default()
+        };
+        let mut reader = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let mut gamma_pass = match VcfReader::from_path(&path, options) {
+            Ok(reader) => reader,
+            Err(error) => panic!("{path}: {error}", path = path.display()),
+        };
+        let individuals = reader.individuals().to_vec();
+        let kinship = the_kinship_of("panel_called");
+        let (phenotype, design) =
+            the_trait_and_the_design_of_the_panel(&individuals, TraitType::Binomial);
+        let tested: Vec<usize> = (0..individuals.len()).collect();
+        let study = GwasInput {
+            phenotype: &phenotype,
+            trait_type: TraitType::Binomial,
+            design: &design,
+            num_coefs: 3,
+            kinship: Some(&kinship),
+            test: None,
+            use_grammar_gamma_approx: true,
+            individuals: &tested,
+            transform_to_biallelic: false,
+        };
+        match crate::gwas::calc_gwas(&mut reader, Some(&mut gamma_pass), &study) {
+            Ok(result) => result,
+            Err(error) => panic!("the approximated study of {name}: {error}"),
         }
     }
 

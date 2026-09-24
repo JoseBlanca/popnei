@@ -646,9 +646,12 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         // or a constant, and covariates that explain the whole of the
         // trait; the score test asked of a linear model and the Wald test
         // of a logistic mixed one, which are the two pairs no model has;
-        // the GRAMMAR-Gamma approximation, asked for by a study with no
-        // kinship and asked for by one with a kinship, which say different
-        // things; a null model that walked towards an infinite coefficient
+        // the four of the GRAMMAR-Gamma approximation: asked for by a study
+        // with no kinship, asked of the core with no second pass to
+        // estimate its factor from, and the two the first block of that
+        // pass is refused for, no variant that varies in it and a factor
+        // its variants gave that is not above 0; a null model that walked
+        // towards an infinite coefficient
         // instead of settling, which is a covariate that separates the
         // individuals that have the condition from the ones that have not
         // and which the user takes out; a kinship that the covariance of
@@ -669,7 +672,9 @@ fn exception_of(error: popnei::Error, path: Option<PathBuf>) -> PyErr {
         | popnei::Error::GwasScoreTestOfALinearModel
         | popnei::Error::GwasWaldTestOfALogisticMixedModel
         | popnei::Error::GwasGrammarGammaWithoutAKinship
-        | popnei::Error::GwasGrammarGammaNotBuilt
+        | popnei::Error::GwasGrammarGammaWithoutASecondPass
+        | popnei::Error::GwasGrammarGammaWithoutAVariantThatVaries { .. }
+        | popnei::Error::GwasGrammarGammaFactorNotAboveZero { .. }
         | popnei::Error::GwasFitDidNotSettle { .. }
         | popnei::Error::GwasKinshipNotACovariance { .. }
         // The name of a trait and the name of a test that are of neither

@@ -91,6 +91,31 @@ impl TheFittedModel {
             TheFittedModel::LogisticMixed(fitted) => fitted.test_the_block(dosages),
         }
     }
+
+    /// Estimates the factor of the GRAMMAR-Gamma approximation from
+    /// `dosages`, the first block of the second pass, so that every variant
+    /// of the pass that follows takes the approximate denominator.
+    ///
+    /// The two mixed models are the ones that have a denominator to
+    /// approximate, and the other two never arrive here: a study with no
+    /// kinship that asks for the approximation is refused by
+    /// [`calc_gwas`] before any model is fitted, and a study with one fits
+    /// a mixed model.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the model's own estimate of the factor fails with, and
+    /// [`Error::GwasGrammarGammaWithoutAKinship`] for the two models that
+    /// have no projection matrix.
+    fn approximate_the_denominator(&mut self, dosages: &GwasDosages) -> Result<()> {
+        match self {
+            TheFittedModel::Linear(_) | TheFittedModel::Logistic(_) => {
+                Err(Error::GwasGrammarGammaWithoutAKinship)
+            }
+            TheFittedModel::Mixed(fitted) => fitted.approximate_the_denominator(dosages),
+            TheFittedModel::LogisticMixed(fitted) => fitted.approximate_the_denominator(dosages),
+        }
+    }
 }
 
 /// The association study of the variants of a reader against a trait of
@@ -118,12 +143,17 @@ impl TheFittedModel {
 /// the test of a block is matrix work.
 ///
 /// `gamma_pass` is the second pass over the same variants that the
-/// GRAMMAR-Gamma approximation reads its first block of. Nothing reads it
-/// yet: the approximation stands in for the denominator of a mixed model's
-/// test, "The GRAMMAR-Gamma approximation" of `docs/specs/gwas.md` is not
-/// written, and a study that asks for it is refused, without a kinship
-/// because there is no such denominator to approximate and with one
-/// because popnei cannot approximate it yet.
+/// GRAMMAR-Gamma approximation reads its first block of, and it is read
+/// only when `use_grammar_gamma_approx` is true. The approximation stands
+/// in for the denominator of a mixed model's test, `x' p x`, with one
+/// factor times the squared length of the variant's centered dosages, and
+/// that factor is the mean over the first 100 variants of that block which
+/// vary of the exact denominator divided by the approximate one. So the
+/// second pass is read once, after the null model is fitted and before the
+/// pass that tests the variants, and it asks its reader for the genotypes
+/// alone. A study that asks for the approximation with no kinship is
+/// refused, since there is no such denominator to approximate, and so is
+/// one that asks for it and gives no second pass.
 ///
 /// # Errors
 ///
@@ -133,9 +163,13 @@ impl TheFittedModel {
 /// covariance of the working trait of a logistic mixed model could not be
 /// factored,
 /// [`Error::GwasGrammarGammaWithoutAKinship`] when the approximation was
-/// asked for by a study with no kinship and
-/// [`Error::GwasGrammarGammaNotBuilt`] when it was asked for by one with a
-/// kinship.
+/// asked for by a study with no kinship,
+/// [`Error::GwasGrammarGammaWithoutASecondPass`] when it was asked for and
+/// `gamma_pass` is `None`,
+/// [`Error::GwasGrammarGammaWithoutAVariantThatVaries`] when no variant of
+/// the first block of that pass varies among the tested individuals, and
+/// [`Error::GwasGrammarGammaFactorNotAboveZero`] when the factor those
+/// variants gave is not a finite number above 0.
 /// [`Error::GwasInputOfAnotherSize`] when a kinship does not hold one row
 /// and one column for each tested individual, and
 /// [`Error::GwasKinshipValueNotFinite`] when one of its values is not a
@@ -151,27 +185,17 @@ impl TheFittedModel {
 /// [`GwasDosages::read_the_block`] refuses of a block and of its variants,
 /// [`Error::GwasVariantsTooLarge`] when the variants of the study are more
 /// than a `usize` counts, and whatever the reader fails with.
-#[expect(
-    unused_variables,
-    reason = "`gamma_pass` keeps the name `docs/specs/gwas.md` gives it, since rustdoc \
-              prints the names of the arguments; nothing reads it until a mixed model \
-              makes the approximation, and the doc comment above says why"
-)]
 pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
     reader: &mut R1,
     gamma_pass: Option<&mut R2>,
     input: &GwasInput<'_>,
 ) -> Result<Gwas> {
     let (model, test) = the_model_and_the_test(input)?;
-    if input.use_grammar_gamma_approx {
-        // The study is refused whether or not it brought a kinship, and
-        // the two refusals say different things: without one there is no
-        // denominator to approximate, and with one there is and popnei has
-        // not written the approximation of it.
-        return match input.kinship {
-            None => Err(Error::GwasGrammarGammaWithoutAKinship),
-            Some(_) => Err(Error::GwasGrammarGammaNotBuilt),
-        };
+    // A study with no kinship has no projection matrix and so no
+    // denominator to approximate, and it is refused before the design is
+    // built or anything is read.
+    if input.use_grammar_gamma_approx && input.kinship.is_none() {
+        return Err(Error::GwasGrammarGammaWithoutAKinship);
     }
     if let Some(kinship) = input.kinship {
         refuse_a_kinship_that_is_not_of_the_individuals(kinship, input.individuals.len())?;
@@ -208,17 +232,27 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
             None => return Err(Error::GwasModelNotBuilt { model }),
         },
     };
-    let mut result = Gwas::of_the_null_model(
-        fitted.null_model(test),
-        GrammarGammaApprox::NotUsed,
-        ChromTable::new(),
-    );
+    let mut dosages = GwasDosages::of_a_study();
+    let approximation = match input.use_grammar_gamma_approx {
+        false => GrammarGammaApprox::NotUsed,
+        true => {
+            the_factor_of_the_approximation(
+                &mut fitted,
+                gamma_pass,
+                &design,
+                ploidy,
+                &mut dosages,
+            )?;
+            GrammarGammaApprox::Used
+        }
+    };
+    let mut result =
+        Gwas::of_the_null_model(fitted.null_model(test), approximation, ChromTable::new());
     // The genotypes and the three columns of the result are what this
     // reads, so a reader over a file leaves the other columns of a variant
     // unparsed.
     reader.set_needs(Needs::GTS | Needs::CHROM_POS | Needs::ID);
     let mut blocks = Reblock::new(reader, None)?;
-    let mut dosages = GwasDosages::of_a_study();
     let mut first_var = 0_usize;
     while let Some(mut block) = blocks.next_block()? {
         dosages.read_the_block(&mut block, &design, BlockOfThePass { ploidy, first_var })?;
@@ -245,6 +279,62 @@ pub fn calc_gwas<R1: BlockReader, R2: BlockReader>(
         });
     }
     Ok(result)
+}
+
+/// Reads the first block of the second pass and estimates the factor of
+/// the GRAMMAR-Gamma approximation from it, so that every variant the pass
+/// that follows tests takes the approximate denominator.
+///
+/// `gamma_pass` reads the same variants as the pass that tests them, and
+/// only its first block is read. It is asked for the genotypes alone,
+/// where the pass that tests the variants also asks for the chromosome,
+/// the position and the id, and [`Reblock`] goes in front of it for the
+/// same reason: a filter leaves blocks of uneven size, and which variants
+/// the factor comes from would otherwise depend on what the source gave.
+/// `ploidy` is the ploidy of that other pass, so a second pass over
+/// another dataset is refused rather than read at a width of its own.
+///
+/// `dosages` is the buffer the pass that follows reads its blocks into,
+/// which is used here so that the second pass asks the machine for nothing
+/// the first one will not use again.
+///
+/// # Errors
+///
+/// [`Error::GwasGrammarGammaWithoutASecondPass`] when `gamma_pass` is
+/// `None`, and [`Error::PassGaveNoVariant`] when it gives no block, with
+/// what each of its filters was given and kept. What
+/// [`GwasDosages::read_the_block`] refuses of that block, which is where a
+/// second pass over other individuals or another ploidy is refused, and
+/// what the model's own estimate of the factor refuses of the variants
+/// that vary in it.
+fn the_factor_of_the_approximation<R: BlockReader>(
+    fitted: &mut TheFittedModel,
+    gamma_pass: Option<&mut R>,
+    design: &Design<'_>,
+    ploidy: usize,
+    dosages: &mut GwasDosages,
+) -> Result<()> {
+    let Some(gamma_pass) = gamma_pass else {
+        return Err(Error::GwasGrammarGammaWithoutASecondPass);
+    };
+    gamma_pass.set_needs(Needs::GTS);
+    let mut blocks = Reblock::new(gamma_pass, None)?;
+    let Some(mut block) = blocks.next_block()? else {
+        let filters = blocks.filtering_stats();
+        return Err(Error::PassGaveNoVariant {
+            num_vars_of_the_source: filters.last().map_or(0, |(_, stats)| stats.vars_processed),
+            filters,
+        });
+    };
+    dosages.read_the_block(
+        &mut block,
+        design,
+        BlockOfThePass {
+            ploidy,
+            first_var: 0,
+        },
+    )?;
+    fitted.approximate_the_denominator(dosages)
 }
 
 /// Adds the chromosome, the position and the id of the variants of a block

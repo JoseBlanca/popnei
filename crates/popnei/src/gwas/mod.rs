@@ -70,9 +70,18 @@
 //! once, for the projection matrix, which is what its score test takes
 //! every variant through. `the_share_that_is_nothing` is here and not in a
 //! model because every model reads it.
+//!
+//! `grammar_gamma` is the one thing the two mixed models share and no
+//! other model has: the GRAMMAR-Gamma approximation, which replaces the
+//! denominator of a variant's test, a product of the variant with an
+//! individuals by individuals matrix, with one factor times the squared
+//! length of the variant's centered dosages. The factor is estimated once,
+//! from the first block of a second pass over the same variants that
+//! [`calc_gwas`] is given beside the pass that tests them.
 
 mod distributions;
 mod dosages;
+mod grammar_gamma;
 mod linear;
 mod linear_mixed;
 mod logistic;

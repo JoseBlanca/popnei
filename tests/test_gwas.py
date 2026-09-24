@@ -964,18 +964,21 @@ def test_the_approximation_of_a_study_with_no_kinship_is_refused(
         _the_worked_example(worked_example, use_grammar_gamma_approx=True)
 
 
-def test_the_approximation_of_a_study_with_a_kinship_is_being_written() -> None:
-    """A mixed model that asks for the approximation is refused, and is not
-    given the exact test in silence.
+def test_the_approximation_of_a_study_with_a_kinship_has_no_second_pass_yet() -> None:
+    """A mixed model that asks for the approximation is refused while this
+    layer opens no second pass, and is not given the exact test in silence.
 
-    The approximation is the plan `gwas-logistic`, being one item over both
-    mixed models. A study that made the exact test of every variant and
-    reported that it had approximated nothing would give the user no way to
-    tell that what they asked for did not happen.
+    The core estimates the factor of the approximation from the first block
+    of a second pass over the same variants, which it takes as an argument,
+    and this layer passes none: that is task 3.2 of
+    `docs/plans/gwas-logistic.md`, which also takes this test away. A study
+    that made the exact test of every variant and reported that it had
+    approximated nothing would give the user no way to tell that what they
+    asked for did not happen.
     """
     phenotypes = _phenotypes()
 
-    with pytest.raises(ValueError, match="approximation is being written"):
+    with pytest.raises(ValueError, match="none was given"):
         calc_gwas(
             open_vcf(PANEL),
             phenotypes["cont"],

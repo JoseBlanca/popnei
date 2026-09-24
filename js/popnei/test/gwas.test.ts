@@ -1332,7 +1332,11 @@ test("a tested individual the kinship has not is refused by name", () => {
   );
 });
 
-test("the grammar gamma approximation of a mixed model is being written", () => {
+test("the grammar gamma approximation of a mixed model has no second pass yet", () => {
+  // The core estimates the factor of the approximation from the first block
+  // of a second pass over the same variants, which it takes as an argument,
+  // and this package passes none: that is task 3.2 of
+  // `docs/plans/gwas-logistic.md`, which also takes this test away.
   assert.throws(
     () =>
       gwasOf(PANEL_VCF, {
@@ -1341,7 +1345,7 @@ test("the grammar gamma approximation of a mixed model is being written", () => 
         kinship: PANEL_KINSHIP,
         useGrammarGammaApprox: true,
       }),
-    { message: /GRAMMAR-Gamma approximation is being written/ },
+    { message: /second pass over the same variants, and none was given/ },
   );
 });
 
