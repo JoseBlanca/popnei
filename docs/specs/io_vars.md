@@ -373,7 +373,12 @@ the genotypes alone and finds one column in the file it reads back, and
 `num_vars` with no `regions` in its footer. A fifth asserts what the call
 says it wrote, 4 variants for the block of `cases.vcf`, 500 for `many.vcf`
 at any size of batch and 0 for a source with no variants, and that a
-`&mut reader` writes the file that the same reader given whole writes.
+`&mut reader` writes the file that the same reader given whole writes. A
+sixth writes 5000 variants of 200 diploid individuals whose every genotype is
+`0/1`, reads them back and finds the 2000000 alleles that went in: those
+genotypes compress to 0.44 bits each, which is the case of issue 2 above, and
+the test asserts that the file is under 250000 bytes so that it keeps holding
+that case.
 
 The TypeScript test, under node, reads `cases.vcf` from a `Uint8Array` with
 `openVcf` and `onlyPassed` false, so that it gives the four variants, writes
@@ -535,31 +540,75 @@ browser tab ends the session, or an allocation of 144115188075855871 bytes,
 which ends the process and which nothing catches. What the reader checks: the
 message is one of a batch; the rows it says are the variants of its entry of
 the footer; every buffer of it lies inside the body of the batch; every buffer
-compressed with lz4 says a length that its column can hold; and no column of
-it says more values than the body holds bits. Natively, what those checks do
+compressed with lz4 says a length in bytes that its column can hold; and no
+column of it says more values than it can hold. Natively, what those checks do
 not see is held by `catch_unwind` around the call into arrow-rs, which gives
 the same error; in wasm, where a panic ends the program and unwinds nothing,
 the checks are the whole of it.
 
-What a column can hold is worked out from the schema of the file and the rows
-of the batch, walking the buffers in the order the IPC format lays them out:
-the genotypes of a batch are its rows times the individuals times the ploidy
-bytes and no more, the positions 8 bytes for each row, the qualities 4, the
-offsets of a column of texts and of a list 4 for each row and one after the
-last, and a mask of nulls a bit for each row. The texts of the three columns
+How many bytes a buffer of a column can hold is worked out from the schema of
+the file and the rows of the batch, walking the buffers in the order the IPC
+format lays them out: the genotypes of a batch are its rows times the
+individuals times the ploidy bytes and no more, the positions 8 bytes for each
+row, the qualities 4, the offsets of a column of texts and of a list 4 for each
+row and one after the last, and a mask of nulls a bit for each row rounded up
+to a whole byte, which is what arrow-rs writes. The texts of the three columns
 of texts, and the values of a list, have no such number, and neither has a
-column whose type popnei does not know, which stops the walk: what bounds
-those is what lz4 gives from the bytes the buffer holds, 255 for each byte,
-and the 2147483647 bytes that the 32 bit offsets of a column of texts
-address. The exact bound is what matters for the genotypes, which are the
-large buffer: a reviewer wrote a file of 20000 variants of 1000 diploid
-individuals in one batch, 25147258 bytes, and changed the eight bytes that
-say how long its `gts` buffer is once it is decompressed. Under wasm, on 21
-September 2026, 1000000000 and 2000000000 gave the error of a batch that
-could not be read and left the memory of the tab grown to 2066087936 bytes
-for its life, because arrow-rs had asked for what the buffer said before it
-read it; 3000000000 and 4294967295 ended the tab with a trap, which is what
-wasm does with an allocation it cannot address.
+column whose type popnei does not know, which stops the walk: what bounds those
+is what lz4 gives from the bytes the buffer holds, 255 for each byte, and the
+2147483647 bytes that the 32 bit offsets of a column of texts address. The
+exact bound is what matters for the genotypes, which are the large buffer: a
+reviewer wrote a file of 20000 variants of 1000 diploid individuals in one
+batch, 25147258 bytes, and changed the eight bytes that say how long its `gts`
+buffer is once it is decompressed. Under wasm, on 21 September 2026, 1000000000
+and 2000000000 gave the error of a batch that could not be read and left the
+memory of the tab grown to 2066087936 bytes for its life, because arrow-rs had
+asked for what the buffer said before it read it; 3000000000 and 4294967295
+ended the tab with a trap, which is what wasm does with an allocation it cannot
+address.
+
+How many values a column can hold comes from the same schema and the same rows.
+It is a second check and not the first one again: a buffer of the message says
+how many bytes it holds once it is decompressed, and a field node of the same
+message says how many values its column holds, and arrow-rs reads both. For the
+genotypes the two numbers are the same, the rows times the individuals times
+the ploidy, because an allele is one byte. The walk is over the columns in the
+order the IPC format lays them out, a column inside a column after the one that
+holds it: every column of the batch holds its rows, the alleles of the
+genotypes that number, and the alleles of a variant, which are the values of a
+list, as many as the offsets of that list say, at most the 2147483647 that 32
+bit offsets address, the same number as the bytes above and from the same
+offsets. The values of a large list are the one thing the schema does not
+bound at all, since its offsets are 64 bits.
+
+A second bound holds every column, and it is the smaller of the two that a node
+is held to: the body of the batch. A value takes a bit at the very least once
+the batch is decompressed, and an lz4 frame gives at most 255 bytes for each
+byte it holds, so a body of 110080 bytes holds 224563200 values and no more.
+For every column of a file popnei writes it is looser than the schema's by a
+factor of eight or more, and it is the only bound a column whose type popnei
+does not walk has, and every column after it: popnei cannot say how many field
+nodes such a column takes, so it cannot say which column the nodes after it
+belong to.
+
+The schema alone is not enough, because the rows a column is bounded by are
+what the batch and its entry of the footer say, and no byte of the file bounds
+those. A file whose first column is a dictionary, which pyarrow writes for any
+categorical of pandas, and whose alleles of the genotypes say
+3074457345618258603 values, reaches `integer overflow computing expected number
+of expected values in FixedListSize` inside arrow-rs, an `expect` that panics
+in a release build too. The code review of 24 September 2026 found that with
+such a file after the bits of the batch had been replaced by the schema instead
+of joined to it.
+
+Until 24 September 2026 the body was the only bound, and it counted the bits of
+the batch as it lies on disk, where it is compressed, against values that are
+counted once it is decompressed. So popnei refused the file it had just written
+when its genotypes repeated: 5000 variants of 200 diploid individuals whose
+every genotype is `0/1` are 2000000 alleles in a batch of 110080 bytes, 0.44
+bits for each allele. That is issue 2 of the repository. What the 255 bytes an
+lz4 frame gives for a byte do is put the two sides of that comparison in the
+same state.
 
 Two individuals with the same name are an error, as they are for the VCF
 reader.
@@ -630,8 +679,14 @@ message holds `2.0`; a `gts` width of 7 with 3 individuals and a `ploidy` of
 2; a file with no `gts` column; a file whose `individuals` name nobody and
 whose `gts` holds no allele; a `pos` column of `Int32`; a null position; a
 quality that is a NaN and one that is an infinity, both with the variant; a
-file with two batches and one entry in `popnei_batches`; bytes that are not an
-arrow file; and
+file with two batches and one entry in `popnei_batches`; a message whose
+column of the alleles of the genotypes says 25 values where the 4 variants of
+3 diploid individuals of the batch hold 24, which is the bound on the values a
+column says it holds at its edge; a file whose first column is a dictionary,
+which stops the walk of the schema, and whose alleles of the genotypes say
+3074457345618258603 values, which the body of the batch refuses and which
+never reaches arrow-rs;
+bytes that are not an arrow file; and
 `tests/reference/vars/zstd.vars`, a vars file of the four variants of
 `cases.vcf` compressed with zstd, which `tests/reference/vars/make_reference.py`
 writes with pyarrow since popnei cannot, which opens and gives the error
@@ -651,11 +706,22 @@ to each of the 255 other values is a test that is run by hand, as
 `docs/specs/io_vcf.md` has one for `cases.vcf.gz`. A file that is read with no
 error and holds other variants is counted and is not a failure: a byte of a
 compressed buffer that decompresses into other genotypes is what a checksum of
-the format would catch, and the format has none. On 21 September 2026, with
-arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 550055
-gave an error, 726033 were read as the whole file, 23902 were read as another
-file with no error, 2783 reached a panic inside arrow-rs that `catch_unwind`
-held, and none ended the process.
+the format would catch, and the format has none. On 24 September 2026, with
+arrow-rs 60, the sweep over the 255 values made 1299990 files, of which 553104
+gave an error, 726033 were read as the whole file, 20853 were read as another
+file with no error, 1939 reached a panic inside arrow-rs that `catch_unwind`
+held, and none ended the process. The panics were 2783 while a column of a
+batch was bounded by the bits of that batch: a column holds its rows, which is
+far below that, so 844 more of these files are refused before arrow-rs reads
+them.
+
+A cargo test walks a schema of the types popnei's writer never makes and its
+own tests otherwise never reach, a struct, a large list, a map and a
+dictionary, and asserts one bound for each field node the IPC format lays out,
+in its order: the columns of a struct hold the rows of the struct, the values
+of a large list are not bounded, those of a map are bounded by its 32 bit
+offsets, and the list ends at the dictionary, which is what leaves the columns
+after it to the body of the batch.
 
 The TypeScript test is the round trip under node of "The writer".
 
