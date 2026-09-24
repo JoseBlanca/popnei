@@ -1070,7 +1070,8 @@ the linearization settles in 26 rounds with a smallest weight of 3.3e-24,
 at 1e12 a weight reaches 0 and the fit is refused at its round 26, and the
 smallest pivot is 0.197 of the largest at GMMAT's `tau` of 1.508057, 0.195
 on the panel with genotypes missing at that same `tau` and 0.0709 at 1e10,
-against a threshold of 4.44e-14. What the refusal is for is the error a user gets: without it
+against a threshold of 4.44e-14. What the refusal is for is the error a user
+gets: without it
 the linear algebra crate refuses a matrix that is not finite, naming a
 matrix the user never saw, which is a `RuntimeError` in Python and so a
 defect of popnei, for the data.
@@ -1740,7 +1741,8 @@ whether the pivot does fall that far in this case, and that is what the
 meanwhile is for: the implementer builds it and measures it on both
 reference panels, and because it can only take answers away, a rule that
 takes away a variant either panel answers today stops there and is reported
-rather than moving a literal. It has since been built and measured, on 24 September 2026, and its
+rather than moving a literal. It has since been built and measured, on 24
+September 2026, and its
 condition held: on both panels and both backends no variant that was
 answered loses its answer and none gains one, the smallest pivot of an
 answered fit being 2.600e-2 of the largest on `panel_called` and 4.730e-5 on
