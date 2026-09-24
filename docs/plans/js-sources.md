@@ -103,7 +103,7 @@ source instead.
 
 Tasks:
 
-- [ ] 1.1 `numPassesOf`: the `Consumer` enum and its `num_passes` in
+- [x] 1.1 `numPassesOf`: the `Consumer` enum and its `num_passes` in
       `crates/popnei-js/src/`, the function wasm-bindgen exports, and
       `numPassesOf` in `js/popnei/src/`, exported from both entry points,
       which checks its name and its options as the spec says. From "How many
