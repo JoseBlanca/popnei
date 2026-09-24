@@ -156,6 +156,11 @@ pub fn fit_ld_decay(
         // would return for it, and no pair at all is that case.
         return Ok(LdDecay::of_no_curve());
     }
+    // The n of the model, which a pass takes from the individuals a
+    // population was built over. `as f64` is exact below 2^53, which the
+    // `coding` skill says of every count of popnei: the dosages of a
+    // population hold a byte for each of its individuals at every variant,
+    // so 9·10¹⁵ individuals is memory no machine has.
     let individuals = num_individuals as f64;
     let Some(rho_per_bp) = the_rho_per_bp_of_the_smallest(dists, num_pairs, sum_r2, individuals)
     else {
@@ -242,6 +247,13 @@ fn the_sum_to_make_smallest(
 ) -> f64 {
     let mut total = 0.0;
     for ((dist, pairs), sum) in dists.iter().zip(num_pairs).zip(sum_r2) {
+        // `as f64` is exact below 2^53, which the pairs of a distance are,
+        // being a count. The distance is not a count and a caller with a
+        // table of its own can write one above 2^53, 9·10¹⁵ base pairs,
+        // where the largest genome is 1.5·10¹¹: the `f64` nearest such a
+        // distance is within 1.1·10⁻¹⁶ of it, and the fit tells two ρ per
+        // base pair apart down to 10⁻⁹ of a decade, so what the rounding
+        // moves is below what the search resolves.
         let curve = the_curve_at(*dist as f64 * rho_per_bp, num_individuals);
         let mean = *sum / *pairs as f64;
         let apart = mean - curve;
