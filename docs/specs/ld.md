@@ -747,21 +747,40 @@ One pass. The calculation asks its reader for the genotypes and for the
 chromosome and the position.
 
 It holds the blocks whose variants are within `max_dist` of the newest
-variant read and on its chromosome, and drops a block as soon as every
-variant of it is further back than that or on another chromosome. For
-each population it holds the three matrices of "How it runs" of the item
+variant read and on its chromosome. A block every variant of which is
+further back than that or on another chromosome is dropped one block
+later, when the block after the one that put it out of reach is taken:
+the pairs of a block are counted against the window as it stood when that
+block arrived, and a variant within `max_dist` of the first variant of a
+block can be further than that from the last variant of the same block,
+which is what the window reaches back from. Dropping it as soon as it is
+out of reach leaves those pairs uncounted, and how many of them there are
+depends on the size of the blocks. What the deferral costs is the memory
+of the blocks that fell out, held for one step of the pass. For each
+population it holds the three matrices of "How it runs" of the item
 above, built over the individuals of that population and over the
 variants of the held blocks that passed the major allele frequency of
 that population.
 
-The pairs of the window are computed in tiles, as the matrix of the item
-above is, six products a tile pair and four on the diagonal, and each
-tile pair gives the count, the sum of r² and the sum of the squares of r²
-of each bin it touched. The tiles are cut at fixed multiples of the tile
-size counted from the first variant of the pass, so they do not move with
-the blocks, and the sums of the bins are added up in the order of the
-tiles. So the result is the same, to the bit, whatever the size of the
-blocks and the number of threads, and the calculation needs no `reblock`
+Every pair is counted at the step of the newer of its two variants. The
+pairs of that step are computed in tiles, as the matrix of the item above
+is, six products a tile pair and four on the diagonal, and the tiles are
+cut at fixed multiples of the tile size counted from the first variant
+that population kept in the pass, so they do not move with the blocks.
+The r² of one tile of the newest variants against every variant that can
+pair with them is taken first, tile pair by tile pair, and the count, the
+sum of r² and the sum of the squares of r² of each bin are then added up
+one newest variant at a time, the variants that pair with it in the order
+of the pass.
+
+The bins are added up in the order of the variants and not in the order
+of the tile pairs because a block can end inside a tile: a tile whose
+newest variants two blocks gave would add its pairs to a bin in two goes
+where one block would add them in one, and a sum of floats moves in its
+last bits when the order of its terms does. The order of the variants is
+the order of the source, which no block and no tile cuts. So the result
+is the same, to the bit, whatever the size of the blocks, the size of the
+tiles and the number of threads, and the calculation needs no `reblock`
 before it, the reader of `docs/specs/block.md` that cuts and joins blocks
 to one size.
 
@@ -783,9 +802,9 @@ and refused rather than taken, as the matrix of the item above is. It is
 16 MB for each population and no more is shared between them, so twenty
 populations at those defaults ask for 320 MB before the first block is
 read. A pair
-is added to its distance in the same step of the tile that adds it to its
-bin, so the tiles fix the order of both sums and the fit is the same to
-the bit whatever the size of the blocks and the number of threads.
+is added to its distance in the same step that adds it to its bin, so the
+order of the variants fixes both sums and the fit is the same to the bit
+whatever the size of the blocks and the number of threads.
 
 The fit itself runs when the pass has ended and reads nothing but those
 two arrays, over the distances that hold a pair and not over the whole
