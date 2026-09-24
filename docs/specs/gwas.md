@@ -835,8 +835,11 @@ chi square with one degree of freedom of `(beta / se)²`.
 
 A variant whose Wald fit runs away gets NaN for all three. Three things mark
 it, and popnei reproduces all three: a step that is not finite, which
-includes the system the factorization refuses as singular; a coefficient
-whose absolute value passes 30; and a fit still moving after 50 steps.
+includes the system the factorization refuses as singular; the variant's
+own effect passing 30 in absolute value, which is the last coefficient of
+the fit and the only one `_wald_test` of `pynei/gwas.py` reads, so a
+covariate whose effect is larger than that does not mark anything; and a
+fit still moving after 50 steps.
 
 The first of the three is tested as **not finite** and not as an infinity,
 which is what keeps the two backends of `docs/specs/linalg.md` giving the
