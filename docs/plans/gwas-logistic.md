@@ -140,7 +140,7 @@ The plans `gwas-linear` and `kinship`, merged.
       running away loses its p-value in silence, and deliverable 3 is what
       guards it. Built from the same section. Serves deliverables 2 and 3.
       Needs 1.1.
-- [ ] 1.3 The binomial trait through both bindings and both packages: the
+- [x] 1.3 The binomial trait through both bindings and both packages: the
       `trait` argument reaching the two new models, the error that
       `gwas-linear` left for a binomial trait now gone, and the pytest and
       node tests. Built from "Its Python function, and its TypeScript one"

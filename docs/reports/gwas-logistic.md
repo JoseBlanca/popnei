@@ -285,6 +285,40 @@ red. It now asks for the logistic mixed model, a binomial trait with a
 kinship, which the same message refuses. Two lines of the list and one call
 in each suite; nothing of the bindings or the packages moved.
 
+### Task 1.3, the trait through the bindings and the packages
+
+The core and both binding crates already carried the trait end to end, so
+no model code was needed above the core. What changed:
+`crates/popnei-python/src/errors.rs` now lists `GwasFitDidNotSettle` by name
+instead of letting it reach the wildcard arm, where it arrived with the VCF
+path glued to its message; the prose saying the logistic model was being
+written is gone from both packages and from the `# Errors` comments of the
+wasm binding; `tests/reference/gwas/refusals_of_both_layers.json` gains two
+cases, written into both suites. The pytest suite goes from 499 to 506 and
+the node one from 325 to 328.
+
+### The four deliverables of work package 1
+
+Each was run by the orchestrator, and the worst of each comparison was
+measured again from a script of its own rather than read out of the task's
+report. All of them on 24 September 2026, on Accelerate and on faer alike.
+
+| what | command | worst | allowed |
+|---|---|---|---|
+| 1, the score test is R's | `uv run pytest tests/test_gwas.py -k the_score_test_of_every_variant` | statistic 1.589e-3, p 3.749e-4 in `log10` | 1e-2, 1e-3 |
+| 2, the Wald test is plink2's | `uv run pytest tests/test_gwas.py -k the_wald_test_of_every_variant` | `beta` 2.103e-5 of the `se`, `se` 1.334e-4 of it, p 1.924e-3 relative | 1e-4, 5e-4, 5e-3 |
+| 3, the runaway variant is plink2's | `uv run pytest tests/test_gwas.py -k the_variants_with_no_answer` | the variants with a NaN p-value are `var0006`, and plink2's `FIRTH?` `Y` rows are `var0006` | the two sets equal |
+| 4, popnei and pyNei agree | `uv run pytest tests/test_gwas.py -k every_variant_of_a_logistic_panel` and `npm test` | 1.105e-14 over both panels and both tests; the six node literals at 2.688e-6, 5.301e-5 and 1.878e-4 | 1e-12; 1e-5, 1e-4, 5e-3 |
+
+The node numbers are the same three the cargo test measures natively, so
+none of what they carry is WebAssembly's rounding.
+
+Deliverable 4 has more room than the spec expects. The spec puts this
+model's bound near 1e-12 from the core's Wald test alone, which sits at
+3.06e-15; through Python over both panels and both tests the worst is
+1.105e-14, so 1e-12 is 90 times the worst and not 300 times. The bound is
+right and the sentence that explains it is now out by that much.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
