@@ -2355,10 +2355,10 @@ impl Error {
     /// let every other one fall through a wildcard arm, and twice an error
     /// of the association study arrived with the path of the VCF glued in
     /// front of a message about the user's own arguments, each time costing
-    /// a day to find: `GwasGrammarGammaNotBuilt`, which was there until 24
-    /// September 2026, and `GwasFitDidNotSettle`, which was there until 26
-    /// September. A case added to the enum now does not compile until
-    /// somebody has said which of the two it is.
+    /// a day to find: `GwasGrammarGammaNotBuilt` and `GwasFitDidNotSettle`,
+    /// both of which were there until 24 September 2026. A case added to
+    /// the enum now does not compile until somebody has said which of the
+    /// two it is.
     #[must_use]
     pub fn names_the_file(&self) -> bool {
         match *self {

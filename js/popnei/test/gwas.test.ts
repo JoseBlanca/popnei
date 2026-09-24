@@ -408,16 +408,28 @@ const OF_GMMAT_VARIANCE = 1e-5;
 const OF_GMMAT_P_VALUE = 1e-4;
 
 /**
- * How far each of the two variances of the null model may be from GMMAT's
- * `glmmkin`: 1e-5 absolute, which is the spec's and is how far two
- * restricted maximum likelihood searches land apart.
+ * How far a number of a null model fitted over a kinship may be from
+ * GMMAT's `glmmkin`: 1e-5 absolute, which is the spec's and is how far two
+ * searches for the variance land apart, the restricted maximum likelihood
+ * one of the linear mixed model and the penalized quasi-likelihood one of
+ * the logistic mixed model.
  *
- * Measured under node on 24 September 2026, the worst of the three numbers
- * this test holds to it is the genetic variance, 1.273e-6 from GMMAT's,
- * which is 13 per cent of what is allowed; the cargo test measures 1.218e-6
- * on faer natively. Where that 1.2e-6 comes from is the kinship and not the
- * search: GMMAT was given the six printed digits of plink2's matrix and
- * this suite reads the float64 beside them.
+ * Four numbers of the two models are held to it, all of them fitted over
+ * the panel with every genotype called, which is the only panel this suite
+ * studies. Measured under node on 24 September 2026, the worst is the
+ * logistic mixed model's variance of the kinship effect, 6.033e-6 from
+ * GMMAT's and 60 per cent of what is allowed, which pytest measures at the
+ * same 6.033e-6 natively on both backends. The linear mixed model's three
+ * are nearer: its genetic variance is 1.273e-6 away, 13 per cent of what is
+ * allowed, where the cargo test measures 1.218e-6 on faer natively, its
+ * residual variance 1.073e-6 and its heritability 7.138e-7.
+ *
+ * The two models are that far away for different reasons. The logistic
+ * model's 6.0e-6 is the two programs and not the route popnei takes:
+ * `docs/reports/glmm-method/README.md` measured pyNei's fit and the cheaper
+ * one alike at 6.3e-6 of GMMAT's variance. The linear model's 1.2e-6 is the
+ * kinship and not the search: GMMAT was given the six printed digits of
+ * plink2's matrix and this suite reads the float64 beside them.
  */
 const OF_GMMAT_NULL_MODEL = 1e-5;
 

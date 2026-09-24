@@ -1751,6 +1751,12 @@ mod glmm {
     /// `panel_called` on 24 September 2026, where 1e10 still settles.
     const A_VARIANCE_THAT_COLLAPSES_THE_WEIGHTS: f64 = 1.0e12;
 
+    /// The round the linearization held at
+    /// [`A_VARIANCE_THAT_COLLAPSES_THE_WEIGHTS`] is refused at: 26, which
+    /// "The logistic mixed model" of `docs/specs/gwas.md` gives, measured
+    /// on `panel_called` on 24 September 2026 on both backends.
+    const THE_ROUND_THE_WEIGHTS_COLLAPSE_AT: usize = 26;
+
     /// A variance large enough that the kinship's own smallest eigenvalue,
     /// -3.4e-15 on `panel_called`, takes the covariance of the working
     /// trait below 0: 1e16.
@@ -2045,7 +2051,10 @@ mod glmm {
                     crate::gwas::GwasModel::Glmm,
                     "the model the refusal names"
                 );
-                assert!(rounds > 0, "the rounds the refusal names, {rounds}");
+                assert_eq!(
+                    rounds, THE_ROUND_THE_WEIGHTS_COLLAPSE_AT,
+                    "the round the refusal names"
+                );
             }
             other => panic!("the linearization at a variance of 1e12 gave {other:?}"),
         }
