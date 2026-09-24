@@ -48,7 +48,8 @@ pub struct NullModel {
     /// Which test is made of every variant.
     pub test: TestType,
     /// One per column of the design: the intercept first and then one for
-    /// each covariate.
+    /// each covariate, in the units of the trait for a continuous one and
+    /// as a log odds ratio for a binomial one.
     pub covariate_effects: Vec<f64>,
     /// What the model left unexplained, and `None` for a binomial trait,
     /// whose variance is decided by its mean.

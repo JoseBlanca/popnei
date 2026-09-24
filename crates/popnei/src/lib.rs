@@ -40,8 +40,9 @@
 //! association study takes as the covariance of its random effect; and
 //! `gwas` tests every variant against a trait of the individuals, giving
 //! the effect of each variant on the trait, the uncertainty of that effect
-//! and its p-value, of which the two models of a continuous trait are
-//! written so far, the linear one and the linear mixed one. The
+//! and its p-value, of which three of the four models are written, the
+//! linear one and the linear mixed one of a continuous trait and the
+//! logistic one of a binomial trait with no kinship. The
 //! modules that follow them are being written, and `docs/architecture.md`
 //! has their order.
 //!

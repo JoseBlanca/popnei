@@ -11,8 +11,8 @@
 //! of them. Of the four models three are written: the linear one and the
 //! linear mixed one, which are a continuous trait without and with a
 //! kinship, and the logistic one, which is a binomial
-//! trait without one. The logistic
-//! mixed model are refused until they are written.
+//! trait without one. The logistic mixed model is refused until it is
+//! written.
 //!
 //! `distributions` holds the two functions that turn the statistic of a
 //! test into a p-value, which every model of the module ends in, and

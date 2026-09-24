@@ -32,7 +32,11 @@ use super::study::{
 /// written.
 #[expect(
     clippy::large_enum_variant,
-    reason = "the logistic model carries the buffers its Wald test fits one variant in,               which make it about 300 bytes larger than the other two; one of these is               made for a study and lives until its pass is over, so that is 300 bytes               once, where boxing it would put an allocation and a dereference between               every block and the model it is tested against"
+    reason = "the logistic model carries the buffers its Wald test fits one variant in, \
+              which make it about 300 bytes larger than the other two; one of these is \
+              made for a study and lives until its pass is over, so that is 300 bytes \
+              once, where boxing it would put an allocation and a dereference between \
+              every block and the model it is tested against"
 )]
 enum TheFittedModel {
     /// The linear model, a continuous trait with no kinship.

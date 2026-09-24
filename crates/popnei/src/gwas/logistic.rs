@@ -75,9 +75,16 @@ const OF_THE_FIRST_INTERCEPT: f64 = 1e-6;
 /// Cholesky factorization of `d' w d`, the design weighted by the weights
 /// and taken against itself. The score test of a variant needs nothing
 /// else, so no matrix is factored and nothing is inverted per variant. The
-/// buffers of a block are kept from one block to the next, so a pass over
-/// a million variants asks the machine for them once and allocates nothing
-/// for a variant.
+/// buffers of a block are kept from one block to the next, so this module
+/// asks the machine for them once a pass and for none of them per variant.
+/// What a pass still allocates per variant is under it, in the linear
+/// algebra crate, and only on one of the two backends: on faer, which is
+/// what a browser runs, `cholesky_lower` and `solve_with_cholesky` take a
+/// scratch buffer on every call, and on BLAS and LAPACK neither does.
+/// Counted on 24 September 2026 over one pass of 2000 variants with the
+/// Wald test, the whole pass makes 87463 allocations on faer against 9447
+/// on BLAS, so the 78016 that separate them are about 39 per variant and
+/// all of them are in `crates/popnei-linalg/src/faer.rs`.
 pub(crate) struct LogisticModel {
     /// The effect of the intercept and of each covariate, one per column
     /// of the design, as a log odds ratio.
@@ -182,7 +189,9 @@ impl LogisticModel {
         // already in memory.
         #[expect(
             clippy::arithmetic_side_effects,
-            reason = "the design holds `num_individuals` times `num_coefs` values and                       `num_individuals` is `num_coefs` plus 2 at least, so this product                       is smaller than the length of the design and fits in a `usize`"
+            reason = "the design holds `num_individuals` times `num_coefs` values and \
+                      `num_individuals` is `num_coefs` plus 2 at least, so this product is \
+                      smaller than the length of the design and fits in a `usize`"
         )]
         let of_the_coefficients = num_coefs * num_coefs;
         let mut fitted = LogisticModel {
@@ -461,9 +470,11 @@ impl LogisticModel {
     /// the null and an effect of 0 for the variant.
     /// [`TheFitOfOneVariant`] is what makes each of them, in buffers that
     /// were made with the model of a study that asked for this test, so
-    /// this crate allocates nothing for a variant. A variant whose fit
-    /// runs away gets the three NaNs of one that has no answer and the
-    /// pass goes on.
+    /// this module allocates nothing for a variant; what the linear
+    /// algebra crate allocates under it is on the doc comment of
+    /// [`LogisticModel`], and on faer it is about 39 allocations per
+    /// variant. A variant whose fit runs away gets the three NaNs of one
+    /// that has no answer and the pass goes on.
     ///
     /// # Errors
     ///
@@ -869,7 +880,8 @@ impl TheFitOfOneVariant {
     /// others were still moving has the system of its own last
     /// coefficients there too; measured on 24 September 2026 over the 1199
     /// variants of the panel that both libraries answer, the two standard
-    /// errors are within 3.2e-15 of each other as a share of themselves.
+    /// errors are within 3.369e-15 of each other as a share of themselves,
+    /// the worst being the 3.368e-15 of `var1151`.
     ///
     /// # Errors
     ///
@@ -1496,9 +1508,9 @@ mod glm {
     /// runs the 50 rounds and is still moving, at -299.6 and 84.0. popnei
     /// solves with a Cholesky, which refuses the weighted design once the
     /// fitted chances have reached 0 and 1, and that comes first: measured
-    /// on 24 September 2026, at the round 45 on Accelerate and on faer
-    /// alike. The test asserts the rounds are between 1 and the 50 the fit
-    /// is given and not that they are 45, since which round the weights
+    /// on 24 September 2026, at the round 45 on Accelerate and at the round
+    /// 43 on faer. The test asserts the rounds are between 1 and the 50 the
+    /// fit is given and not that they are 45, since which round the weights
     /// underflow at is the last bits of an exponential and a platform may
     /// put it elsewhere; what the fixture guards is that such a study is
     /// refused and not answered.
