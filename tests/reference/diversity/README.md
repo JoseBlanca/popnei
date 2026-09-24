@@ -44,7 +44,15 @@ panel falls below either of those two numbers at any variant.
 
 Each script compares what it got with the literals of the tables of
 `docs/specs/diversity.md` and stops at the first one that differs, so the
-files here hold the numbers of the spec or the script fails.
+files here hold the numbers of the spec or the script fails. The two that
+read the panel refuse it rather than reading it wrongly: a missing
+`#CHROM` line, a `FORMAT` that is not `GT` alone, a call that is not a pair
+of alleles, a half called genotype, a variant of more than two alleles, a
+populations file that does not name exactly the individuals of the VCF, or
+a version of a reference program other than the one named below.
+`make_reference.py` writes each of its two files under a `.new` name and
+renames it over the stored one, so a run that fails half way leaves what
+was stored as it was.
 
 ## make_reference.R: adegenet, poppr and vegan
 
@@ -192,32 +200,42 @@ an assumption. Where two populations do share an individual the assumption is
 false and an enumeration over allele counts is as wrong as the formula.
 
 `enumerate_private.tsv` holds 23 pairs of a case and a population, one
-line each, over ten cases. A case is one variant and not a dataset: it
+line each, over eleven cases. A case is one variant and not a dataset: it
 gives what every population called at that variant, and the value of a
 pair is the per variant value that popnei averages over the variants of a
 population. Eighteen of the pairs are the ones "How it is verified" of
 "The private alleles" of the spec lists: the three variants of the worked
 example that have a draw of 4, and five cases made up for the check, of
-two and three populations at draws of 2 and 3. Two cases are there because
-those 18 leave parts of an implementation untested, nine of their values
-being 0 or 1 and 14 of their 18 population slots having exactly 4 called
-alleles: a single population, which gets every allele it called, and three
-populations of 3, 5 and 6 called alleles, no two alike. The tenth case is
-the shared individual below.
+two and three populations at draws of 2 and 3.
 
-The ten fields of a line are `case`, its name, which for the eighteen is
-the name the spec gives them; `enumerated_over`, which of the two
-enumerations gave the line;
+Two more cases, four pairs, are there because those 18 are a thin fixture
+for what they become, the literals of the cargo tests: seven of their
+values are exactly 0 and two exactly 1, and fourteen of their eighteen
+population slots have exactly 4 called alleles, so almost none of them
+would catch an implementation that read one population's called alleles
+for another's. One is a lone population, 3, 2 and 1 copies of 6 called at
+a draw of 3, giving 9/4: with no other population to hold them, every
+allele the draw shows is private, so the value is the standardized number
+of alleles. The other is three populations of 3, 5 and 6 called alleles,
+`2,1 | 3,1,1 | 2,2,1,1` at a draw of 2, giving 1/5, 8/25 and 49/75, where
+no population has 4 called alleles and the fourth allele is in the third
+population alone. The eleventh case is the shared individual below.
+
+The ten fields of a line, in the order the file has them, are `case`, its
+name, which for the eighteen is the name the spec gives them;
+`enumerated_over`, which of the two enumerations gave the line;
 `allele_counts`, the copies of each allele that each population called,
 the populations separated by ` | `; `num_called_alleles`, the size of the
 draw; `population`, `pop1` for the first population of `allele_counts` and
-so on; `closed_form` and `enumerated`, the two values to 17 decimal
-places, which the cargo tests of the module assert and each of which reads
-back as the float64 nearest the exact value, checked by the script and not
-assumed; `closed_form_exact` and `enumerated_exact`, those same two as
-exact rationals, `14/15` and not `0.9333333333`, for a reader checking a
-line by hand; and `difference`, `closed_form` minus `enumerated` as an
-exact rational.
+so on; `closed_form` and `closed_form_exact`, then `enumerated` and
+`enumerated_exact`, each of the two values as a decimal of 17 places and
+then as an exact rational, `14/15` and not `0.9333333333`, for a reader
+checking a line by hand; and `difference`, `closed_form` minus
+`enumerated` as an exact rational. The cargo tests of the module assert
+the decimals, and each of them reads back as the float64 nearest its exact
+value, which the script checks rather than assumes. Each decimal has its
+own exact column because on the last line the two values differ, and one
+column could no longer stand for both.
 
 One line of the file has a difference that is not 0, and it is there on
 purpose. It is the case named "the shared individual, the one pair the
@@ -229,10 +247,12 @@ difference of 1/2. That pair is enumerated over the labelled gene copies
 of the individuals rather than over allele counts, so that a copy two
 populations share is drawn by both or by neither, which is what lets it
 show the error; `enumerated_over` reads `labelled gene copies` there and
-`allele counts` on the other 22. The script refuses to write the file
-unless those 22 agree exactly and this one disagrees by exactly 1/2, so a
-difference of 1/2 on this line is the file being right and any other
-difference anywhere is the file not being written at all.
+`allele counts` on the other 22. Only `pop1` is written for that case: its
+two populations are the same individual, so a `pop2` line would repeat it.
+The script refuses to write the file unless those 22 agree exactly and this
+one disagrees by exactly 1/2, so a difference of 1/2 on this line is the
+file being right, and any other difference anywhere is the file not being
+written at all.
 
 ## What the spec checks and this directory does not hold
 
