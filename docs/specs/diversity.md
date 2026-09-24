@@ -494,7 +494,11 @@ individuals rather than over allele counts, so that two populations
 holding the one diploid individual `0/1` draw the same copies. At a draw
 of one allele it gives 0 where the closed form gives 0.5. It is the one
 pair of the file whose difference is not 0, and it is what shows that the
-overlap "The cases" warns about is real. The file names, for every pair,
+overlap "The cases" warns about is real. A draw of one allele is below the
+smallest a `calc_pop_diversity` will take, so that pair is asserted on the
+arithmetic of one variant and not through a pass; task 3.3 of
+`docs/plans/diversity.md` found that, and it is why the other 22 are
+asserted as one haploid variant each rather than as calls. The file names, for every pair,
 which of the two things it enumerated over, and it carries the exact
 rational of the closed form and of the enumeration side by side, since on
 that pair they differ.
@@ -507,12 +511,30 @@ allele counts on all 22 pairs whose populations share no individual, which
 is what says the 0 of the last pair comes from the sharing and not from a
 second way of counting.
 
-Two properties are asserted on the panel beside them: with
-`num_called_alleles` equal to the smallest `c` of the dataset the value is
-at most the standardized number of alleles of the same population, since a
-private allele is an allele; and a population compared against a copy of
-itself has 0 private alleles at every draw size, since every allele it
-draws the copy can draw too. On the panel at a draw of 20 the values are
+Two properties are asserted beside them. With `num_called_alleles` equal
+to the smallest `c` of the dataset the value is at most the standardized
+number of alleles of the same population, since a private allele is an
+allele. And a population compared against a copy of itself has 0
+standardized private alleles **when the draw takes every allele it
+called**, `num_called_alleles` equal to its `c`, since both draws are then
+the whole population and the copy holds everything the original drew.
+
+At a smaller draw it does not, and the reason is the independence the
+closed form assumes, met for the third time in this item. A copy is the
+most complete overlap there can be, the very same gene copies, and the
+formula still multiplies the chance that an allele is in one draw by the
+chance that it is in no other, so it gives a population credit for an
+allele its copy's draw happened to miss. Measured on 24 September 2026: a
+variant whose population called one allele 3 times and another once, 4
+called alleles, gives 0.25 against its own copy at a draw of 2 and 0.1875
+at a draw of 3, reaching 0 only at 4; counts of 2, 1 and 1 give
+0.6388888889, then 0.375, then 0. The totals do have the property at every
+draw size, because they ask which alleles a population called and not
+which a draw of them showed, and a copy calls everything the original
+called. This spec had the sentence without its condition until task 3.3 of
+`docs/plans/diversity.md` asserted it and found it false.
+
+On the panel at a draw of 20 the values are
 0.0112196177, 0.0099715392 and 0.0089014974, and they are literals of a
 pytest test. Unlike every other number of this spec they are not stored
 beside the reference script, because no program outside popnei computes
