@@ -24,6 +24,7 @@ from popnei.io_vcf import open_vcf
 from popnei.kinship import Kinship, calc_kinship
 from popnei.ld import (
     LdAndDistPerPop,
+    LdDecay,
     R2Matrix,
     calc_ld_and_dist_per_pop,
     calc_rogers_huff_r2_matrix,
@@ -57,6 +58,7 @@ __all__ = [
     "GWASResult",
     "Kinship",
     "LdAndDistPerPop",
+    "LdDecay",
     "NullModel",
     "PCAResult",
     "PassStats",

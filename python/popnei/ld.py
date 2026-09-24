@@ -20,8 +20,9 @@ the distance grows, and how fast it falls off is a property of the
 population: one that went through few individuals keeps linkage
 disequilibrium over longer stretches.
 :func:`calc_ld_and_dist_per_pop` gives that fall-off for each population, as
-the mean r² of the pairs of each bin of distance, and
-:class:`LdAndDistPerPop` is what it comes in.
+the mean r² of the pairs of each bin of distance and as a curve fitted to its
+pairs, :class:`LdDecay`, which carries the distance at which r² has fallen to
+half. :class:`LdAndDistPerPop` is what the two come in.
 
 `docs/specs/ld.md` has the calculation and the numbers the tests assert.
 """
@@ -183,10 +184,80 @@ def calc_rogers_huff_r2_matrix(
     return R2Matrix(r2=r2, chroms=chroms, poss=poss, pass_stats=_pass_stats_of(counts))
 
 
+@dataclass(frozen=True)
+class LdDecay:
+    """The curve of r² against distance fitted to the pairs of one
+    population, and the distance at which it has fallen to half.
+
+    The curve is the r² that two variants of a population are expected to
+    have at a given recombination between them, under drift and
+    recombination: Hill and Weir (1988), with the correction of Weir and Hill
+    (1986) for r² being measured on a sample of individuals and not on the
+    whole population, which is what holds the curve up at long distances. It
+    has one number to fit, :attr:`rho_per_bp`, and the number of individuals
+    of the population enters it as it is given.
+
+    The curve is fitted to every pair the pass counted, each at its own
+    distance, so the bins do not move it and two runs over one dataset give
+    the same three numbers.
+
+    A population whose pairs no curve was fitted to has NaN in all three, and
+    that is no error. It happens to a population whose pairs fall at fewer
+    than two distances, one distance saying nothing about a fall-off, which
+    includes a population with no pair at all and one left with two variants;
+    and to a population whose best fit falls at an end of the range of the ρ
+    per base pair that is searched, 1e-12 to 100, a curve flat across
+    `max_dist` or fallen before the second base pair being no fall-off that
+    these pairs pin down.
+
+    `docs/specs/ld.md` has the curve, what is fitted to what and the numbers
+    the tests assert.
+    """
+
+    rho_per_bp: float
+    """The fitted 4Nr: four times the effective size of the population times
+    the recombination per base pair, which is by how much ρ, the scaled
+    recombination of the curve, grows with each base pair between the two
+    variants of a pair.
+
+    The effective size and the recombination rate enter the curve only as
+    that product, and one pass over one dataset does not separate them, so
+    neither is given on its own.
+    """
+
+    r2_at_zero: float
+    """The fitted curve at a distance of 0, which is its own ceiling: two
+    variants that never recombine still do not reach an r² of 1, because
+    their allele frequencies drift apart.
+
+    How many individuals the population has fixes it on its own,
+    0.46198347107438015 at 100 of them, and no pair of the dataset moves it.
+    """
+
+    half_dist: float
+    """The distance in base pairs at which the fitted curve has fallen to
+    half of :attr:`r2_at_zero`.
+
+    What is halved is the curve at a distance of 0 and not the mean r² of the
+    shortest bin, so `num_bins` does not move this distance; `min_dist` and
+    `max_dist` do, through :attr:`rho_per_bp`, since they choose which pairs
+    the curve is fitted to.
+
+    It is NaN when the other two are, and NaN on its own for a curve that
+    never falls to half of its value at 0, which happens below three
+    individuals: what the curve falls towards as ρ grows is 1 over the
+    individuals, which is above that half at one and at two of them. No pass
+    of :func:`calc_ld_and_dist_per_pop` reaches such a population, since one
+    individual has no variant with variance and so no pair, and two give
+    every pair an r² of 1, which the three NaN above cover.
+    """
+
+
 @dataclass(frozen=True, eq=False, repr=False)
 class LdAndDistPerPop:
     """How the r² of a pair of variants falls off with the distance between
-    them, in bins of distance and for each population.
+    them, for each population: in bins of distance, and as a curve fitted to
+    its pairs with the distance at which that curve has fallen to half.
 
     ``result == other`` is true for the same object and false for any other,
     as it is for an :class:`popnei.R2Matrix`: the frames of two results are
@@ -216,6 +287,17 @@ class LdAndDistPerPop:
     It is worked out over the individuals of that population alone, so two
     populations of one pass count different variants, and a variant that no
     individual of a population has called is out of it.
+    """
+
+    decay_per_pop: dict[str, LdDecay]
+    """The curve fitted to the pairs of each population, under its name and
+    in the order of the `pops` dict that was given, as :attr:`per_pop` and
+    :attr:`num_vars_per_pop` are.
+
+    The :class:`LdDecay` of a population holds the fitted ρ per base pair,
+    the curve at a distance of 0 and the distance at which it has fallen to
+    half of that, the three of them NaN for a population whose pairs no curve
+    was fitted to.
     """
 
     pass_stats: PassStats
@@ -305,9 +387,18 @@ def calc_ld_and_dist_per_pop(
     allele, and keeping them raises the curve everywhere. Anything that is
     not a number from 0 to 1 is a ``ValueError``.
 
+    Beside the bins each population gets a curve fitted to its pairs, in its
+    `decay_per_pop`: an :class:`LdDecay` with the fitted ρ per base pair, the
+    curve at a distance of 0 and the distance at which it has fallen to half
+    of that. The curve is fitted to every pair and at the distance of each
+    pair, so `num_bins` does not move it, and a population whose pairs no
+    curve was fitted to has NaN in all three, which :class:`LdDecay` says
+    when and which is no error.
+
     What it gives is an :class:`LdAndDistPerPop` with the bins of each
     population in its `per_pop`, how many variants each of them kept in its
-    `num_vars_per_pop`, and the counts of the pass in its `pass_stats`.
+    `num_vars_per_pop`, the curve of each of them in its `decay_per_pop`, and
+    the counts of the pass in its `pass_stats`.
 
     A population in which every variant was left out, and a dataset whose
     variants are all further apart than `max_dist` or each on a chromosome of
@@ -319,6 +410,8 @@ def calc_ld_and_dist_per_pop(
     it gives the bins over every pair, where pyNei gives a sample of at most
     ``max_num_measures_to_keep`` pairs drawn with no seed, so that two runs
     over one dataset give the same numbers here and different points there;
+    it fits the curve and gives the half distance, where pyNei hands its
+    sample of pairs over and leaves the fitting to the user;
     it gives r² where pyNei gives r, and a missing genotype takes its
     individual out of that pair where pyNei leaves it in with a dosage of -1;
     the distances come as `min_dist` and then `max_dist`, where pyNei's
@@ -356,8 +449,9 @@ def calc_ld_and_dist_per_pop(
     )
     per_pop = {}
     num_vars_per_pop = {}
+    decay_per_pop = {}
     for name, bins in zip(pop_names, of_each_pop, strict=True):
-        smallest_dist, largest_dist, num_pairs, mean_r2, sd_r2, num_vars = bins
+        smallest_dist, largest_dist, num_pairs, mean_r2, sd_r2, num_vars, curve = bins
         per_pop[name] = pandas.DataFrame(
             {
                 "largest_dist": largest_dist,
@@ -368,8 +462,13 @@ def calc_ld_and_dist_per_pop(
             index=pandas.Index(smallest_dist, name="smallest_dist"),
         )
         num_vars_per_pop[name] = num_vars
+        rho_per_bp, r2_at_zero, half_dist = curve
+        decay_per_pop[name] = LdDecay(
+            rho_per_bp=rho_per_bp, r2_at_zero=r2_at_zero, half_dist=half_dist
+        )
     return LdAndDistPerPop(
         per_pop=per_pop,
         num_vars_per_pop=num_vars_per_pop,
+        decay_per_pop=decay_per_pop,
         pass_stats=_pass_stats_of(counts),
     )

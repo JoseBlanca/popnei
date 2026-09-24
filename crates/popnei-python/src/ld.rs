@@ -2,7 +2,7 @@
 //! gives the matrix of every pair with the chromosome and the position of
 //! each variant beside it, and one that gives, for each population, how the
 //! r² of a pair falls off with the distance between its two variants, in
-//! bins of distance.
+//! bins of distance and as the curve fitted to its pairs.
 //!
 //! The calculations are the core's, [`popnei::ld::calc_r2_matrix`] and
 //! [`popnei::ld::calc_ld_and_dist`], and what
@@ -16,8 +16,9 @@
 //! package builds.
 //!
 //! A pair that has no r², which "What it gives" of `docs/specs/ld.md`
-//! defines, is NaN in the core already, so nothing of that missing value is
-//! decided here. The one that is decided here is a bin with no pair, whose
+//! defines, is NaN in the core already, and so are the three values of the
+//! curve of a population that has none, so nothing of those missing values
+//! is decided here. The one that is decided here is a bin with no pair, whose
 //! mean and standard deviation the core gives as `None` and which a user
 //! reads as NaN.
 
@@ -223,10 +224,20 @@ fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
         .collect()
 }
 
+/// The curve of one population on its way to Python: the fitted ρ per base
+/// pair, the fitted curve at a distance of 0 and the distance at which it
+/// has fallen to half of that, which are [`popnei::ld::LdDecay`].
+///
+/// The three are NaN together for a population no curve was fitted to, and
+/// the core has them NaN already, so nothing of that missing value is
+/// decided here.
+type TheCurveOfAPop = (f64, f64, f64);
+
 /// The bins of one population on their way to Python: the smallest and the
 /// largest distance of each bin, both included, how many pairs it holds, the
-/// mean of their r² and its standard deviation, and how many variants the
-/// population kept at its major allele frequency.
+/// mean of their r² and its standard deviation, how many variants the
+/// population kept at its major allele frequency, and the curve fitted to
+/// its pairs.
 ///
 /// The five arrays hold one value for each bin, in the order of the
 /// distances, and the package makes the rows of a pandas frame out of them.
@@ -235,7 +246,8 @@ fn filtering_of(chain: &dyn BlockReader) -> Vec<(&'static str, u64, u64)> {
 /// [`crate::stats::of_a_result`] says why: a user subtracts the pairs of
 /// one bin from the pairs of another, or the smallest distance of a bin
 /// from the largest, and of unsigned counts they read 1.8e19 where the
-/// answer is negative.
+/// answer is negative. The three values of the curve are `f64` and cross as
+/// they are.
 type BinsOfAPop<'py> = (
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<i64>>,
@@ -243,6 +255,7 @@ type BinsOfAPop<'py> = (
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
     u64,
+    TheCurveOfAPop,
 );
 
 /// What one pass of the fall-off gives Python: the names of the populations
@@ -356,11 +369,13 @@ pub(crate) fn calc_ld_and_dist_per_pop<'py>(
 }
 
 /// The bins of one population as the five arrays and the count the package
-/// builds its frame from.
+/// builds its frame from, with the three values of the curve fitted to its
+/// pairs.
 ///
 /// A bin with no pair has a mean and a standard deviation of NaN, which is
 /// where the `None` of the core becomes the missing value that numpy and
-/// pandas hold.
+/// pandas hold. The three values of the curve are the core's as they are,
+/// NaN included.
 ///
 /// # Errors
 ///
@@ -393,6 +408,7 @@ fn the_bins_for_python<'py>(
         mean_r2.push(bins.mean_r2(bin).unwrap_or(f64::NAN));
         sd_r2.push(bins.sd_r2(bin).unwrap_or(f64::NAN));
     }
+    let curve = bins.decay();
     Ok((
         smallest_dist.into_pyarray(py),
         largest_dist.into_pyarray(py),
@@ -400,6 +416,7 @@ fn the_bins_for_python<'py>(
         mean_r2.into_pyarray(py),
         sd_r2.into_pyarray(py),
         bins.num_vars(),
+        (curve.rho_per_bp(), curve.r2_at_zero(), curve.half_dist()),
     ))
 }
 

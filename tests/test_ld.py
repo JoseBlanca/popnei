@@ -19,7 +19,11 @@ against; the five pairs of the table of "How it is verified" are asserted
 here again, through the three layers, within 1e-12 relative.
 
 The ten bins of the fall-off are the first table of that same part, of one
-population of every individual, and their r² comes from plink2 too.
+population of every individual, and their r² comes from plink2 too. The curve
+fitted to the pairs of that same population is the first row of the table of
+the curve, which R 4.6.1 fitted to those same pairs, and it is compared within
+1e-6 relative where the ρ per base pair and the half distance come out of a
+search and within 1e-12 at the r² of a distance of 0, which no search touches.
 
 The comparison the spec asks for at the matrix is with pyNei at commit
 ef0ca6e, which `pyproject.toml` names, and it has two halves, because the
@@ -47,6 +51,7 @@ from pathlib import Path
 import numpy
 import pytest
 from popnei import (
+    LdDecay,
     R2Matrix,
     _core,
     calc_ld_and_dist_per_pop,
@@ -139,6 +144,39 @@ THE_BINS_OF_EVERY_INDIVIDUAL = [
     (1481, 0.015365254218410632, 0.020746495170409326),
     (530, 0.013266303346602112, 0.017768417874071147),
 ]
+
+# The first row of the table of the curve of "How it is verified" of
+# `docs/specs/ld.md`, for the same one population of every one of the 100
+# individuals at a `max_allowed_maf` of 0.95 and over the same pairs as the
+# ten bins above: the fitted ρ per base pair, which is 4Nr, four times the
+# effective size of the population times the recombination per base pair;
+# the fitted curve at a distance of 0; and the distance in base pairs at
+# which it has fallen to half of that. R 4.6.1's `optimize` gave them on 24
+# September 2026, and `tests/reference/ld/ld.decay.txt` holds them again.
+THE_CURVE_OF_EVERY_INDIVIDUAL = (
+    0.00031727347196446889,
+    0.46198347107438015,
+    6810.5712522189806,
+)
+
+# The other two rows of that same table, of `pop_a` and `pop_b` at a
+# `max_allowed_maf` of 0.8, which are the populations of the two tables of
+# the bins. The 50 individuals of each fix the same r² at a distance of 0,
+# and the pairs of each give it its own ρ per base pair and so its own half
+# distance.
+THE_CURVES_OF_THE_TWO_POPS = {
+    "pop_a": (0.00030068285442483295, 0.46942148760330576, 7530.1038938711654),
+    "pop_b": (0.00031187790821896646, 0.46942148760330576, 7259.8060755719744),
+}
+
+# How close popnei's curve has to be to R's, relative, which is the tolerance
+# "How it is verified" of `docs/specs/ld.md` gives the ρ per base pair and
+# the half distance. Both are where a search stopped, and R's two optimisers
+# land 2.1e-9 of themselves apart on this dataset, so this is 480 times their
+# own disagreement. The r² at a distance of 0 is the curve's ceiling, which
+# the individuals of the population fix on their own with no search, and the
+# spec compares it within the 1e-12 of `TOLERANCE`.
+TOLERANCE_OF_THE_FIT = 1e-6
 
 # The two populations of the second and the third table of the same part:
 # `pop_a` the individuals `i000` to `i049` of `ld.vcf.gz` and `pop_b` `i050`
@@ -659,6 +697,69 @@ def test_ld_and_dist_gives_the_ten_bins_of_the_spec_that_plink2_gives() -> None:
         assert frame["sd_r2"].iloc[row] == pytest.approx(sd_r2, rel=TOLERANCE)
 
 
+def _assert_the_curve_is(
+    curve: LdDecay, of_the_spec: tuple[float, float, float]
+) -> None:
+    """The three values of `curve` are the row of the table of the curve of
+    "How it is verified" of `docs/specs/ld.md` that `of_the_spec` holds.
+
+    The ρ per base pair and the half distance are compared within the 1e-6
+    relative of that part and the r² at a distance of 0 within its 1e-12.
+    """
+    rho_per_bp, r2_at_zero, half_dist = of_the_spec
+    assert curve.rho_per_bp == pytest.approx(rho_per_bp, rel=TOLERANCE_OF_THE_FIT)
+    assert curve.r2_at_zero == pytest.approx(r2_at_zero, rel=TOLERANCE)
+    assert curve.half_dist == pytest.approx(half_dist, rel=TOLERANCE_OF_THE_FIT)
+
+
+def test_ld_and_dist_fits_the_curve_of_the_first_row_of_the_table_of_the_spec() -> None:
+    """The curve fitted to the pairs of the one population of `ld.vcf.gz`,
+    through the three layers, and then the curve of each of the two
+    populations of the rows below it.
+
+    The three numbers of the first call are the first row of the table of the
+    curve of "How it is verified" of `docs/specs/ld.md`, of the same call as
+    the ten bins above: R 4.6.1 fitted the curve to the 46441 pairs of that
+    population, grouped at the 249 distances they fall at, and
+    `tests/reference/ld/ld.decay.txt` holds what it printed.
+
+    The second call is of `pop_a` and `pop_b` at a `max_allowed_maf` of 0.8,
+    the two populations of the other two rows, and each of them has to get
+    the curve of its own pairs: their 50 individuals give both the same r² at
+    a distance of 0, and their half distances are 7530.10 and 7259.81 bp.
+
+    The fit reads every pair and not the ten bins, so `num_bins` does not
+    move it: fitting the mean of each of these ten bins at the middle of the
+    bin instead gives a half distance of 7886.60 bp for the first
+    population, 15.8 per 100 above the 6810.57 asserted here.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.95,
+    )
+
+    assert list(of_the_pass.decay_per_pop) == ["pop"]
+    _assert_the_curve_is(
+        of_the_pass.decay_per_pop["pop"], THE_CURVE_OF_EVERY_INDIVIDUAL
+    )
+
+    of_the_two_pops = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        pops=THE_TWO_POPS,
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.8,
+    )
+
+    assert list(of_the_two_pops.decay_per_pop) == list(THE_TWO_POPS)
+    for pop, of_the_spec in THE_CURVES_OF_THE_TWO_POPS.items():
+        _assert_the_curve_is(of_the_two_pops.decay_per_pop[pop], of_the_spec)
+
+
 def test_ld_and_dist_gives_every_count_and_every_distance_as_a_signed_number() -> None:
     """The counts and the distances of the bins are signed 64 bit integers,
     as pyNei's counts are, so that the difference of two of them is a
@@ -808,6 +909,56 @@ def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(
     assert list(frame["num_pairs"]) == [0, 0, 0, 0]
     assert frame["mean_r2"].isna().all()
     assert frame["sd_r2"].isna().all()
+
+
+def test_ld_and_dist_fits_no_curve_to_a_pop_whose_pairs_fall_at_one_distance(
+    write_vcf,
+) -> None:
+    """Two populations that get the three NaN of "The cases" of
+    `docs/specs/ld.md`, one for each way a pass reaches them.
+
+    `of_the_three` holds every individual and keeps every variant, and the
+    `max_dist` of 15 leaves it the two pairs 10 base pairs apart and drops
+    the one 20 apart, so every pair it counts is at one distance. One
+    distance says nothing about a fall-off, so its `rho_per_bp`, its
+    `r2_at_zero` and its `half_dist` are all NaN although its bins hold
+    pairs. `of_one_individual` holds `ind3` alone, which keeps the two
+    variants that individual is heterozygous at and leaves out the one it is
+    homozygous at, above the `max_allowed_maf` of 0.95: one individual has
+    one dosage at every variant, so no variant of it has variance, the one
+    pair of the two it kept has no r², and it counts no pair at all, which is
+    the same case with nothing in it.
+
+    Neither is an error, and the two come back in the order they were given
+    and not in the order of their names.
+    """
+    path = write_vcf(
+        [
+            "chr1\t10\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/1\t1/1",
+            "chr1\t20\t.\tA\tT\t.\tPASS\t.\tGT\t0/0\t0/0\t0/1",
+            "chr1\t30\t.\tA\tT\t.\tPASS\t.\tGT\t1/1\t0/1\t0/1",
+        ]
+    )
+
+    of_the_pass = calc_ld_and_dist_per_pop(
+        open_vcf(path),
+        pops={"of_the_three": ["ind1", "ind2", "ind3"], "of_one_individual": ["ind3"]},
+        min_dist=1,
+        max_dist=15,
+        num_bins=3,
+    )
+
+    assert list(of_the_pass.decay_per_pop) == ["of_the_three", "of_one_individual"]
+    assert of_the_pass.num_vars_per_pop == {"of_the_three": 3, "of_one_individual": 2}
+    # The bins say which of the two cases each population is: the pairs of
+    # the first are the two 10 base pairs apart, both in the second bin, of 6
+    # to 10, and the second population has no pair in any bin.
+    assert list(of_the_pass.per_pop["of_the_three"]["num_pairs"]) == [0, 2, 0]
+    assert list(of_the_pass.per_pop["of_one_individual"]["num_pairs"]) == [0, 0, 0]
+    for pop, curve in of_the_pass.decay_per_pop.items():
+        assert math.isnan(curve.rho_per_bp), pop
+        assert math.isnan(curve.r2_at_zero), pop
+        assert math.isnan(curve.half_dist), pop
 
 
 def test_ld_and_dist_refuses_what_is_no_variants_no_distance_and_no_bins(
