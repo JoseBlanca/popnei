@@ -75,11 +75,14 @@ branch was counted anywhere below.
 
 Run no experiment beyond the one the plan named, which was run and is
 closed. The folded spectrum, which "Speed" of the spec called the one part
-that could dominate, is 20 to 23 in 100 of the pass at a draw of 200 and 8
-to 10 in 100 at a draw of 20, so the bound that "What could go wrong" of
-work package 4 sets, that anything beyond the shared weights of deliverable
-2 is a performance review of its own, is not reached. The pass meets the
-target that is now in "Speed" with headroom at every thread count: at most
+that could dominate, adds 0.097 to 0.109 s at a draw of 200 to a pass that
+computes the other four statistics, which is 20 to 23 in 100 of that pass
+over blocks already in memory and 16 to 18 in 100 of the whole pass a user
+runs over the file, and 0.011 to 0.013 s at a draw of 20, 5 to 6 in 100 of
+it. So the bound that "What could go wrong" of work package 4 sets, that
+anything beyond the shared weights of deliverable 2 is a performance review
+of its own, is not reached. The pass meets the target that is now in
+"Speed" with headroom at every thread count: at most
 1.1 times `calc_per_var_distribs` where it is 0.78 to 1.02 times, and at
 most 2 times it at a draw of 200 where it is 1.16 to 1.61 times.
 
@@ -96,7 +99,9 @@ on 24 September 2026. Each is the best of 5 timed runs with one untimed run
 before them, timed in Python by
 `crates/popnei/benches/time_diversity.py` from the call that opens the file
 to the result, and each cell holds two sets taken one after the other. The
-two sets agree within 0.006 s on every row. The threads are rayon's, which
+two sets agree within 0.009 s on every row and within 0.003 s on four of
+the seven; the three that are further apart are 0.604 against 0.595,
+0.375 against 0.383 and 0.355 against 0.348. The threads are rayon's, which
 popnei takes from the environment because it builds no pool of its own, so
 over a vars file, whose reader runs on the thread that calls it, the
 threads are the calculation's alone.
@@ -138,8 +143,12 @@ diploid individuals in the three populations of 48, 68 and 84 of
 `tests/reference/stats/panel_pops_bcftools.txt`, separates none of these
 passes: every one of them, the read alone and all five at either draw, is
 0.004 s on one thread and 0.002 s on 18, and `calc_per_var_distribs` is
-0.005 s and 0.002 s, where the clock resolves 0.001 s. A draw of 200 on the
-panel measures nothing about the draw besides. No population of the panel
+0.005 s and 0.002 s. Those three decimals are what `time_diversity.py`
+prints and not what its clock can tell apart: it times with
+`time.perf_counter`, whose resolution `time.get_clock_info` gives as
+4.17e-08 s on this machine. So what these passes are too close together
+for is the panel and not the clock. A draw of 200 on the panel measures
+nothing about the draw besides. No population of the panel
 calls 200 alleles at any variant, so no variant is in the draw for any of
 them, every standardized value is NaN and all 101 bins are 0: that 0.004 s
 is a pass that did the work of a pass with no draw.
@@ -164,9 +173,16 @@ What the row loop spends it on was separated by differencing whole passes
 of `crates/popnei/benches/diversity_pass.rs` instead, which runs the same
 pass over blocks already in memory and so leaves the read of the file out.
 Over 100000 variants of 1000 individuals in 3 populations on one thread,
-best of 5 or of 9 runs. The floor, the copy of the block the harness makes
-and the allele counts of every population, is 0.126 s, and what each pass
-adds over it is the statistics it was asked for and nothing else.
+best of 5 or of 9 runs. The floor is `cargo bench --bench diversity_pass --
+--stats num_alleles --pops 3 --threads 1`, the pass asked for the one
+statistic that needs no draw arithmetic, which is the copy of the block the
+harness makes and the allele counts of every population: 0.126 s, and what
+each pass adds over it is the statistics it was asked for and nothing else.
+It is not a pass that computes nothing. `--stats` has no `none`, and
+`calc_pop_diversity` refuses a pass asked for no statistic at all, so one
+statistic is the least a pass can be asked for. The orchestrator of the
+plan ran that command again at a load average of 3.50 and read 0.132 s,
+against the 0.126 s of the quieter set this table comes from.
 
 | what the pass asks for | the draw | best | over the floor |
 |---|---|---|---|
@@ -176,15 +192,52 @@ adds over it is the statistics it was asked for and nothing else.
 | `fis` | none | 0.174 s | 0.048 s, the two heterozygosities |
 | `folded_sfs` | 20 | 0.148 s | 0.022 s, `add_the_bins_of_the_var` |
 | `folded_sfs` | 200 | 0.234, 0.236 s | 0.108 s, `add_the_bins_of_the_var` |
-| the four that need a draw | 200 | 0.371, 0.393, 0.396 s | |
+| the four that need no draw | 200 | 0.371, 0.393, 0.396 s | |
 | all five | 200 | 0.480, 0.490, 0.494 s | |
-| all five | 20 | 0.218, 0.222 s | |
+| the four that need no draw | 20 | 0.205, 0.206, 0.207 s | |
+| all five | 20 | 0.218, 0.218, 0.218 s | |
 
-So the folded spectrum is 0.098 to 0.109 s of a pass of 0.480 to 0.494 s
-at a draw of 200, 20 to 23 in 100 of it, and 8 to 10 in 100 at a draw of
-20. The three standardized values, the number of alleles, the ratio of
-variable variants and the private alleles, are 0.198 s together, 1.8 times
-the spectrum. That is what refutes the sentence "Speed" had before the
+The two rows of the four that need no draw are `--stats without_a_draw`
+with a draw given that those four do not read, and they are there to be
+subtracted from the row of all five beside them. The rows at a draw of 20
+are three rounds the orchestrator of the plan ran on 24 September 2026,
+alternating the two passes, at load averages of 2.82 to 2.98; the pass
+with all five read 0.218 s in each of the three. The four that do need a
+draw are in no row of the table. `--stats
+num_alleles,private_alleles,variable_vars_ratio,folded_sfs --draw 200` was
+run once, at a load average of 4.74, and read 0.456 s, against 0.386 s for
+the four that need none and 0.497 s for all five in that same round. Those
+three are what say which four the row of 0.371, 0.393 and 0.396 s holds:
+0.386 s is inside that range and 0.456 s is far outside it.
+
+What the spectrum costs is two quantities and not one. What it adds to a
+pass that computes the other four is what a user who asks for all five
+pays for it: at a draw of 200 that is 0.480 − 0.371, 0.490 − 0.393 and
+0.494 − 0.396, so 0.097 to 0.109 s, and at a draw of 20 it is 0.218 −
+0.205, 0.218 − 0.206 and 0.218 − 0.207, so 0.011 to 0.013 s. What a pass
+asked for the spectrum alone costs is more, because that pass still counts
+the alleles of every population and the other four read those same counts:
+0.108 s over the floor at a draw of 200 and 0.022 s at a draw of 20. At a
+draw of 200 the two are inside the spread of the runs of each other; at a
+draw of 20 the pass alone costs about twice what the spectrum adds.
+
+Which pass those are shares of. The 0.480 to 0.494 s is the pass over
+blocks already in memory, whose floor carries one copy of the 10 MB block
+for every block, which the doc comment of
+`crates/popnei/benches/diversity_pass.rs` says stands in for no part of a
+real pass, and which reads no file. Of it the spectrum is 20 to 23 in 100
+at a draw of 200, and of the 0.218 s pass it is 5 to 6 in 100 at a draw of
+20. Over the pass a user runs, the 0.595 to 0.604 s of one thread in "What
+a whole pass costs", the same 0.097 to 0.109 s is 16 to 18 in 100.
+
+The three standardized values, the number of alleles, the ratio of
+variable variants and the private alleles, cost more than the spectrum.
+One pass asked for all three adds 0.208 s over the floor, 1.9 times the
+0.108 s a pass asked for the spectrum alone adds at a draw of 200, and
+three passes asked for one of them each add 0.067, 0.066 and 0.066 s,
+0.199 s in all. The 0.208 s was taken later that day at a floor of 0.132 s,
+as "The measurement plan" below says, where each statistic adds what it
+adds here. That is what refutes the sentence "Speed" had before the
 measurement, that the spectrum is the one part that can dominate: it is the
 smaller half of what the draw costs.
 
@@ -199,8 +252,16 @@ the experiment below is what that is worth.
 The most bytes the pass holds live at once beside its block, counted by a
 global allocator inside `crates/popnei/benches/diversity_pass.rs`, which
 adds the size of every allocation and subtracts the size of every free and
-keeps the largest total it saw. It gives the same figure to the byte on
-every run. A megabyte here is 1000000 bytes.
+keeps the largest total it saw. On one thread it gives the same figure to
+the byte on every run. On 18 threads it does so only when the pass has the
+pool to itself: with other agents building on the machine, 27 runs of the
+first shape below gave 0.029 to 0.048 MB and none of them reached its
+0.053 MB, and the second shape gave 1.627 to 1.763 MB against its
+2.007 MB, while with the machine quiet the same two commands gave
+0.053 MB twelve times out of twelve and 2.007 MB eight times out of nine.
+Rayon splitting the chunks and stealing them differently under load is the
+suspicion of what the missing bytes are; nothing measured it. A megabyte
+here is 1000000 bytes.
 
 | individuals | rows in a block | populations | the draw | 18 threads | 1 thread |
 |---|---|---|---|---|---|
@@ -209,22 +270,62 @@ every run. A megabyte here is 1000000 bytes.
 | 1000 | 5000 | 50 | 2000 | 15.479 MB | 1.251 MB |
 | 10000 | 500 | 50 | 20000 | 36.343 MB | 12.123 MB |
 
-It does not grow with the variants. It grows with the populations, with the
-bins of the spectrum and with the threads of the pool, because the
-reduction holds one set of partial sums for each chunk of a group and a
-group is two chunks for each thread. So every memory figure of this module
-is stated with the threads it was taken at: the first shape holds 0.053 MB
-on 18 threads and 0.005 MB on one, over the same variants.
+Three of these four shapes are passes in which no variant reaches the
+draw, so the table is what a pass allocates and not what the arithmetic of
+a draw costs. The second gives 10 individuals to each of its 50
+populations, against the `min_num_individuals` of 20 the benchmark asks
+for, so no variant counts for any population at all; the third and the
+fourth ask for draws of 2000 and 20000 gene copies that populations of 20
+and 200 individuals cannot fill. The bins are allocated whatever the data,
+and the figures do not move when the variants do count: the second shape
+run with 2000 individuals in the place of 500, which is 40 to a
+population, holds 2.019 MB against its 2.007 MB. The first shape is the
+one where every variant is in the draw, and its own run prints `20000 of
+them in the draw for the first population`.
+
+It does not grow with the variants of the dataset. It grows with the rows
+of a block, because what the reduction holds is one set of partial sums for
+each chunk of 64 rows it reads at once: the first shape on 18 threads holds
+0.007, 0.020, 0.039 and 0.053 MB at 128, 512, 2048 and 10000 rows in a
+block. It grows with the populations and with the bins of the spectrum. And
+it grows with the threads of the pool up to what the rows of the block
+allow, since a group is two chunks for each thread and a group cannot be
+larger than the block: the fourth shape, whose block of 500 rows is 8
+chunks, holds 12.123, 20.160, 36.234, 36.343 and 36.343 MB at 1, 2, 4, 8
+and 18 threads, flat from 4 threads up. So every memory figure of this
+module is stated with the threads it was taken at: the first shape holds
+0.053 MB on 18 threads and 0.005 MB on one, over the same variants.
 
 The fourth shape is where the grouping stops binding. Its block is 500
 rows, which is 8 chunks of 64, and a group on 18 threads is 36 chunks, so
-every chunk of the block is read at once: the 36.343 MB is 8 sets of
-partial sums of 4.0 MB of bins each, 50 populations of 10001 bins of 8
-bytes, plus the pass's own 4.0 MB of the same shape. On one thread, where a
-group is 2 chunks, the same dataset holds 12.123 MB. Read against the block
-of about 10 MB of section 2 of `docs/architecture.md`, the first three
-shapes are a small fraction of a block and the fourth, whose own block is
-10 MB, holds 3.6 times one beside it.
+every chunk of the block is read at once: 8 sets of partial sums of 4.0 MB
+of bins each, 50 populations of 10001 bins of 8 bytes, plus the pass's own
+4.0 MB of the same shape, which is 36.004 MB of the 36.343. On one thread,
+where a group is 2 chunks, the same dataset holds 12.123 MB.
+
+The 0.339 MB the bins leave over is the rest of what a pass holds, and
+three things account for it. For each chunk that a thread is inside, the
+counts of the alleles each population called at the row in hand, an
+`[u32; 128]` and two numbers, 528 bytes for each population, and the
+chance and the sum the standardized private alleles carry, 16 bytes for
+each population. For every chunk of the group and for the pass itself, the
+eleven sums `OfAPop` keeps for each population, 88 bytes. And once for the
+whole pass, the individuals of each population as a `Vec<usize>`, which is
+0.080 MB for 10000 individuals in 50 populations and 0.004 MB for 500 of
+them. Added to the bins, with one chunk holding the counts of a row for
+each thread of the pool, those three come within 0.004 MB of each of the
+eight figures of the table and below every one of them: 36.341 MB against
+the 36.343 measured here, 2.003 against 2.007 on the second shape and
+15.475 against 15.479 on the third, where the bins alone are 36.004, 1.347
+and 14.815. What is left over is the vector that holds one result for each
+chunk of a group. How many chunks hold the counts of a row at the instant
+of the peak is the one term of this that no run pins down, and nothing
+counted the allocations by the site they were made at.
+
+Read against the block of about 10 MB of section 2 of
+`docs/architecture.md`, the first three shapes are a small fraction of a
+block and the fourth, whose own block is 10 MB, holds 3.6 times one beside
+it.
 
 Whether reading fewer chunks of a block than the pool has threads would be
 better is a trade nobody has measured: it would hold fewer sets of partial
@@ -236,11 +337,14 @@ package 3 reported on 24 September 2026, which were 0.045, 2.342, 15.871
 and 36.481 MB for the same four shapes. The measurement above is 0.008 MB
 above that reviewer's on the first shape and 0.138 to 0.392 MB below it on
 the other three. How that reviewer defined what it subtracted from the peak
-is not known, so what the difference is made of cannot be said; what can is
-that the figures above come from a harness that is in the repository, that
-prints the block it subtracted, and that gives the same number on every
-run. The orchestrator of the plan reproduced the first row itself at
-0.053 MB.
+is not known, so what the difference is made of cannot be said. One thing
+it is not is the load on the machine: load makes this count read lower, as
+the 27 runs above do, and three of that reviewer's four figures are higher
+than the measurement here. What can be said is that the figures above come
+from a harness that is in the repository, that prints the block it
+subtracted, and that gives the same number on every run when the pass has
+the pool to itself. The orchestrator of the plan reproduced the first row
+itself at 0.053 MB.
 
 ## The measurement plan
 
@@ -327,16 +431,18 @@ the scope".
 ### D1 The hypergeometric weights of a variant are computed once and shared by its bins
 
 `crates/popnei/src/diversity.rs:983`, `OfTheDraw::add_the_bins_of_the_var`.
-Hot path, high confidence: the function is 0.108 s of a 0.494 s pass at a
-draw of 200 by the differencing above, and the profile puts the row loop it
-is inlined into at 53.1 per cent of the self time.
+Hot path, high confidence: by the differencing above, a pass asked for the
+spectrum alone adds 0.108 s over the floor at a draw of 200 and the
+spectrum adds 0.097 to 0.109 s to a pass of 0.480 to 0.494 s that computes
+the other four, and the profile puts the row loop it is inlined into at
+53.1 per cent of the self time.
 
 Deliverable 2 of work package 4 asks whether the weights of a variant are
 computed once and shared by the bins of its spectrum, which "Speed" of the
 spec named as the thing to decide. They already are. Per variant and per
 population the function takes one product, of `num_called_alleles` factors
-where the copies of the major allele cannot fill the draw on their own and
-of the called alleles less that number where they can, for the smallest
+where the copies of the major allele can fill the draw on their own and of
+the called alleles less that number where they cannot, for the smallest
 count of the range the variant can show, and then walks the bins upward
 from it by a recurrence: the chance of one more copy of the rarer allele is
 the chance in hand times `(m - j)(g - j) / ((j + 1)(c - m - g + j + 1))`,
