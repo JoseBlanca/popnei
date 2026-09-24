@@ -606,9 +606,9 @@ The sum of the first population of "How it is verified" is 23.21 at its
 smallest, an `f64` steps from 23.21 by 3.55·10⁻¹⁵, and moving the ρ per
 base pair away from the smallest does not raise the sum steadily at that
 scale: 10⁻⁹ of itself away the sum is 8 of those steps above its
-smallest, 10⁻⁸ away 15 and 3·10⁻⁸ away 41, and 9.3·10⁻⁹ away, between the
-first two, it is 21. So the bottom of the sum is a stretch of ρ some
-10⁻⁸ wide in which a step of the staircase decides, and what the fit
+smallest, 9.3·10⁻⁹ away 21, 10⁻⁸ away 15, which is fewer although it is
+further, and 3·10⁻⁸ away 41. So the bottom of the sum is a stretch of ρ
+some 10⁻⁸ of itself wide in which a step decides, and what the fit
 returns is the first point it evaluated at the lowest step, which is
 where the grid put its points. Narrowing the range moves the grid;
 tightening the bracket moves nothing, and the fit over the whole range
