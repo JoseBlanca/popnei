@@ -159,3 +159,14 @@ harness = false
 [[bench]]
 name = "kinship"
 harness = false
+
+# How long the association study of the variants of a file against a trait
+# takes, for each of the four models and each of the tests they have, of
+# the performance review of docs/reports/perf-gwas-2026-09-24.md, which is
+# the first measurement popnei has of that module. It takes the path of a
+# VCF or of a vars file, the model, the test, how many covariates the
+# design holds, the seed of the trait it draws and the runs, and prints one
+# wall time per run, so it runs without a harness, as the ten above do.
+[[bench]]
+name = "gwas"
+harness = false
