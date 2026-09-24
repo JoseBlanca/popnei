@@ -896,6 +896,8 @@ option that was not taken.
 - Genotypes packed in 2 bits, the option to measure of section 4 of the
   architecture: it would be a later version of this format.
 - Reading a vars file of pyNei, of either of its formats.
+- The reading of a `File` of a page by ranges, which is what `openVars`
+  takes in the wasm package: `docs/specs/js_sources.md`.
 - The VCF writer: an item of `docs/specs/io_vcf.md`.
 - `Variants`, the handle both functions here give and take:
   `docs/specs/variant.md`. `iter_blocks`, which is how its genotypes reach
