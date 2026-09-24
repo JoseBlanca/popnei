@@ -152,3 +152,45 @@ crate and `cargo wasm-check` does not build that crate for wasm, so nothing
 of the five commands would catch a call into JavaScript that does not
 compile for the target the package ships. Work package 3 is where that is
 put right, since it is the work that adds `web-sys`.
+
+## Work package 3: the source over a `File`, with the harness of work package 2
+
+Done at 8437da5, c580acf and 929f79d, and reviewed together with work
+package 2, whose harness its browser tests are written in. The
+deliverables, each run by the orchestrator:
+
+| deliverable | command | what it gave |
+|---|---|---|
+| 1, 2 | `npm run test:browser` | 7 tests in Chromium, 0 failed: the array of bytes of work package 2, a `File` of `many.vcf`, of `many.vcf.gz` and of a vars file written from it, a file of more than one range, a range that comes back short and a range the browser refused |
+| 3 | `node --test test/blob_outside_a_worker.test.ts` | 6 tests, 0 failed |
+| 4 | `grep -c FileReaderSync js/popnei/README.md` | 6 |
+| 5 | the checks of the `coding` skill | all green, with `cargo wasm-check-js` added to them |
+| 5 | `npm test` in `js/popnei` | 372 tests, 0 failed |
+
+The package is smaller with the ranges than without them: 2021550 bytes of
+wasm against 2034662, and 650486 gzipped against 657075. `js-sys` and
+`web-sys` are in it; what outweighs them is that the read which opens a
+file goes through the same type as every other read, which took one build
+of the VCF reader and one of the vars file reader out of the module.
+
+### What the review found
+
+Four reviewers, and two of them found the same hole: no test read a file of
+more than one range, because every file of every test is smaller than the
+4 MiB one holds. One of them patched the reader so that the end of the
+first range was the end of the file, the silent wrong result the short
+range is refused for, and all five browser tests passed. The spec now asks
+for that check and `many_ranges.ts` is it, a `File` of 14008097 bytes and
+60000 variants.
+
+The other finding that cost a user something: reading the counts of a pass
+from inside the progress function leaked the pass and the bytes of its
+file, 6.7 MB a run, for the same reason freeing the variants there did.
+Both are refused now with popnei's own error.
+
+Nine findings were taken in all. One was not: a read that fails names the
+range and the size of the file and not the name of the file, which a `File`
+of a page has. The spec asks nothing there, the coding skill says
+JavaScript has no path to add, and a worker of the applications opens one
+variant file at a time, so what it would add is a feature of `web-sys` for
+a message that already names the range.
