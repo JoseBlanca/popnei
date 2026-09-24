@@ -803,6 +803,61 @@ with three NaNs is answered with an effect of -5.7e-16 and a p-value of 1.
 The rule itself is unchanged and is still compared against whichever
 denominator the study formed. It is in the spec.
 
+### What the review of work package 3 found
+
+Four reviewers read it. Two findings are what the whole review process is
+for, and neither could have been found by reading.
+
+**A study whose every variant is NaN, in silence.** The check on the factor
+was one-sided, on a quantity the code's own error text calls the rounding of
+a cancellation, which falls on either side of 0. When it fell negative the
+study was refused, as intended; when it fell positive the study was accepted
+with a factor of order 1e-16, every denominator then sat under Open 2's
+threshold, and the user got a table of NaN with nothing said. Measured by
+the orchestrator over 193 designs of six individuals whose covariate is a
+variant's own dosages, with the first block holding only that variant: 112
+refused and **81 accepted with every variant NaN**. The factor is now taken
+only over variants the projection leaves something of, and the same 193
+designs are all refused.
+
+**Every end-to-end test of the approximation passed best when the
+approximation did nothing.** They bounded only how far the approximated
+answer sits from the exact one, and zero distance is the best possible
+score. A reviewer replaced the approximation with nothing in the logistic
+mixed model and all 836 core tests stayed green, as did 513 pytest and 331
+node; the result still reported that the approximation had been used,
+because that flag is set where the argument is read and not where the
+denominator is formed. A regression that quietly lost the approximation —
+leaving a user paying the quadratic cost they asked to avoid — would have
+shipped green. Every ceiling now has a floor beside it: the worst effect
+moves 0.489655 for the linear mixed model and 0.393349 for the logistic one,
+so a floor of 0.05 sits a factor of eight clear.
+
+That reviewer also answered the question this report asked when work package
+3 began. A constant error that does not grow with the structure of the panel
+**is** caught: scaling the denominator by 1.02 turns the unit test and the
+panel test red. The corridor the loose bound leaves is narrower than it
+looked; what it did not catch was the approximation being absent altogether.
+
+**Three guards no test executed**, each deleted in turn with the suite
+staying green: the check that a block's rows and values agree, the half of
+the factor check that catches a value which is not a number, and the early
+return of the centered length on an empty slice. The second matters most,
+since a factor that is not a number makes every p-value of the study one
+too. Each has a test now.
+
+**Four things that were not true** in doc comments: a count of three where
+the test asserts four and averages four ratios, a fixture described as the
+variant no individual has a genotype of where the code uses one every
+individual is heterozygous for, a statistic called the spec's median where
+the core takes the value at index 600 of the sorted absolute log ratios, and
+a factor printed as -0.0000000000000003608224830031759.
+
+**A defect reported as a wrong argument.** The branch that approximates a
+denominator told a user with no kinship to supply one, on a path reachable
+only when a kinship *was* supplied and the model came out non-mixed, which
+is popnei's own fault.
+
 ## How the work went
 
 This last section is not written for the owner, who can stop here. It is for
