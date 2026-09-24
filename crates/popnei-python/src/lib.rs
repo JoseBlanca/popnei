@@ -104,6 +104,14 @@ mod _core {
     #[pymodule_export]
     const DEFAULT_NUM_PRIN_COMPS: usize = popnei::pca::DEFAULT_NUM_PRIN_COMPS;
 
+    // Whether a mixed model of `calc_gwas` stands in for the denominator of
+    // its test with the GRAMMAR-Gamma approximation when the user says
+    // nothing. It is the exact denominator, since the approximation gives up
+    // accuracy that grows with how strongly a panel is structured, and a
+    // user asks for it.
+    #[pymodule_export]
+    const DEFAULT_USE_GRAMMAR_GAMMA_APPROX: bool = popnei::gwas::DEFAULT_USE_GRAMMAR_GAMMA_APPROX;
+
     #[pymodule_export]
     use super::dists::calc_pairwise_kosman_dists;
     #[pymodule_export]

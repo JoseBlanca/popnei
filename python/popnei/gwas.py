@@ -52,9 +52,10 @@ from the new fit, and so on until the fit stops moving. Its only test is the
 score test, since a Wald test would fit one mixed model for every variant,
 and asking for the Wald test is a ``ValueError`` that says so.
 
-The GRAMMAR-Gamma approximation, which a mixed model can take instead of the
-exact denominator of its test, is being written; asking for it is a
-``ValueError`` that says so.
+A mixed model can take the GRAMMAR-Gamma approximation instead of the exact
+denominator of its test, which makes the work of a variant linear in the
+individuals rather than quadratic, at a cost in accuracy that grows with how
+strongly the panel is structured.
 
 `docs/specs/gwas.md` has the four models, the numbers the tests assert and
 what popnei does differently from pyNei.
@@ -232,7 +233,7 @@ class GWASResult:
 
     used_grammar_gamma_approx: bool
     """Whether the GRAMMAR-Gamma approximation was used, which only a mixed
-    model can use and which is being written.
+    model can use.
 
     It stands in for the denominator of a mixed model's test, which is a
     product with the covariance of the random effect and costs one such
@@ -254,14 +255,7 @@ def calc_gwas(
     covariates: pandas.DataFrame | None = None,
     kinship: Kinship | None = None,
     test: TestType | str | None = None,
-    # The default is written here and not taken from the core's
-    # `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can
-    # make the approximation takes when the user says nothing: popnei
-    # refuses the approximation until it is written, so a core whose default
-    # became true would turn every plain call into a refusal. Until then
-    # this default changes no result, since the approximation is refused
-    # whatever is written here.
-    use_grammar_gamma_approx: bool = False,
+    use_grammar_gamma_approx: bool = _core.DEFAULT_USE_GRAMMAR_GAMMA_APPROX,
     transform_to_biallelic: bool = _core.DEFAULT_TRANSFORM_TO_BIALLELIC,
 ) -> GWASResult:
     """Which of the variants of `variants` are associated with `phenotype`.
@@ -361,9 +355,19 @@ def calc_gwas(
 
     `use_grammar_gamma_approx` stands in for the denominator of a mixed
     model's test, which costs a product with the covariance of the random
-    effect for every variant. It is being written, and asking for it is a
-    ``ValueError``: with no kinship because there is no such denominator to
-    approximate, and with one because popnei cannot approximate it yet.
+    effect for every variant, with one factor times the squared length of
+    the variant's centered dosages, which costs a walk over the variant. The
+    factor is estimated once, from the first 100 variants that vary of a
+    second pass over the same variants, which the call opens itself. What it
+    gives up is accuracy, and how much grows with how strongly the panel is
+    structured, since one factor stands in for a quantity that differs from
+    variant to variant: on the panel of ``docs/specs/gwas.md`` a p-value is
+    out by a factor of 30 at worst while the middle of them barely moves.
+    Only a mixed model has such a denominator, so asking for it without a
+    `kinship` is a ``ValueError``, and so is a first block in which no
+    variant varies among the tested individuals or whose variants the design
+    explains, which leaves no factor above 0 to multiply by. The result says
+    in ``used_grammar_gamma_approx`` whether it was used.
 
     `transform_to_biallelic` makes every allele that is not the major one
     count the same, which is what a variant of more than two different
@@ -373,7 +377,9 @@ def calc_gwas(
 
     The call makes one pass over the source of `variants`, through the steps
     that are on it, so the study is over the variants its filters kept, and
-    the ``Variants`` is as it was afterwards. A pass that gives no variant is
+    the ``Variants`` is as it was afterwards; `use_grammar_gamma_approx`
+    makes a second one, over the same variants and through the same steps,
+    of which only the first block is read. A pass that gives no variant is
     a ``ValueError`` whose message says whether the source held none or the
     steps kept none.
 

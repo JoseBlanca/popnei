@@ -1,6 +1,7 @@
 //! The association study of the variants of a source on its way to Python:
-//! one pass over them, and one row for each with the effect of the variant
-//! on the trait, how uncertain that effect is and its p-value.
+//! one pass over them, or two when the GRAMMAR-Gamma approximation is asked
+//! for, and one row for each variant with its effect on the trait, how
+//! uncertain that effect is and its p-value.
 //!
 //! The calculation is the core's, [`popnei::gwas::calc_gwas`], and what this
 //! module does is what `kinship.rs` does for the kinship: it builds the
@@ -166,11 +167,10 @@ pub(crate) fn calc_gwas<'py>(
         num_coefs,
         kinship: kinship_values,
         test,
-        // The approximation is refused by the core, which says two
-        // different things about it, that a study with no kinship has no
-        // denominator to approximate and that popnei has not written the
-        // approximation of the one a mixed model has. Both packages give it
-        // as the user wrote it, so both messages are the same in each.
+        // A study with no kinship that asks for the approximation is
+        // refused by the core, which has no denominator to approximate
+        // there. Both packages give the flag as the user wrote it, so the
+        // message a user reads is the same in each.
         use_grammar_gamma_approx,
         individuals: &tested,
         transform_to_biallelic,
@@ -267,8 +267,10 @@ pub(crate) fn calc_gwas<'py>(
 /// has them, a phenotype or a value of the design that is not a finite
 /// number, a design whose columns are not independent or that leaves nothing
 /// to measure the uncertainty of a variant from, a variant of more than two
-/// alleles while `transform_to_biallelic` is false, and an operation of the
-/// linear algebra that did not run.
+/// alleles while `transform_to_biallelic` is false, the GRAMMAR-Gamma
+/// approximation asked for by a study with no kinship or estimated from a
+/// first block in which nothing varies or whose variants the design
+/// explains, and an operation of the linear algebra that did not run.
 fn over_the_source(
     source: &dyn OpenSource,
     steps: &[Step],
@@ -281,7 +283,17 @@ fn over_the_source(
     // of its filters can be read when the call is over: the loop over the
     // blocks is the core's, and no block of it reaches this crate.
     let mut chain = chain_of(reader, steps)?;
-    let result = popnei::gwas::calc_gwas(&mut chain, None::<&mut Box<dyn BlockReader>>, input)?;
+    // The factor of the GRAMMAR-Gamma approximation is estimated from the
+    // first block of a second pass over the same variants, through the same
+    // steps, which is opened here and only for a study that asked for the
+    // approximation: every other study reads the source once. It is the
+    // chain of the first pass that the counts come from, since the two go
+    // through the same steps and count the same, as `pca.rs` takes them.
+    let mut gamma_pass = match input.use_grammar_gamma_approx {
+        false => None,
+        true => Some(chain_of(source.reader(None)?, steps)?),
+    };
+    let result = popnei::gwas::calc_gwas(&mut chain, gamma_pass.as_mut(), input)?;
     let filtering = chain
         .filtering_stats()
         .into_iter()

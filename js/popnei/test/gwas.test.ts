@@ -685,6 +685,30 @@ function theMixedStudyOfThePanel(): GwasResult {
 }
 
 /**
+ * The study of the panel with the kinship and the default test of the linear
+ * mixed model, which is the Wald one, `useGrammarGammaApprox` as it is
+ * given.
+ *
+ * It is the study the Python suite compares the approximation against, so
+ * the three numbers the approximation gives here are the same three
+ * measured there, on the other backend.
+ */
+function theMixedStudyOfThePanelWith(
+  useGrammarGammaApprox: boolean,
+): GwasResult {
+  return gwasOf(PANEL_VCF, {
+    phenotype: PHENOTYPES.cont as Record<string, number>,
+    trait: "continuous",
+    covariates: {
+      cov1: PHENOTYPES.cov1 as Record<string, number>,
+      cov2: PHENOTYPES.cov2 as Record<string, number>,
+    },
+    kinship: PANEL_KINSHIP,
+    useGrammarGammaApprox,
+  });
+}
+
+/**
  * The study of the panel with the binomial trait, both covariates and the
  * kinship, which is what GMMAT was given for its logistic mixed model.
  *
@@ -1319,6 +1343,95 @@ test("the panel tells the two variances apart and gives all three", () => {
   assert.notEqual(result.nullModel.heritability, undefined);
 });
 
+/**
+ * How far the GRAMMAR-Gamma approximation may be from the exact answer on the
+ * panel with the linear mixed model: the median of `log10(p_approx/p_exact)`
+ * within 0.1 of 0, the largest of those within 1.5, and `beta` within 0.5 of
+ * itself.
+ *
+ * The three are pyNei's own numbers in `test_grammar_gamma_approx`, which
+ * "How it is verified" of the approximation in `docs/specs/gwas.md` carries,
+ * and the Python suite asserts the same three on the same study. They are
+ * not bounds measured here and lowered until they broke: the spec gives
+ * them, and a run either fills them or does not.
+ *
+ * The third is nearly full, and that is the method and not a defect. The
+ * factor is one number standing in for a quantity that differs from variant
+ * to variant, and on this panel the 100 ratios it is the mean of run from
+ * 0.312 to 0.670 around a mean of 0.517. Measured on 24 September 2026: in
+ * WebAssembly, which is faer, the median is -5.1885e-4, the largest 0.51185
+ * and the worst `beta` 0.48966; natively the same three are -5.1885e-4,
+ * 0.51185 and 0.48966 on Accelerate and on faer. So the `beta` bound is 98
+ * per cent spent and the other two are nowhere near theirs.
+ */
+const OF_THE_APPROXIMATION_MEDIAN = 0.1;
+const OF_THE_APPROXIMATION_LARGEST = 1.5;
+const OF_THE_APPROXIMATION_BETA = 0.5;
+
+test("the approximation of the panel is near the exact answer", () => {
+  const approximated = theMixedStudyOfThePanelWith(true);
+  const exact = theMixedStudyOfThePanelWith(false);
+
+  assert.equal(approximated.usedGrammarGammaApprox, true);
+  assert.equal(exact.usedGrammarGammaApprox, false);
+  assert.equal(approximated.stats.pValue.length, PANEL_NUM_VARS);
+  // A variant the exact test leaves with no answer is answered under the
+  // approximation, which "Open 2's threshold under the approximation" of the
+  // spec says: the approximate denominator is a positive factor times a sum
+  // of squares and holds no cancellation. The two are compared where both
+  // have an answer, and this panel has no such variant, which the count
+  // below asserts.
+  const moved: number[] = [];
+  const apart: number[] = [];
+  for (let at = 0; at < PANEL_NUM_VARS; at += 1) {
+    const ofTheApproximation = approximated.stats.pValue[at] as number;
+    const ofTheExact = exact.stats.pValue[at] as number;
+    if (!Number.isFinite(ofTheApproximation) || !Number.isFinite(ofTheExact)) {
+      continue;
+    }
+    moved.push(Math.log10(ofTheApproximation / ofTheExact));
+    const betaOfTheApproximation = approximated.stats.beta[at] as number;
+    const betaOfTheExact = exact.stats.beta[at] as number;
+    apart.push(
+      Math.abs(betaOfTheApproximation - betaOfTheExact) /
+        Math.abs(betaOfTheExact),
+    );
+  }
+  assert.equal(moved.length, PANEL_NUM_VARS);
+  const sorted = [...moved].sort((one, other) => one - other);
+  const half = sorted.length / 2;
+  const median =
+    ((sorted[half - 1] as number) + (sorted[half] as number)) / 2;
+  const largest = Math.max(...moved.map((value) => Math.abs(value)));
+  const worst = Math.max(...apart);
+  assert.ok(
+    Math.abs(median) <= OF_THE_APPROXIMATION_MEDIAN,
+    `the median of log10(p_approx / p_exact) over the panel is ${median}`,
+  );
+  assert.ok(
+    largest <= OF_THE_APPROXIMATION_LARGEST,
+    `the largest |log10(p_approx / p_exact)| over the panel is ${largest}`,
+  );
+  assert.ok(
+    worst <= OF_THE_APPROXIMATION_BETA,
+    `the worst \`beta\` of the panel is ${worst} of itself away from the exact one`,
+  );
+});
+
+test("the approximation is asked for and the result says it was used", () => {
+  // It is the one place a user can tell the two apart: the columns of
+  // `stats` have the same names and the same shape either way, and a study
+  // that had quietly made the exact test would look the same.
+  const approximated = theMixedStudyOfThePanelWith(true);
+
+  assert.equal(approximated.usedGrammarGammaApprox, true);
+  assert.equal(approximated.nullModel.model, "lmm");
+  // The pass that estimates the factor reads the same variants as the one
+  // that tests them, and it is the counts of the first that come back, so a
+  // study that read the source twice reports the variants once.
+  assert.equal(approximated.passStats.numVars, PANEL_NUM_VARS);
+});
+
 test("a tested individual the kinship has not is refused by name", () => {
   assert.throws(
     () =>
@@ -1329,23 +1442,6 @@ test("a tested individual the kinship has not is refused by name", () => {
         kinship: theKinshipOfTheWorkedExample("i2"),
       }),
     { message: /`i2` is tested and is not one of the 5 individuals/ },
-  );
-});
-
-test("the grammar gamma approximation of a mixed model has no second pass yet", () => {
-  // The core estimates the factor of the approximation from the first block
-  // of a second pass over the same variants, which it takes as an argument,
-  // and this package passes none: that is task 3.2 of
-  // `docs/plans/gwas-logistic.md`, which also takes this test away.
-  assert.throws(
-    () =>
-      gwasOf(PANEL_VCF, {
-        phenotype: PHENOTYPES.cont as Record<string, number>,
-        trait: "continuous",
-        kinship: PANEL_KINSHIP,
-        useGrammarGammaApprox: true,
-      }),
-    { message: /second pass over the same variants, and none was given/ },
   );
 });
 
@@ -1464,10 +1560,6 @@ function theCallsThatAreRefused(): Record<string, () => GwasResult> {
   return {
     "a kinship that is not a kinship": theStudyWith({ kinship: "a matrix" }),
     "the grammar gamma approximation with no kinship": theStudyWith({
-      useGrammarGammaApprox: true,
-    }),
-    "the grammar gamma approximation with a kinship": theStudyWith({
-      kinship: theKinshipOfTheWorkedExample(),
       useGrammarGammaApprox: true,
     }),
     "a tested individual the kinship has not": theStudyWith({

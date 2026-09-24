@@ -50,13 +50,15 @@
  * the score test, since a Wald test would fit one mixed model for every
  * variant.
  *
- * The GRAMMAR-Gamma approximation a mixed model can take instead of the
- * exact denominator of its test is being written; asking for it is an
- * `Error` that says so. `docs/specs/gwas.md` has the four models.
+ * A mixed model can take the GRAMMAR-Gamma approximation instead of the
+ * exact denominator of its test, which makes the work of a variant linear in
+ * the individuals instead of quadratic at a cost in accuracy.
+ * `docs/specs/gwas.md` has the four models.
  */
 
 import {
   default_transform_to_biallelic as defaultTransformToBiallelic,
+  default_use_grammar_gamma_approx as defaultUseGrammarGammaApprox,
 } from "../wasm/popnei.js";
 
 import { aBoolean, aString, whatWasGiven } from "./arguments.js";
@@ -327,10 +329,15 @@ export interface CalcGwasOptions {
   kinship?: Kinship;
   /**
    * Whether the GRAMMAR-Gamma approximation is made, which stands in for the
-   * denominator of a mixed model's test and which only a mixed model has.
-   * It is being written, and asking for it is an `Error`: with no kinship
-   * because there is no such denominator to approximate, and with one
-   * because popnei cannot approximate it yet.
+   * denominator of a mixed model's test, a product with the covariance of
+   * the random effect that costs one such product for every variant, with
+   * one factor times the squared length of the variant's centered dosages,
+   * which costs a walk over the variant. The factor is estimated from the
+   * first 100 variants that vary of a second pass over the same variants,
+   * which the call opens itself. What it gives up is accuracy, and how much
+   * grows with how strongly the panel is structured. Only a mixed model has
+   * such a denominator, so asking for it without a `kinship` is an `Error`,
+   * and the result says in `usedGrammarGammaApprox` whether it was used.
    */
   useGrammarGammaApprox?: boolean;
 }
@@ -370,7 +377,9 @@ export interface CalcGwasOptions {
  * when a covariate is named `intercept`, which is the name the effect of the
  * column of ones comes back under; when `kinship` is not a `Kinship` or has
  * not an individual that is tested; when `useGrammarGammaApprox` is asked
- * for, which is being written; when the score test is asked of a linear
+ * for by a study with no kinship, which has no denominator to approximate,
+ * or the first block its factor is estimated from leaves no factor above 0;
+ * when the score test is asked of a linear
  * model, which has it not; when no individual is tested or they are fewer
  * than the columns of the design plus two; when a phenotype or a covariate
  * is not a finite number once it is read as one; when the trait is the same
@@ -404,17 +413,9 @@ export function calcGwas(
       : aBoolean("transformToBiallelic", options.transformToBiallelic);
   // An option written and left `undefined` is one that was not given, which
   // is what spreading an object of options over a call leaves behind.
-  //
-  // The default is written here and not taken from the core's
-  // `DEFAULT_USE_GRAMMAR_GAMMA_APPROX`, which is what a study that can make
-  // the approximation takes when the user says nothing, as the Python
-  // package writes it too: popnei refuses the approximation until it is
-  // written, so a core whose default became true would turn every plain
-  // call into a refusal. Until then this default changes no result, since
-  // the approximation is refused whatever is written here.
   const useGrammarGammaApprox =
     options.useGrammarGammaApprox === undefined
-      ? false
+      ? defaultUseGrammarGammaApprox()
       : aBoolean("useGrammarGammaApprox", options.useGrammarGammaApprox);
   const kinship = theKinship(options.kinship);
   const individuals = theTestedIndividuals(

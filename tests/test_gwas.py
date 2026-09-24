@@ -964,31 +964,6 @@ def test_the_approximation_of_a_study_with_no_kinship_is_refused(
         _the_worked_example(worked_example, use_grammar_gamma_approx=True)
 
 
-def test_the_approximation_of_a_study_with_a_kinship_has_no_second_pass_yet() -> None:
-    """A mixed model that asks for the approximation is refused while this
-    layer opens no second pass, and is not given the exact test in silence.
-
-    The core estimates the factor of the approximation from the first block
-    of a second pass over the same variants, which it takes as an argument,
-    and this layer passes none: that is task 3.2 of
-    `docs/plans/gwas-logistic.md`, which also takes this test away. A study
-    that made the exact test of every variant and reported that it had
-    approximated nothing would give the user no way to tell that what they
-    asked for did not happen.
-    """
-    phenotypes = _phenotypes()
-
-    with pytest.raises(ValueError, match="none was given"):
-        calc_gwas(
-            open_vcf(PANEL),
-            phenotypes["cont"],
-            TraitType.CONTINUOUS,
-            covariates=phenotypes[["cov1", "cov2"]],
-            kinship=_the_kinship_of_the_panel(),
-            use_grammar_gamma_approx=True,
-        )
-
-
 def test_the_wald_test_is_the_linear_models_own_and_the_score_test_is_refused(
     worked_example: pathlib.Path,
 ) -> None:
@@ -1519,7 +1494,12 @@ def _the_kinship_of_the_panel() -> Kinship:
     )
 
 
-def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool = True):
+def _the_mixed_study_of(
+    panel: pathlib.Path,
+    test: str | None,
+    with_cov1: bool = True,
+    use_grammar_gamma_approx: bool = False,
+):
     """The study of `panel` with the kinship plink2 wrote and the test
     `test`, `None` taking the default of the model.
 
@@ -1527,6 +1507,10 @@ def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool =
     intercept and the binary one. rrBLUP takes every fixed effect as a
     factor, so it was given `cov2` alone and popnei is run with that one
     covariate for its comparison; GMMAT was given both.
+
+    `use_grammar_gamma_approx` asks for the approximate denominator instead
+    of the exact one, which only the tests of the approximation do: every
+    comparison with a reference program is against the exact answer.
     """
     phenotypes = _phenotypes()
     columns = ["cov1", "cov2"] if with_cov1 else ["cov2"]
@@ -1537,6 +1521,7 @@ def _the_mixed_study_of(panel: pathlib.Path, test: str | None, with_cov1: bool =
         covariates=phenotypes[columns],
         kinship=_the_kinship_of_the_panel(),
         test=test,
+        use_grammar_gamma_approx=use_grammar_gamma_approx,
     )
 
 
@@ -1801,6 +1786,118 @@ def test_the_two_tests_of_the_mixed_model_differ_in_the_error_alone() -> None:
     assert list(wald.stats["beta"]) == list(score.stats["beta"])
     differ = numpy.asarray(wald.stats["se"]) != numpy.asarray(score.stats["se"])
     assert differ.all()
+
+
+# How far the GRAMMAR-Gamma approximation may be from the exact answer on the
+# panel with the linear mixed model. The three are pyNei's own numbers in
+# `test_grammar_gamma_approx`, which "How it is verified" of the
+# approximation in `docs/specs/gwas.md` carries: the median of
+# `log10(p_approx / p_exact)` within 0.1 of 0, the largest of those within
+# 1.5, and `beta` within 0.5 of itself.
+#
+# They are not bounds measured here and lowered until they broke, which is
+# how every other tolerance of this file was chosen: the spec gives these
+# three, and what a run of popnei does is fill them or not. The third is
+# nearly full, and that is a property of the method and not a defect. The
+# factor is one number standing in for a quantity that differs from variant
+# to variant, and on this panel the 100 ratios it is the mean of run from
+# 0.312 to 0.670 around a mean of 0.517, a standard deviation of 12.9 per
+# cent of the mean, which the cargo tests of `grammar_gamma.rs` hold; a
+# variant's effect moves by the share its own ratio sits from that mean.
+#
+# Measured on 24 September 2026 on the panel with every genotype called.
+# On Accelerate the median is -5.1885e-04, the largest 0.51185 and the worst
+# `beta` 0.48966; on faer, through a wheel built with `--no-default-features`,
+# the same three are -5.1885e-04, 0.51185 and 0.48966, the two backends
+# agreeing to 1e-11 of each other. So the `beta` bound is 98 per cent spent
+# and the other two are not near theirs. A run that broke the 0.5 would be a
+# question for the spec and not a tolerance to widen.
+OF_THE_APPROXIMATION_MEDIAN = 0.1
+OF_THE_APPROXIMATION_LARGEST = 1.5
+OF_THE_APPROXIMATION_BETA = 0.5
+
+
+def test_the_approximation_of_the_panel_is_near_the_exact_answer() -> None:
+    """The panel with the linear mixed model, approximated and exact, over
+    the 1200 variants.
+
+    The approximation replaces `x' p x`, the denominator of the test, with
+    one factor times the squared length of the variant's centered dosages,
+    which costs a walk over the variant instead of a product with an
+    individuals by individuals matrix. There is no program outside popnei to
+    check it against, since GMMAT and rrBLUP compute the exact denominator,
+    so what is checked is the relation to popnei's own exact answer, which is
+    pyNei's own check of it.
+
+    The bound is loose by design: a p-value out by a factor of 30 passes it.
+    What it does catch is an approximation that has stopped tracking the
+    exact answer at all, and the cargo tests of `grammar_gamma.rs` check the
+    factor itself against the ratios it is the mean of, which is the part
+    this cannot see.
+    """
+    approximated = _the_mixed_study_of(PANEL, None, use_grammar_gamma_approx=True)
+    exact = _the_mixed_study_of(PANEL, None)
+
+    assert approximated.used_grammar_gamma_approx is True
+    assert exact.used_grammar_gamma_approx is False
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    # A variant the exact test leaves with no answer is answered under the
+    # approximation, which "Open 2's threshold under the approximation" of
+    # the spec says: the approximate denominator is a positive factor times a
+    # sum of squares and holds no cancellation, so nothing there falls
+    # through the threshold. The two are compared where both have an answer,
+    # and this panel has no such variant, which the count asserts.
+    of_the_exact = numpy.asarray(exact.stats["p_value"])
+    of_the_approximation = numpy.asarray(approximated.stats["p_value"])
+    answered = numpy.isfinite(of_the_exact) & numpy.isfinite(of_the_approximation)
+    assert int(answered.sum()) == PANEL_NUM_VARS
+    moved = numpy.log10(of_the_approximation[answered] / of_the_exact[answered])
+    median = float(numpy.median(moved))
+    largest = float(numpy.max(numpy.abs(moved)))
+    assert abs(median) <= OF_THE_APPROXIMATION_MEDIAN, (
+        f"the median of log10(p_approx / p_exact) over the panel is {median}"
+    )
+    assert largest <= OF_THE_APPROXIMATION_LARGEST, (
+        f"the largest |log10(p_approx / p_exact)| over the panel is {largest}"
+    )
+    beta_of_the_exact = numpy.asarray(exact.stats["beta"])[answered]
+    beta_of_the_approximation = numpy.asarray(approximated.stats["beta"])[answered]
+    # `beta` is compared with a share of itself here, and not with a share of
+    # the `se` of its variant as every comparison with a reference program of
+    # this file is. What the approximation moves is the denominator both the
+    # effect and its error are divided by, so the effect moves by the share
+    # the variant's own ratio sits from the factor, and that share is what
+    # the 0.5 of the spec bounds.
+    apart = numpy.abs(beta_of_the_approximation - beta_of_the_exact) / numpy.abs(
+        beta_of_the_exact
+    )
+    worst = float(numpy.max(apart))
+    assert worst <= OF_THE_APPROXIMATION_BETA, (
+        f"the worst `beta` of the panel is {worst} of itself away from the exact one"
+    )
+
+
+def test_the_result_of_the_approximation_says_that_it_was_used() -> None:
+    """The result of a study that asked for the approximation says so.
+
+    It is the one place a user can tell the two apart: the columns of `stats`
+    have the same names and the same shape either way, and a study that had
+    quietly made the exact test would look the same. The panel with genotypes
+    missing is the one taken here, with the score test, so that the flag is
+    read on a study the test above does not make.
+    """
+    approximated = _the_mixed_study_of(
+        PANEL_WITH_MISSING, "score", use_grammar_gamma_approx=True
+    )
+
+    assert approximated.used_grammar_gamma_approx is True
+    assert approximated.null_model.model == GWASModel.LMM
+    assert len(approximated.stats) == PANEL_NUM_VARS
+    assert numpy.isfinite(approximated.stats["p_value"]).all()
+    # The pass that estimates the factor reads the same variants as the one
+    # that tests them, and it is the counts of the first that come back, so a
+    # study that read the source twice reports the variants once.
+    assert approximated.pass_stats.num_vars == PANEL_NUM_VARS
 
 
 def test_a_tested_individual_the_kinship_has_not_is_refused_by_name() -> None:
@@ -2371,11 +2468,6 @@ def _the_calls_that_are_refused(
         ),
         "the grammar gamma approximation with no kinship": lambda: _the_worked_example(
             worked_example, use_grammar_gamma_approx=True
-        ),
-        "the grammar gamma approximation with a kinship": lambda: _the_worked_example(
-            worked_example,
-            kinship=_the_kinship_of_the_worked_example(),
-            use_grammar_gamma_approx=True,
         ),
         "a tested individual the kinship has not": lambda: _the_worked_example(
             worked_example,
