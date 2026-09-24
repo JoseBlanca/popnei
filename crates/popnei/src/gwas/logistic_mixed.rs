@@ -1638,32 +1638,58 @@ mod glmm {
     /// cheaper one alike at 6.3e-6 of GMMAT's variance, and popnei gives
     /// 6.30e-6 on both backends, 63 per cent of what is allowed. What
     /// popnei's own arithmetic is worth here is the distance between the
-    /// two backends, 2.7e-15 of the variance, nine orders below the
+    /// two backends, 7.4e-16 of the variance, ten orders below the
     /// distance from GMMAT.
     const OF_GMMAT_GENETIC_VARIANCE: f64 = 1e-5;
 
-    /// How far the trace of the projection matrix times the kinship taken
-    /// from the identity may be from the two matrices multiplied out, as a
-    /// share of the absolute terms of that sum: 6e-14.
+    /// The variances the trace of the projection matrix times the kinship
+    /// is read at, and how far the identity it is taken from may be from
+    /// the two matrices multiplied out at each, as a share of the absolute
+    /// terms of that sum.
     ///
     /// The trace is a sum of 40000 products of both signs that cancel to
     /// about half of what went into them, so what it is measured against
     /// is those products' absolute values and not its own value, which is
     /// what "How it is verified" of `docs/specs/gwas.md` asks a tolerance
-    /// to be measured against. Measured over both panels at a variance of
-    /// 0 and at GMMAT's on 24 September 2026: the worst is 2.08e-14 on
-    /// Accelerate and 2.05e-14 on faer, both on the panel with every
-    /// genotype called at GMMAT's variance, so this is 2.9 times where it
-    /// breaks.
-    const OF_THE_TRACE: f64 = 6e-14;
+    /// to be measured against.
+    ///
+    /// One bound does not hold over the range the search walks through.
+    /// The identity is `(n - trace(sigma⁻¹ w⁻¹)) / tau` and the difference
+    /// of its two terms goes to 0 with the variance while the rounding of
+    /// each does not, so the error grows as one over the variance:
+    /// measured over both panels on both backends on 24 September 2026,
+    /// the worst share is 1.45e-7 at a variance of 1e-6, 7.7e-11 at 1e-4,
+    /// 2.7e-12 at 1e-2, 1.1e-13 at 0.1 and 2.1e-14 at GMMAT's 1.508057. A
+    /// variance of 0 is not on that curve: the division is not taken
+    /// there, and the worst is 6.3e-15. So the 6e-14 this module held the
+    /// trace to is the bound at about a variance of 1 and above, and each
+    /// variance here carries its own, between 2.8 and 3.6 times the worst
+    /// measured at it.
+    ///
+    /// The fit reads the trace at every step it takes, the small
+    /// variances among them: the search comes down from above and the
+    /// floor it stops at is 1e-6, where the trace is worth 7 digits and
+    /// not 14. What that costs is the derivative of the restricted
+    /// likelihood there, and the fit's own answer to a variance below the
+    /// floor is the boundary, 0, whatever that derivative says.
+    const OF_THE_TRACE: [(f64, f64); 6] = [
+        (0.0, 2e-14),
+        (1e-6, 5e-7),
+        (1e-4, 2.5e-10),
+        (1e-2, 9e-12),
+        (0.1, 4e-13),
+        (OF_GMMAT_VARIANCE, 6e-14),
+    ];
 
     /// How large a column of the design against a column of the projection
     /// matrix may be, as a share of the absolute terms of that sum:
     /// 6e-15.
     ///
     /// Measured over the 600 sums of each panel on 24 September 2026: the
-    /// worst is 1.94e-15 on Accelerate and 8.97e-16 on faer, on the panel
-    /// with every genotype called, so this is 3.1 times where it breaks.
+    /// worst is 1.52e-15 on Accelerate, on the panel with every genotype
+    /// called, and 1.44e-15 on faer, on the panel with genotypes missing,
+    /// so this is 3.9 times where it breaks. The two backends reach their
+    /// worst on different panels, which is why each says which.
     const OF_THE_DESIGN_AGAINST_THE_PROJECTION: f64 = 6e-15;
 
     /// How far the trait less the fitted chance may be from the working
@@ -1677,8 +1703,8 @@ mod glmm {
     /// arithmetic. It is a share of the residual's own largest value and
     /// not of each value, since a residual near 0 is an individual the fit
     /// explained. Measured over both panels on 24 September 2026: the
-    /// worst is 1.170e-13 on Accelerate and 1.177e-13 on faer, both on the
-    /// panel with every genotype called, so this is 4.2 times where it
+    /// worst is 1.172e-13 on Accelerate and 1.175e-13 on faer, both on the
+    /// panel with every genotype called, so this is 4.3 times where it
     /// breaks.
     const OF_THE_RESIDUAL_AGAINST_THE_PROJECTED_WORKING_TRAIT: f64 = 5e-13;
 
@@ -2324,11 +2350,20 @@ mod glmm {
     /// the identity divides by that variance and 0 is exactly where the
     /// kinship explains nothing, which is a value the search reaches and
     /// not one it approaches: the case is taken before the division, and a
-    /// fit that took it after would give an infinity or a NaN here.
+    /// fit that took it after would give an infinity or a NaN here. This
+    /// is the test that pins that ordering, and taking the division at a
+    /// variance of 0 leaves the fit over a kinship of all zeros landing on
+    /// the same boundary it lands on now.
+    ///
+    /// It is read at four variances between them as well, because the
+    /// error of the identity grows as one over the variance and one bound
+    /// does not hold over the range the search walks through:
+    /// [`OF_THE_TRACE`] carries the variances and the bound of each, with
+    /// what was measured at each.
     ///
     /// Each trace is measured against the absolute terms of the sum it is
     /// and not against its own value, which is a sum of 40000 products of
-    /// both signs; [`OF_THE_TRACE`] is what they are held to.
+    /// both signs.
     #[test]
     fn the_trace_from_the_identity_is_the_trace_of_the_two_matrices() {
         for name in ["panel_called", "panel"] {
@@ -2336,7 +2371,7 @@ mod glmm {
             let tested: Vec<usize> = (0..phenotype.len()).collect();
             let num_individuals = phenotype.len();
             let (design, null) = the_design_and_the_null_of(&phenotype, &values, &kinship, &tested);
-            for variance in [0.0, OF_GMMAT_VARIANCE] {
+            for (variance, allowed) in OF_THE_TRACE {
                 let mut fitted = match TheLinearization::of_the_logistic_null(
                     &phenotype, &design, &kinship, &null,
                 ) {
@@ -2373,11 +2408,12 @@ mod glmm {
                 }
                 let difference = (of_the_identity - of_the_matrices).abs();
                 assert!(
-                    difference <= OF_THE_TRACE * scale,
+                    difference <= allowed * scale,
                     "{name} at a variance of {variance}: the trace from the identity is \
                      {of_the_identity} and the two matrices multiplied out give \
                      {of_the_matrices}, {difference} apart, where the absolute terms of that \
-                     sum are {scale} and {OF_THE_TRACE} of them is allowed"
+                     sum are {scale}, {share} of them, and {allowed} of them is allowed",
+                    share = difference / scale
                 );
             }
         }
@@ -2500,15 +2536,17 @@ mod glmm {
     /// walks down to the boundary and stops there with a variance of
     /// exactly 0.
     ///
-    /// It is the one fixture that takes the whole search through the
-    /// boundary, and it takes it through twice: the trace divides by the
-    /// variance, so a variance of 0 has to be answered from the weights
-    /// and the diagonal of the kinship before the division; and a second
-    /// variance at 0 is what ends the fit, where a fit that only set it to
-    /// 0 would run its 200 steps there. Neither the derivative nor the
-    /// average information is above 0 here, so the Newton step is not a
-    /// number, and what keeps the variance a number is the bracket:
-    /// a step that is not above 0 quarters the variance instead.
+    /// What it reads is that the search stops there: a second variance at
+    /// 0 is what ends the fit, where a fit that only set it to 0 would run
+    /// its 200 steps there. Neither the derivative nor the average
+    /// information is above 0 here, so the Newton step is not a number,
+    /// and what keeps the variance a number is the bracket: a step that
+    /// does not land on a finite variance above 0 quarters the variance
+    /// instead. That the trace answers a variance of 0 from the weights
+    /// and the diagonal of the kinship before its division is not read
+    /// here, although the fit walks through it:
+    /// [`the_trace_from_the_identity_is_the_trace_of_the_two_matrices`] is
+    /// what fails when that division is taken, and this stays green.
     ///
     /// Measured on 24 September 2026 on both backends: 12 steps and 12
     /// rounds, and the effects are the plain logistic null's, which is
@@ -2752,8 +2790,8 @@ mod glmm {
     /// to two or three times what was measured, as the bounds this module
     /// sets on popnei's own arithmetic are: what it measures is how far
     /// popnei's fit and GMMAT's land apart. What popnei's own arithmetic is
-    /// worth here is the distance between the two backends, 2.2e-15 of
-    /// `VAR` at that same variant, nine orders below the distance from
+    /// worth here is the distance between the two backends, 3.4e-16 of
+    /// `VAR` at that same variant, ten orders below the distance from
     /// GMMAT.
     const OF_GMMAT_SCORE_VARIANCE: f64 = 1e-5;
 
@@ -3095,22 +3133,41 @@ mod glmm {
     /// takes so that the two answer alike. Measured on this fixture on 24
     /// September 2026, which is the first time either mixed model's score
     /// test has reached that rule at all: the collinear variant keeps
-    /// 2.776e-17 of `x' p x` on Accelerate and 1.284e-16 on faer, against a
+    /// 2.082e-17 of `x' p x` on Accelerate and 2.533e-16 on faer, against a
     /// threshold of 2.780e-15, which is the eight tested individuals times
     /// 2.2e-16 of the variant's squared length of 11 times the 0.14228 the
     /// largest diagonal entry of the projection matrix is. The ordinary
     /// variant beside it keeps 0.82216, against a threshold of 4.044e-15.
-    /// So the threshold sits 22 times above the largest rounding the two
+    /// So the threshold sits 11 times above the largest rounding the two
     /// backends left and fourteen orders of magnitude below a variant that
-    /// has something to test.
+    /// has something to test. What is left of the collinear variant is
+    /// rounding and nothing else, so it moves with any change to the
+    /// arithmetic of the fit and these two numbers are of the fit as it
+    /// stands; what the fixture rests on is the threshold and the 0.82216,
+    /// which do not.
     ///
     /// What the study gave with the threshold taken out, measured the same
-    /// day: a `beta` of -7136 with an `se` of 1.898e8 and a p-value of
-    /// 0.999970 on Accelerate, and a `beta` of -1543 with an `se` of
-    /// 8.826e7 and a p-value of 0.999986 on faer. Neither is a NaN, so
+    /// day: a `beta` of -14384 with an `se` of 2.684e8 and a p-value of
+    /// 0.999957 on Accelerate, and a `beta` of -842.4 with an `se` of
+    /// 6.511e7 and a p-value of 0.999990 on faer. Neither is a NaN, so
     /// nothing marks the row: a user reads a variant that was tested and
-    /// showed nothing, and the two builds differ by a factor of 4.6 in the
+    /// showed nothing, and the two builds differ by a factor of 17 in the
     /// effect they report for it.
+    ///
+    /// What this fixture pins is that a threshold is there and not the
+    /// scale it is built from. The collinear variant keeps 2.776e-17 of
+    /// `x' p x` against a threshold of 2.780e-15 and the ordinary one
+    /// keeps 0.82216, so the largest diagonal entry of the projection
+    /// matrix, 0.14228, can be dropped from the product and both variants
+    /// are still answered the way they are: the threshold would be
+    /// 1.954e-14, still 77 times above the rounding and thirteen orders
+    /// below the ordinary variant. What says that this model takes the
+    /// same scale as the linear mixed model's score test, so that the two
+    /// answer alike, is the doc comment of
+    /// [`LogisticMixedModel::largest_of_the_projection`] and no fixture
+    /// here; a fixture that read it would need a variant whose
+    /// `x' p x` fell between the two thresholds, which is a band of a
+    /// factor of 7.
     ///
     /// The ordinary variant beside it is asserted to have an answer and not
     /// to any number: no reference program was run on this fixture, and the
