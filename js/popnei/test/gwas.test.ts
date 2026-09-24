@@ -306,14 +306,14 @@ const OF_PLINK2_LOGISTIC_SIX: {
  *
  * They are wider than the 5e-6 plink2's six printed digits round a value by
  * because plink2 stops its logistic fit earlier than popnei does: what they
- * measure is the distance between two fits. Measured under node on 26
+ * measure is the distance between two fits. Measured under node on 24
  * September 2026, the worst effect is 2.688e-6 of the `se` of its variant,
  * `var0052`, 27 per cent of what is allowed; the worst standard error is
  * 5.301e-5 of itself, `var1137`, 53 per cent of its bound; and the worst
  * p-value is 1.878e-4 of itself, `var1137` again, 4 per cent of its bound.
- * The cargo test of the same six measures 2.69e-6, 5.30e-5 and 1.88e-4 on
- * faer natively and on Accelerate, so none of the distance from plink2 is
- * WebAssembly's own rounding.
+ * The same six measure 2.688e-6, 5.301e-5 and 1.878e-4 natively on faer and
+ * on Accelerate, so none of the distance from plink2 is WebAssembly's own
+ * rounding.
  */
 const OF_PLINK2_LOGISTIC_BETA = 1e-5;
 const OF_PLINK2_LOGISTIC_SE = 1e-4;
@@ -844,11 +844,11 @@ test("the six variants of the panel are plink2's logistic effect, error and p-va
 test("the one variant whose logistic fit runs away has no answer here either", () => {
   // `var0006` separates the individuals that have the condition from those
   // that have not, so its effect has no finite value to reach: plink2 falls
-  // back to a penalized regression there and popnei gives NaN. The mark that
-  // catches it is tested for a value that is not finite and not for an
-  // infinity, which is what makes the two linear algebra backends agree, and
-  // this build is the one that would show it: WebAssembly runs faer, where a
-  // system that overflows gives a NaN and LAPACK gives an infinity.
+  // back to a penalized regression there and popnei gives NaN. What catches
+  // it is the mark for an effect past 30 in absolute value, at round 29 on
+  // both linear algebra backends, which is what "What it gives" of "The
+  // logistic model" of the spec measured; the two marks for a value that is
+  // not finite fire at no fixture of any of the three suites.
   const result = theLogisticStudyOfThePanel();
 
   const withoutAnAnswer = (result.stats.id as readonly string[]).filter(

@@ -462,7 +462,7 @@ def _the_kinship_of_the_tested(
     `ascontiguousarray`: those are three copies of the matrix where the core
     needs one, because a frame of one dtype lies column after column and
     comes back from `to_numpy` the wrong way round for the core, which reads
-    it row after row. Measured at 3000 individuals, a matrix of 72 MB, on 25
+    it row after row. Measured at 3000 individuals, a matrix of 72 MB, on 24
     September 2026: 144.4 MB at the peak and 72.4 MB held with the three, and
     72.2 MB at the peak and 72.0 MB held with this, which at the 10000
     individuals of

@@ -111,18 +111,25 @@ OF_PYNEI = 1.5e-14
 OF_PYNEI_P_VALUE = 1e-11
 
 # How far a `beta` of the logistic model may be from pyNei's, as a share of
-# the `se` of that variant, and how far an `se` and a p-value may be, each as
-# a share of itself.
+# the `se` of that variant, and how far an `se`, a p-value and an effect of
+# the null model may be, each as a share of itself.
 #
 # The bound against pyNei is per model, 1e-9 relative being the ceiling of
 # "How it is verified" of "What every model shares" and not its value, and
-# this model measures far inside it. Over the 1200 variants of each panel
-# with each of the two tests, on 26 September 2026, the worst of the eight
-# runs is the `beta` of the score test, 1.105e-14 of the `se` of its variant
-# on faer and 1.095e-14 on Accelerate, so this is 90 times where it breaks.
-# The `se` is nearer, 3.368e-15 of itself at worst, and the p-value 4.524e-14
-# of itself, both on Accelerate; the effects of the null model agree to
-# 3.7e-16. The spec's 1e-9 would have been 90000 times the worst.
+# this model measures far inside it. Measured on 24 September 2026 over the
+# 1200 variants of each panel with each of the two tests, on both backends,
+# the furthest of the three columns is the p-value: 4.524e-14 of itself at
+# `var1004` of the panel with every genotype called under the Wald test, on
+# Accelerate, where faer's worst p-value is 3.213e-14 at `var0833` of the
+# panel with genotypes missing under the score test. The `beta` is nearer,
+# 1.151e-14 of the `se` of its variant at worst, at `var0197` under the score
+# test on faer and 1.090e-14 on Accelerate, and the `se` nearer still at
+# 3.368e-15 of itself. The effects of the null model are 1.970e-16 of pyNei's
+# away, 2.220e-16 absolute, in all four runs on both backends. So this is 22
+# times where the bound breaks, where the spec's 1e-9 would have been 22000
+# times it; the procedure of "How it is verified" sets a bound two or three
+# times above where it breaks, which here is 1.5e-13, and the owner is asked
+# before it moves.
 OF_PYNEI_LOGISTIC = 1e-12
 
 # How far a `beta` and an `se` of the logistic Wald test may be from
@@ -484,7 +491,7 @@ def test_the_score_test_of_every_variant_of_the_panel_is_rs() -> None:
     digit. The ids are compared first, so that every row is matched to the
     variant R wrote it for.
 
-    Measured over the 1200 on 26 September 2026, the same on Accelerate and
+    Measured over the 1200 on 24 September 2026, the same on Accelerate and
     on faer to the four digits given: the worst statistic is 1.589e-3 away
     from R's, at `var0784`, 16 per cent of what is allowed, and the worst
     p-value is 3.749e-4 in `log10`, at `var0784` as well, 37 per cent of its
@@ -525,7 +532,7 @@ def test_the_wald_test_of_every_variant_of_the_panel_is_plink2s() -> None:
     variant it fell back to a penalized regression for is left out here and
     is what the test below is about.
 
-    Measured over the 1199 on 26 September 2026, the same on Accelerate and
+    Measured over the 1199 on 24 September 2026, the same on Accelerate and
     on faer to the four digits given: the worst effect is 2.103e-5 of the
     `se` of its variant, at `var0395`, 21 per cent of what is allowed; the
     worst standard error is 1.334e-4 of that `se`, at `var0179`, 27 per cent
@@ -626,10 +633,10 @@ def test_every_variant_of_a_logistic_panel_is_pyneis(
     `residual_variance` is `None` for a binomial trait in both libraries,
     whose variance is decided by its mean.
 
-    Measured on 26 September 2026 over the four pairs of panel and test on
-    both backends, the worst being the `beta` of the score test of the panel
-    with genotypes missing, 1.105e-14 of the `se` of its variant on faer.
-    The comment on `OF_PYNEI_LOGISTIC` has the rest.
+    Measured on 24 September 2026 over the four pairs of panel and test on
+    both backends, the furthest number being the p-value of the Wald test of
+    the panel with every genotype called, 4.524e-14 of itself at `var1004` on
+    Accelerate. The comment on `OF_PYNEI_LOGISTIC` has the rest.
     """
     ours = _the_logistic_study(panel, test=test)
     theirs = _the_logistic_study_of_pynei(panel, test)
@@ -1419,7 +1426,7 @@ OF_RRBLUP = 1e-4
 # worst p-value is 4.62e-5 and 4.76e-5 in `log10`, both at `var0185`, 48 per
 # cent of what is allowed.
 #
-# How much of each of those is popnei's, measured on 25 September 2026. At
+# How much of each of those is popnei's, measured on 24 September 2026. At
 # `var0955` GMMAT prints 11.6504, so half of its last digit is 4.2917e-6 of
 # the value against the 4.4268e-6 measured: at most 1.35e-7 of that
 # difference is popnei's arithmetic. The comparison is not for that reason
@@ -1447,7 +1454,7 @@ OF_GMMAT_P_VALUE = 1e-4
 # variance of this build 3.155e-9 apart on the same kinship, 2.583e-9 of it,
 # so a bound at 1e-9 would sit below the noise of the search and would pass
 # or fail by rounding. The 9.7e-9 the spec gives, and this comment gave
-# until 25 September 2026, is the cargo build's figure, which is not this
+# until 24 September 2026, is the cargo build's figure, which is not this
 # one: the two were measured on different builds and the wrong one was
 # copied here.
 #
@@ -1879,7 +1886,7 @@ def test_a_kinship_that_does_not_tell_the_variances_apart_gives_none_of_them(
     genetic variance and the residual one: the restricted maximum likelihood
     has nothing to choose between them and its criterion is flat over the
     whole grid, so which point wins is rounding. What the study gave before
-    this, on 25 September 2026, was a ``heritability`` of 6.83e-05, which
+    this, on 24 September 2026, was a ``heritability`` of 6.83e-05, which
     reads as a small number and is an arbitrary one; perturbing such a
     kinship by 1e-15 gave 6.5e-5, 7.1e-5 and 0.967 over three seeds.
 
