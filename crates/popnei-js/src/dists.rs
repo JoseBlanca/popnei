@@ -24,7 +24,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::dists::calc_kosman_sums;
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The Kosman distance of every pair of individuals, the names of those
@@ -98,21 +98,23 @@ pub(crate) fn kosman_dists_of(
     min_num_vars: u32,
     steps: Steps,
 ) -> Result<KosmanDistances, JsPopneiError> {
-    let run = source.starts_a_run(&Consumer::KosmanDists);
-    let reader = source.reader(&run, None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    // The names are the reader's own, taken before the calculation borrows
-    // it: the vector and the names then cannot be of two different sources.
-    let names = chain.individuals().to_vec();
-    let sums = calc_kosman_sums(&mut chain)?;
-    let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
-    let dist_vector = sums
-        .dists(min_num_vars)
-        .map(|dist| dist.unwrap_or(f64::NAN))
-        .collect();
-    Ok(KosmanDistances {
-        dist_vector: Some(dist_vector),
-        names: Some(names),
-        counts,
+    the_run_of(source, &Consumer::KosmanDists, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        // The names are the reader's own, taken before the calculation borrows
+        // it: the vector and the names then cannot be of two different
+        // sources.
+        let names = chain.individuals().to_vec();
+        let sums = calc_kosman_sums(&mut chain)?;
+        let counts = PassCounts::of(sums.num_vars(), &chain.filtering_stats());
+        let dist_vector = sums
+            .dists(min_num_vars)
+            .map(|dist| dist.unwrap_or(f64::NAN))
+            .collect();
+        Ok(KosmanDistances {
+            dist_vector: Some(dist_vector),
+            names: Some(names),
+            counts,
+        })
     })
 }

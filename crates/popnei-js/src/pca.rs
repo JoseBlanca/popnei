@@ -16,7 +16,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::pca::{Pca, PcaOptions, VariantPcaOptions};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The principal components of a table, on their way to TypeScript.
@@ -256,35 +256,36 @@ pub(crate) fn pca_of_the_variants(
     // The source is asked for no size of block: the core puts a `reblock`
     // over each reader and chooses the size there, since the product of a
     // block is matrix work and a filter leaves blocks of uneven size.
-    let run = source.starts_a_run(&Consumer::PcaOfVariants { num_prin_comps });
-    let mut first_pass = chain_of(source.reader(&run, None)?, steps.steps())?;
-    // The weights of a variant need the eigenvectors, which are known when
-    // the first pass ends, so they come from a second pass over the same
-    // variants. With none asked for there is no second reader and the source
-    // is read once.
-    let mut second_pass = if num_prin_comps > 0 {
-        Some(chain_of(source.reader(&run, None)?, steps.steps())?)
-    } else {
-        None
-    };
-    let result = popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)?;
-    // The variants the pass gave, used or not, which is what the counts of a
-    // pass say.
-    let num_vars = u64::try_from(result.num_cols).map_err(|_| {
-        JsPopneiError::Broken(format!(
-            "the pass gave {num_vars} variants, more than the count of a pass holds",
-            num_vars = result.num_cols
-        ))
-    })?;
-    let pass_stats = PassCounts::of(num_vars, &first_pass.filtering_stats());
-    Ok(PcaOfVariants {
-        num_comps: result.num_comps,
-        projections: Some(result.projections),
-        explained_variance_percent: Some(result.explained_variance_percent),
-        num_prin_comps: result.num_prin_comps,
-        princomps: Some(result.princomps),
-        used_vars: Some(the_positions_of_the_used_variants(&result.used_cols)?),
-        pass_stats,
+    the_run_of(source, &Consumer::PcaOfVariants { num_prin_comps }, |run| {
+        let mut first_pass = chain_of(source.reader(run, None)?, steps.steps())?;
+        // The weights of a variant need the eigenvectors, which are known when
+        // the first pass ends, so they come from a second pass over the same
+        // variants. With none asked for there is no second reader and the
+        // source is read once.
+        let mut second_pass = if num_prin_comps > 0 {
+            Some(chain_of(source.reader(run, None)?, steps.steps())?)
+        } else {
+            None
+        };
+        let result = popnei::pca::pca_of_variants(&mut first_pass, second_pass.as_mut(), &options)?;
+        // The variants the pass gave, used or not, which is what the counts of
+        // a pass say.
+        let num_vars = u64::try_from(result.num_cols).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "the pass gave {num_vars} variants, more than the count of a pass holds",
+                num_vars = result.num_cols
+            ))
+        })?;
+        let pass_stats = PassCounts::of(num_vars, &first_pass.filtering_stats());
+        Ok(PcaOfVariants {
+            num_comps: result.num_comps,
+            projections: Some(result.projections),
+            explained_variance_percent: Some(result.explained_variance_percent),
+            num_prin_comps: result.num_prin_comps,
+            princomps: Some(result.princomps),
+            used_vars: Some(the_positions_of_the_used_variants(&result.used_cols)?),
+            pass_stats,
+        })
     })
 }
 

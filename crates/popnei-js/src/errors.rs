@@ -90,6 +90,18 @@ pub enum JsPopneiError {
     /// wasm, and an abort is a trap that leaves the module unusable, so
     /// what can be asked for beforehand is.
     NoMemory(String),
+    /// The value the function that is told how far a pass has got threw,
+    /// which ended the run and crosses back to the application untouched.
+    ///
+    /// It is the one case that is not an error of popnei. A run is stopped
+    /// by that function throwing: the read it threw in fails, the error
+    /// travels out through the readers of the core, and the consumer puts
+    /// this case in its place, whatever error the core gave, so that nothing
+    /// depends on which reader turned the failed read into which error. What
+    /// the application catches is the value it threw itself, which it
+    /// recognises with `===` and without reading a message, as "What the
+    /// source tells the page" of `docs/specs/js_sources.md` says.
+    Stopped(JsValue),
     /// Something that cannot happen unless this crate has a defect: a
     /// chromosome whose number is not in the table of the reader that gave
     /// it, a variant with more alleles than a JavaScript array of counts
@@ -110,13 +122,23 @@ impl From<popnei::Error> for JsPopneiError {
 
 impl From<JsPopneiError> for JsValue {
     /// The `Error` that JavaScript catches, with the message the error has
-    /// in Rust.
+    /// in Rust, or the value of the application that stopped a run, which
+    /// crosses as it is.
     ///
     /// JavaScript has one exception for everything a library refuses, so
-    /// the eight cases are one `Error`, where Python tells a `ValueError`
-    /// from an `OSError`.
+    /// the eight cases that are an error of popnei are one `Error`, where
+    /// Python tells a `ValueError` from an `OSError`. The ninth,
+    /// [`Stopped`], is not an error of popnei: what it holds is the value
+    /// the application threw, and it goes back as it came.
+    ///
+    /// [`Stopped`]: JsPopneiError::Stopped
     fn from(error: JsPopneiError) -> JsValue {
         let message = match error {
+            // The value the application threw, given back without being
+            // made into anything: it is what an application tells its own
+            // cancel by, and an `Error` around it would be a message to
+            // read.
+            JsPopneiError::Stopped(thrown) => return thrown,
             JsPopneiError::Core(error) => the_message_of_the_core(&error),
             // The threshold of a filter, which is the number a user wrote
             // in the call that adds it: the message names the argument, and

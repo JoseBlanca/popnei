@@ -30,7 +30,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use popnei::ld::{MAX_NUM_VARS_OF_THE_MATRIX, TheMatrixGivenAway, calc_r2_matrix};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The r² of every pair of the variants of a pass, with the chromosome and
@@ -154,30 +154,31 @@ pub(crate) fn r2_matrix_of(
     max_num_vars: usize,
     steps: Steps,
 ) -> Result<R2Matrix, JsPopneiError> {
-    let run = source.starts_a_run(&Consumer::R2Matrix);
-    let reader = source.reader(&run, None)?;
-    let mut chain = chain_of(reader, steps.steps())?;
-    let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
-    let num_vars = matrix.num_vars();
-    let counted = u64::try_from(num_vars).map_err(|_| {
-        JsPopneiError::Broken(format!(
-            "the pass gave {num_vars} variants, more than the count of a pass holds"
-        ))
-    })?;
-    let counts = PassCounts::of(counted, &chain.filtering_stats());
-    // The matrix is taken out of the core's result and not read from it, so
-    // that what crosses into JavaScript is the allocation the core filled.
-    // `given_away` consumes that result, so the chromosomes and the
-    // positions are read from what it gave and not from it.
-    let matrix = matrix.given_away();
-    let chroms = the_names_of_the_chromosomes(&matrix)?;
-    let poss = positions_of(&matrix.poss)?;
-    Ok(R2Matrix {
-        num_vars,
-        r2: Some(matrix.r2),
-        chroms: Some(chroms),
-        poss: Some(poss),
-        counts,
+    the_run_of(source, &Consumer::R2Matrix, |run| {
+        let reader = source.reader(run, None)?;
+        let mut chain = chain_of(reader, steps.steps())?;
+        let matrix = calc_r2_matrix(&mut chain, max_num_vars).map_err(of_this_pass)?;
+        let num_vars = matrix.num_vars();
+        let counted = u64::try_from(num_vars).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "the pass gave {num_vars} variants, more than the count of a pass holds"
+            ))
+        })?;
+        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        // The matrix is taken out of the core's result and not read from it,
+        // so that what crosses into JavaScript is the allocation the core
+        // filled. `given_away` consumes that result, so the chromosomes and
+        // the positions are read from what it gave and not from it.
+        let matrix = matrix.given_away();
+        let chroms = the_names_of_the_chromosomes(&matrix)?;
+        let poss = positions_of(&matrix.poss)?;
+        Ok(R2Matrix {
+            num_vars,
+            r2: Some(matrix.r2),
+            chroms: Some(chroms),
+            poss: Some(poss),
+            counts,
+        })
     })
 }
 

@@ -24,7 +24,7 @@ use popnei::filters::resolve_individuals;
 use popnei::kinship::{calc_kinship, principal_components_of};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts};
+use crate::source::{Consumer, OpenSource, PassCounts, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// The kinship of every pair of individuals, the names of those individuals
@@ -122,34 +122,36 @@ pub(crate) fn kinship_of_the_variants(
     transform_to_biallelic: bool,
     steps: Steps,
 ) -> Result<KinshipOfVariants, JsPopneiError> {
-    let run = source.starts_a_run(&Consumer::Kinship);
-    let mut chain = chain_of(source.reader(&run, None)?, steps.steps())?;
-    // The names the pass gives, which are the source's own when no step is
-    // a filter of individuals and the kept ones in the order they were
-    // named when one is. They are read before the calculation borrows the
-    // chain, so the matrix and the names cannot be of two different passes.
-    let of_the_pass = chain.individuals().to_vec();
-    // A name that is of nobody is refused before the source is read: the
-    // rule and its message are the core's, the one a filter of individuals
-    // is given its names by.
-    let positions = match individuals.as_deref() {
-        Some(names) => Some(resolve_individuals(names, &of_the_pass)?),
-        None => None,
-    };
-    // The names of the matrix are the ones that were asked for, in the
-    // order they were asked in, which is the order the core gives the rows
-    // in; with no name at all they are every individual of the pass. They
-    // are built before the call because the pair that has no variant called
-    // in both is named with them.
-    let of_the_matrix = individuals.unwrap_or(of_the_pass);
-    let kinship = calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)
-        .map_err(|error| under_the_names_of_the_individuals(error, &of_the_matrix))?;
-    let counts = PassCounts::of(kinship.num_vars_given, &chain.filtering_stats());
-    Ok(KinshipOfVariants {
-        num_vars: kinship.num_vars as f64,
-        matrix: Some(kinship.matrix),
-        individuals: Some(of_the_matrix),
-        counts,
+    the_run_of(source, &Consumer::Kinship, |run| {
+        let mut chain = chain_of(source.reader(run, None)?, steps.steps())?;
+        // The names the pass gives, which are the source's own when no step is
+        // a filter of individuals and the kept ones in the order they were
+        // named when one is. They are read before the calculation borrows the
+        // chain, so the matrix and the names cannot be of two different
+        // passes.
+        let of_the_pass = chain.individuals().to_vec();
+        // A name that is of nobody is refused before the source is read: the
+        // rule and its message are the core's, the one a filter of individuals
+        // is given its names by.
+        let positions = match individuals.as_deref() {
+            Some(names) => Some(resolve_individuals(names, &of_the_pass)?),
+            None => None,
+        };
+        // The names of the matrix are the ones that were asked for, in the
+        // order they were asked in, which is the order the core gives the rows
+        // in; with no name at all they are every individual of the pass. They
+        // are built before the call because the pair that has no variant
+        // called in both is named with them.
+        let of_the_matrix = individuals.unwrap_or(of_the_pass);
+        let kinship = calc_kinship(&mut chain, positions.as_deref(), transform_to_biallelic)
+            .map_err(|error| under_the_names_of_the_individuals(error, &of_the_matrix))?;
+        let counts = PassCounts::of(kinship.num_vars_given, &chain.filtering_stats());
+        Ok(KinshipOfVariants {
+            num_vars: kinship.num_vars as f64,
+            matrix: Some(kinship.matrix),
+            individuals: Some(of_the_matrix),
+            counts,
+        })
     })
 }
 

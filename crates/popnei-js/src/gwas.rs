@@ -34,7 +34,7 @@ use popnei::block::BlockReader;
 use popnei::gwas::{Gwas, GwasInput, TestType, TraitType, calc_gwas};
 
 use crate::errors::JsPopneiError;
-use crate::source::{Consumer, OpenSource, PassCounts, positions_of};
+use crate::source::{Consumer, OpenSource, PassCounts, positions_of, the_run_of};
 use crate::steps::{Steps, chain_of};
 
 /// What a study is asked for, as the package checked it: the individuals to
@@ -279,35 +279,36 @@ pub(crate) fn gwas_of_the_variants(
         individuals: &individuals,
         transform_to_biallelic: study.transform_to_biallelic,
     };
-    let run = source.starts_a_run(&Consumer::Gwas);
-    let mut chain = chain_of(source.reader(&run, None)?, steps.steps())?;
-    let result = calc_gwas(&mut chain, None::<&mut Box<dyn BlockReader>>, &input)?;
-    let counted = u64::try_from(result.num_vars).map_err(|_| {
-        JsPopneiError::Broken(format!(
-            "the study read {num_vars} variants, more than the count of a pass holds",
-            num_vars = result.num_vars
-        ))
-    })?;
-    let counts = PassCounts::of(counted, &chain.filtering_stats());
-    let chroms = the_names_of_the_chromosomes(&result)?;
-    let poss = result.poss.as_deref().map(positions_of).transpose()?;
-    Ok(GwasOfVariants {
-        model: result.null_model.model.name().to_owned(),
-        test: result.null_model.test.name().to_owned(),
-        covariate_effects: Some(result.null_model.covariate_effects),
-        residual_variance: result.null_model.residual_variance,
-        genetic_variance: result.null_model.genetic_variance,
-        heritability: result.null_model.heritability,
-        num_individuals: result.null_model.num_individuals,
-        allele_freq: Some(result.allele_freq),
-        beta: Some(result.beta),
-        se: Some(result.se),
-        p_value: Some(result.p_value),
-        used_grammar_gamma_approx: result.used_grammar_gamma_approx,
-        chroms,
-        poss,
-        ids: result.ids,
-        counts,
+    the_run_of(source, &Consumer::Gwas, |run| {
+        let mut chain = chain_of(source.reader(run, None)?, steps.steps())?;
+        let result = calc_gwas(&mut chain, None::<&mut Box<dyn BlockReader>>, &input)?;
+        let counted = u64::try_from(result.num_vars).map_err(|_| {
+            JsPopneiError::Broken(format!(
+                "the study read {num_vars} variants, more than the count of a pass holds",
+                num_vars = result.num_vars
+            ))
+        })?;
+        let counts = PassCounts::of(counted, &chain.filtering_stats());
+        let chroms = the_names_of_the_chromosomes(&result)?;
+        let poss = result.poss.as_deref().map(positions_of).transpose()?;
+        Ok(GwasOfVariants {
+            model: result.null_model.model.name().to_owned(),
+            test: result.null_model.test.name().to_owned(),
+            covariate_effects: Some(result.null_model.covariate_effects),
+            residual_variance: result.null_model.residual_variance,
+            genetic_variance: result.null_model.genetic_variance,
+            heritability: result.null_model.heritability,
+            num_individuals: result.null_model.num_individuals,
+            allele_freq: Some(result.allele_freq),
+            beta: Some(result.beta),
+            se: Some(result.se),
+            p_value: Some(result.p_value),
+            used_grammar_gamma_approx: result.used_grammar_gamma_approx,
+            chroms,
+            poss,
+            ids: result.ids,
+            counts,
+        })
     })
 }
 

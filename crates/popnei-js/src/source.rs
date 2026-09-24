@@ -20,7 +20,11 @@
 //! JavaScript, the function it tells, is [`InJavaScript`] in
 //! [`IN_JAVASCRIPT`]: no handle of JavaScript is `Send`, and a reader of the
 //! core has to be, so what a pass holds of those two tables is the number of
-//! an entry.
+//! an entry. A function of the page that throws ends the pass where it was
+//! reading, and the value it threw is kept in the run and given back to the
+//! application in place of the error the failed read became, so a cancel is
+//! the application's own value and popnei's errors stay the ones it made
+//! itself.
 //!
 //! [`Blocks`] is that pass, whichever source it came from: it owns the chain
 //! of readers of the pass, the source with a filter over it for each step of
@@ -314,6 +318,13 @@ pub(crate) struct PassOverTheBytes {
     /// again.
     told_at: u64,
     num_bytes: u64,
+    /// Whether the function of the page threw in this pass, which is when
+    /// the pass ends: every read after that one fails with the same error
+    /// and the function is called no more, as `docs/specs/js_sources.md`
+    /// says. No reader of the core reads again after an error of this kind,
+    /// so what this keeps is the promise made to the application and not
+    /// the behaviour of any of them.
+    was_stopped: bool,
 }
 
 /// Where the bytes of a pass come from.
@@ -340,6 +351,7 @@ impl PassOverTheBytes {
             // `u64`, so the file of a source that is in the memory of a tab
             // never reaches this.
             num_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            was_stopped: false,
         }
     }
 
@@ -350,8 +362,12 @@ impl PassOverTheBytes {
     ///
     /// # Errors
     ///
-    /// When the function of the page throws.
+    /// When the function of the page throws, and every read after the one it
+    /// threw in.
     fn before_a_read(&mut self) -> std::io::Result<()> {
+        if self.was_stopped {
+            return Err(the_pass_was_stopped());
+        }
         if self.pass == 0 {
             self.pass = the_pass_that_starts(self.run);
             return self.tell();
@@ -390,7 +406,9 @@ impl PassOverTheBytes {
     /// source of the run was given no function.
     ///
     /// The function is called with no table of this crate borrowed, so an
-    /// application that calls popnei from inside it does not trap.
+    /// application that calls popnei from inside it does not trap. What it
+    /// throws is kept in the run, which is where the consumer of that run
+    /// reads it to throw it in place of the error this read fails with.
     ///
     /// # Errors
     ///
@@ -412,18 +430,38 @@ impl PassOverTheBytes {
             &JsValue::from_f64(f64::from(self.pass)),
             &JsValue::from_f64(f64::from(num_passes)),
         );
-        told.apply(&JsValue::NULL, &progress).map_err(|_| {
-            // `ErrorKind::Interrupted` is read again by three loops of the
-            // core and `ErrorKind::UnexpectedEof` is what the reader of a
-            // vars file turns into the error of a file that was cut short, so
-            // neither of them would end the pass as this has to.
-            std::io::Error::other(
-                "the function that is told how far a pass has got threw, and the pass \
-                 ended where it was reading",
-            )
-        })?;
+        if let Err(thrown) = told.apply(&JsValue::NULL, &progress) {
+            // The value is put in the run before the read fails, so that the
+            // consumer finds it there whatever the readers of the core make
+            // of the failed read on the way out.
+            the_run_was_stopped(self.run, thrown);
+            self.was_stopped = true;
+            return Err(the_pass_was_stopped());
+        }
         Ok(())
     }
+}
+
+/// What a read that the function of the page threw in fails with.
+///
+/// The kind is the one of `std::io::Error::other`: `ErrorKind::Interrupted`
+/// is read again by three loops of the core, `read_line_of` of `io::vcf`,
+/// `take_from` of `io::bgzf` and the `read_exact` of `bytes_at` of
+/// `io::vars`, so a stop written with it would never end the pass, and
+/// `ErrorKind::UnexpectedEof` is what `bytes_at` turns into the error of a
+/// vars file that was cut short, so a stop written with it would reach the
+/// user as a damaged file.
+///
+/// No user of the package reads this message: the consumer of the run throws
+/// the value the function threw in place of whatever error the core made of
+/// this one. It is what a run that could not be counted, the one with no
+/// entry of [`RUNS`], fails with, and that run tells the page nothing, so no
+/// function of an application throws in it either.
+fn the_pass_was_stopped() -> std::io::Error {
+    std::io::Error::other(
+        "the function that is told how far a pass has got threw, and the pass ended \
+         where it was reading",
+    )
 }
 
 impl Read for PassOverTheBytes {
@@ -499,8 +537,8 @@ struct InJavaScript {
     freed: bool,
 }
 
-/// One run of one consumer: which source it reads, how many passes it makes
-/// and how many have begun.
+/// One run of one consumer: which source it reads, how many passes it makes,
+/// how many have begun, and what the function of the page threw.
 ///
 /// It is taken out when the consumer returns, and for `iterBlocks` when the
 /// iteration ends or the pass is freed.
@@ -508,6 +546,14 @@ struct Run {
     source: u32,
     num_passes: u32,
     passes_begun: u32,
+    /// What the function that is told the progress threw, which ended a pass
+    /// of this run and is what the consumer throws in place of the error the
+    /// core gave.
+    ///
+    /// It is nothing when the run starts, so no run throws what another one
+    /// was stopped with: a run that ends gives its entry back and the next
+    /// one made in it is a new [`Run`].
+    stopped_with: Option<JsValue>,
 }
 
 thread_local! {
@@ -634,6 +680,7 @@ pub(crate) fn starts_a_run_of(source: u32, consumer: &Consumer) -> RunOfAConsume
                 source,
                 num_passes: consumer.num_passes(),
                 passes_begun: 0,
+                stopped_with: None,
             },
         )
     });
@@ -653,6 +700,34 @@ fn the_pass_that_starts(run: u32) -> u32 {
         run.passes_begun = run.passes_begun.saturating_add(1);
         run.passes_begun
     })
+}
+
+/// The function of the page threw `thrown` in a pass of the run numbered
+/// `run`, which is what the consumer of that run throws in place of the error
+/// its read failed with.
+///
+/// A run whose function threw twice keeps the first value: the pass the first
+/// throw was in reads no more, and a second pass of the same run is not
+/// started, because the consumer gets the error of the first.
+fn the_run_was_stopped(run: u32, thrown: JsValue) {
+    RUNS.with_borrow_mut(|runs| {
+        if let Some(run) = entry_to_change(runs, run)
+            && run.stopped_with.is_none()
+        {
+            run.stopped_with = Some(thrown);
+        }
+    });
+}
+
+/// What the function of the page threw in a pass of the run numbered `run`,
+/// and nothing when no pass of it was stopped.
+///
+/// The value is cloned out of the table, which is a handle of JavaScript
+/// copied: the run keeps what stopped it for as long as it is open, and the
+/// `iterBlocks` whose iteration threw it is asked for its blocks again
+/// without being told of another stop.
+fn what_a_run_was_stopped_with(run: u32) -> Option<JsValue> {
+    RUNS.with_borrow(|runs| entry_of(runs, run)?.stopped_with.clone())
 }
 
 /// The function the page is told the progress of the run numbered `run` with,
@@ -675,6 +750,33 @@ fn what_tells_the_page(run: u32) -> Option<(Function, u32)> {
 /// consumer is done with it.
 pub(crate) struct RunOfAConsumer(u32);
 
+impl RunOfAConsumer {
+    /// `result` as the consumer of this run gives it: an error swapped for
+    /// the value the function of the page threw, when that is what ended a
+    /// pass of the run.
+    ///
+    /// The swap is made whatever error the core gave back, so nothing
+    /// depends on which reader turned the failed read into which error: the
+    /// same stop is a wrong line of a VCF to one reader, a gzip member that
+    /// is not there to another and a vars file that was cut short to a
+    /// third, and the application is given its own value in all three.
+    ///
+    /// It is called while the run is open, because the value it reads goes
+    /// out of [`RUNS`] with the run.
+    pub(crate) fn what_the_consumer_gives<T>(
+        &self,
+        result: Result<T, JsPopneiError>,
+    ) -> Result<T, JsPopneiError> {
+        match result {
+            Ok(given) => Ok(given),
+            Err(error) => Err(match what_a_run_was_stopped_with(self.0) {
+                Some(thrown) => JsPopneiError::Stopped(thrown),
+                None => error,
+            }),
+        }
+    }
+}
+
 impl Drop for RunOfAConsumer {
     /// Takes the run out of [`RUNS`], and with it the entry of a source that
     /// was freed while this was the last run reading it.
@@ -695,6 +797,33 @@ impl Drop for RunOfAConsumer {
             the_entry_of_the_source_goes(source);
         }
     }
+}
+
+/// What the consumer `consumer` of `source` gives, over a run of its own.
+///
+/// `reads_the_source` opens the readers of the passes of the run and makes
+/// the calculation over them, and the run is open while it runs and is taken
+/// out of [`RUNS`] when it is over.
+///
+/// Every consumer but the iteration of `iterBlocks` opens its run here, so
+/// that the value an application threw to stop it is what the consumer gives
+/// back, in place of the error the read failed with, and no consumer has to
+/// remember to make that swap itself. The iteration is the one that does not:
+/// its run lives on in the `Blocks` after the call that made it has returned,
+/// and [`Blocks::next_block`] is where its swap is made.
+///
+/// # Errors
+///
+/// Those of the consumer, and the value the function that is told the
+/// progress threw when it stopped a pass of the run.
+pub(crate) fn the_run_of<T>(
+    source: &dyn OpenSource,
+    consumer: &Consumer,
+    reads_the_source: impl FnOnce(&RunOfAConsumer) -> Result<T, JsPopneiError>,
+) -> Result<T, JsPopneiError> {
+    let run = source.starts_a_run(consumer);
+    let given = reads_the_source(&run);
+    run.what_the_consumer_gives(given)
 }
 
 /// That the memory of wasm takes `num_bytes` more, asked for before a
@@ -781,14 +910,24 @@ pub(crate) fn blocks_of(
     // opens twelve iterations over one source at once has twelve runs, and
     // each of them is the pass 1 of 1 of its own.
     let run = source.starts_a_run(&Consumer::IterBlocks);
-    let reader = source.reader(&run, num_vars_per_block)?;
-    // The fields are asked of the whole chain and not of the source alone: a
-    // filter asks its source for what it was asked for and for the
-    // genotypes, which it needs itself.
-    let mut chain = chain_of(reader, steps.steps())?;
-    chain.set_needs(needs.union(Needs::GTS));
+    // The run is not opened by `the_run_of`, as every other consumer's is,
+    // because it goes into the `Blocks` and lives on after this call. So the
+    // reader is built here with the run in hand and the swap of the error is
+    // made on what building it gave: the first read of the pass is the header
+    // of a VCF or the footer of a vars file, made when the reader is built,
+    // and the function of the page can throw in it.
+    let opens_the_pass = || -> Result<Box<dyn BlockReader>, JsPopneiError> {
+        let reader = source.reader(&run, num_vars_per_block)?;
+        // The fields are asked of the whole chain and not of the source
+        // alone: a filter asks its source for what it was asked for and for
+        // the genotypes, which it needs itself.
+        let mut chain = chain_of(reader, steps.steps())?;
+        chain.set_needs(needs.union(Needs::GTS));
+        Ok(Box::new(Reblock::new(chain, num_vars_per_block)?))
+    };
+    let opened = opens_the_pass();
     Ok(Blocks {
-        reader: Box::new(Reblock::new(chain, num_vars_per_block)?),
+        reader: run.what_the_consumer_gives(opened)?,
         run,
         finished: false,
         num_vars: 0,
@@ -956,20 +1095,21 @@ pub(crate) fn bytes_of_a_vars_file(
     // of genotypes while it is written, and 0.3 MB when the caller asked for
     // batches of 100. A source that cannot give that size, the vars file
     // whose batches were written at another one, leaves it to the `reblock`.
-    let run = source.starts_a_run(&Consumer::WriteVars);
-    let reader = source.reader(&run, num_vars_per_block)?;
-    // The chain of the pass stays here, lent to the core, so that the counts
-    // of its filters can be read when the call is over: the loop over the
-    // blocks is the core's, and so is the count of the variants it wrote,
-    // which no loop of this crate sees.
-    let mut chain = chain_of(reader, steps.steps())?;
-    let (written, num_vars) =
-        popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
-    Ok(VarsFile {
-        pieces: written.pieces,
-        num_bytes: written.num_bytes,
-        next: 0,
-        counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+    the_run_of(source, &Consumer::WriteVars, |run| {
+        let reader = source.reader(run, num_vars_per_block)?;
+        // The chain of the pass stays here, lent to the core, so that the
+        // counts of its filters can be read when the call is over: the loop
+        // over the blocks is the core's, and so is the count of the variants
+        // it wrote, which no loop of this crate sees.
+        let mut chain = chain_of(reader, steps.steps())?;
+        let (written, num_vars) =
+            popnei::io::vars::write_vars(&mut chain, PiecesOfTheFile::new(), num_vars_per_block)?;
+        Ok(VarsFile {
+            pieces: written.pieces,
+            num_bytes: written.num_bytes,
+            next: 0,
+            counts: PassCounts::of(num_vars, &chain.filtering_stats()),
+        })
     })
 }
 
@@ -1050,10 +1190,9 @@ pub struct Blocks {
     /// The run of the iteration, which is taken out of [`RUNS`] when the pass
     /// is freed: an iteration that a user abandons holds it until the
     /// `FinalizationRegistry` of the package frees the pass.
-    #[expect(
-        dead_code,
-        reason = "the run is held for as long as the pass reads, and what takes it out                   of `RUNS` is dropping it with the pass"
-    )]
+    ///
+    /// It is read at every block, to give back the value an application threw
+    /// to stop the iteration in place of the error the read failed with.
     run: RunOfAConsumer,
     /// Whether the pass is over: the reader has no more blocks, or a block
     /// was lost with an error. After either there is no block.
@@ -1096,7 +1235,10 @@ impl Blocks {
         if !matches!(columns, Ok(Some(_))) {
             self.finished = true;
         }
-        columns
+        // The iteration is the one consumer whose run is not opened by
+        // `the_run_of`, so this is where the value that stopped it takes the
+        // place of the error the read failed with.
+        self.run.what_the_consumer_gives(columns)
     }
 
     /// How many variants the pass has given, and what each filter of it was

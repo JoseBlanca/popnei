@@ -651,10 +651,12 @@ export class Variants {
    * principal component analysis that reads the file twice does not look
    * broken when the bar goes back to empty.
    *
-   * What `told` throws ends the pass where it was reading and the consumer
-   * fails there, so an application cancels a run without ending its worker.
-   * The `Variants` is then the one it was, and the next run over it reads
-   * the file from its start.
+   * What `told` throws ends the pass where it was reading, and the consumer
+   * throws that same value: an application that cancels a run tells its own
+   * cancel from a file that could not be read with `===` and without reading
+   * a message, and its worker is not ended. Whichever error the read failed
+   * with inside popnei is not the one it gets. The `Variants` is then the
+   * one it was, and the next run over it reads the file from its start.
    *
    * The function holds until it is set again, and setting it changes nothing
    * about the variants a pass gives. The reads of `openVcf` and `openVars`,
