@@ -585,3 +585,43 @@ deselected`, where it gave 7 and where at the start of the plan it exited
 the core crate stays at 857 with 2 ignored and the same on faer, 149
 linear algebra, 332 node, and fmt, clippy, wasm-check and ruff clean.
 Every one was run by the orchestrator.
+
+**2.5, the fitted curve in TypeScript.** Commit `d2aaeaa`. `decayPerPop`
+on the result, an object of population name to `{rhoPerBp, r2AtZero,
+halfDist}`, three numbers and not arrays as the spec asks, with `LdDecay`
+exported from both `node.ts` and `web.ts`. The three values cross as one
+array of a value per population and are read at that population's index,
+so nothing is cut.
+
+The WebAssembly build gives the same three numbers as Python, to the bit.
+That is worth recording because the review of work package 1 found the
+WebAssembly build 2 units in the last place from the native one on a
+bin's mean: the fit uses the four operations for the curve and the sum,
+and `powf` only to move along the exponent of 10 in the grid and the
+search, so the platform can move the answer only through where the search
+looked, and here it did not.
+
+The task added a node test of a population with no curve, which the
+deliverable did not ask for, because it is the only test in any suite
+that shows a NaN of the core reaching a JavaScript user as `NaN`. It
+needed no new fixture file.
+
+`node --test js/popnei/test/ld.test.ts` runs 19 tests where it ran 17,
+and the whole node suite is 334 where it was 332.
+
+### The seven deliverables of work package 2, each checked by the orchestrator
+
+| the deliverable | the command | what it gave |
+|---|---|---|
+| 1, `ld.decay.txt` written again and compared | `tests/reference/ld/run_plink2.sh` into an empty directory | exit 0, no file named as differing, and `cmp` finds the stored `ld.decay.txt` and `ld.bins.txt` both identical to the written ones |
+| 2, `fit_ld_decay` against the curve-derived table | `cargo test -p popnei --lib ld::decay -- --list` | `15 tests`, where it printed `0 tests` before this work package |
+| 3, the cases with no curve | the same list | both ends of the searched range, fewer than two distances and no pair at all, each with its own test, and the four errors beside them |
+| 4, the three rows against R | `cargo test --workspace` | `857 passed; 0 failed; 2 ignored`, and `149 passed` in the linear algebra crate |
+| 5, the memory asked and refused | the same run | the test of task 2.1, which fails when the checked allocation is made ordinary |
+| 6, the Python layer | `uv run pytest tests/test_ld.py -k ld_and_dist` | `9 passed, 16 deselected`, where the plan started at exit 5 with nothing matched |
+| 7, the TypeScript layer | `npm run build && npm test` in `js/popnei` | `tests 334, pass 334, fail 0`, and 19 in the ld file where there were 10 at the start of the plan |
+
+`cargo test -p popnei --no-default-features` gives the same 857 on the
+faer backend, and `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo wasm-check`, `uv run ruff format
+--check` and `uv run ruff check` are clean.

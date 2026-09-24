@@ -289,7 +289,7 @@ is not possible: nothing of work package 1 needs anything of this one.
   `decay_per_pop` on `LdAndDistPerPop` and the
   `LdDecay` dataclass, with the NaN of a population with no curve, and
   the pytest tests of deliverable 6. It serves deliverable 6. Needs 2.3.
-- [ ] 2.5 The TypeScript layer, from the last paragraph of "Its Python
+- [x] 2.5 The TypeScript layer, from the last paragraph of "Its Python
   function": `decayPerPop` on the result object and
   the node test of deliverable 7. It serves deliverable 7. Needs 2.3, and
   it can run beside 2.4.
