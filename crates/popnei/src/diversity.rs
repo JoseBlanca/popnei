@@ -36,7 +36,8 @@ use std::ops::Range;
 
 use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
-use crate::stats::{ExpHet, ObsHet, checked_ploidy, every_individual_in_order, min_called_alleles};
+use crate::io::vcf::MAX_PLOIDY;
+use crate::stats::{ExpHet, ObsHet, every_individual_in_order, min_called_alleles};
 use crate::variant::{
     AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_and_gts_of, count_alleles_of,
     count_gts,
@@ -966,9 +967,19 @@ impl OfTheDraw {
     /// `(m - j) (g - j) / ((j + 1) (c - m - g + j + 1))`, so every value the
     /// loop holds is a chance and stays between 0 and 1, where the three
     /// binomial coefficients on their own are above what an `f64` holds: a
-    /// draw of 180 of 20000 copies asks for a number of 444 digits and 171!
+    /// draw of 180 of 20000 copies asks for a number of 445 digits and 171!
     /// is already an infinity. The counts are stepped through with `j` rising
     /// on every call, so two populations of one pass round the same way.
+    ///
+    /// The first count of the range is the count of the smallest chance of
+    /// it, and that chance falls below what an `f64` holds while the bins it
+    /// leads up to are of the order of 1: at 600 heterozygous individuals and
+    /// a draw of 600 it is 1e-360, and a chance of 0 there leaves the variant
+    /// out of every bin of the spectrum and says nothing. So the chance is a
+    /// [`ChanceOfAPowerOfTwo`] through the whole range, a mantissa of full
+    /// precision beside the power of two it is worth, and what a bin is given
+    /// is the one number that is worth. A bin whose own chance is below what
+    /// an `f64` holds is the only one that gets a 0.
     fn add_the_bins_of_the_var(
         &self,
         counts: &AlleleCounts,
@@ -989,13 +1000,17 @@ impl OfTheDraw {
         let first = drawn.saturating_sub(of_the_major_allele);
         let last = of_the_rarer_allele.min(drawn);
         let mut chance = if first == 0 {
-            chance_a_draw_misses_an_allele(called_alleles, of_the_rarer_allele, drawn)
+            chance_a_draw_misses_an_allele_of_a_power_of_two(
+                called_alleles,
+                of_the_rarer_allele,
+                drawn,
+            )
         } else {
             // The draw takes every copy of the major allele, which is the
             // chance that a draw of the copies it leaves behind misses each of
             // them. A draw of every copy leaves none behind and takes them
             // with chance 1, which is the product of no factor.
-            chance_a_draw_misses_an_allele(
+            chance_a_draw_misses_an_allele_of_a_power_of_two(
                 called_alleles,
                 of_the_major_allele,
                 called_alleles.saturating_sub(drawn),
@@ -1010,7 +1025,7 @@ impl OfTheDraw {
                 .ok()
                 .and_then(|bin| of_the_pops_bins.get_mut(bin))
             {
-                *of_the_bin += chance;
+                *of_the_bin += chance.as_one_number();
             }
             // The chance of one more copy of the rarer allele, from the one in
             // hand. Past the last count of the range it is 0 or a number
@@ -1019,8 +1034,10 @@ impl OfTheDraw {
             let of_the_draw_left = f64::from(drawn) - f64::from(count);
             let room_the_major_allele_leaves =
                 f64::from(of_the_major_allele) - f64::from(drawn) + f64::from(count) + 1.0;
-            chance *= (of_the_rarer_allele_left * of_the_draw_left)
-                / ((f64::from(count) + 1.0) * room_the_major_allele_leaves);
+            chance = chance.times(
+                (of_the_rarer_allele_left * of_the_draw_left)
+                    / ((f64::from(count) + 1.0) * room_the_major_allele_leaves),
+            );
         }
     }
 
@@ -1185,8 +1202,17 @@ struct Totals {
     /// each [`OfAPop`], which keeps the counts of a population `Copy`: a chunk
     /// of 64 rows counts into a `Totals` of its own, so a vector for each
     /// population would be one allocation for each population of each chunk,
-    /// 7850 of them for a block of 10000 rows and 50 populations, where these
-    /// are 157, one for each chunk.
+    /// where this is one.
+    ///
+    /// What they cost is `num_pops * num_bins` floats for every `Totals`
+    /// alive at once, and the bins of a draw near the gene copies of the
+    /// dataset are about half of them, so one population's bins of a draw of
+    /// 20000 are 80 KB. The chunks of a block are therefore read in groups
+    /// and not all at once, which [`chunks_of_a_group`] says the size of: the
+    /// counts of every chunk of a block held at once were 7.0 MB beside a
+    /// block of 10 MB at 10000 rows, 50 populations and a draw of 180, and 33
+    /// MB beside the same block at a draw of 2000, measured on 24 September
+    /// 2026 with an allocator that counts what is live.
     folded_sfs: Vec<f64>,
     num_vars_every_pop: u64,
     num_vars_every_pop_in_draw: u64,
@@ -1195,16 +1221,31 @@ struct Totals {
 impl Totals {
     /// The counts of `num_pops` populations before any variant is read, with
     /// `num_bins` bins of the folded spectrum for each of them.
-    fn of(num_pops: usize, num_bins: usize) -> Totals {
-        Totals {
+    ///
+    /// # Errors
+    ///
+    /// Bins of every population that are more values than the machine counts,
+    /// the populations times the bins of one of them. The bins of one are
+    /// half the draw and the draw is at most the gene copies of the dataset,
+    /// but nothing bounds the populations, which a caller gives as it likes,
+    /// so the product is checked and not argued away. The standard library
+    /// ends a vector of more than an `isize` of bytes in a panic of its own,
+    /// which the core of popnei does not do.
+    fn of(num_pops: usize, num_bins: usize) -> Result<Totals> {
+        let too_many = || Error::DiversityMoreBinsThanTheMachineHolds { num_pops, num_bins };
+        let of_every_pop = num_pops.checked_mul(num_bins).ok_or_else(too_many)?;
+        let bytes = of_every_pop
+            .checked_mul(size_of::<f64>())
+            .ok_or_else(too_many)?;
+        if isize::try_from(bytes).is_err() {
+            return Err(too_many());
+        }
+        Ok(Totals {
             pops: vec![OfAPop::none(); num_pops],
-            // A product that saturated would ask for more bins than the
-            // machine has memory for, and the allocation of them is what
-            // fails.
-            folded_sfs: vec![0.0; num_pops.saturating_mul(num_bins)],
+            folded_sfs: vec![0.0; of_every_pop],
             num_vars_every_pop: 0,
             num_vars_every_pop_in_draw: 0,
-        }
+        })
     }
 
     /// It adds what one chunk of rows counted to what the pass has.
@@ -1281,13 +1322,16 @@ impl Totals {
 ///
 /// # Errors
 ///
-/// A `stats` that holds no statistic, [`DiversityStats::FOLDED_SFS`] asked
-/// for with no `num_called_alleles`, a `num_called_alleles` below 2 or above
-/// the individuals of the reader times its ploidy, a population with no
-/// individual, an index that is not an individual of the dataset, an
-/// individual asked for more than once, no variant in the reader, a variant
-/// of more alleles than a count of them holds, and those of the reader,
-/// among them a ploidy of 0 or above the 255 a genotype of popnei holds.
+/// [`DiversityStats::FOLDED_SFS`] asked for with no `num_called_alleles`, a
+/// `num_called_alleles` below 2 or above the individuals of the reader times
+/// its ploidy, a `stats` that holds no statistic, a name that is no statistic
+/// of this module, a population with no individual, an index that is not an
+/// individual of the dataset, an individual asked for more than once, no
+/// variant in the reader, a ploidy the reader states that popnei does not
+/// read, a variant of more alleles than a count of them holds, a block saying
+/// it holds more variants than a pass counts them in, more bins of the folded
+/// spectrum over every population than the machine counts, and those of the
+/// reader.
 pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
     reader: &mut R,
     pops: &[&[usize]],
@@ -1340,7 +1384,7 @@ fn the_pass<R: BlockReader + ?Sized>(
     // checked before the draw because the largest draw the dataset allows is
     // the individuals times this ploidy, and a ploidy of 0 would make that
     // largest draw 0 and refuse every draw in its name.
-    let ploidy_of_the_gts = checked_ploidy("ploidy", ploidy)?;
+    let ploidy_of_the_gts = ploidy_of_the_variants(ploidy)?;
     check_the_draw(options, num_individuals, ploidy_of_the_gts)?;
     let of_the_pops = pops_of_the_pass(pops, num_individuals)?;
     // The five statistics follow from the genotypes of a row, so no column
@@ -1356,7 +1400,7 @@ fn the_pass<R: BlockReader + ?Sized>(
         ploidy,
     };
     let num_sfs_bins = of_the_pass.num_sfs_bins();
-    let mut totals = Totals::of(of_the_pops.len(), num_sfs_bins);
+    let mut totals = Totals::of(of_the_pops.len(), num_sfs_bins)?;
     let mut num_vars: u64 = 0;
     while let Some(block) = reader.next_block()? {
         let alleles_per_var = alleles_per_var_of(&block, num_individuals, ploidy)?;
@@ -1461,6 +1505,33 @@ fn check_the_draw(options: &DiversityOptions, num_individuals: usize, ploidy: u3
     Ok(())
 }
 
+/// The ploidy the reader of the pass states, as the count the threshold of
+/// called genotypes and the largest draw of the dataset are measured in.
+///
+/// It is this module's own refusal and not the one `docs/specs/stats.md`
+/// raises for the `ploidy` and `exponent` arguments of
+/// `calc_per_var_distribs`: a user of [`calc_pop_diversity`] passes no
+/// ploidy, the reader states it, and a message naming an argument they never
+/// wrote would send them looking for it. `docs/specs/dists.md` met the same
+/// thing and gave its own pass a case of its own.
+///
+/// # Errors
+///
+/// A ploidy of 0 or above [`MAX_PLOIDY`]. The VCF reader refuses both when it
+/// is opened and the vars file reader refuses a file whose genotypes hold no
+/// allele, so what reaches this is a vars file that says its genotypes hold
+/// more alleles than popnei reads.
+fn ploidy_of_the_variants(ploidy: usize) -> Result<u32> {
+    let out_of_range = || Error::DiversityPloidyOutOfRange {
+        ploidy,
+        largest: MAX_PLOIDY,
+    };
+    if ploidy == 0 || ploidy > MAX_PLOIDY {
+        return Err(out_of_range());
+    }
+    u32::try_from(ploidy).map_err(|_| out_of_range())
+}
+
 /// The populations of the pass, each with the indices of its individuals
 /// and with whether they are every individual of the reader in its order.
 ///
@@ -1530,41 +1601,92 @@ fn add_the_block(
     of_the_pass: &OfThePass,
     totals: &mut Totals,
 ) -> Result<()> {
-    use rayon::iter::ParallelIterator;
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
     use rayon::slice::ParallelSlice;
 
     let num_pops = of_the_pass.pops.len();
     let num_bins = of_the_pass.num_sfs_bins();
-    let of_the_chunks: Result<Vec<Totals>> = block
-        .gts
-        .par_chunks(alleles_of_a_chunk(alleles_per_var))
-        .map(|chunk| {
-            let mut of_the_chunk = Totals::of(num_pops, num_bins);
-            add_the_rows(chunk, alleles_per_var, of_the_pass, &mut of_the_chunk)?;
-            Ok(of_the_chunk)
-        })
-        .collect();
-    match of_the_chunks {
-        Ok(of_the_chunks) => {
-            for of_the_chunk in &of_the_chunks {
-                totals.add_the_chunk(of_the_chunk);
-            }
-            Ok(())
-        }
-        // The second pass costs a read of the block, and it is made only
-        // where the block is refused and nothing of it is given.
-        Err(of_a_thread) => {
-            let mut read_again = Totals::of(num_pops, num_bins);
-            match add_the_chunks_one_by_one(block, alleles_per_var, of_the_pass, &mut read_again) {
-                Err(of_the_first_row) => Err(of_the_first_row),
-                // The rows are the same rows, so the second pass finds an
-                // error too; the error of the threads is what is left if it
-                // ever did not.
-                Ok(()) => Err(of_a_thread),
+    let alleles_of_a_chunk = alleles_of_a_chunk(alleles_per_var);
+    // A group holds whole chunks, so the chunks of the block are the same
+    // chunks whatever the group holds, and they are added in the order of the
+    // block across the groups as within one.
+    let alleles_of_a_group = alleles_of_a_chunk.saturating_mul(chunks_of_a_group());
+    let mut of_the_chunks: Vec<Result<Totals>> = Vec::new();
+    for group in block.gts.chunks(alleles_of_a_group) {
+        group
+            .par_chunks(alleles_of_a_chunk)
+            .map(|chunk| {
+                let mut of_the_chunk = Totals::of(num_pops, num_bins)?;
+                add_the_rows(chunk, alleles_per_var, of_the_pass, &mut of_the_chunk)?;
+                Ok(of_the_chunk)
+            })
+            .collect_into_vec(&mut of_the_chunks);
+        for of_the_chunk in of_the_chunks.drain(..) {
+            match of_the_chunk {
+                Ok(of_the_chunk) => totals.add_the_chunk(&of_the_chunk),
+                // The second pass costs a read of the block, and it is made
+                // only where the block is refused: what the groups before this
+                // one added to `totals` is given to nobody, the pass handing
+                // the error back.
+                Err(of_a_thread) => {
+                    let mut read_again = Totals::of(num_pops, num_bins)?;
+                    return match add_the_chunks_one_by_one(
+                        block,
+                        alleles_per_var,
+                        of_the_pass,
+                        &mut read_again,
+                    ) {
+                        Err(of_the_first_row) => Err(of_the_first_row),
+                        // The rows are the same rows, so the second pass finds
+                        // an error too; the error of the threads is what is
+                        // left if it ever did not.
+                        Ok(()) => Err(of_a_thread),
+                    };
+                }
             }
         }
     }
+    Ok(())
 }
+
+/// How many chunks of rows of a block are read at once, which is what the
+/// memory of a pass is measured in.
+///
+/// The counts of a chunk live until the chunks before it have been added, so
+/// that the sums of `f64` are added in the order of the block and do not
+/// depend on how many threads read it. Reading every chunk of a block at once
+/// therefore holds one `Totals` for each of them, and the bins of the folded
+/// spectrum make that `num_pops * (num_called_alleles / 2 + 1)` floats each:
+/// 7.0 MB beside a block of 10 MB for 10000 rows of 500 individuals at 50
+/// populations and a draw of 180, and 33 MB beside the same block for 5000
+/// rows of 1000 individuals at a draw of 2000, measured on 24 September 2026
+/// with an allocator that counts what is live.
+///
+/// So the chunks are read in groups of [`CHUNKS_OF_A_GROUP_PER_THREAD`] for
+/// each thread of the pool the pass runs in, and one group is added before
+/// the next is read. Two for each thread and not one, so that a thread that
+/// finishes a chunk early has another to take; and a group of the threads and
+/// not a fixed number, because what has to be read at once to keep the
+/// threads busy is what the pool has. The first case above is then 2.3 MB and
+/// the second 15.9 MB, measured the same day on 18 threads, so a group of 36
+/// chunks of the 157 and the 79 those blocks hold.
+///
+/// A block of fewer chunks than a group is read as it was, every chunk at
+/// once: 500 rows of 10000 individuals are 8 chunks, and at 50 populations and
+/// a draw of every gene copy they hold 40 MB beside a block of 10 MB, which is
+/// 4 MB of bins for each chunk and 4 MB more for the pass itself. Reading
+/// fewer chunks than the pool has threads would leave threads idle, and what
+/// that is worth against the memory has not been measured.
+#[cfg(not(target_family = "wasm"))]
+fn chunks_of_a_group() -> usize {
+    rayon::current_num_threads()
+        .saturating_mul(CHUNKS_OF_A_GROUP_PER_THREAD)
+        .max(1)
+}
+
+/// How many chunks of a group each thread of the pool is given.
+#[cfg(not(target_family = "wasm"))]
+const CHUNKS_OF_A_GROUP_PER_THREAD: usize = 2;
 
 /// The same counts, with the chunks read one after another, which is what
 /// wasm does: it has no threads.
@@ -1596,7 +1718,7 @@ fn add_the_chunks_one_by_one(
     of_the_pass: &OfThePass,
     totals: &mut Totals,
 ) -> Result<()> {
-    let mut of_the_chunk = Totals::of(of_the_pass.pops.len(), of_the_pass.num_sfs_bins());
+    let mut of_the_chunk = Totals::of(of_the_pass.pops.len(), of_the_pass.num_sfs_bins())?;
     for chunk in block.gts.chunks(alleles_of_a_chunk(alleles_per_var)) {
         of_the_chunk.forget_what_it_holds();
         add_the_rows(chunk, alleles_per_var, of_the_pass, &mut of_the_chunk)?;
@@ -1638,8 +1760,12 @@ fn add_the_rows(
     let mut num_pops_that_called: AlleleCounts = [0; 128];
     // The room the standardized private alleles work in, one chance and one
     // sum for each population, written again for every row as the counts above
-    // are.
-    let mut of_the_draw_at_the_row = OfTheDrawAtTheRow::of(of_the_pass.pops.len());
+    // are. A pass that was given no draw has none of it: it is two vectors for
+    // every chunk of rows, 314 of them for a block of 10000 rows, and the four
+    // statistics a user who names none asks for take no draw.
+    let mut of_the_draw_at_the_row = of_the_pass
+        .of_the_draw
+        .map(|_| OfTheDrawAtTheRow::of(of_the_pass.pops.len()));
     for row in gts.chunks_exact(alleles_per_var) {
         let mut every_pop = true;
         // A pass that was given no draw has no variant in the draw for every
@@ -1772,11 +1898,14 @@ fn add_the_rows(
                 // The standardized value is the mean over the variants in the
                 // draw for every population, so a row one population is short
                 // of the draw at adds to no population's sum.
-                if every_pop_in_draw && let Some(of_the_draw) = of_the_pass.of_the_draw {
+                if every_pop_in_draw
+                    && let Some(of_the_draw) = of_the_pass.of_the_draw
+                    && let Some(at_the_row) = of_the_draw_at_the_row.as_mut()
+                {
                     add_the_standardized_private_alleles(
                         &of_each_pop,
                         of_the_draw.num_called_alleles,
-                        &mut of_the_draw_at_the_row,
+                        at_the_row,
                         &mut totals.pops,
                     );
                 }
@@ -2057,6 +2186,119 @@ fn num_different_alleles(counts: &AlleleCounts, one_past_the_largest: usize) -> 
         .fold(0_u64, |num_different, _| num_different.saturating_add(1))
 }
 
+/// A chance an `f64` cannot hold on its own, as a mantissa and a power of
+/// two: the chance is `mantissa` times 2 raised to `power_of_two`.
+///
+/// The chances of this module are products of up to `num_called_alleles`
+/// factors below 1, and they reach far below the 5e-324 an `f64` holds: the
+/// chance that a draw of 600 of the 1200 copies of 600 heterozygous
+/// individuals misses one of the two alleles is 1e-360. A product kept in one
+/// `f64` is 0 there, and it is wrong by percent just above, where an `f64`
+/// holds a number with two bits of its mantissa. Neither can be seen in the
+/// result: the folded spectrum steps up from that chance to the bins of the
+/// counts around half the draw, which are of the order of 1, so a 0 there
+/// leaves the variant out of every bin of its spectrum and says nothing.
+///
+/// The mantissa is kept between 2^-512 and 2^512 by multiplying or dividing
+/// it by 2^512, which changes no bit of it, and the power of two carries what
+/// that was worth. Every factor is then multiplied into a mantissa of full
+/// precision, and a chance is 0 only where it is below what an `f64` holds.
+#[derive(Debug, Clone, Copy)]
+struct ChanceOfAPowerOfTwo {
+    /// The mantissa, between 2^-512 and 2^512 unless the chance is 0.
+    mantissa: f64,
+    /// The power of two the mantissa is worth, at most 512: a chance is at
+    /// most 1 and a mantissa at least 2^-512.
+    power_of_two: i32,
+}
+
+/// What the mantissa of a [`ChanceOfAPowerOfTwo`] is multiplied or divided by
+/// to bring it back into range, 2^512. It is exact in an `f64`, so neither
+/// changes a bit of the mantissa, and its inverse, 2^-512, is exact too.
+///
+/// 512 and not 1024: the mantissa stays inside two powers of two of the
+/// middle of what an `f64` holds, so a factor of this module, which is
+/// between the smallest allele count over the called alleles and a few
+/// hundred million, neither overflows it nor drops it below the numbers an
+/// `f64` holds with every bit of its mantissa.
+const OF_A_POWER_OF_TWO: f64 = 1.340_780_792_994_259_7e154;
+
+impl ChanceOfAPowerOfTwo {
+    /// The chance 1, which a product of factors starts from.
+    fn one() -> ChanceOfAPowerOfTwo {
+        ChanceOfAPowerOfTwo {
+            mantissa: 1.0,
+            power_of_two: 0,
+        }
+    }
+
+    /// The chance 0, which is 0 at every power of two.
+    fn none() -> ChanceOfAPowerOfTwo {
+        ChanceOfAPowerOfTwo {
+            mantissa: 0.0,
+            power_of_two: 0,
+        }
+    }
+
+    /// The chance times `factor`, with the mantissa brought back into range.
+    fn times(self, factor: f64) -> ChanceOfAPowerOfTwo {
+        ChanceOfAPowerOfTwo {
+            mantissa: self.mantissa * factor,
+            power_of_two: self.power_of_two,
+        }
+        .kept_in_range()
+    }
+
+    /// The same chance with its mantissa between 2^-512 and 2^512.
+    ///
+    /// A mantissa of 0 is left as it is, a chance of 0 being 0 at every power
+    /// of two, and so is one that is not finite, which no factor of this
+    /// module gives: what would otherwise multiply or divide it for ever.
+    fn kept_in_range(self) -> ChanceOfAPowerOfTwo {
+        let mut mantissa = self.mantissa;
+        let mut power_of_two = self.power_of_two;
+        if mantissa == 0.0 || !mantissa.is_finite() {
+            return self;
+        }
+        while mantissa < 1.0 / OF_A_POWER_OF_TWO {
+            mantissa *= OF_A_POWER_OF_TWO;
+            power_of_two = power_of_two.saturating_sub(512);
+        }
+        while mantissa > OF_A_POWER_OF_TWO {
+            mantissa /= OF_A_POWER_OF_TWO;
+            power_of_two = power_of_two.saturating_add(512);
+        }
+        ChanceOfAPowerOfTwo {
+            mantissa,
+            power_of_two,
+        }
+    }
+
+    /// The chance as the one number an `f64` holds, and 0 where it is below
+    /// the smallest of those, 5e-324.
+    ///
+    /// The power of two is raised in two halves, because 2 raised to a power
+    /// below -1074 is 0 in an `f64` and would take a chance the `f64` does
+    /// hold down with it: half of the power is as far as -1074 twice over.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the divisor is the literal 2, and the remainder of a halving is between the half and 0, so neither the division nor the subtraction can overflow an i32"
+    )]
+    fn as_one_number(self) -> f64 {
+        if self.power_of_two == 0 {
+            return self.mantissa;
+        }
+        let half = self.power_of_two / 2;
+        self.mantissa * of_the_power_of_two(half) * of_the_power_of_two(self.power_of_two - half)
+    }
+}
+
+/// 2 raised to `power_of_two`, which is 0 below -1074 and infinite above
+/// 1023, as an `f64` holds it.
+fn of_the_power_of_two(power_of_two: i32) -> f64 {
+    2.0_f64.powi(power_of_two)
+}
+
 /// The chance that a draw of `num_called_alleles` of the `called_alleles`
 /// copies a population called at one variant, taken without replacement,
 /// holds no copy of an allele the population called `count_of_the_allele`
@@ -2075,8 +2317,9 @@ fn num_different_alleles(counts: &AlleleCounts, one_past_the_largest: usize) -> 
 /// than `num_called_alleles` of the called copies are of another allele,
 /// since then no draw of that size avoids this allele; a
 /// `num_called_alleles` above `called_alleles`, which is no draw at all,
-/// gives that same 0. A `count_of_the_allele` of 0, an allele the
-/// population did not call, gives 1.
+/// gives that same 0, for every `count_of_the_allele` and for the 0 of an
+/// allele the population did not call among them. Where the draw is one the
+/// population can make, a `count_of_the_allele` of 0 gives 1.
 ///
 /// It is the product of `num_called_alleles` factors,
 /// `(c - n - i) / (c - i)` for `i` from 0 up, each in `f64`, and not the
@@ -2087,24 +2330,52 @@ fn num_different_alleles(counts: &AlleleCounts, one_past_the_largest: usize) -> 
 /// Division and multiplication are rounded the same way on every platform,
 /// unlike `exp` and `ln`, so a test of this asserts the digits of what it
 /// gives.
+///
+/// The chance itself falls below what an `f64` holds long before any
+/// dataset of popnei is large: a draw of 600 of the 1200 copies of 600
+/// heterozygous individuals misses one of the alleles with a chance of
+/// 1e-360, which is 0 in an `f64`, and a draw of 580 of them with one of
+/// 5e-323, which an `f64` holds with two bits of its mantissa. So the
+/// product is taken in [`ChanceOfAPowerOfTwo`], which keeps the mantissa in
+/// range, and this gives back the one number it is worth, which is 0 only
+/// where the chance is below the smallest an `f64` holds. A caller that goes
+/// on multiplying takes the two parts instead, as the folded spectrum does.
 fn chance_a_draw_misses_an_allele(
     called_alleles: u32,
     count_of_the_allele: u32,
     num_called_alleles: u32,
 ) -> f64 {
+    chance_a_draw_misses_an_allele_of_a_power_of_two(
+        called_alleles,
+        count_of_the_allele,
+        num_called_alleles,
+    )
+    .as_one_number()
+}
+
+/// The same chance as a mantissa and a power of two, which is what the
+/// folded spectrum steps up from: `C(c - n, g) / C(c, g)` is the smallest
+/// term of its range, so it is worked out where an `f64` cannot hold it and
+/// the bins it leads to can.
+fn chance_a_draw_misses_an_allele_of_a_power_of_two(
+    called_alleles: u32,
+    count_of_the_allele: u32,
+    num_called_alleles: u32,
+) -> ChanceOfAPowerOfTwo {
     let all_the_copies = f64::from(called_alleles);
     let of_another_allele = all_the_copies - f64::from(count_of_the_allele);
     let drawn = f64::from(num_called_alleles);
 
     if of_another_allele < drawn {
-        return 0.0;
+        return ChanceOfAPowerOfTwo::none();
     }
 
-    (0..num_called_alleles)
-        .map(f64::from)
-        .fold(1.0, |chance, drawn_before| {
-            chance * ((of_another_allele - drawn_before) / (all_the_copies - drawn_before))
-        })
+    (0..num_called_alleles).map(f64::from).fold(
+        ChanceOfAPowerOfTwo::one(),
+        |chance, drawn_before| {
+            chance.times((of_another_allele - drawn_before) / (all_the_copies - drawn_before))
+        },
+    )
 }
 
 /// The chance that every one of the `num_called_alleles` copies a draw
@@ -2459,6 +2730,27 @@ mod fixtures {
         (reader, of_each_pops_individuals)
     }
 
+    /// A reader over `num_vars` variants of `num_individuals` diploid
+    /// individuals whose every genotype is `0/1`, in one block.
+    ///
+    /// The population of every individual calls two alleles at every variant,
+    /// half of its copies of each, which is where the chance of the first
+    /// count of the folded spectrum's range is smallest: at 600 individuals
+    /// and a draw of every copy it is 1e-360, which is below the 5e-324 an
+    /// `f64` holds.
+    pub(super) fn the_heterozygous_individuals(
+        num_individuals: usize,
+        num_vars: usize,
+    ) -> GivenBlocks {
+        let of_a_row: Vec<i8> = (0..num_individuals).flat_map(|_| [0, 1]).collect();
+        let rows: Vec<&[i8]> = vec![&of_a_row[..]; num_vars];
+        GivenBlocks::of_a_source_of(
+            num_individuals,
+            2,
+            blocks_of(&rows, num_individuals, 2, num_vars.max(1)),
+        )
+    }
+
     /// The six variants of the worked example, in blocks of
     /// `num_vars_per_block` variants of the five diploid individuals.
     pub(super) fn the_worked_example(num_vars_per_block: usize) -> GivenBlocks {
@@ -2473,7 +2765,7 @@ mod the_pass {
     use super::fixtures::{
         GivenBlocks, POP1, POP2, a_source_of_many_variants,
         a_source_with_two_rows_below_the_missing_allele, a_variant_of_the_allele_counts, blocks_of,
-        the_panel, the_pops_of_the_panel, the_worked_example,
+        the_heterozygous_individuals, the_panel, the_pops_of_the_panel, the_worked_example,
     };
     use super::{DiversityOptions, DiversityStats, PopDiversity, calc_pop_diversity};
     use crate::block::BlockReader;
@@ -2742,6 +3034,22 @@ mod the_pass {
         );
     }
 
+    /// What a bin of a spectrum of a long draw may differ from its exact value
+    /// by: 1e-13 of it.
+    ///
+    /// A bin near half the draw is stepped up to from the first count of the
+    /// range, one multiplication and one division for each count in between,
+    /// so a draw of 600 reaches it in up to 300 steps of two roundings each.
+    /// Measured on 24 September 2026 with an `f64` replica of this arithmetic
+    /// in Python against `fractions.Fraction`, over 30633 triples of the called
+    /// copies, the copies of the rarer allele and the draw: the worst bin was
+    /// 1.2e-14 of the largest bin of its column and the worst column sum
+    /// 1.2e-14 away from the variants it holds, and over the draws of 400 to
+    /// 1200 of 1200 copies the worst bin was 2.7e-15. The bound is 1e-13 and
+    /// not the 1e-12 the panel is compared within, which is `dadi`'s error and
+    /// not popnei's.
+    const OF_A_LONG_STEP: f64 = 1e-13;
+
     /// What a standardized private allele value may differ from the value of
     /// `tests/reference/diversity/enumerate_private.tsv` by: one unit of the
     /// last place of a number near 1, 2.2e-16.
@@ -2812,6 +3120,24 @@ mod the_pass {
                  and they are {of_the_reference}"
             );
         }
+        assert_the_bins_hold_every_variant(diversity, pop, within, what);
+    }
+
+    /// It checks that the bins of the folded spectrum of one population sum to
+    /// the variants in the draw for it, each of those variants giving one whole
+    /// variant spread over the bins.
+    ///
+    /// It is the one property of a spectrum that holds at any size of draw and
+    /// any number of copies, so it is what a draw too large for the chances of
+    /// its counts to be held in an `f64` is caught by: a chance that came out 0
+    /// where it is not leaves its variant out of the sum.
+    fn assert_the_bins_hold_every_variant(
+        diversity: &PopDiversity,
+        pop: usize,
+        within: f64,
+        what: &str,
+    ) {
+        let found = diversity.folded_sfs(pop).expect("the folded spectrum");
         let num_vars_in_draw = diversity
             .num_vars_in_draw(pop)
             .expect("the variants in the draw");
@@ -2824,6 +3150,30 @@ mod the_pass {
             (of_every_bin - num_vars_in_draw).abs() <= within * num_vars_in_draw.max(1.0),
             "the bins of the spectrum of {what} sum to {of_every_bin}, and {num_vars_in_draw} \
              variants are in the draw for it"
+        );
+    }
+
+    /// It checks one bin of the folded spectrum of one population: the
+    /// variants a draw is expected to show `count` copies of the rarer allele
+    /// at, against `value`, within `within` of it.
+    fn assert_the_bin(
+        diversity: &PopDiversity,
+        pop: usize,
+        count: usize,
+        value: f64,
+        within: f64,
+        what: &str,
+    ) {
+        let bins = diversity.folded_sfs(pop).expect("the folded spectrum");
+        let found = bins
+            .get(count)
+            .copied()
+            .unwrap_or_else(|| panic!("the spectrum of {what} has no bin {count}: {bins:?}"));
+
+        assert!(
+            (found - value).abs() <= within * value.abs().max(f64::MIN_POSITIVE),
+            "the variants of {what} that show {count} copies of the rarer allele are {found}, \
+             and they are {value}"
         );
     }
 
@@ -3323,6 +3673,92 @@ mod the_pass {
         );
     }
 
+    /// A draw of every gene copy of a tetraploid dataset is its individuals
+    /// times 4 and not times 2: the largest draw is measured in the ploidy the
+    /// reader states, so a dataset of two tetraploid individuals takes a draw
+    /// of 8 and refuses 9.
+    ///
+    /// Two individuals and not two hundred, because what this holds is the
+    /// ploidy in that product and a small dataset shows it: with the ploidy
+    /// read as 2 the draw of 8 is refused, and the message it is refused with
+    /// contradicts itself, naming a largest draw of 4 beside 2 individuals at a
+    /// ploidy of 4.
+    ///
+    /// The one variant has every genotype called, `0/0/1/1` and `0/1/2/3`, so
+    /// the population called 8 alleles there and the draw of 8 is one it
+    /// reaches: its spectrum holds the whole variant.
+    #[test]
+    fn a_draw_of_every_gene_copy_of_a_tetraploid_dataset_is_its_individuals_times_four() {
+        let of_the_row: [i8; 8] = [0, 0, 1, 1, 0, 1, 2, 3];
+        let rows: Vec<&[i8]> = vec![&of_the_row[..]];
+
+        let of_a_draw_of_8 = calc_pop_diversity(
+            &mut GivenBlocks::of_a_source_of(2, 4, blocks_of(&rows, 2, 4, 1)),
+            &[],
+            &options_of_a_draw(1, 8),
+        )
+        .expect("the diversity at a draw of every gene copy of two tetraploid individuals");
+        let error = calc_pop_diversity(
+            &mut GivenBlocks::of_a_source_of(2, 4, blocks_of(&rows, 2, 4, 1)),
+            &[],
+            &options_of_a_draw(1, 9),
+        )
+        .expect_err("a draw of one gene copy more than two tetraploid individuals hold");
+
+        assert_eq!(of_a_draw_of_8.num_vars_in_draw(0), Some(1));
+        assert_the_bins_hold_every_variant(
+            &of_a_draw_of_8,
+            0,
+            OF_TEN_DECIMALS_OF_A_DRAW,
+            "two tetraploid individuals at a draw of 8",
+        );
+        assert!(
+            matches!(
+                error,
+                Error::DiversityDrawLargerThanTheDataset {
+                    num_called_alleles: 9,
+                    largest_draw: 8,
+                    num_individuals: 2,
+                    ploidy: 4
+                }
+            ),
+            "{error}"
+        );
+    }
+
+    /// A ploidy the reader states that popnei does not read is refused by this
+    /// module in its own words, and not by the message the statistics of one
+    /// variant give for their `ploidy` and `exponent` arguments: a user of
+    /// `calc_pop_diversity` passes neither, so a message naming one would send
+    /// them looking for something they never wrote.
+    /// `docs/specs/diversity.md` has the case and `docs/specs/dists.md` the
+    /// same decision for the distances between populations.
+    ///
+    /// The VCF reader refuses a ploidy of 0 and one above 255 when it is
+    /// opened, so what reaches this is a vars file whose metadata says its
+    /// genotypes hold more alleles than popnei reads.
+    #[test]
+    fn a_ploidy_the_reader_states_that_popnei_does_not_read_is_refused() {
+        for ploidy in [0, 256, usize::MAX] {
+            let of_the_row: [i8; 2] = [0, 1];
+            let rows: Vec<&[i8]> = vec![&of_the_row[..]];
+            let mut reader = GivenBlocks::of_a_source_of(1, ploidy, blocks_of(&rows, 1, ploidy, 1));
+
+            let error = calc_pop_diversity(&mut reader, &[], &options_with_no_draw(1))
+                .expect_err("a ploidy popnei does not read");
+
+            assert!(
+                matches!(&error, Error::DiversityPloidyOutOfRange { ploidy: found, largest }
+                    if *found == ploidy && *largest == 255),
+                "{ploidy}: {error:?}"
+            );
+            let said = error.to_string();
+            assert!(!said.contains("statistic of one variant"), "{said}");
+            assert!(!said.contains("exponent"), "{said}");
+            assert!(said.contains("ploidy"), "{said}");
+        }
+    }
+
     /// `pop1` of the worked example called 2, 2, 4 and 1 different alleles
     /// at the variants 1, 2, 3 and 5 that count for it, 9 in all and a mean
     /// of 2.25, and `pop2` called 1, 1, 4 and 2, 8 in all and a mean of 2.
@@ -3558,6 +3994,239 @@ mod the_pass {
             ],
             OF_TEN_DECIMALS_OF_A_DRAW,
             "one population of 5 copies each of three alleles at a draw of 8",
+        );
+    }
+
+    /// The rarer allele of a variant is every allele that is not the major one
+    /// of the population there, so the spectrum is read against the copies of
+    /// the allele it called most often and not against the copies of the one it
+    /// called least: "What it gives" of "The folded site frequency spectrum" of
+    /// `docs/specs/diversity.md`.
+    ///
+    /// One haploid population called 3 copies of one allele, 2 of another and 1
+    /// of a third, and the draw is of 3 of those 6. The major allele has 3
+    /// copies, so the rarer allele has 3 too, and a draw of 3 shows 0, 1, 2 or
+    /// 3 of them with the chances 1/20, 9/20, 9/20 and 1/20, which fold into
+    /// two bins of 1/10 and 9/10. Read against the least called allele, which
+    /// has 1 copy, the rarer allele would have 5 and the draw would hold 2 of
+    /// them at least: the bins would be 1/2 and 1/2, the variants would still
+    /// sum to 1 and every other value of the pass would be what it is.
+    ///
+    /// The counts are 3, 2 and 1 and not three equal ones because a variant
+    /// whose alleles were all called equally often has the same spectrum
+    /// whichever of them is read as the major one.
+    #[test]
+    fn the_spectrum_is_read_against_the_major_allele_and_not_the_least_called_one() {
+        let (mut reader, of_each_pops_individuals) = a_variant_of_the_allele_counts(&[&[3, 2, 1]]);
+        let pops: Vec<&[usize]> = of_each_pops_individuals
+            .iter()
+            .map(|individuals| &individuals[..])
+            .collect();
+
+        let diversity = calc_pop_diversity(&mut reader, &pops, &options_of_a_draw(1, 3))
+            .expect("the diversity of a variant of three alleles of 3, 2 and 1 copies");
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(1));
+        assert_folded_sfs(
+            &diversity,
+            0,
+            &[1.0 / 10.0, 9.0 / 10.0],
+            OF_TEN_DECIMALS_OF_A_DRAW,
+            "one population of 3, 2 and 1 copies of three alleles at a draw of 3",
+        );
+    }
+
+    /// A draw of every copy of 600 heterozygous individuals keeps its variant:
+    /// the bins of one variant sum to that one variant, whatever the size of
+    /// the draw.
+    ///
+    /// The chance of the first count of the range is the smallest chance of it,
+    /// and at 1200 called copies with 600 of each allele and a draw of 600 it
+    /// is 1e-360, which is 0 in an `f64`, while the bins it leads up to are of
+    /// the order of 0.09. A chance held in one `f64` is 0 there and the variant
+    /// falls out of every bin of its spectrum, leaving a column of zeros beside
+    /// a count of one variant in the draw, which no other value of the pass
+    /// contradicts. `docs/objectives.md` puts the largest dataset of popnei at
+    /// ten thousand individuals, so this is well inside what it claims.
+    ///
+    /// The bins of the three counts nearest half the draw are checked against
+    /// exact rational arithmetic: 0.0896553075918513, 0.09146343635537864 and
+    /// 0.04603710442907589 at 298, 299 and 300 copies of the rarer allele,
+    /// worked out on 24 September 2026 in `fractions.Fraction`. The last of
+    /// them is the top bin, which is not doubled, and it is about half of the
+    /// one below it for that reason. The 9 bins from 0 up hold a chance below
+    /// the 5e-324 an `f64` holds and are 0 in it, which is right and is why
+    /// this test reads the bins near the middle.
+    #[test]
+    fn a_draw_of_every_copy_of_six_hundred_heterozygous_individuals_keeps_its_variant() {
+        let mut reader = the_heterozygous_individuals(600, 1);
+
+        let diversity = calc_pop_diversity(&mut reader, &[], &options_of_a_draw(1, 600))
+            .expect("the diversity of 600 heterozygous individuals at a draw of 600");
+
+        assert_eq!(diversity.num_vars_in_draw(0), Some(1));
+        assert_eq!(
+            diversity.folded_sfs(0).map(<[f64]>::len),
+            Some(301),
+            "the bins of a draw of 600"
+        );
+        let of_the_exact = [
+            (298, 0.089_655_307_591_851_3),
+            (299, 0.091_463_436_355_378_64),
+            (300, 0.046_037_104_429_075_89),
+        ];
+        for (count, value) in of_the_exact {
+            assert_the_bin(
+                &diversity,
+                0,
+                count,
+                value,
+                OF_A_LONG_STEP,
+                "600 heterozygous individuals at a draw of 600",
+            );
+        }
+        assert_the_bin(
+            &diversity,
+            0,
+            0,
+            0.0,
+            OF_A_LONG_STEP,
+            "600 heterozygous individuals at a draw of 600",
+        );
+        assert_the_bins_hold_every_variant(
+            &diversity,
+            0,
+            OF_A_LONG_STEP,
+            "600 heterozygous individuals at a draw of 600",
+        );
+    }
+
+    /// Every draw of the copies of 600 heterozygous individuals keeps its three
+    /// variants, at the sizes where the chance of the first count of the range
+    /// is normal, subnormal and below what an `f64` holds alike.
+    ///
+    /// The failure it guards is not one that grows with the draw: with the
+    /// chance held in one `f64` the three variants sum to 3.000000000000001 at
+    /// a draw of 560, to 3.043348989886391 at 580, to 0 from 584 to 616, to
+    /// 3.043348989886391 again at 620 and to 2.9999999999999973 at 1000, so a
+    /// test at one size would pass and say nothing about the next. Measured on
+    /// 24 September 2026.
+    ///
+    /// The draw of 1200 is every copy of the dataset, where the range holds one
+    /// count alone: the draw takes all 600 rarer copies and the bin 600 holds
+    /// the whole variant.
+    #[test]
+    fn every_draw_of_six_hundred_heterozygous_individuals_keeps_its_three_variants() {
+        for drawn in [400, 560, 570, 580, 584, 600, 616, 620, 1000, 1200] {
+            let mut reader = the_heterozygous_individuals(600, 3);
+
+            let diversity = calc_pop_diversity(&mut reader, &[], &options_of_a_draw(1, drawn))
+                .expect("the diversity of 600 heterozygous individuals");
+
+            assert_eq!(
+                diversity.num_vars_in_draw(0),
+                Some(3),
+                "the variants in the draw of {drawn}"
+            );
+            assert_the_bins_hold_every_variant(
+                &diversity,
+                0,
+                OF_A_LONG_STEP,
+                &format!("600 heterozygous individuals at a draw of {drawn}"),
+            );
+        }
+    }
+
+    /// The bins of a draw of 580 of the 1200 copies of 600 heterozygous
+    /// individuals, where the chance of the first count of the range is
+    /// 5e-323: an `f64` holds that number with two bits of its mantissa, so a
+    /// chance kept in one `f64` is wrong by 1.4 % at the largest bin and its
+    /// column sums to 1.0144966329546 instead of 1. Measured on 24 September
+    /// 2026 against exact rational arithmetic, which also gave the three
+    /// literals here: the bins at 288, 289 and 290 copies of the rarer allele.
+    ///
+    /// It is the size that holds the wrong number and not only the 0 of a
+    /// larger draw, which the test above holds.
+    #[test]
+    fn a_draw_of_580_of_six_hundred_heterozygous_individuals_has_the_bins_of_the_exact_values() {
+        let mut reader = the_heterozygous_individuals(600, 1);
+
+        let diversity = calc_pop_diversity(&mut reader, &[], &options_of_a_draw(1, 580))
+            .expect("the diversity of 600 heterozygous individuals at a draw of 580");
+
+        let of_the_exact = [
+            (288, 0.089_702_426_810_771_06),
+            (289, 0.091_513_531_675_664_17),
+            (290, 0.046_062_659_233_477_66),
+        ];
+        for (count, value) in of_the_exact {
+            assert_the_bin(
+                &diversity,
+                0,
+                count,
+                value,
+                OF_A_LONG_STEP,
+                "600 heterozygous individuals at a draw of 580",
+            );
+        }
+        assert_the_bins_hold_every_variant(
+            &diversity,
+            0,
+            OF_A_LONG_STEP,
+            "600 heterozygous individuals at a draw of 580",
+        );
+    }
+
+    /// A variant one population is short of the draw at adds to no
+    /// population's standardized private alleles, as a variant one population
+    /// has too little called at adds to no population's private alleles: the
+    /// mean is over the variants in the draw for every population, which is its
+    /// divisor, so a variant that is in one sum and out of the divisor would
+    /// make the value larger than the draws can tell apart.
+    ///
+    /// Two haploid populations of 10 and 4 individuals over two variants. At
+    /// the first, `pop_a` called 5 copies each of two alleles and `pop_b` 3 and
+    /// 1, which at a draw of 4 gives `pop_b` 0.047619047619047616 private
+    /// alleles: each of its two alleles is in every draw of 4 of its 4 copies,
+    /// and a draw of 4 of the 10 copies of `pop_a` misses each of them with
+    /// chance 5/210. At the second, `pop_b` called 2 copies and left two
+    /// genotypes missing, so the variant counts for it and is out of its draw,
+    /// and out of the draw for every population with it.
+    ///
+    /// A pass that added that second variant to the sums and not to the divisor
+    /// would give `pop_b` 0.07142857142857142, half again as much, with the
+    /// same count of variants beside it. The test that names the rule over the
+    /// worked example cannot see it: at the one variant `pop2` is short of the
+    /// draw there, `pop1` called exactly as many alleles as the draw takes, so
+    /// every one of its own terms is 0 and the wrong sum is the right one. The
+    /// panel cannot see it either, all 1200 of its variants being in the draw
+    /// for all three of its populations.
+    #[test]
+    fn a_variant_one_population_is_short_of_the_draw_at_is_out_of_every_standardized_count() {
+        let of_the_first: [i8; 14] = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 1];
+        let short_of_the_draw: [i8; 14] = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, -1, -1];
+        let rows: Vec<&[i8]> = vec![&of_the_first[..], &short_of_the_draw[..]];
+        let of_pop_a: [usize; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let of_pop_b: [usize; 4] = [10, 11, 12, 13];
+        let mut reader = GivenBlocks::of_a_source_of(14, 1, blocks_of(&rows, 14, 1, 2));
+
+        let diversity = calc_pop_diversity(
+            &mut reader,
+            &[&of_pop_a, &of_pop_b],
+            &options_of_a_draw(1, 4),
+        )
+        .expect("the diversity of two haploid populations at a draw of 4");
+
+        assert_eq!(diversity.num_vars(1), Some(2));
+        assert_eq!(diversity.num_vars_in_draw(1), Some(1));
+        assert_eq!(diversity.num_vars_every_pop(), 2);
+        assert_eq!(diversity.num_vars_every_pop_in_draw(), 1);
+        assert_private_alleles_in_draw(
+            &diversity,
+            1,
+            0.047_619_047_619_047_616,
+            OF_THE_ENUMERATION,
+            "pop_b at a draw of 4 over the one variant of its draw",
         );
     }
 
@@ -3833,15 +4502,22 @@ mod the_pass {
     /// with the value of `p0`, of `p1` and of `p2`, which is how the file
     /// reads.
     ///
-    /// This is the tightest comparison of the module: an `f64` projection
-    /// differs from those values by up to 7.1e-14 of them, `dadi`'s own error
-    /// dominating, where the standardized number of alleles against
-    /// `vegan::rarefy` sits 550 times inside the same 1e-12. Both were
-    /// measured on 24 September 2026 by recomputing the panel in exact
-    /// rational arithmetic, which "How it is verified" of that item records.
-    /// The columns of the file sum to the 1200 variants in the draw short by
-    /// up to 7.0e-11, which is why the sum is compared within a tolerance too;
-    /// popnei's own bins are summed here and not the file's.
+    /// This is the tightest comparison of the module. What it measures is
+    /// popnei against the values `dadi` printed, and the worst of the 33 is
+    /// 6.7e-14 of the value, 15 times inside the 1e-12 it is compared within;
+    /// the other comparison of the panel, popnei's standardized number of
+    /// alleles against the values `vegan::rarefy` printed, is 2.3e-16 at its
+    /// worst, 4300 times inside the same bound. Both were measured here on 24
+    /// September 2026 by running this test. Neither is popnei against the
+    /// values themselves: "How it is verified" of that item records how far
+    /// each of the two reference programs is from exact rational arithmetic,
+    /// which is where the 6.7e-14 comes from, `dadi`'s own error dominating
+    /// what popnei's own summing adds.
+    ///
+    /// popnei's own bins are summed here and not the file's: two of its three
+    /// columns sum to the 1200 variants in the draw 2.3e-13 short of it and one
+    /// to 1200 exactly, where the columns of the file are short by up to
+    /// 7.0e-11, which is why the sum is compared within a tolerance.
     ///
     /// `dadi` masks the bin 0 and the bins above half the draw in a folded
     /// spectrum and popnei reports the bin 0, so the file holds the unmasked
@@ -4967,7 +5643,7 @@ mod the_names_of_the_statistics {
 
 #[cfg(test)]
 mod the_chance_a_draw_misses_an_allele {
-    use super::chance_a_draw_misses_an_allele;
+    use super::{chance_a_draw_misses_an_allele, chance_a_draw_misses_an_allele_of_a_power_of_two};
 
     /// What a value of these tests may differ from the number of the spec's
     /// table by. `vegan` printed the alleles a draw shows to ten digits, so
@@ -5158,6 +5834,94 @@ mod the_chance_a_draw_misses_an_allele {
             "a draw of 2 of a million copies misses a single copy with \
              chance {found}, and it is 0.999998"
         );
+    }
+
+    /// A draw of more copies than the population called is no draw at all and
+    /// misses every allele with chance 0, the allele it called 0 times among
+    /// them: there is no draw of that size to miss anything.
+    ///
+    /// No pass reaches it, a variant being in the draw for a population only
+    /// where the population called at least as many copies as the draw takes,
+    /// and the two sentences of the doc comment that say what a count of 0
+    /// gives and what a draw above the called copies gives meet here, so the
+    /// rule is written down and held rather than left to whichever of them a
+    /// reader reaches first.
+    #[test]
+    fn a_draw_of_more_copies_than_the_population_called_misses_every_allele_with_chance_zero() {
+        for count_of_the_allele in [0, 1, 4] {
+            let found = chance_a_draw_misses_an_allele(4, count_of_the_allele, 5);
+
+            assert!(
+                found == 0.0,
+                "a draw of 5 of 4 copies misses an allele called {count_of_the_allele} times \
+                 with chance {found}, and there is no such draw to miss it"
+            );
+        }
+    }
+
+    /// The chance that a draw of 600 of the 1200 copies of 600 heterozygous
+    /// individuals misses one of the two alleles is 1e-360, which is below the
+    /// 5e-324 an `f64` holds, so this gives 0 and the mantissa and the power of
+    /// two it is worked out in hold it: the mantissa is a number of full
+    /// precision and the power of two is at most -1024, three of the steps of
+    /// 512 the product takes.
+    ///
+    /// It is the chance the folded spectrum steps up from, so what the two
+    /// parts are for is that the bins of such a draw, which are of the order of
+    /// 0.09, are not all 0.
+    #[test]
+    fn a_chance_below_what_a_float_holds_is_kept_as_a_mantissa_and_a_power_of_two() {
+        let of_a_power_of_two = chance_a_draw_misses_an_allele_of_a_power_of_two(1200, 600, 600);
+
+        assert!(
+            of_a_power_of_two.mantissa.is_normal(),
+            "the mantissa is {}",
+            of_a_power_of_two.mantissa
+        );
+        assert!(
+            of_a_power_of_two.power_of_two <= -1024,
+            "the power of two is {}",
+            of_a_power_of_two.power_of_two
+        );
+        let as_one_number = chance_a_draw_misses_an_allele(1200, 600, 600);
+
+        assert!(
+            as_one_number == 0.0,
+            "the chance in one number is {as_one_number}, and it is below what an f64 holds"
+        );
+    }
+}
+
+#[cfg(test)]
+mod the_counts_of_a_pass {
+    use super::Totals;
+    use crate::error::Error;
+
+    /// Bins of every population that are more values than the machine counts
+    /// are refused and do not reach the allocation, which the standard library
+    /// ends in a panic of its own: a panic of the core becomes a
+    /// `PanicException` in Python, which derives from `BaseException` and so is
+    /// not caught, and in a notebook or a browser tab it ends the session.
+    ///
+    /// The bins of one population are half the draw and the draw is at most the
+    /// gene copies of the dataset, but nothing bounds the populations of a call,
+    /// which a caller of the core gives as it likes, so what keeps the product
+    /// in range is this check and not the data.
+    #[test]
+    fn more_bins_than_the_machine_counts_are_refused_and_not_allocated() {
+        for (num_pops, num_bins) in [(usize::MAX, 2), (1 << 40, 1 << 40), (usize::MAX / 4, 4)] {
+            let error = match Totals::of(num_pops, num_bins) {
+                Ok(_) => panic!("{num_pops} populations of {num_bins} bins were allocated"),
+                Err(error) => error,
+            };
+
+            assert!(
+                matches!(&error, Error::DiversityMoreBinsThanTheMachineHolds { num_pops: found, num_bins: bins }
+                    if *found == num_pops && *bins == num_bins),
+                "{num_pops} populations of {num_bins} bins: {error:?}"
+            );
+        }
+        assert!(Totals::of(3, 11).is_ok());
     }
 }
 

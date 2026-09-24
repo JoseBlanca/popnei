@@ -1859,6 +1859,49 @@ pub enum Error {
         num_vars: usize,
     },
 
+    /// The reader of a pass of the diversity states a ploidy of 0 or one
+    /// above the alleles a genotype of popnei holds. The threshold of called
+    /// genotypes of the pass is measured in that ploidy and so is the largest
+    /// draw the dataset allows, so a ploidy that did not fit would leave every
+    /// population counting no variant. The VCF reader refuses both when it is
+    /// opened and the vars file reader refuses a file whose genotypes hold no
+    /// allele, so what reaches this is a vars file whose metadata says its
+    /// genotypes hold more alleles than popnei reads. It is this module's own
+    /// case and not the one the statistics of one variant raise for their
+    /// `ploidy` argument: a user of `calc_pop_diversity` passes no ploidy, so
+    /// a message naming that argument would send them looking for one they
+    /// never wrote. In Python it is a `ValueError`, and it names the file the
+    /// variants were read from.
+    #[error(
+        "the variants were read at a ploidy of {ploidy}, and the diversity of a population is calculated over genotypes of 1 allele at least and {largest} at most: how many genotypes a population called at a variant is its called alleles over the ploidy"
+    )]
+    DiversityPloidyOutOfRange {
+        /// The ploidy the reader of the pass gives.
+        ploidy: usize,
+        /// The largest one popnei reads, `io::vcf::MAX_PLOIDY`.
+        largest: usize,
+    },
+
+    /// The bins of the folded spectrum of every population of a pass are
+    /// more floats than the machine counts: the populations times
+    /// `num_called_alleles / 2 + 1`, which is what one vector of them holds.
+    /// A `usize` is 32 bits in WebAssembly, where 430000 populations at a
+    /// draw of every gene copy of a large dataset reach it, and 64 bits
+    /// natively, where no dataset does. The pass says so before it reads a
+    /// variant rather than dying in the allocation. In Python it is a
+    /// `ValueError`: it is the populations and the draw a user asked for.
+    #[error(
+        "the folded spectrum of {num_pops} populations holds {num_bins} bins for each of them, which is more values than this machine counts, {largest}: ask for the spectrum of fewer populations at a time or for a smaller `num_called_alleles`",
+        largest = usize::MAX
+    )]
+    DiversityMoreBinsThanTheMachineHolds {
+        /// How many populations the pass is over.
+        num_pops: usize,
+        /// How many bins the spectrum of one of them holds,
+        /// `num_called_alleles / 2 + 1`.
+        num_bins: usize,
+    },
+
     /// The number of called alleles every population is brought down to is
     /// below 2. A draw of one allele shows one allele whatever the
     /// population holds, so every standardized value of such a draw is 1 or
