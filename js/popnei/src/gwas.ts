@@ -335,8 +335,13 @@ export interface CalcGwasOptions {
    * which costs a walk over the variant. The factor is estimated from the
    * first 100 variants that vary of a second pass over the same variants,
    * which the call opens itself. What it gives up is accuracy, and how much
-   * grows with how strongly the panel is structured. Only a mixed model has
-   * such a denominator, so asking for it without a `kinship` is an `Error`,
+   * grows with how strongly the panel is structured, since one factor stands
+   * in for a quantity that differs from variant to variant: on the panel of
+   * `docs/specs/gwas.md`, 200 individuals and 1200 variants, a p-value is out
+   * by a factor of 3.3 at worst while the middle of them barely moves, where
+   * what that spec allows the approximation is a factor of 32. Only a mixed
+   * model has such a denominator, so asking for it without a `kinship` is an
+   * `Error`,
    * and so is a first block in which no variant varies among the tested
    * individuals or whose variants the design explains, which leaves no
    * factor above 0 to multiply by. The result says in
