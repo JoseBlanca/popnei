@@ -90,7 +90,11 @@ rest leaves a sentence that still says nothing.
 ### A number comes with what it was measured on
 
 The dataset, the machine, the threads, the program that was run, and the
-date when the measurement is not from the work being reported. A
+date when the measurement is not from the work being reported. The date is
+the one the session was told, not one worked out from the dates already in
+the file: on 24 September 2026 sixteen dates one day ahead were found across
+two suites, a package and two specs, written by sessions that had each
+inferred the same wrong day. A writer who does not know it asks. A
 comparison has both of its sides in the same units, and says which side
 is the better one when the reader could doubt it. A number carried over
 from another document keeps all of this.
