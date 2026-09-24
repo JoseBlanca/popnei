@@ -16,17 +16,27 @@
 //! those alleles over the ploidy, so a half called genotype counts as half
 //! an individual.
 //!
+//! F_IS is the one of the five that reads whole genotypes and not only
+//! the alleles called: it is one minus the mean observed heterozygosity of
+//! the population over the mean unbiased expected one, and both of those
+//! are the per variant statistics of `docs/specs/stats.md`, computed here
+//! by the `stats` module itself so that the two specs cannot disagree
+//! about a heterozygosity.
+//!
 //! What is built here so far is the pass, those counts of variants, the
-//! alleles each population called, the private ones among them and the
-//! variants that vary in it. The two statistics left are added on top of
-//! the same counts.
+//! alleles each population called, the private ones among them, the
+//! variants that vary in it and F_IS. The statistic left, the folded site
+//! frequency spectrum, is added on top of the same counts.
 
 use std::collections::HashSet;
 
 use crate::block::{Block, BlockReader, alleles_of_a_chunk, alleles_per_var_of};
 use crate::error::{Error, Result};
-use crate::stats::{every_individual_in_order, min_called_alleles};
-use crate::variant::{AlleleCounts, Needs, count_alleles, count_alleles_of};
+use crate::stats::{ExpHet, ObsHet, every_individual_in_order, min_called_alleles};
+use crate::variant::{
+    AlleleCounts, GtCounts, Needs, count_alleles, count_alleles_and_gts_of, count_alleles_of,
+    count_gts,
+};
 
 /// Which of the five statistics of this module a pass is asked for: a set
 /// of them, with union, [`DiversityStats::contains`] and
@@ -125,6 +135,16 @@ struct OfAPop {
     private_alleles: u64,
     /// How many of those variants it called more than one allele at.
     num_variable_vars: u64,
+    /// The observed heterozygosities of the variants behind its F_IS,
+    /// added up.
+    sum_obs_het: f64,
+    /// The unbiased expected heterozygosities of the same variants, added
+    /// up.
+    sum_unbiased_exp_het: f64,
+    /// How many variants those two sums are over: the ones that counted for
+    /// the population and at which both heterozygosities exist. It is the
+    /// divisor of both means, so F_IS does not depend on it.
+    num_vars_with_both_hets: u64,
 }
 
 impl OfAPop {
@@ -135,7 +155,30 @@ impl OfAPop {
             num_alleles: 0,
             private_alleles: 0,
             num_variable_vars: 0,
+            sum_obs_het: 0.0,
+            sum_unbiased_exp_het: 0.0,
+            num_vars_with_both_hets: 0,
         }
+    }
+
+    /// One minus the mean observed heterozygosity of the population over
+    /// its mean unbiased expected one, and NaN when it has no F_IS: when no
+    /// variant of it carries both heterozygosities, and when its mean
+    /// unbiased expected heterozygosity is 0, every variant it counted
+    /// having held one allele.
+    fn fis(&self) -> f64 {
+        if self.num_vars_with_both_hets == 0 {
+            return f64::NAN;
+        }
+        // A count below 2^53 is exact in a float64, and a pass of that many
+        // variants reads more rows than any source holds.
+        let num_vars = self.num_vars_with_both_hets as f64;
+        let mean_obs_het = self.sum_obs_het / num_vars;
+        let mean_unbiased_exp_het = self.sum_unbiased_exp_het / num_vars;
+        if mean_unbiased_exp_het == 0.0 {
+            return f64::NAN;
+        }
+        1.0 - mean_obs_het / mean_unbiased_exp_het
     }
 }
 
@@ -227,6 +270,39 @@ impl PopDiversity {
         }
         self.pops.get(pop).map(|pop| pop.num_variable_vars)
     }
+
+    /// How far the genotypes of the population are from the proportions its
+    /// allele frequencies would give if its individuals paired at random:
+    /// one minus its mean observed heterozygosity over its mean unbiased
+    /// expected one, 0 when the two match, positive when it holds fewer
+    /// heterozygous genotypes than random pairing would give and negative
+    /// when it holds more. `None` when `pop` is not a population of the
+    /// call or [`DiversityStats::FIS`] was not asked for.
+    ///
+    /// Both means are over the same variants, those that counted for the
+    /// population and at which both heterozygosities exist: the observed
+    /// one needs a called genotype, since it divides by the called ones,
+    /// and the unbiased expected one needs as many called alleles as a
+    /// genotype holds, since it draws that many of them without
+    /// replacement. It is Nei's F_IS, read on one population on its own,
+    /// and not Weir and Cockerham's, which comes out of a decomposition of
+    /// the variance across populations.
+    ///
+    /// It is NaN when the population has no F_IS: when no variant counted
+    /// for it, which is not an error; when its mean unbiased expected
+    /// heterozygosity is 0, every variant it counted having held one
+    /// allele; and at ploidy 1, where no genotype can be heterozygous, so
+    /// the observed heterozygosity is 0 at every variant and the ratio
+    /// would be 1 wherever the population has any diversity. The draw of
+    /// `num_called_alleles` does not touch it: the observed heterozygosity
+    /// is a property of whole genotypes and not of a sample of alleles.
+    #[must_use]
+    pub fn fis(&self, pop: usize) -> Option<f64> {
+        if !self.stats.contains(DiversityStats::FIS) {
+            return None;
+        }
+        self.pops.get(pop).map(OfAPop::fis)
+    }
 }
 
 /// One population of a pass: the individuals it holds among those of the
@@ -287,6 +363,84 @@ impl CountsThePrivateAlleles {
     }
 }
 
+/// The two per variant statistics of `docs/specs/stats.md` that F_IS is
+/// built from, which a pass asked for F_IS carries and one asked for the
+/// other four does not.
+///
+/// They are the ones of the `stats` module and not a second copy of either
+/// formula, so that the two specs cannot disagree about a heterozygosity.
+/// Each is built with a threshold of no individual, because the pass has
+/// already decided which variants count for a population, by its own rule
+/// in called alleles; what is left for the two of them to say is whether
+/// each exists at the variant, which is where they give `None`.
+#[derive(Debug, Clone, Copy)]
+struct Heterozygosities {
+    /// The heterozygous genotypes of the population over its called ones,
+    /// which is `None` where it called no whole genotype.
+    obs_het: ObsHet,
+    /// The chance that as many gene copies as a genotype holds, drawn from
+    /// the called alleles of the population without replacement, are not
+    /// all of the same allele. It is `None` where the population called
+    /// fewer alleles than a genotype holds, which for a diploid population
+    /// is one called allele.
+    unbiased_exp_het: ExpHet,
+}
+
+impl Heterozygosities {
+    /// The two statistics of a pass asked for F_IS over variants of the
+    /// ploidy `ploidy`, and `None` for a pass that gives no F_IS: one that
+    /// did not ask for it, and one over haploid variants, where no genotype
+    /// can be heterozygous and the ratio would be 1 wherever the population
+    /// has any diversity.
+    ///
+    /// The exponent of the unbiased expected heterozygosity is the ploidy,
+    /// which is what `docs/specs/stats.md` gives a caller that asks for no
+    /// other.
+    ///
+    /// # Errors
+    ///
+    /// A ploidy above the largest one the statistics of
+    /// `docs/specs/stats.md` take, 255, which no reader of popnei gives.
+    fn of(stats: DiversityStats, ploidy: usize) -> Result<Option<Heterozygosities>> {
+        if !stats.contains(DiversityStats::FIS) || ploidy < 2 {
+            return Ok(None);
+        }
+        Ok(Some(Heterozygosities {
+            obs_het: ObsHet::new(0),
+            unbiased_exp_het: ExpHet::new(ploidy, ploidy, 0)?,
+        }))
+    }
+
+    /// It adds the two heterozygosities of one population at one variant to
+    /// what the population has counted, and adds nothing when either of
+    /// them does not exist there: both means of F_IS are over the variants
+    /// that carry both, so the two sums have one divisor.
+    ///
+    /// `counts` is how often the population called each allele of the
+    /// variant, `called_alleles` their sum and `gts` how many of its
+    /// genotypes there were called, missing and heterozygous.
+    fn add_the_var(
+        &self,
+        counts: &AlleleCounts,
+        called_alleles: u32,
+        gts: GtCounts,
+        counted: &mut OfAPop,
+    ) {
+        let (Some(obs_het), Some(unbiased_exp_het)) = (
+            self.obs_het.of_var(gts),
+            self.unbiased_exp_het.of_var(counts, called_alleles, true),
+        ) else {
+            return;
+        };
+        counted.sum_obs_het += obs_het;
+        counted.sum_unbiased_exp_het += unbiased_exp_het;
+        // One variant of the pass, and a pass of more than
+        // 18446744073709551615 variants reads more rows than any source
+        // holds.
+        counted.num_vars_with_both_hets = counted.num_vars_with_both_hets.saturating_add(1);
+    }
+}
+
 /// What every row of a pass is read with: the populations and the rule for
 /// which variants count for them.
 #[derive(Debug)]
@@ -299,6 +453,9 @@ struct OfThePass<'a> {
     /// Whether the alleles no other population called are counted, which
     /// walks the counts of every population of the row a second time.
     counts_the_private_alleles: CountsThePrivateAlleles,
+    /// The two heterozygosities F_IS is built from, which a pass that gives
+    /// no F_IS does not carry and whose genotypes it does not count.
+    heterozygosities: Option<Heterozygosities>,
     /// How many alleles a population has to have called at a variant for
     /// the variant to count for it: `min_num_individuals` genotypes of the
     /// ploidy.
@@ -337,6 +494,14 @@ impl Totals {
             of_the_pass.num_variable_vars = of_the_pass
                 .num_variable_vars
                 .saturating_add(of_the_chunk.num_variable_vars);
+            // The chunks of a block are added in the order of the block and
+            // the blocks in the order of the pass, so these two sums of
+            // float64 do not depend on how many threads read the rows.
+            of_the_pass.sum_obs_het += of_the_chunk.sum_obs_het;
+            of_the_pass.sum_unbiased_exp_het += of_the_chunk.sum_unbiased_exp_het;
+            of_the_pass.num_vars_with_both_hets = of_the_pass
+                .num_vars_with_both_hets
+                .saturating_add(of_the_chunk.num_vars_with_both_hets);
         }
         self.num_vars_every_pop = self
             .num_vars_every_pop
@@ -389,6 +554,7 @@ pub fn calc_pop_diversity<R: BlockReader + ?Sized>(
         pops: &of_the_pops,
         counts_the_alleles: CountsTheAlleles::of(options.stats),
         counts_the_private_alleles: CountsThePrivateAlleles::of(options.stats),
+        heterozygosities: Heterozygosities::of(options.stats, ploidy)?,
         min_called_alleles: min_called_alleles(
             options.min_num_individuals,
             // Every reader of popnei gives a ploidy of 255 at most, and a
@@ -642,15 +808,33 @@ fn add_the_rows(
                     .len()
                     .saturating_mul(of_the_pass.ploidy)
                     == alleles_per_var;
-            let (called_alleles, one_past_the_largest) = if of_the_whole_row {
+            // The genotypes of the population are counted beside its
+            // alleles when the pass gives F_IS, which reads the
+            // heterozygous ones, and are not counted at all otherwise.
+            let counts_the_gts = of_the_pass.heterozygosities.is_some();
+            let (called_alleles, one_past_the_largest, gts) = if of_the_whole_row {
                 // Counting the row as it is gives no bound on the alleles it
                 // holds, so the whole of the counts is walked below; every
                 // entry of them was written, so the ones above the largest
                 // allele of the row hold 0.
-                (
-                    count_alleles(row, &mut at_the_row.counts)?,
-                    at_the_row.counts.len(),
-                )
+                let called_alleles = count_alleles(row, &mut at_the_row.counts)?;
+                let gts = if counts_the_gts {
+                    Some(count_gts(row, of_the_pass.ploidy)?)
+                } else {
+                    None
+                };
+                (called_alleles, at_the_row.counts.len(), gts)
+            } else if counts_the_gts {
+                // One walk over the individuals of the population gives both
+                // of its counts, where the two functions would look up each
+                // of its genotypes twice.
+                let (counted, gts) = count_alleles_and_gts_of(
+                    row,
+                    of_the_pass.ploidy,
+                    &of_the_pop.individuals,
+                    &mut at_the_row.counts,
+                )?;
+                (counted.called_alleles, counted.num_alleles, Some(gts))
             } else {
                 let counted = count_alleles_of(
                     row,
@@ -658,7 +842,7 @@ fn add_the_rows(
                     &of_the_pop.individuals,
                     &mut at_the_row.counts,
                 )?;
-                (counted.called_alleles, counted.num_alleles)
+                (counted.called_alleles, counted.num_alleles, None)
             };
             at_the_row.one_past_the_largest = one_past_the_largest;
             // A population that called nothing at the variant does not
@@ -687,6 +871,11 @@ fn add_the_rows(
                 if num_different > 1 {
                     counted.num_variable_vars = counted.num_variable_vars.saturating_add(1);
                 }
+            }
+            // The genotypes of the population at this variant were counted
+            // above exactly when the pass carries the two heterozygosities.
+            if let (Some(heterozygosities), Some(gts)) = (of_the_pass.heterozygosities, gts) {
+                heterozygosities.add_the_var(&at_the_row.counts, called_alleles, gts, counted);
             }
         }
         if every_pop {
@@ -1025,6 +1214,25 @@ mod the_pass {
         assert!(
             (found - mean).abs() <= OF_AN_EXACT_QUOTIENT,
             "the mean private alleles of {what} is {found}, and it is {mean}"
+        );
+    }
+
+    /// What a value of F_IS of these tests may differ from the number of
+    /// the spec by. The spec prints its F_IS to ten decimals, so a literal
+    /// here is within 5e-11 of the value it rounds, and the two sums and
+    /// the division of a number near 0.35 leave a few units of the last
+    /// place of a float64, about 1e-16.
+    const OF_TEN_DECIMALS: f64 = 1e-10;
+
+    /// It checks the F_IS of one population: one minus its mean observed
+    /// heterozygosity over its mean unbiased expected one, over the
+    /// variants that counted for it and at which both of them exist.
+    fn assert_fis(diversity: &PopDiversity, pop: usize, fis: f64, what: &str) {
+        let found = diversity.fis(pop).expect("the F_IS");
+
+        assert!(
+            (found - fis).abs() <= OF_TEN_DECIMALS,
+            "the F_IS of {what} is {found}, and it is {fis}"
         );
     }
 
@@ -1532,5 +1740,211 @@ mod the_pass {
         assert_eq!(of_the_private_alleles.private_alleles(1), Some(1));
         assert_eq!(of_the_private_alleles.num_alleles(0), None);
         assert_eq!(of_the_alleles.private_alleles(0), None);
+    }
+    /// `pop1` of the worked example has observed heterozygosities of 0.5,
+    /// 0.5, 1 and 0 at the variants 1, 2, 3 and 5 and unbiased expected
+    /// heterozygosities of 0.5, 0.5, 1 and 0, both means 0.5, so its F_IS
+    /// is 0; `pop2` has 0, 0, 1 and 0 against 0, 0, 1 and 0.5333333333,
+    /// means of 0.25 and 0.3833333333, so its F_IS is 0.3478260870. The
+    /// eight per variant values are the ones the worked example of
+    /// `docs/specs/stats.md` tabulates. "How it is verified" of "The
+    /// inbreeding coefficient F_IS" of `docs/specs/diversity.md`.
+    #[test]
+    fn the_fis_of_the_worked_example_is_zero_in_pop1_and_0_3478_in_pop2() {
+        let diversity = of_the_worked_example(1, 6);
+
+        assert_fis(&diversity, 0, 0.0, "pop1");
+        assert_fis(&diversity, 1, 0.3478260870, "pop2");
+        assert_eq!(diversity.fis(2), None);
+    }
+
+    /// The two sums of heterozygosities behind F_IS are sums of float64,
+    /// and they are added chunk by chunk and block by block in the order of
+    /// the variants, so neither the size of the blocks nor the threads that
+    /// read a block change them.
+    #[test]
+    fn the_size_of_the_blocks_does_not_change_the_fis() {
+        for num_vars_per_block in [1, 2, 4, 6] {
+            let diversity = of_the_worked_example(1, num_vars_per_block);
+
+            assert_fis(
+                &diversity,
+                0,
+                0.0,
+                &format!("pop1 in blocks of {num_vars_per_block}"),
+            );
+            assert_fis(
+                &diversity,
+                1,
+                0.3478260870,
+                &format!("pop2 in blocks of {num_vars_per_block}"),
+            );
+        }
+    }
+
+    /// A variant that counted for a population and that it called no whole
+    /// genotype at is out of both of its means: the observed heterozygosity
+    /// divides by the called genotypes and has none there. At a threshold
+    /// of no individual the sixth variant of the worked example,
+    /// `0/. ./. ./. ./. ./.`, counts for `pop1`, which called one allele of
+    /// a half called genotype there, and `pop1` keeps the F_IS of the four
+    /// variants it called whole genotypes at.
+    #[test]
+    fn a_variant_with_no_called_genotype_is_out_of_the_fis() {
+        let diversity = of_the_worked_example(0, 6);
+
+        assert_eq!(diversity.num_vars(0), Some(5));
+        assert_fis(&diversity, 0, 0.0, "pop1 at a threshold of no individual");
+        assert_fis(
+            &diversity,
+            1,
+            0.3478260870,
+            "pop2 at a threshold of no individual",
+        );
+    }
+
+    /// A population for which no variant counted has NaN in `fis` and is
+    /// not an error, which "The cases" of `docs/specs/diversity.md` states.
+    /// At a threshold of three called genotypes no variant counts for
+    /// `pop1`, which holds two individuals; the fifth counts for `pop2`,
+    /// whose three individuals called six alleles there, and `pop2` has an
+    /// observed heterozygosity of 0 and an unbiased expected one of
+    /// 0.5333333333 at it, so its F_IS is 1.
+    #[test]
+    fn a_population_no_variant_counted_for_has_no_fis() {
+        let diversity = of_the_worked_example(3, 6);
+
+        assert_eq!(diversity.num_vars(0), Some(0));
+        assert!(
+            diversity
+                .fis(0)
+                .expect("the F_IS of a population no variant counted for")
+                .is_nan()
+        );
+        assert_eq!(diversity.num_vars(1), Some(1));
+        assert_fis(
+            &diversity,
+            1,
+            1.0,
+            "pop2 at a threshold of three individuals",
+        );
+    }
+
+    /// A population whose every variant holds one allele has a mean
+    /// unbiased expected heterozygosity of 0 and no F_IS, which is NaN:
+    /// "What it gives" of "The inbreeding coefficient F_IS" of
+    /// `docs/specs/diversity.md`. The two variants are `0/0 0/0 0/0` and
+    /// `1/1 1/1 1/1`, of one population of the three individuals of the
+    /// reader.
+    #[test]
+    fn a_population_of_one_allele_at_every_variant_has_no_fis() {
+        let of_the_zeros: [i8; 6] = [0, 0, 0, 0, 0, 0];
+        let of_the_ones: [i8; 6] = [1, 1, 1, 1, 1, 1];
+        let rows: Vec<&[i8]> = vec![&of_the_zeros[..], &of_the_ones[..]];
+        let mut reader = GivenBlocks::of_a_source_of(3, 2, blocks_of(&rows, 3, 2, 2));
+
+        let diversity = calc_pop_diversity(&mut reader, &[], &options_with_no_draw(1))
+            .expect("the diversity of a population of one allele at every variant");
+
+        assert_eq!(diversity.num_vars(0), Some(2));
+        assert!(
+            diversity
+                .fis(0)
+                .expect("the F_IS of a population with no diversity")
+                .is_nan()
+        );
+    }
+
+    /// At ploidy 1 no genotype can be heterozygous, so the observed
+    /// heterozygosity is 0 at every variant and F_IS would be 1 wherever
+    /// the population has any diversity. popnei gives NaN there instead,
+    /// which "What it gives" of "The inbreeding coefficient F_IS" of
+    /// `docs/specs/diversity.md` states. The variant is `0 1 1` of three
+    /// haploid individuals, at which the population called two alleles.
+    #[test]
+    fn a_haploid_population_has_no_fis_instead_of_one() {
+        let row: [i8; 3] = [0, 1, 1];
+        let rows: Vec<&[i8]> = vec![&row[..]];
+        let mut reader = GivenBlocks::of_a_source_of(3, 1, blocks_of(&rows, 3, 1, 1));
+
+        let diversity = calc_pop_diversity(&mut reader, &[], &options_with_no_draw(1))
+            .expect("the diversity of a haploid population");
+
+        assert_eq!(diversity.num_vars(0), Some(1));
+        assert_eq!(diversity.num_alleles(0), Some(2));
+        assert!(
+            diversity
+                .fis(0)
+                .expect("the F_IS of a haploid population")
+                .is_nan()
+        );
+    }
+
+    /// A population that holds more heterozygous genotypes than random
+    /// pairing would give has a negative F_IS. The variant is `0/1 0/1` of
+    /// two diploid individuals: both of its called genotypes are
+    /// heterozygous, so its observed heterozygosity is 1, and 2 of its 4
+    /// called alleles are the allele 0 and 2 the allele 1, so the chance
+    /// that two of them drawn without replacement are alike is twice
+    /// (2/4)(1/3), a third, and its unbiased expected heterozygosity is two
+    /// thirds. Its F_IS is 1 - 1 / (2/3), -0.5.
+    #[test]
+    fn a_population_of_heterozygous_genotypes_alone_has_a_negative_fis() {
+        let row: [i8; 4] = [0, 1, 0, 1];
+        let rows: Vec<&[i8]> = vec![&row[..]];
+        let of_the_two: [usize; 2] = [0, 1];
+        let mut reader = GivenBlocks::of_a_source_of(2, 2, blocks_of(&rows, 2, 2, 1));
+
+        let diversity = calc_pop_diversity(&mut reader, &[&of_the_two], &options_with_no_draw(1))
+            .expect("the diversity of two heterozygous genotypes");
+
+        assert_fis(
+            &diversity,
+            0,
+            -0.5,
+            "a population of two heterozygous genotypes",
+        );
+    }
+
+    /// F_IS is counted when it was asked for and not otherwise, and a pass
+    /// asked for it alone gives the same number as one asked for every
+    /// statistic.
+    #[test]
+    fn the_fis_is_counted_only_when_it_was_asked_for() {
+        let of_the_fis = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::FIS,
+                num_called_alleles: None,
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the F_IS alone")
+        };
+        let of_the_alleles = {
+            let mut reader = the_worked_example(6);
+            let options = DiversityOptions {
+                stats: DiversityStats::NUM_ALLELES,
+                num_called_alleles: None,
+                min_num_individuals: 1,
+            };
+            calc_pop_diversity(&mut reader, &[&POP1, &POP2], &options)
+                .expect("the diversity with the alleles called alone")
+        };
+
+        assert_fis(
+            &of_the_fis,
+            0,
+            0.0,
+            "pop1 in a pass asked for the F_IS alone",
+        );
+        assert_fis(
+            &of_the_fis,
+            1,
+            0.3478260870,
+            "pop2 in a pass asked for the F_IS alone",
+        );
+        assert_eq!(of_the_fis.num_alleles(0), None);
+        assert_eq!(of_the_alleles.fis(0), None);
     }
 }
