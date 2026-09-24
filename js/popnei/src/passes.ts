@@ -17,7 +17,7 @@ import {
   num_passes_of as numPassesOfTheCore,
 } from "../wasm/popnei.js";
 
-import { wholeNumberOfZeroOrMore } from "./arguments.js";
+import { aString, wholeNumberOfZeroOrMore } from "./arguments.js";
 import { theWasmHasToBeLoaded } from "./core.js";
 
 /**
@@ -58,13 +58,19 @@ export type ConsumerName =
  * down: what it is for is a page that draws a bar, and Python reads a file
  * by its path in a program that has none.
  *
- * @throws {Error} When `consumer` is the name of no consumer of the
- * package, when `numPrinComps` is not a whole number of 0 or more and at
- * most 4294967295, and when `init` has not been awaited.
+ * @throws {Error} When `consumer` is not a name, when it is the name of no
+ * consumer of the package, when `numPrinComps` is not a whole number of 0 or
+ * more and at most 4294967295, and when `init` has not been awaited.
  */
 export function numPassesOf(consumer: ConsumerName, options?: object): number {
   theWasmHasToBeLoaded();
-  return numPassesOfTheCore(consumer, numPrinCompsOf(consumer, options));
+  // The name is checked here and not in the core: what the generated code
+  // hands the core for a number or an object is a pointer into the memory of
+  // wasm and a length, which the module reads the bytes of a name at, and
+  // the read traps the module for good where the package owes its user an
+  // `Error`.
+  const name = aString("consumer", consumer);
+  return numPassesOfTheCore(name, numPrinCompsOf(consumer, options));
 }
 
 /**

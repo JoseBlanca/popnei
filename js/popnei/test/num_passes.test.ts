@@ -72,3 +72,19 @@ test("a numPrinComps that is not a whole number of 0 or more is refused", async 
     message: /`numPrinComps` is a whole number of 0 or more/,
   });
 });
+
+test("a consumer that is not a name is refused where it was written", async () => {
+  await init();
+  // A number or an object reaches the core as a pointer into the memory of
+  // wasm, which read the bytes of a name where there are none: the wasm
+  // trapped with a `RuntimeError` that names neither the argument nor what
+  // was given, and the call after it found the module dead.
+  assert.throws(() => numPassesOf(42 as unknown as ConsumerName), {
+    name: "Error",
+    message: /`consumer` is a name, and the number 42 was given/,
+  });
+  assert.throws(() => numPassesOf({} as unknown as ConsumerName), {
+    name: "Error",
+    message: /`consumer` is a name, and an object of the type `Object` was given/,
+  });
+});
