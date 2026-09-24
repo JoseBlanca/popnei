@@ -53,11 +53,18 @@ struct TheVariantOfTheWindow {
 /// variants, which [`TheWindowOfTheBlocks::take_the_block`] refuses a
 /// block without, so [`TheWindowOfTheBlocks::variants`] gives one variant
 /// for each of the variants the blocks count.
+///
+/// Of a block it keeps where each of its variants lies and nothing else,
+/// which is all it reads to say which blocks are still in reach: the
+/// genotypes of the block go to the populations, each of which keeps those
+/// of its own individuals, and the block itself is dropped as soon as it
+/// has been taken.
 struct TheWindowOfTheBlocks {
     /// How far back of the newest variant read a variant is still held.
     max_dist: u64,
-    /// The blocks held, the oldest first.
-    held: VecDeque<Block>,
+    /// Where the variants of each block held lie, the oldest block first
+    /// and inside a block in the order of its variants.
+    held: VecDeque<Vec<TheVariantOfTheWindow>>,
     /// The last variant of the last block that had one, and `None` before
     /// a block with a variant has been taken.
     newest: Option<TheVariantOfTheWindow>,
@@ -86,19 +93,36 @@ impl TheWindowOfTheBlocks {
     /// # Errors
     ///
     /// What [`Block::check`] refuses, a block whose columns are not of its
-    /// number of variants among them, and
+    /// number of variants among them,
     /// [`Error::FieldsNotInTheBlock`] for a block that has not the
-    /// chromosome and the position of its variants.
+    /// chromosome and the position of its variants, and
+    /// [`Error::LdNoMemory`] when this machine does not give the memory of
+    /// where the variants of the block lie.
     fn take_the_block(&mut self, block: Block) -> Result<usize> {
         block.check()?;
         let missing = Needs::CHROM_POS.difference(block.fields());
         if !missing.is_empty() {
             return Err(Error::FieldsNotInTheBlock { fields: missing });
         }
-        if let Some(last) = the_variants_of(&block).next_back() {
-            self.newest = Some(last);
+        let mut variants: Vec<TheVariantOfTheWindow> = Vec::new();
+        variants
+            .try_reserve_exact(block.num_vars)
+            .map_err(|_| Error::LdNoMemory {
+                what: "where the variants of a block of the window lie",
+                values: block.num_vars,
+                bytes_per_value: size_of::<TheVariantOfTheWindow>(),
+            })?;
+        variants.extend(the_variants_of(&block));
+        if let Some(last) = variants.last() {
+            self.newest = Some(*last);
         }
-        self.held.push_back(block);
+        self.held.try_reserve(1).map_err(|_| Error::LdNoMemory {
+            what: "the blocks of the window",
+            // The one this block asks for beside the blocks held.
+            values: self.held.len().saturating_add(1),
+            bytes_per_value: size_of::<Vec<TheVariantOfTheWindow>>(),
+        })?;
+        self.held.push_back(variants);
         Ok(self.drop_what_fell_out())
     }
 
@@ -136,21 +160,7 @@ impl TheWindowOfTheBlocks {
     fn num_vars(&self) -> usize {
         self.held
             .iter()
-            .fold(0, |num_vars, block| num_vars + block.num_vars)
-    }
-
-    /// The blocks it holds, the oldest first.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the pass over a window reads the variants of each population and \
-                      the dosages over them, and not the window itself; what this \
-                      answers is read by the tests of the window alone"
-        )
-    )]
-    fn blocks(&self) -> impl ExactSizeIterator<Item = &Block> {
-        self.held.iter()
+            .fold(0, |num_vars, block| num_vars + block.len())
     }
 
     /// Where each variant of the blocks it holds lies, the oldest block
@@ -165,7 +175,7 @@ impl TheWindowOfTheBlocks {
         )
     )]
     fn variants(&self) -> impl Iterator<Item = TheVariantOfTheWindow> {
-        self.held.iter().flat_map(the_variants_of)
+        self.held.iter().flatten().copied()
     }
 
     /// The newest variant read, which the window reaches back from, and
@@ -202,9 +212,10 @@ impl TheWindowOfTheBlocks {
             // The variants of a block are in the order of the source, so
             // the last one is the one most likely to be in reach and the
             // walk back from it stops at the first variant it finds there.
-            let any_in_the_window = the_variants_of(oldest)
+            let any_in_the_window = oldest
+                .iter()
                 .rev()
-                .any(|variant| self.in_the_window(variant));
+                .any(|variant| self.in_the_window(*variant));
             if any_in_the_window {
                 break;
             }
@@ -481,10 +492,13 @@ struct ThePopOverTheWindow {
     /// the one population of every individual.
     individuals: Vec<usize>,
     /// The genotypes of the variants held, variant after variant, each of
-    /// them the row the block it came from had, over every individual of
-    /// that block. The dosages of one step of the pass are built from it
-    /// and it is kept with the memory it had, so a pass allocates it once
-    /// and grows it to the largest window it meets.
+    /// them the alleles of the individuals of this population alone, in the
+    /// order they were given. A population of 50 individuals of a source of
+    /// 1000 holds a twentieth of the row the block had, where a copy of the
+    /// whole row would cost every population of the pass as much as the
+    /// source has individuals. The dosages of one step of the pass are
+    /// built from it and it is kept with the memory it had, so a pass
+    /// allocates it once and grows it to the largest window it meets.
     gts: Vec<i8>,
     /// Where each variant held lies, the oldest first, one for each
     /// variant of `gts`.
@@ -557,8 +571,11 @@ impl ThePopOverTheWindow {
     ) -> Result<()> {
         // The frequency of each variant of the block among the individuals
         // of this population, which `LdDosages::of_block` works out over
-        // the individuals it is built with.
+        // the individuals it is built with. It is also what refuses an
+        // index that is not an individual of the block, so the alleles
+        // gathered below are there.
         let of_the_block = LdDosages::of_block(block, &self.individuals)?;
+        let alleles_per_var = self.alleles_per_var(of_the_source);
         let mut kept = 0_usize;
         let rows = block
             .gts
@@ -573,13 +590,30 @@ impl ThePopOverTheWindow {
                 continue;
             }
             self.gts
-                .try_reserve(gts.len())
+                .try_reserve(alleles_per_var)
                 .map_err(|_| Error::LdNoMemory {
                     what: "the genotypes of the variants of the window",
-                    values: gts.len(),
+                    values: alleles_per_var,
                     bytes_per_value: size_of::<i8>(),
                 })?;
-            self.gts.extend_from_slice(gts);
+            match self.individuals.is_empty() {
+                // The population of every individual of the source, whose
+                // genotypes are the row itself.
+                true => self.gts.extend_from_slice(gts),
+                false => {
+                    for individual in &self.individuals {
+                        let Some(genotype) =
+                            the_genotype_of(gts, *individual, of_the_source.ploidy)
+                        else {
+                            return Err(Error::LdIndividualNotInTheDataset {
+                                individual: *individual,
+                                num_individuals: of_the_source.num_individuals,
+                            });
+                        };
+                        self.gts.extend_from_slice(genotype);
+                    }
+                }
+            }
             self.variants
                 .try_reserve(1)
                 .map_err(|_| Error::LdNoMemory {
@@ -628,10 +662,34 @@ impl ThePopOverTheWindow {
         // The genotypes held are the variants held times the alleles of one
         // variant, which is the length of a vector this machine gave, so
         // the alleles of the variants dropped are at most that number.
-        let alleles = dropped_vars.saturating_mul(of_the_source.alleles_per_var);
+        let alleles = dropped_vars.saturating_mul(self.alleles_per_var(of_the_source));
         self.gts.drain(..alleles.min(self.gts.len()));
         self.variants.drain(..dropped_vars.min(self.variants.len()));
         self.first_var = self.first_var.saturating_add(the_count_of(dropped_vars));
+    }
+
+    /// How many individuals the genotypes it holds are of, which are its
+    /// own and every individual of the source for the population that
+    /// names none.
+    fn num_individuals(&self, of_the_source: TheSourceOfThePass) -> usize {
+        match self.individuals.is_empty() {
+            true => of_the_source.num_individuals,
+            false => self.individuals.len(),
+        }
+    }
+
+    /// How many alleles of one variant it holds, which is its individuals
+    /// times the ploidy of the source.
+    fn alleles_per_var(&self, of_the_source: TheSourceOfThePass) -> usize {
+        match self.individuals.is_empty() {
+            // The alleles of one variant of the source, which the first
+            // block of the pass counted.
+            true => of_the_source.alleles_per_var,
+            // At most the alleles of one variant of the source, since an
+            // individual is asked for once, and that is a number this
+            // machine counted.
+            false => self.individuals.len().saturating_mul(of_the_source.ploidy),
+        }
     }
 
     /// Builds the dosages of the variants it holds, over its individuals.
@@ -643,7 +701,7 @@ impl ThePopOverTheWindow {
     fn the_dosages_are_built(&mut self, of_the_source: TheSourceOfThePass) -> Result<()> {
         let mut block = Block {
             num_vars: self.variants.len(),
-            num_individuals: of_the_source.num_individuals,
+            num_individuals: self.num_individuals(of_the_source),
             ploidy: of_the_source.ploidy,
             gts: std::mem::take(&mut self.gts),
             chrom: None,
@@ -652,7 +710,10 @@ impl ThePopOverTheWindow {
             alleles: None,
             qual: None,
         };
-        let built = LdDosages::of_block(&block, &self.individuals);
+        // The genotypes held are those of the individuals of this
+        // population and of no others, in the order they were given, so the
+        // dosages are built over every individual of this block.
+        let built = LdDosages::of_block(&block, &[]);
         // The genotypes are taken back with the memory they have, whether
         // the dosages were built or not, so that the next step of the pass
         // is gathered into the same buffer.
@@ -689,6 +750,15 @@ impl ThePopOverTheWindow {
     fn kept_of_the_newest_block(&self) -> usize {
         self.kept_of_each_block.back().copied().unwrap_or(0)
     }
+}
+
+/// The `ploidy` alleles of the individual at `individual` in the row of the
+/// genotypes of one variant, and `None` when the row has not that
+/// individual.
+fn the_genotype_of(gts: &[i8], individual: usize, ploidy: usize) -> Option<&[i8]> {
+    let first = individual.checked_mul(ploidy)?;
+    let past_it = first.checked_add(ploidy)?;
+    gts.get(first..past_it)
 }
 
 /// A count of variants as a result carries it, which is a `u64` and not a
@@ -1734,7 +1804,22 @@ mod tests {
         assert_eq!(window.num_vars(), 0);
         assert_eq!(window.variants().count(), 0);
         assert_eq!(window.the_newest_variant(), None);
-        assert_eq!(window.blocks().len(), 0);
+    }
+
+    #[test]
+    fn the_window_keeps_where_the_variants_of_a_block_lie_and_not_its_genotypes() {
+        let mut window = TheWindowOfTheBlocks::of(1000);
+        let block = block_of(2, Some(vec![0, 0]), Some(vec![100, 200]));
+        // The genotypes of the block are four alleles of two diploid
+        // variants, and what the window is left holding of it is the two
+        // variants, 16 bytes each.
+        let gts = block.gts.len();
+        match window.take_the_block(block) {
+            Ok(dropped) => assert_eq!((gts, dropped), (4, 0)),
+            Err(error) => panic!("the window refused the block: {error}"),
+        }
+        let held: usize = window.held.iter().map(|block| block.capacity()).sum();
+        assert_eq!((window.num_vars(), held), (2, 2));
     }
 
     /// A block of `num_vars` variants of one diploid individual on the
@@ -1950,6 +2035,24 @@ mod tests {
         assert_eq!(the_positions_of(pop_b), vec![100, 300, 400]);
         assert_eq!((pop_a.num_vars(), pop_b.num_vars()), (2, 3));
         assert_eq!((the_size_of(pop_a), the_size_of(pop_b)), ((2, 2), (3, 2)));
+    }
+
+    #[test]
+    fn a_pop_holds_the_genotypes_of_its_own_individuals_and_not_the_rows_of_the_source() {
+        let vcf = vcf_of_four_individuals(&THE_VARIANTS_OF_THE_TWO_POPS);
+        let of_the_pops = the_dosages_of_a_pass(&vcf, &[&POP_A, &POP_B], 5, 1000, 0.75);
+        // `pop_a` keeps the variants at 200 and 400 and `pop_b` those at
+        // 100, 300 and 400, and each of them holds four alleles of a
+        // variant, its two individuals at the ploidy 2, where the row of
+        // the block holds the eight of the four individuals of the source.
+        let of_pop_a = pop_of(&of_the_pops, 0).gts.as_slice();
+        let of_pop_b = pop_of(&of_the_pops, 1).gts.as_slice();
+        // `i0` and `i1` at 200 are 0/0 and 0/1, and at 400 the same two.
+        assert_eq!(of_pop_a, [0, 0, 0, 1, 0, 0, 0, 1]);
+        // `i2` and `i3` are 0/1 and 0/1 at each of the three, where the
+        // row at 400 opens with the 0/0 of `i0`, which is in neither
+        // population's genotypes.
+        assert_eq!(of_pop_b, [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
     }
 
     #[test]
