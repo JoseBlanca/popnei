@@ -148,6 +148,19 @@ THE_TWO_POPS = {
     "pop_b": [f"i{individual:03d}" for individual in range(50, 100)],
 }
 
+# Two populations that share twenty individuals and leave ten out, for the
+# sentence of "Its Python function" of `docs/specs/ld.md` that an individual
+# may be in more than one population and that one in none is read by none of
+# them: `i000` to `i059` and `i040` to `i089` of `ld.vcf.gz`, with `i090` to
+# `i099` in neither.
+THE_OVERLAPPING_POPS = {
+    "of_the_first_sixty": [f"i{individual:03d}" for individual in range(60)],
+    "of_the_forties_on": [f"i{individual:03d}" for individual in range(40, 90)],
+}
+
+# The ten individuals of `ld.vcf.gz` that neither population above names.
+THE_INDIVIDUALS_OF_NO_POP = [f"i{individual:03d}" for individual in range(90, 100)]
+
 # How many pairs each of the ten bins holds for each of the two populations
 # and the mean of their r², from the second and the third table, which are
 # of a `max_allowed_maf` of 0.8. Those two tables leave the standard
@@ -720,6 +733,50 @@ def test_ld_and_dist_keeps_in_each_pop_the_variants_pynei_keeps_there() -> None:
         means = of_the_pass.per_pop[pop]["mean_r2"]
         for row, (_, mean_r2) in enumerate(rows):
             assert means.iloc[row] == pytest.approx(mean_r2, rel=TOLERANCE)
+
+
+def test_ld_and_dist_reads_a_shared_individual_in_both_pops_and_an_unnamed_one_in_neither() -> (
+    None
+):
+    """Two populations of `ld.vcf.gz` that share the twenty individuals
+    `i040` to `i059` and that name neither `i090` nor the nine after it.
+
+    "Its Python function" of `docs/specs/ld.md` has an individual in more
+    than one population read by both of them and one in no population read
+    by none. What shows which individuals a population was counted over is
+    how many variants it kept at its major allele frequency, since that
+    frequency is worked out over its individuals alone: pyNei is asked for
+    the same two counts with `filter_samples` around the individuals of each
+    population and `filter_by_maf` over what is left, as it is for the two
+    populations of the tables of the spec.
+
+    The ten individuals of no population change that count, which the last
+    assertion holds to, so a pass that read them would give another number
+    for the first population.
+    """
+    of_the_pass = calc_ld_and_dist_per_pop(
+        _the_ld_dataset(),
+        pops=THE_OVERLAPPING_POPS,
+        min_dist=1,
+        max_dist=250_000,
+        num_bins=10,
+        max_allowed_maf=0.8,
+    )
+
+    assert list(of_the_pass.per_pop) == list(THE_OVERLAPPING_POPS)
+    assert of_the_pass.num_vars_per_pop == {
+        pop: _pynei_vars_at_a_maf_of(individuals, 0.8)
+        for pop, individuals in THE_OVERLAPPING_POPS.items()
+    }
+    # The pass read every variant of the file for both populations, as it
+    # does when the populations are disjoint.
+    assert of_the_pass.pass_stats.num_vars == NUM_VARS_OF_THE_LD_DATASET
+    assert (
+        _pynei_vars_at_a_maf_of(
+            THE_OVERLAPPING_POPS["of_the_first_sixty"] + THE_INDIVIDUALS_OF_NO_POP, 0.8
+        )
+        != of_the_pass.num_vars_per_pop["of_the_first_sixty"]
+    )
 
 
 def test_ld_and_dist_leaves_every_bin_empty_when_no_pair_reaches_min_dist(

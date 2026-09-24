@@ -2727,9 +2727,20 @@ mod tests {
             num_bins: 2,
             max_allowed_maf: 1.0,
         };
-        let of_the_pass = the_bins_of_a_pass(&vcf, &[], 1, &options, 256);
-        let bins = bins_of(&of_the_pass, 0);
-        assert_eq!((bins.num_vars(), the_pairs_of(bins)), (3, vec![0, 0]));
+        // The three variants lie within 200 base pairs of one another, so
+        // a block of three puts them in the window at once and each pair
+        // of them reaches the count of the pairs, where the chromosome is
+        // what leaves it out. A block of one holds one variant at a step,
+        // where a pair is never made at all.
+        for num_vars_per_block in [1, 3] {
+            let of_the_pass = the_bins_of_a_pass(&vcf, &[], num_vars_per_block, &options, 256);
+            let bins = bins_of(&of_the_pass, 0);
+            assert_eq!(
+                (bins.num_vars(), the_pairs_of(bins)),
+                (3, vec![0, 0]),
+                "at blocks of {num_vars_per_block} variants"
+            );
+        }
     }
 
     #[test]
