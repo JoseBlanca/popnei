@@ -1100,6 +1100,24 @@ fit; popnei raises a `ValueError`, because under the rule of
 that will not settle is the data, the same category as the kinship that is
 not a covariance below. The 50 rounds of the logistic fit are the same.
 
+Two more things end a linearization with that same refusal, and pyNei meets
+neither: a weight is `mu (1 - mu)`, so an individual whose fitted chance has
+reached 0 or 1 has a weight of 0, `w⁻¹` is then an infinity and the working
+trait is not a number, where pyNei carries the infinity into its inverse;
+and a pivot of `d' sigma⁻¹ d` that has fallen to the `n` times 2.2e-16 of
+**Open 5** of the largest is a fit whose weighted design has collapsed,
+which is that rule's second caller. Neither is reached by a fit of either
+panel, and both were reached by holding `tau` where no fit takes it,
+measured on `panel_called` on 25 September 2026 on both backends: at 1e10
+the linearization settles in 26 rounds with a smallest weight of 3.3e-24,
+at 1e12 a weight reaches 0 and the fit is refused at its round 26, and the
+smallest pivot is 0.197 of the largest at GMMAT's `tau` of 1.508057, 0.195
+on the panel with genotypes missing at that same `tau` and 0.0709 at 1e10,
+against a threshold of 4.44e-14. What the refusal is for is the error a user gets: without it
+the linear algebra crate refuses a matrix that is not finite, naming a
+matrix the user never saw, which is a `RuntimeError` in Python and so a
+defect of popnei, for the data.
+
 `tau` starts at half the variance of the first working trait. The whole
 variance is what `tau` would be if the kinship explained all of it, and
 pyNei halves it; either way the start is too large rather than too small, so
@@ -1177,7 +1195,14 @@ at 50 in 100.
 If a dataset ever reaches it, the factorization gives the `Singular` of
 `docs/specs/linalg.md` with the row it stopped at, and `calc_gwas` turns it
 into an error naming the kinship and saying that missing genotypes can make
-one that is not a covariance. It is not a defect of popnei and not a wrong
+one that is not a covariance. That is what `tau` held above 4 over the size
+of the smallest eigenvalue gives, and holding it there is how the error is
+reached at all: on `panel_called`, whose smallest eigenvalue is
+-3.4e-15 against a largest of 17.3, the factorization stops at the row 199
+at a `tau` of 1e16, where 4 over that eigenvalue is 1.2e15; on the panel
+with 3 genotypes missing in 100, whose smallest is -0.0321, it stops at the
+row 196 at a `tau` of 1e10, where the same arithmetic gives 124. Measured on
+both backends on 25 September 2026, which give the same row. It is not a defect of popnei and not a wrong
 argument, so it is neither a `RuntimeError` nor a plain `ValueError` about a
 type: it is a `ValueError` about the data.
 
