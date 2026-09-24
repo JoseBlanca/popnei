@@ -34,14 +34,25 @@ numbers to ten digits.
 The two programs run in two Python 3.12 environments that the script makes
 with `uv venv --python 3.12` and reuses on a later run, under
 `tmp/diversity-reference/`, which .gitignore leaves out of the repository.
-Neither program is a development dependency of pyproject.toml: dadi 2.4.4
-does not build on the project's Python, 3.14 with the free threading build,
-its nlopt dependency failing to compile, and scikit-allel 1.3.13 installs
-there but re-enables the global interpreter lock of the process that imports
-it, which that Python warns about. No test of popnei imports either of them,
-and this script runs each in a process of its own. The same directory holds
-the program each process runs, the allele counts dadi projects and the
-genotypes scikit-allel reads, all written again on every run.
+They are there so that the numbers stored here come from the one version of
+each program the spec names, dadi 2.4.4 and scikit-allel 1.3.13, whatever
+the development dependencies of pyproject.toml later hold. Neither program
+is among those dependencies and no test of popnei imports either, so
+nothing else in the repository fixes their versions.
+
+Both of them install and run on the project's Python as well, 3.14.5 with
+the global interpreter lock, which .python-version pins by its patch
+version. What dadi 2.4.4 does not build on is 3.14.7, the free threading
+build that `uv venv --python 3.14` picks by itself on the owner's machine:
+its nlopt dependency compiles from source and stops for want of cmake,
+which is not installed there. Both were measured on 24 September 2026 and
+are recorded in "How it is verified" of the folded spectrum of the spec,
+with the draw of 6 on which dadi gives the same four values on 3.14.5 as on
+3.12.
+
+The environment directory also holds the program each process runs, the
+allele counts dadi projects and the genotypes scikit-allel reads, all
+written again on every run.
 
 The script checks what it got against the literals of "How it is verified"
 of "The folded site frequency spectrum" and of "The inbreeding coefficient
@@ -317,10 +328,7 @@ def fis_from_allel(gts, pops, counted):
         arguments.append(f"{pop}={path}")
     python = make_environment("allel-3.12", ALLEL)
     program = write_program("allel_fis.py", ALLEL_PROGRAM)
-    # PYTHON_GIL=0 keeps quiet the warning that importing scikit-allel raises on
-    # a free threading Python. This one is 3.12, which has no such build, and
-    # the variable is harmless there.
-    printed = run([str(python), str(program), *arguments], PYTHON_GIL="0")
+    printed = run([str(python), str(program), *arguments])
     fis = {}
     for line in printed.splitlines():
         pop, value = line.split()
