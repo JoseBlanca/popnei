@@ -312,6 +312,30 @@ mod tests {
         );
     }
 
+    /// The centered squared length of no value at all is 0 and not NaN.
+    ///
+    /// The mean of no value is a sum of 0 over a count of 0, which is NaN,
+    /// and the early return is what the function answers with in its place.
+    /// A study of no individual does not reach here,
+    /// `Design::of_the_study` refusing a study of no more individuals than
+    /// the columns of its design plus one, so what this holds is the
+    /// function itself: an empty row gets a number, which a caller
+    /// multiplies by the factor and divides a variant by.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the early return hands back the literal 0.0 and no arithmetic touches \
+                  it, so the value is exact and a tolerance would let a NaN through"
+    )]
+    fn the_centered_squared_length_of_no_value_is_zero() {
+        let found = the_centered_squared_length_of(&[]);
+
+        assert_eq!(
+            found, 0.0,
+            "the centered squared length of no value is {found}"
+        );
+    }
+
     /// Against the identity the exact denominator of a variant is its own
     /// squared length, so every ratio is the squared length over the
     /// centered one and the factor is their mean.
@@ -441,6 +465,70 @@ mod tests {
                 assert_eq!(num_vars, 4, "the variants it was the mean over");
             }
             other => panic!("a projection of all zeros gave {other:?}"),
+        }
+    }
+
+    /// A factor that is not a finite number is refused, and a study of
+    /// every variant divided by NaN is not given.
+    ///
+    /// The fixture is the identity times the largest `f64`, against which
+    /// every exact denominator overflows to an infinity while the scale the
+    /// ratios are judged by is 1, so every one of the four ratios is kept
+    /// and their mean is an infinity. It is the half of the check that the
+    /// refusal of a projection of zeros does not reach: that one is a mean
+    /// of no ratio at all, and this one is a mean of four.
+    ///
+    /// No panel gives it. What it holds is the `is_finite` of the check: a
+    /// factor of NaN would make `beta`, `se` and the p-value of every
+    /// variant of the study NaN, and a factor of an infinity would make
+    /// every `beta` 0 and every p-value 1.
+    #[test]
+    fn a_factor_that_is_not_finite_is_refused() {
+        let dosages = the_dosages_of_the_panel_of_eight();
+        let projection: Vec<f64> = the_identity_of_eight()
+            .iter()
+            .map(|value| value * f64::MAX)
+            .collect();
+
+        match GrammarGamma::of_the_first_block(&projection, 8, 1.0, &dosages) {
+            Err(Error::GwasGrammarGammaFactorNotAboveZero { factor, num_vars }) => {
+                assert!(
+                    !factor.is_finite() && factor > 0.0,
+                    "the factor the identity times the largest f64 gives is {factor}, \
+                     which is above 0 and is where the other half of the check does \
+                     nothing"
+                );
+                assert_eq!(num_vars, 4, "the variants it was the mean over");
+            }
+            other => panic!("a projection of infinities gave {other:?}"),
+        }
+    }
+
+    /// A block whose values are fewer than its variants that vary times the
+    /// individuals is refused.
+    ///
+    /// The rows the ratios are formed from are the first `num_vars` rows of
+    /// `num_individuals` values of the buffer, and a buffer that does not
+    /// hold that many is a defect of the dosages of this module. The
+    /// fixture makes it by asking for the factor of the four variants of
+    /// the panel of eight over nine individuals: the buffer holds 4 rows of
+    /// 8 and the estimate wants 4 of 9. Without the refusal the rows would
+    /// be empty, and the mean of no ratio would be NaN, which is the same
+    /// refusal one step later and with a message about the design of the
+    /// study instead of about popnei.
+    #[test]
+    fn a_block_of_fewer_values_than_its_variants_and_individuals_is_refused() {
+        let dosages = the_dosages_of_the_panel_of_eight();
+        assert_eq!(
+            dosages.dosages().len(),
+            32,
+            "four variants of eight individuals"
+        );
+        let projection = vec![0.0_f64; 81];
+
+        match GrammarGamma::of_the_first_block(&projection, 9, 1.0, &dosages) {
+            Err(Error::GwasVariantsTooLarge) => {}
+            other => panic!("a block of four rows of eight read as nine gave {other:?}"),
         }
     }
 

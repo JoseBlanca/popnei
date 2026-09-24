@@ -3280,6 +3280,24 @@ mod glmm {
     /// denominators is from the factor.
     const OF_THE_APPROXIMATION: (f64, f64, f64) = (0.1, 1.5, 0.5);
 
+    /// How far the worst effect of a panel has to move under the
+    /// approximation for the approximation to have happened: 0.05 of it.
+    ///
+    /// The three bounds above are ceilings, and a run that made no
+    /// approximation at all would pass all of them, an exact answer being
+    /// at no distance from itself. It is not a hypothesis: a reviewer
+    /// replaced the approximation with `None` in this model on 24 September
+    /// 2026 and the whole core suite stayed green, the pytest and node
+    /// suites with it. So the effect is held above a floor as well.
+    ///
+    /// The floor is 0.05 where the worst effect measured that day is 0.3933
+    /// on the panel with every genotype called and 0.385 on the panel with
+    /// genotypes missing, a factor of eight of room, and the p-values are
+    /// left alone: they are where the approximation moves least, the median
+    /// of the absolute log ratios being 0.00981 here, and a floor near that
+    /// would go red on a panel the approximation happens to suit.
+    const THE_APPROXIMATION_MOVES_THE_EFFECT: f64 = 0.05;
+
     /// The approximation gives every variant of a panel an answer near the
     /// exact one, and the result says that it was used.
     ///
@@ -3346,6 +3364,12 @@ mod glmm {
                 worst_effect <= of_the_effects,
                 "the worst effect of {name} moves by {worst_effect} of itself, against \
                  the {of_the_effects} allowed"
+            );
+            assert!(
+                worst_effect >= THE_APPROXIMATION_MOVES_THE_EFFECT,
+                "the worst effect of {name} moves by {worst_effect} of itself, and an \
+                 approximation that happened moves it by \
+                 {THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
             );
         }
     }

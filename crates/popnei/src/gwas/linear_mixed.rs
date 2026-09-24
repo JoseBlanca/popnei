@@ -2170,6 +2170,26 @@ pub(crate) mod lmm {
     /// bound is the spec's and so pyNei's and not one to lower.
     const OF_THE_APPROXIMATE_EFFECT: f64 = 0.5;
 
+    /// How far the worst effect of a panel has to move under the
+    /// approximation for the approximation to have happened: 0.05 of it.
+    ///
+    /// Every bound of this test is a ceiling, and a run that made no
+    /// approximation at all would pass all of them, an exact answer being
+    /// at no distance from itself. It is not a hypothesis: a reviewer
+    /// replaced the approximation with `None` in the logistic mixed model
+    /// on 24 September 2026 and the whole core suite stayed green, and in
+    /// the linear mixed model one test of eight individuals went red and
+    /// the pytest and node suites stayed green for both. So the effect is
+    /// held above a floor as well.
+    ///
+    /// The floor is 0.05 where the worst effect measured that day is 0.4897
+    /// under the linear mixed model and 0.3933 under the logistic one, a
+    /// factor of eight of room, and the p-values are left alone: they are
+    /// where the approximation moves least, the median of the absolute log
+    /// ratios being 0.0130 here, and a floor near that would go red on a
+    /// panel the approximation happens to suit.
+    const THE_APPROXIMATION_MOVES_THE_EFFECT: f64 = 0.05;
+
     /// The study of a panel with the GRAMMAR-Gamma approximation, which is
     /// the study [`the_study_of_the_panel`] makes with both covariates and
     /// a second pass over the same file beside it.
@@ -2277,6 +2297,12 @@ pub(crate) mod lmm {
                     of_the_effects <= OF_THE_APPROXIMATE_EFFECT,
                     "the worst effect of {name} under {test:?} moves by {of_the_effects} \
                      of itself, against the {OF_THE_APPROXIMATE_EFFECT} allowed"
+                );
+                assert!(
+                    of_the_effects >= THE_APPROXIMATION_MOVES_THE_EFFECT,
+                    "the worst effect of {name} under {test:?} moves by {of_the_effects} \
+                     of itself, and an approximation that happened moves it by \
+                     {THE_APPROXIMATION_MOVES_THE_EFFECT} at least"
                 );
             }
         }
