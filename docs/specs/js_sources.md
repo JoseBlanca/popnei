@@ -141,10 +141,12 @@ in this crate, and a change to the trait of the core.
 
 Each range crosses once into the memory of wasm, copied out of the
 `ArrayBuffer`, the block of bytes JavaScript gives back, that
-`FileReaderSync` fills. The memory of a pass is that one range, plus what
-the reader holds: the lines of a block for a VCF, the batch for a vars file.
-A source with several passes open at once holds one range for each of them;
-a test of the package keeps twelve passes over one vars file open together.
+`FileReaderSync` fills. The memory of a pass is the range it holds, and the
+range it is reading while that one is still there, plus what the reader
+holds: the lines of a block for a VCF, the batch for a vars file. "Speed"
+below has what a pass over a VCF came to, 3.4 times its range. A source with
+several passes open at once holds that for each of them; a test of the
+package keeps twelve passes over one vars file open together.
 
 The two crates that call `FileReaderSync` and `Blob.slice` are `js-sys` and
 `web-sys`. They are pure Rust and they compile for
@@ -619,17 +621,37 @@ read into which error.
 
 ## Speed
 
-The size of a range is the number to measure, and no argument of the API
-carries it (**Open 3**, below). What one call into JavaScript costs, and
-what a pass costs at each size, is measured in Chromium on the owner's Apple
-M5 Pro, on a VCF of a few hundred MB built from `many.vcf`, at 256 KiB,
-1 MiB, 4 MiB and 16 MiB, against the same file read whole as an array of
-bytes, which is what the applications do today. The measurement gives two
-numbers this spec then carries: the size of a range, and what a pass over a
-file of that size holds in the memory of wasm, which is the bound the
-browser test asserts. It needs the source of this spec reading a `File` in
-a browser, so it comes after that work and not before it; until then the
-implementer writes 4 MiB, and no other number is picked for it.
+A range is 4194304 bytes, 4 MiB, and no argument of the API carries that
+number (**Open 3**, below). A pass over a file of the page holds 14155776
+bytes of the memory of wasm at that size, and the bound the browser test
+asserts is 25165824 bytes, 24 MiB.
+
+Both come from the measurement of 24 September 2026, in Chromium on the
+owner's Apple M5 Pro, over a VCF of 299994147 bytes and 1285000 variants of
+50 diploid individuals built from the body of `many.vcf` repeated, with
+`calcPerIndividualStats` as the consumer, the best of five runs of each
+point. `docs/reports/js-sources-measurement.md` has the tables, the machine,
+the file and the script that took the times.
+
+| the size of a range | one pass | the memory of wasm |
+|---|---|---|
+| 256 KiB | 1069 ms | 3407872 |
+| 1 MiB | 1006 ms | 4718592 |
+| 4 MiB | 996 ms | 14155776 |
+| 16 MiB | 958 ms | 51904512 |
+| the whole file as an array of bytes | 921 ms | 302383104 |
+
+Reading by ranges costs 8.1 % of a pass over that file against holding it
+whole, 75 ms of about a second, and holds 21.4 times less of the memory of
+wasm. 16 MiB is 38 ms faster than 4 MiB and holds 3.7 times more; 1 MiB
+holds a third of what 4 MiB holds and was slower than it, by 10 to 61 ms, in
+each of the four rounds of runs. What a pass holds is about 3.4 times its
+range and not the one range that "How it runs" above describes: the next
+range is built while the range the pass holds is still live, and the memory
+of a wasm module never shrinks.
+
+The size of a range is measured again when the reading of a range changes,
+and the bound of the test with it.
 
 ## Open points
 
