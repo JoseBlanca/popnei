@@ -127,6 +127,22 @@ whose r² is taken from the curve itself. Run `decay.py` first: it writes
 the three files `decay.R` reads. `decay.py` needs `ld.vcf` and runs
 plink2 itself; `decay.R` needs R, 4.6.1 here.
 
+`decay_truth.py` is the evidence behind the two choices that "The curve
+that is fitted" of `docs/specs/ld.md` makes, which curve and what n is.
+It runs a Wright-Fisher population of 200 individuals for 1000
+generations, with two chromosomes of 1500 sites 200 bp apart,
+recombination 2.5e-07 per bp and mutation 1e-04 per site, so that the
+population reaches the drift and recombination the curve is the
+expectation of and its 4Nr per bp is known to be 2e-04. It then fits Hill
+and Weir's curve with n the individuals, with n the individuals times the
+ploidy and with no sample term, and Sved's, to the pairs of one
+chromosome, and prints how far each lands from that 4Nr and what each
+gives at the shortest distance; and it takes the pairs of variants on
+different chromosomes, which assort independently and so carry no linkage
+disequilibrium, at four sample sizes, to measure whether the sampling
+term goes by the individuals or by the gametes. Three seeds, about 40 s,
+needs no file and no other program.
+
 `prune.py` is the table of the filter: it walks the variants with the
 rule of `docs/specs/filters.md` on plink2's own r² matrix, checks the two
 properties the spec says hold of the set it keeps, and runs plink2's

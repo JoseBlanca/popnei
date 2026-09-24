@@ -461,37 +461,66 @@ model, what is made smallest and how.
 ### The curve that is fitted
 
 The model is the r² expected between two variants of a population under
-drift and recombination, Hill and Weir (1988) with the correction for the
-gametes sampled of Weir and Hill (1986), which is **Open 5** below. It is
-what the literature of
-linkage disequilibrium decay fits, as Remington et al. (2001) fitted it to
-maize. r² is a quantity of one pair of variants, and the model says what
+drift and recombination, Hill and Weir (1988) with the correction for a
+finite sample of Weir and Hill (1986). It is what the literature of
+linkage disequilibrium decay fits, as Remington et al. (2001) fitted it
+to maize. r² is a quantity of one pair of variants, and the model says what
 the average of it is expected to be at a given recombination, over the
 pairs of a genome and over the histories the population could have had.
 
 With ρ the scaled recombination between the two variants, four times the
 effective size of the population times the recombination fraction between
-them, and n the gametes sampled,
+them, and n how many were sampled,
 
     E[r²] = (10 + ρ) / ((2 + ρ) · (11 + ρ))
             · [1 + ((3 + ρ) · (12 + 12ρ + ρ²)) / (n · (2 + ρ) · (11 + ρ))]
 
 The first factor is the expectation, and it falls from 10/22, 0.4545, at
 ρ of 0 towards 0 as ρ grows: two variants that never recombine still do
-not
-reach an r² of 1, because their allele frequencies drift apart. The
-second corrects it for r² being measured on n gametes and not on the
+not reach an r² of 1, because their allele frequencies drift apart. The
+second corrects it for r² being measured on a sample and not on the whole
 population, and it is what holds the curve up at long distances, where
-the r² of a finite sample does not fall to 0. What n is has not been
-settled: it is **Open 4** below, and until the owner answers it the
-individuals of the population times the ploidy.
+the r² of a finite sample does not fall to 0.
+
+n is the individuals of the population, and not the individuals times the
+ploidy. Hill and Weir wrote n for the gametes sampled, because the r²
+they expect is between the alleles that travel together on one
+chromosome. popnei's is the estimate named after Rogers and Huff of "What
+it gives" above, the correlation across individuals of their dosages, and
+what such a correlation is biased upwards by is how many individuals it
+was taken over. `docs/reports/ld-method/decay_truth.py` measured it on 24
+September 2026 on a simulated population of 200 individuals with two
+chromosomes that assort independently: a pair of variants on different
+chromosomes carries no linkage disequilibrium, so the mean r² of such a
+pair is that bias plus what the population itself holds. Fitting that
+mean over samples of 25, 50, 100 and 200 individuals as a constant plus b
+divided by the individuals less one gives a b of 0.925, 0.971 and 0.984
+in three runs, where the individuals ask for 1 and the individuals times
+the ploidy for 0.5. It is the individuals of the population and not the
+individuals called at both variants of a pair, which a missing rate of
+0.03 puts at about 0.94 of them.
 
 popnei fits one number, the ρ per base pair: 4Nr, four times the
 effective size of the population times the recombination per base pair,
 which is the r of that product and not the r whose square this module
-measures. A pair d base pairs apart has a ρ of d times it. The effective size and the recombination rate enter only as
-that product, and one pass over one dataset does not separate them, so
-neither is given on its own. `rho_per_bp` in the results.
+measures. A pair d base pairs apart has a ρ of d times it. The effective
+size and the recombination rate enter only as that product, and one pass
+over one dataset does not separate them, so neither is given on its own.
+`rho_per_bp` in the results.
+
+Sved's curve, E[r²] = 1/(1 + ρ), is the other one the literature fits,
+and it is not the one used. Both estimate the same 4Nr, so the same
+simulation is asked which of them gets it back: over its three runs
+Sved's lands 69, 122 and 175 per 100 above the 4Nr the population was run
+at, where Hill and Weir's lands 12 per 100 below it, 20 above and 31
+above. Sved's has to pass through 1 at a distance of 0, so at 200 bp, the
+shortest distance those runs hold, it gives 0.92 to 0.94 where the mean
+r² measured there is 0.39 to 0.50; Hill and Weir's gives 0.45. What the
+simulation does not settle is n: the effective size its runs settled at
+is itself known only to about a quarter, 140, 221 and 274 against the 200
+individuals they were run with, which is wider than the three answers to
+n are apart. That is why n rests on the unlinked pairs above and not on
+this.
 
 The fitted value is the ρ per base pair at which the sum, over every pair
 the bins counted, of the square of the pair's r² minus the curve at the
@@ -513,8 +542,8 @@ square of the r² of every pair, is the same at every ρ.
 
 Fitting the mean of each bin instead, placed at the middle of the bin,
 moves the answer. For the first population of "How it is verified", the
-pairs give a half distance of 7157.39 bp, its ten bins give 8208.65, 14.7
-per 100 above, and fifty bins give 6883.99, 3.8 per 100 below. The first
+pairs give a half distance of 6810.57 bp, its ten bins give 7886.60, 15.8
+per 100 above, and fifty bins give 6541.43, 3.9 per 100 below. The first
 bin is both where the curve bends most and where the half distance falls,
 so that is where replacing its pairs by one mean costs most.
 
@@ -525,15 +554,15 @@ them bracket a golden section search, the usual one, which holds two
 points inside the bracket and drops the end beyond whichever of them has
 the larger sum, so the bracket is 0.618 of itself after each step, until
 it is narrower than 10⁻⁹ of a decade, 40 steps from a bracket two grid
-cells wide. So the fit costs 183 evaluations of
-the sum above, 141 for the grid and 2 to open the search and 40 for its
-steps, each one pass over the distances that hold a pair. The range covers every
-fall-off that can be seen between one base pair and the largest
+cells wide. So the fit costs 183 evaluations of the sum above, 141 for
+the grid and 2 to open the search and 40 for its steps, each one pass
+over the distances that hold a pair. The range covers every fall-off that
+can be seen between one base pair and the largest
 `max_dist` a user would give: below 10⁻¹² the curve is flat across 10⁶
 bp, and above 10² it has fallen before the second base pair. Narrowing
 the range, at the bottom to 10⁻⁹, at the top to 10⁰, or both, moves the
 fitted value of the first population of "How it is verified" by at most
-1.5·10⁻⁸ of itself, which is the tolerance the search stops at and not
+8.9·10⁻⁹ of itself, which is the tolerance the search stops at and not
 something the range did.
 
 The grid before the search is what looks at the whole range instead of
@@ -546,16 +575,16 @@ a decade from the smallest.
 The half distance is where the fitted curve has fallen to half of its
 value at distance 0. The curve falls without turning, so exactly one ρ
 gives half of what it gives at ρ of 0, and which ρ that is depends on n
-alone: 2.1113080900232815 at n of 200 and 2.1608135872529166 at n of 100.
+alone: 2.1608135872529166 at n of 100 and 2.2641731329247312 at n of 50.
 The half distance is that ρ divided by the fitted ρ per base pair. popnei
 solves for it by bisection between ρ of 0 and 10⁶, stopping when the
 bracket is narrower than 10⁻¹² of its own middle, about 60 halvings, and
 not from a table, so a dataset of another n needs no new number.
 
 It is half of the value at distance 0 and not half of the shortest bin.
-The value at 0 is the curve's own ceiling, 0.45826446280991739 at n of
-200, which the gametes sampled fix on their own, so what is being halved
-does not change when `min_dist`, `max_dist` or `num_bins` changes.
+The value at 0 is the curve's own ceiling, 0.46198347107438015 at n of
+100, which the individuals sampled fix on their own, so what is being
+halved does not change when `min_dist`, `max_dist` or `num_bins` changes.
 `min_dist` and `max_dist` still move the half distance, through the
 fitted ρ per base pair; `num_bins` moves neither.
 
@@ -860,34 +889,34 @@ the first population is 46441 pairs at 249 distances, and
 number that no ρ changes and so with the same smallest, and
 with R's `nls` under its `port` algorithm, which is Gauss and Newton's
 method on the residuals and uses the derivatives popnei does not take.
-The two agree to 5.8·10⁻⁸ of each other at the furthest of the three
+The two agree to 2.1·10⁻⁹ of each other at the furthest of the three
 populations, so the literals below are what `optimize` gives, and they
-are compared within 10⁻⁶ relative, 17 times the disagreement of two
+are compared within 10⁻⁶ relative, 480 times the disagreement of two
 optimisers and far below anything read off a plot. The check is a cargo
 test at `calc_ld_and_dist`, on `ld.vcf.gz` read with the VCF reader, with
 the same block sizes and thread counts as the bins above.
 
 | the population | n | ρ per base pair | r² at distance 0 | the half distance, bp |
 |---|---|---|---|---|
-| every individual, at 0.95 | 200 | 0.00029498313753548991 | 0.45826446280991739 | 7157.3856989342876 |
-| pop_a, at 0.8 | 100 | 0.00026089588864801263 | 0.46198347107438015 | 8282.2830150772352 |
-| pop_b, at 0.8 | 100 | 0.0002704036549245934 | 0.46198347107438015 | 7991.0664959595151 |
+| every individual, at 0.95 | 100 | 0.00031727347196446889 | 0.46198347107438015 | 6810.5712522189806 |
+| pop_a, at 0.8 | 50 | 0.00030068285442483295 | 0.46942148760330576 | 7530.1038938711654 |
+| pop_b, at 0.8 | 50 | 0.00031187790821896646 | 0.46942148760330576 | 7259.8060755719744 |
 
 The curve describes this dataset roughly, and the test says that popnei
 finds the same smallest as R on the same pairs and not that the model is
 right for it. At the middle of the first of the ten bins above the curve
-of the first population is 0.1684 where the bin's mean r² is 0.2077, and
-at the middle of the last it is 0.0186 where the mean is 0.0133. The
+of the first population is 0.1656 where the bin's mean r² is 0.2077, and
+at the middle of the last it is 0.0227 where the mean is 0.0133. The
 dataset is four founder haplotypes recombined along a chromosome, which
 is not the drift and recombination the model is of.
 
 The first cargo test needs neither plink2 nor R, and it is made at
 `fit_ld_decay`, which takes the pairs of each distance and not
 genotypes: r² is taken from the curve itself at a ρ per base pair of
-0.0001 and n of 200, one pair at each of the distances 1000, 2000 and so
+0.0001 and n of 100, one pair at each of the distances 1000, 2000 and so
 on to 250000, and the fit has to give 0.0001 back and a half distance of
-21113.080900232813, both within 10⁻⁶ relative. R's `optimize` gives
-9.9999999620134988e-05 on that table, 3.8·10⁻⁹ away from the number the
+21608.135872529165, both within 10⁻⁶ relative. R's `optimize` gives
+9.9999999605176671e-05 on that table, 4.0·10⁻⁹ away from the number the
 table was made with, so the tolerance is not hiding a wrong answer. The
 same test asserts the three NaN of a population left with pairs at one
 distance, and of one whose smallest falls at an end of the searched
@@ -899,13 +928,13 @@ one distance has NaN in all three of them, so that the dict and the
 dataclass of the Python layer are exercised where the cargo test
 exercises the arithmetic.
 
-Sved's curve, E[r²] = 1/(1 + ρ), the other one the literature fits, is
-not the one used, and whether it should be is **Open 5** below. On the
-pairs of the first population it leaves 95.73 where Hill and Weir's
-leaves 19.35, both of them the pairs of each distance times the square of
-their mean r² minus the curve there, which is the sum the fit makes
-smallest less a number no ρ changes. It puts the half distance at 1872.81
-bp against 7157.39.
+Sved's curve, which "The curve that is fitted" gives the reasons for not
+using, comes out of these pairs too: it leaves 95.73 where Hill and
+Weir's leaves 23.21, both of them the pairs of each distance times the
+square of their mean r² minus the curve there, which is the sum the fit
+makes smallest less a number no ρ changes. It puts the half distance at
+1872.81 bp against 6810.57, the reference dataset agreeing with the
+simulation on a dataset the model is not of.
 
 The TypeScript test, under node, asserts the ten counts of pairs and the
 ten means of the one population of the first table, and the three numbers
@@ -1080,21 +1109,21 @@ The curve fitted to the pairs counted at each distance, which
 `calc_ld_and_dist` calls for each population when its pass has ended and
 which the checks of "How it is verified" that need no plink2 are made at.
 `dists` are in base pairs and need not be in order, `num_pairs` and
-`sum_r2` hold one value for each of them, and `num_gametes` is the
-individuals of the population times the ploidy. Fewer than two distances,
+`sum_r2` hold one value for each of them, and `num_individuals` is the n
+of "The curve that is fitted". Fewer than two distances,
 and a smallest that falls at either end of the searched range, are the
 `LdDecay` of three NaN that "The cases" describes and not an error.
 
 ```rust
 /// # Errors
 ///
-/// Slices of different lengths, a `num_gametes` of 0, a distance that
+/// Slices of different lengths, a `num_individuals` of 0, a distance that
 /// holds no pair, and a sum of r² that is not finite or is below 0.
 pub fn fit_ld_decay(
     dists: &[u64],
     num_pairs: &[u64],
     sum_r2: &[f64],
-    num_gametes: u64,
+    num_individuals: u64,
 ) -> Result<LdDecay>;
 
 pub struct LdDecay { /* private */ }
@@ -1104,8 +1133,8 @@ impl LdDecay {
     /// base pair. NaN when no curve was fitted, which "The cases" says
     /// when, and then the other two are NaN as well.
     pub fn rho_per_bp(&self) -> f64;
-    /// The fitted curve at a distance of 0, which the gametes sampled
-    /// fix on their own.
+    /// The fitted curve at a distance of 0, which the individuals of
+    /// the population fix on their own.
     pub fn r2_at_zero(&self) -> f64;
     /// The distance in base pairs at which the fitted curve has fallen
     /// to half of `r2_at_zero`.
@@ -1374,45 +1403,6 @@ then states a target popnei does not meet, and no experiment of
 time: 72.7 per 100 of it is inside Accelerate. Recommendation: keep 0.50 s
 as the target and record the like-for-like figure beside it, which "What
 the target compares" of "Speed" does. Meanwhile 0.50 s stands and is met.
-
-**Open 4: what n is in the fitted curve.** The second factor of the curve
-of "The curve that is fitted" corrects the expected r² for its being
-measured on n gametes rather than on the whole population, and n is not
-something popnei can read off the data. Hill and Weir wrote n for the
-gametes sampled, which for the individuals of a population is their
-number times the ploidy. Against that, popnei reads no phase: its r² is
-the one named after Rogers and Huff, taken across individuals, and a
-diploid individual whose two chromosomes were never told apart is not two
-gametes that were each observed. The options are the individuals times
-the ploidy, the individuals themselves, and no second factor at all. On
-the first population of "How it is verified", 100 individuals at ploidy
-2, they give a half distance of 7157.39 bp at n of 200, 6810.57 at n of
-100, which is 4.8 per 100 below it, and 7514.67 with the factor dropped,
-5.0 per 100 above it. So the choice moves the number the web application
-plots by about 5 per 100 and moves nothing else: the bins, the pairs and
-everything above are the same. Recommendation: the individuals times the
-ploidy, which is n as Hill and Weir wrote it and what the fits in the
-literature use. Meanwhile that is what is built, and the three literals
-of the table are of it.
-
-**Open 5: which curve is fitted.** Two are fitted in the literature, each
-with one parameter: Hill and Weir's expected r², which "The curve that is
-fitted" has, and Sved's, E[r²] = 1/(1 + ρ). They do not give the same
-number for the same population. On the pairs of the first population of
-"How it is verified" Hill and Weir's puts the half distance at 7157.39 bp
-and Sved's at 1872.81, 3.8 times apart, because the two do not halve from
-the same place: Sved's curve is 1 at a distance of 0, so its half
-distance is where r² has fallen to 0.5, and Hill and Weir's is 0.4583
-there for 200 gametes, so its half distance is where r² has fallen to
-0.2291. On how closely each follows the pairs, Hill and Weir's leaves
-19.35 of the sum quoted in "How it is verified" where Sved's leaves
-95.73, the same pairs and the same sum. What Sved's gives is a shorter
-formula with no n in it, which takes **Open 4** away with it, and a
-number that answers the question a reader is likelier to ask of the words
-"falls to half". Recommendation: Hill and Weir's, which follows these
-pairs 4.9 times more closely and which is what the fits of the literature
-use. Meanwhile it is the one built, and the three literals of the table
-are of it.
 
 ## Not in this spec
 

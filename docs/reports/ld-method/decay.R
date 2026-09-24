@@ -1,6 +1,6 @@
 # The curve of expected r2 fitted to the pairs decay.py wrote: the table of
 # "How it is verified" of the item "LD against distance, per population" of
-# docs/specs/ld.md, and the numbers its text and its Open 4 quote.
+# docs/specs/ld.md, and the numbers its text quotes.
 W <- Sys.getenv("LD_WORK", ".")
 
 # Hill and Weir (1988) with the correction for the n gametes sampled, and
@@ -31,7 +31,9 @@ read_pairs <- function(tag) {
   t <- read.table(file.path(W, paste0(tag, ".decay.tsv")), header = TRUE)
   t$mean_r2 <- t$sum_r2 / t$num_pairs; t }
 
-pops <- list(all = 200, pop_a = 100, pop_b = 100)
+# n is the individuals of the population, which decay_truth.py measured
+# to be what the sample term of the curve is about.
+pops <- list(all = 100, pop_a = 50, pop_b = 50)
 cat("the table of the spec: the curve fitted to every pair\n")
 fits <- list()
 for (tag in names(pops)) {
@@ -46,7 +48,7 @@ for (tag in names(pops)) {
               g, abs(g / b$C - 1)))
 }
 
-t <- read_pairs("all"); n <- 200; b <- fits[["all"]]
+t <- read_pairs("all"); n <- 100; b <- fits[["all"]]
 cat("\nhow well the curve describes this dataset, at the ten bins of the spec\n")
 k <- pmin(floor((t$dist - 1) / 25000), 9)
 np <- tapply(t$num_pairs, k, sum); sr <- tapply(t$sum_r2, k, sum)
@@ -73,8 +75,8 @@ for (nb in c(10, 50)) {
               nb, rho_at_half(hw, n) / c2$C, rho_at_half(hw, n) / c2$C / half - 1, half))
 }
 
-cat("\nOpen 4: what n does to the half distance of the first row\n")
-for (nn in c(200, 100)) {
+cat("\nwhat the other answers to n would have given for the first row\n")
+for (nn in c(100, 200)) {
   c2 <- brent(t$dist, t$num_pairs, t$mean_r2, hw, nn)
   cat(sprintf("  n = %3d: half dist %.10g\n", nn, rho_at_half(hw, nn) / c2$C))
 }
@@ -89,15 +91,15 @@ for (lo in c(-12, -9)) for (hi in c(2, 0)) {
 }
 
 cat("\nthe rho at which the curve is half of its value at 0, by n\n")
-for (nn in c(50, 100, 200, 400))
+for (nn in c(25, 50, 100, 200))
   cat(sprintf("  n = %3d: r2 at 0 %.17g, rho at half %.17g\n",
               nn, hw(0, 1, nn), rho_at_half(hw, nn)))
 
 cat("\nthe case of the first cargo test: r2 taken from the curve itself\n")
-C0 <- 1e-4; d0 <- seq(1000, 250000, by = 1000); y0 <- hw(d0, C0, 200)
-r0 <- brent(d0, rep(1, length(d0)), y0, hw, 200)
+C0 <- 1e-4; d0 <- seq(1000, 250000, by = 1000); y0 <- hw(d0, C0, 100)
+r0 <- brent(d0, rep(1, length(d0)), y0, hw, 100)
 cat(sprintf("  made at rho per bp %g, recovered %.17g, %.3g of itself away\n",
             C0, r0$C, abs(r0$C / C0 - 1)))
-cat(sprintf("  half dist %.17g\n", rho_at_half(hw, 200) / C0))
+cat(sprintf("  half dist %.17g\n", rho_at_half(hw, 100) / C0))
 cat(sprintf("  r2 at 1000, 2000, 3000 bp: %.17g %.17g %.17g\n", y0[1], y0[2], y0[3]))
 cat(sprintf("\nR %s.%s\n", R.version$major, R.version$minor))
