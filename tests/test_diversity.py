@@ -18,8 +18,9 @@ The counts the tests assert are read from the files of
 and which program wrote it: `adegenet` 2.1.11 counted the alleles and the
 variable variants, `poppr` 2.9.8 the private ones, and `scikit-allel` 1.3.13
 gave the plain form of F_IS. The unbiased form, which popnei returns, is in
-the spec and not in a file, because it is built from the unbiased expected
-heterozygosity, whose own verification is in `docs/specs/stats.md`.
+the spec and not in a file: no program outside popnei computes it, and the
+values there come from `docs/reports/diversity-method/panel.py`, which works
+the five quantities out in Python as the spec defines them.
 
 The draw of a common number of called alleles is not asserted here: the
 standardized values and the folded spectrum are work package 3 of
@@ -50,26 +51,36 @@ PANEL = STATS_REFERENCE_DIR / "panel.vcf.gz"
 PANEL_NUM_VARS = 1200
 PANEL_MIN_NUM_INDIVIDUALS = 20
 
-# What a value of popnei may differ from a number of a reference file by. The
-# files hold every digit of each float, and the two sides add the same per
-# variant values in different orders, so the last bits differ.
-OF_A_STORED_NUMBER = 1e-12
-
-# What popnei's F_IS may differ from the number of the spec by. Those three
-# are printed to ten decimals there and are in no file, so the literal itself
-# is up to 5e-11 from the value it stands for. That is what is compared here
-# and not the 1e-12 of the value that every other number of this file is
-# compared within, which on a value of 0.0128 is 1.3e-14 and is below the
-# rounding of the literal. What popnei gives differs from the three literals
-# by 3.7e-11, 2.4e-11 and 3.1e-11, measured on 24 September 2026, so each of
-# them is what popnei's value rounds to at ten decimals.
-OF_A_LITERAL_OF_TEN_DECIMALS = 5e-11
+# What a value of popnei may differ from the number it is compared with by,
+# which is what every item of the spec asks for its floats: 1e-12 of the
+# value. Every number compared here carries all its digits, the stored ones
+# because the files of `tests/reference/diversity/` hold 17 significant
+# figures and the three F_IS because the spec gives them at the precision
+# they were computed to, and the two sides add the same per variant values in
+# different orders, so the last bits differ.
+OF_A_REFERENCE_VALUE = 1e-12
 
 # The unbiased F_IS of the three populations of the panel, from "How it is
 # verified" of "The inbreeding coefficient F_IS" of the spec. It is the form
 # popnei returns: one minus the mean observed heterozygosity over the mean
 # unbiased expected one.
-PANEL_FIS = {"p0": -0.0127584868, "p1": -0.0181107131, "p2": -0.0184585832}
+#
+# The item prints those three to ten decimals for the reader and gives them
+# again at the precision they were computed to, which is what is written
+# here: a value of ten decimals stands for anything within 5e-11 of itself,
+# and 1e-12 of 0.0128 is 1.3e-14, so the shorter form could not be compared
+# within the tolerance this file uses everywhere. They come from
+# `docs/reports/diversity-method/panel.py`, which computes the five
+# quantities of the spec in Python and is where every unbiased number of the
+# spec comes from, so this assertion says that popnei's Rust agrees with that
+# Python and nothing more, as the standardized private alleles do. What
+# checks F_IS against a program outside popnei is the plain form below,
+# against `scikit-allel`.
+PANEL_FIS = {
+    "p0": -0.012758486763377208,
+    "p1": -0.018110713076467277,
+    "p2": -0.018458583231322434,
+}
 
 
 def _pops_of(path: Path) -> dict[str, list[str]]:
@@ -115,13 +126,13 @@ def _of_the_panel(**kwargs) -> PopDiversity:
     return calc_pop_diversity(_panel(), **kwargs)
 
 
-def _the_same_number(ours, theirs, tolerance: float = OF_A_STORED_NUMBER) -> bool:
-    """Whether two means or two ratios agree within `tolerance` of the value,
+def _the_same_number(ours, theirs) -> bool:
+    """Whether two values agree within `OF_A_REFERENCE_VALUE` of the value,
     with a missing value on both sides or on neither."""
     ours, theirs = float(ours), float(theirs)
     if math.isnan(ours) or math.isnan(theirs):
         return math.isnan(ours) and math.isnan(theirs)
-    return math.isclose(ours, theirs, rel_tol=tolerance, abs_tol=0)
+    return math.isclose(ours, theirs, rel_tol=OF_A_REFERENCE_VALUE, abs_tol=0)
 
 
 # The four statistics of this work package, which are every one but the
@@ -138,7 +149,8 @@ def test_the_panel_holds_the_alleles_and_the_fis_the_reference_programs_give() -
     """The alleles the three populations of the panel called, the private
     ones among them and the variants that vary in each, against the counts of
     `adegenet` and `poppr` stored in `tests/reference/diversity/`, and F_IS
-    against the three numbers of the spec."""
+    against the three values of the spec, which the Python of
+    `docs/reports/diversity-method/panel.py` computed."""
     diversity = _of_the_panel(stats=WITH_NO_SPECTRUM)
     of_the_alleles = _reference("panel_num_alleles.tsv")
     of_the_private = _reference("panel_private_alleles.tsv")
@@ -160,7 +172,7 @@ def test_the_panel_holds_the_alleles_and_the_fis_the_reference_programs_give() -
         assert diversity.variable_vars_ratio.loc[pop, "total"] == int(
             of_the_variable[pop]["total_adegenet"]
         )
-        assert abs(float(diversity.fis[pop]) - fis) <= OF_A_LITERAL_OF_TEN_DECIMALS, (
+        assert _the_same_number(diversity.fis[pop], fis), (
             f"the F_IS of {pop} is {diversity.fis[pop]!r} and the spec gives {fis}"
         )
     assert diversity.num_vars_every_pop == int(
